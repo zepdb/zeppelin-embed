@@ -22,6 +22,9 @@ const HAMMING_BLOCK: usize = HAMMING_LANES * HAMMING_UNROLL;
 const PACKED_LANES: usize = 16;
 const BIT2_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 4;
 const BIT4_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 2;
+// Retained by tasks/evidence/opt-ledger/B1-bit4.md iterations 1-10.
+const BIT4_RAW_DOTPROD_BLOCK: usize = BIT4_DIMENSIONS_PER_BLOCK * 4;
+const BIT4_PREPARED_DOTPROD_BLOCK: usize = BIT4_DIMENSIONS_PER_BLOCK * 4;
 const WIDE_STREAM_LANES: usize = 16;
 const WIDE_STREAM_UNROLL: usize = 4;
 const WIDE_STREAM_BLOCK: usize = WIDE_STREAM_LANES * WIDE_STREAM_UNROLL;
@@ -46,6 +49,7 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         hamming_u1_batch,
         dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
+        dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
@@ -63,6 +67,7 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
         hamming_u1_batch,
         dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
+        dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
@@ -100,6 +105,7 @@ fn dotprod_shape_table(
         hamming_u1_batch,
         dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
+        dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
@@ -117,6 +123,7 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         hamming_u1_batch,
         dot_bit2: dot_bit2_widen,
         dot_bit4: dot_bit4_widen,
+        dot_bit4_prepared: dot_bit4_prepared_widen,
         dot_bit2_batch: dot_bit2_batch_widen,
         dot_bit4_batch: dot_bit4_batch_widen,
     }
@@ -382,22 +389,141 @@ fn dot_bit4_dotprod(q: &[i8], codes: &[u8]) -> i32 {
 
 #[target_feature(enable = "dotprod")]
 unsafe fn dot_bit4_dotprod_inner(q: &[i8], codes: &[u8]) -> i32 {
-    // SAFETY: each iteration consumes exactly 16 code bytes and 32 query
+    // SAFETY: each iteration consumes exactly 64 code bytes and 128 query
     // bytes. Shift/mask extraction stays in registers, and the wrapper
     // established FEAT_DotProd before any SDOT instruction is reached.
     unsafe {
-        let processed = q.len() / BIT4_DIMENSIONS_PER_BLOCK * BIT4_DIMENSIONS_PER_BLOCK;
-        let mut acc = vdupq_n_s32(0);
+        let processed = q.len() / BIT4_RAW_DOTPROD_BLOCK * BIT4_RAW_DOTPROD_BLOCK;
+        let mut acc0 = vdupq_n_s32(0);
+        let mut acc1 = vdupq_n_s32(0);
+        let mut acc2 = vdupq_n_s32(0);
+        let mut acc3 = vdupq_n_s32(0);
+        let mut acc4 = vdupq_n_s32(0);
+        let mut acc5 = vdupq_n_s32(0);
+        let mut acc6 = vdupq_n_s32(0);
+        let mut acc7 = vdupq_n_s32(0);
         let mut base = 0_usize;
         while base < processed {
             let code_ptr = codes.as_ptr().wrapping_add(base / 2);
             let (values0, values1) = unpack_bit4_block(code_ptr);
+            let (values2, values3) = unpack_bit4_block(code_ptr.wrapping_add(PACKED_LANES));
+            let (values4, values5) = unpack_bit4_block(code_ptr.wrapping_add(PACKED_LANES * 2));
+            let (values6, values7) = unpack_bit4_block(code_ptr.wrapping_add(PACKED_LANES * 3));
             let query_ptr = q.as_ptr().wrapping_add(base);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr), values0);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
-            base += BIT4_DIMENSIONS_PER_BLOCK;
+            acc0 = dotprod_mac(acc0, vld1q_s8(query_ptr), values0);
+            acc1 = dotprod_mac(acc1, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            acc2 = dotprod_mac(
+                acc2,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)),
+                values2,
+            );
+            acc3 = dotprod_mac(
+                acc3,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)),
+                values3,
+            );
+            acc4 = dotprod_mac(
+                acc4,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 4)),
+                values4,
+            );
+            acc5 = dotprod_mac(
+                acc5,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 5)),
+                values5,
+            );
+            acc6 = dotprod_mac(
+                acc6,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 6)),
+                values6,
+            );
+            acc7 = dotprod_mac(
+                acc7,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 7)),
+                values7,
+            );
+            base += BIT4_RAW_DOTPROD_BLOCK;
         }
-        packed_bit4_tail(vaddvq_s32(acc), q, codes, processed)
+        let vectors = vaddq_s32(
+            vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3)),
+            vaddq_s32(vaddq_s32(acc4, acc5), vaddq_s32(acc6, acc7)),
+        );
+        packed_bit4_tail(vaddvq_s32(vectors), q, codes, processed)
+    }
+}
+
+#[inline]
+fn dot_bit4_prepared_dotprod(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 2);
+    // SAFETY: the DotProd table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit4_prepared_dotprod_inner(q, query_sum, codes) }
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_bit4_prepared_dotprod_inner(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes exactly 64 code bytes and 128 query
+    // bytes. Query preparation groups even then odd coordinates per 32-byte
+    // block, so high and low nibbles can feed SDOT without per-row ZIPs.
+    unsafe {
+        let processed = q.len() / BIT4_PREPARED_DOTPROD_BLOCK * BIT4_PREPARED_DOTPROD_BLOCK;
+        let mut acc0 = vdupq_n_s32(0);
+        let mut acc1 = vdupq_n_s32(0);
+        let mut acc2 = vdupq_n_s32(0);
+        let mut acc3 = vdupq_n_s32(0);
+        let mut acc4 = vdupq_n_s32(0);
+        let mut acc5 = vdupq_n_s32(0);
+        let mut acc6 = vdupq_n_s32(0);
+        let mut acc7 = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 2);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            let (values0, values1) = unpack_bit4_split_block(code_ptr);
+            let (values2, values3) = unpack_bit4_split_block(code_ptr.wrapping_add(PACKED_LANES));
+            let (values4, values5) =
+                unpack_bit4_split_block(code_ptr.wrapping_add(PACKED_LANES * 2));
+            let (values6, values7) =
+                unpack_bit4_split_block(code_ptr.wrapping_add(PACKED_LANES * 3));
+            acc0 = dotprod_mac(acc0, vld1q_s8(query_ptr), values0);
+            acc1 = dotprod_mac(acc1, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            acc2 = dotprod_mac(
+                acc2,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)),
+                values2,
+            );
+            acc3 = dotprod_mac(
+                acc3,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)),
+                values3,
+            );
+            acc4 = dotprod_mac(
+                acc4,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 4)),
+                values4,
+            );
+            acc5 = dotprod_mac(
+                acc5,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 5)),
+                values5,
+            );
+            acc6 = dotprod_mac(
+                acc6,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 6)),
+                values6,
+            );
+            acc7 = dotprod_mac(
+                acc7,
+                vld1q_s8(query_ptr.wrapping_add(I8_LANES * 7)),
+                values7,
+            );
+            base += BIT4_PREPARED_DOTPROD_BLOCK;
+        }
+        let vectors = vaddq_s32(
+            vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3)),
+            vaddq_s32(vaddq_s32(acc4, acc5), vaddq_s32(acc6, acc7)),
+        );
+        packed_bit4_prepared_tail(vaddvq_s32(vectors), q, query_sum, codes, processed)
     }
 }
 
@@ -426,6 +552,41 @@ unsafe fn dot_bit4_widen_inner(q: &[i8], codes: &[u8]) -> i32 {
             base += BIT4_DIMENSIONS_PER_BLOCK;
         }
         packed_bit4_tail(vaddvq_s32(acc), q, codes, processed)
+    }
+}
+
+#[inline]
+fn dot_bit4_prepared_widen(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 2);
+    // SAFETY: the NEON table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit4_prepared_widen_inner(q, query_sum, codes) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn dot_bit4_prepared_widen_inner(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes one complete 16-byte packed block and
+    // its matching block-interleaved 32-byte query block.
+    unsafe {
+        let processed = q.len() / BIT4_DIMENSIONS_PER_BLOCK * BIT4_DIMENSIONS_PER_BLOCK;
+        let mut acc0 = vdupq_n_s32(0);
+        let mut acc1 = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 2);
+            let (values0, values1) = unpack_bit4_split_block(code_ptr);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            acc0 = widen_mac(acc0, vld1q_s8(query_ptr), values0);
+            acc1 = widen_mac(acc1, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            base += BIT4_DIMENSIONS_PER_BLOCK;
+        }
+        packed_bit4_prepared_tail(
+            vaddvq_s32(vaddq_s32(acc0, acc1)),
+            q,
+            query_sum,
+            codes,
+            processed,
+        )
     }
 }
 
@@ -488,6 +649,19 @@ unsafe fn unpack_bit4_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t) {
 }
 
 #[target_feature(enable = "neon")]
+unsafe fn unpack_bit4_split_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t) {
+    // SAFETY: callers provide a pointer to a complete 16-byte packed block.
+    unsafe {
+        let packed = vld1q_u8(code_ptr);
+        let mask = vdupq_n_u8(0x0f);
+        (
+            vreinterpretq_s8_u8(vshrq_n_u8(packed, 4)),
+            vreinterpretq_s8_u8(vandq_u8(packed, mask)),
+        )
+    }
+}
+
+#[target_feature(enable = "neon")]
 unsafe fn bit2_grid(fields: uint8x16_t) -> int8x16_t {
     vreinterpretq_s8_u8(vsubq_u8(vshlq_n_u8(fields, 1), vdupq_n_u8(3)))
 }
@@ -520,6 +694,23 @@ fn packed_bit4_tail(sum: i32, q: &[i8], codes: &[u8], processed: usize) -> i32 {
         return sum;
     };
     sum + scalar::dot_bit4(q_tail, code_tail)
+}
+
+fn packed_bit4_prepared_tail(
+    sum: i32,
+    q: &[i8],
+    query_sum: i32,
+    codes: &[u8],
+    processed: usize,
+) -> i32 {
+    let Some(q_tail) = q.get(processed..) else {
+        return sum;
+    };
+    let Some(code_tail) = codes.get(processed / 2..) else {
+        return sum;
+    };
+    let unsigned_sum = sum + scalar::dot_bit4_prepared_unsigned(q_tail, code_tail);
+    2 * unsigned_sum - 15 * query_sum
 }
 
 #[inline]

@@ -7,3 +7,5 @@ pub mod frontier;
 pub mod platform;
 /// Quantization recall-retention and deterministic byte-count harness.
 pub mod recall;
+/// Full scheme-level coarse-scoring benchmark support.
+pub mod scheme_level;

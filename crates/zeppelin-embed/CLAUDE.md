@@ -72,11 +72,16 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Extended-RaBitQ uses the exact critical-value rescale search and stores the
   row norm plus estimator correction. Random rotation is optional and off by
   default in v1; recall validation remains per embedding model.
-- Bit2 and Bit4 scoring uses appended runtime-dispatch slots. AArch64 NEON
-  extracts fields with shift/mask ladders and ZIP interleaving, then accumulates
-  directly from registers; scalar is the oracle and non-NEON architectures use
-  that allocation-free fallback. Never materialize an expanded row while
-  scoring.
+- Bit2 and the coordinate-order public Bit4 kernel use appended runtime-dispatch
+  slots. AArch64 NEON extracts fields with shift/mask ladders and ZIP
+  interleaving, then accumulates directly from registers; scalar is the oracle
+  and non-NEON architectures use that allocation-free fallback. Never
+  materialize an expanded row while scoring.
+- The optimized Bit4 estimator prepares an in-memory-only query layout with
+  even then odd coordinates per 32-value block. NEON scores unsigned high/low
+  nibble vectors and applies `2*dot - 15*query_sum` once per row. The persisted
+  MSB-first row layout and the public coordinate-order `dot_bit4` kernel remain
+  unchanged; provenance is `tasks/evidence/opt-ledger/B1-bit4.md`.
 
 ## Task 04 quantization and recall invariants
 

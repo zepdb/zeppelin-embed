@@ -14,6 +14,7 @@ pub(super) fn table() -> KernelTable {
         hamming_u1_batch,
         dot_bit2,
         dot_bit4,
+        dot_bit4_prepared,
         dot_bit2_batch,
         dot_bit4_batch,
     }
@@ -127,6 +128,44 @@ pub(super) fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
                 .sum::<i32>()
         })
         .sum()
+}
+
+pub(super) fn dot_bit4_prepared(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    2 * dot_bit4_prepared_unsigned(q, codes) - 15 * query_sum
+}
+
+pub(super) fn dot_bit4_prepared_unsigned(q: &[i8], codes: &[u8]) -> i32 {
+    debug_assert_eq!(codes.len(), q.len().div_ceil(2));
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+    let mut sum = 0_i32;
+    let mut query_base = 0_usize;
+    let mut code_base = 0_usize;
+    while query_base < q.len() {
+        let block_len = (q.len() - query_base).min(32);
+        let even_count = block_len.div_ceil(2);
+        let code_count = block_len.div_ceil(2);
+        let Some(query_block) = q.get(query_base..query_base + block_len) else {
+            return sum;
+        };
+        let Some(code_block) = codes.get(code_base..code_base + code_count) else {
+            return sum;
+        };
+        for (field, (&packed, &even)) in code_block
+            .iter()
+            .zip(query_block.iter().take(even_count))
+            .enumerate()
+        {
+            let high = i32::from(packed >> 4);
+            sum += i32::from(even) * high;
+            if let Some(&odd) = query_block.get(even_count + field) {
+                let low = i32::from(packed & 0x0f);
+                sum += i32::from(odd) * low;
+            }
+        }
+        query_base += block_len;
+        code_base += code_count;
+    }
+    sum
 }
 
 pub(super) fn dot_bit2_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {

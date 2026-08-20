@@ -48,6 +48,481 @@ use zeppelin_embed_bench::frontier::tune::{
 use zeppelin_embed_bench::frontier::variants::{KernelPoint, VariantRegistry};
 
 #[test]
+fn scheme_level_scoring_matches_production_entry_points_and_measures_actual_buffers() {
+    use zeppelin_embed::quant::QuantScheme;
+    use zeppelin_embed_bench::scheme_level::{EncodedCorpus, PreparedQuery};
+
+    const DIMENSION: usize = 8;
+    const ROWS: usize = 3;
+    const SEED: u64 = 0x5c4e_4d45;
+    let values = [
+        -1.0_f32, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1.0, 1.0, -0.5, 0.25, -0.125, 0.0625,
+        -0.03125, 0.015625, -0.0078125, -0.9, 0.8, -0.7, 0.6, -0.5, 0.4, -0.3, 0.2,
+    ];
+    let query = [0.8_f32, -0.7, 0.6, -0.5, 0.4, -0.3, 0.2, -0.1];
+
+    for scheme in [
+        QuantScheme::Bit1,
+        QuantScheme::Bit2,
+        QuantScheme::Bit4,
+        QuantScheme::Int8,
+    ] {
+        let corpus = EncodedCorpus::encode(scheme, &values, DIMENSION)
+            .expect("the benchmark corpus encodes");
+        let prepared =
+            PreparedQuery::new(scheme, &query, SEED).expect("the benchmark query prepares");
+        let mut actual = vec![0.0_f32; ROWS];
+        corpus
+            .score_prepared(&prepared, &mut actual)
+            .expect("the benchmark scores every row");
+        let expected = direct_scheme_scores(scheme, &values, &query, DIMENSION, SEED);
+        assert_eq!(
+            actual, expected,
+            "{scheme:?} must use its production scorer"
+        );
+
+        let buffers = corpus.encoded_buffer_bytes();
+        let expected_code_bytes = match scheme {
+            QuantScheme::Bit1 => ROWS * DIMENSION.div_ceil(8),
+            QuantScheme::Bit2 => ROWS * DIMENSION.div_ceil(4),
+            QuantScheme::Bit4 => ROWS * DIMENSION.div_ceil(2),
+            QuantScheme::Int8 => ROWS * DIMENSION,
+            QuantScheme::F32 | QuantScheme::F16 => unreachable!("test scheme set is coarse-only"),
+        };
+        let expected_factor_bytes = match scheme {
+            QuantScheme::Bit1 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit1Factors>(),
+            QuantScheme::Bit2 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit2Factors>(),
+            QuantScheme::Bit4 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>(),
+            QuantScheme::Int8 => ROWS * std::mem::size_of::<(f32, f32)>(),
+            QuantScheme::F32 | QuantScheme::F16 => unreachable!("test scheme set is coarse-only"),
+        };
+        assert_eq!(buffers.code_bytes, expected_code_bytes);
+        assert_eq!(buffers.factor_bytes, expected_factor_bytes);
+        assert_eq!(buffers.total, expected_code_bytes + expected_factor_bytes);
+        assert_eq!(corpus.bytes_per_row(), buffers.total / ROWS);
+    }
+}
+
+fn direct_scheme_scores(
+    scheme: zeppelin_embed::quant::QuantScheme,
+    values: &[f32],
+    query: &[f32],
+    dimension: usize,
+    seed: u64,
+) -> Vec<f32> {
+    use zeppelin_embed::quant::{
+        Int8Vec, QuantScheme, dot_int8_query, est_dot_bit1, est_dot_bit2, est_dot_bit4,
+        prepare_bit1_query, prepare_bit2_query, prepare_bit4_query, prepare_int8_query,
+        quantize_bit1, quantize_bit2, quantize_bit4, quantize_int8,
+    };
+
+    values
+        .chunks_exact(dimension)
+        .map(|row| match scheme {
+            QuantScheme::Int8 => {
+                let prepared = prepare_int8_query(query).expect("direct int8 query");
+                let mut codes = vec![0_i8; dimension];
+                let (scale, offset) = quantize_int8(row, &mut codes).expect("direct int8 row");
+                dot_int8_query(
+                    &prepared,
+                    Int8Vec {
+                        codes: &codes,
+                        scale,
+                        offset,
+                    },
+                )
+                .expect("direct int8 score")
+            }
+            QuantScheme::Bit1 => {
+                let prepared = prepare_bit1_query(query, seed).expect("direct bit1 query");
+                let mut codes = vec![0_u8; dimension.div_ceil(8)];
+                let factors = quantize_bit1(row, &mut codes).expect("direct bit1 row");
+                est_dot_bit1(&prepared, &codes, factors).expect("direct bit1 score")
+            }
+            QuantScheme::Bit2 => {
+                let prepared = prepare_bit2_query(query, seed).expect("direct bit2 query");
+                let mut codes = vec![0_u8; dimension.div_ceil(4)];
+                let factors = quantize_bit2(row, &mut codes).expect("direct bit2 row");
+                est_dot_bit2(&prepared, &codes, factors).expect("direct bit2 score")
+            }
+            QuantScheme::Bit4 => {
+                let prepared = prepare_bit4_query(query, seed).expect("direct bit4 query");
+                let mut codes = vec![0_u8; dimension.div_ceil(2)];
+                let factors = quantize_bit4(row, &mut codes).expect("direct bit4 row");
+                est_dot_bit4(&prepared, &codes, factors).expect("direct bit4 score")
+            }
+            QuantScheme::F32 | QuantScheme::F16 => unreachable!("test scheme set is coarse-only"),
+        })
+        .collect()
+}
+
+#[test]
+fn scheme_level_cli_and_audit_metadata_are_fail_closed_and_machine_readable() {
+    use zeppelin_embed::kernels::KernelArm;
+    use zeppelin_embed::quant::QuantScheme;
+    use zeppelin_embed_bench::scheme_level::{
+        MIN_WORKING_SET_BYTES, SchemeLevelError, SchemeReport, SchemeSelection,
+        enforce_cache_floor, parse_arguments, scoring_path,
+    };
+
+    let arguments = [
+        "--rows",
+        "4000000",
+        "--dimension",
+        "768",
+        "--queries",
+        "7",
+        "--seed",
+        "0x5c4e4d45",
+        "--scheme",
+        "all",
+        "--repeats",
+        "5",
+    ];
+    let config = parse_arguments(arguments).expect("all required flags parse");
+    assert_eq!(config.rows, 4_000_000);
+    assert_eq!(config.dimension, 768);
+    assert_eq!(config.queries, 7);
+    assert_eq!(config.seed, 0x5c4e_4d45);
+    assert_eq!(config.scheme, SchemeSelection::All);
+    assert_eq!(config.repeats, 5);
+
+    let tiny_values = [1.0_f32, -1.0, 0.5, -0.5, 0.25, -0.25, 0.125, -0.125];
+    let tiny = zeppelin_embed_bench::scheme_level::EncodedCorpus::encode(
+        QuantScheme::Bit1,
+        &tiny_values,
+        8,
+    )
+    .expect("tiny corpus encodes");
+    let error = enforce_cache_floor(&tiny).expect_err("cache-resident input must fail closed");
+    assert_eq!(
+        error,
+        SchemeLevelError::WorkingSetTooSmall {
+            actual: tiny.encoded_buffer_bytes().total,
+            minimum: MIN_WORKING_SET_BYTES,
+        }
+    );
+
+    let bit1 = scoring_path(QuantScheme::Bit1, KernelArm::Neon);
+    assert!(!bit1.native_runtime_dispatched_simd);
+    assert!(bit1.label.contains("scalar sign extraction"));
+    assert!(!bit1.expanded_row_materialized);
+    assert_eq!(bit1.unpack_bytes_per_row, 0);
+
+    for scheme in [QuantScheme::Int8, QuantScheme::Bit2, QuantScheme::Bit4] {
+        let path = scoring_path(scheme, KernelArm::Neon);
+        assert!(path.native_runtime_dispatched_simd, "{scheme:?} NEON path");
+        assert!(!path.expanded_row_materialized);
+        assert_eq!(path.unpack_bytes_per_row, 0);
+    }
+    assert!(scoring_path(QuantScheme::Int8, KernelArm::Avx2).native_runtime_dispatched_simd);
+    assert!(
+        !scoring_path(QuantScheme::Bit2, KernelArm::Avx2).native_runtime_dispatched_simd,
+        "the current AVX2 table routes packed two-bit scoring to scalar"
+    );
+
+    for scheme in config.scheme.schemes() {
+        let report = SchemeReport::not_measured(
+            scheme,
+            &config,
+            scoring_path(scheme, KernelArm::Neon),
+            "machine-state preflight unavailable; fail-closed",
+        );
+        let line = report
+            .machine_summary_line()
+            .expect("summary serialization succeeds");
+        let raw = line
+            .strip_prefix("SCHEME_SUMMARY ")
+            .expect("summary has a stable record prefix");
+        let value: serde_json::Value =
+            serde_json::from_str(raw).expect("summary suffix is valid JSON");
+        assert_eq!(value["schema"], 1);
+        assert_eq!(value["status"], "NOT_MEASURED");
+        assert_eq!(value["measurement_authority"], "NOT_AUTHORITATIVE");
+        assert!(value["ns_per_row"].is_null());
+        assert!(value["effective_gbps"].is_null());
+        assert!(value["percent_of_wide_load_ceiling"].is_null());
+        assert_eq!(value["expanded_row_materialized"], false);
+        assert_eq!(value["unpack_bytes_per_row"], 0);
+    }
+}
+
+#[test]
+fn scheme_level_streaming_fixture_is_scoreable_and_above_ceiling_is_a_defect() {
+    use zeppelin_embed::kernels::KernelArm;
+    use zeppelin_embed::quant::QuantScheme;
+    use zeppelin_embed_bench::scheme_level::{
+        BenchmarkConfig, EncodedCorpus, MeasurementMetrics, PreparedQuery, SchemeReport,
+        SchemeSelection, scoring_path,
+    };
+
+    const ROWS: usize = 2_051;
+    const DIMENSION: usize = 19;
+    const SEED: u64 = 0x51ea_6e1e;
+    let query = (0..DIMENSION)
+        .map(|coordinate| (coordinate as f32 - 7.0) / 11.0)
+        .collect::<Vec<_>>();
+    for scheme in [
+        QuantScheme::Bit1,
+        QuantScheme::Bit2,
+        QuantScheme::Bit4,
+        QuantScheme::Int8,
+    ] {
+        let corpus = EncodedCorpus::synthetic(scheme, ROWS, DIMENSION, SEED)
+            .expect("streaming fixture builds through valid encoded templates");
+        let same = EncodedCorpus::synthetic(scheme, ROWS, DIMENSION, SEED)
+            .expect("streaming fixture is reproducible");
+        let different = EncodedCorpus::synthetic(scheme, ROWS, DIMENSION, SEED + 1)
+            .expect("alternate streaming fixture builds");
+        assert_eq!(corpus, same);
+        assert_ne!(corpus, different);
+        assert_eq!(corpus.rows(), ROWS);
+        let prepared = PreparedQuery::new(scheme, &query, SEED).expect("query prepares");
+        let mut scores = vec![0.0_f32; ROWS];
+        corpus
+            .score_prepared(&prepared, &mut scores)
+            .expect("every generated packed row remains production-scoreable");
+        assert!(scores.iter().all(|score| score.is_finite()));
+    }
+
+    let config = BenchmarkConfig {
+        rows: ROWS,
+        dimension: DIMENSION,
+        queries: 2,
+        seed: SEED,
+        scheme: SchemeSelection::Int8,
+        repeats: 3,
+    };
+    let report = SchemeReport::measured_candidate(
+        QuantScheme::Int8,
+        &config,
+        scoring_path(QuantScheme::Int8, KernelArm::Neon),
+        MeasurementMetrics {
+            bytes_per_row: 27,
+            working_set_bytes: 459,
+            ns_per_row: 0.25,
+            effective_gbps: 81.0,
+            percent_of_wide_load_ceiling: 100.385_696,
+            checksum: 1234,
+        },
+        "direct-probe",
+    );
+    let line = report
+        .machine_summary_line()
+        .expect("defect record serializes");
+    let value: serde_json::Value = serde_json::from_str(
+        line.strip_prefix("SCHEME_SUMMARY ")
+            .expect("stable summary prefix"),
+    )
+    .expect("summary is JSON");
+    assert_eq!(value["status"], "MEASUREMENT_DEFECT");
+    assert_eq!(value["measurement_authority"], "SINGLE_TENANT_REQUIRED");
+    assert!(
+        value["note"]
+            .as_str()
+            .expect("defect note is text")
+            .contains("above 100%")
+    );
+}
+
+#[test]
+fn scheme_level_validation_failures_and_candidate_records_are_typed() {
+    use std::error::Error as _;
+
+    use zeppelin_embed::kernels::KernelArm;
+    use zeppelin_embed::quant::QuantScheme;
+    use zeppelin_embed_bench::scheme_level::{
+        BenchmarkConfig, EncodedBufferBytes, EncodedCorpus, MeasurementMetrics, PreparedQuery,
+        SchemeLevelError, SchemeReport, SchemeSelection, parse_arguments, scheme_label,
+        scoring_path,
+    };
+
+    let arguments_for = |scheme: &'static str| {
+        [
+            "--rows",
+            "1",
+            "--dimension",
+            "8",
+            "--queries",
+            "1",
+            "--seed",
+            "7",
+            "--scheme",
+            scheme,
+            "--repeats",
+            "1",
+        ]
+    };
+    for (name, expected) in [
+        ("bit1", SchemeSelection::Bit1),
+        ("bit2", SchemeSelection::Bit2),
+        ("bit4", SchemeSelection::Bit4),
+        ("int8", SchemeSelection::Int8),
+    ] {
+        let parsed = parse_arguments(arguments_for(name)).expect("single scheme parses");
+        assert_eq!(parsed.scheme, expected);
+        assert_eq!(parsed.scheme.schemes().len(), 1);
+    }
+
+    assert_eq!(
+        parse_arguments(std::iter::empty::<&str>()).expect_err("required flags"),
+        SchemeLevelError::MissingFlag("--rows")
+    );
+    assert_eq!(
+        parse_arguments(["--rows"]).expect_err("flag needs a value"),
+        SchemeLevelError::MissingValue(String::from("--rows"))
+    );
+    assert_eq!(
+        parse_arguments(["--unknown", "1"]).expect_err("unknown flag"),
+        SchemeLevelError::UnknownFlag(String::from("--unknown"))
+    );
+    assert!(matches!(
+        parse_arguments(["--rows", "0"]),
+        Err(SchemeLevelError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        parse_arguments(["--seed", "0xnope"]),
+        Err(SchemeLevelError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        parse_arguments(["--scheme", "binary"]),
+        Err(SchemeLevelError::InvalidValue { .. })
+    ));
+    let duplicate = [
+        "--rows",
+        "1",
+        "--rows",
+        "2",
+        "--dimension",
+        "8",
+        "--queries",
+        "1",
+        "--seed",
+        "7",
+        "--scheme",
+        "bit1",
+        "--repeats",
+        "1",
+    ];
+    assert_eq!(
+        parse_arguments(duplicate).expect_err("duplicate flag"),
+        SchemeLevelError::DuplicateFlag(String::from("--rows"))
+    );
+
+    assert_eq!(
+        EncodedCorpus::encode(QuantScheme::Bit1, &[1.0], 0).expect_err("zero dimension"),
+        SchemeLevelError::ZeroDimension
+    );
+    assert!(matches!(
+        EncodedCorpus::encode(QuantScheme::Bit1, &[], 8),
+        Err(SchemeLevelError::RowShape { .. })
+    ));
+    assert!(matches!(
+        EncodedCorpus::encode(QuantScheme::Bit1, &[1.0, 2.0, 3.0], 2),
+        Err(SchemeLevelError::RowShape { .. })
+    ));
+    assert!(matches!(
+        EncodedCorpus::encode(QuantScheme::F32, &[1.0], 1),
+        Err(SchemeLevelError::UnsupportedScheme(QuantScheme::F32))
+    ));
+    assert!(matches!(
+        EncodedCorpus::encode(QuantScheme::Int8, &[f32::NAN], 1),
+        Err(SchemeLevelError::Quant(_))
+    ));
+    assert!(matches!(
+        EncodedCorpus::synthetic(QuantScheme::Bit1, 0, 8, 1),
+        Err(SchemeLevelError::RowShape { .. })
+    ));
+    assert!(matches!(
+        PreparedQuery::new(QuantScheme::F16, &[1.0], 1),
+        Err(SchemeLevelError::UnsupportedScheme(QuantScheme::F16))
+    ));
+
+    let corpus =
+        EncodedCorpus::encode(QuantScheme::Int8, &[1.0, -1.0], 2).expect("int8 validation corpus");
+    let int8_query =
+        PreparedQuery::new(QuantScheme::Int8, &[1.0, -1.0], 1).expect("int8 validation query");
+    assert!(matches!(
+        corpus.score_prepared(&int8_query, &mut []),
+        Err(SchemeLevelError::OutputCount { .. })
+    ));
+    let bit1_query =
+        PreparedQuery::new(QuantScheme::Bit1, &[1.0, -1.0], 1).expect("bit1 mismatch query");
+    assert_eq!(
+        corpus
+            .score_prepared(&bit1_query, &mut [0.0])
+            .expect_err("scheme mismatch"),
+        SchemeLevelError::SchemeMismatch
+    );
+
+    for scheme in [QuantScheme::Int8, QuantScheme::Bit2, QuantScheme::Bit4] {
+        assert!(!scoring_path(scheme, KernelArm::Scalar).native_runtime_dispatched_simd);
+    }
+    assert!(!scoring_path(QuantScheme::Bit4, KernelArm::Avx2).native_runtime_dispatched_simd);
+    assert_eq!(scheme_label(QuantScheme::F32), "f32");
+    assert_eq!(scheme_label(QuantScheme::F16), "f16");
+
+    let config = BenchmarkConfig {
+        rows: 1,
+        dimension: 8,
+        queries: 1,
+        seed: 7,
+        scheme: SchemeSelection::Int8,
+        repeats: 1,
+    };
+    let path = scoring_path(QuantScheme::Int8, KernelArm::Scalar);
+    let candidate = SchemeReport::measured_candidate(
+        QuantScheme::Int8,
+        &config,
+        path,
+        MeasurementMetrics {
+            bytes_per_row: 16,
+            working_set_bytes: 16,
+            ns_per_row: 2.0,
+            effective_gbps: 8.0,
+            percent_of_wide_load_ceiling: 9.914_572,
+            checksum: 99,
+        },
+        "direct-probe",
+    );
+    let candidate_json: serde_json::Value = serde_json::from_str(
+        candidate
+            .machine_summary_line()
+            .expect("candidate serializes")
+            .strip_prefix("SCHEME_SUMMARY ")
+            .expect("candidate prefix"),
+    )
+    .expect("candidate JSON");
+    assert_eq!(candidate_json["status"], "MEASURED_CANDIDATE");
+
+    let refused = SchemeReport::not_measured_with_buffers(
+        QuantScheme::Int8,
+        &config,
+        path,
+        EncodedBufferBytes {
+            code_bytes: 8,
+            factor_bytes: 8,
+            total: 16,
+        },
+        "cache floor",
+    );
+    let refused_json: serde_json::Value = serde_json::from_str(
+        refused
+            .machine_summary_line()
+            .expect("refusal serializes")
+            .strip_prefix("SCHEME_SUMMARY ")
+            .expect("refusal prefix"),
+    )
+    .expect("refusal JSON");
+    assert_eq!(refused_json["bytes_per_row"], 16);
+
+    let quant_error = EncodedCorpus::encode(QuantScheme::Int8, &[f32::INFINITY], 1)
+        .expect_err("quant error source");
+    assert!(quant_error.source().is_some());
+    assert!(SchemeLevelError::ZeroDimension.source().is_none());
+}
+
+#[test]
 fn frontier_roofline_math_matches_hand_computed_memory_and_compute_cases() {
     let provenance =
         DenominatorProvenance::measured("worked example", "frontier test", "2026-08-20")

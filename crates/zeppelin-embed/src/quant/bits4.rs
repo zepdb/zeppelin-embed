@@ -19,7 +19,7 @@
 //! denominator it cancels, leaving `c * <y,q_hat>`. The companion norm is kept
 //! for reconstruction/error bounds and future distance bookkeeping.
 
-use crate::kernels::{MAX_DOT_I8_DIMENSION, dot_bit4};
+use crate::kernels::{MAX_DOT_I8_DIMENSION, dot_bit4_prepared};
 
 use super::QuantError;
 
@@ -70,9 +70,13 @@ impl Bit4Factors {
 ///
 /// Coordinates are symmetrically quantized to `[-127, 127]` with seeded
 /// stochastic rounding, so their reconstruction is unbiased in expectation.
+/// The private kernel representation groups even then odd coordinates within
+/// each 32-value block, matching the packed row's high/low nibble vectors.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bit4Query {
+    /// Even coordinates followed by odd coordinates in each 32-value block.
     codes: Vec<i8>,
+    code_sum: i32,
     scale: f64,
 }
 
@@ -264,13 +268,14 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
     if max_absolute == 0.0 {
         return Ok(Bit4Query {
             codes: vec![0_i8; q.len()],
+            code_sum: 0,
             scale: 0.0,
         });
     }
 
     let scale = f64::from(max_absolute) / 127.0;
     let mut random = SplitMix64::new(seed);
-    let mut codes = Vec::with_capacity(q.len());
+    let mut coordinate_codes = Vec::with_capacity(q.len());
     for &value in q {
         let scaled = f64::from(value) / scale;
         let lower = scaled.floor();
@@ -280,19 +285,26 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
         } else {
             lower
         };
-        codes.push(rounded.clamp(-127.0, 127.0) as i8);
+        coordinate_codes.push(rounded.clamp(-127.0, 127.0) as i8);
     }
-    Ok(Bit4Query { codes, scale })
+    let code_sum = coordinate_codes.iter().map(|&code| i32::from(code)).sum();
+    let codes = interleave_bit4_query_blocks(&coordinate_codes);
+    Ok(Bit4Query {
+        codes,
+        code_sum,
+        scale,
+    })
 }
 
 /// Estimates a dot product directly from one packed four-bit row.
 ///
-/// The native packed kernel expands each nibble `u` to `2*u - 15` in scalar
-/// variables or SIMD registers, representing twice the selected half-integer
-/// grid value. It accumulates immediately and never materializes an expanded
-/// row. If the prepared query reconstructs as `scale*z`, the integer kernel
-/// gives `<y,q_hat> = scale * dot(2*y,z) / 2`; the stored correction then yields
-/// the Extended-RaBitQ estimate.
+/// The native packed kernel scores unsigned nibbles directly, then applies
+/// `dot(z, 2*u - 15) = 2*dot(z, u) - 15*sum(z)` once per row. The query's
+/// block-interleaved representation pairs directly with high- and low-nibble
+/// vectors, so scoring needs no expanded row, ZIP interleave, or per-vector
+/// grid conversion. If the prepared query reconstructs as `scale*z`, the
+/// integer kernel gives `<y,q_hat> = scale * dot(2*y,z) / 2`; the stored
+/// correction then yields the Extended-RaBitQ estimate.
 ///
 /// For an odd dimension, the unused low nibble must be canonical zero padding.
 ///
@@ -309,8 +321,17 @@ pub fn est_dot_bit4(
     if factors.scale == 0.0 {
         return Ok(0.0);
     }
-    let integer_dot = dot_bit4(&query.codes, codes);
+    let integer_dot = dot_bit4_prepared(&query.codes, query.code_sum, codes);
     Ok((factors.correction() * query.scale * 0.5 * f64::from(integer_dot)) as f32)
+}
+
+fn interleave_bit4_query_blocks(codes: &[i8]) -> Vec<i8> {
+    let mut interleaved = Vec::with_capacity(codes.len());
+    for block in codes.chunks(32) {
+        interleaved.extend(block.iter().step_by(2).copied());
+        interleaved.extend(block.iter().skip(1).step_by(2).copied());
+    }
+    interleaved
 }
 
 fn validate_input(v: &[f32], output_len: usize) -> Result<(), QuantError> {

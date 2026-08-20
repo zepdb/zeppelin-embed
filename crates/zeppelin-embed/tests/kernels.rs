@@ -36,6 +36,15 @@ mod kernels {
             .prop_flat_map(|len| (vec(any::<i8>(), len), vec(any::<u8>(), len.div_ceil(2))))
     }
 
+    fn prepare_bit4_kernel_query(codes: &[i8]) -> Vec<i8> {
+        let mut prepared = Vec::with_capacity(codes.len());
+        for block in codes.chunks(32) {
+            prepared.extend(block.iter().step_by(2).copied());
+            prepared.extend(block.iter().skip(1).step_by(2).copied());
+        }
+        prepared
+    }
+
     fn vector_pair_f16() -> impl Strategy<Value = (Vec<u16>, Vec<u16>)> {
         (1_usize..=4_096).prop_flat_map(|len| (vec(any::<u16>(), len), vec(any::<u16>(), len)))
     }
@@ -198,6 +207,21 @@ mod kernels {
             let scalar = KernelVariant::scalar().dot_bit4(&q, &codes);
             for variant in KernelVariant::available() {
                 prop_assert_eq!(variant.dot_bit4(&q, &codes), scalar, "arm={:?}", variant.arm());
+            }
+        }
+
+        #[test]
+        fn prop_bit4_prepared_all_arms_equal_scalar((q, codes) in bit4_dot_case()) {
+            let scalar = KernelVariant::scalar().dot_bit4(&q, &codes);
+            let query_sum = q.iter().map(|&code| i32::from(code)).sum();
+            let prepared = prepare_bit4_kernel_query(&q);
+            for variant in KernelVariant::available() {
+                prop_assert_eq!(
+                    variant.dot_bit4_prepared(&prepared, query_sum, &codes),
+                    scalar,
+                    "arm={:?}",
+                    variant.arm()
+                );
             }
         }
 
@@ -479,6 +503,24 @@ mod kernels {
         let max_a = vec![i8::MIN; MAX_DOT_I8_DIMENSION];
         let max_b = vec![i8::MIN; MAX_DOT_I8_DIMENSION];
         assert_eq!(dot_i8(&max_a, &max_b), 1_i32 << 30);
+    }
+
+    #[test]
+    fn bit4_prepared_max_dimension_intermediates_remain_exact() {
+        let q = vec![i8::MIN; MAX_DOT_I8_DIMENSION];
+        let codes = vec![0xff_u8; MAX_DOT_I8_DIMENSION / 2];
+        let prepared = prepare_bit4_kernel_query(&q);
+        let query_sum = q.iter().map(|&code| i32::from(code)).sum();
+        let expected = KernelVariant::scalar().dot_bit4(&q, &codes);
+        assert_eq!(expected, -125_829_120);
+        for variant in KernelVariant::available() {
+            assert_eq!(
+                variant.dot_bit4_prepared(&prepared, query_sum, &codes),
+                expected,
+                "arm={:?}",
+                variant.arm()
+            );
+        }
     }
 
     #[cfg(target_arch = "aarch64")]

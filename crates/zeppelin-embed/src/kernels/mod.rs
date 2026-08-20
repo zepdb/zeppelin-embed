@@ -197,6 +197,7 @@ type HammingU1Fn = fn(&[u8], &[u8]) -> u32;
 type DotI8BatchFn = fn(&[i8], &[i8], usize, &mut [i32]);
 type HammingU1BatchFn = fn(&[u8], &[u8], usize, &mut [u32]);
 type DotPackedFn = fn(&[i8], &[u8]) -> i32;
+type DotBit4PreparedFn = fn(&[i8], i32, &[u8]) -> i32;
 type DotPackedBatchFn = fn(&[i8], &[u8], usize, &mut [i32]);
 
 #[derive(Clone, Copy)]
@@ -211,6 +212,7 @@ struct KernelTable {
     hamming_u1_batch: HammingU1BatchFn,
     dot_bit2: DotPackedFn,
     dot_bit4: DotPackedFn,
+    dot_bit4_prepared: DotBit4PreparedFn,
     dot_bit2_batch: DotPackedBatchFn,
     dot_bit4_batch: DotPackedBatchFn,
 }
@@ -308,6 +310,16 @@ impl KernelVariant {
     #[must_use]
     pub fn dot_bit4(self, q: &[i8], codes: &[u8]) -> i32 {
         (self.table.dot_bit4)(q, codes)
+    }
+
+    /// Scores a block-interleaved four-bit query against one packed row.
+    ///
+    /// Within each 32-coordinate query block, even coordinates precede odd
+    /// coordinates. `query_sum` is the sum of the original signed query codes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn dot_bit4_prepared(self, q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+        (self.table.dot_bit4_prepared)(q, query_sum, codes)
     }
 
     /// Scores a signed-byte query against contiguous packed two-bit rows.
@@ -446,6 +458,10 @@ pub fn dot_bit2(q: &[i8], codes: &[u8]) -> i32 {
 #[must_use]
 pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
     (dispatch::active_table().dot_bit4)(q, codes)
+}
+
+pub(crate) fn dot_bit4_prepared(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
+    (dispatch::active_table().dot_bit4_prepared)(q, query_sum, codes)
 }
 
 /// Scores one signed-byte query against contiguous packed two-bit rows.
