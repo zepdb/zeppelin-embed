@@ -37,6 +37,7 @@ impl KernelPoint {
 }
 
 type I8Executor = fn(KernelVariant, &[i8], &[i8]) -> i32;
+type I8BatchExecutor = fn(KernelVariant, &[i8], &[i8], usize, &mut [i32]);
 
 /// A currently executable, compile-time-shaped kernel point.
 #[derive(Clone, Copy)]
@@ -44,6 +45,7 @@ pub struct RegisteredVariant {
     point: KernelPoint,
     kernel: KernelVariant,
     i8_executor: I8Executor,
+    i8_batch_executor: I8BatchExecutor,
     build_name: &'static str,
 }
 
@@ -82,6 +84,11 @@ impl RegisteredVariant {
     pub fn dot_i8(&self, left: &[i8], right: &[i8]) -> i32 {
         (self.i8_executor)(self.kernel, left, right)
     }
+
+    /// Executes a contiguous row-major i8 batch through this task-03 table.
+    pub fn dot_i8_batch(&self, query: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+        (self.i8_batch_executor)(self.kernel, query, rows, d, out);
+    }
 }
 
 /// Full declared grid plus the task-03 points already backed by code.
@@ -117,9 +124,25 @@ impl VariantRegistry {
                 }
             }
         }
+        let mut dotprod_index = 0_usize;
         let materialized = KernelVariant::available()
             .filter(|variant| KERNEL_KNOB_SPACE.tier.contains(&variant.tier()))
-            .map(materialize_task03_baseline)
+            .map(|kernel| match kernel.tier() {
+                InstructionTier::NeonI8mmReserved => materialize::<4, 4, 2, 0>(kernel),
+                InstructionTier::NeonDotprod => {
+                    let point = match dotprod_index {
+                        0 => materialize::<4, 4, 1, 0>(kernel),
+                        1 => materialize::<2, 2, 1, 0>(kernel),
+                        2 => materialize::<6, 6, 1, 0>(kernel),
+                        3 => materialize::<8, 8, 1, 0>(kernel),
+                        4 => materialize::<4, 4, 1, 1>(kernel),
+                        _ => materialize_task03_baseline(kernel),
+                    };
+                    dotprod_index += 1;
+                    point
+                }
+                _ => materialize_task03_baseline(kernel),
+            })
             .collect();
         Ok(Self {
             declared,
@@ -232,6 +255,7 @@ fn materialize<
         },
         kernel,
         i8_executor: execute_i8::<UNROLL, ACCUMULATORS, ROWS, PREFETCH>,
+        i8_batch_executor: execute_i8_batch::<UNROLL, ACCUMULATORS, ROWS, PREFETCH>,
         build_name: std::any::type_name::<Shape<UNROLL, ACCUMULATORS, ROWS, PREFETCH>>(),
     }
 }
@@ -257,13 +281,29 @@ fn execute_i8<
     kernel.dot_i8(left, right)
 }
 
+fn execute_i8_batch<
+    const UNROLL: usize,
+    const ACCUMULATORS: usize,
+    const ROWS: usize,
+    const PREFETCH: usize,
+>(
+    kernel: KernelVariant,
+    query: &[i8],
+    rows: &[i8],
+    d: usize,
+    out: &mut [i32],
+) {
+    let _shape = (UNROLL, ACCUMULATORS, ROWS, PREFETCH);
+    kernel.dot_i8_batch(query, rows, d, out);
+}
+
 fn tier_name(tier: InstructionTier) -> &'static str {
     match tier {
         InstructionTier::Scalar => "scalar",
         InstructionTier::NeonWiden => "neon-widen",
         InstructionTier::NeonDotprod => "neon-dotprod",
         InstructionTier::Avx2 => "avx2",
-        InstructionTier::NeonI8mmReserved => "i8mm-reserved",
+        InstructionTier::NeonI8mmReserved => "neon-i8mm-smmla-r2",
         InstructionTier::Sme2Reserved => "sme2-reserved",
     }
 }

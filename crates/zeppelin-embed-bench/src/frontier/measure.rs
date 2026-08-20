@@ -434,6 +434,8 @@ pub struct SyntheticI8Workload {
     dimension: usize,
     query: Vec<i8>,
     rows: Vec<i8>,
+    output: Vec<i32>,
+    verified_observation: Option<WorkloadObservation>,
 }
 
 impl SyntheticI8Workload {
@@ -466,6 +468,8 @@ impl SyntheticI8Workload {
             dimension,
             query,
             rows,
+            output: vec![0_i32; row_count],
+            verified_observation: None,
         })
     }
 }
@@ -478,30 +482,24 @@ impl Workload for SyntheticI8Workload {
     }
 
     fn execute(&mut self, variant: &RegisteredVariant) -> Result<WorkloadObservation, Self::Error> {
-        execute_rows(
+        let observation = execute_contiguous_batch(
             variant,
             &self.query,
             &self.rows,
             self.dimension,
-            1,
-            self.rows.len() / self.dimension,
-            true,
-        )
+            &mut self.output,
+        )?;
+        self.verified_observation = Some(observation);
+        Ok(observation)
     }
 
     fn execute_timed(
         &mut self,
         variant: &RegisteredVariant,
     ) -> Result<WorkloadObservation, Self::Error> {
-        execute_rows(
-            variant,
-            &self.query,
-            &self.rows,
-            self.dimension,
-            1,
-            self.rows.len() / self.dimension,
-            false,
-        )
+        variant.dot_i8_batch(&self.query, &self.rows, self.dimension, &mut self.output);
+        black_box(&self.output);
+        self.verified_observation.ok_or(WorkloadError::InvalidShape)
     }
 }
 
@@ -656,6 +654,37 @@ fn execute_rows(
         checksum = checksum.wrapping_add(i64::from(observed));
         correct &= observed == expected;
         access_fingerprint ^= physical_index as u64;
+        access_fingerprint = access_fingerprint.wrapping_mul(0x100_0000_01b3);
+    }
+    black_box(checksum);
+    Ok(WorkloadObservation {
+        correct,
+        checksum,
+        access_fingerprint,
+    })
+}
+
+fn execute_contiguous_batch(
+    variant: &RegisteredVariant,
+    query: &[i8],
+    rows: &[i8],
+    dimension: usize,
+    output: &mut [i32],
+) -> Result<WorkloadObservation, WorkloadError> {
+    if rows.len() != dimension.saturating_mul(output.len()) {
+        return Err(WorkloadError::InvalidShape);
+    }
+    variant.dot_i8_batch(query, rows, dimension, output);
+    let scalar = KernelVariant::scalar();
+    let mut checksum = 0_i64;
+    let mut correct = true;
+    let mut access_fingerprint = 0xcbf2_9ce4_8422_2325_u64;
+    for (logical_index, (&observed, row)) in
+        output.iter().zip(rows.chunks_exact(dimension)).enumerate()
+    {
+        correct &= observed == scalar.dot_i8(query, row);
+        checksum = checksum.wrapping_add(i64::from(observed));
+        access_fingerprint ^= logical_index as u64;
         access_fingerprint = access_fingerprint.wrapping_mul(0x100_0000_01b3);
     }
     black_box(checksum);

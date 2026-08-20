@@ -8,16 +8,17 @@ use super::{
 };
 
 const I8_LANES: usize = 16;
-const I8_UNROLL: usize = 4; // baseline — pending frontier campaign B1
-const I8_BLOCK: usize = I8_LANES * I8_UNROLL; // baseline — pending frontier campaign B1
+// Retained by tasks/evidence/opt-ledger/B1.md iterations 1–5.
+const I8_UNROLL: usize = 4;
+const I8_BLOCK: usize = I8_LANES * I8_UNROLL;
 const F32_LANES: usize = 4;
-const FLOAT_UNROLL: usize = 4; // baseline — pending frontier campaign B1
-const FLOAT_ACCUMULATORS: usize = 4; // baseline — pending frontier campaign B1
-const FLOAT_BLOCK: usize = F32_LANES * FLOAT_UNROLL; // baseline — pending frontier campaign B1
+const FLOAT_UNROLL: usize = 4; // f16/FHM remained untested after B1 stagnation.
+const FLOAT_ACCUMULATORS: usize = 4; // f16/FHM remained untested after B1 stagnation.
+const FLOAT_BLOCK: usize = F32_LANES * FLOAT_UNROLL;
 const _: [(); FLOAT_UNROLL] = [(); FLOAT_ACCUMULATORS];
 const HAMMING_LANES: usize = 16;
-const HAMMING_UNROLL: usize = 4; // baseline — pending frontier campaign B1
-const HAMMING_BLOCK: usize = HAMMING_LANES * HAMMING_UNROLL; // baseline — pending frontier campaign B1
+const HAMMING_UNROLL: usize = 4; // u1 variants remained untested after B1 stagnation.
+const HAMMING_BLOCK: usize = HAMMING_LANES * HAMMING_UNROLL;
 const WIDE_STREAM_LANES: usize = 16;
 const WIDE_STREAM_UNROLL: usize = 4;
 const WIDE_STREAM_BLOCK: usize = WIDE_STREAM_LANES * WIDE_STREAM_UNROLL;
@@ -39,6 +40,52 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         dot_f16: f16_kernel(features),
         hamming_u1,
         dot_i8_batch: dot_i8_batch_dotprod,
+        hamming_u1_batch,
+    }
+}
+
+pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
+    KernelTable {
+        arm: KernelArm::Neon,
+        tier: InstructionTier::NeonI8mmReserved,
+        dot_i8: dot_i8_dotprod,
+        dot_f32,
+        dot_f16: f16_kernel(features),
+        hamming_u1,
+        dot_i8_batch: dot_i8_batch_i8mm,
+        hamming_u1_batch,
+    }
+}
+
+pub(super) fn dotprod_u2_table(features: KernelFeatures) -> KernelTable {
+    dotprod_shape_table(features, dot_i8_dotprod_u2, dot_i8_batch_dotprod_u2)
+}
+
+pub(super) fn dotprod_u6_table(features: KernelFeatures) -> KernelTable {
+    dotprod_shape_table(features, dot_i8_dotprod_u6, dot_i8_batch_dotprod_u6)
+}
+
+pub(super) fn dotprod_u8_table(features: KernelFeatures) -> KernelTable {
+    dotprod_shape_table(features, dot_i8_dotprod_u8, dot_i8_batch_dotprod_u8)
+}
+
+pub(super) fn dotprod_prefetch_table(features: KernelFeatures) -> KernelTable {
+    dotprod_shape_table(features, dot_i8_dotprod, dot_i8_batch_dotprod_prefetch)
+}
+
+fn dotprod_shape_table(
+    features: KernelFeatures,
+    dot_i8: super::DotI8Fn,
+    dot_i8_batch: super::DotI8BatchFn,
+) -> KernelTable {
+    KernelTable {
+        arm: KernelArm::Neon,
+        tier: InstructionTier::NeonDotprod,
+        dot_i8,
+        dot_f32,
+        dot_f16: f16_kernel(features),
+        hamming_u1,
+        dot_i8_batch,
         hamming_u1_batch,
     }
 }
@@ -104,6 +151,54 @@ unsafe fn dot_i8_dotprod_inner(a: &[i8], b: &[i8]) -> i32 {
         let sum = vaddvq_s32(vectors);
         add_i8_tail(sum, a, b, processed)
     }
+}
+
+fn dot_i8_dotprod_u2(a: &[i8], b: &[i8]) -> i32 {
+    dot_i8_dotprod_shape::<2>(a, b)
+}
+
+fn dot_i8_dotprod_u6(a: &[i8], b: &[i8]) -> i32 {
+    dot_i8_dotprod_shape::<6>(a, b)
+}
+
+fn dot_i8_dotprod_u8(a: &[i8], b: &[i8]) -> i32 {
+    dot_i8_dotprod_shape::<8>(a, b)
+}
+
+fn dot_i8_dotprod_shape<const ACCUMULATORS: usize>(a: &[i8], b: &[i8]) -> i32 {
+    debug_assert_eq!(a.len(), b.len(), "kernel lengths must be pre-validated");
+    debug_assert!(
+        a.len() <= MAX_DOT_I8_DIMENSION,
+        "i8 dimension must be pre-validated"
+    );
+    // SAFETY: each generated table is installed only after runtime DotProd
+    // detection; equal-length live slices bound every complete vector load.
+    unsafe { dot_i8_dotprod_shape_inner::<ACCUMULATORS>(a, b) }
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_i8_dotprod_shape_inner<const ACCUMULATORS: usize>(a: &[i8], b: &[i8]) -> i32 {
+    debug_assert!(ACCUMULATORS > 0);
+    let block = I8_LANES * ACCUMULATORS;
+    let processed = a.len() / block * block;
+    let mut accumulators = [vdupq_n_s32(0); ACCUMULATORS];
+    let mut base = 0_usize;
+    while base < processed {
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            let offset = base + index * I8_LANES;
+            // SAFETY: offset is within a complete `block` in both live slices.
+            let left = unsafe { vld1q_s8(a.as_ptr().add(offset)) };
+            let right = unsafe { vld1q_s8(b.as_ptr().add(offset)) };
+            *accumulator = unsafe { dotprod_mac(*accumulator, left, right) };
+        }
+        base += block;
+    }
+    let vectors = accumulators
+        .into_iter()
+        .fold(vdupq_n_s32(0), |sum, accumulator| {
+            vaddq_s32(sum, accumulator)
+        });
+    add_i8_tail(vaddvq_s32(vectors), a, b, processed)
 }
 
 #[target_feature(enable = "dotprod")]
@@ -512,6 +607,144 @@ fn dot_i8_batch_dotprod(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
 
 fn dot_i8_batch_widen(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_widen);
+}
+
+fn dot_i8_batch_dotprod_u2(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    batch_i8(q, rows, d, out, dot_i8_dotprod_u2);
+}
+
+fn dot_i8_batch_dotprod_u6(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    batch_i8(q, rows, d, out, dot_i8_dotprod_u6);
+}
+
+fn dot_i8_batch_dotprod_u8(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    batch_i8(q, rows, d, out, dot_i8_dotprod_u8);
+}
+
+fn dot_i8_batch_dotprod_prefetch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(
+        d <= MAX_DOT_I8_DIMENSION,
+        "i8 dimension must be pre-validated"
+    );
+    debug_assert_eq!(
+        rows.len(),
+        d.saturating_mul(out.len()),
+        "batch shape must be pre-validated"
+    );
+    if d == 0 {
+        out.fill(0);
+        return;
+    }
+    // SAFETY: this table is installed only after DotProd detection; the
+    // asserted row shape bounds both the prefetched address and kernel loads.
+    unsafe { dot_i8_batch_dotprod_prefetch_inner(q, rows, d, out) };
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_i8_batch_dotprod_prefetch_inner(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    let row_count = out.len();
+    for (row_index, (row, result)) in rows.chunks_exact(d).zip(out.iter_mut()).enumerate() {
+        if row_index + 1 < row_count {
+            let next = rows.as_ptr().wrapping_add((row_index + 1) * d);
+            // SAFETY: the next row exists by the branch and row-shape contract.
+            unsafe {
+                asm!(
+                    "prfm pldl1keep, [{address}]",
+                    address = in(reg) next,
+                    options(readonly, nostack)
+                );
+            }
+        }
+        // SAFETY: this function established DotProd and each row matches q.
+        *result = unsafe { dot_i8_dotprod_inner(q, row) };
+    }
+}
+
+fn dot_i8_batch_i8mm(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(
+        d <= MAX_DOT_I8_DIMENSION,
+        "i8 dimension must be pre-validated"
+    );
+    debug_assert_eq!(
+        rows.len(),
+        d.saturating_mul(out.len()),
+        "batch shape must be pre-validated"
+    );
+    if d == 0 {
+        out.fill(0);
+        return;
+    }
+    // SAFETY: this table is installed only after runtime I8MM and DotProd
+    // detection. The asserted row-major shape bounds every paired-row load.
+    unsafe { dot_i8_batch_i8mm_inner(q, rows, d, out) };
+}
+
+#[target_feature(enable = "i8mm,dotprod")]
+unsafe fn dot_i8_batch_i8mm_inner(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
+    let paired_rows = out.len() / 2 * 2;
+    let processed = d / I8_LANES * I8_LANES;
+    let mut row_index = 0_usize;
+    while row_index < paired_rows {
+        let row0_start = row_index * d;
+        let row1_start = row0_start + d;
+        // SAFETY: paired_rows and the asserted rows.len() == d * out.len()
+        // keep both row slices in bounds.
+        let row0 = unsafe { rows.get_unchecked(row0_start..row0_start + d) };
+        let row1 = unsafe { rows.get_unchecked(row1_start..row1_start + d) };
+        let mut acc = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            // SAFETY: processed is a multiple of 16 no greater than d, so all
+            // three complete vector loads remain within their live slices.
+            let query = unsafe { vld1q_s8(q.as_ptr().add(base)) };
+            let left = unsafe { vld1q_s8(row0.as_ptr().add(base)) };
+            let right = unsafe { vld1q_s8(row1.as_ptr().add(base)) };
+            let query_low = vget_low_s8(query);
+            let query_high = vget_high_s8(query);
+            let duplicated_low = vcombine_s8(query_low, query_low);
+            let duplicated_high = vcombine_s8(query_high, query_high);
+            let rows_low = vcombine_s8(vget_low_s8(left), vget_low_s8(right));
+            let rows_high = vcombine_s8(vget_high_s8(left), vget_high_s8(right));
+            acc = unsafe { i8mm_mac(acc, duplicated_low, rows_low) };
+            acc = unsafe { i8mm_mac(acc, duplicated_high, rows_high) };
+            base += I8_LANES;
+        }
+        let sum0 = vgetq_lane_s32::<0>(acc);
+        let sum1 = vgetq_lane_s32::<1>(acc);
+        let tail0 = add_i8_tail(sum0, q, row0, processed);
+        let tail1 = add_i8_tail(sum1, q, row1, processed);
+        // SAFETY: row_index and row_index + 1 are below paired_rows <= out.len().
+        unsafe {
+            *out.get_unchecked_mut(row_index) = tail0;
+            *out.get_unchecked_mut(row_index + 1) = tail1;
+        }
+        row_index += 2;
+    }
+    if paired_rows < out.len() {
+        let start = paired_rows * d;
+        // SAFETY: the remaining row is exactly the final d-element row.
+        let row = unsafe { rows.get_unchecked(start..start + d) };
+        // SAFETY: this target-feature function established DotProd execution.
+        *unsafe { out.get_unchecked_mut(paired_rows) } = unsafe { dot_i8_dotprod_inner(q, row) };
+    }
+}
+
+#[target_feature(enable = "i8mm")]
+unsafe fn i8mm_mac(mut acc: int32x4_t, left: int8x16_t, right: int8x16_t) -> int32x4_t {
+    // SAFETY: runtime dispatch established FEAT_I8MM. SMMLA treats both
+    // operands as two 8-byte rows and returns their four pairwise dot products.
+    unsafe {
+        asm!(
+            "smmla {acc:v}.4s, {left:v}.16b, {right:v}.16b",
+            acc = inout(vreg) acc,
+            left = in(vreg) left,
+            right = in(vreg) right,
+            options(pure, nomem, nostack)
+        );
+    }
+    acc
 }
 
 fn batch_i8(q: &[i8], rows: &[i8], d: usize, out: &mut [i32], kernel: fn(&[i8], &[i8]) -> i32) {

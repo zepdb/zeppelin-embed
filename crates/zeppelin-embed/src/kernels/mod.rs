@@ -51,7 +51,7 @@ pub enum InstructionTier {
     NeonDotprod,
     /// x86-64 AVX2 plus POPCNT.
     Avx2,
-    /// Reserved, unimplemented FEAT_I8MM campaign tier.
+    /// AArch64 FEAT_I8MM SMMLA batch tier.
     NeonI8mmReserved,
     /// Reserved, unimplemented FEAT_SME2 campaign tier.
     Sme2Reserved,
@@ -66,7 +66,7 @@ pub struct KernelFeatures {
     pub dotprod: bool,
     /// AArch64 half-precision conversion/arithmetic is executable.
     pub fp16: bool,
-    /// AArch64 FEAT_I8MM was detected; implementation is deferred to B1.
+    /// AArch64 FEAT_I8MM is executable.
     pub i8mm: bool,
     /// AArch64 FEAT_SME2 was detected; implementation is deferred to B1.
     pub sme2: bool,
@@ -160,16 +160,18 @@ pub struct BaselineKernelConfig {
 
 /// Shipped baseline configuration; B1 may replace every value with evidence.
 pub const BASELINE_KERNEL_CONFIG: BaselineKernelConfig = BaselineKernelConfig {
-    unroll: 4,         // baseline — pending frontier campaign B1
-    accumulators: 4,   // baseline — pending frontier campaign B1
-    rows_per_block: 1, // baseline — pending frontier campaign B1
-    prefetch_dist: 0,  // baseline — pending frontier campaign B1
+    // Retained by tasks/evidence/opt-ledger/B1.md iterations 1–5.
+    unroll: 4,
+    accumulators: 4,
+    rows_per_block: 1,
+    prefetch_dist: 0,
 };
 
-const UNROLL_KNOBS: [usize; 3] = [2, 4, 8]; // baseline — pending frontier campaign B1
-const ACCUMULATOR_KNOBS: [usize; 4] = [2, 4, 6, 8]; // baseline — pending frontier campaign B1
-const ROW_BLOCK_KNOBS: [usize; 5] = [1, 2, 4, 8, 16]; // baseline — pending frontier campaign B1
-const PREFETCH_KNOBS: [usize; 5] = [0, 1, 2, 4, 8]; // baseline — pending frontier campaign B1
+// Search provenance: tasks/evidence/opt-ledger/B1.md.
+const UNROLL_KNOBS: [usize; 4] = [2, 4, 6, 8];
+const ACCUMULATOR_KNOBS: [usize; 4] = [2, 4, 6, 8];
+const ROW_BLOCK_KNOBS: [usize; 5] = [1, 2, 4, 8, 16];
+const PREFETCH_KNOBS: [usize; 5] = [0, 1, 2, 4, 8];
 const TIER_KNOBS: [InstructionTier; 6] = [
     InstructionTier::Scalar,
     InstructionTier::NeonWiden,
@@ -177,7 +179,7 @@ const TIER_KNOBS: [InstructionTier; 6] = [
     InstructionTier::Avx2,
     InstructionTier::NeonI8mmReserved,
     InstructionTier::Sme2Reserved,
-]; // baseline — pending frontier campaign B1
+]; // Search provenance: tasks/evidence/opt-ledger/B1.md.
 
 /// Registered Task 27-H kernel tuning space.
 pub const KERNEL_KNOB_SPACE: KnobSpace = KnobSpace {

@@ -12,8 +12,8 @@ mod kernels {
     use proptest::prelude::*;
     use zeppelin_embed::kernels::{
         InstructionTier, KERNEL_KNOB_SPACE, KernelArm, KernelInitError, KernelVariant,
-        MAX_DOT_I8_DIMENSION, dot_f16, dot_f32, dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch,
-        initialize, is_arm_supported, selected_arm,
+        MAX_DOT_I8_DIMENSION, detected_features, dot_f16, dot_f32, dot_i8, dot_i8_batch,
+        hamming_u1, hamming_u1_batch, initialize, is_arm_supported, selected_arm,
     };
 
     fn vector_pair_i8() -> impl Strategy<Value = (Vec<i8>, Vec<i8>)> {
@@ -305,6 +305,46 @@ mod kernels {
         assert_eq!(dot_i8(&max_a, &max_b), 1_i32 << 30);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn i8mm_variant_is_registered_and_batch_layout_matches_scalar() {
+        if !detected_features().i8mm {
+            return;
+        }
+        let variant = KernelVariant::available()
+            .find(|variant| variant.tier() == InstructionTier::NeonI8mmReserved)
+            .expect("runtime I8MM support materializes the campaign tier");
+        for (d, row_count) in [
+            (1_usize, 2_usize),
+            (7, 3),
+            (8, 2),
+            (15, 5),
+            (16, 2),
+            (31, 3),
+            (257, 5),
+        ] {
+            let q: Vec<i8> = (0..d)
+                .map(|index| if index % 5 == 0 { i8::MIN } else { index as i8 })
+                .collect();
+            let rows: Vec<i8> = (0..d * row_count)
+                .map(|index| {
+                    if index % 7 == 0 {
+                        i8::MIN
+                    } else {
+                        index.wrapping_mul(31) as i8
+                    }
+                })
+                .collect();
+            let mut actual = vec![0_i32; row_count];
+            variant.dot_i8_batch(&q, &rows, d, &mut actual);
+            let expected = rows
+                .chunks_exact(d)
+                .map(|row| KernelVariant::scalar().dot_i8(&q, row))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "d={d} rows={row_count}");
+        }
+    }
+
     #[test]
     fn f16_special_values_have_defined_ieee_behavior() {
         let scalar = KernelVariant::scalar();
@@ -474,7 +514,7 @@ mod kernels {
 
     #[test]
     fn knob_space_is_registered_as_data_for_task_27_h() {
-        assert_eq!(KERNEL_KNOB_SPACE.unroll, [2, 4, 8]);
+        assert_eq!(KERNEL_KNOB_SPACE.unroll, [2, 4, 6, 8]);
         assert_eq!(KERNEL_KNOB_SPACE.accumulators, [2, 4, 6, 8]);
         assert_eq!(KERNEL_KNOB_SPACE.rows_per_block, [1, 2, 4, 8, 16]);
         assert_eq!(KERNEL_KNOB_SPACE.prefetch_dist, [0, 1, 2, 4, 8]);

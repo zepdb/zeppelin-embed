@@ -3,3 +3,4 @@ research/
 tasks/
 .env
 target/
+.claude/
