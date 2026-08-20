@@ -77,3 +77,18 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   directly from registers; scalar is the oracle and non-NEON architectures use
   that allocation-free fallback. Never materialize an expanded row while
   scoring.
+
+## Task 04 quantization and recall invariants
+
+- Int8 rows use one per-vector signed affine map plus exactly two `f32`
+  factors. Queries use a symmetric signed-byte representation prepared once;
+  row scoring is one native i8 dot plus the precomputed query-code sum.
+- Bit1 is MSB-first and scores directly from packed bytes without an expanded
+  row. Identity rotation remains the v1 implementation, but it is not a safe
+  universal default: the 512 x 768 heavy-tailed recall fixture did not reach
+  0.95 recall@10 through 16x. Require per-model recall evidence before enabling
+  Bit1; do not infer safety from the uniform fixture.
+- Recall byte counters include every stored code and factor byte read in the
+  coarse stage plus every f32 corpus-row byte read in exact rescore. Query bytes
+  and output metadata are common across schemes and excluded. No Task 04
+  command records wall-clock performance.

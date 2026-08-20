@@ -10,5 +10,17 @@ if ! rustup toolchain list | grep -q '^nightly'; then
     exit 2
 fi
 
-exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [[ "${1:-}" == "run" && -n "${2:-}" && ( -z "${3:-}" || "${3:-}" == "--" ) ]]; then
+    TARGET_NAME="$2"
+    SEED_DIR="$PROJECT_ROOT/fuzz/seeds/$TARGET_NAME"
+    if [[ -d "$SEED_DIR" ]]; then
+        CORPUS_DIR="$PROJECT_ROOT/fuzz/corpus/$TARGET_NAME"
+        mkdir -p "$CORPUS_DIR"
+        exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz \
+            run "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR" "${@:3}"
+    fi
+fi
 
+exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz "$@"

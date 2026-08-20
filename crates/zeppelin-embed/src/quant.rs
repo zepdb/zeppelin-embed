@@ -1,14 +1,24 @@
 //! Training-free vector quantization.
 
+mod binary;
 mod bits2;
 mod bits4;
+mod int8;
+mod rescore;
 
+pub use binary::{
+    Bit1Factors, Bit1Query, dequantize_bit1, est_dot_bit1, prepare_bit1_query, quantize_bit1,
+};
 pub use bits2::{
     Bit2Factors, Bit2Query, dequantize_bit2, est_dot_bit2, prepare_bit2_query, quantize_bit2,
 };
 pub use bits4::{
     Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, prepare_bit4_query, quantize_bit4,
 };
+pub use int8::{
+    Int8Query, Int8Vec, dequantize_int8, dot_int8_query, prepare_int8_query, quantize_int8,
+};
+pub use rescore::{RescoreError, RescoreHit, RescoreResult, SearchByteCounts, rescore_top_k};
 
 /// Typed failure from a training-free quantizer or estimator.
 #[derive(Clone, Debug, Eq, PartialEq)]

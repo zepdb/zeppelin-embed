@@ -5,3 +5,5 @@ pub mod frontier;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;
+/// Quantization recall-retention and deterministic byte-count harness.
+pub mod recall;

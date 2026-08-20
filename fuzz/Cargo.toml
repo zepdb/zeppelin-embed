@@ -30,3 +30,10 @@ path = "fuzz_targets/kernels_equivalence.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "quant_roundtrip"
+path = "fuzz_targets/quant_roundtrip.rs"
+test = false
+doc = false
+bench = false
