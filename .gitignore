@@ -4,3 +4,4 @@ tasks/
 .env
 target/
 .claude/
+presentation/

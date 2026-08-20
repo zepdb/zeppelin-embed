@@ -196,6 +196,8 @@ type DotF16Fn = fn(&[u16], &[u16]) -> f32;
 type HammingU1Fn = fn(&[u8], &[u8]) -> u32;
 type DotI8BatchFn = fn(&[i8], &[i8], usize, &mut [i32]);
 type HammingU1BatchFn = fn(&[u8], &[u8], usize, &mut [u32]);
+type DotPackedFn = fn(&[i8], &[u8]) -> i32;
+type DotPackedBatchFn = fn(&[i8], &[u8], usize, &mut [i32]);
 
 #[derive(Clone, Copy)]
 struct KernelTable {
@@ -207,6 +209,10 @@ struct KernelTable {
     hamming_u1: HammingU1Fn,
     dot_i8_batch: DotI8BatchFn,
     hamming_u1_batch: HammingU1BatchFn,
+    dot_bit2: DotPackedFn,
+    dot_bit4: DotPackedFn,
+    dot_bit2_batch: DotPackedBatchFn,
+    dot_bit4_batch: DotPackedBatchFn,
 }
 
 /// One concrete runtime dispatch table.
@@ -290,6 +296,28 @@ impl KernelVariant {
     /// Scores contiguous packed-bit rows through this concrete table.
     pub fn hamming_u1_batch(self, q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) {
         (self.table.hamming_u1_batch)(q, rows, d_bytes, out);
+    }
+
+    /// Scores a signed-byte query against one packed two-bit row.
+    #[must_use]
+    pub fn dot_bit2(self, q: &[i8], codes: &[u8]) -> i32 {
+        (self.table.dot_bit2)(q, codes)
+    }
+
+    /// Scores a signed-byte query against one packed four-bit row.
+    #[must_use]
+    pub fn dot_bit4(self, q: &[i8], codes: &[u8]) -> i32 {
+        (self.table.dot_bit4)(q, codes)
+    }
+
+    /// Scores a signed-byte query against contiguous packed two-bit rows.
+    pub fn dot_bit2_batch(self, q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+        (self.table.dot_bit2_batch)(q, rows, d, out);
+    }
+
+    /// Scores a signed-byte query against contiguous packed four-bit rows.
+    pub fn dot_bit4_batch(self, q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+        (self.table.dot_bit4_batch)(q, rows, d, out);
     }
 }
 
@@ -394,4 +422,46 @@ pub fn dot_i8_batch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
 /// the final byte is significant. A zero byte dimension fills `out` with zero.
 pub fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) {
     (dispatch::active_table().hamming_u1_batch)(q, rows, d_bytes, out);
+}
+
+/// Scores a signed-byte query against one packed two-bit row.
+///
+/// Four unsigned fields are stored most-significant first in each byte and
+/// decoded to the doubled quantization grid `2 * code - 3`. Callers must
+/// pre-validate `codes.len() == q.len().div_ceil(4)` and `q.len() <=
+/// MAX_DOT_I8_DIMENSION`; unused trailing fields are ignored. The hot path
+/// allocates no memory.
+#[must_use]
+pub fn dot_bit2(q: &[i8], codes: &[u8]) -> i32 {
+    (dispatch::active_table().dot_bit2)(q, codes)
+}
+
+/// Scores a signed-byte query against one packed four-bit row.
+///
+/// Two unsigned fields are stored most-significant first in each byte and
+/// decoded to the doubled quantization grid `2 * code - 15`. Callers must
+/// pre-validate `codes.len() == q.len().div_ceil(2)` and `q.len() <=
+/// MAX_DOT_I8_DIMENSION`; an unused trailing field is ignored. The hot path
+/// allocates no memory.
+#[must_use]
+pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
+    (dispatch::active_table().dot_bit4)(q, codes)
+}
+
+/// Scores one signed-byte query against contiguous packed two-bit rows.
+///
+/// Callers must pre-validate `q.len() == d` and `rows.len() ==
+/// d.div_ceil(4) * out.len()` and `d <= MAX_DOT_I8_DIMENSION`. A zero dimension
+/// fills `out` with zero. No scratch storage is allocated.
+pub fn dot_bit2_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    (dispatch::active_table().dot_bit2_batch)(q, rows, d, out);
+}
+
+/// Scores one signed-byte query against contiguous packed four-bit rows.
+///
+/// Callers must pre-validate `q.len() == d` and `rows.len() ==
+/// d.div_ceil(2) * out.len()` and `d <= MAX_DOT_I8_DIMENSION`. A zero dimension
+/// fills `out` with zero. No scratch storage is allocated.
+pub fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    (dispatch::active_table().dot_bit4_batch)(q, rows, d, out);
 }

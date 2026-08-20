@@ -20,6 +20,10 @@ pub(super) fn table() -> KernelTable {
         hamming_u1,
         dot_i8_batch,
         hamming_u1_batch,
+        dot_bit2: scalar::dot_bit2,
+        dot_bit4: scalar::dot_bit4,
+        dot_bit2_batch: scalar::dot_bit2_batch,
+        dot_bit4_batch: scalar::dot_bit4_batch,
     }
 }
 

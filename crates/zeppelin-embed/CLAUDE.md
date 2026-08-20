@@ -60,3 +60,20 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - `KERNEL_KNOB_SPACE` and `BASELINE_KERNEL_CONFIG` are data contracts for Task
   27-H. I8MM and SME2 tiers remain detected/reserved but unimplemented; no
   tuner, ledger, roofline calculator, L2 distance, or PDX scan belongs here.
+
+## Task 04 narrow-width invariants
+
+- Persisted quantization identifiers are append-only: `Bit4 = 4` and
+  owner-assigned `Bit2 = 5`; their numeric order is intentionally unrelated to
+  width.
+- Bit2 packs four coordinates per byte and Bit4 packs two, both MSB-first.
+  Unused low-order fields in a final partial byte are zero on encode and are
+  rejected when non-zero during scoring or reconstruction.
+- Extended-RaBitQ uses the exact critical-value rescale search and stores the
+  row norm plus estimator correction. Random rotation is optional and off by
+  default in v1; recall validation remains per embedding model.
+- Bit2 and Bit4 scoring uses appended runtime-dispatch slots. AArch64 NEON
+  extracts fields with shift/mask ladders and ZIP interleaving, then accumulates
+  directly from registers; scalar is the oracle and non-NEON architectures use
+  that allocation-free fallback. Never materialize an expanded row while
+  scoring.

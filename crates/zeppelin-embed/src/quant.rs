@@ -1,1 +1,130 @@
 //! Training-free vector quantization.
+
+mod bits2;
+mod bits4;
+
+pub use bits2::{
+    Bit2Factors, Bit2Query, dequantize_bit2, est_dot_bit2, prepare_bit2_query, quantize_bit2,
+};
+pub use bits4::{
+    Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, prepare_bit4_query, quantize_bit4,
+};
+
+/// Typed failure from a training-free quantizer or estimator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QuantError {
+    /// The input dimension is zero, for which a code direction is undefined.
+    EmptyVector,
+    /// The vector exceeds the dimension supported by the reused i8 kernel.
+    DimensionTooLarge {
+        /// Supplied coordinate count.
+        actual: usize,
+        /// Largest accepted coordinate count.
+        maximum: usize,
+    },
+    /// A coordinate was NaN or infinite.
+    NonFinite {
+        /// Zero-based coordinate of the first rejected value.
+        index: usize,
+    },
+    /// A caller-owned output buffer had the wrong byte length.
+    OutputLength {
+        /// Required byte count.
+        expected: usize,
+        /// Supplied byte count.
+        actual: usize,
+    },
+    /// A packed row had the wrong byte length for the query dimension.
+    CodeLength {
+        /// Required byte count.
+        expected: usize,
+        /// Supplied byte count.
+        actual: usize,
+    },
+    /// Unused low-order fields in a final partial byte were not zero.
+    NonZeroPadding {
+        /// Final byte containing non-canonical padding.
+        byte: u8,
+        /// Mask selecting the unused low-order bits.
+        mask: u8,
+    },
+}
+
+impl std::fmt::Display for QuantError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyVector => formatter.write_str("quantization vector must not be empty"),
+            Self::DimensionTooLarge { actual, maximum } => write!(
+                formatter,
+                "quantization dimension {actual} exceeds supported maximum {maximum}"
+            ),
+            Self::NonFinite { index } => {
+                write!(
+                    formatter,
+                    "quantization input is non-finite at coordinate {index}"
+                )
+            }
+            Self::OutputLength { expected, actual } => write!(
+                formatter,
+                "quantization output length mismatch: expected {expected}, got {actual}"
+            ),
+            Self::CodeLength { expected, actual } => write!(
+                formatter,
+                "packed quantization code length mismatch: expected {expected}, got {actual}"
+            ),
+            Self::NonZeroPadding { byte, mask } => write!(
+                formatter,
+                "packed quantization code has non-zero padding: byte={byte:#04x}, mask={mask:#04x}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QuantError {}
+
+/// Persisted quantization scheme identifier.
+///
+/// Discriminants are an append-only storage contract. They must never be
+/// reordered, renumbered, or reused, even though `Bit2` is numerically narrower
+/// than `Bit4`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum QuantScheme {
+    /// Uncompressed IEEE binary32 coordinates.
+    F32 = 0,
+    /// IEEE binary16 coordinates.
+    F16 = 1,
+    /// Signed eight-bit scalar quantization.
+    Int8 = 2,
+    /// One-bit RaBitQ codes.
+    Bit1 = 3,
+    /// Four-bit Extended-RaBitQ codes.
+    Bit4 = 4,
+    /// Two-bit Extended-RaBitQ codes.
+    Bit2 = 5,
+}
+
+impl QuantScheme {
+    /// Returns the permanent persisted identifier.
+    #[must_use]
+    pub const fn id(self) -> u8 {
+        self as u8
+    }
+
+    /// Decodes a permanent persisted identifier.
+    #[must_use]
+    pub const fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::F32),
+            1 => Some(Self::F16),
+            2 => Some(Self::Int8),
+            3 => Some(Self::Bit1),
+            4 => Some(Self::Bit4),
+            5 => Some(Self::Bit2),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

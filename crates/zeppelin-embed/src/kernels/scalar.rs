@@ -12,6 +12,10 @@ pub(super) fn table() -> KernelTable {
         hamming_u1,
         dot_i8_batch,
         hamming_u1_batch,
+        dot_bit2,
+        dot_bit4,
+        dot_bit2_batch,
+        dot_bit4_batch,
     }
 }
 
@@ -82,6 +86,79 @@ pub(super) fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut 
     }
     for (row, result) in rows.chunks_exact(d_bytes).zip(out.iter_mut()) {
         *result = hamming_u1(q, row);
+    }
+}
+
+pub(super) fn dot_bit2(q: &[i8], codes: &[u8]) -> i32 {
+    const SHIFTS: [u32; 4] = [6, 4, 2, 0];
+    debug_assert_eq!(codes.len(), q.len().div_ceil(4));
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+    codes
+        .iter()
+        .zip(q.chunks(4))
+        .map(|(&packed, query)| {
+            query
+                .iter()
+                .zip(SHIFTS)
+                .map(|(&query_value, shift)| {
+                    let code = i32::from((packed >> shift) & 0x03);
+                    i32::from(query_value) * (2 * code - 3)
+                })
+                .sum::<i32>()
+        })
+        .sum()
+}
+
+pub(super) fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
+    const SHIFTS: [u32; 2] = [4, 0];
+    debug_assert_eq!(codes.len(), q.len().div_ceil(2));
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+    codes
+        .iter()
+        .zip(q.chunks(2))
+        .map(|(&packed, query)| {
+            query
+                .iter()
+                .zip(SHIFTS)
+                .map(|(&query_value, shift)| {
+                    let code = i32::from((packed >> shift) & 0x0f);
+                    i32::from(query_value) * (2 * code - 15)
+                })
+                .sum::<i32>()
+        })
+        .sum()
+}
+
+pub(super) fn dot_bit2_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    dot_packed_batch(q, rows, d, out, 4, dot_bit2);
+}
+
+pub(super) fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    dot_packed_batch(q, rows, d, out, 2, dot_bit4);
+}
+
+fn dot_packed_batch(
+    q: &[i8],
+    rows: &[u8],
+    d: usize,
+    out: &mut [i32],
+    fields_per_byte: usize,
+    dot: fn(&[i8], &[u8]) -> i32,
+) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(d <= MAX_DOT_I8_DIMENSION);
+    let row_bytes = d.div_ceil(fields_per_byte);
+    debug_assert_eq!(
+        rows.len(),
+        row_bytes.saturating_mul(out.len()),
+        "batch shape must be pre-validated"
+    );
+    if row_bytes == 0 {
+        out.fill(0);
+        return;
+    }
+    for (row, result) in rows.chunks_exact(row_bytes).zip(out.iter_mut()) {
+        *result = dot(q, row);
     }
 }
 
