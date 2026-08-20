@@ -1,4 +1,7 @@
-//! Benchmark harness and incumbent-adapter shell for Task 24.
+//! Benchmark, platform-truth, and optimization-frontier tooling.
+
+/// Optimization-frontier measurement and search harness.
+pub mod frontier;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;

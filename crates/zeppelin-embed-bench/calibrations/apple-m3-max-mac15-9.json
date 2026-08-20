@@ -1,0 +1,94 @@
+{
+  "schema": "zeppelin-compute-calibration-v1",
+  "machine": {
+    "model_name": "MacBook Pro",
+    "model_identifier": "Mac15,9",
+    "chip": "Apple M3 Max",
+    "os_product_version": "27.0",
+    "os_build": "26A5388g",
+    "power_state": "AC Power",
+    "thermal_state": "No thermal warning level has been recorded"
+  },
+  "measured_date": "2026-08-20",
+  "command": "cargo run --release -p zeppelin-embed-bench --bin frontier -- denominators",
+  "tiers": [
+    {
+      "tier": "neon-fma-f32",
+      "adopted_gmac_per_second": 33.294029,
+      "runs": [
+        {
+          "run": 1,
+          "gmac_per_second": 33.250349,
+          "raw_medians_ns": [4811979.5, 4821687.5, 4819666.5],
+          "checksum": 1293457031
+        },
+        {
+          "run": 2,
+          "gmac_per_second": 33.294029,
+          "raw_medians_ns": [4805666.5, 4816333.5, 4808520.5],
+          "checksum": 1293457031
+        }
+      ]
+    },
+    {
+      "tier": "neon-sdot-i8",
+      "adopted_gmac_per_second": 170.672356,
+      "runs": [
+        {
+          "run": 1,
+          "gmac_per_second": 170.582308,
+          "raw_medians_ns": [3756000.0, 3751854.5, 3767250.0],
+          "checksum": 640000112
+        },
+        {
+          "run": 2,
+          "gmac_per_second": 170.672356,
+          "raw_medians_ns": [3749875.0, 3761729.5, 3761354.5],
+          "checksum": 640000112
+        }
+      ]
+    },
+    {
+      "tier": "neon-fp16-convert-fma",
+      "adopted_gmac_per_second": 21.569397,
+      "runs": [
+        {
+          "run": 1,
+          "gmac_per_second": 21.569397,
+          "raw_medians_ns": [7427166.0, 7417917.0, 7429959.0],
+          "checksum": 1285068430
+        },
+        {
+          "run": 2,
+          "gmac_per_second": 21.543320,
+          "raw_medians_ns": [7428583.0, 7426896.0, 7428812.5],
+          "checksum": 1285068430
+        }
+      ]
+    }
+  ],
+  "revision_history": [
+    {
+      "date": "2026-08-20",
+      "override_used": false,
+      "reason": "seeded from two unsandboxed operator calibrations",
+      "changes": [
+        {
+          "tier": "neon-fma-f32",
+          "previous_gmac_per_second": null,
+          "adopted_gmac_per_second": 33.294029
+        },
+        {
+          "tier": "neon-sdot-i8",
+          "previous_gmac_per_second": null,
+          "adopted_gmac_per_second": 170.672356
+        },
+        {
+          "tier": "neon-fp16-convert-fma",
+          "previous_gmac_per_second": null,
+          "adopted_gmac_per_second": 21.569397
+        }
+      ]
+    }
+  ]
+}
