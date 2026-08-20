@@ -37,3 +37,26 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   which includes both resident size and `phys_footprint`. The core `sys` lines
   remain subject to the 90% coverage gate; do not exclude platform code from
   coverage.
+
+## Task 03 invariants
+
+- Kernel callers validate equal dimensions and batch shapes before the hot
+  path. The six public kernels use `debug_assert!` only; i8 dimensions are
+  bounded by `MAX_DOT_I8_DIMENSION = 65,536`, whose worst-case sum is `2^30`.
+- SIMD selection is runtime-only and cached once. Engine initialization must
+  call `kernels::initialize()` so `ZE_KERNEL=scalar|neon|avx2` failures remain
+  typed; raw kernel calls safely select the best detected arm when no override
+  is requested.
+- Stable Rust 1.93 still marks `vdotq_s32` unstable. The SDOT-equivalent NEON
+  baseline therefore emits exactly one runtime-gated `sdot` instruction with
+  `asm!`; never move that instruction outside the detected DotProd table.
+- The scalar f16 bit conversion defines zeros, subnormals, normals, infinities,
+  and NaNs without `half`. NEON f16/f32 variants use four independent vector
+  accumulators; equivalence uses a fixed `1e-5` dot-product backward-error
+  bound scaled by `SUM|a_i * b_i|`, not by the cancellation-sensitive result.
+- Stable Rust 1.93 also marks `vcvt_f32_f16` unstable. The runtime-FP16 table
+  emits `fcvtl` through documented inline assembly; the fallback keeps the
+  scalar bit conversion but still accumulates converted blocks in vectors.
+- `KERNEL_KNOB_SPACE` and `BASELINE_KERNEL_CONFIG` are data contracts for Task
+  27-H. I8MM and SME2 tiers remain detected/reserved but unimplemented; no
+  tuner, ledger, roofline calculator, L2 distance, or PDX scan belongs here.

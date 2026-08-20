@@ -75,6 +75,13 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - run: cargo test --workspace
+      - name: Exercise every runtime kernel arm
+        run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
+      - name: Require AVX2 execution on Ubuntu
+        if: runner.os == 'Linux'
+        run: >-
+          ZE_REQUIRE_AVX2=1 cargo test -p zeppelin-embed --test kernels
+          kernels::x86_runtime_executes_avx2_when_host_supports_it -- --exact
 
   coverage-gate:
     name: coverage-gate (${{ matrix.os }})
@@ -155,6 +162,20 @@ jobs:
         with:
           tool: cargo-fuzz
       - run: scripts/cargo-fuzz-nightly run fuzz_smoke -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run kernels_equivalence -- -max_total_time=60
+
+  kernel-perf-floor:
+    name: kernel-perf-floor (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: >-
+          cargo test --release -p zeppelin-embed --test kernels
+          kernels::perf -- --ignored --nocapture
 
   miri:
     name: miri (ubuntu-latest)

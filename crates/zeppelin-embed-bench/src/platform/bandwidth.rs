@@ -68,6 +68,21 @@ pub struct BandwidthReport {
     pub checksum: u64,
 }
 
+/// Side-by-side results over one shared buffer and statistical configuration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandwidthMethodComparison {
+    /// Existing libc `memchr` absent-byte stream rate.
+    pub memchr: BandwidthReport,
+    /// Four-way-unrolled AArch64 NEON wide-load stream rate.
+    pub wide_vector_load: BandwidthReport,
+}
+
+#[derive(Clone, Copy)]
+enum StreamMethod {
+    Memchr,
+    WideVectorLoad,
+}
+
 /// Detects the current machine's physical performance-core count.
 pub fn detect_performance_core_count() -> io::Result<usize> {
     #[cfg(target_os = "macos")]
@@ -117,6 +132,27 @@ pub fn parse_performance_core_count(output: &str) -> Option<usize> {
 
 /// Measures streaming-read throughput for every configured core count.
 pub fn measure(config: BandwidthConfig) -> io::Result<BandwidthReport> {
+    validate_config(&config)?;
+    let mut buffer = allocate_buffer(config.buffer_bytes);
+    black_box(&mut buffer);
+    measure_buffer(&config, &buffer, StreamMethod::Memchr)
+}
+
+/// Measures the existing `memchr` method and the wide-vector-load method over
+/// the same initialized buffer, warm-up count, samples, and thread counts.
+pub fn measure_method_comparison(config: BandwidthConfig) -> io::Result<BandwidthMethodComparison> {
+    validate_config(&config)?;
+    let mut buffer = allocate_buffer(config.buffer_bytes);
+    black_box(&mut buffer);
+    let memchr = measure_buffer(&config, &buffer, StreamMethod::Memchr)?;
+    let wide_vector_load = measure_buffer(&config, &buffer, StreamMethod::WideVectorLoad)?;
+    Ok(BandwidthMethodComparison {
+        memchr,
+        wide_vector_load,
+    })
+}
+
+fn validate_config(config: &BandwidthConfig) -> io::Result<()> {
     if config.buffer_bytes == 0
         || config.samples == 0
         || config.core_counts.is_empty()
@@ -127,20 +163,30 @@ pub fn measure(config: BandwidthConfig) -> io::Result<BandwidthReport> {
             "bandwidth measurement needs nonzero bytes, samples, and core counts",
         ));
     }
-    let mut buffer = vec![0_u8; config.buffer_bytes];
-    buffer.fill(0xa5);
-    black_box(&mut buffer);
+    Ok(())
+}
 
+fn allocate_buffer(buffer_bytes: usize) -> Vec<u8> {
+    let mut buffer = vec![0_u8; buffer_bytes];
+    buffer.fill(0xa5);
+    buffer
+}
+
+fn measure_buffer(
+    config: &BandwidthConfig,
+    buffer: &[u8],
+    method: StreamMethod,
+) -> io::Result<BandwidthReport> {
     let mut checksum = 0_u64;
     let mut measurements = Vec::with_capacity(config.core_counts.len());
     for core_count in &config.core_counts {
         for _ in 0..config.warmup_samples {
-            let (_, observed) = read_once(&buffer, *core_count)?;
+            let (_, observed) = read_once(buffer, *core_count, method)?;
             checksum ^= observed;
         }
         let mut rates = Vec::with_capacity(config.samples);
         for _ in 0..config.samples {
-            let (duration, observed) = read_once(&buffer, *core_count)?;
+            let (duration, observed) = read_once(buffer, *core_count, method)?;
             checksum ^= observed;
             rates.push(gigabytes_per_second(config.buffer_bytes, duration)?);
         }
@@ -162,7 +208,11 @@ pub fn measure(config: BandwidthConfig) -> io::Result<BandwidthReport> {
     })
 }
 
-fn read_once(buffer: &[u8], core_count: usize) -> io::Result<(Duration, u64)> {
+fn read_once(
+    buffer: &[u8],
+    core_count: usize,
+    method: StreamMethod,
+) -> io::Result<(Duration, u64)> {
     if core_count > buffer.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -180,7 +230,10 @@ fn read_once(buffer: &[u8], core_count: usize) -> io::Result<(Duration, u64)> {
             handles.push(scope.spawn(move || {
                 ready.wait();
                 let started = Instant::now();
-                let checksum = stream_checksum(chunk);
+                let checksum = match method {
+                    StreamMethod::Memchr => Ok(stream_checksum(chunk)),
+                    StreamMethod::WideVectorLoad => wide_vector_checksum(chunk),
+                };
                 (started.elapsed(), checksum)
             }));
         }
@@ -190,11 +243,24 @@ fn read_once(buffer: &[u8], core_count: usize) -> io::Result<(Duration, u64)> {
             let (duration, observed) = handle
                 .join()
                 .map_err(|_| io::Error::other("bandwidth reader thread panicked"))?;
+            let observed = observed?;
             longest = longest.max(duration);
             checksum ^= observed;
         }
         Ok((longest, checksum))
     })
+}
+
+#[inline(never)]
+fn wide_vector_checksum(bytes: &[u8]) -> io::Result<u64> {
+    let checksum = zeppelin_embed::kernels::platform_wide_stream_checksum(black_box(bytes))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "wide-vector bandwidth method requires runtime AArch64 NEON support",
+            )
+        })?;
+    Ok(black_box(checksum))
 }
 
 #[inline(never)]
@@ -251,9 +317,42 @@ pub fn print_report(report: &BandwidthReport) {
     );
 }
 
+/// Prints both method reports side by side and a combined JSON record.
+pub fn print_method_comparison(comparison: &BandwidthMethodComparison) {
+    println!("== memchr-based stream rate ==");
+    print_report(&comparison.memchr);
+    println!("== wide-vector-load stream rate ==");
+    print_report(&comparison.wide_vector_load);
+    println!(
+        "COMPARISON_JSON {}",
+        serde_json::json!({
+            "kind": "bandwidth_method_comparison",
+            "memchr": report_json(&comparison.memchr),
+            "wide_vector_load": report_json(&comparison.wide_vector_load),
+        })
+    );
+}
+
+fn report_json(report: &BandwidthReport) -> serde_json::Value {
+    serde_json::json!({
+        "buffer_bytes": report.buffer_bytes,
+        "warmup_samples": report.warmup_samples,
+        "checksum": report.checksum,
+        "measurements": report.measurements.iter().map(|measurement| {
+            serde_json::json!({
+                "core_count": measurement.core_count,
+                "median_gb_per_second": measurement.median_gb_per_second,
+                "samples_gb_per_second": measurement.samples_gb_per_second
+            })
+        }).collect::<Vec<_>>()
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BandwidthConfig, measure, parse_performance_core_count};
+    use super::{
+        BandwidthConfig, measure, measure_method_comparison, parse_performance_core_count,
+    };
 
     #[test]
     fn bandwidth_smoke_is_plausible() -> Result<(), Box<dyn std::error::Error>> {
@@ -268,5 +367,22 @@ mod tests {
     fn performance_core_count_parser_reads_system_profiler_shape() {
         let output = "Total Number of Cores: 16 (12 Performance and 4 Efficiency)";
         assert_eq!(parse_performance_core_count(output), Some(12));
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn bandwidth_method_comparison_uses_matched_buffers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let comparison = measure_method_comparison(BandwidthConfig::smoke())?;
+        assert_eq!(
+            comparison.memchr.buffer_bytes,
+            comparison.wide_vector_load.buffer_bytes
+        );
+        let measurement = &comparison.wide_vector_load.measurements[0];
+        assert_eq!(measurement.core_count, 1);
+        assert_eq!(measurement.samples_gb_per_second.len(), 3);
+        assert!(measurement.median_gb_per_second.is_finite());
+        assert!(measurement.median_gb_per_second > 0.0);
+        Ok(())
     }
 }

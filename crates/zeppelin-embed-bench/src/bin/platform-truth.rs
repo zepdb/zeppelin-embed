@@ -24,12 +24,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         "all" if arguments.len() == 1 => run_all(),
         "fsync" if arguments.len() == 1 => run_fsync_full(),
         "bandwidth" if arguments.len() == 1 => run_bandwidth_full(),
+        "bandwidth-compare" if arguments.len() == 1 => run_bandwidth_comparison_full(),
         "footprint" if arguments.len() == 1 => run_footprint_full(),
         "incumbent" if arguments.len() == 1 => run_incumbent_full(),
         "energy" => run_energy(&arguments[1..]),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: platform-truth [--smoke | all | fsync | bandwidth | footprint | incumbent | energy -- <workload> [args...]]",
+            "usage: platform-truth [--smoke | all | fsync | bandwidth | bandwidth-compare | footprint | incumbent | energy -- <workload> [args...]]",
         )
         .into()),
     }
@@ -90,6 +91,16 @@ fn run_bandwidth_full() -> Result<(), Box<dyn Error>> {
     println!("detected performance cores: {performance_cores}");
     let report = bandwidth::measure(bandwidth::BandwidthConfig::full(performance_cores))?;
     bandwidth::print_report(&report);
+    Ok(())
+}
+
+fn run_bandwidth_comparison_full() -> Result<(), Box<dyn Error>> {
+    print_machine_context();
+    let performance_cores = bandwidth::detect_performance_core_count()?;
+    println!("detected performance cores: {performance_cores}");
+    let comparison =
+        bandwidth::measure_method_comparison(bandwidth::BandwidthConfig::full(performance_cores))?;
+    bandwidth::print_method_comparison(&comparison);
     Ok(())
 }
 

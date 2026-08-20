@@ -625,6 +625,7 @@ checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 name = "zeppelin-embed"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "libc",
  "proptest",
  "rand",
