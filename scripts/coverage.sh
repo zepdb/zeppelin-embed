@@ -10,9 +10,15 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
 fi
 
 cd "$PROJECT_ROOT"
-exec cargo llvm-cov \
+cargo llvm-cov \
     --workspace \
     --fail-under-lines 90 \
     --ignore-filename-regex '(^|/)(crates/zeppelin-embed-bench|fuzz|target)/' \
     "$@"
 
+cargo llvm-cov \
+    -p zeppelin-embed-bench \
+    --test frontier \
+    --fail-under-lines 90 \
+    --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \
+    "$@"

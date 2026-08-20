@@ -9,6 +9,9 @@ use zeppelin_embed_bench::frontier::calibration::{
     CalibrationArtifact, CalibrationMachineContext, CalibrationRun, CalibrationTier,
     CalibrationWritePolicy, default_calibration_path, persist_calibration,
 };
+use zeppelin_embed_bench::frontier::cli::{
+    Command, DenominatorCommand, TuneCommand, parse_command,
+};
 use zeppelin_embed_bench::frontier::ledger::{Ledger, LedgerSummary};
 use zeppelin_embed_bench::frontier::measure::{
     MeasurementConfig, PreflightOutcome, StridedI8Workload, SyntheticI8Workload,
@@ -23,8 +26,6 @@ use zeppelin_embed_bench::frontier::tune::{
 };
 use zeppelin_embed_bench::frontier::variants::VariantRegistry;
 
-const DEFAULT_SEED: u64 = 0x27_2026_0820;
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("frontier: {error}");
@@ -34,62 +35,15 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    match arguments.first().map(String::as_str) {
-        Some("tune") => run_tune(&arguments[1..]),
-        Some("report") if arguments.len() == 1 => run_report(),
-        Some("denominators") => run_denominators(&arguments[1..]),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: frontier tune --campaign kernels-i8 --smoke [--seed N] | report | denominators [--persist --date YYYY-MM-DD [--allow-lower-ceiling]]",
-        )
-        .into()),
+    match parse_command(&arguments)? {
+        Command::Tune(command) => run_tune(command),
+        Command::Report => run_report(),
+        Command::Denominators(command) => run_denominators(command),
     }
 }
 
-fn run_tune(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut campaign = None;
-    let mut smoke = false;
-    let mut seed = DEFAULT_SEED;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments.get(index).map(String::as_str) {
-            Some("--campaign") => {
-                campaign = arguments.get(index + 1).cloned();
-                index += 2;
-            }
-            Some("--smoke") => {
-                smoke = true;
-                index += 1;
-            }
-            Some("--seed") => {
-                let raw = arguments.get(index + 1).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--seed requires a value")
-                })?;
-                seed = raw.parse::<u64>().map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid seed: {error}"),
-                    )
-                })?;
-                index += 2;
-            }
-            Some(other) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unknown tune argument {other}"),
-                )
-                .into());
-            }
-            None => break,
-        }
-    }
-    if campaign.as_deref() != Some("kernels-i8") || !smoke {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "27-H exposes only the non-campaign smoke: tune --campaign kernels-i8 --smoke",
-        )
-        .into());
-    }
+fn run_tune(command: TuneCommand) -> Result<(), Box<dyn Error>> {
+    let seed = command.seed;
     let registry = VariantRegistry::from_kernel_knob_space()?;
     println!("campaign: kernels-i8 (HARNESS SMOKE; not B1)");
     println!("seed: {seed}");
@@ -212,8 +166,7 @@ fn print_summary(summary: LedgerSummary, files: usize) {
     println!("provisional synthetic-only: {}", summary.provisional);
 }
 
-fn run_denominators(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let options = parse_denominator_arguments(arguments)?;
+fn run_denominators(options: DenominatorCommand) -> Result<(), Box<dyn Error>> {
     println!("memory one-core wide-load denominator: {WIDE_LOAD_SINGLE_CORE_GBPS:.6} GB/s");
     println!(
         "memory provenance command: cargo run --release -p zeppelin-embed-bench --bin platform-truth -- bandwidth-compare"
@@ -242,7 +195,7 @@ fn run_denominators(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 println!("{}: {reason}", tier.as_str());
             }
             if options.persist {
-                let date = options.date.ok_or_else(|| {
+                let date = options.date.as_deref().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "--persist requires caller-supplied --date YYYY-MM-DD",
@@ -284,58 +237,6 @@ fn run_denominators(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct DenominatorArguments<'a> {
-    persist: bool,
-    date: Option<&'a str>,
-    allow_lower_ceiling: bool,
-}
-
-fn parse_denominator_arguments(
-    arguments: &[String],
-) -> Result<DenominatorArguments<'_>, io::Error> {
-    let mut options = DenominatorArguments::default();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments.get(index).map(String::as_str) {
-            Some("--persist") => {
-                options.persist = true;
-                index += 1;
-            }
-            Some("--date") => {
-                options.date = Some(arguments.get(index + 1).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--date requires YYYY-MM-DD")
-                })?);
-                index += 2;
-            }
-            Some("--allow-lower-ceiling") => {
-                options.allow_lower_ceiling = true;
-                index += 1;
-            }
-            Some(other) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unknown denominators argument {other}"),
-                ));
-            }
-            None => break,
-        }
-    }
-    if (options.date.is_some() || options.allow_lower_ceiling) && !options.persist {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--date and --allow-lower-ceiling apply only with --persist",
-        ));
-    }
-    if options.persist && options.date.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--persist requires caller-supplied --date YYYY-MM-DD",
-        ));
-    }
-    Ok(options)
 }
 
 fn denominator_command(date: &str, allow_lower_ceiling: bool) -> String {

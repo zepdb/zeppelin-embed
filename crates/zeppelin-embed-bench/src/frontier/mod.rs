@@ -2,6 +2,8 @@
 
 /// Persisted, provenance-bearing compute calibration artifacts.
 pub mod calibration;
+/// Pure parsing and typed validation for the frontier command line.
+pub mod cli;
 /// Append-only campaign evidence ledger.
 pub mod ledger;
 /// Machine preflight, statistical measurement, and pluggable workloads.
