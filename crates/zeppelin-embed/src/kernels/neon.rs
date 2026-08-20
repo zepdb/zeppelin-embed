@@ -18,6 +18,9 @@ const _: [(); FLOAT_UNROLL] = [(); FLOAT_ACCUMULATORS];
 const HAMMING_LANES: usize = 16;
 const HAMMING_UNROLL: usize = 4; // baseline — pending frontier campaign B1
 const HAMMING_BLOCK: usize = HAMMING_LANES * HAMMING_UNROLL; // baseline — pending frontier campaign B1
+const PACKED_LANES: usize = 16;
+const BIT2_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 4;
+const BIT4_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 2;
 const WIDE_STREAM_LANES: usize = 16;
 const WIDE_STREAM_UNROLL: usize = 4;
 const WIDE_STREAM_BLOCK: usize = WIDE_STREAM_LANES * WIDE_STREAM_UNROLL;
@@ -40,6 +43,10 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         hamming_u1,
         dot_i8_batch: dot_i8_batch_dotprod,
         hamming_u1_batch,
+        dot_bit2: dot_bit2_dotprod,
+        dot_bit4: dot_bit4_dotprod,
+        dot_bit2_batch: dot_bit2_batch_dotprod,
+        dot_bit4_batch: dot_bit4_batch_dotprod,
     }
 }
 
@@ -53,6 +60,10 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         hamming_u1,
         dot_i8_batch: dot_i8_batch_widen,
         hamming_u1_batch,
+        dot_bit2: dot_bit2_widen,
+        dot_bit4: dot_bit4_widen,
+        dot_bit2_batch: dot_bit2_batch_widen,
+        dot_bit4_batch: dot_bit4_batch_widen,
     }
 }
 
@@ -195,6 +206,217 @@ fn add_i8_tail(sum: i32, a: &[i8], b: &[i8], processed: usize) -> i32 {
         .zip(b_tail)
         .map(|(&left, &right)| i32::from(left) * i32::from(right))
         .sum::<i32>()
+}
+
+#[inline]
+fn dot_bit2_dotprod(q: &[i8], codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 4);
+    // SAFETY: the DotProd table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit2_dotprod_inner(q, codes) }
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_bit2_dotprod_inner(q: &[i8], codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes exactly 16 code bytes and 64 query
+    // bytes. Shift/mask extraction stays in registers, and the wrapper
+    // established FEAT_DotProd before any SDOT instruction is reached.
+    unsafe {
+        let processed = q.len() / BIT2_DIMENSIONS_PER_BLOCK * BIT2_DIMENSIONS_PER_BLOCK;
+        let mut acc = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 4);
+            let (values0, values1, values2, values3) = unpack_bit2_block(code_ptr);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr), values0);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)), values2);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)), values3);
+            base += BIT2_DIMENSIONS_PER_BLOCK;
+        }
+        packed_bit2_tail(vaddvq_s32(acc), q, codes, processed)
+    }
+}
+
+#[inline]
+fn dot_bit2_widen(q: &[i8], codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 4);
+    // SAFETY: the NEON table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit2_widen_inner(q, codes) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn dot_bit2_widen_inner(q: &[i8], codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes exactly 16 code bytes and 64 query
+    // bytes. Shift/mask extraction and widening MACs stay in registers.
+    unsafe {
+        let processed = q.len() / BIT2_DIMENSIONS_PER_BLOCK * BIT2_DIMENSIONS_PER_BLOCK;
+        let mut acc = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 4);
+            let (values0, values1, values2, values3) = unpack_bit2_block(code_ptr);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            acc = widen_mac(acc, vld1q_s8(query_ptr), values0);
+            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)), values2);
+            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)), values3);
+            base += BIT2_DIMENSIONS_PER_BLOCK;
+        }
+        packed_bit2_tail(vaddvq_s32(acc), q, codes, processed)
+    }
+}
+
+#[inline]
+fn dot_bit4_dotprod(q: &[i8], codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 2);
+    // SAFETY: the DotProd table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit4_dotprod_inner(q, codes) }
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_bit4_dotprod_inner(q: &[i8], codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes exactly 16 code bytes and 32 query
+    // bytes. Shift/mask extraction stays in registers, and the wrapper
+    // established FEAT_DotProd before any SDOT instruction is reached.
+    unsafe {
+        let processed = q.len() / BIT4_DIMENSIONS_PER_BLOCK * BIT4_DIMENSIONS_PER_BLOCK;
+        let mut acc = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 2);
+            let (values0, values1) = unpack_bit4_block(code_ptr);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr), values0);
+            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            base += BIT4_DIMENSIONS_PER_BLOCK;
+        }
+        packed_bit4_tail(vaddvq_s32(acc), q, codes, processed)
+    }
+}
+
+#[inline]
+fn dot_bit4_widen(q: &[i8], codes: &[u8]) -> i32 {
+    packed_shape_debug_assertions(q, codes, 2);
+    // SAFETY: the NEON table is installed only after runtime feature
+    // detection; complete packed blocks bound every query and code load.
+    unsafe { dot_bit4_widen_inner(q, codes) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn dot_bit4_widen_inner(q: &[i8], codes: &[u8]) -> i32 {
+    // SAFETY: each iteration consumes exactly 16 code bytes and 32 query
+    // bytes. Shift/mask extraction and widening MACs stay in registers.
+    unsafe {
+        let processed = q.len() / BIT4_DIMENSIONS_PER_BLOCK * BIT4_DIMENSIONS_PER_BLOCK;
+        let mut acc = vdupq_n_s32(0);
+        let mut base = 0_usize;
+        while base < processed {
+            let code_ptr = codes.as_ptr().wrapping_add(base / 2);
+            let (values0, values1) = unpack_bit4_block(code_ptr);
+            let query_ptr = q.as_ptr().wrapping_add(base);
+            acc = widen_mac(acc, vld1q_s8(query_ptr), values0);
+            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
+            base += BIT4_DIMENSIONS_PER_BLOCK;
+        }
+        packed_bit4_tail(vaddvq_s32(acc), q, codes, processed)
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn unpack_bit2_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t, int8x16_t, int8x16_t) {
+    // SAFETY: callers provide a pointer to a complete 16-byte packed block.
+    // ZIP on byte pairs and then halfwords restores field order without a
+    // lookup table or memory-resident scratch space.
+    unsafe {
+        let packed = vld1q_u8(code_ptr);
+        let mask = vdupq_n_u8(0x03);
+        let field0 = vandq_u8(vshrq_n_u8(packed, 6), mask);
+        let field1 = vandq_u8(vshrq_n_u8(packed, 4), mask);
+        let field2 = vandq_u8(vshrq_n_u8(packed, 2), mask);
+        let field3 = vandq_u8(packed, mask);
+        let fields01_low = vzip1q_u8(field0, field1);
+        let fields01_high = vzip2q_u8(field0, field1);
+        let fields23_low = vzip1q_u8(field2, field3);
+        let fields23_high = vzip2q_u8(field2, field3);
+        let values0 = vzip1q_u16(
+            vreinterpretq_u16_u8(fields01_low),
+            vreinterpretq_u16_u8(fields23_low),
+        );
+        let values1 = vzip2q_u16(
+            vreinterpretq_u16_u8(fields01_low),
+            vreinterpretq_u16_u8(fields23_low),
+        );
+        let values2 = vzip1q_u16(
+            vreinterpretq_u16_u8(fields01_high),
+            vreinterpretq_u16_u8(fields23_high),
+        );
+        let values3 = vzip2q_u16(
+            vreinterpretq_u16_u8(fields01_high),
+            vreinterpretq_u16_u8(fields23_high),
+        );
+        (
+            bit2_grid(vreinterpretq_u8_u16(values0)),
+            bit2_grid(vreinterpretq_u8_u16(values1)),
+            bit2_grid(vreinterpretq_u8_u16(values2)),
+            bit2_grid(vreinterpretq_u8_u16(values3)),
+        )
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn unpack_bit4_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t) {
+    // SAFETY: callers provide a pointer to a complete 16-byte packed block.
+    // One byte ZIP restores high-nibble, low-nibble dimension order entirely
+    // within vector registers.
+    unsafe {
+        let packed = vld1q_u8(code_ptr);
+        let mask = vdupq_n_u8(0x0f);
+        let high = vshrq_n_u8(packed, 4);
+        let low = vandq_u8(packed, mask);
+        (
+            bit4_grid(vzip1q_u8(high, low)),
+            bit4_grid(vzip2q_u8(high, low)),
+        )
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn bit2_grid(fields: uint8x16_t) -> int8x16_t {
+    vreinterpretq_s8_u8(vsubq_u8(vshlq_n_u8(fields, 1), vdupq_n_u8(3)))
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn bit4_grid(fields: uint8x16_t) -> int8x16_t {
+    vreinterpretq_s8_u8(vsubq_u8(vshlq_n_u8(fields, 1), vdupq_n_u8(15)))
+}
+
+fn packed_shape_debug_assertions(q: &[i8], codes: &[u8], fields_per_byte: usize) {
+    debug_assert_eq!(codes.len(), q.len().div_ceil(fields_per_byte));
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+}
+
+fn packed_bit2_tail(sum: i32, q: &[i8], codes: &[u8], processed: usize) -> i32 {
+    let Some(q_tail) = q.get(processed..) else {
+        return sum;
+    };
+    let Some(code_tail) = codes.get(processed / 4..) else {
+        return sum;
+    };
+    sum + scalar::dot_bit2(q_tail, code_tail)
+}
+
+fn packed_bit4_tail(sum: i32, q: &[i8], codes: &[u8], processed: usize) -> i32 {
+    let Some(q_tail) = q.get(processed..) else {
+        return sum;
+    };
+    let Some(code_tail) = codes.get(processed / 2..) else {
+        return sum;
+    };
+    sum + scalar::dot_bit4(q_tail, code_tail)
 }
 
 #[inline]
@@ -514,6 +736,22 @@ fn dot_i8_batch_widen(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_widen);
 }
 
+fn dot_bit2_batch_dotprod(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    batch_packed(q, rows, d, out, 4, dot_bit2_dotprod);
+}
+
+fn dot_bit2_batch_widen(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    batch_packed(q, rows, d, out, 4, dot_bit2_widen);
+}
+
+fn dot_bit4_batch_dotprod(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    batch_packed(q, rows, d, out, 2, dot_bit4_dotprod);
+}
+
+fn dot_bit4_batch_widen(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
+    batch_packed(q, rows, d, out, 2, dot_bit4_widen);
+}
+
 fn batch_i8(q: &[i8], rows: &[i8], d: usize, out: &mut [i32], kernel: fn(&[i8], &[i8]) -> i32) {
     debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
     debug_assert!(
@@ -530,6 +768,31 @@ fn batch_i8(q: &[i8], rows: &[i8], d: usize, out: &mut [i32], kernel: fn(&[i8], 
         return;
     }
     for (row, result) in rows.chunks_exact(d).zip(out.iter_mut()) {
+        *result = kernel(q, row);
+    }
+}
+
+fn batch_packed(
+    q: &[i8],
+    rows: &[u8],
+    d: usize,
+    out: &mut [i32],
+    fields_per_byte: usize,
+    kernel: fn(&[i8], &[u8]) -> i32,
+) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(d <= MAX_DOT_I8_DIMENSION);
+    let row_bytes = d.div_ceil(fields_per_byte);
+    debug_assert_eq!(
+        rows.len(),
+        row_bytes.saturating_mul(out.len()),
+        "batch shape must be pre-validated"
+    );
+    if row_bytes == 0 {
+        out.fill(0);
+        return;
+    }
+    for (row, result) in rows.chunks_exact(row_bytes).zip(out.iter_mut()) {
         *result = kernel(q, row);
     }
 }

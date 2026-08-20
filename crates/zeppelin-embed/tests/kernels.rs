@@ -10,10 +10,12 @@ mod kernels {
 
     use proptest::collection::vec;
     use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
     use zeppelin_embed::kernels::{
         InstructionTier, KERNEL_KNOB_SPACE, KernelArm, KernelInitError, KernelVariant,
-        MAX_DOT_I8_DIMENSION, dot_f16, dot_f32, dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch,
-        initialize, is_arm_supported, selected_arm,
+        MAX_DOT_I8_DIMENSION, dot_bit2, dot_bit2_batch, dot_bit4, dot_bit4_batch, dot_f16, dot_f32,
+        dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch, initialize, is_arm_supported,
+        selected_arm,
     };
 
     fn vector_pair_i8() -> impl Strategy<Value = (Vec<i8>, Vec<i8>)> {
@@ -22,6 +24,16 @@ mod kernels {
 
     fn vector_pair_u8() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
         (1_usize..=4_096).prop_flat_map(|len| (vec(any::<u8>(), len), vec(any::<u8>(), len)))
+    }
+
+    fn bit2_dot_case() -> impl Strategy<Value = (Vec<i8>, Vec<u8>)> {
+        (1_usize..=4_096)
+            .prop_flat_map(|len| (vec(any::<i8>(), len), vec(any::<u8>(), len.div_ceil(4))))
+    }
+
+    fn bit4_dot_case() -> impl Strategy<Value = (Vec<i8>, Vec<u8>)> {
+        (1_usize..=4_096)
+            .prop_flat_map(|len| (vec(any::<i8>(), len), vec(any::<u8>(), len.div_ceil(2))))
     }
 
     fn vector_pair_f16() -> impl Strategy<Value = (Vec<u16>, Vec<u16>)> {
@@ -131,6 +143,7 @@ mod kernels {
 
     proptest! {
         #![proptest_config(ProptestConfig {
+            rng_seed: RngSeed::Fixed(0x5eed_03b1_0204),
             failure_persistence: Some(Box::new(
                 proptest::test_runner::FileFailurePersistence::Direct(concat!(
                     env!("CARGO_MANIFEST_DIR"),
@@ -169,6 +182,72 @@ mod kernels {
             let scalar = KernelVariant::scalar().dot_f32(&a, &b);
             for variant in KernelVariant::available() {
                 assert_f32_result_matches(&a, &b, scalar, variant.dot_f32(&a, &b));
+            }
+        }
+
+        #[test]
+        fn prop_bit2_all_arms_equal_scalar((q, codes) in bit2_dot_case()) {
+            let scalar = KernelVariant::scalar().dot_bit2(&q, &codes);
+            for variant in KernelVariant::available() {
+                prop_assert_eq!(variant.dot_bit2(&q, &codes), scalar, "arm={:?}", variant.arm());
+            }
+        }
+
+        #[test]
+        fn prop_bit4_all_arms_equal_scalar((q, codes) in bit4_dot_case()) {
+            let scalar = KernelVariant::scalar().dot_bit4(&q, &codes);
+            for variant in KernelVariant::available() {
+                prop_assert_eq!(variant.dot_bit4(&q, &codes), scalar, "arm={:?}", variant.arm());
+            }
+        }
+
+        #[test]
+        fn prop_bit2_batch_equals_n_single_calls(
+            d in 1_usize..=4_096,
+            row_count in 1_usize..=4,
+            q_seed in any::<i8>(),
+            row_seed in any::<u8>(),
+        ) {
+            let q: Vec<i8> = (0..d)
+                .map(|index| q_seed.wrapping_add((index.wrapping_mul(29)) as i8))
+                .collect();
+            let row_bytes = d.div_ceil(4);
+            let rows: Vec<u8> = (0..row_bytes * row_count)
+                .map(|index| row_seed.wrapping_add((index.wrapping_mul(31)) as u8))
+                .collect();
+            for variant in KernelVariant::available() {
+                let mut actual = vec![0_i32; row_count];
+                variant.dot_bit2_batch(&q, &rows, d, &mut actual);
+                let expected: Vec<i32> = rows
+                    .chunks_exact(row_bytes)
+                    .map(|row| variant.dot_bit2(&q, row))
+                    .collect();
+                prop_assert_eq!(actual, expected, "arm={:?}", variant.arm());
+            }
+        }
+
+        #[test]
+        fn prop_bit4_batch_equals_n_single_calls(
+            d in 1_usize..=4_096,
+            row_count in 1_usize..=4,
+            q_seed in any::<i8>(),
+            row_seed in any::<u8>(),
+        ) {
+            let q: Vec<i8> = (0..d)
+                .map(|index| q_seed.wrapping_add((index.wrapping_mul(29)) as i8))
+                .collect();
+            let row_bytes = d.div_ceil(2);
+            let rows: Vec<u8> = (0..row_bytes * row_count)
+                .map(|index| row_seed.wrapping_add((index.wrapping_mul(31)) as u8))
+                .collect();
+            for variant in KernelVariant::available() {
+                let mut actual = vec![0_i32; row_count];
+                variant.dot_bit4_batch(&q, &rows, d, &mut actual);
+                let expected: Vec<i32> = rows
+                    .chunks_exact(row_bytes)
+                    .map(|row| variant.dot_bit4(&q, row))
+                    .collect();
+                prop_assert_eq!(actual, expected, "arm={:?}", variant.arm());
             }
         }
 
@@ -265,6 +344,103 @@ mod kernels {
     }
 
     #[test]
+    fn packed_dot_public_surface_matches_worked_examples() {
+        let bit2_query = [1_i8, 2, 3, 4, 5];
+        let bit2_codes = [0b0001_1011_u8, 0b1000_0000];
+        let bit4_query = [2_i8, -3, 4];
+        let bit4_codes = [0x0f_u8, 0x80];
+        let scalar = KernelVariant::scalar();
+
+        assert_eq!(scalar.dot_bit2(&bit2_query, &bit2_codes), 15);
+        assert_eq!(dot_bit2(&bit2_query, &bit2_codes), 15);
+        assert_eq!(scalar.dot_bit4(&bit4_query, &bit4_codes), -71);
+        assert_eq!(dot_bit4(&bit4_query, &bit4_codes), -71);
+    }
+
+    #[test]
+    fn packed_dot_batches_match_worked_single_calls() {
+        let bit2_query = [1_i8, 2, 3, 4, 5];
+        let bit2_rows = [0b0001_1011_u8, 0b1000_0000, 0b1110_0100, 0b0100_0000];
+        let bit4_query = [2_i8, -3, 4];
+        let bit4_rows = [0x0f_u8, 0x80, 0xf0, 0x70];
+
+        let mut bit2_out = [0_i32; 2];
+        dot_bit2_batch(&bit2_query, &bit2_rows, bit2_query.len(), &mut bit2_out);
+        assert_eq!(
+            bit2_out,
+            [
+                dot_bit2(&bit2_query, &bit2_rows[..2]),
+                dot_bit2(&bit2_query, &bit2_rows[2..]),
+            ]
+        );
+
+        let mut bit4_out = [0_i32; 2];
+        dot_bit4_batch(&bit4_query, &bit4_rows, bit4_query.len(), &mut bit4_out);
+        assert_eq!(
+            bit4_out,
+            [
+                dot_bit4(&bit4_query, &bit4_rows[..2]),
+                dot_bit4(&bit4_query, &bit4_rows[2..]),
+            ]
+        );
+    }
+
+    #[test]
+    fn packed_dot_tails_and_byte_boundaries_equal_scalar() {
+        let lengths = [
+            1_usize, 2, 3, 4, 5, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 67, 127, 128, 129, 257,
+            4_093, 4_096,
+        ];
+        for len in lengths {
+            let q: Vec<i8> = (0..len)
+                .map(|index| (index.wrapping_mul(43) as i8).wrapping_sub(91))
+                .collect();
+            let bit2_codes: Vec<u8> = (0..len.div_ceil(4))
+                .map(|index| (index.wrapping_mul(71) as u8).wrapping_add(19))
+                .collect();
+            let bit4_codes: Vec<u8> = (0..len.div_ceil(2))
+                .map(|index| (index.wrapping_mul(53) as u8).wrapping_add(7))
+                .collect();
+            let bit2_scalar = KernelVariant::scalar().dot_bit2(&q, &bit2_codes);
+            let bit4_scalar = KernelVariant::scalar().dot_bit4(&q, &bit4_codes);
+            for variant in KernelVariant::available() {
+                assert_eq!(
+                    variant.dot_bit2(&q, &bit2_codes),
+                    bit2_scalar,
+                    "Bit2 len={len} arm={:?}",
+                    variant.arm()
+                );
+                assert_eq!(
+                    variant.dot_bit4(&q, &bit4_codes),
+                    bit4_scalar,
+                    "Bit4 len={len} arm={:?}",
+                    variant.arm()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packed_dot_ignores_unused_trailing_fields() {
+        let bit2_query = [3_i8, -5, 7, -11, 13];
+        let bit4_query = [3_i8, -5, 7];
+        for variant in KernelVariant::available() {
+            assert_eq!(
+                variant.dot_bit2(&bit2_query, &[0x1b, 0x80]),
+                variant.dot_bit2(&bit2_query, &[0x1b, 0xbf]),
+                "Bit2 arm={:?}",
+                variant.arm()
+            );
+            assert_eq!(
+                variant.dot_bit4(&bit4_query, &[0x1f, 0x80]),
+                variant.dot_bit4(&bit4_query, &[0x1f, 0x8f]),
+                "Bit4 arm={:?}",
+                variant.arm()
+            );
+        }
+    }
+
+    #[test]
     fn i8_min_and_non_lane_tails_are_exact() {
         let lengths = [1_usize, 3, 7, 15, 16, 17, 31, 32, 33, 127, 257, 4_093];
         for len in lengths {
@@ -348,6 +524,14 @@ mod kernels {
         let mut hamming_out = [7_u32; 2];
         hamming_u1_batch(&[], &[], 0, &mut hamming_out);
         assert_eq!(hamming_out, [0, 0]);
+
+        let mut bit2_out = [7_i32; 2];
+        dot_bit2_batch(&[], &[], 0, &mut bit2_out);
+        assert_eq!(bit2_out, [0, 0]);
+
+        let mut bit4_out = [7_i32; 2];
+        dot_bit4_batch(&[], &[], 0, &mut bit4_out);
+        assert_eq!(bit4_out, [0, 0]);
     }
 
     #[test]
