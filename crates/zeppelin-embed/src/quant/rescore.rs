@@ -1,6 +1,8 @@
 //! Deterministic two-stage coarse selection and exact f32 rescoring.
 
 use crate::kernels::dot_f32;
+use crate::scan::ScanCandidate;
+use crate::scan::topk::BoundedTopK;
 
 /// Stored-data bytes touched by one two-stage query.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -177,22 +179,16 @@ pub fn rescore_top_k(
         .checked_mul(oversample)
         .ok_or(RescoreError::ArithmeticOverflow)?;
     let candidate_count = row_count.min(requested);
-    let mut candidates = coarse_scores
-        .iter()
-        .copied()
-        .enumerate()
-        .collect::<Vec<_>>();
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .1
-            .total_cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    candidates.truncate(candidate_count);
+    let mut coarse_top_k = BoundedTopK::new(candidate_count);
+    for (row_id, &score) in coarse_scores.iter().enumerate() {
+        coarse_top_k.push(ScanCandidate { row_id, score });
+    }
+    let candidates = coarse_top_k.into_sorted();
 
-    let mut hits = Vec::with_capacity(candidate_count);
-    for (row_index, _) in candidates {
-        let start = row_index
+    let mut exact_top_k = BoundedTopK::new(k);
+    for candidate in candidates {
+        let start = candidate
+            .row_id
             .checked_mul(dimension)
             .ok_or(RescoreError::ArithmeticOverflow)?;
         let end = start
@@ -202,18 +198,19 @@ pub fn rescore_top_k(
             dimension,
             actual: rows.len(),
         })?;
-        hits.push(RescoreHit {
-            row_index,
+        exact_top_k.push(ScanCandidate {
+            row_id: candidate.row_id,
             score: dot_f32(query, row),
         });
     }
-    hits.sort_unstable_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| left.row_index.cmp(&right.row_index))
-    });
-    hits.truncate(k.min(hits.len()));
+    let hits = exact_top_k
+        .into_sorted()
+        .into_iter()
+        .map(|candidate| RescoreHit {
+            row_index: candidate.row_id,
+            score: candidate.score,
+        })
+        .collect();
 
     let coarse = row_count
         .checked_mul(coarse_bytes_per_row)
