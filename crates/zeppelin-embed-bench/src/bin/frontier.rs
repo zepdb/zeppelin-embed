@@ -4,7 +4,13 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
+use zeppelin_embed_bench::frontier::attestation::{
+    CampaignPreflightOutcome, FileAttestationSource, MachineStateProvenance,
+    default_attestation_path, preflight_with_attestation, system_machine_identifier,
+    write_operator_attestation,
+};
 use zeppelin_embed_bench::frontier::calibration::{
     CalibrationArtifact, CalibrationMachineContext, CalibrationRun, CalibrationTier,
     CalibrationWritePolicy, default_calibration_path, persist_calibration,
@@ -14,12 +20,12 @@ use zeppelin_embed_bench::frontier::cli::{
 };
 use zeppelin_embed_bench::frontier::ledger::{Ledger, LedgerSummary};
 use zeppelin_embed_bench::frontier::measure::{
-    MeasurementConfig, PreflightOutcome, StridedI8Workload, SyntheticI8Workload,
-    SystemMachineProbe, Workload, WorkloadSampler, measure_source, preflight,
+    MeasurementConfig, StridedI8Workload, SyntheticI8Workload, SystemMachineProbe, Workload,
+    WorkloadSampler, measure_source_with_provenance,
 };
 use zeppelin_embed_bench::frontier::roofline::{
     ComputeCalibrationConfig, ComputeCalibrationOutcome, WIDE_LOAD_SINGLE_CORE_GBPS,
-    calibrate_compute_tiers,
+    calibrate_compute_tiers_with_attestation,
 };
 use zeppelin_embed_bench::frontier::tune::{
     CandidateEvaluation, SearchConfig, SearchSpace, run_search,
@@ -36,10 +42,27 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match parse_command(&arguments)? {
+        Command::Attest => run_attest(),
         Command::Tune(command) => run_tune(command),
         Command::Report => run_report(),
         Command::Denominators(command) => run_denominators(command),
     }
+}
+
+fn run_attest() -> Result<(), Box<dyn Error>> {
+    let root = repository_root();
+    let path = default_attestation_path(&root);
+    let machine_identifier = system_machine_identifier()?;
+    write_operator_attestation(
+        &SystemMachineProbe,
+        &machine_identifier,
+        SystemTime::now(),
+        &path,
+    )?;
+    println!("operator attestation written: {}", path.display());
+    println!("machine identifier: {machine_identifier}");
+    println!("valid for 20 minutes; live pmset output was AC and nominal");
+    Ok(())
 }
 
 fn run_tune(command: TuneCommand) -> Result<(), Box<dyn Error>> {
@@ -54,19 +77,26 @@ fn run_tune(command: TuneCommand) -> Result<(), Box<dyn Error>> {
     );
     println!("workload: synthetic-contiguous (PROVISIONAL)");
     println!("workload: synthetic-strided (PROVISIONAL)");
-    match preflight(&SystemMachineProbe) {
-        PreflightOutcome::Idle { reasons } => {
+    let attestation = FileAttestationSource::new(default_attestation_path(&repository_root()));
+    match preflight_with_attestation(&SystemMachineProbe, &attestation) {
+        CampaignPreflightOutcome::Idle { reasons } => {
             for reason in reasons {
                 println!("PREFLIGHT IDLE: {reason}");
             }
             println!("SMOKE IDLE: fail-closed; zero timings and zero ledger rows produced");
             Ok(())
         }
-        PreflightOutcome::Ready { .. } => run_ready_smoke(&registry, seed),
+        CampaignPreflightOutcome::Ready { provenance, .. } => {
+            run_ready_smoke(&registry, seed, provenance)
+        }
     }
 }
 
-fn run_ready_smoke(registry: &VariantRegistry, seed: u64) -> Result<(), Box<dyn Error>> {
+fn run_ready_smoke(
+    registry: &VariantRegistry,
+    seed: u64,
+    machine_state: MachineStateProvenance,
+) -> Result<(), Box<dyn Error>> {
     let points = registry
         .materialized()
         .iter()
@@ -107,7 +137,11 @@ fn run_ready_smoke(registry: &VariantRegistry, seed: u64) -> Result<(), Box<dyn 
             }
         };
         let mut sampler = WorkloadSampler::new(&mut contiguous, variant);
-        match measure_source(&mut sampler, MeasurementConfig::strict()) {
+        match measure_source_with_provenance(
+            &mut sampler,
+            MeasurementConfig::strict(),
+            machine_state.clone(),
+        ) {
             Ok(measurement) if correctness_green => {
                 CandidateEvaluation::correct(point.stable_id(), measurement.min_of_medians_ns)
             }
@@ -171,7 +205,12 @@ fn run_denominators(options: DenominatorCommand) -> Result<(), Box<dyn Error>> {
     println!(
         "memory provenance command: cargo run --release -p zeppelin-embed-bench --bin platform-truth -- bandwidth-compare"
     );
-    match calibrate_compute_tiers(&SystemMachineProbe, ComputeCalibrationConfig::evidence())? {
+    let attestation = FileAttestationSource::new(default_attestation_path(&repository_root()));
+    match calibrate_compute_tiers_with_attestation(
+        &SystemMachineProbe,
+        &attestation,
+        ComputeCalibrationConfig::evidence(),
+    )? {
         ComputeCalibrationOutcome::Idle { reasons } => {
             for reason in reasons {
                 println!("COMPUTE DENOMINATORS NOT MEASURED: {reason}");
@@ -221,8 +260,18 @@ fn run_denominators(options: DenominatorCommand) -> Result<(), Box<dyn Error>> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let command = denominator_command(date, options.allow_lower_ceiling);
-                let artifact =
-                    CalibrationArtifact::new(current_machine_context()?, date, command, tiers)?;
+                let provenance = calibrations
+                    .first()
+                    .map(|calibration| &calibration.measurement.machine_state)
+                    .ok_or_else(|| {
+                        io::Error::other("no measured compute calibration provenance")
+                    })?;
+                let artifact = CalibrationArtifact::new(
+                    current_machine_context(provenance)?,
+                    date,
+                    command,
+                    tiers,
+                )?;
                 let policy = if options.allow_lower_ceiling {
                     CalibrationWritePolicy::AllowLower {
                         reason: "operator explicitly passed --allow-lower-ceiling".to_owned(),
@@ -250,8 +299,19 @@ fn denominator_command(date: &str, allow_lower_ceiling: bool) -> String {
     )
 }
 
-fn current_machine_context() -> Result<CalibrationMachineContext, io::Error> {
+fn current_machine_context(
+    provenance: &MachineStateProvenance,
+) -> Result<CalibrationMachineContext, io::Error> {
     let hardware = command_stdout("system_profiler", &["SPHardwareDataType"])?;
+    let state = match provenance {
+        MachineStateProvenance::DirectProbe => {
+            "established by direct fail-closed pmset preflight".to_owned()
+        }
+        MachineStateProvenance::OperatorAttestation {
+            timestamp,
+            machine_identifier,
+        } => format!("established by operator attestation at {timestamp} for {machine_identifier}"),
+    };
     Ok(CalibrationMachineContext {
         model_name: profiler_field(&hardware, "Model Name")?,
         model_identifier: profiler_field(&hardware, "Model Identifier")?,
@@ -262,9 +322,8 @@ fn current_machine_context() -> Result<CalibrationMachineContext, io::Error> {
         os_build: command_stdout("sw_vers", &["-buildVersion"])?
             .trim()
             .to_owned(),
-        power_state: "AC Power established by fail-closed pmset preflight".to_owned(),
-        thermal_state: "Nominal thermal state established by fail-closed pmset preflight"
-            .to_owned(),
+        power_state: format!("AC Power {state}"),
+        thermal_state: format!("Nominal thermal state {state}"),
     })
 }
 

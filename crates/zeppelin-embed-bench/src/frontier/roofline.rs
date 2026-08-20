@@ -4,10 +4,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use super::attestation::{
+    AttestationSource, CampaignPreflightOutcome, MachineStateProvenance, preflight_with_attestation,
+};
 use super::calibration::{CalibrationError, default_calibration_path, load_calibration};
 use super::measure::{
     MachineProbe, MeasurementConfig, MeasurementError, MeasurementResult, PreflightOutcome,
-    SampleSource, measure_source, preflight,
+    SampleSource, measure_source_with_provenance, preflight,
 };
 
 /// Adopted BL-013 one-core wide-load denominator in decimal GB/s.
@@ -511,13 +514,40 @@ pub fn calibrate_compute_tiers(
             return Ok(ComputeCalibrationOutcome::Idle { reasons });
         }
     }
+    calibrate_compute_tiers_ready(config, MachineStateProvenance::DirectProbe)
+}
+
+/// Measures compute ceilings after the unchanged direct probe, using a valid
+/// operator attestation only when that probe is unavailable.
+pub fn calibrate_compute_tiers_with_attestation(
+    probe: &impl MachineProbe,
+    attestation: &impl AttestationSource,
+    config: ComputeCalibrationConfig,
+) -> Result<ComputeCalibrationOutcome, ComputeCalibrationError> {
+    if config.iterations_per_sample == 0 {
+        return Err(ComputeCalibrationError::InvalidIterations);
+    }
+    let provenance = match preflight_with_attestation(probe, attestation) {
+        CampaignPreflightOutcome::Ready { provenance, .. } => provenance,
+        CampaignPreflightOutcome::Idle { reasons } => {
+            return Ok(ComputeCalibrationOutcome::Idle { reasons });
+        }
+    };
+    calibrate_compute_tiers_ready(config, provenance)
+}
+
+fn calibrate_compute_tiers_ready(
+    config: ComputeCalibrationConfig,
+    provenance: MachineStateProvenance,
+) -> Result<ComputeCalibrationOutcome, ComputeCalibrationError> {
     #[cfg(target_arch = "aarch64")]
     {
-        calibrate_aarch64(config)
+        calibrate_aarch64(config, provenance)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let _ = config;
+        let _ = provenance;
         Ok(ComputeCalibrationOutcome::Measured {
             calibrations: Vec::new(),
             not_measured: vec![
@@ -541,6 +571,7 @@ pub fn calibrate_compute_tiers(
 #[cfg(target_arch = "aarch64")]
 fn calibrate_aarch64(
     config: ComputeCalibrationConfig,
+    machine_state: MachineStateProvenance,
 ) -> Result<ComputeCalibrationOutcome, ComputeCalibrationError> {
     let features = zeppelin_embed::kernels::detected_features();
     let mut calibrations = Vec::new();
@@ -569,8 +600,9 @@ fn calibrate_aarch64(
             iterations: config.iterations_per_sample,
             checksum: 0,
         };
-        let measurement = measure_source(&mut source, config.measurement)
-            .map_err(ComputeCalibrationError::Measurement)?;
+        let measurement =
+            measure_source_with_provenance(&mut source, config.measurement, machine_state.clone())
+                .map_err(ComputeCalibrationError::Measurement)?;
         let seconds = measurement.min_of_medians_ns / 1_000_000_000.0;
         calibrations.push(ComputeCalibration {
             tier,

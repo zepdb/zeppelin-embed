@@ -6,13 +6,15 @@ use std::fmt;
 /// Default deterministic seed used by the smoke tuner.
 pub const DEFAULT_SEED: u64 = 0x27_2026_0820;
 
-const USAGE: &str = "usage: frontier tune --campaign kernels-i8 --smoke [--seed N] | report | denominators [--persist --date YYYY-MM-DD [--allow-lower-ceiling]]";
+const USAGE: &str = "usage: frontier attest | tune --campaign kernels-i8 --smoke [--seed N] | report | denominators [--persist --date YYYY-MM-DD [--allow-lower-ceiling]]";
 const TUNE_RESTRICTION: &str =
     "27-H exposes only the non-campaign smoke: tune --campaign kernels-i8 --smoke";
 
 /// A validated frontier command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
+    /// Capture and persist a validated live operator attestation.
+    Attest,
     /// Run the bounded task-27-H tuner smoke.
     Tune(TuneCommand),
     /// Print the optimization ledger summary.
@@ -110,6 +112,8 @@ impl Error for CliError {}
 /// Parses command-line arguments after the executable name without side effects.
 pub fn parse_command(arguments: &[String]) -> Result<Command, CliError> {
     match arguments.first().map(String::as_str) {
+        Some("attest") if arguments.len() == 1 => Ok(Command::Attest),
+        Some("attest") => Err(CliError::Usage),
         Some("tune") => parse_tune(&arguments[1..]).map(Command::Tune),
         Some("report") if arguments.len() == 1 => Ok(Command::Report),
         Some("report") => Err(CliError::Usage),

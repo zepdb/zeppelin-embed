@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
@@ -6,6 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use zeppelin_embed::kernels::InstructionTier;
+use zeppelin_embed_bench::frontier::attestation::{
+    AttestationSource, AttestationWriteError, CampaignPreflightOutcome, FileAttestationSource,
+    MachineIdentifierProbe, MachineStateProvenance, default_attestation_path,
+    machine_identifier_with_probe, preflight_with_attestation, write_operator_attestation,
+};
 use zeppelin_embed_bench::frontier::calibration::{
     CalibrationArtifact, CalibrationError, CalibrationMachineContext, CalibrationRun,
     CalibrationTier, CalibrationWritePolicy, default_calibration_path, load_calibration,
@@ -21,7 +27,8 @@ use zeppelin_embed_bench::frontier::ledger::{
 use zeppelin_embed_bench::frontier::measure::{
     MachineProbe, MeasurementConfig, MeasurementError, PreflightOutcome, ProbeOutput, SampleSource,
     StridedI8Workload, SyntheticI8Workload, Workload, WorkloadDescriptor, WorkloadError,
-    WorkloadObservation, WorkloadSampler, measure_source, preflight,
+    WorkloadObservation, WorkloadSampler, measure_source, measure_source_with_provenance,
+    preflight,
 };
 use zeppelin_embed_bench::frontier::pmu::{
     AttributionClass, CounterReading, PmuError, PmuOutcome, PmuReport, capture_cpu_counters,
@@ -810,6 +817,42 @@ fn frontier_variance_budget_exhaustion_never_promotes_noisy_runs() {
 }
 
 #[test]
+fn frontier_measurement_and_ledger_row_preserve_attested_provenance() {
+    let provenance = MachineStateProvenance::OperatorAttestation {
+        timestamp: "2026-08-20T12:00:00Z".to_owned(),
+        machine_identifier: "Mac15,9".to_owned(),
+    };
+    let mut source = ScriptedSamples {
+        samples: std::iter::repeat_n(100.0, 30).collect(),
+        warmups: 0,
+    };
+    let measurement = measure_source_with_provenance(
+        &mut source,
+        MeasurementConfig {
+            warmup_repetitions: 0,
+            accepted_runs: 1,
+            maximum_attempts: 1,
+            ..MeasurementConfig::strict()
+        },
+        provenance.clone(),
+    )
+    .expect("the attested measurement is statistically valid");
+    assert_eq!(measurement.machine_state, provenance);
+
+    let path = unique_temp_path("attested-ledger-row");
+    let mut ledger = Ledger::open(&path).expect("the attested ledger opens");
+    let mut row = frontier_row("attested measurement", 1.0);
+    row.machine_state = measurement.machine_state;
+    ledger.append(&row).expect("the attested row appends");
+    let rows = ledger.rows().expect("the attested row reloads");
+    assert_eq!(rows[0].machine_state, provenance);
+    let raw = fs::read_to_string(&path).expect("the attested ledger bytes are readable");
+    assert!(raw.contains("operator-attestation"));
+    assert!(raw.contains("2026-08-20T12:00:00Z"));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn frontier_ledger_is_append_only_and_detects_prior_byte_rewrites() {
     let path = unique_temp_path("ledger");
     let mut ledger = Ledger::open(&path).expect("a new ledger opens");
@@ -1041,6 +1084,77 @@ struct MockProbe {
 
 struct ErrorProbe;
 
+struct MissingAttestationSource;
+
+struct IdentifierFallbackProbe {
+    calls: RefCell<Vec<(String, Vec<String>)>>,
+}
+
+struct IdentifierPrimaryProbe;
+
+struct IdentifierEmptySysctlProbe;
+
+struct IdentifierFailureProbe;
+
+struct IdentifierErrorAttestationSource {
+    bytes: Vec<u8>,
+    now: SystemTime,
+}
+
+struct StaticAttestationSource {
+    bytes: Vec<u8>,
+    machine_identifier: String,
+    now: SystemTime,
+}
+
+impl AttestationSource for MissingAttestationSource {
+    fn read_attestation(&self) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "operator attestation is absent",
+        ))
+    }
+
+    fn current_machine_identifier(&self) -> io::Result<String> {
+        Ok("Mac15,9".to_owned())
+    }
+
+    fn now(&self) -> SystemTime {
+        UNIX_EPOCH + std::time::Duration::from_secs(1_776_364_400)
+    }
+}
+
+impl AttestationSource for StaticAttestationSource {
+    fn read_attestation(&self) -> io::Result<Vec<u8>> {
+        Ok(self.bytes.clone())
+    }
+
+    fn current_machine_identifier(&self) -> io::Result<String> {
+        Ok(self.machine_identifier.clone())
+    }
+
+    fn now(&self) -> SystemTime {
+        self.now
+    }
+}
+
+impl AttestationSource for IdentifierErrorAttestationSource {
+    fn read_attestation(&self) -> io::Result<Vec<u8>> {
+        Ok(self.bytes.clone())
+    }
+
+    fn current_machine_identifier(&self) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "model identifier probe denied",
+        ))
+    }
+
+    fn now(&self) -> SystemTime {
+        self.now
+    }
+}
+
 impl MachineProbe for ErrorProbe {
     fn pmset(&self, arguments: &[&str]) -> io::Result<ProbeOutput> {
         Err(io::Error::new(
@@ -1063,6 +1177,123 @@ impl MachineProbe for MockProbe {
     }
 }
 
+impl MachineIdentifierProbe for IdentifierFallbackProbe {
+    fn command(&self, program: &str, arguments: &[&str]) -> io::Result<ProbeOutput> {
+        self.calls.borrow_mut().push((
+            program.to_owned(),
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect(),
+        ));
+        match program {
+            "sysctl" => Ok(ProbeOutput::failure("sysctl unavailable")),
+            "system_profiler" => Ok(ProbeOutput::success(
+                "Hardware:\n\n    Model Name: MacBook Pro\n    Model Identifier: Mac15,9\n",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "unexpected identifier command",
+            )),
+        }
+    }
+}
+
+impl MachineIdentifierProbe for IdentifierPrimaryProbe {
+    fn command(&self, program: &str, _arguments: &[&str]) -> io::Result<ProbeOutput> {
+        match program {
+            "sysctl" => Ok(ProbeOutput::success("  Mac15,9\n")),
+            "system_profiler" => panic!("a valid sysctl identity must not invoke the fallback"),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "unexpected identifier command",
+            )),
+        }
+    }
+}
+
+impl MachineIdentifierProbe for IdentifierEmptySysctlProbe {
+    fn command(&self, program: &str, _arguments: &[&str]) -> io::Result<ProbeOutput> {
+        match program {
+            "sysctl" => Ok(ProbeOutput::success(" \n")),
+            "system_profiler" => Ok(ProbeOutput::success(
+                "Hardware:\n    Model Identifier: Mac15,9\n",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "unexpected identifier command",
+            )),
+        }
+    }
+}
+
+impl MachineIdentifierProbe for IdentifierFailureProbe {
+    fn command(&self, program: &str, _arguments: &[&str]) -> io::Result<ProbeOutput> {
+        match program {
+            "sysctl" => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sysctl denied",
+            )),
+            "system_profiler" => Ok(ProbeOutput::failure("profiler omitted model identifier")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "unexpected identifier command",
+            )),
+        }
+    }
+}
+
+#[test]
+fn frontier_machine_identifier_falls_back_to_system_profiler_after_sysctl_failure() {
+    let probe = IdentifierFallbackProbe {
+        calls: RefCell::new(Vec::new()),
+    };
+
+    assert_eq!(
+        machine_identifier_with_probe(&probe).expect("the profiler fallback supplies the model"),
+        "Mac15,9"
+    );
+    assert_eq!(
+        *probe.calls.borrow(),
+        vec![
+            (
+                "sysctl".to_owned(),
+                vec!["-n".to_owned(), "hw.model".to_owned()],
+            ),
+            (
+                "system_profiler".to_owned(),
+                vec!["SPHardwareDataType".to_owned()],
+            ),
+        ]
+    );
+}
+
+#[test]
+fn frontier_machine_identifier_prefers_sysctl_and_reports_both_command_failures() {
+    assert_eq!(
+        machine_identifier_with_probe(&IdentifierPrimaryProbe)
+            .expect("the primary sysctl output supplies the model"),
+        "Mac15,9"
+    );
+
+    let failure = machine_identifier_with_probe(&IdentifierFailureProbe)
+        .expect_err("two failed identifier commands cannot establish machine identity");
+    let message = failure.to_string();
+    assert!(message.contains("sysctl -n hw.model could not start: sysctl denied"));
+    assert!(message.contains(
+        "system_profiler SPHardwareDataType returned no identifier: profiler omitted model identifier"
+    ));
+}
+
+#[test]
+fn frontier_machine_identifier_falls_back_when_sysctl_returns_a_blank_identifier() {
+    assert_eq!(
+        machine_identifier_with_probe(&IdentifierEmptySysctlProbe)
+            .expect("blank sysctl output must fall back to system_profiler"),
+        "Mac15,9"
+    );
+}
+
 #[test]
 fn frontier_preflight_fails_closed_on_mocked_battery_state() {
     let probe = MockProbe {
@@ -1076,6 +1307,684 @@ fn frontier_preflight_fails_closed_on_mocked_battery_state() {
         panic!("battery power must idle the measurement loop");
     };
     assert!(reasons.iter().any(|reason| reason.contains("AC power")));
+}
+
+#[test]
+fn frontier_preflight_favorable_direct_probe_is_marked_direct() {
+    let power = "Now drawing from 'AC Power'";
+    let thermal = "No thermal warning level has been recorded\nNo performance warning level has been recorded";
+    let outcome = preflight_with_attestation(
+        &MockProbe {
+            power: ProbeOutput::success(power),
+            thermal: ProbeOutput::success(thermal),
+        },
+        &MissingAttestationSource,
+    );
+    assert_eq!(
+        outcome,
+        CampaignPreflightOutcome::Ready {
+            power_evidence: power.to_owned(),
+            thermal_evidence: thermal.to_owned(),
+            provenance: MachineStateProvenance::DirectProbe,
+        }
+    );
+}
+
+#[test]
+fn frontier_preflight_probe_errors_without_attestation_stays_idle() {
+    let outcome = preflight_with_attestation(&ErrorProbe, &MissingAttestationSource);
+    let CampaignPreflightOutcome::Idle { reasons } = outcome else {
+        panic!("an unavailable probe without an attestation must idle");
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("operator attestation is absent"))
+    );
+}
+
+#[test]
+fn frontier_preflight_probe_errors_with_fresh_valid_attestation_is_ready_and_marked() {
+    let source = StaticAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'AC Power'\nAC attached; not charging",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded\nNo CPU power status has been recorded",
+        ),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let outcome = preflight_with_attestation(&ErrorProbe, &source);
+    let CampaignPreflightOutcome::Ready {
+        power_evidence,
+        thermal_evidence,
+        provenance,
+    } = outcome
+    else {
+        panic!("a fresh, machine-matched, safe attestation must substitute for probe errors");
+    };
+    assert!(power_evidence.contains("AC Power"));
+    assert!(thermal_evidence.contains("No thermal warning"));
+    assert_eq!(
+        provenance,
+        MachineStateProvenance::OperatorAttestation {
+            timestamp: "2026-08-20T12:00:00Z".to_owned(),
+            machine_identifier: "Mac15,9".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn frontier_preflight_status_zero_iokit_error_can_use_fresh_attestation() {
+    let probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'"),
+        thermal: ProbeOutput::success(
+            "Error:Failed to get thermal warning level with error code 0xe00002bc\nError: Failed to get performance warning level with error code 0xe00002bc\nError: No CPU power status with error code 0xe00002bc",
+        ),
+    };
+    let source = StaticAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'AC Power'",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded\nNo CPU power status has been recorded",
+        ),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let CampaignPreflightOutcome::Ready { provenance, .. } =
+        preflight_with_attestation(&probe, &source)
+    else {
+        panic!("literal IOKit probe-error output must be eligible for attestation");
+    };
+    assert!(matches!(
+        provenance,
+        MachineStateProvenance::OperatorAttestation { .. }
+    ));
+}
+
+#[test]
+fn frontier_preflight_probe_errors_with_expired_attestation_stays_idle() {
+    let source = StaticAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'AC Power'",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_229_001),
+    };
+    let outcome = preflight_with_attestation(&ErrorProbe, &source);
+    let CampaignPreflightOutcome::Idle { reasons } = outcome else {
+        panic!("an attestation older than the TTL must idle");
+    };
+    assert!(reasons.iter().any(|reason| reason.contains("expired")));
+}
+
+#[test]
+fn frontier_preflight_probe_errors_with_battery_attestation_stays_idle() {
+    let source = StaticAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'Battery Power'",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let outcome = preflight_with_attestation(&ErrorProbe, &source);
+    let CampaignPreflightOutcome::Idle { reasons } = outcome else {
+        panic!("attested raw battery output must idle");
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("raw pmset -g ps"))
+    );
+}
+
+#[test]
+fn frontier_preflight_successful_battery_probe_cannot_be_overridden_by_attestation() {
+    let probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'Battery Power'"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    let source = StaticAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'AC Power'",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let outcome = preflight_with_attestation(&probe, &source);
+    let CampaignPreflightOutcome::Idle { reasons } = outcome else {
+        panic!("a successful unfavorable probe must outrank every attestation");
+    };
+    assert!(reasons.iter().any(|reason| reason.contains("AC power")));
+}
+
+#[test]
+fn frontier_attestation_write_refuses_live_battery_state() {
+    let path = unique_temp_path("operator-attestation-battery");
+    let probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'Battery Power'"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    let error = write_operator_attestation(
+        &probe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &path,
+    )
+    .expect_err("the live attest command must refuse battery power");
+    assert!(error.to_string().contains("AC power"));
+    assert!(!path.exists(), "refusal must not create an attestation");
+}
+
+#[test]
+fn frontier_attestation_writer_refuses_probe_failures_without_creating_a_file() {
+    let path = unique_temp_path("operator-attestation-probe-failure");
+
+    let error = write_operator_attestation(
+        &ErrorProbe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &path,
+    )
+    .expect_err("unavailable live probes must refuse to attest");
+    let AttestationWriteError::UnsafeMachineState(reasons) = error else {
+        panic!("probe failures must be reported as unsafe machine state");
+    };
+    assert!(reasons.iter().any(|reason| reason.contains("denied -g ps")));
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("denied -g therm"))
+    );
+    assert!(
+        !path.exists(),
+        "probe failure must not create an attestation"
+    );
+}
+
+#[test]
+fn frontier_attestation_writer_refuses_warning_throttle_and_ambiguous_thermal_state() {
+    for (label, thermal) in [
+        (
+            "warning",
+            "thermal warning level = 1\nperformance warning level = 0\nCPU power status = 100",
+        ),
+        (
+            "throttle",
+            "thermal warning level = 0\nperformance warning level = 0\ncpu_speed_limit = 80",
+        ),
+        ("ambiguous", "No thermal state is available"),
+    ] {
+        let path = unique_temp_path(&format!("operator-attestation-{label}"));
+        let error = match write_operator_attestation(
+            &MockProbe {
+                power: ProbeOutput::success("Now drawing from 'AC Power'"),
+                thermal: ProbeOutput::success(thermal),
+            },
+            "Mac15,9",
+            UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+            &path,
+        ) {
+            Ok(()) => panic!("{label} thermal evidence must refuse to attest"),
+            Err(error) => error,
+        };
+        let AttestationWriteError::UnsafeMachineState(reasons) = error else {
+            panic!("{label} thermal evidence must be an unsafe-state refusal");
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("nominal thermal state")),
+            "{label} refusal must name the failed thermal requirement"
+        );
+        assert!(!path.exists(), "{label} refusal must not create a file");
+    }
+}
+
+#[test]
+fn frontier_attestation_writer_output_round_trips_through_error_fallback() {
+    let path = unique_temp_path("operator-attestation-safe");
+    let power = "Now drawing from 'AC Power'\nAC attached; not charging";
+    let thermal = "No thermal warning level has been recorded\nNo performance warning level has been recorded\nNo CPU power status has been recorded";
+    let probe = MockProbe {
+        power: ProbeOutput::success(power),
+        thermal: ProbeOutput::success(thermal),
+    };
+    write_operator_attestation(
+        &probe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &path,
+    )
+    .expect("safe live output writes an attestation");
+    let raw = fs::read(&path).expect("the written attestation is readable");
+    let source = StaticAttestationSource {
+        bytes: raw,
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let outcome = preflight_with_attestation(&ErrorProbe, &source);
+    let CampaignPreflightOutcome::Ready {
+        power_evidence,
+        thermal_evidence,
+        provenance,
+    } = outcome
+    else {
+        panic!("writer output must be accepted by the error-only fallback");
+    };
+    assert_eq!(power_evidence, power);
+    assert_eq!(thermal_evidence, thermal);
+    assert_eq!(
+        provenance,
+        MachineStateProvenance::OperatorAttestation {
+            timestamp: "2026-08-20T12:00:00Z".to_owned(),
+            machine_identifier: "Mac15,9".to_owned(),
+        }
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn frontier_attestation_missing_schema_and_each_required_field_are_rejected() {
+    let safe = json!({
+        "schema": 1,
+        "timestamp": "2026-08-20T12:00:00Z",
+        "machine_identifier": "Mac15,9",
+        "pmset_ps_raw": "Now drawing from 'AC Power'",
+        "pmset_therm_raw": "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+    });
+
+    for (field, expected) in [
+        ("schema", "schema must be 1"),
+        ("timestamp", "missing nonblank string field timestamp"),
+        (
+            "machine_identifier",
+            "missing nonblank string field machine_identifier",
+        ),
+        ("pmset_ps_raw", "missing nonblank string field pmset_ps_raw"),
+        (
+            "pmset_therm_raw",
+            "missing nonblank string field pmset_therm_raw",
+        ),
+    ] {
+        let mut value = safe.clone();
+        value
+            .as_object_mut()
+            .expect("the fixture is an object")
+            .remove(field);
+        let source = StaticAttestationSource {
+            bytes: serde_json::to_vec(&value).expect("the missing-field fixture serializes"),
+            machine_identifier: "Mac15,9".to_owned(),
+            now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+        };
+
+        let reason = attestation_rejection_reason(&source);
+        assert!(
+            reason.contains(expected),
+            "missing {field} produced unexpected rejection: {reason}"
+        );
+    }
+}
+
+#[test]
+fn frontier_attestation_rejects_an_unavailable_current_machine_identifier() {
+    let source = IdentifierErrorAttestationSource {
+        bytes: attestation_bytes(
+            "2026-08-20T12:00:00Z",
+            "Now drawing from 'AC Power'",
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_260),
+    };
+    let CampaignPreflightOutcome::Idle { reasons } =
+        preflight_with_attestation(&ErrorProbe, &source)
+    else {
+        panic!("an unavailable current identity must reject the attestation");
+    };
+    assert!(reasons.iter().any(|reason| {
+        reason.contains("current machine identifier unavailable: model identifier probe denied")
+    }));
+}
+
+#[test]
+fn frontier_attestation_ttl_accepts_the_exact_edge_and_rejects_one_second_past() {
+    let bytes = attestation_bytes(
+        "2026-04-30T12:00:00Z",
+        "Now drawing from 'AC Power'",
+        "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+    );
+    let at_edge = StaticAttestationSource {
+        bytes: bytes.clone(),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_777_551_600),
+    };
+    let CampaignPreflightOutcome::Ready { provenance, .. } =
+        preflight_with_attestation(&ErrorProbe, &at_edge)
+    else {
+        panic!("an attestation exactly at the 1,200-second TTL remains valid");
+    };
+    assert!(matches!(
+        provenance,
+        MachineStateProvenance::OperatorAttestation { .. }
+    ));
+
+    let just_past = StaticAttestationSource {
+        bytes,
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH + std::time::Duration::from_secs(1_777_551_601),
+    };
+    let reason = attestation_rejection_reason(&just_past);
+    assert!(
+        reason.contains("age 1201 seconds exceeds 1200 second TTL"),
+        "one second past the TTL produced unexpected rejection: {reason}"
+    );
+}
+
+#[test]
+fn frontier_attestation_writer_refuses_clocks_outside_the_iso8601_range() {
+    let safe_probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    for (label, time, expected) in [
+        (
+            "before-epoch",
+            UNIX_EPOCH - std::time::Duration::from_secs(1),
+            "time predates the Unix epoch",
+        ),
+        (
+            "five-digit-year",
+            UNIX_EPOCH + std::time::Duration::from_secs(253_402_300_800),
+            "time exceeds four-digit ISO-8601 years",
+        ),
+    ] {
+        let path = unique_temp_path(&format!("operator-attestation-clock-{label}"));
+        let error = write_operator_attestation(&safe_probe, "Mac15,9", time, &path)
+            .expect_err("an unrepresentable clock must refuse to attest");
+        let AttestationWriteError::InvalidClock(reason) = error else {
+            panic!("{label} must remain a typed invalid-clock refusal");
+        };
+        assert_eq!(reason, expected);
+        assert!(!path.exists(), "{label} refusal must not create a file");
+    }
+}
+
+#[test]
+fn frontier_attestation_rejects_schema_identity_clock_and_thermal_corruption() {
+    let safe = json!({
+        "schema": 1,
+        "timestamp": "2026-08-20T12:00:00Z",
+        "machine_identifier": "Mac15,9",
+        "pmset_ps_raw": "Now drawing from 'AC Power'",
+        "pmset_therm_raw": "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+    });
+    let mut cases = Vec::new();
+    cases.push((
+        b"{not-json}".to_vec(),
+        "Mac15,9",
+        1_787_227_260,
+        "key must be a string",
+    ));
+    for (label, replacement, expected) in [
+        ("schema", json!(2), "schema must be 1"),
+        (
+            "pmset_therm_raw",
+            json!("thermal warning level = 1\nperformance warning level = 1"),
+            "raw pmset -g therm",
+        ),
+        (
+            "timestamp",
+            json!("2026-08-20T12:02:00Z"),
+            "timestamp is in the future",
+        ),
+        (
+            "timestamp",
+            json!("2026/08/20 12:00:00Z"),
+            "must use YYYY-MM-DDTHH:MM:SSZ",
+        ),
+        ("timestamp", json!("202X-08-20T12:00:00Z"), "decimal digits"),
+        (
+            "timestamp",
+            json!("2026-13-20T12:00:00Z"),
+            "outside the supported UTC range",
+        ),
+        (
+            "timestamp",
+            json!("2026-02-30T12:00:00Z"),
+            "invalid UTC date or time",
+        ),
+    ] {
+        let mut value = safe.clone();
+        value[label] = replacement;
+        cases.push((
+            serde_json::to_vec(&value).expect("the corrupt attestation serializes"),
+            "Mac15,9",
+            1_787_227_260,
+            expected,
+        ));
+    }
+    cases.push((
+        serde_json::to_vec(&safe).expect("the machine mismatch serializes"),
+        "Mac99,1",
+        1_787_227_260,
+        "machine identifier mismatch",
+    ));
+
+    for (bytes, machine_identifier, now, expected) in cases {
+        let source = StaticAttestationSource {
+            bytes,
+            machine_identifier: machine_identifier.to_owned(),
+            now: UNIX_EPOCH + std::time::Duration::from_secs(now),
+        };
+        let reason = attestation_rejection_reason(&source);
+        assert!(reason.contains(expected), "unexpected rejection: {reason}");
+    }
+
+    let before_epoch = StaticAttestationSource {
+        bytes: serde_json::to_vec(&json!({
+            "schema": 1,
+            "timestamp": "1970-01-01T00:00:00Z",
+            "machine_identifier": "Mac15,9",
+            "pmset_ps_raw": "Now drawing from 'AC Power'",
+            "pmset_therm_raw": "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        }))
+        .expect("the pre-epoch clock fixture serializes"),
+        machine_identifier: "Mac15,9".to_owned(),
+        now: UNIX_EPOCH - std::time::Duration::from_secs(1),
+    };
+    assert!(attestation_rejection_reason(&before_epoch).contains("before the Unix epoch"));
+}
+
+#[test]
+fn frontier_attestation_atomic_replace_is_private_and_leaves_no_temporary_file() {
+    let directory = unique_temp_path("attestation-atomic-directory");
+    let path = directory.join("operator-attestation.json");
+    let first_probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'\nfirst observation"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    write_operator_attestation(
+        &first_probe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &path,
+    )
+    .expect("the initial safe observation is persisted");
+
+    let second_probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'\nsecond observation"),
+        thermal: first_probe.thermal.clone(),
+    };
+    write_operator_attestation(
+        &second_probe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_201),
+        &path,
+    )
+    .expect("a newer safe observation atomically replaces the first");
+
+    let raw = fs::read_to_string(&path).expect("the replacement is readable");
+    assert!(raw.contains("second observation"));
+    assert!(!raw.contains("first observation"));
+    assert!(raw.contains("2026-08-20T12:00:01Z"));
+    assert!(
+        !path
+            .with_extension(format!("tmp-{}", std::process::id()))
+            .exists(),
+        "successful replacement must leave no temporary file"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("replacement metadata is available")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "attestations must be owner-readable and owner-writable only"
+        );
+    }
+    fs::remove_dir_all(directory).expect("the atomic-write fixture is removable");
+}
+
+#[test]
+fn frontier_attestation_persistence_reports_typed_open_and_rename_failures() {
+    let safe_probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    let now = UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200);
+
+    let open_target = unique_temp_path("attestation-open-failure");
+    let open_temporary = open_target.with_extension(format!("tmp-{}", std::process::id()));
+    fs::create_dir(&open_temporary).expect("the temporary-path directory fixture is created");
+    let open_error = write_operator_attestation(&safe_probe, "Mac15,9", now, &open_target)
+        .expect_err("a directory at the temporary path must prevent opening the file");
+    let AttestationWriteError::Io { path, .. } = open_error else {
+        panic!("temporary-file open failure must remain a typed I/O refusal");
+    };
+    assert_eq!(path, open_temporary);
+    assert!(!open_target.exists());
+    fs::remove_dir(open_temporary).expect("the open-failure fixture is removable");
+
+    let rename_target = unique_temp_path("attestation-rename-failure");
+    fs::create_dir(&rename_target).expect("the destination-directory fixture is created");
+    let rename_temporary = rename_target.with_extension(format!("tmp-{}", std::process::id()));
+    let rename_error = write_operator_attestation(&safe_probe, "Mac15,9", now, &rename_target)
+        .expect_err("a directory destination must prevent atomic file replacement");
+    let AttestationWriteError::Io { path, .. } = rename_error else {
+        panic!("rename failure must remain a typed I/O refusal");
+    };
+    assert_eq!(path, rename_target);
+    assert!(
+        rename_temporary.is_file(),
+        "the fully written temporary remains inspectable"
+    );
+    fs::remove_file(rename_temporary).expect("the rename-failure temporary is removable");
+    fs::remove_dir(rename_target).expect("the rename-failure destination is removable");
+}
+
+#[test]
+fn frontier_attestation_writer_and_file_source_report_typed_failures() {
+    let safe_probe = MockProbe {
+        power: ProbeOutput::success("Now drawing from 'AC Power'"),
+        thermal: ProbeOutput::success(
+            "No thermal warning level has been recorded\nNo performance warning level has been recorded",
+        ),
+    };
+    let blank_path = unique_temp_path("blank-machine-attestation");
+    let blank = write_operator_attestation(
+        &safe_probe,
+        " ",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &blank_path,
+    )
+    .expect_err("a blank machine identifier must be refused");
+    assert!(matches!(
+        blank,
+        AttestationWriteError::InvalidMachineIdentifier
+    ));
+    assert_eq!(blank.to_string(), "live machine identifier is blank");
+
+    let clock_path = unique_temp_path("invalid-clock-attestation");
+    let clock = write_operator_attestation(
+        &safe_probe,
+        "Mac15,9",
+        UNIX_EPOCH - std::time::Duration::from_secs(1),
+        &clock_path,
+    )
+    .expect_err("a pre-epoch clock must be refused");
+    assert!(matches!(clock, AttestationWriteError::InvalidClock(_)));
+    assert!(clock.to_string().contains("attestation clock is invalid"));
+
+    let parent_file = unique_temp_path("attestation-parent-file");
+    fs::write(&parent_file, b"not a directory").expect("the parent-file fixture is writable");
+    let io_path = parent_file.join("attestation.json");
+    let persistence = write_operator_attestation(
+        &safe_probe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &io_path,
+    )
+    .expect_err("a file cannot become the attestation directory");
+    assert!(matches!(persistence, AttestationWriteError::Io { .. }));
+    assert!(persistence.to_string().contains("attestation"));
+    let _ = fs::remove_file(parent_file);
+
+    let failed_probe_path = unique_temp_path("failed-probe-attestation");
+    let probe_error = write_operator_attestation(
+        &ErrorProbe,
+        "Mac15,9",
+        UNIX_EPOCH + std::time::Duration::from_secs(1_787_227_200),
+        &failed_probe_path,
+    )
+    .expect_err("probe I/O errors must not write an attestation");
+    assert!(probe_error.to_string().contains("denied -g ps"));
+
+    let root = unique_temp_path("attestation-root");
+    assert_eq!(
+        default_attestation_path(&root),
+        root.join("target/frontier/operator-attestation.json")
+    );
+    let file_path = unique_temp_path("file-attestation-source");
+    fs::write(&file_path, b"attestation bytes").expect("the source fixture is writable");
+    let file_source = FileAttestationSource::new(&file_path);
+    assert_eq!(
+        file_source
+            .read_attestation()
+            .expect("the file source reads bytes"),
+        b"attestation bytes"
+    );
+    assert!(file_source.now() >= UNIX_EPOCH);
+    #[cfg(target_os = "macos")]
+    assert!(
+        !file_source
+            .current_machine_identifier()
+            .expect("the file source resolves the live macOS model identifier")
+            .is_empty()
+    );
+    #[cfg(not(target_os = "macos"))]
+    let _platform_identifier_result = file_source.current_machine_identifier();
+    let _ = fs::remove_file(file_path);
 }
 
 #[test]
@@ -1857,6 +2766,7 @@ fn frontier_attributed_synthetic_completion_stays_provisional_in_ledger() {
             workload: decision.workload_name,
             provisional: decision.provisional,
             evidence_path: "tasks/evidence/synthetic-attribution.md".to_owned(),
+            machine_state: MachineStateProvenance::DirectProbe,
             status: LedgerStatus::from_campaign_stop(&decision.stop),
         })
         .expect("the attributed row appends");
@@ -1939,7 +2849,7 @@ fn frontier_cli_no_arguments_returns_the_existing_usage_error() {
     assert_eq!(error, CliError::Usage);
     assert_eq!(
         error.to_string(),
-        "usage: frontier tune --campaign kernels-i8 --smoke [--seed N] | report | denominators [--persist --date YYYY-MM-DD [--allow-lower-ceiling]]"
+        "usage: frontier attest | tune --campaign kernels-i8 --smoke [--seed N] | report | denominators [--persist --date YYYY-MM-DD [--allow-lower-ceiling]]"
     );
 }
 
@@ -1952,7 +2862,20 @@ fn frontier_cli_unknown_subcommand_is_a_typed_usage_error() {
             command: "unknown".to_owned(),
         }
     );
-    assert!(error.to_string().starts_with("usage: frontier tune"));
+    assert!(error.to_string().starts_with("usage: frontier attest"));
+}
+
+#[test]
+fn frontier_cli_attest_is_an_exact_arity_command() {
+    assert_eq!(
+        parse_cli(&["attest"]).expect("attest has no caller-supplied evidence"),
+        FrontierCommand::Attest
+    );
+    assert_eq!(
+        parse_cli(&["attest", "quoted-output"])
+            .expect_err("attest must collect live output rather than accept arguments"),
+        CliError::Usage
+    );
 }
 
 #[test]
@@ -2181,11 +3104,35 @@ fn frontier_row(hypothesis: &str, delta_percent: f64) -> LedgerRow {
         workload: "synthetic-test".to_owned(),
         provisional: true,
         evidence_path: "tasks/evidence/test.md".to_owned(),
+        machine_state: MachineStateProvenance::DirectProbe,
         status: LedgerStatus::FrontierOpen {
             reason: "test frontier remains open".to_owned(),
             hypotheses: vec!["next test hypothesis".to_owned()],
         },
     }
+}
+
+fn attestation_bytes(timestamp: &str, power_raw: &str, thermal_raw: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "schema": 1,
+        "timestamp": timestamp,
+        "machine_identifier": "Mac15,9",
+        "pmset_ps_raw": power_raw,
+        "pmset_therm_raw": thermal_raw,
+    }))
+    .expect("the attestation fixture serializes")
+}
+
+fn attestation_rejection_reason(source: &StaticAttestationSource) -> String {
+    let CampaignPreflightOutcome::Idle { reasons } =
+        preflight_with_attestation(&ErrorProbe, source)
+    else {
+        panic!("the corrupt attestation must idle");
+    };
+    reasons
+        .last()
+        .cloned()
+        .expect("attestation rejection includes a reason")
 }
 
 fn calibration_artifact(base_gmac_per_second: f64, measured_date: &str) -> CalibrationArtifact {

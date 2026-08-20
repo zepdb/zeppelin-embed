@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::attestation::MachineStateProvenance;
 use super::pmu::{AttributionEvidence, CounterReading};
 use super::tune::CampaignStop;
 
@@ -103,6 +104,8 @@ pub struct LedgerRow {
     pub provisional: bool,
     /// Measurement/correctness evidence path.
     pub evidence_path: String,
+    /// How safe machine state was established for the measurement.
+    pub machine_state: MachineStateProvenance,
     /// Completion or open-frontier record.
     pub status: LedgerStatus,
 }
@@ -285,6 +288,16 @@ fn validate_row(row: &LedgerRow) -> Result<(), LedgerError> {
             "delta and roofline percentages must be finite".to_owned(),
         ));
     }
+    if let MachineStateProvenance::OperatorAttestation {
+        timestamp,
+        machine_identifier,
+    } = &row.machine_state
+        && (timestamp.trim().is_empty() || machine_identifier.trim().is_empty())
+    {
+        return Err(LedgerError::InvalidRow(
+            "attested machine state requires timestamp and machine identifier".to_owned(),
+        ));
+    }
     match &row.status {
         LedgerStatus::Complete { attribution } => {
             if attribution.counters.is_empty()
@@ -338,8 +351,23 @@ fn row_to_value(row: &LedgerRow) -> Value {
         "workload": row.workload,
         "provisional?": row.provisional,
         "evidence path": row.evidence_path,
+        "machine-state": machine_state_to_value(&row.machine_state),
         "status": status,
     })
+}
+
+fn machine_state_to_value(provenance: &MachineStateProvenance) -> Value {
+    match provenance {
+        MachineStateProvenance::DirectProbe => json!({"kind": "direct-probe"}),
+        MachineStateProvenance::OperatorAttestation {
+            timestamp,
+            machine_identifier,
+        } => json!({
+            "kind": "operator-attestation",
+            "timestamp": timestamp,
+            "machine_identifier": machine_identifier,
+        }),
+    }
 }
 
 fn read_and_validate(path: &Path) -> Result<Vec<u8>, LedgerError> {
@@ -414,6 +442,15 @@ fn value_to_row(value: &Value) -> Result<LedgerRow, String> {
         }
         other => return Err(format!("unknown status {other}")),
     };
+    let machine_state_value = value.get("machine-state").ok_or("missing machine-state")?;
+    let machine_state = match string_field(machine_state_value, "kind")? {
+        "direct-probe" => MachineStateProvenance::DirectProbe,
+        "operator-attestation" => MachineStateProvenance::OperatorAttestation {
+            timestamp: string_field(machine_state_value, "timestamp")?.to_owned(),
+            machine_identifier: string_field(machine_state_value, "machine_identifier")?.to_owned(),
+        },
+        other => return Err(format!("unknown machine-state kind {other}")),
+    };
     let row = LedgerRow {
         date: string_field(value, "date")?.to_owned(),
         hypothesis: string_field(value, "hypothesis")?.to_owned(),
@@ -427,6 +464,7 @@ fn value_to_row(value: &Value) -> Result<LedgerRow, String> {
             .and_then(Value::as_bool)
             .ok_or("missing provisional?")?,
         evidence_path: string_field(value, "evidence path")?.to_owned(),
+        machine_state,
         status,
     };
     validate_row(&row).map_err(|error| error.to_string())?;

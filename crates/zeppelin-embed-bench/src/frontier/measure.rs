@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use zeppelin_embed::kernels::KernelVariant;
 
+use super::attestation::MachineStateProvenance;
 use super::roofline::{BindingBound, ComputeTier};
 use super::variants::RegisteredVariant;
 
@@ -63,6 +64,8 @@ pub struct MeasurementResult {
     pub discarded_runs: usize,
     /// Minimum accepted run median.
     pub min_of_medians_ns: f64,
+    /// How safe machine state was established before this measurement.
+    pub machine_state: MachineStateProvenance,
 }
 
 /// Typed statistical measurement failure.
@@ -109,6 +112,15 @@ pub fn measure_source<S: SampleSource>(
     source: &mut S,
     config: MeasurementConfig,
 ) -> Result<MeasurementResult, MeasurementError<S::Error>> {
+    measure_source_with_provenance(source, config, MachineStateProvenance::DirectProbe)
+}
+
+/// Measures a source while carrying its established machine-state provenance.
+pub fn measure_source_with_provenance<S: SampleSource>(
+    source: &mut S,
+    config: MeasurementConfig,
+    machine_state: MachineStateProvenance,
+) -> Result<MeasurementResult, MeasurementError<S::Error>> {
     validate_measurement_config(config)?;
     for _ in 0..config.warmup_repetitions {
         source.warm_up().map_err(MeasurementError::Source)?;
@@ -147,6 +159,7 @@ pub fn measure_source<S: SampleSource>(
                 accepted_run_rsd_percent,
                 discarded_runs,
                 min_of_medians_ns,
+                machine_state,
             });
         }
     }
@@ -325,13 +338,13 @@ pub fn preflight(probe: &impl MachineProbe) -> PreflightOutcome {
     }
 }
 
-fn explicitly_on_ac_power(output: &str) -> bool {
+pub(crate) fn explicitly_on_ac_power(output: &str) -> bool {
     let lowercase = output.to_ascii_lowercase();
     lowercase.contains("drawing from 'ac power'")
         || (lowercase.contains("ac attached") && !lowercase.contains("battery power"))
 }
 
-fn explicitly_thermal_nominal(output: &str) -> bool {
+pub(crate) fn explicitly_thermal_nominal(output: &str) -> bool {
     let lowercase = output.to_ascii_lowercase();
     let no_warnings =
         lowercase.contains("no thermal warning") && lowercase.contains("no performance warning");

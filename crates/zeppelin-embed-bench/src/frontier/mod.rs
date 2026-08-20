@@ -1,5 +1,7 @@
 //! Reproducible optimization-frontier harness.
 
+/// Short-lived operator machine-state attestations.
+pub mod attestation;
 /// Persisted, provenance-bearing compute calibration artifacts.
 pub mod calibration;
 /// Pure parsing and typed validation for the frontier command line.
