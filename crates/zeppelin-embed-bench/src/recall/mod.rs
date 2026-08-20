@@ -1,8 +1,9 @@
 //! Recall-retention sweeps with exact rescore byte accounting.
 
 use zeppelin_embed::quant::{
-    Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError, SearchByteCounts, est_dot_bit4,
-    prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
+    Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError, SearchByteCounts,
+    est_dot_bit4_batch, prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8,
+    rescore_top_k,
 };
 
 /// Dataset generators and standard binary-vector loaders.
@@ -378,11 +379,10 @@ impl EncodedRows {
                 factors,
             } => {
                 let prepared = prepare_bit4_query(query, seed ^ 0x04b4_7004)?;
-                codes
-                    .chunks_exact(dimension.div_ceil(2))
-                    .zip(factors)
-                    .map(|(codes, &factors)| est_dot_bit4(&prepared, codes, factors))
-                    .collect()
+                debug_assert_eq!(codes.len(), dimension.div_ceil(2) * factors.len());
+                let mut scores = vec![0.0_f32; factors.len()];
+                est_dot_bit4_batch(&prepared, codes, factors, &mut scores)?;
+                Ok(scores)
             }
         }
     }

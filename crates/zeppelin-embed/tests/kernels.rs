@@ -17,6 +17,7 @@ mod kernels {
         dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch, initialize, is_arm_supported,
         selected_arm,
     };
+    use zeppelin_embed::quant::quantize_bit4;
 
     fn vector_pair_i8() -> impl Strategy<Value = (Vec<i8>, Vec<i8>)> {
         (1_usize..=4_096).prop_flat_map(|len| (vec(any::<i8>(), len), vec(any::<i8>(), len)))
@@ -234,6 +235,56 @@ mod kernels {
                     .map(|row| variant.dot_bit4(&q, row))
                     .collect();
                 prop_assert_eq!(actual, expected, "arm={:?}", variant.arm());
+            }
+        }
+
+        #[test]
+        fn prop_bit4_prepared_score_batch_equals_scalar(
+            d in 1_usize..=1_024,
+            row_count in 1_usize..=7,
+            q_seed in any::<i8>(),
+            row_seed in any::<u8>(),
+        ) {
+            let q: Vec<i8> = (0..d)
+                .map(|index| q_seed.wrapping_add((index.wrapping_mul(29)) as i8))
+                .collect();
+            let query_sum = q.iter().map(|&code| i32::from(code)).sum();
+            let prepared = prepare_bit4_kernel_query(&q);
+            let row_bytes = d.div_ceil(2);
+            let rows: Vec<u8> = (0..row_bytes * row_count)
+                .map(|index| row_seed.wrapping_add((index.wrapping_mul(31)) as u8))
+                .collect();
+            let factor_source = (0..d)
+                .map(|index| ((index % 17) as f32 - 8.0) / 9.0)
+                .collect::<Vec<_>>();
+            let mut ignored_codes = vec![0_u8; row_bytes];
+            let factor = quantize_bit4(&factor_source, &mut ignored_codes).expect("valid row");
+            let factors = vec![factor; row_count];
+            let scalar = KernelVariant::scalar();
+            let mut expected = vec![f32::NAN; row_count];
+            scalar.score_bit4_prepared_batch(
+                (&prepared, query_sum, 0.125),
+                &rows,
+                d,
+                &factors,
+                &mut expected,
+            );
+            for variant in KernelVariant::available() {
+                let mut actual = vec![f32::NAN; row_count];
+                variant.score_bit4_prepared_batch(
+                    (&prepared, query_sum, 0.125),
+                    &rows,
+                    d,
+                    &factors,
+                    &mut actual,
+                );
+                prop_assert_eq!(
+                    actual.iter().map(|score| score.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|score| score.to_bits()).collect::<Vec<_>>(),
+                    "arm={:?} tier={:?}",
+                    variant.arm(),
+                    variant.tier(),
+                );
             }
         }
 

@@ -49,6 +49,7 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
+        score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
     }
 }
 
@@ -65,6 +66,7 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
+        score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
     }
 }
 
@@ -101,6 +103,7 @@ fn dotprod_shape_table(
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
+        score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
     }
 }
 
@@ -117,6 +120,7 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         dot_bit4: dot_bit4_widen,
         dot_bit4_prepared: dot_bit4_prepared_widen,
         dot_bit4_batch: dot_bit4_batch_widen,
+        score_bit4_prepared_batch: scalar::score_bit4_prepared_batch,
     }
 }
 
@@ -1043,7 +1047,381 @@ unsafe fn i8mm_mac(mut acc: int32x4_t, left: int8x16_t, right: int8x16_t) -> int
 }
 
 fn dot_bit4_batch_dotprod(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
-    batch_packed(q, rows, d, out, 2, dot_bit4_dotprod);
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(d <= MAX_DOT_I8_DIMENSION);
+    let row_bytes = d.div_ceil(2);
+    debug_assert_eq!(rows.len(), row_bytes.saturating_mul(out.len()));
+    if row_bytes == 0 {
+        out.fill(0);
+        return;
+    }
+    let query_sum = q.iter().map(|&code| i32::from(code)).sum();
+    // SAFETY: the DotProd table is installed only after runtime feature
+    // detection. The asserted flat batch shape bounds every four-row load.
+    unsafe { dot_bit4_batch_dotprod_r4_inner(q, query_sum, rows, row_bytes, out) };
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_bit4_batch_dotprod_r4_inner(
+    q: &[i8],
+    query_sum: i32,
+    rows: &[u8],
+    row_bytes: usize,
+    out: &mut [i32],
+) {
+    // SAFETY: each grouped iteration advances by four complete rows. UZP
+    // converts each shared coordinate-order query block to high/low-nibble
+    // order once, and all code loads stay within the asserted row shape.
+    unsafe {
+        const BLOCK: usize = BIT4_DIMENSIONS_PER_BLOCK * 2;
+        let processed = q.len() / BLOCK * BLOCK;
+        let processed_query_sum = if processed == q.len() {
+            query_sum
+        } else {
+            q.get(..processed)
+                .unwrap_or_default()
+                .iter()
+                .map(|&code| i32::from(code))
+                .sum()
+        };
+        let grouped_rows = out.len() / 4 * 4;
+        let mut row_index = 0_usize;
+        while row_index < grouped_rows {
+            let row0_ptr = rows.as_ptr().add(row_index * row_bytes);
+            let row1_ptr = row0_ptr.add(row_bytes);
+            let row2_ptr = row1_ptr.add(row_bytes);
+            let row3_ptr = row2_ptr.add(row_bytes);
+            let mut row0_acc0 = vdupq_n_s32(0);
+            let mut row0_acc1 = vdupq_n_s32(0);
+            let mut row1_acc0 = vdupq_n_s32(0);
+            let mut row1_acc1 = vdupq_n_s32(0);
+            let mut row2_acc0 = vdupq_n_s32(0);
+            let mut row2_acc1 = vdupq_n_s32(0);
+            let mut row3_acc0 = vdupq_n_s32(0);
+            let mut row3_acc1 = vdupq_n_s32(0);
+            let mut base = 0_usize;
+            while base < processed {
+                let query_ptr = q.as_ptr().add(base);
+                let coordinate0 = vld1q_s8(query_ptr);
+                let coordinate1 = vld1q_s8(query_ptr.add(I8_LANES));
+                let coordinate2 = vld1q_s8(query_ptr.add(I8_LANES * 2));
+                let coordinate3 = vld1q_s8(query_ptr.add(I8_LANES * 3));
+                let query_even0 = vuzp1q_s8(coordinate0, coordinate1);
+                let query_odd0 = vuzp2q_s8(coordinate0, coordinate1);
+                let query_even1 = vuzp1q_s8(coordinate2, coordinate3);
+                let query_odd1 = vuzp2q_s8(coordinate2, coordinate3);
+                let code_offset = base / 2;
+                row0_acc0 = bit4_split_mac(
+                    row0_acc0,
+                    query_even0,
+                    query_odd0,
+                    row0_ptr.add(code_offset),
+                );
+                row1_acc0 = bit4_split_mac(
+                    row1_acc0,
+                    query_even0,
+                    query_odd0,
+                    row1_ptr.add(code_offset),
+                );
+                row2_acc0 = bit4_split_mac(
+                    row2_acc0,
+                    query_even0,
+                    query_odd0,
+                    row2_ptr.add(code_offset),
+                );
+                row3_acc0 = bit4_split_mac(
+                    row3_acc0,
+                    query_even0,
+                    query_odd0,
+                    row3_ptr.add(code_offset),
+                );
+                row0_acc1 = bit4_split_mac(
+                    row0_acc1,
+                    query_even1,
+                    query_odd1,
+                    row0_ptr.add(code_offset + PACKED_LANES),
+                );
+                row1_acc1 = bit4_split_mac(
+                    row1_acc1,
+                    query_even1,
+                    query_odd1,
+                    row1_ptr.add(code_offset + PACKED_LANES),
+                );
+                row2_acc1 = bit4_split_mac(
+                    row2_acc1,
+                    query_even1,
+                    query_odd1,
+                    row2_ptr.add(code_offset + PACKED_LANES),
+                );
+                row3_acc1 = bit4_split_mac(
+                    row3_acc1,
+                    query_even1,
+                    query_odd1,
+                    row3_ptr.add(code_offset + PACKED_LANES),
+                );
+                base += BLOCK;
+            }
+            let pairs01 = vpaddq_s32(
+                vaddq_s32(row0_acc0, row0_acc1),
+                vaddq_s32(row1_acc0, row1_acc1),
+            );
+            let pairs23 = vpaddq_s32(
+                vaddq_s32(row2_acc0, row2_acc1),
+                vaddq_s32(row3_acc0, row3_acc1),
+            );
+            let unsigned_sums = vpaddq_s32(pairs01, pairs23);
+            let integer_dots = if processed == q.len() {
+                vsubq_s32(vshlq_n_s32(unsigned_sums, 1), vdupq_n_s32(15 * query_sum))
+            } else {
+                let mut sums = [0_i32; 4];
+                vst1q_s32(sums.as_mut_ptr(), unsigned_sums);
+                let row0 = std::slice::from_raw_parts(row0_ptr, row_bytes);
+                let row1 = std::slice::from_raw_parts(row1_ptr, row_bytes);
+                let row2 = std::slice::from_raw_parts(row2_ptr, row_bytes);
+                let row3 = std::slice::from_raw_parts(row3_ptr, row_bytes);
+                sums[0] =
+                    packed_bit4_coordinate_tail(sums[0], q, row0, processed, processed_query_sum);
+                sums[1] =
+                    packed_bit4_coordinate_tail(sums[1], q, row1, processed, processed_query_sum);
+                sums[2] =
+                    packed_bit4_coordinate_tail(sums[2], q, row2, processed, processed_query_sum);
+                sums[3] =
+                    packed_bit4_coordinate_tail(sums[3], q, row3, processed, processed_query_sum);
+                vld1q_s32(sums.as_ptr())
+            };
+            vst1q_s32(out.as_mut_ptr().add(row_index), integer_dots);
+            row_index += 4;
+        }
+        while row_index < out.len() {
+            let row_ptr = rows.as_ptr().add(row_index * row_bytes);
+            let row = std::slice::from_raw_parts(row_ptr, row_bytes);
+            *out.get_unchecked_mut(row_index) = dot_bit4_dotprod_inner(q, row);
+            row_index += 1;
+        }
+    }
+}
+
+fn packed_bit4_coordinate_tail(
+    unsigned_sum: i32,
+    q: &[i8],
+    codes: &[u8],
+    processed: usize,
+    processed_query_sum: i32,
+) -> i32 {
+    let full_blocks = 2 * unsigned_sum - 15 * processed_query_sum;
+    let Some(q_tail) = q.get(processed..) else {
+        return full_blocks;
+    };
+    let Some(code_tail) = codes.get(processed / 2..) else {
+        return full_blocks;
+    };
+    full_blocks + scalar::dot_bit4(q_tail, code_tail)
+}
+
+fn score_bit4_prepared_batch_dotprod(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[u8],
+    d: usize,
+    factors: &[crate::quant::Bit4Factors],
+    out: &mut [f32],
+) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(d <= MAX_DOT_I8_DIMENSION);
+    debug_assert_eq!(factors.len(), out.len());
+    let row_bytes = d.div_ceil(2);
+    debug_assert_eq!(rows.len(), row_bytes.saturating_mul(out.len()));
+    if row_bytes == 0 {
+        out.fill(0.0);
+        return;
+    }
+    // SAFETY: the DotProd table is installed only after runtime feature
+    // detection. The asserted batch shape bounds every row, factor, output,
+    // and complete-block load used by the four-row microkernel.
+    unsafe {
+        score_bit4_prepared_batch_dotprod_r4_inner(
+            q,
+            query_sum,
+            query_scale_half,
+            rows,
+            row_bytes,
+            factors,
+            out,
+        );
+    }
+}
+#[target_feature(enable = "dotprod")]
+unsafe fn score_bit4_prepared_batch_dotprod_r4_inner(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[u8],
+    row_bytes: usize,
+    factors: &[crate::quant::Bit4Factors],
+    out: &mut [f32],
+) {
+    // SAFETY: the wrapper proves the flat batch shape. Each grouped iteration
+    // advances by four whole rows; each dimension iteration loads exactly one
+    // complete 64-coordinate query block and two 16-byte blocks per row.
+    unsafe {
+        const BLOCK: usize = BIT4_DIMENSIONS_PER_BLOCK * 2;
+        let processed = q.len() / BLOCK * BLOCK;
+        let grouped_rows = out.len() / 4 * 4;
+        let mut row_index = 0_usize;
+        while row_index < grouped_rows {
+            let row0_ptr = rows.as_ptr().add(row_index * row_bytes);
+            let row1_ptr = row0_ptr.add(row_bytes);
+            let row2_ptr = row1_ptr.add(row_bytes);
+            let row3_ptr = row2_ptr.add(row_bytes);
+            let mut row0_acc0 = vdupq_n_s32(0);
+            let mut row0_acc1 = vdupq_n_s32(0);
+            let mut row1_acc0 = vdupq_n_s32(0);
+            let mut row1_acc1 = vdupq_n_s32(0);
+            let mut row2_acc0 = vdupq_n_s32(0);
+            let mut row2_acc1 = vdupq_n_s32(0);
+            let mut row3_acc0 = vdupq_n_s32(0);
+            let mut row3_acc1 = vdupq_n_s32(0);
+            let mut base = 0_usize;
+            while base < processed {
+                let query_ptr = q.as_ptr().add(base);
+                let query0 = vld1q_s8(query_ptr);
+                let query1 = vld1q_s8(query_ptr.add(I8_LANES));
+                let query2 = vld1q_s8(query_ptr.add(I8_LANES * 2));
+                let query3 = vld1q_s8(query_ptr.add(I8_LANES * 3));
+                let code_offset = base / 2;
+                row0_acc0 = bit4_split_mac(row0_acc0, query0, query1, row0_ptr.add(code_offset));
+                row1_acc0 = bit4_split_mac(row1_acc0, query0, query1, row1_ptr.add(code_offset));
+                row2_acc0 = bit4_split_mac(row2_acc0, query0, query1, row2_ptr.add(code_offset));
+                row3_acc0 = bit4_split_mac(row3_acc0, query0, query1, row3_ptr.add(code_offset));
+                row0_acc1 = bit4_split_mac(
+                    row0_acc1,
+                    query2,
+                    query3,
+                    row0_ptr.add(code_offset + PACKED_LANES),
+                );
+                row1_acc1 = bit4_split_mac(
+                    row1_acc1,
+                    query2,
+                    query3,
+                    row1_ptr.add(code_offset + PACKED_LANES),
+                );
+                row2_acc1 = bit4_split_mac(
+                    row2_acc1,
+                    query2,
+                    query3,
+                    row2_ptr.add(code_offset + PACKED_LANES),
+                );
+                row3_acc1 = bit4_split_mac(
+                    row3_acc1,
+                    query2,
+                    query3,
+                    row3_ptr.add(code_offset + PACKED_LANES),
+                );
+                base += BLOCK;
+            }
+            let row0 = vaddq_s32(row0_acc0, row0_acc1);
+            let row1 = vaddq_s32(row1_acc0, row1_acc1);
+            let row2 = vaddq_s32(row2_acc0, row2_acc1);
+            let row3 = vaddq_s32(row3_acc0, row3_acc1);
+            let pairs01 = vpaddq_s32(row0, row1);
+            let pairs23 = vpaddq_s32(row2, row3);
+            let unsigned_sums = vpaddq_s32(pairs01, pairs23);
+            let integer_dots = if processed == q.len() {
+                vsubq_s32(vshlq_n_s32(unsigned_sums, 1), vdupq_n_s32(15 * query_sum))
+            } else {
+                let mut sums = [0_i32; 4];
+                vst1q_s32(sums.as_mut_ptr(), unsigned_sums);
+                let row0_slice = std::slice::from_raw_parts(row0_ptr, row_bytes);
+                let row1_slice = std::slice::from_raw_parts(row1_ptr, row_bytes);
+                let row2_slice = std::slice::from_raw_parts(row2_ptr, row_bytes);
+                let row3_slice = std::slice::from_raw_parts(row3_ptr, row_bytes);
+                sums[0] = packed_bit4_prepared_tail(sums[0], q, query_sum, row0_slice, processed);
+                sums[1] = packed_bit4_prepared_tail(sums[1], q, query_sum, row1_slice, processed);
+                sums[2] = packed_bit4_prepared_tail(sums[2], q, query_sum, row2_slice, processed);
+                sums[3] = packed_bit4_prepared_tail(sums[3], q, query_sum, row3_slice, processed);
+                vld1q_s32(sums.as_ptr())
+            };
+            store_bit4_score_pair(
+                integer_dots,
+                *factors.get_unchecked(row_index),
+                *factors.get_unchecked(row_index + 1),
+                query_scale_half,
+                out.as_mut_ptr().add(row_index),
+            );
+            store_bit4_score_pair(
+                vextq_s32(integer_dots, integer_dots, 2),
+                *factors.get_unchecked(row_index + 2),
+                *factors.get_unchecked(row_index + 3),
+                query_scale_half,
+                out.as_mut_ptr().add(row_index + 2),
+            );
+            row_index += 4;
+        }
+        while row_index < out.len() {
+            let row_ptr = rows.as_ptr().add(row_index * row_bytes);
+            let row = std::slice::from_raw_parts(row_ptr, row_bytes);
+            let integer_dot = dot_bit4_prepared_dotprod_inner(q, query_sum, row);
+            *out.get_unchecked_mut(row_index) = scalar::bit4_score(
+                integer_dot,
+                *factors.get_unchecked(row_index),
+                query_scale_half,
+            );
+            row_index += 1;
+        }
+    }
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn bit4_split_mac(
+    mut acc: int32x4_t,
+    query_high: int8x16_t,
+    query_low: int8x16_t,
+    code_ptr: *const u8,
+) -> int32x4_t {
+    // SAFETY: callers pass a complete 16-byte code block. Both SDOT calls are
+    // reached only from the runtime-detected DotProd table.
+    unsafe {
+        let packed = vld1q_u8(code_ptr);
+        let high = vreinterpretq_s8_u8(vshrq_n_u8(packed, 4));
+        let low = vreinterpretq_s8_u8(vandq_u8(packed, vdupq_n_u8(0x0f)));
+        acc = dotprod_mac(acc, query_high, high);
+        dotprod_mac(acc, query_low, low)
+    }
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn store_bit4_score_pair(
+    integer_dots: int32x4_t,
+    factor0: crate::quant::Bit4Factors,
+    factor1: crate::quant::Bit4Factors,
+    query_scale_half: f64,
+    output: *mut f32,
+) {
+    // SAFETY: the caller provides two writable output lanes. Factor values are
+    // gathered into vectors before the f64 correction chain; the zero-scale
+    // mask preserves the scalar oracle's positive-zero fast-path exactly.
+    unsafe {
+        let (scale0, correction0) = factor0.scoring_parts();
+        let (scale1, correction1) = factor1.scoring_parts();
+        let scales = [scale0, scale1];
+        let corrections = [correction0, correction1];
+        let scale_f32 = vld1_f32(scales.as_ptr());
+        let correction_f32 = vld1_f32(corrections.as_ptr());
+        let factor_correction = vmulq_f64(vcvt_f64_f32(scale_f32), vcvt_f64_f32(correction_f32));
+        let dots_i64 = vmovl_s32(vget_low_s32(integer_dots));
+        let dots_f64 = vcvtq_f64_s64(dots_i64);
+        let scaled = vmulq_f64(vmulq_n_f64(factor_correction, query_scale_half), dots_f64);
+        let scores = vcvt_f32_f64(scaled);
+        let zero_mask = vceq_f32(scale_f32, vdup_n_f32(0.0));
+        let exact_scores = vbsl_u32(
+            zero_mask,
+            vreinterpret_u32_f32(vdup_n_f32(0.0)),
+            vreinterpret_u32_f32(scores),
+        );
+        vst1_f32(output, vreinterpret_f32_u32(exact_scores));
+    }
 }
 
 fn dot_bit4_batch_widen(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {

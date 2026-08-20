@@ -14,8 +14,8 @@ use crate::kernels::MAX_DOT_I8_DIMENSION;
 
 use super::{
     Int8Vec, QuantError, QuantScheme, RescoreError, dequantize_bit4, dequantize_int8,
-    dot_int8_query, est_dot_bit4, prepare_bit4_query, prepare_int8_query, quantize_bit4,
-    quantize_int8, rescore_top_k,
+    dot_int8_query, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query, prepare_int8_query,
+    quantize_bit4, quantize_int8, rescore_top_k,
 };
 
 fn fixture_f32(path: &str) -> Vec<f32> {
@@ -123,6 +123,80 @@ fn bit4_native_estimator_scores_aligned_vector() {
     let estimate = est_dot_bit4(&query, &codes, factors).expect("matching code");
 
     assert!((estimate - 1.0).abs() <= f32::EPSILON);
+}
+
+#[test]
+fn bit4_batch_estimator_is_bit_exact_to_single_row_oracle() {
+    const DIMENSION: usize = 97;
+    let query_values = (0..DIMENSION)
+        .map(|index| ((index as f32 * 0.173).sin() * 0.75) + 0.125)
+        .collect::<Vec<_>>();
+    let query = prepare_bit4_query(&query_values, 0x4ba7_c001).expect("valid query");
+    let rows = [
+        vec![0.0_f32; DIMENSION],
+        (0..DIMENSION)
+            .map(|index| (index as f32 * 0.071).cos())
+            .collect(),
+        (0..DIMENSION)
+            .map(|index| ((index % 11) as f32 - 5.0) / 7.0)
+            .collect(),
+    ];
+    let row_bytes = DIMENSION.div_ceil(2);
+    let mut codes = vec![0_u8; row_bytes * rows.len()];
+    let mut factors = Vec::with_capacity(rows.len());
+    for (row, output) in rows.iter().zip(codes.chunks_exact_mut(row_bytes)) {
+        factors.push(quantize_bit4(row, output).expect("valid row"));
+    }
+    let expected = codes
+        .chunks_exact(row_bytes)
+        .zip(&factors)
+        .map(|(row, &factor)| est_dot_bit4(&query, row, factor).expect("valid score"))
+        .collect::<Vec<_>>();
+    let mut actual = vec![f32::NAN; rows.len()];
+
+    est_dot_bit4_batch(&query, &codes, &factors, &mut actual).expect("valid batch");
+
+    assert_eq!(
+        actual
+            .iter()
+            .map(|score| score.to_bits())
+            .collect::<Vec<_>>(),
+        expected
+            .iter()
+            .map(|score| score.to_bits())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bit4_batch_estimator_rejects_shape_and_padding_errors() {
+    let values = [0.25_f32, -0.5, 0.75];
+    let query = prepare_bit4_query(&values, 0x4ba7_c004).expect("valid query");
+    let mut codes = vec![0_u8; values.len().div_ceil(2)];
+    let factor = quantize_bit4(&values, &mut codes).expect("valid row");
+
+    assert_eq!(
+        est_dot_bit4_batch(&query, &codes, &[factor], &mut []),
+        Err(QuantError::OutputLength {
+            expected: 1,
+            actual: 0,
+        })
+    );
+    assert_eq!(
+        est_dot_bit4_batch(&query, &codes[..1], &[factor], &mut [f32::NAN]),
+        Err(QuantError::CodeLength {
+            expected: 2,
+            actual: 1,
+        })
+    );
+    codes[1] |= 0x0f;
+    assert_eq!(
+        est_dot_bit4_batch(&query, &codes, &[factor], &mut [f32::NAN]),
+        Err(QuantError::NonZeroPadding {
+            byte: codes[1],
+            mask: 0x0f,
+        })
+    );
 }
 
 #[test]

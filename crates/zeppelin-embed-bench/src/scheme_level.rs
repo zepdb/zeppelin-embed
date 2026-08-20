@@ -2,7 +2,7 @@
 
 use zeppelin_embed::quant::{
     Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
-    est_dot_bit4, prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8,
+    est_dot_bit4_batch, prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8,
 };
 
 /// Deterministic validation failure from the scheme-level benchmark seam.
@@ -743,13 +743,8 @@ impl EncodedCorpus {
                 },
                 PreparedQuery::Bit4(query),
             ) => {
-                for ((codes, &factors), score) in codes
-                    .chunks_exact(dimension.div_ceil(2))
-                    .zip(factors)
-                    .zip(output.iter_mut())
-                {
-                    *score = est_dot_bit4(query, codes, factors)?;
-                }
+                debug_assert_eq!(codes.len(), dimension.div_ceil(2) * factors.len());
+                est_dot_bit4_batch(query, codes, factors, output)?;
             }
             _ => return Err(SchemeLevelError::SchemeMismatch),
         }

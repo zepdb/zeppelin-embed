@@ -15,6 +15,7 @@ pub(super) fn table() -> KernelTable {
         dot_bit4,
         dot_bit4_prepared,
         dot_bit4_batch,
+        score_bit4_prepared_batch,
     }
 }
 
@@ -148,6 +149,44 @@ pub(super) fn dot_bit4_prepared_unsigned(q: &[i8], codes: &[u8]) -> i32 {
 
 pub(super) fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
     dot_packed_batch(q, rows, d, out, 2, dot_bit4);
+}
+
+pub(super) fn score_bit4_prepared_batch(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[u8],
+    d: usize,
+    factors: &[crate::quant::Bit4Factors],
+    out: &mut [f32],
+) {
+    debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
+    debug_assert!(d <= MAX_DOT_I8_DIMENSION);
+    debug_assert_eq!(factors.len(), out.len());
+    let row_bytes = d.div_ceil(2);
+    debug_assert_eq!(rows.len(), row_bytes.saturating_mul(out.len()));
+    for ((row, &factor), score) in rows
+        .chunks_exact(row_bytes)
+        .zip(factors)
+        .zip(out.iter_mut())
+    {
+        let integer_dot = dot_bit4_prepared(q, query_sum, row);
+        *score = bit4_score(integer_dot, factor, query_scale_half);
+    }
+}
+
+pub(super) fn bit4_score(
+    integer_dot: i32,
+    factor: crate::quant::Bit4Factors,
+    query_scale_half: f64,
+) -> f32 {
+    let (scale, normalized_correction) = factor.scoring_parts();
+    if scale == 0.0 {
+        return 0.0;
+    }
+    ((f64::from(scale) * f64::from(normalized_correction))
+        * query_scale_half
+        * f64::from(integer_dot)) as f32
 }
 
 fn dot_packed_batch(
