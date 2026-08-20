@@ -1,0 +1,1 @@
+//! Persistent manifest coordination.

@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/zeppelin-embed",
+    "crates/zeppelin-embed-ffi",
+    "crates/zeppelin-embed-bench",
+    "tests",
+]
+exclude = ["fuzz", "tools/fuzz-dispatch"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+libc = "=0.2.189"
+roaring = "=0.10.12"
+xxhash-rust = { version = "=0.8.18", features = ["xxh3"] }
+
+proptest = "=1.10.0"
+criterion = { version = "=0.5.1", default-features = false }
+rand = "=0.9.5"
+rand_chacha = "=0.9.0"
+tempfile = "=3.25.0"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
+
+[profile.bench]
+opt-level = 3
+debug = true
+lto = "fat"
+codegen-units = 1
+strip = "none"

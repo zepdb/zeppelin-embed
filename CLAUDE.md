@@ -1,0 +1,85 @@
+# zeppelin-embed project rules
+
+## Architecture invariants
+
+- Fail loudly. Do not add compatibility fallbacks, silent predicate drops, or
+  best-effort recovery paths that hide violated contracts.
+- Sealed segments and published artifacts are immutable. There is one writer
+  per store, and every mutation eventually returns the generation it changed.
+- Use strong domain types at public seams. Structured queries remain data;
+  string DSLs do not enter the engine.
+- Production engine code is panic-free. `unwrap`, `expect`, indexing, `panic!`,
+  `todo!`, and `unimplemented!` are denied; tests may opt out only at a scoped
+  test module or function.
+- The C ABI will retain `panic = "unwind"` so Task 22 can catch panics, poison
+  handles, and protect the host process. Unwinding is a safety net, not normal
+  control flow.
+- Use the system allocator. Never add jemalloc, GPU/Metal offload, OpenMP/BLAS,
+  C++ interop, build-host CPU probing, or `-C target-cpu=native`. SIMD dispatch
+  is runtime-only.
+- Persisted formats are explicit hand-written layouts. Serde is absent from
+  core production dependencies and JSON is confined to the benchmark tooling.
+- Threading stays explicit; Rayon is prohibited.
+
+## Dependency budget
+
+The only permitted direct core dependencies are `libc`, `roaring`, and
+`xxhash-rust`. Core dev-dependencies may be `proptest`, `criterion`, `rand`,
+`rand_chacha`, and `tempfile`; Criterion currently lives only in the separate
+bench crate so its reporting dependencies never enter the core graph. Adding
+anything requires an explicit decision recorded here and a matching deny-policy
+audit.
+
+Task 01 chose `xxhash-rust` over `crc32c`: it is pure Rust with no build script
+or native wrapper, is compact, and provides deterministic seeded hashing for
+the test harness. Its BSL-1.0 license is narrowly excepted for that explicitly
+allowed crate in `deny.toml`. This is not a persisted-format decision; Task 07
+must specify format checksum semantics before bytes become durable.
+
+The absolute blacklist includes Tokio, Arrow, DataFusion, jemalloc, ONNX
+Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
+C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling
+and is deliberately excluded from the production workspace graph.
+
+The 2 MB static-library gate measures post-strip linkable sections with the
+platform `size` tool and separately reports physical archive KB from `du`.
+Embedded fat-LTO LLVM bitcode and archive metadata are not runtime footprint;
+the linked-section total still includes Rust `std`, unwind support, and every
+engine section, so later code growth remains gated on each architecture.
+
+## Engineering method
+
+- Work strictly RED -> GREEN: write the named test, observe the intended
+  failure, implement the smallest passing change, then rerun it. Commit messages
+  record the test names and one-line RED and GREEN evidence.
+- Maintain at least 90% line coverage per crate from Task 01 onward.
+- Use the component test pyramid: unit and end-to-end tests, `proptest` for
+  algebraic contracts, `cargo-fuzz` for byte parsers, and Criterion for hot
+  paths.
+- Every randomized test uses `test_support::seeded_rng`; `ZE_TEST_SEED` makes a
+  failed run reproducible.
+- From Task 11 onward, use the seeded fault runner; every Task 12+ component
+  extends its operations and invariants.
+- Gate deterministic performance counters with zero flake budget. Wall-clock
+  gates require at least 2x headroom and remain supporting evidence.
+- Put every measured claim in `tasks/evidence/<task>-<topic>.md`, including
+  hardware, dataset, exact command, and raw numbers.
+
+## Quickstart
+
+```bash
+scripts/ci-gates.sh
+cargo test --workspace
+cargo deny check
+cargo llvm-cov --workspace --fail-under-lines 90
+scripts/size-budget.sh
+cargo fuzz run fuzz_smoke -- -max_total_time=60
+```
+
+The repository uses stable Rust (verified as 1.93.0 for Task 01). Cargo-fuzz
+uses the installed nightly toolchain; the repository Cargo alias delegates only
+the `fuzz` subcommand through the excluded std-only dispatcher and
+`scripts/cargo-fuzz-nightly`, so normal builds remain on stable while the
+acceptance command stays unqualified. CI installs nightly plus `rust-src` and
+uses the same wrapper. Miri is an Ubuntu nightly subset, with unsupported tests
+explicitly tagged using `cfg_attr(miri, ...)`.

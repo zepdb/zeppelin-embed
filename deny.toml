@@ -1,0 +1,96 @@
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MIT",
+]
+confidence-threshold = 0.8
+exceptions = [
+    { crate = "xxhash-rust", allow = ["BSL-1.0"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+    { name = "tokio", reason = "async runtimes are outside the embedded core" },
+    { name = "arrow", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-arith", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-array", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-buffer", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-cast", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-csv", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-data", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-flight", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-ipc", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-json", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-ord", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-row", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-schema", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-select", reason = "Arrow is outside the core dependency budget" },
+    { name = "arrow-string", reason = "Arrow is outside the core dependency budget" },
+    { name = "datafusion", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-common", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-execution", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-expr", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-functions", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-functions-aggregate", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-functions-nested", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-functions-table", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-optimizer", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-physical-expr", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-physical-plan", reason = "DataFusion is outside the embedded architecture" },
+    { name = "datafusion-sql", reason = "DataFusion is outside the embedded architecture" },
+    { name = "jemalloc", reason = "all memory uses the accountable system allocator" },
+    { name = "jemalloc-sys", reason = "all memory uses the accountable system allocator" },
+    { name = "jemallocator", reason = "all memory uses the accountable system allocator" },
+    { name = "tikv-jemalloc-ctl", reason = "all memory uses the accountable system allocator" },
+    { name = "tikv-jemalloc-sys", reason = "all memory uses the accountable system allocator" },
+    { name = "tikv-jemallocator", reason = "all memory uses the accountable system allocator" },
+    { name = "onnxruntime", reason = "models live behind host delegates, never in core" },
+    { name = "onnxruntime-sys", reason = "models live behind host delegates, never in core" },
+    { name = "ort", reason = "models live behind host delegates, never in core" },
+    { name = "ort-sys", reason = "models live behind host delegates, never in core" },
+    { name = "openssl", reason = "TLS and networking are outside the embedded core" },
+    { name = "openssl-macros", reason = "TLS and networking are outside the embedded core" },
+    { name = "openssl-probe", reason = "TLS and networking are outside the embedded core" },
+    { name = "openssl-src", reason = "TLS and networking are outside the embedded core" },
+    { name = "openssl-sys", reason = "TLS and networking are outside the embedded core" },
+    { name = "ring", reason = "cryptographic runtime stacks are outside the core" },
+    { name = "reqwest", reason = "network clients are outside the embedded core" },
+    { name = "hyper", reason = "HTTP servers are outside the embedded core" },
+    { name = "hyper-rustls", reason = "HTTP servers are outside the embedded core" },
+    { name = "hyper-tls", reason = "HTTP servers are outside the embedded core" },
+    { name = "hyper-util", reason = "HTTP servers are outside the embedded core" },
+    { name = "axum", reason = "HTTP servers are outside the embedded core" },
+    { name = "axum-core", reason = "HTTP servers are outside the embedded core" },
+    { name = "axum-extra", reason = "HTTP servers are outside the embedded core" },
+    { name = "axum-macros", reason = "HTTP servers are outside the embedded core" },
+    { name = "rayon", reason = "engine threading must remain explicit" },
+    { name = "rayon-core", reason = "engine threading must remain explicit" },
+    { name = "serde_json", wrappers = ["criterion", "tinytemplate"], reason = "JSON is allowed only behind the bench harness" },
+    { name = "cxx", reason = "C++ interop is prohibited" },
+    { name = "cxx-build", reason = "C++ interop is prohibited" },
+    { name = "cxxbridge-cmd", reason = "C++ interop is prohibited" },
+    { name = "cxxbridge-flags", reason = "C++ interop is prohibited" },
+    { name = "autocxx", reason = "C++ interop is prohibited" },
+    { name = "autocxx-bindgen", reason = "C++ interop is prohibited" },
+    { name = "autocxx-build", reason = "C++ interop is prohibited" },
+    { name = "faiss-sys", reason = "C++ interop is prohibited" },
+    { name = "hnswlib-sys", reason = "C++ interop is prohibited" },
+    { name = "librocksdb-sys", reason = "C++ interop is prohibited" },
+    { name = "rocksdb-sys", reason = "C++ interop is prohibited" },
+    { name = "torch-sys", reason = "C++ interop is prohibited" },
+    { name = "usearch-sys", reason = "C++ interop is prohibited" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

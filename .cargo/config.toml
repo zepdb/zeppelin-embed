@@ -1,0 +1,3 @@
+[alias]
+fuzz = "run --quiet --manifest-path tools/fuzz-dispatch/Cargo.toml --"
+

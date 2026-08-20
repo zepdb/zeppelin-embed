@@ -1,0 +1,4 @@
+[profile.default]
+fail-fast = false
+retries = 0
+
