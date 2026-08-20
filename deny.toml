@@ -74,7 +74,7 @@ deny = [
     { name = "axum-macros", reason = "HTTP servers are outside the embedded core" },
     { name = "rayon", reason = "engine threading must remain explicit" },
     { name = "rayon-core", reason = "engine threading must remain explicit" },
-    { name = "serde_json", wrappers = ["criterion", "tinytemplate"], reason = "JSON is allowed only behind the bench harness" },
+    { name = "serde_json", wrappers = ["criterion", "tinytemplate", "zeppelin-embed-bench"], reason = "JSON is allowed only behind the bench harness" },
     { name = "cxx", reason = "C++ interop is prohibited" },
     { name = "cxx-build", reason = "C++ interop is prohibited" },
     { name = "cxxbridge-cmd", reason = "C++ interop is prohibited" },

@@ -13,7 +13,9 @@ cargo test --workspace
 cargo test -p zeppelin-embed-workspace-tests \
     --test scaffold_gates deny_blacklist_rejects_banned_dep \
     -- --ignored --exact
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    cargo run -p zeppelin-embed-bench --bin platform-truth -- --smoke
+fi
 "$SCRIPT_DIR/coverage.sh"
 cargo deny check
 "$SCRIPT_DIR/size-budget.sh"
-

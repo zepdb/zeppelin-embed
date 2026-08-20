@@ -39,6 +39,8 @@ pub mod quant;
 pub mod scan;
 /// Immutable segment representation.
 pub mod segment;
+/// Operating-system integration wrappers.
+pub mod sys;
 /// Adaptive storage tiers.
 pub mod tier;
 /// Virtual filesystem and platform I/O.

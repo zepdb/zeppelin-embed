@@ -639,6 +639,8 @@ name = "zeppelin-embed-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
+ "serde_json",
  "zeppelin-embed",
 ]
 

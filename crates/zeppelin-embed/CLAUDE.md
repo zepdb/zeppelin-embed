@@ -24,3 +24,16 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 -- -D warnings`, and `RUSTDOCFLAGS="-D warnings" cargo doc -p zeppelin-embed
 --no-deps`.
 
+## Task 02 invariants
+
+- Darwin integration lives behind `sys::darwin` and is absent from non-macOS
+  builds. Keep the safe public wrappers typed and panic-free; every libc or
+  Mach call stays inside a documented `unsafe` block.
+- The installed SDK values used by the durability wrappers are
+  `F_FULLFSYNC=51` and `F_BARRIERFSYNC=85`. Re-verify them against the active
+  SDK header when changing toolchains rather than introducing host probing or
+  a build script.
+- `task_info(TASK_VM_INFO)` is requested with the stable rev1 struct prefix,
+  which includes both resident size and `phys_footprint`. The core `sys` lines
+  remain subject to the 90% coverage gate; do not exclude platform code from
+  coverage.
