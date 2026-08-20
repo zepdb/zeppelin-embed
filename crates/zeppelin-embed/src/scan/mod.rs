@@ -1,7 +1,43 @@
 //! Exact flat scanning over row-major and PDX vector layouts.
 
+mod abandon;
+pub mod parallel;
 pub mod pdx;
 pub(crate) mod topk;
+
+pub use parallel::{
+    ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity, top_k_with_options,
+};
+
+/// Search space for Task 27's scan-layout optimization campaign.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScanKnobSpace {
+    /// Runtime-selectable PDX row-block sizes.
+    pub rows_per_block: &'static [usize],
+    /// Partial-score dimensions processed between bound checks.
+    pub dimensions_per_slab: &'static [usize],
+}
+
+/// Shipped baseline scan geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BaselineScanConfig {
+    /// Maximum rows in a PDX block.
+    pub rows_per_block: usize,
+    /// Dimensions processed between abandonment checks.
+    pub dimensions_per_slab: usize,
+}
+
+/// Enumerated scan geometry available to the optimization ledger.
+pub const SCAN_KNOB_SPACE: ScanKnobSpace = ScanKnobSpace {
+    rows_per_block: &[pdx::PDX_ROWS_PER_BLOCK, 128],
+    dimensions_per_slab: &[16, abandon::BASELINE_DIMENSIONS_PER_SLAB, 64],
+};
+
+/// Current provisional scan geometry.
+pub const BASELINE_SCAN_CONFIG: BaselineScanConfig = BaselineScanConfig {
+    rows_per_block: pdx::PDX_ROWS_PER_BLOCK,
+    dimensions_per_slab: abandon::BASELINE_DIMENSIONS_PER_SLAB,
+};
 
 use crate::kernels;
 use crate::quant::{
@@ -235,6 +271,12 @@ pub enum ScanError {
     Quant(QuantError),
     /// Candidate-window arithmetic overflowed `usize`.
     ArithmeticOverflow,
+    /// A scoped worker thread could not be created.
+    ThreadSpawn(String),
+    /// A scoped scan worker panicked before returning a typed result.
+    WorkerPanicked,
+    /// The operating system could not report a usable CPU count.
+    CpuCount(String),
 }
 
 impl std::fmt::Display for ScanError {
@@ -269,6 +311,11 @@ impl std::fmt::Display for ScanError {
             Self::Quant(error) => write!(formatter, "scan quantization error: {error}"),
             Self::ArithmeticOverflow => {
                 formatter.write_str("scan candidate-window arithmetic overflowed")
+            }
+            Self::ThreadSpawn(error) => write!(formatter, "could not spawn scan worker: {error}"),
+            Self::WorkerPanicked => formatter.write_str("a scoped scan worker panicked"),
+            Self::CpuCount(error) => {
+                write!(formatter, "could not determine scan CPU count: {error}")
             }
         }
     }
@@ -363,6 +410,13 @@ fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, 
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct PartitionScan {
+    candidates: Vec<ScanCandidate>,
+    dims_touched: u64,
+    rows_abandoned: u64,
+}
+
 impl ScanQuery<'_> {
     const fn scheme(self) -> QuantScheme {
         match self {
@@ -385,11 +439,222 @@ impl ScanRows<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScanGeometry {
+    row_count: usize,
+    work_units: usize,
+}
+
+pub(crate) fn scan_geometry(request: ScanRequest<'_>) -> Result<ScanGeometry, ScanError> {
+    let query_scheme = request.query.scheme();
+    let row_scheme = request.rows.scheme();
+    if query_scheme != row_scheme {
+        return Err(ScanError::SchemeMismatch {
+            query: query_scheme,
+            rows: row_scheme,
+        });
+    }
+    let query_dimension = match request.query {
+        ScanQuery::F32(query) => query.len(),
+        ScanQuery::F16(query) => query.len(),
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len(),
+    };
+    if query_dimension == 0 {
+        return Err(ScanError::ZeroDimension);
+    }
+    let (row_count, work_units) = match request.rows {
+        ScanRows::F32RowMajor(rows) => row_major_geometry(rows.len(), query_dimension)?,
+        ScanRows::F16RowMajor(rows) => row_major_geometry(rows.len(), query_dimension)?,
+        ScanRows::Int8RowMajor { codes, factors } => {
+            let geometry = row_major_geometry(codes.len(), query_dimension)?;
+            require_factor_count(geometry.0, factors.len())?;
+            geometry
+        }
+        ScanRows::Bit4RowMajor { codes, factors } => {
+            let row_width = query_dimension.div_ceil(2);
+            let geometry = row_major_geometry(codes.len(), row_width)?;
+            require_factor_count(geometry.0, factors.len())?;
+            geometry
+        }
+        ScanRows::F32Pdx(matrix)
+        | ScanRows::F16Pdx(matrix)
+        | ScanRows::Int8Pdx { codes: matrix, .. }
+        | ScanRows::Bit4Pdx { codes: matrix, .. } => {
+            if matrix.dimension() != query_dimension {
+                return Err(ScanError::DimensionMismatch {
+                    query: query_dimension,
+                    rows: matrix.dimension(),
+                });
+            }
+            match request.rows {
+                ScanRows::Int8Pdx { factors, .. } => {
+                    require_factor_count(matrix.row_count(), factors.len())?;
+                }
+                ScanRows::Bit4Pdx { factors, .. } => {
+                    require_factor_count(matrix.row_count(), factors.len())?;
+                }
+                _ => {}
+            }
+            (matrix.row_count(), matrix.blocks().len())
+        }
+    };
+    Ok(ScanGeometry {
+        row_count,
+        work_units,
+    })
+}
+
+fn row_major_geometry(scalar_count: usize, row_width: usize) -> Result<(usize, usize), ScanError> {
+    if !scalar_count.is_multiple_of(row_width) {
+        return Err(ScanError::RowDataLength {
+            dimension: row_width,
+            actual: scalar_count,
+        });
+    }
+    let rows = scalar_count / row_width;
+    Ok((rows, rows))
+}
+
+fn require_factor_count(expected: usize, actual: usize) -> Result<(), ScanError> {
+    if expected != actual {
+        return Err(ScanError::FactorCount { expected, actual });
+    }
+    Ok(())
+}
+
+pub(crate) fn scan_partition(
+    request: ScanRequest<'_>,
+    k: usize,
+    range: std::ops::Range<usize>,
+    early_abandon: bool,
+) -> Result<PartitionScan, ScanError> {
+    let geometry = scan_geometry(request)?;
+    if range.start > range.end || range.end > geometry.row_count {
+        return Err(ScanError::ArithmeticOverflow);
+    }
+    if early_abandon
+        && let (ScanQuery::F32(query), ScanRows::F32Pdx(matrix)) = (request.query, request.rows)
+    {
+        return abandon::scan_f32_pdx(query, matrix, request.row_mask, k, range);
+    }
+
+    let first_row = range.start;
+    let candidates = match (request.query, request.rows) {
+        (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
+            let rows = scalar_row_range(rows, query.len(), range.clone())?;
+            scan_f32_rows(query, rows, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::F32(query), ScanRows::F32Pdx(matrix)) => {
+            let rows = matrix.decode_f32_range(range.clone())?;
+            scan_f32_rows(query, &rows, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
+            let rows = scalar_row_range(rows, query.len(), range.clone())?;
+            scan_f16_rows(query, rows, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::F16(query), ScanRows::F16Pdx(matrix)) => {
+            let rows = matrix.decode_f16_range(range.clone())?;
+            scan_f16_rows(query, &rows, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::Int8(query), ScanRows::Int8RowMajor { codes, factors }) => {
+            let codes = scalar_row_range(codes, query.len(), range.clone())?;
+            let factors = factors
+                .get(range.clone())
+                .ok_or(ScanError::ArithmeticOverflow)?;
+            scan_int8_rows(query, codes, factors, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::Int8(query), ScanRows::Int8Pdx { codes, factors }) => {
+            let decoded = codes.decode_int8_range(range.clone())?;
+            let factors = factors
+                .get(range.clone())
+                .ok_or(ScanError::ArithmeticOverflow)?;
+            scan_int8_rows(query, &decoded, factors, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::Bit4(query), ScanRows::Bit4RowMajor { codes, factors }) => {
+            let codes = scalar_row_range(codes, query.len().div_ceil(2), range.clone())?;
+            let factors = factors
+                .get(range.clone())
+                .ok_or(ScanError::ArithmeticOverflow)?;
+            scan_bit4_rows(query, codes, factors, request.row_mask, k, first_row)?
+        }
+        (ScanQuery::Bit4(query), ScanRows::Bit4Pdx { codes, factors }) => {
+            let decoded = codes.decode_bit4_range(range.clone())?;
+            let factors = factors
+                .get(range.clone())
+                .ok_or(ScanError::ArithmeticOverflow)?;
+            scan_bit4_rows(query, &decoded, factors, request.row_mask, k, first_row)?
+        }
+        (query, rows) => {
+            return Err(ScanError::SchemeMismatch {
+                query: query.scheme(),
+                rows: rows.scheme(),
+            });
+        }
+    };
+    let scored_rows = match request.rows {
+        ScanRows::Bit4RowMajor { .. } | ScanRows::Bit4Pdx { .. } => range.end - range.start,
+        _ => allowed_row_count(request.row_mask, range.clone()),
+    };
+    let dimensions = u64::try_from(match request.query {
+        ScanQuery::F32(query) => query.len(),
+        ScanQuery::F16(query) => query.len(),
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len(),
+    })
+    .map_err(|_| ScanError::ArithmeticOverflow)?;
+    let dims_touched = u64::try_from(scored_rows)
+        .map_err(|_| ScanError::ArithmeticOverflow)?
+        .checked_mul(dimensions)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    Ok(PartitionScan {
+        candidates,
+        dims_touched,
+        rows_abandoned: 0,
+    })
+}
+
+fn scalar_row_range<T>(
+    values: &[T],
+    row_width: usize,
+    rows: std::ops::Range<usize>,
+) -> Result<&[T], ScanError> {
+    let start = rows
+        .start
+        .checked_mul(row_width)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let end = rows
+        .end
+        .checked_mul(row_width)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    values.get(start..end).ok_or(ScanError::ArithmeticOverflow)
+}
+
+fn allowed_row_count(
+    row_mask: Option<&roaring::RoaringBitmap>,
+    rows: std::ops::Range<usize>,
+) -> usize {
+    rows.filter(|&row_id| {
+        !row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
+    })
+    .count()
+}
+
 fn scan_f32(
     query: &[f32],
     rows: &[f32],
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
+    scan_f32_rows(query, rows, row_mask, k, 0)
+}
+
+fn scan_f32_rows(
+    query: &[f32],
+    rows: &[f32],
+    row_mask: Option<&roaring::RoaringBitmap>,
+    k: usize,
+    first_row: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
     if query.is_empty() {
         return Err(ScanError::ZeroDimension);
@@ -402,16 +667,30 @@ fn scan_f32(
     }
     if let Some((index, _)) = query
         .iter()
-        .chain(rows)
         .enumerate()
         .find(|(_, value)| !value.is_finite())
     {
         return Err(ScanError::NonFiniteInput { index });
     }
+    if let Some((local_index, _)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        let index = first_row
+            .checked_mul(query.len())
+            .and_then(|offset| offset.checked_add(local_index))
+            .and_then(|offset| query.len().checked_add(offset))
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        return Err(ScanError::NonFiniteInput { index });
+    }
 
     let row_count = rows.len() / query.len();
     let mut selected = BoundedTopK::new(k.min(row_count));
-    for (row_id, row) in rows.chunks_exact(query.len()).enumerate() {
+    for (local_row, row) in rows.chunks_exact(query.len()).enumerate() {
+        let row_id = first_row
+            .checked_add(local_row)
+            .ok_or(ScanError::ArithmeticOverflow)?;
         if row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
         {
             continue;
@@ -431,6 +710,16 @@ fn scan_f16(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
+    scan_f16_rows(query, rows, row_mask, k, 0)
+}
+
+fn scan_f16_rows(
+    query: &[u16],
+    rows: &[u16],
+    row_mask: Option<&roaring::RoaringBitmap>,
+    k: usize,
+    first_row: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
     if query.is_empty() {
         return Err(ScanError::ZeroDimension);
     }
@@ -442,7 +731,10 @@ fn scan_f16(
     }
     let row_count = rows.len() / query.len();
     let mut selected = BoundedTopK::new(k.min(row_count));
-    for (row_id, row) in rows.chunks_exact(query.len()).enumerate() {
+    for (local_row, row) in rows.chunks_exact(query.len()).enumerate() {
+        let row_id = first_row
+            .checked_add(local_row)
+            .ok_or(ScanError::ArithmeticOverflow)?;
         if row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
         {
             continue;
@@ -463,6 +755,17 @@ fn scan_int8(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
+    scan_int8_rows(query, codes, factors, row_mask, k, 0)
+}
+
+fn scan_int8_rows(
+    query: &Int8Query,
+    codes: &[i8],
+    factors: &[Int8Factors],
+    row_mask: Option<&roaring::RoaringBitmap>,
+    k: usize,
+    first_row: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
     let dimension = query.len();
     if dimension == 0 {
         return Err(ScanError::ZeroDimension);
@@ -481,7 +784,10 @@ fn scan_int8(
         });
     }
     let mut selected = BoundedTopK::new(k.min(row_count));
-    for (row_id, (row, factor)) in codes.chunks_exact(dimension).zip(factors).enumerate() {
+    for (local_row, (row, factor)) in codes.chunks_exact(dimension).zip(factors).enumerate() {
+        let row_id = first_row
+            .checked_add(local_row)
+            .ok_or(ScanError::ArithmeticOverflow)?;
         if row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
         {
             continue;
@@ -509,6 +815,17 @@ fn scan_bit4(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
+    scan_bit4_rows(query, codes, factors, row_mask, k, 0)
+}
+
+fn scan_bit4_rows(
+    query: &Bit4Query,
+    codes: &[u8],
+    factors: &[Bit4Factors],
+    row_mask: Option<&roaring::RoaringBitmap>,
+    k: usize,
+    first_row: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
     let dimension = query.len();
     if dimension == 0 {
         return Err(ScanError::ZeroDimension);
@@ -530,7 +847,10 @@ fn scan_bit4(
     let mut scores = vec![0.0_f32; row_count];
     est_dot_bit4_batch(query, codes, factors, &mut scores)?;
     let mut selected = BoundedTopK::new(k.min(row_count));
-    for (row_id, score) in scores.into_iter().enumerate() {
+    for (local_row, score) in scores.into_iter().enumerate() {
+        let row_id = first_row
+            .checked_add(local_row)
+            .ok_or(ScanError::ArithmeticOverflow)?;
         if row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
         {
             continue;
@@ -556,7 +876,8 @@ mod tests {
 
     use super::pdx::PdxMatrix;
     use super::{
-        CandidateStream, Int8Factors, ScanQuery, ScanRequest, ScanRows, candidate_stream, top_k,
+        CandidateStream, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows,
+        candidate_stream, top_k, top_k_with_options,
     };
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
 
@@ -647,25 +968,20 @@ mod tests {
                         .map(|_| random.random_range(-2.0_f32..=2.0_f32))
                         .collect::<Vec<_>>();
                     let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("valid f32 PDX");
+                    let row_request = ScanRequest {
+                        query: ScanQuery::F32(&query),
+                        rows: ScanRows::F32RowMajor(&rows),
+                        row_mask: None,
+                    };
+                    let pdx_request = ScanRequest {
+                        query: ScanQuery::F32(&query),
+                        rows: ScanRows::F32Pdx(&pdx),
+                        row_mask: None,
+                    };
+                    assert_extended_scan_arms(row_request, pdx_request, k, case);
                     (
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::F32(&query),
-                                rows: ScanRows::F32RowMajor(&rows),
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid row-major f32 scan"),
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::F32(&query),
-                                rows: ScanRows::F32Pdx(&pdx),
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid PDX f32 scan"),
+                        top_k(row_request, k).expect("valid row-major f32 scan"),
+                        top_k(pdx_request, k).expect("valid PDX f32 scan"),
                     )
                 }
                 1 => {
@@ -686,31 +1002,26 @@ mod tests {
                         })
                         .collect::<Vec<_>>();
                     let pdx = PdxMatrix::encode_int8(&codes, dimension).expect("valid int8 PDX");
+                    let row_request = ScanRequest {
+                        query: ScanQuery::Int8(&query),
+                        rows: ScanRows::Int8RowMajor {
+                            codes: &codes,
+                            factors: &factors,
+                        },
+                        row_mask: None,
+                    };
+                    let pdx_request = ScanRequest {
+                        query: ScanQuery::Int8(&query),
+                        rows: ScanRows::Int8Pdx {
+                            codes: &pdx,
+                            factors: &factors,
+                        },
+                        row_mask: None,
+                    };
+                    assert_extended_scan_arms(row_request, pdx_request, k, case);
                     (
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::Int8(&query),
-                                rows: ScanRows::Int8RowMajor {
-                                    codes: &codes,
-                                    factors: &factors,
-                                },
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid row-major int8 scan"),
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::Int8(&query),
-                                rows: ScanRows::Int8Pdx {
-                                    codes: &pdx,
-                                    factors: &factors,
-                                },
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid PDX int8 scan"),
+                        top_k(row_request, k).expect("valid row-major int8 scan"),
+                        top_k(pdx_request, k).expect("valid PDX int8 scan"),
                     )
                 }
                 _ => {
@@ -738,36 +1049,393 @@ mod tests {
                         .expect("finite factor source");
                     let factors = vec![factor; row_count];
                     let pdx = PdxMatrix::encode_bit4(&codes, dimension).expect("valid Bit4 PDX");
+                    let row_request = ScanRequest {
+                        query: ScanQuery::Bit4(&query),
+                        rows: ScanRows::Bit4RowMajor {
+                            codes: &codes,
+                            factors: &factors,
+                        },
+                        row_mask: None,
+                    };
+                    let pdx_request = ScanRequest {
+                        query: ScanQuery::Bit4(&query),
+                        rows: ScanRows::Bit4Pdx {
+                            codes: &pdx,
+                            factors: &factors,
+                        },
+                        row_mask: None,
+                    };
+                    assert_extended_scan_arms(row_request, pdx_request, k, case);
                     (
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::Bit4(&query),
-                                rows: ScanRows::Bit4RowMajor {
-                                    codes: &codes,
-                                    factors: &factors,
-                                },
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid row-major Bit4 scan"),
-                        top_k(
-                            ScanRequest {
-                                query: ScanQuery::Bit4(&query),
-                                rows: ScanRows::Bit4Pdx {
-                                    codes: &pdx,
-                                    factors: &factors,
-                                },
-                                row_mask: None,
-                            },
-                            k,
-                        )
-                        .expect("valid PDX Bit4 scan"),
+                        top_k(row_request, k).expect("valid row-major Bit4 scan"),
+                        top_k(pdx_request, k).expect("valid PDX Bit4 scan"),
                     )
                 }
             };
 
             assert_eq!(pdx, row_major, "case {case}");
+        }
+    }
+
+    fn assert_extended_scan_arms(
+        row_request: ScanRequest<'_>,
+        pdx_request: ScanRequest<'_>,
+        k: usize,
+        case: usize,
+    ) {
+        let expected = top_k(row_request, k).expect("valid reference scan");
+        for request in [row_request, pdx_request] {
+            for early_abandon in [false, true] {
+                let actual = top_k_with_options(
+                    request,
+                    k,
+                    ScanOptions {
+                        early_abandon,
+                        thread_budget: case % 8 + 1,
+                    },
+                )
+                .expect("valid extended scan")
+                .candidates;
+                assert_eq!(actual.len(), expected.len(), "extended case {case} length");
+                assert_eq!(actual, expected, "extended case {case}");
+            }
+        }
+    }
+
+    #[test]
+    fn prop_early_abandon_is_lossless() {
+        let mut random = crate::test_support::seeded_rng("scan::prop_early_abandon_is_lossless");
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(256);
+        for case in 0..cases {
+            let dimension = match case % 8 {
+                0 => 1,
+                1 => 8,
+                2 => 17,
+                3 => 32,
+                4 => 33,
+                5 => 64,
+                6 => 65,
+                _ => random.random_range(1..=96),
+            };
+            let row_count = random.random_range(1..=160);
+            let k = if case.is_multiple_of(13) {
+                row_count
+            } else {
+                random.random_range(1..=row_count)
+            };
+            match case % 3 {
+                0 => {
+                    let query = adversarial_f32_values(&mut random, dimension, case);
+                    let rows = adversarial_f32_values(
+                        &mut random,
+                        row_count * dimension,
+                        case.wrapping_add(1),
+                    );
+                    let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
+                    assert_abandon_pair(
+                        ScanRequest {
+                            query: ScanQuery::F32(&query),
+                            rows: ScanRows::F32RowMajor(&rows),
+                            row_mask: None,
+                        },
+                        ScanRequest {
+                            query: ScanQuery::F32(&query),
+                            rows: ScanRows::F32Pdx(&pdx),
+                            row_mask: None,
+                        },
+                        k,
+                        case,
+                    );
+                }
+                1 => {
+                    let query_values = adversarial_f32_values(&mut random, dimension, case);
+                    let query = prepare_int8_query(&query_values).expect("Int8 query");
+                    let codes = (0..row_count * dimension)
+                        .map(|_| random.random::<i8>())
+                        .collect::<Vec<_>>();
+                    let factors = (0..row_count)
+                        .map(|row| {
+                            let scale = if row.is_multiple_of(11) {
+                                0.0
+                            } else {
+                                random.random_range(f32::MIN_POSITIVE..=0.5)
+                            };
+                            Int8Factors::new(scale, random.random_range(-2.0..=2.0))
+                                .expect("Int8 factors")
+                        })
+                        .collect::<Vec<_>>();
+                    let pdx = PdxMatrix::encode_int8(&codes, dimension).expect("Int8 PDX");
+                    assert_abandon_pair(
+                        ScanRequest {
+                            query: ScanQuery::Int8(&query),
+                            rows: ScanRows::Int8RowMajor {
+                                codes: &codes,
+                                factors: &factors,
+                            },
+                            row_mask: None,
+                        },
+                        ScanRequest {
+                            query: ScanQuery::Int8(&query),
+                            rows: ScanRows::Int8Pdx {
+                                codes: &pdx,
+                                factors: &factors,
+                            },
+                            row_mask: None,
+                        },
+                        k,
+                        case,
+                    );
+                }
+                _ => {
+                    let query_values = adversarial_f32_values(&mut random, dimension, case);
+                    let query = prepare_bit4_query(&query_values, case as u64).expect("Bit4 query");
+                    let row_width = dimension.div_ceil(2);
+                    let mut codes = Vec::with_capacity(row_count * row_width);
+                    let mut factors = Vec::with_capacity(row_count);
+                    for row in 0..row_count {
+                        let source =
+                            adversarial_f32_values(&mut random, dimension, case.wrapping_add(row));
+                        let mut encoded = vec![0_u8; row_width];
+                        factors.push(quantize_bit4(&source, &mut encoded).expect("Bit4 row"));
+                        codes.extend(encoded);
+                    }
+                    let pdx = PdxMatrix::encode_bit4(&codes, dimension).expect("Bit4 PDX");
+                    assert_abandon_pair(
+                        ScanRequest {
+                            query: ScanQuery::Bit4(&query),
+                            rows: ScanRows::Bit4RowMajor {
+                                codes: &codes,
+                                factors: &factors,
+                            },
+                            row_mask: None,
+                        },
+                        ScanRequest {
+                            query: ScanQuery::Bit4(&query),
+                            rows: ScanRows::Bit4Pdx {
+                                codes: &pdx,
+                                factors: &factors,
+                            },
+                            row_mask: None,
+                        },
+                        k,
+                        case,
+                    );
+                }
+            }
+        }
+    }
+
+    fn assert_abandon_pair(
+        row_request: ScanRequest<'_>,
+        pdx_request: ScanRequest<'_>,
+        k: usize,
+        case: usize,
+    ) {
+        for request in [row_request, pdx_request] {
+            let exhaustive = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: false,
+                    thread_budget: 1,
+                },
+            )
+            .expect("exhaustive scan");
+            let abandoned = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: true,
+                    thread_budget: 1,
+                },
+            )
+            .expect("abandon scan");
+            assert_eq!(
+                abandoned.candidates.len(),
+                exhaustive.candidates.len(),
+                "case {case} candidate count"
+            );
+            assert_eq!(abandoned.candidates, exhaustive.candidates, "case {case}");
+        }
+    }
+
+    fn adversarial_f32_values(random: &mut impl Rng, length: usize, case: usize) -> Vec<f32> {
+        const VALUES: [f32; 12] = [
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            1.0,
+            -1.0,
+            1.0e-20,
+            -1.0e-20,
+            1.0e10,
+            -1.0e10,
+        ];
+        (0..length)
+            .map(|index| {
+                if case.is_multiple_of(19) {
+                    0.0
+                } else if index < VALUES.len() {
+                    VALUES[index]
+                } else {
+                    random.random_range(-8.0_f32..=8.0_f32)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prop_parallel_equals_single_thread() {
+        let mut random =
+            crate::test_support::seeded_rng("scan::prop_parallel_equals_single_thread");
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(256);
+        for case in 0..cases {
+            let dimension = random.random_range(1..=65);
+            let row_count = random.random_range(1..=576);
+            let k = random.random_range(1..=row_count);
+            let query = (0..dimension)
+                .map(|_| random.random_range(-2.0_f32..=2.0_f32))
+                .collect::<Vec<_>>();
+            let rows = if case.is_multiple_of(9) {
+                vec![1.0_f32; row_count * dimension]
+            } else {
+                (0..row_count * dimension)
+                    .map(|_| random.random_range(-2.0_f32..=2.0_f32))
+                    .collect::<Vec<_>>()
+            };
+            let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
+            let request = ScanRequest {
+                query: ScanQuery::F32(&query),
+                rows: ScanRows::F32Pdx(&pdx),
+                row_mask: None,
+            };
+            let single = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: case.is_multiple_of(2),
+                    thread_budget: 1,
+                },
+            )
+            .expect("single-thread scan");
+            let requested = case % 8 + 1;
+            let parallel = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: case.is_multiple_of(2),
+                    thread_budget: requested,
+                },
+            )
+            .expect("parallel scan");
+            assert_eq!(
+                parallel.candidates.first(),
+                single.candidates.first(),
+                "case {case} first candidate"
+            );
+            assert_eq!(parallel.candidates, single.candidates, "case {case}");
+        }
+    }
+
+    #[test]
+    fn dims_touched_is_exact_when_abandonment_is_disabled() {
+        let dimension = 37;
+        let row_count = 137;
+        let query = vec![1.0_f32; dimension];
+        let rows = vec![0.5_f32; row_count * dimension];
+        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
+        let outcome = top_k_with_options(
+            ScanRequest {
+                query: ScanQuery::F32(&query),
+                rows: ScanRows::F32Pdx(&pdx),
+                row_mask: None,
+            },
+            10,
+            ScanOptions {
+                early_abandon: false,
+                thread_budget: 1,
+            },
+        )
+        .expect("exhaustive scan");
+        assert_eq!(outcome.stats.dims_touched, (row_count * dimension) as u64);
+        assert_eq!(outcome.stats.rows_abandoned, 0);
+    }
+
+    #[test]
+    fn dims_touched_is_strictly_lower_when_abandonment_triggers() {
+        let dimension = 128;
+        let row_count = 192;
+        let query = vec![1.0_f32; dimension];
+        let mut rows = vec![-10.0_f32; row_count * dimension];
+        for value in rows.iter_mut().take(64 * dimension) {
+            *value = 10.0;
+        }
+        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
+        let request = ScanRequest {
+            query: ScanQuery::F32(&query),
+            rows: ScanRows::F32Pdx(&pdx),
+            row_mask: None,
+        };
+        let exhaustive = top_k_with_options(
+            request,
+            1,
+            ScanOptions {
+                early_abandon: false,
+                thread_budget: 1,
+            },
+        )
+        .expect("exhaustive scan");
+        let abandoned = top_k_with_options(
+            request,
+            1,
+            ScanOptions {
+                early_abandon: true,
+                thread_budget: 1,
+            },
+        )
+        .expect("abandon scan");
+        assert_eq!(abandoned.candidates, exhaustive.candidates);
+        assert!(
+            abandoned.stats.dims_touched < exhaustive.stats.dims_touched,
+            "assertion failed: abandon={} exhaustive={}",
+            abandoned.stats.dims_touched,
+            exhaustive.stats.dims_touched
+        );
+        assert_eq!(abandoned.stats.rows_abandoned, 128);
+    }
+
+    #[test]
+    fn explicit_thread_budget_is_honoured_up_to_physical_cap() {
+        let capacity = super::physical_thread_capacity().expect("physical thread capacity");
+        let dimension = 1;
+        let row_count = capacity.max(8) * super::pdx::PDX_ROWS_PER_BLOCK;
+        let query = [1.0_f32];
+        let rows = vec![1.0_f32; row_count];
+        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("enough PDX blocks");
+        for requested in 1..=capacity.saturating_add(2) {
+            let outcome = top_k_with_options(
+                ScanRequest {
+                    query: ScanQuery::F32(&query),
+                    rows: ScanRows::F32Pdx(&pdx),
+                    row_mask: None,
+                },
+                1,
+                ScanOptions {
+                    early_abandon: false,
+                    thread_budget: requested,
+                },
+            )
+            .expect("parallel scan");
+            assert_eq!(outcome.stats.threads_used, requested.min(capacity));
         }
     }
 

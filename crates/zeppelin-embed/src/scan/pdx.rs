@@ -94,8 +94,16 @@ pub struct PdxMatrix {
     row_count: usize,
     row_width: usize,
     element_width: usize,
+    rows_per_block: usize,
     blocks: Vec<PdxBlock>,
     encoded: Vec<u8>,
+    f32_metadata: Vec<F32BlockMetadata>,
+    f32_first_non_finite: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct F32BlockMetadata {
+    extrema_bits: Vec<(u32, u32)>,
 }
 
 /// Typed failure from PDX geometry validation or decoding.
@@ -138,6 +146,8 @@ pub enum PdxError {
     },
     /// Geometry arithmetic overflowed `usize` or stable descriptor fields.
     ArithmeticOverflow,
+    /// A caller-selected PDX block size was zero.
+    ZeroRowsPerBlock,
     /// An owned descriptor did not address exactly its validated payload.
     CorruptBlock,
 }
@@ -166,6 +176,7 @@ impl std::fmt::Display for PdxError {
                 write!(formatter, "PDX row count {actual} exceeds the u32 domain")
             }
             Self::ArithmeticOverflow => formatter.write_str("PDX geometry arithmetic overflowed"),
+            Self::ZeroRowsPerBlock => formatter.write_str("PDX rows per block must not be zero"),
             Self::CorruptBlock => formatter.write_str("PDX block descriptor is inconsistent"),
         }
     }
@@ -181,6 +192,23 @@ impl PdxMatrix {
     /// Returns [`PdxError`] for a zero dimension, a partial row, excessive row
     /// count, or arithmetic overflow.
     pub fn encode_f32(rows: &[f32], dimension: usize) -> Result<Self, PdxError> {
+        Self::encode_f32_with_rows_per_block(rows, dimension, PDX_ROWS_PER_BLOCK)
+    }
+
+    /// Encodes f32 rows with a caller-selected runtime block geometry.
+    ///
+    /// This exists so the provisional 64-versus-128 block experiment can run
+    /// without recompiling the crate. The durable default remains
+    /// [`PDX_ROWS_PER_BLOCK`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdxError`] for invalid row geometry or a zero block size.
+    pub fn encode_f32_with_rows_per_block(
+        rows: &[f32],
+        dimension: usize,
+        rows_per_block: usize,
+    ) -> Result<Self, PdxError> {
         let row_count = validate_scalar_rows(rows.len(), dimension)?;
         let row_width = dimension
             .checked_mul(std::mem::size_of::<f32>())
@@ -199,6 +227,7 @@ impl PdxMatrix {
             row_count,
             row_width,
             std::mem::size_of::<f32>(),
+            rows_per_block,
             &bytes,
         )
     }
@@ -209,6 +238,19 @@ impl PdxMatrix {
     ///
     /// Returns [`PdxError`] for invalid geometry or arithmetic overflow.
     pub fn encode_f16(rows: &[u16], dimension: usize) -> Result<Self, PdxError> {
+        Self::encode_f16_with_rows_per_block(rows, dimension, PDX_ROWS_PER_BLOCK)
+    }
+
+    /// Encodes f16 rows with a caller-selected runtime block geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdxError`] for invalid row geometry or a zero block size.
+    pub fn encode_f16_with_rows_per_block(
+        rows: &[u16],
+        dimension: usize,
+        rows_per_block: usize,
+    ) -> Result<Self, PdxError> {
         let row_count = validate_scalar_rows(rows.len(), dimension)?;
         let row_width = dimension
             .checked_mul(std::mem::size_of::<u16>())
@@ -227,6 +269,7 @@ impl PdxMatrix {
             row_count,
             row_width,
             std::mem::size_of::<u16>(),
+            rows_per_block,
             &bytes,
         )
     }
@@ -237,6 +280,19 @@ impl PdxMatrix {
     ///
     /// Returns [`PdxError`] for invalid geometry or arithmetic overflow.
     pub fn encode_int8(rows: &[i8], dimension: usize) -> Result<Self, PdxError> {
+        Self::encode_int8_with_rows_per_block(rows, dimension, PDX_ROWS_PER_BLOCK)
+    }
+
+    /// Encodes Int8 rows with a caller-selected runtime block geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdxError`] for invalid row geometry or a zero block size.
+    pub fn encode_int8_with_rows_per_block(
+        rows: &[i8],
+        dimension: usize,
+        rows_per_block: usize,
+    ) -> Result<Self, PdxError> {
         let row_count = validate_scalar_rows(rows.len(), dimension)?;
         let bytes = rows.iter().map(|&value| value as u8).collect::<Vec<_>>();
         Self::encode_row_bytes(
@@ -245,6 +301,7 @@ impl PdxMatrix {
             row_count,
             dimension,
             1,
+            rows_per_block,
             &bytes,
         )
     }
@@ -256,6 +313,19 @@ impl PdxMatrix {
     /// Returns [`PdxError`] for invalid geometry, partial rows, non-canonical
     /// odd-dimension padding, excessive row count, or arithmetic overflow.
     pub fn encode_bit4(rows: &[u8], dimension: usize) -> Result<Self, PdxError> {
+        Self::encode_bit4_with_rows_per_block(rows, dimension, PDX_ROWS_PER_BLOCK)
+    }
+
+    /// Encodes Bit4 rows with a caller-selected runtime block geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdxError`] for invalid row geometry or a zero block size.
+    pub fn encode_bit4_with_rows_per_block(
+        rows: &[u8],
+        dimension: usize,
+        rows_per_block: usize,
+    ) -> Result<Self, PdxError> {
         if dimension == 0 {
             return Err(PdxError::ZeroDimension);
         }
@@ -269,7 +339,15 @@ impl PdxMatrix {
         let row_count = rows.len() / row_width;
         validate_row_count(row_count)?;
         validate_bit4_padding(rows, dimension, row_width)?;
-        Self::encode_row_bytes(QuantScheme::Bit4, dimension, row_count, row_width, 1, rows)
+        Self::encode_row_bytes(
+            QuantScheme::Bit4,
+            dimension,
+            row_count,
+            row_width,
+            1,
+            rows_per_block,
+            rows,
+        )
     }
 
     /// Validates dimension-major bytes using caller-supplied layout geometry.
@@ -288,6 +366,27 @@ impl PdxMatrix {
         row_count: usize,
         encoded: &[u8],
     ) -> Result<Self, PdxError> {
+        Self::from_encoded_bytes_with_rows_per_block(
+            scheme,
+            dimension,
+            row_count,
+            PDX_ROWS_PER_BLOCK,
+            encoded,
+        )
+    }
+
+    /// Validates dimension-major bytes with caller-selected block geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdxError`] for invalid geometry, payload, or block size.
+    pub fn from_encoded_bytes_with_rows_per_block(
+        scheme: QuantScheme,
+        dimension: usize,
+        row_count: usize,
+        rows_per_block: usize,
+        encoded: &[u8],
+    ) -> Result<Self, PdxError> {
         if dimension == 0 {
             return Err(PdxError::ZeroDimension);
         }
@@ -302,20 +401,27 @@ impl PdxMatrix {
                 actual: encoded.len(),
             });
         }
-        let blocks = build_blocks(row_count, row_width, element_width)?;
-        let matrix = Self {
+        let blocks = build_blocks(row_count, row_width, element_width, rows_per_block)?;
+        let mut matrix = Self {
             scheme,
             dimension,
             row_count,
             row_width,
             element_width,
+            rows_per_block,
             blocks,
             encoded: encoded.to_vec(),
+            f32_metadata: Vec::new(),
+            f32_first_non_finite: None,
         };
         let rows = matrix.decode_row_bytes()?;
         if scheme == QuantScheme::Bit4 {
             validate_bit4_padding(&rows, dimension, row_width)?;
         }
+        let (metadata, first_non_finite) =
+            build_f32_metadata(scheme, dimension, &matrix.blocks, &rows)?;
+        matrix.f32_metadata = metadata;
+        matrix.f32_first_non_finite = first_non_finite;
         Ok(matrix)
     }
 
@@ -335,6 +441,12 @@ impl PdxMatrix {
     #[must_use]
     pub const fn row_count(&self) -> usize {
         self.row_count
+    }
+
+    /// Returns the runtime-selected maximum rows in each PDX block.
+    #[must_use]
+    pub const fn rows_per_block(&self) -> usize {
+        self.rows_per_block
     }
 
     /// Returns stable block descriptors in row order.
@@ -410,12 +522,98 @@ impl PdxMatrix {
         Ok(rows)
     }
 
+    pub(crate) fn decode_f32_range(
+        &self,
+        rows: std::ops::Range<usize>,
+    ) -> Result<Vec<f32>, PdxError> {
+        self.require_scheme(QuantScheme::F32)?;
+        let bytes = self.decode_row_byte_range(rows)?;
+        bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| {
+                let array = <[u8; 4]>::try_from(chunk).map_err(|_| PdxError::CorruptBlock)?;
+                Ok(f32::from_bits(u32::from_le_bytes(array)))
+            })
+            .collect()
+    }
+
+    pub(crate) fn decode_f16_range(
+        &self,
+        rows: std::ops::Range<usize>,
+    ) -> Result<Vec<u16>, PdxError> {
+        self.require_scheme(QuantScheme::F16)?;
+        let bytes = self.decode_row_byte_range(rows)?;
+        bytes
+            .chunks_exact(std::mem::size_of::<u16>())
+            .map(|chunk| {
+                let array = <[u8; 2]>::try_from(chunk).map_err(|_| PdxError::CorruptBlock)?;
+                Ok(u16::from_le_bytes(array))
+            })
+            .collect()
+    }
+
+    pub(crate) fn decode_int8_range(
+        &self,
+        rows: std::ops::Range<usize>,
+    ) -> Result<Vec<i8>, PdxError> {
+        self.require_scheme(QuantScheme::Int8)?;
+        Ok(self
+            .decode_row_byte_range(rows)?
+            .into_iter()
+            .map(|value| value as i8)
+            .collect())
+    }
+
+    pub(crate) fn decode_bit4_range(
+        &self,
+        rows: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, PdxError> {
+        self.require_scheme(QuantScheme::Bit4)?;
+        let decoded = self.decode_row_byte_range(rows)?;
+        validate_bit4_padding(&decoded, self.dimension, self.row_width)?;
+        Ok(decoded)
+    }
+
+    pub(crate) fn f32_first_non_finite(&self) -> Option<usize> {
+        self.f32_first_non_finite
+    }
+
+    pub(crate) fn f32_extrema(&self, block_index: usize) -> Result<&[(u32, u32)], PdxError> {
+        self.require_scheme(QuantScheme::F32)?;
+        self.f32_metadata
+            .get(block_index)
+            .map(|metadata| metadata.extrema_bits.as_slice())
+            .ok_or(PdxError::CorruptBlock)
+    }
+
+    pub(crate) fn f32_column(&self, block_index: usize, column: usize) -> Result<&[u8], PdxError> {
+        self.require_scheme(QuantScheme::F32)?;
+        let block = self.blocks.get(block_index).ok_or(PdxError::CorruptBlock)?;
+        if column >= self.dimension {
+            return Err(PdxError::CorruptBlock);
+        }
+        let payload_offset =
+            usize::try_from(block.payload_offset).map_err(|_| PdxError::CorruptBlock)?;
+        let column_width = (block.row_count as usize)
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(PdxError::CorruptBlock)?;
+        let start = column
+            .checked_mul(column_width)
+            .and_then(|offset| payload_offset.checked_add(offset))
+            .ok_or(PdxError::CorruptBlock)?;
+        let end = start
+            .checked_add(column_width)
+            .ok_or(PdxError::CorruptBlock)?;
+        self.encoded.get(start..end).ok_or(PdxError::CorruptBlock)
+    }
+
     fn encode_row_bytes(
         scheme: QuantScheme,
         dimension: usize,
         row_count: usize,
         row_width: usize,
         element_width: usize,
+        rows_per_block: usize,
         rows: &[u8],
     ) -> Result<Self, PdxError> {
         let expected = row_count
@@ -427,7 +625,9 @@ impl PdxMatrix {
                 actual: rows.len(),
             });
         }
-        let blocks = build_blocks(row_count, row_width, element_width)?;
+        let blocks = build_blocks(row_count, row_width, element_width, rows_per_block)?;
+        let (f32_metadata, f32_first_non_finite) =
+            build_f32_metadata(scheme, dimension, &blocks, rows)?;
         let mut encoded = Vec::with_capacity(expected);
         for block in &blocks {
             let first_row =
@@ -461,8 +661,11 @@ impl PdxMatrix {
             row_count,
             row_width,
             element_width,
+            rows_per_block,
             blocks,
             encoded,
+            f32_metadata,
+            f32_first_non_finite,
         })
     }
 
@@ -539,6 +742,81 @@ impl PdxMatrix {
         }
         Ok(rows)
     }
+
+    fn decode_row_byte_range(&self, rows: std::ops::Range<usize>) -> Result<Vec<u8>, PdxError> {
+        if rows.start > rows.end || rows.end > self.row_count {
+            return Err(PdxError::CorruptBlock);
+        }
+        let output_rows = rows
+            .end
+            .checked_sub(rows.start)
+            .ok_or(PdxError::CorruptBlock)?;
+        let output_length = output_rows
+            .checked_mul(self.row_width)
+            .ok_or(PdxError::ArithmeticOverflow)?;
+        let mut decoded = vec![0_u8; output_length];
+        for block in &self.blocks {
+            let first_row = usize::try_from(block.first_row).map_err(|_| PdxError::CorruptBlock)?;
+            let block_rows = block.row_count as usize;
+            let block_end = first_row
+                .checked_add(block_rows)
+                .ok_or(PdxError::CorruptBlock)?;
+            let intersection_start = first_row.max(rows.start);
+            let intersection_end = block_end.min(rows.end);
+            if intersection_start >= intersection_end {
+                continue;
+            }
+            let payload_offset =
+                usize::try_from(block.payload_offset).map_err(|_| PdxError::CorruptBlock)?;
+            let payload_length =
+                usize::try_from(block.payload_length).map_err(|_| PdxError::CorruptBlock)?;
+            let payload_end = payload_offset
+                .checked_add(payload_length)
+                .ok_or(PdxError::CorruptBlock)?;
+            let payload = self
+                .encoded
+                .get(payload_offset..payload_end)
+                .ok_or(PdxError::CorruptBlock)?;
+            let columns = block.column_count as usize;
+            for column in 0..columns {
+                for row_id in intersection_start..intersection_end {
+                    let local_row = row_id
+                        .checked_sub(first_row)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let source = column
+                        .checked_mul(block_rows)
+                        .and_then(|offset| offset.checked_add(local_row))
+                        .and_then(|element| element.checked_mul(self.element_width))
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let source_end = source
+                        .checked_add(self.element_width)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let output_row = row_id
+                        .checked_sub(rows.start)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let target = output_row
+                        .checked_mul(self.row_width)
+                        .and_then(|offset| {
+                            column
+                                .checked_mul(self.element_width)
+                                .and_then(|column_offset| offset.checked_add(column_offset))
+                        })
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let target_end = target
+                        .checked_add(self.element_width)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let source = payload
+                        .get(source..source_end)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    let target = decoded
+                        .get_mut(target..target_end)
+                        .ok_or(PdxError::CorruptBlock)?;
+                    target.copy_from_slice(source);
+                }
+            }
+        }
+        Ok(decoded)
+    }
 }
 
 fn validate_scalar_rows(scalar_count: usize, dimension: usize) -> Result<usize, PdxError> {
@@ -584,17 +862,21 @@ fn build_blocks(
     row_count: usize,
     row_width: usize,
     element_width: usize,
+    rows_per_block: usize,
 ) -> Result<Vec<PdxBlock>, PdxError> {
+    if rows_per_block == 0 {
+        return Err(PdxError::ZeroRowsPerBlock);
+    }
     let column_count = row_width
         .checked_div(element_width)
         .ok_or(PdxError::ArithmeticOverflow)?;
     let column_count = u32::try_from(column_count).map_err(|_| PdxError::ArithmeticOverflow)?;
     let element_width = u32::try_from(element_width).map_err(|_| PdxError::ArithmeticOverflow)?;
-    let mut blocks = Vec::with_capacity(row_count.div_ceil(PDX_ROWS_PER_BLOCK));
+    let mut blocks = Vec::with_capacity(row_count.div_ceil(rows_per_block));
     let mut first_row = 0_usize;
     let mut payload_offset = 0_usize;
     while first_row < row_count {
-        let block_rows = (row_count - first_row).min(PDX_ROWS_PER_BLOCK);
+        let block_rows = (row_count - first_row).min(rows_per_block);
         let payload_length = block_rows
             .checked_mul(row_width)
             .ok_or(PdxError::ArithmeticOverflow)?;
@@ -617,6 +899,68 @@ fn build_blocks(
             .ok_or(PdxError::ArithmeticOverflow)?;
     }
     Ok(blocks)
+}
+
+fn build_f32_metadata(
+    scheme: QuantScheme,
+    dimension: usize,
+    blocks: &[PdxBlock],
+    rows: &[u8],
+) -> Result<(Vec<F32BlockMetadata>, Option<usize>), PdxError> {
+    if scheme != QuantScheme::F32 {
+        return Ok((Vec::new(), None));
+    }
+    let row_width = dimension
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(PdxError::ArithmeticOverflow)?;
+    let mut metadata = Vec::with_capacity(blocks.len());
+    let mut first_non_finite: Option<usize> = None;
+    for block in blocks {
+        let first_row =
+            usize::try_from(block.first_row).map_err(|_| PdxError::ArithmeticOverflow)?;
+        let block_rows = block.row_count as usize;
+        let mut extrema_bits = Vec::with_capacity(dimension);
+        for column in 0..dimension {
+            let mut minimum = f32::INFINITY;
+            let mut maximum = f32::NEG_INFINITY;
+            for local_row in 0..block_rows {
+                let row_id = first_row
+                    .checked_add(local_row)
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let scalar_index = row_id
+                    .checked_mul(dimension)
+                    .and_then(|offset| offset.checked_add(column))
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let byte_start = row_id
+                    .checked_mul(row_width)
+                    .and_then(|offset| {
+                        column
+                            .checked_mul(std::mem::size_of::<f32>())
+                            .and_then(|column_offset| offset.checked_add(column_offset))
+                    })
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let byte_end = byte_start
+                    .checked_add(std::mem::size_of::<f32>())
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let bytes = rows
+                    .get(byte_start..byte_end)
+                    .ok_or(PdxError::CorruptBlock)?;
+                let array = <[u8; 4]>::try_from(bytes).map_err(|_| PdxError::CorruptBlock)?;
+                let value = f32::from_bits(u32::from_le_bytes(array));
+                if value.is_finite() {
+                    minimum = minimum.min(value);
+                    maximum = maximum.max(value);
+                } else {
+                    first_non_finite = Some(
+                        first_non_finite.map_or(scalar_index, |current| current.min(scalar_index)),
+                    );
+                }
+            }
+            extrema_bits.push((minimum.to_bits(), maximum.to_bits()));
+        }
+        metadata.push(F32BlockMetadata { extrema_bits });
+    }
+    Ok((metadata, first_non_finite))
 }
 
 fn validate_bit4_padding(rows: &[u8], dimension: usize, row_width: usize) -> Result<(), PdxError> {
@@ -863,6 +1207,7 @@ mod tests {
             },
             PdxError::RowCountTooLarge { actual: usize::MAX },
             PdxError::ArithmeticOverflow,
+            PdxError::ZeroRowsPerBlock,
             PdxError::CorruptBlock,
         ] {
             assert!(!error.to_string().is_empty());
@@ -901,5 +1246,36 @@ mod tests {
         let mut corrupt = PdxMatrix::encode_int8(&[1_i8, 2], 1).expect("valid PDX");
         corrupt.blocks[0].payload_offset = u64::MAX;
         assert_eq!(corrupt.decode_int8(), Err(PdxError::CorruptBlock));
+    }
+
+    #[test]
+    fn runtime_block_geometry_supports_64_and_128_without_recompilation() {
+        let dimension = 5_usize;
+        let row_count = 257_usize;
+        let rows = (0..row_count * dimension)
+            .map(|index| index.wrapping_mul(13) as i8)
+            .collect::<Vec<_>>();
+        for rows_per_block in [64, 128] {
+            let pdx = PdxMatrix::encode_int8_with_rows_per_block(&rows, dimension, rows_per_block)
+                .expect("runtime block geometry");
+            assert_eq!(pdx.rows_per_block(), rows_per_block);
+            assert_eq!(pdx.blocks().len(), row_count.div_ceil(rows_per_block));
+            assert_eq!(pdx.decode_int8().expect("round trip"), rows);
+            assert_eq!(
+                PdxMatrix::from_encoded_bytes_with_rows_per_block(
+                    QuantScheme::Int8,
+                    dimension,
+                    row_count,
+                    rows_per_block,
+                    pdx.encoded_bytes(),
+                )
+                .expect("runtime decode"),
+                pdx
+            );
+        }
+        assert_eq!(
+            PdxMatrix::encode_int8_with_rows_per_block(&rows, dimension, 0),
+            Err(PdxError::ZeroRowsPerBlock)
+        );
     }
 }

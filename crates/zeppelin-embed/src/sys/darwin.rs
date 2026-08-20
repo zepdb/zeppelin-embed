@@ -25,6 +25,10 @@ pub enum SysError {
     RangeOverflow,
     /// `mincore` rejected the supplied memory range.
     Mincore(io::Error),
+    /// `sysctlbyname(hw.perflevel0.physicalcpu)` failed.
+    PerformanceCoreCount(io::Error),
+    /// Darwin returned a zero or malformed performance-core count.
+    InvalidPerformanceCoreCount,
 }
 
 impl fmt::Display for SysError {
@@ -41,6 +45,15 @@ impl fmt::Display for SysError {
             Self::PageSize(error) => write!(formatter, "could not determine VM page size: {error}"),
             Self::RangeOverflow => formatter.write_str("memory range overflows the address space"),
             Self::Mincore(error) => write!(formatter, "mincore failed: {error}"),
+            Self::PerformanceCoreCount(error) => {
+                write!(
+                    formatter,
+                    "could not read physical performance-core count: {error}"
+                )
+            }
+            Self::InvalidPerformanceCoreCount => {
+                formatter.write_str("Darwin returned an invalid physical performance-core count")
+            }
         }
     }
 }
@@ -51,8 +64,9 @@ impl std::error::Error for SysError {
             Self::BarrierFsync(error)
             | Self::FullFsync(error)
             | Self::PageSize(error)
-            | Self::Mincore(error) => Some(error),
-            Self::TaskVmInfo(_) | Self::RangeOverflow => None,
+            | Self::Mincore(error)
+            | Self::PerformanceCoreCount(error) => Some(error),
+            Self::TaskVmInfo(_) | Self::RangeOverflow | Self::InvalidPerformanceCoreCount => None,
         }
     }
 }
@@ -161,6 +175,36 @@ pub fn phys_footprint() -> Result<u64, SysError> {
     task_memory_info().map(|info| info.phys_footprint)
 }
 
+/// Reads the physical performance-core count from Darwin's performance level
+/// zero topology.
+///
+/// # Errors
+///
+/// Returns [`SysError::PerformanceCoreCount`] when `sysctlbyname` fails and
+/// [`SysError::InvalidPerformanceCoreCount`] for zero or malformed output.
+pub fn physical_performance_core_count() -> Result<usize, SysError> {
+    let mut count = 0_u32;
+    let mut length = std::mem::size_of::<u32>();
+    let result = unsafe {
+        // SAFETY: the name is a static nul-terminated C string, `count` is a
+        // writable integer, and `length` advertises its exact byte size.
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&raw mut count).cast::<libc::c_void>(),
+            &raw mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result == -1 {
+        return Err(SysError::PerformanceCoreCount(io::Error::last_os_error()));
+    }
+    if count == 0 || length != std::mem::size_of::<u32>() {
+        return Err(SysError::InvalidPerformanceCoreCount);
+    }
+    usize::try_from(count).map_err(|_| SysError::InvalidPerformanceCoreCount)
+}
+
 /// Counts resident virtual-memory pages intersecting a byte slice.
 ///
 /// The supplied slice may begin or end between page boundaries. The wrapper rounds the queried
@@ -218,7 +262,10 @@ pub fn mincore_resident(range: &[u8]) -> Result<usize, SysError> {
     clippy::unwrap_used
 )]
 mod tests {
-    use super::{SysError, barrier_fsync, full_fsync, mincore_resident, phys_footprint};
+    use super::{
+        SysError, barrier_fsync, full_fsync, mincore_resident, phys_footprint,
+        physical_performance_core_count,
+    };
     use std::os::fd::AsRawFd;
     use std::slice;
 
@@ -250,6 +297,22 @@ mod tests {
     #[test]
     fn phys_footprint_is_nonzero_for_current_task() -> Result<(), Box<dyn std::error::Error>> {
         assert!(phys_footprint()? > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn physical_p_core_count_is_within_logical_cpu_count() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let physical = physical_performance_core_count()?;
+        let logical = std::thread::available_parallelism()?.get();
+        assert!(
+            physical >= 1,
+            "assertion failed: physical P-core count was {physical}"
+        );
+        assert!(
+            physical <= logical,
+            "physical P-core count {physical} exceeded logical CPU count {logical}"
+        );
         Ok(())
     }
 
