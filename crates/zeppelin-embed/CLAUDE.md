@@ -82,6 +82,13 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   nibble vectors and applies `2*dot - 15*query_sum` once per row. The persisted
   MSB-first row layout and the public coordinate-order `dot_bit4` kernel remain
   unchanged; provenance is `tasks/evidence/opt-ledger/B1-bit4.md`.
+- Repeated Bit4 estimation uses one validated prepared batch dispatch. The
+  retained DotProd microkernel interleaves four rows over 64 dimensions,
+  shares prepared-query loads, reduces four row sums with pairwise ADDP, and
+  applies correction in f64x2 pairs. Query scale includes the exact power-of-two
+  `0.5` factor at preparation. The coordinate-order `dot_bit4_batch` entry also
+  scores four rows per call without changing its public semantics. Provenance
+  is `tasks/evidence/opt-ledger/bit4-parity.md`.
 
 ## Task 04 quantization and recall invariants
 

@@ -19,7 +19,7 @@
 //! denominator it cancels, leaving `c * <y,q_hat>`. The companion norm is kept
 //! for reconstruction/error bounds and future distance bookkeeping.
 
-use crate::kernels::{MAX_DOT_I8_DIMENSION, dot_bit4_prepared};
+use crate::kernels::{MAX_DOT_I8_DIMENSION, dot_bit4_prepared, score_bit4_prepared_batch};
 
 use super::QuantError;
 
@@ -64,6 +64,10 @@ impl Bit4Factors {
     pub fn reconstruction_error_bound(self) -> f64 {
         std::f64::consts::SQRT_2 * self.norm()
     }
+
+    pub(crate) const fn scoring_parts(self) -> (f32, f32) {
+        (self.scale, self.normalized_correction)
+    }
 }
 
 /// Query-side signed-byte representation prepared once and reused per row.
@@ -77,7 +81,7 @@ pub struct Bit4Query {
     /// Even coordinates followed by odd coordinates in each 32-value block.
     codes: Vec<i8>,
     code_sum: i32,
-    scale: f64,
+    scale_half: f64,
 }
 
 impl Bit4Query {
@@ -269,7 +273,7 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
         return Ok(Bit4Query {
             codes: vec![0_i8; q.len()],
             code_sum: 0,
-            scale: 0.0,
+            scale_half: 0.0,
         });
     }
 
@@ -292,7 +296,7 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
     Ok(Bit4Query {
         codes,
         code_sum,
-        scale,
+        scale_half: scale * 0.5,
     })
 }
 
@@ -322,7 +326,55 @@ pub fn est_dot_bit4(
         return Ok(0.0);
     }
     let integer_dot = dot_bit4_prepared(&query.codes, query.code_sum, codes);
-    Ok((factors.correction() * query.scale * 0.5 * f64::from(integer_dot)) as f32)
+    Ok((factors.correction() * query.scale_half * f64::from(integer_dot)) as f32)
+}
+
+/// Estimates dot products for contiguous packed four-bit rows in one dispatch.
+///
+/// `factors` and `out` contain one entry per row. Row validation is performed
+/// before entering the dispatched microkernel, and the scalar table remains
+/// the bit-exact behavioral oracle on machines without the selected SIMD tier.
+///
+/// # Errors
+///
+/// Returns [`QuantError::OutputLength`] for a factor/output count mismatch,
+/// [`QuantError::CodeLength`] for a batch byte-length mismatch, or
+/// [`QuantError::NonZeroPadding`] for a non-canonical odd-dimension row.
+pub fn est_dot_bit4_batch(
+    query: &Bit4Query,
+    codes: &[u8],
+    factors: &[Bit4Factors],
+    out: &mut [f32],
+) -> Result<(), QuantError> {
+    if out.len() != factors.len() {
+        return Err(QuantError::OutputLength {
+            expected: factors.len(),
+            actual: out.len(),
+        });
+    }
+    let row_bytes = query.codes.len().div_ceil(CODES_PER_BYTE);
+    let expected = row_bytes.saturating_mul(factors.len());
+    if codes.len() != expected {
+        return Err(QuantError::CodeLength {
+            expected,
+            actual: codes.len(),
+        });
+    }
+    if !query.codes.len().is_multiple_of(CODES_PER_BYTE) {
+        for row in codes.chunks_exact(row_bytes) {
+            validate_padding(row, query.codes.len())?;
+        }
+    }
+    score_bit4_prepared_batch(
+        &query.codes,
+        query.code_sum,
+        query.scale_half,
+        codes,
+        query.codes.len(),
+        factors,
+        out,
+    );
+    Ok(())
 }
 
 fn interleave_bit4_query_blocks(codes: &[i8]) -> Vec<i8> {

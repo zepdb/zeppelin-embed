@@ -25,6 +25,7 @@ pub(super) fn table() -> KernelTable {
         dot_bit4_prepared: scalar::dot_bit4_prepared,
         dot_bit2_batch: scalar::dot_bit2_batch,
         dot_bit4_batch: scalar::dot_bit4_batch,
+        score_bit4_prepared_batch: scalar::score_bit4_prepared_batch,
     }
 }
 

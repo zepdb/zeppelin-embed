@@ -199,6 +199,8 @@ type HammingU1BatchFn = fn(&[u8], &[u8], usize, &mut [u32]);
 type DotPackedFn = fn(&[i8], &[u8]) -> i32;
 type DotBit4PreparedFn = fn(&[i8], i32, &[u8]) -> i32;
 type DotPackedBatchFn = fn(&[i8], &[u8], usize, &mut [i32]);
+type ScoreBit4PreparedBatchFn =
+    fn(&[i8], i32, f64, &[u8], usize, &[crate::quant::Bit4Factors], &mut [f32]);
 
 #[derive(Clone, Copy)]
 struct KernelTable {
@@ -215,6 +217,7 @@ struct KernelTable {
     dot_bit4_prepared: DotBit4PreparedFn,
     dot_bit2_batch: DotPackedBatchFn,
     dot_bit4_batch: DotPackedBatchFn,
+    score_bit4_prepared_batch: ScoreBit4PreparedBatchFn,
 }
 
 /// One concrete runtime dispatch table.
@@ -330,6 +333,28 @@ impl KernelVariant {
     /// Scores a signed-byte query against contiguous packed four-bit rows.
     pub fn dot_bit4_batch(self, q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
         (self.table.dot_bit4_batch)(q, rows, d, out);
+    }
+
+    /// Scores a prepared four-bit query and row factors through this table.
+    #[doc(hidden)]
+    pub fn score_bit4_prepared_batch(
+        self,
+        query: (&[i8], i32, f64),
+        rows: &[u8],
+        d: usize,
+        factors: &[crate::quant::Bit4Factors],
+        out: &mut [f32],
+    ) {
+        let (q, query_sum, query_scale_half) = query;
+        (self.table.score_bit4_prepared_batch)(
+            q,
+            query_sum,
+            query_scale_half,
+            rows,
+            d,
+            factors,
+            out,
+        );
     }
 }
 
@@ -462,6 +487,26 @@ pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
 
 pub(crate) fn dot_bit4_prepared(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
     (dispatch::active_table().dot_bit4_prepared)(q, query_sum, codes)
+}
+
+pub(crate) fn score_bit4_prepared_batch(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[u8],
+    d: usize,
+    factors: &[crate::quant::Bit4Factors],
+    out: &mut [f32],
+) {
+    (dispatch::active_table().score_bit4_prepared_batch)(
+        q,
+        query_sum,
+        query_scale_half,
+        rows,
+        d,
+        factors,
+        out,
+    );
 }
 
 /// Scores one signed-byte query against contiguous packed two-bit rows.
