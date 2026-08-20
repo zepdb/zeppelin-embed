@@ -84,10 +84,18 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   factors. Queries use a symmetric signed-byte representation prepared once;
   row scoring is one native i8 dot plus the precomputed query-code sum.
 - Bit1 is MSB-first and scores directly from packed bytes without an expanded
-  row. Identity rotation remains the v1 implementation, but it is not a safe
-  universal default: the 512 x 768 heavy-tailed recall fixture did not reach
-  0.95 recall@10 through 16x. Require per-model recall evidence before enabling
-  Bit1; do not infer safety from the uniform fixture.
+  row. Identity rotation remains the v1 implementation, but it is NOT a safe
+  default at any corpus size that matters. Measured at 100,000 x 768, Bit1
+  fails to reach 0.95 recall@10 within a 16x oversample budget on four of five
+  distributions; its worst case is anisotropic 0.5406. Do not enable Bit1
+  without per-model recall evidence at the real corpus size.
+- Recall is strongly corpus-size dependent and small fixtures invert the
+  conclusion. At 512 rows Bit1 reaches 0.9938 on uniform and heavy-tailed
+  looks like the worst case; at 100,000 rows uniform has collapsed to 0.6906
+  while heavy-tailed is FLAT at 0.9500 and is the best case. The danger
+  distribution is anisotropic (0.9812 -> 0.5406), which is what the RaBitQ
+  near-isotropy assumption predicts and what a random rotation would target.
+  Never quote a recall number without its row count.
 - Recall byte counters include every stored code and factor byte read in the
   coarse stage plus every f32 corpus-row byte read in exact rescore. Query bytes
   and output metadata are common across schemes and excluded. No Task 04
