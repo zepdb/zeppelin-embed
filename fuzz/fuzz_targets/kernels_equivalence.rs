@@ -145,16 +145,10 @@ fuzz_target!(|data: &[u8]| {
             (f32::from(fuzz_byte(payload, index.wrapping_mul(11).wrapping_add(1))) - 127.5) / 16.0
         })
         .collect();
-    let bit2_codes: Vec<u8> = (0..len.div_ceil(4))
-        .map(|index| fuzz_byte(payload, index.wrapping_mul(17).wrapping_add(5)))
-        .collect();
     let bit4_codes: Vec<u8> = (0..len.div_ceil(2))
         .map(|index| fuzz_byte(payload, index.wrapping_mul(19).wrapping_add(9)))
         .collect();
     let row_count = usize::from(fuzz_byte(payload, 0) % 4) + 1;
-    let bit2_rows: Vec<u8> = (0..bit2_codes.len() * row_count)
-        .map(|index| fuzz_byte(payload, index.wrapping_mul(23).wrapping_add(11)))
-        .collect();
     let bit4_rows: Vec<u8> = (0..bit4_codes.len() * row_count)
         .map(|index| fuzz_byte(payload, index.wrapping_mul(29).wrapping_add(13)))
         .collect();
@@ -164,10 +158,7 @@ fuzz_target!(|data: &[u8]| {
     let expected_hamming = scalar.hamming_u1(&hamming_a, &hamming_b);
     let expected_f16 = scalar.dot_f16(&f16_a, &f16_b);
     let expected_f32 = scalar.dot_f32(&f32_a, &f32_b);
-    let expected_bit2 = scalar.dot_bit2(&i8_a, &bit2_codes);
     let expected_bit4 = scalar.dot_bit4(&i8_a, &bit4_codes);
-    let mut expected_bit2_batch = vec![0_i32; row_count];
-    scalar.dot_bit2_batch(&i8_a, &bit2_rows, len, &mut expected_bit2_batch);
     let mut expected_bit4_batch = vec![0_i32; row_count];
     scalar.dot_bit4_batch(&i8_a, &bit4_rows, len, &mut expected_bit4_batch);
     for variant in KernelVariant::available() {
@@ -185,18 +176,7 @@ fuzz_target!(|data: &[u8]| {
             f32_matches(&f32_a, &f32_b, expected_f32, actual_f32),
             "f32 backward-error bound failed: expected={expected_f32:?} actual={actual_f32:?}"
         );
-        assert_eq!(variant.dot_bit2(&i8_a, &bit2_codes), expected_bit2);
         assert_eq!(variant.dot_bit4(&i8_a, &bit4_codes), expected_bit4);
-
-        let mut actual_bit2_batch = vec![0_i32; row_count];
-        variant.dot_bit2_batch(&i8_a, &bit2_rows, len, &mut actual_bit2_batch);
-        assert_eq!(actual_bit2_batch, expected_bit2_batch);
-        for (row, &actual) in bit2_rows
-            .chunks_exact(bit2_codes.len())
-            .zip(&actual_bit2_batch)
-        {
-            assert_eq!(actual, variant.dot_bit2(&i8_a, row));
-        }
 
         let mut actual_bit4_batch = vec![0_i32; row_count];
         variant.dot_bit4_batch(&i8_a, &bit4_rows, len, &mut actual_bit4_batch);

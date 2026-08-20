@@ -1,10 +1,8 @@
 //! Full coarse-scoring fixtures shared by the scheme-level benchmark and tests.
 
 use zeppelin_embed::quant::{
-    Bit1Factors, Bit1Query, Bit2Factors, Bit2Query, Bit4Factors, Bit4Query, Int8Query, Int8Vec,
-    QuantError, QuantScheme, dot_int8_query, est_dot_bit1, est_dot_bit2, est_dot_bit4,
-    prepare_bit1_query, prepare_bit2_query, prepare_bit4_query, prepare_int8_query, quantize_bit1,
-    quantize_bit2, quantize_bit4, quantize_int8,
+    Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
+    est_dot_bit4, prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8,
 };
 
 /// Deterministic validation failure from the scheme-level benchmark seam.
@@ -109,12 +107,8 @@ pub const WIDE_LOAD_MEMORY_CEILING_GBPS: f64 =
 /// User-selected subset of coarse quantization schemes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemeSelection {
-    /// Run Bit1, Bit2, Bit4, and Int8 in that order.
+    /// Run Bit4 and Int8 in that order.
     All,
-    /// Run only Bit1.
-    Bit1,
-    /// Run only Bit2.
-    Bit2,
     /// Run only Bit4.
     Bit4,
     /// Run only Int8.
@@ -126,14 +120,7 @@ impl SchemeSelection {
     #[must_use]
     pub fn schemes(self) -> Vec<QuantScheme> {
         match self {
-            Self::All => vec![
-                QuantScheme::Bit1,
-                QuantScheme::Bit2,
-                QuantScheme::Bit4,
-                QuantScheme::Int8,
-            ],
-            Self::Bit1 => vec![QuantScheme::Bit1],
-            Self::Bit2 => vec![QuantScheme::Bit2],
+            Self::All => vec![QuantScheme::Bit4, QuantScheme::Int8],
             Self::Bit4 => vec![QuantScheme::Bit4],
             Self::Int8 => vec![QuantScheme::Int8],
         }
@@ -239,8 +226,6 @@ fn parse_seed(flag: &str, value: &str) -> Result<u64, SchemeLevelError> {
 fn parse_scheme(flag: &str, value: &str) -> Result<SchemeSelection, SchemeLevelError> {
     match value {
         "all" => Ok(SchemeSelection::All),
-        "bit1" => Ok(SchemeSelection::Bit1),
-        "bit2" => Ok(SchemeSelection::Bit2),
         "bit4" => Ok(SchemeSelection::Bit4),
         "int8" => Ok(SchemeSelection::Int8),
         _ => Err(SchemeLevelError::InvalidValue {
@@ -271,12 +256,6 @@ pub const fn scoring_path(
 ) -> ScoringPath {
     use zeppelin_embed::kernels::KernelArm;
     match scheme {
-        QuantScheme::Bit1 => ScoringPath {
-            label: "scalar sign extraction (no runtime-dispatched Bit1 SIMD slot)",
-            native_runtime_dispatched_simd: false,
-            expanded_row_materialized: false,
-            unpack_bytes_per_row: 0,
-        },
         QuantScheme::Int8 => match arm {
             KernelArm::Scalar => scalar_path("scalar Int8 dot plus affine scale/offset correction"),
             KernelArm::Neon => {
@@ -285,17 +264,6 @@ pub const fn scoring_path(
             KernelArm::Avx2 => {
                 native_path("runtime-dispatched AVX2 Int8 dot plus affine scale/offset correction")
             }
-        },
-        QuantScheme::Bit2 => match arm {
-            KernelArm::Neon => {
-                native_path("runtime-dispatched NEON packed Bit2 dot plus RaBitQ correction")
-            }
-            KernelArm::Scalar => {
-                scalar_path("scalar packed Bit2 extraction plus RaBitQ correction")
-            }
-            KernelArm::Avx2 => scalar_path(
-                "scalar packed Bit2 extraction in the AVX2 table plus RaBitQ correction",
-            ),
         },
         QuantScheme::Bit4 => match arm {
             KernelArm::Neon => {
@@ -520,8 +488,6 @@ impl SchemeReport {
 pub const fn scheme_label(scheme: QuantScheme) -> &'static str {
     match scheme {
         QuantScheme::Int8 => "int8",
-        QuantScheme::Bit1 => "bit1",
-        QuantScheme::Bit2 => "bit2",
         QuantScheme::Bit4 => "bit4",
         QuantScheme::F32 => "f32",
         QuantScheme::F16 => "f16",
@@ -559,10 +525,6 @@ pub struct EncodedBufferBytes {
 pub enum PreparedQuery {
     /// Prepared affine Int8 query.
     Int8(Int8Query),
-    /// Prepared one-bit RaBitQ query.
-    Bit1(Bit1Query),
-    /// Prepared two-bit Extended-RaBitQ query.
-    Bit2(Bit2Query),
     /// Prepared four-bit Extended-RaBitQ query.
     Bit4(Bit4Query),
 }
@@ -577,8 +539,6 @@ impl PreparedQuery {
     pub fn new(scheme: QuantScheme, query: &[f32], seed: u64) -> Result<Self, SchemeLevelError> {
         match scheme {
             QuantScheme::Int8 => Ok(Self::Int8(prepare_int8_query(query)?)),
-            QuantScheme::Bit1 => Ok(Self::Bit1(prepare_bit1_query(query, seed)?)),
-            QuantScheme::Bit2 => Ok(Self::Bit2(prepare_bit2_query(query, seed)?)),
             QuantScheme::Bit4 => Ok(Self::Bit4(prepare_bit4_query(query, seed)?)),
             QuantScheme::F32 | QuantScheme::F16 => Err(SchemeLevelError::UnsupportedScheme(scheme)),
         }
@@ -593,18 +553,6 @@ pub enum EncodedCorpus {
         dimension: usize,
         codes: Vec<i8>,
         factors: Vec<(f32, f32)>,
-    },
-    /// Packed one-bit rows and RaBitQ factors.
-    Bit1 {
-        dimension: usize,
-        codes: Vec<u8>,
-        factors: Vec<Bit1Factors>,
-    },
-    /// Packed two-bit rows and Extended-RaBitQ factors.
-    Bit2 {
-        dimension: usize,
-        codes: Vec<u8>,
-        factors: Vec<Bit2Factors>,
     },
     /// Packed four-bit rows and Extended-RaBitQ factors.
     Bit4 {
@@ -645,36 +593,6 @@ impl EncodedCorpus {
                     factors.push(quantize_int8(row, &mut codes[start..])?);
                 }
                 Ok(Self::Int8 {
-                    dimension,
-                    codes,
-                    factors,
-                })
-            }
-            QuantScheme::Bit1 => {
-                let stride = dimension.div_ceil(8);
-                let mut codes = Vec::with_capacity(values.len() / dimension * stride);
-                let mut factors = Vec::with_capacity(values.len() / dimension);
-                for row in values.chunks_exact(dimension) {
-                    let start = codes.len();
-                    codes.resize(start + stride, 0_u8);
-                    factors.push(quantize_bit1(row, &mut codes[start..])?);
-                }
-                Ok(Self::Bit1 {
-                    dimension,
-                    codes,
-                    factors,
-                })
-            }
-            QuantScheme::Bit2 => {
-                let stride = dimension.div_ceil(4);
-                let mut codes = Vec::with_capacity(values.len() / dimension * stride);
-                let mut factors = Vec::with_capacity(values.len() / dimension);
-                for row in values.chunks_exact(dimension) {
-                    let start = codes.len();
-                    codes.resize(start + stride, 0_u8);
-                    factors.push(quantize_bit2(row, &mut codes[start..])?);
-                }
-                Ok(Self::Bit2 {
                     dimension,
                     codes,
                     factors,
@@ -746,8 +664,6 @@ impl EncodedCorpus {
     pub fn rows(&self) -> usize {
         match self {
             Self::Int8 { factors, .. } => factors.len(),
-            Self::Bit1 { factors, .. } => factors.len(),
-            Self::Bit2 { factors, .. } => factors.len(),
             Self::Bit4 { factors, .. } => factors.len(),
         }
     }
@@ -757,14 +673,6 @@ impl EncodedCorpus {
     pub fn encoded_buffer_bytes(&self) -> EncodedBufferBytes {
         let (code_bytes, factor_bytes) = match self {
             Self::Int8 { codes, factors, .. } => (
-                std::mem::size_of_val(codes.as_slice()),
-                std::mem::size_of_val(factors.as_slice()),
-            ),
-            Self::Bit1 { codes, factors, .. } => (
-                std::mem::size_of_val(codes.as_slice()),
-                std::mem::size_of_val(factors.as_slice()),
-            ),
-            Self::Bit2 { codes, factors, .. } => (
                 std::mem::size_of_val(codes.as_slice()),
                 std::mem::size_of_val(factors.as_slice()),
             ),
@@ -825,38 +733,6 @@ impl EncodedCorpus {
                             offset,
                         },
                     )?;
-                }
-            }
-            (
-                Self::Bit1 {
-                    dimension,
-                    codes,
-                    factors,
-                },
-                PreparedQuery::Bit1(query),
-            ) => {
-                for ((codes, &factors), score) in codes
-                    .chunks_exact(dimension.div_ceil(8))
-                    .zip(factors)
-                    .zip(output.iter_mut())
-                {
-                    *score = est_dot_bit1(query, codes, factors)?;
-                }
-            }
-            (
-                Self::Bit2 {
-                    dimension,
-                    codes,
-                    factors,
-                },
-                PreparedQuery::Bit2(query),
-            ) => {
-                for ((codes, &factors), score) in codes
-                    .chunks_exact(dimension.div_ceil(4))
-                    .zip(factors)
-                    .zip(output.iter_mut())
-                {
-                    *score = est_dot_bit2(query, codes, factors)?;
                 }
             }
             (
@@ -936,48 +812,6 @@ fn expand_templates(
                 factors.push(copy_factor(&template_factors, template_index)?);
             }
             Ok(EncodedCorpus::Int8 {
-                dimension,
-                codes,
-                factors,
-            })
-        }
-        EncodedCorpus::Bit1 {
-            dimension,
-            codes: templates,
-            factors: template_factors,
-        } => {
-            let stride = dimension.div_ceil(8);
-            let (codes, factors) = expand_packed_templates(
-                &templates,
-                &template_factors,
-                rows,
-                stride,
-                trailing_mask(dimension, 8),
-                1,
-                random,
-            )?;
-            Ok(EncodedCorpus::Bit1 {
-                dimension,
-                codes,
-                factors,
-            })
-        }
-        EncodedCorpus::Bit2 {
-            dimension,
-            codes: templates,
-            factors: template_factors,
-        } => {
-            let stride = dimension.div_ceil(4);
-            let (codes, factors) = expand_packed_templates(
-                &templates,
-                &template_factors,
-                rows,
-                stride,
-                trailing_mask(dimension, 4),
-                2,
-                random,
-            )?;
-            Ok(EncodedCorpus::Bit2 {
                 dimension,
                 codes,
                 factors,

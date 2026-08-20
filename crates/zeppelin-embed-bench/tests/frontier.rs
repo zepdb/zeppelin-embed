@@ -61,12 +61,7 @@ fn scheme_level_scoring_matches_production_entry_points_and_measures_actual_buff
     ];
     let query = [0.8_f32, -0.7, 0.6, -0.5, 0.4, -0.3, 0.2, -0.1];
 
-    for scheme in [
-        QuantScheme::Bit1,
-        QuantScheme::Bit2,
-        QuantScheme::Bit4,
-        QuantScheme::Int8,
-    ] {
+    for scheme in [QuantScheme::Bit4, QuantScheme::Int8] {
         let corpus = EncodedCorpus::encode(scheme, &values, DIMENSION)
             .expect("the benchmark corpus encodes");
         let prepared =
@@ -83,15 +78,11 @@ fn scheme_level_scoring_matches_production_entry_points_and_measures_actual_buff
 
         let buffers = corpus.encoded_buffer_bytes();
         let expected_code_bytes = match scheme {
-            QuantScheme::Bit1 => ROWS * DIMENSION.div_ceil(8),
-            QuantScheme::Bit2 => ROWS * DIMENSION.div_ceil(4),
             QuantScheme::Bit4 => ROWS * DIMENSION.div_ceil(2),
             QuantScheme::Int8 => ROWS * DIMENSION,
             QuantScheme::F32 | QuantScheme::F16 => unreachable!("test scheme set is coarse-only"),
         };
         let expected_factor_bytes = match scheme {
-            QuantScheme::Bit1 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit1Factors>(),
-            QuantScheme::Bit2 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit2Factors>(),
             QuantScheme::Bit4 => ROWS * std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>(),
             QuantScheme::Int8 => ROWS * std::mem::size_of::<(f32, f32)>(),
             QuantScheme::F32 | QuantScheme::F16 => unreachable!("test scheme set is coarse-only"),
@@ -111,9 +102,8 @@ fn direct_scheme_scores(
     seed: u64,
 ) -> Vec<f32> {
     use zeppelin_embed::quant::{
-        Int8Vec, QuantScheme, dot_int8_query, est_dot_bit1, est_dot_bit2, est_dot_bit4,
-        prepare_bit1_query, prepare_bit2_query, prepare_bit4_query, prepare_int8_query,
-        quantize_bit1, quantize_bit2, quantize_bit4, quantize_int8,
+        Int8Vec, QuantScheme, dot_int8_query, est_dot_bit4, prepare_bit4_query, prepare_int8_query,
+        quantize_bit4, quantize_int8,
     };
 
     values
@@ -132,18 +122,6 @@ fn direct_scheme_scores(
                     },
                 )
                 .expect("direct int8 score")
-            }
-            QuantScheme::Bit1 => {
-                let prepared = prepare_bit1_query(query, seed).expect("direct bit1 query");
-                let mut codes = vec![0_u8; dimension.div_ceil(8)];
-                let factors = quantize_bit1(row, &mut codes).expect("direct bit1 row");
-                est_dot_bit1(&prepared, &codes, factors).expect("direct bit1 score")
-            }
-            QuantScheme::Bit2 => {
-                let prepared = prepare_bit2_query(query, seed).expect("direct bit2 query");
-                let mut codes = vec![0_u8; dimension.div_ceil(4)];
-                let factors = quantize_bit2(row, &mut codes).expect("direct bit2 row");
-                est_dot_bit2(&prepared, &codes, factors).expect("direct bit2 score")
             }
             QuantScheme::Bit4 => {
                 let prepared = prepare_bit4_query(query, seed).expect("direct bit4 query");
@@ -189,7 +167,7 @@ fn scheme_level_cli_and_audit_metadata_are_fail_closed_and_machine_readable() {
 
     let tiny_values = [1.0_f32, -1.0, 0.5, -0.5, 0.25, -0.25, 0.125, -0.125];
     let tiny = zeppelin_embed_bench::scheme_level::EncodedCorpus::encode(
-        QuantScheme::Bit1,
+        QuantScheme::Bit4,
         &tiny_values,
         8,
     )
@@ -203,23 +181,13 @@ fn scheme_level_cli_and_audit_metadata_are_fail_closed_and_machine_readable() {
         }
     );
 
-    let bit1 = scoring_path(QuantScheme::Bit1, KernelArm::Neon);
-    assert!(!bit1.native_runtime_dispatched_simd);
-    assert!(bit1.label.contains("scalar sign extraction"));
-    assert!(!bit1.expanded_row_materialized);
-    assert_eq!(bit1.unpack_bytes_per_row, 0);
-
-    for scheme in [QuantScheme::Int8, QuantScheme::Bit2, QuantScheme::Bit4] {
+    for scheme in [QuantScheme::Int8, QuantScheme::Bit4] {
         let path = scoring_path(scheme, KernelArm::Neon);
         assert!(path.native_runtime_dispatched_simd, "{scheme:?} NEON path");
         assert!(!path.expanded_row_materialized);
         assert_eq!(path.unpack_bytes_per_row, 0);
     }
     assert!(scoring_path(QuantScheme::Int8, KernelArm::Avx2).native_runtime_dispatched_simd);
-    assert!(
-        !scoring_path(QuantScheme::Bit2, KernelArm::Avx2).native_runtime_dispatched_simd,
-        "the current AVX2 table routes packed two-bit scoring to scalar"
-    );
 
     for scheme in config.scheme.schemes() {
         let report = SchemeReport::not_measured(
@@ -262,12 +230,7 @@ fn scheme_level_streaming_fixture_is_scoreable_and_above_ceiling_is_a_defect() {
     let query = (0..DIMENSION)
         .map(|coordinate| (coordinate as f32 - 7.0) / 11.0)
         .collect::<Vec<_>>();
-    for scheme in [
-        QuantScheme::Bit1,
-        QuantScheme::Bit2,
-        QuantScheme::Bit4,
-        QuantScheme::Int8,
-    ] {
+    for scheme in [QuantScheme::Bit4, QuantScheme::Int8] {
         let corpus = EncodedCorpus::synthetic(scheme, ROWS, DIMENSION, SEED)
             .expect("streaming fixture builds through valid encoded templates");
         let same = EncodedCorpus::synthetic(scheme, ROWS, DIMENSION, SEED)
@@ -354,8 +317,6 @@ fn scheme_level_validation_failures_and_candidate_records_are_typed() {
         ]
     };
     for (name, expected) in [
-        ("bit1", SchemeSelection::Bit1),
-        ("bit2", SchemeSelection::Bit2),
         ("bit4", SchemeSelection::Bit4),
         ("int8", SchemeSelection::Int8),
     ] {
@@ -400,7 +361,7 @@ fn scheme_level_validation_failures_and_candidate_records_are_typed() {
         "--seed",
         "7",
         "--scheme",
-        "bit1",
+        "bit4",
         "--repeats",
         "1",
     ];
@@ -410,15 +371,15 @@ fn scheme_level_validation_failures_and_candidate_records_are_typed() {
     );
 
     assert_eq!(
-        EncodedCorpus::encode(QuantScheme::Bit1, &[1.0], 0).expect_err("zero dimension"),
+        EncodedCorpus::encode(QuantScheme::Bit4, &[1.0], 0).expect_err("zero dimension"),
         SchemeLevelError::ZeroDimension
     );
     assert!(matches!(
-        EncodedCorpus::encode(QuantScheme::Bit1, &[], 8),
+        EncodedCorpus::encode(QuantScheme::Bit4, &[], 8),
         Err(SchemeLevelError::RowShape { .. })
     ));
     assert!(matches!(
-        EncodedCorpus::encode(QuantScheme::Bit1, &[1.0, 2.0, 3.0], 2),
+        EncodedCorpus::encode(QuantScheme::Bit4, &[1.0, 2.0, 3.0], 2),
         Err(SchemeLevelError::RowShape { .. })
     ));
     assert!(matches!(
@@ -430,7 +391,7 @@ fn scheme_level_validation_failures_and_candidate_records_are_typed() {
         Err(SchemeLevelError::Quant(_))
     ));
     assert!(matches!(
-        EncodedCorpus::synthetic(QuantScheme::Bit1, 0, 8, 1),
+        EncodedCorpus::synthetic(QuantScheme::Bit4, 0, 8, 1),
         Err(SchemeLevelError::RowShape { .. })
     ));
     assert!(matches!(
@@ -446,16 +407,16 @@ fn scheme_level_validation_failures_and_candidate_records_are_typed() {
         corpus.score_prepared(&int8_query, &mut []),
         Err(SchemeLevelError::OutputCount { .. })
     ));
-    let bit1_query =
-        PreparedQuery::new(QuantScheme::Bit1, &[1.0, -1.0], 1).expect("bit1 mismatch query");
+    let bit4_query =
+        PreparedQuery::new(QuantScheme::Bit4, &[1.0, -1.0], 1).expect("bit4 mismatch query");
     assert_eq!(
         corpus
-            .score_prepared(&bit1_query, &mut [0.0])
+            .score_prepared(&bit4_query, &mut [0.0])
             .expect_err("scheme mismatch"),
         SchemeLevelError::SchemeMismatch
     );
 
-    for scheme in [QuantScheme::Int8, QuantScheme::Bit2, QuantScheme::Bit4] {
+    for scheme in [QuantScheme::Int8, QuantScheme::Bit4] {
         assert!(!scoring_path(scheme, KernelArm::Scalar).native_runtime_dispatched_simd);
     }
     assert!(!scoring_path(QuantScheme::Bit4, KernelArm::Avx2).native_runtime_dispatched_simd);

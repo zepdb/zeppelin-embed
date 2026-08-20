@@ -183,8 +183,6 @@ fn print_report(report: &RecallReport) {
 
 const fn scheme_label(scheme: QuantScheme) -> &'static str {
     match scheme {
-        QuantScheme::Bit1 => "Bit1",
-        QuantScheme::Bit2 => "Bit2",
         QuantScheme::Bit4 => "Bit4",
         QuantScheme::Int8 => "Int8",
         QuantScheme::F32 => "F32",

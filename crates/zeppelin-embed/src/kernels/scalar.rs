@@ -12,10 +12,8 @@ pub(super) fn table() -> KernelTable {
         hamming_u1,
         dot_i8_batch,
         hamming_u1_batch,
-        dot_bit2,
         dot_bit4,
         dot_bit4_prepared,
-        dot_bit2_batch,
         dot_bit4_batch,
     }
 }
@@ -90,26 +88,6 @@ pub(super) fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut 
     }
 }
 
-pub(super) fn dot_bit2(q: &[i8], codes: &[u8]) -> i32 {
-    const SHIFTS: [u32; 4] = [6, 4, 2, 0];
-    debug_assert_eq!(codes.len(), q.len().div_ceil(4));
-    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
-    codes
-        .iter()
-        .zip(q.chunks(4))
-        .map(|(&packed, query)| {
-            query
-                .iter()
-                .zip(SHIFTS)
-                .map(|(&query_value, shift)| {
-                    let code = i32::from((packed >> shift) & 0x03);
-                    i32::from(query_value) * (2 * code - 3)
-                })
-                .sum::<i32>()
-        })
-        .sum()
-}
-
 pub(super) fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
     const SHIFTS: [u32; 2] = [4, 0];
     debug_assert_eq!(codes.len(), q.len().div_ceil(2));
@@ -166,10 +144,6 @@ pub(super) fn dot_bit4_prepared_unsigned(q: &[i8], codes: &[u8]) -> i32 {
         code_base += code_count;
     }
     sum
-}
-
-pub(super) fn dot_bit2_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
-    dot_packed_batch(q, rows, d, out, 4, dot_bit2);
 }
 
 pub(super) fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {

@@ -20,7 +20,6 @@ const HAMMING_LANES: usize = 16;
 const HAMMING_UNROLL: usize = 4; // u1 variants remained untested after B1 stagnation.
 const HAMMING_BLOCK: usize = HAMMING_LANES * HAMMING_UNROLL;
 const PACKED_LANES: usize = 16;
-const BIT2_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 4;
 const BIT4_DIMENSIONS_PER_BLOCK: usize = PACKED_LANES * 2;
 // Retained by tasks/evidence/opt-ledger/B1-bit4.md iterations 1-10.
 const BIT4_RAW_DOTPROD_BLOCK: usize = BIT4_DIMENSIONS_PER_BLOCK * 4;
@@ -47,10 +46,8 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         hamming_u1,
         dot_i8_batch: dot_i8_batch_dotprod,
         hamming_u1_batch,
-        dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
-        dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
 }
@@ -65,10 +62,8 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
         hamming_u1,
         dot_i8_batch: dot_i8_batch_i8mm,
         hamming_u1_batch,
-        dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
-        dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
 }
@@ -103,10 +98,8 @@ fn dotprod_shape_table(
         hamming_u1,
         dot_i8_batch,
         hamming_u1_batch,
-        dot_bit2: dot_bit2_dotprod,
         dot_bit4: dot_bit4_dotprod,
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
-        dot_bit2_batch: dot_bit2_batch_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
     }
 }
@@ -121,10 +114,8 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         hamming_u1,
         dot_i8_batch: dot_i8_batch_widen,
         hamming_u1_batch,
-        dot_bit2: dot_bit2_widen,
         dot_bit4: dot_bit4_widen,
         dot_bit4_prepared: dot_bit4_prepared_widen,
-        dot_bit2_batch: dot_bit2_batch_widen,
         dot_bit4_batch: dot_bit4_batch_widen,
     }
 }
@@ -316,67 +307,6 @@ fn add_i8_tail(sum: i32, a: &[i8], b: &[i8], processed: usize) -> i32 {
         .zip(b_tail)
         .map(|(&left, &right)| i32::from(left) * i32::from(right))
         .sum::<i32>()
-}
-
-#[inline]
-fn dot_bit2_dotprod(q: &[i8], codes: &[u8]) -> i32 {
-    packed_shape_debug_assertions(q, codes, 4);
-    // SAFETY: the DotProd table is installed only after runtime feature
-    // detection; complete packed blocks bound every query and code load.
-    unsafe { dot_bit2_dotprod_inner(q, codes) }
-}
-
-#[target_feature(enable = "dotprod")]
-unsafe fn dot_bit2_dotprod_inner(q: &[i8], codes: &[u8]) -> i32 {
-    // SAFETY: each iteration consumes exactly 16 code bytes and 64 query
-    // bytes. Shift/mask extraction stays in registers, and the wrapper
-    // established FEAT_DotProd before any SDOT instruction is reached.
-    unsafe {
-        let processed = q.len() / BIT2_DIMENSIONS_PER_BLOCK * BIT2_DIMENSIONS_PER_BLOCK;
-        let mut acc = vdupq_n_s32(0);
-        let mut base = 0_usize;
-        while base < processed {
-            let code_ptr = codes.as_ptr().wrapping_add(base / 4);
-            let (values0, values1, values2, values3) = unpack_bit2_block(code_ptr);
-            let query_ptr = q.as_ptr().wrapping_add(base);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr), values0);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)), values2);
-            acc = dotprod_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)), values3);
-            base += BIT2_DIMENSIONS_PER_BLOCK;
-        }
-        packed_bit2_tail(vaddvq_s32(acc), q, codes, processed)
-    }
-}
-
-#[inline]
-fn dot_bit2_widen(q: &[i8], codes: &[u8]) -> i32 {
-    packed_shape_debug_assertions(q, codes, 4);
-    // SAFETY: the NEON table is installed only after runtime feature
-    // detection; complete packed blocks bound every query and code load.
-    unsafe { dot_bit2_widen_inner(q, codes) }
-}
-
-#[target_feature(enable = "neon")]
-unsafe fn dot_bit2_widen_inner(q: &[i8], codes: &[u8]) -> i32 {
-    // SAFETY: each iteration consumes exactly 16 code bytes and 64 query
-    // bytes. Shift/mask extraction and widening MACs stay in registers.
-    unsafe {
-        let processed = q.len() / BIT2_DIMENSIONS_PER_BLOCK * BIT2_DIMENSIONS_PER_BLOCK;
-        let mut acc = vdupq_n_s32(0);
-        let mut base = 0_usize;
-        while base < processed {
-            let code_ptr = codes.as_ptr().wrapping_add(base / 4);
-            let (values0, values1, values2, values3) = unpack_bit2_block(code_ptr);
-            let query_ptr = q.as_ptr().wrapping_add(base);
-            acc = widen_mac(acc, vld1q_s8(query_ptr), values0);
-            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES)), values1);
-            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 2)), values2);
-            acc = widen_mac(acc, vld1q_s8(query_ptr.wrapping_add(I8_LANES * 3)), values3);
-            base += BIT2_DIMENSIONS_PER_BLOCK;
-        }
-        packed_bit2_tail(vaddvq_s32(acc), q, codes, processed)
-    }
 }
 
 #[inline]
@@ -591,47 +521,6 @@ unsafe fn dot_bit4_prepared_widen_inner(q: &[i8], query_sum: i32, codes: &[u8]) 
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn unpack_bit2_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t, int8x16_t, int8x16_t) {
-    // SAFETY: callers provide a pointer to a complete 16-byte packed block.
-    // ZIP on byte pairs and then halfwords restores field order without a
-    // lookup table or memory-resident scratch space.
-    unsafe {
-        let packed = vld1q_u8(code_ptr);
-        let mask = vdupq_n_u8(0x03);
-        let field0 = vandq_u8(vshrq_n_u8(packed, 6), mask);
-        let field1 = vandq_u8(vshrq_n_u8(packed, 4), mask);
-        let field2 = vandq_u8(vshrq_n_u8(packed, 2), mask);
-        let field3 = vandq_u8(packed, mask);
-        let fields01_low = vzip1q_u8(field0, field1);
-        let fields01_high = vzip2q_u8(field0, field1);
-        let fields23_low = vzip1q_u8(field2, field3);
-        let fields23_high = vzip2q_u8(field2, field3);
-        let values0 = vzip1q_u16(
-            vreinterpretq_u16_u8(fields01_low),
-            vreinterpretq_u16_u8(fields23_low),
-        );
-        let values1 = vzip2q_u16(
-            vreinterpretq_u16_u8(fields01_low),
-            vreinterpretq_u16_u8(fields23_low),
-        );
-        let values2 = vzip1q_u16(
-            vreinterpretq_u16_u8(fields01_high),
-            vreinterpretq_u16_u8(fields23_high),
-        );
-        let values3 = vzip2q_u16(
-            vreinterpretq_u16_u8(fields01_high),
-            vreinterpretq_u16_u8(fields23_high),
-        );
-        (
-            bit2_grid(vreinterpretq_u8_u16(values0)),
-            bit2_grid(vreinterpretq_u8_u16(values1)),
-            bit2_grid(vreinterpretq_u8_u16(values2)),
-            bit2_grid(vreinterpretq_u8_u16(values3)),
-        )
-    }
-}
-
-#[target_feature(enable = "neon")]
 unsafe fn unpack_bit4_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t) {
     // SAFETY: callers provide a pointer to a complete 16-byte packed block.
     // One byte ZIP restores high-nibble, low-nibble dimension order entirely
@@ -662,11 +551,6 @@ unsafe fn unpack_bit4_split_block(code_ptr: *const u8) -> (int8x16_t, int8x16_t)
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn bit2_grid(fields: uint8x16_t) -> int8x16_t {
-    vreinterpretq_s8_u8(vsubq_u8(vshlq_n_u8(fields, 1), vdupq_n_u8(3)))
-}
-
-#[target_feature(enable = "neon")]
 unsafe fn bit4_grid(fields: uint8x16_t) -> int8x16_t {
     vreinterpretq_s8_u8(vsubq_u8(vshlq_n_u8(fields, 1), vdupq_n_u8(15)))
 }
@@ -674,16 +558,6 @@ unsafe fn bit4_grid(fields: uint8x16_t) -> int8x16_t {
 fn packed_shape_debug_assertions(q: &[i8], codes: &[u8], fields_per_byte: usize) {
     debug_assert_eq!(codes.len(), q.len().div_ceil(fields_per_byte));
     debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
-}
-
-fn packed_bit2_tail(sum: i32, q: &[i8], codes: &[u8], processed: usize) -> i32 {
-    let Some(q_tail) = q.get(processed..) else {
-        return sum;
-    };
-    let Some(code_tail) = codes.get(processed / 4..) else {
-        return sum;
-    };
-    sum + scalar::dot_bit2(q_tail, code_tail)
 }
 
 fn packed_bit4_tail(sum: i32, q: &[i8], codes: &[u8], processed: usize) -> i32 {
@@ -1166,14 +1040,6 @@ unsafe fn i8mm_mac(mut acc: int32x4_t, left: int8x16_t, right: int8x16_t) -> int
         );
     }
     acc
-}
-
-fn dot_bit2_batch_dotprod(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
-    batch_packed(q, rows, d, out, 4, dot_bit2_dotprod);
-}
-
-fn dot_bit2_batch_widen(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
-    batch_packed(q, rows, d, out, 4, dot_bit2_widen);
 }
 
 fn dot_bit4_batch_dotprod(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {

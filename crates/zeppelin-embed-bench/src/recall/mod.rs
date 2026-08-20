@@ -1,10 +1,8 @@
 //! Recall-retention sweeps with exact rescore byte accounting.
 
 use zeppelin_embed::quant::{
-    Bit1Factors, Bit2Factors, Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError,
-    SearchByteCounts, est_dot_bit1, est_dot_bit2, est_dot_bit4, prepare_bit1_query,
-    prepare_bit2_query, prepare_bit4_query, prepare_int8_query, quantize_bit1, quantize_bit2,
-    quantize_bit4, quantize_int8, rescore_top_k,
+    Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError, SearchByteCounts, est_dot_bit4,
+    prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
 };
 
 /// Dataset generators and standard binary-vector loaders.
@@ -152,12 +150,7 @@ pub fn run_recall(
         return Err(RecallError::InvalidOversamples);
     }
     let truth = ground_truth(dataset, k)?;
-    let schemes = [
-        QuantScheme::Bit1,
-        QuantScheme::Bit2,
-        QuantScheme::Bit4,
-        QuantScheme::Int8,
-    ];
+    let schemes = [QuantScheme::Bit4, QuantScheme::Int8];
     let mut points = Vec::with_capacity(schemes.len() * oversamples.len());
     for scheme in schemes {
         let encoded = EncodedRows::new(scheme, &dataset.vectors.values, dataset.vectors.dimension)?;
@@ -312,16 +305,6 @@ enum EncodedRows {
         codes: Vec<i8>,
         factors: Vec<(f32, f32)>,
     },
-    Bit1 {
-        dimension: usize,
-        codes: Vec<u8>,
-        factors: Vec<Bit1Factors>,
-    },
-    Bit2 {
-        dimension: usize,
-        codes: Vec<u8>,
-        factors: Vec<Bit2Factors>,
-    },
     Bit4 {
         dimension: usize,
         codes: Vec<u8>,
@@ -342,36 +325,6 @@ impl EncodedRows {
                     factors.push((scale, offset));
                 }
                 Ok(Self::Int8 {
-                    dimension,
-                    codes,
-                    factors,
-                })
-            }
-            QuantScheme::Bit1 => {
-                let stride = dimension.div_ceil(8);
-                let mut codes = Vec::with_capacity(values.len() / dimension * stride);
-                let mut factors = Vec::with_capacity(values.len() / dimension);
-                for row in values.chunks_exact(dimension) {
-                    let start = codes.len();
-                    codes.resize(start + stride, 0_u8);
-                    factors.push(quantize_bit1(row, &mut codes[start..])?);
-                }
-                Ok(Self::Bit1 {
-                    dimension,
-                    codes,
-                    factors,
-                })
-            }
-            QuantScheme::Bit2 => {
-                let stride = dimension.div_ceil(4);
-                let mut codes = Vec::with_capacity(values.len() / dimension * stride);
-                let mut factors = Vec::with_capacity(values.len() / dimension);
-                for row in values.chunks_exact(dimension) {
-                    let start = codes.len();
-                    codes.resize(start + stride, 0_u8);
-                    factors.push(quantize_bit2(row, &mut codes[start..])?);
-                }
-                Ok(Self::Bit2 {
                     dimension,
                     codes,
                     factors,
@@ -419,30 +372,6 @@ impl EncodedRows {
                     })
                     .collect()
             }
-            Self::Bit1 {
-                dimension,
-                codes,
-                factors,
-            } => {
-                let prepared = prepare_bit1_query(query, seed ^ 0x01b1_7004)?;
-                codes
-                    .chunks_exact(dimension.div_ceil(8))
-                    .zip(factors)
-                    .map(|(codes, &factors)| est_dot_bit1(&prepared, codes, factors))
-                    .collect()
-            }
-            Self::Bit2 {
-                dimension,
-                codes,
-                factors,
-            } => {
-                let prepared = prepare_bit2_query(query, seed ^ 0x02b2_7004)?;
-                codes
-                    .chunks_exact(dimension.div_ceil(4))
-                    .zip(factors)
-                    .map(|(codes, &factors)| est_dot_bit2(&prepared, codes, factors))
-                    .collect()
-            }
             Self::Bit4 {
                 dimension,
                 codes,
@@ -461,12 +390,6 @@ impl EncodedRows {
     fn stored_bytes_per_row(&self) -> usize {
         match self {
             Self::Int8 { dimension, .. } => dimension + 2 * std::mem::size_of::<f32>(),
-            Self::Bit1 { dimension, .. } => {
-                dimension.div_ceil(8) + std::mem::size_of::<Bit1Factors>()
-            }
-            Self::Bit2 { dimension, .. } => {
-                dimension.div_ceil(4) + std::mem::size_of::<Bit2Factors>()
-            }
             Self::Bit4 { dimension, .. } => {
                 dimension.div_ceil(2) + std::mem::size_of::<Bit4Factors>()
             }

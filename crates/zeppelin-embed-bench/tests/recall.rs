@@ -68,13 +68,8 @@ fn recall_table_counts_bytes_for_every_scheme_and_oversample() {
 
     let report = run_recall(&dataset, &[1, 2], 10).expect("recall report");
 
-    assert_eq!(report.points.len(), 8);
-    for scheme in [
-        QuantScheme::Bit1,
-        QuantScheme::Bit2,
-        QuantScheme::Bit4,
-        QuantScheme::Int8,
-    ] {
+    assert_eq!(report.points.len(), 4);
+    for scheme in [QuantScheme::Bit4, QuantScheme::Int8] {
         assert_eq!(
             report
                 .points

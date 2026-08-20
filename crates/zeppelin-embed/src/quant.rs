@@ -1,17 +1,9 @@
 //! Training-free vector quantization.
 
-mod binary;
-mod bits2;
 mod bits4;
 mod int8;
 mod rescore;
 
-pub use binary::{
-    Bit1Factors, Bit1Query, dequantize_bit1, est_dot_bit1, prepare_bit1_query, quantize_bit1,
-};
-pub use bits2::{
-    Bit2Factors, Bit2Query, dequantize_bit2, est_dot_bit2, prepare_bit2_query, quantize_bit2,
-};
 pub use bits4::{
     Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, prepare_bit4_query, quantize_bit4,
 };
@@ -95,9 +87,9 @@ impl std::error::Error for QuantError {}
 /// Persisted quantization scheme identifier.
 ///
 /// Discriminants are an append-only storage contract. They must never be
-/// reordered, renumbered, or reused, even though `Bit2` is numerically narrower
-/// than `Bit4`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// reordered, renumbered, or reused. Ids 3 and 5 are retired and permanently
+/// reserved by `docs/adr/ADR-002-retire-bit1-bit2.md`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
 pub enum QuantScheme {
     /// Uncompressed IEEE binary32 coordinates.
@@ -106,12 +98,9 @@ pub enum QuantScheme {
     F16 = 1,
     /// Signed eight-bit scalar quantization.
     Int8 = 2,
-    /// One-bit RaBitQ codes.
-    Bit1 = 3,
     /// Four-bit Extended-RaBitQ codes.
+    #[default]
     Bit4 = 4,
-    /// Two-bit Extended-RaBitQ codes.
-    Bit2 = 5,
 }
 
 impl QuantScheme {
@@ -128,9 +117,7 @@ impl QuantScheme {
             0 => Some(Self::F32),
             1 => Some(Self::F16),
             2 => Some(Self::Int8),
-            3 => Some(Self::Bit1),
             4 => Some(Self::Bit4),
-            5 => Some(Self::Bit2),
             _ => None,
         }
     }

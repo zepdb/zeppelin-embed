@@ -63,17 +63,17 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 
 ## Task 04 narrow-width invariants
 
-- Persisted quantization identifiers are append-only: `Bit4 = 4` and
-  owner-assigned `Bit2 = 5`; their numeric order is intentionally unrelated to
-  width.
-- Bit2 packs four coordinates per byte and Bit4 packs two, both MSB-first.
-  Unused low-order fields in a final partial byte are zero on encode and are
-  rejected when non-zero during scoring or reconstruction.
+- Persisted quantization identifiers are append-only: `F32 = 0`, `F16 = 1`,
+  `Int8 = 2`, and `Bit4 = 4`. Ids 3 and 5 are retired and permanently reserved;
+  see `docs/adr/ADR-002-retire-bit1-bit2.md`. They must never be reused.
+- Bit4 packs two coordinates per byte, MSB-first. An unused low-order field in
+  a final partial byte is zero on encode and is rejected when non-zero during
+  scoring or reconstruction.
 - Extended-RaBitQ uses the exact critical-value rescale search and stores the
   row norm plus estimator correction. Random rotation is optional and off by
   default in v1; recall validation remains per embedding model.
-- Bit2 and the coordinate-order public Bit4 kernel use appended runtime-dispatch
-  slots. AArch64 NEON extracts fields with shift/mask ladders and ZIP
+- The coordinate-order public Bit4 kernel uses an appended runtime-dispatch
+  slot. AArch64 NEON extracts fields with shift/mask ladders and ZIP
   interleaving, then accumulates directly from registers; scalar is the oracle
   and non-NEON architectures use that allocation-free fallback. Never
   materialize an expanded row while scoring.
@@ -85,22 +85,14 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 
 ## Task 04 quantization and recall invariants
 
+- Bit4 is the default quantization scheme. Int8 remains a configurable,
+  non-default alternative.
 - Int8 rows use one per-vector signed affine map plus exactly two `f32`
   factors. Queries use a symmetric signed-byte representation prepared once;
   row scoring is one native i8 dot plus the precomputed query-code sum.
-- Bit1 is MSB-first and scores directly from packed bytes without an expanded
-  row. Identity rotation remains the v1 implementation, but it is NOT a safe
-  default at any corpus size that matters. Measured at 100,000 x 768, Bit1
-  fails to reach 0.95 recall@10 within a 16x oversample budget on four of five
-  distributions; its worst case is anisotropic 0.5406. Do not enable Bit1
-  without per-model recall evidence at the real corpus size.
 - Recall is strongly corpus-size dependent and small fixtures invert the
-  conclusion. At 512 rows Bit1 reaches 0.9938 on uniform and heavy-tailed
-  looks like the worst case; at 100,000 rows uniform has collapsed to 0.6906
-  while heavy-tailed is FLAT at 0.9500 and is the best case. The danger
-  distribution is anisotropic (0.9812 -> 0.5406), which is what the RaBitQ
-  near-isotropy assumption predicts and what a random rotation would target.
-  Never quote a recall number without its row count.
+  conclusion. A result from a small fixture does not establish behavior at a
+  production corpus size. Never quote a recall number without its row count.
 - Recall byte counters include every stored code and factor byte read in the
   coarse stage plus every f32 corpus-row byte read in exact rescore. Query bytes
   and output metadata are common across schemes and excluded. No Task 04
