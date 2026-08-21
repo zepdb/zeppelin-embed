@@ -1,5 +1,8 @@
 //! Synchronous virtual-filesystem seam for crash and fault injection.
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod crash;
+
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -266,4 +269,17 @@ fn sync_file(_: &File, kind: SyncKind) -> std::io::Result<()> {
         std::io::ErrorKind::Unsupported,
         format!("{kind:?} synchronization requires a supported file-descriptor platform"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn crash_support_api_gate_is_identical_in_debug_and_release() {
+        let source = include_str!("mod.rs");
+        let gate = source
+            .lines()
+            .zip(source.lines().skip(1))
+            .find_map(|(line, next)| (next == "pub mod crash;").then_some(line));
+        assert_eq!(gate, Some("#[cfg(any(test, feature = \"test-support\"))]"));
+    }
 }

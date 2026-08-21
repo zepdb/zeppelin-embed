@@ -159,3 +159,23 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   to match its declared `first_seq` and exact increments thereafter, and stops
   before the first invalid record. A checksum-valid successor classifies the
   failure as middle corruption but is never skipped or returned.
+
+## Task 08 Part B1 crash-harness invariants
+
+- `CrashVfs` is test-support code over `MemoryVfs`; `vfs::crash` exists only
+  under `cfg(test)` or the explicit `test-support` feature, so ordinary debug
+  and optimized shipping builds expose the same public API.
+- Crash enumeration is deterministic and capped at 4,096 states. Hitting the
+  cap sets `was_capped()` and prints a loud truncation line; protocol matrices
+  must reject capped runs.
+- Byte-operation damage uses at most 96 deterministic semantic points: format
+  transitions, region and selected 64-KB checksum-chunk boundaries, first/last
+  region sectors, sub-sector edges, and a fixed-seed interior sample. Each
+  point emits prefix, suffix, garbage-tail, zero-tail, and interior-damage
+  states. Remaining checksum chunks and sector boundaries are sampled rather
+  than uniformly crossed.
+- Every operation prefix, every ordered subset of writes since the latest
+  sync, and unsafe rename-with-old-content states remain distinct auditable
+  schedules even when bytes coincide.
+- A sync closes the global reorder epoch. Never enumerate a state that omits or
+  reorders a pre-sync write behind a later write.
