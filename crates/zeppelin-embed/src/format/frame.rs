@@ -124,17 +124,32 @@ pub fn encode_artifact(family: FormatFamily, flags: u32, payload: &[u8]) -> Vec<
         .saturating_add(payload.len())
         .saturating_add(FILE_TRAILER_LEN);
     let mut encoded = Vec::with_capacity(file_length);
-    encoded.extend_from_slice(&FILE_MAGIC);
-    encoded.extend_from_slice(&family.id().to_le_bytes());
-    encoded.extend_from_slice(&1_u16.to_le_bytes());
-    encoded.extend_from_slice(&flags.to_le_bytes());
-    encoded.extend_from_slice(&(FILE_HEADER_LEN as u64).to_le_bytes());
-    encoded.extend_from_slice(&(file_length as u64).to_le_bytes());
+    encoded.extend_from_slice(&encode_header(FileHeader {
+        magic: FILE_MAGIC,
+        family: family.id(),
+        version: 1,
+        flags,
+        header_length: FILE_HEADER_LEN as u64,
+        file_length: file_length as u64,
+    }));
     encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     encoded.extend_from_slice(payload);
     encoded.extend_from_slice(&xxh3_64(payload).to_le_bytes());
     let file_checksum = xxh3_64(&encoded);
     encoded.extend_from_slice(&file_checksum.to_le_bytes());
+    encoded
+}
+
+/// Encodes the shared fixed-width persisted-file header without a body or trailer.
+#[must_use]
+pub fn encode_header(header: FileHeader) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(FILE_HEADER_LEN);
+    encoded.extend_from_slice(&header.magic);
+    encoded.extend_from_slice(&header.family.to_le_bytes());
+    encoded.extend_from_slice(&header.version.to_le_bytes());
+    encoded.extend_from_slice(&header.flags.to_le_bytes());
+    encoded.extend_from_slice(&header.header_length.to_le_bytes());
+    encoded.extend_from_slice(&header.file_length.to_le_bytes());
     encoded
 }
 

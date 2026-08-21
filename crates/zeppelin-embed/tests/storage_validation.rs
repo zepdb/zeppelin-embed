@@ -19,7 +19,7 @@ use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, encode_segment, write_segment,
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId};
-use zeppelin_embed::vfs::{CountingVfs, StdVfs, Vfs};
+use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
 
 fn empty_columns() -> ColumnStore {
     ColumnStoreBuilder::new(Schema::new(Vec::new()).expect("schema"))
@@ -89,7 +89,9 @@ fn std_and_counting_vfs_cover_the_complete_synchronous_seam() {
     assert_eq!(counting.open(&source).expect("open"), 6);
     assert_eq!(counting.read(&source).expect("read"), b"abcdef");
     assert_eq!(counting.read_range(&source, 2, 8).expect("range"), b"cdef");
-    counting.sync(&source).expect("file sync");
+    counting
+        .sync(&source, SyncKind::Barrier)
+        .expect("file sync");
     assert!(
         counting
             .list(directory.path())
@@ -370,10 +372,13 @@ fn segment_writer_surfaces_each_vfs_commit_stage() {
         fn write(&self, _: &Path, _: &[u8]) -> std::io::Result<()> {
             Err(std::io::Error::other("write stage"))
         }
+        fn open_append(&self, _: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+            Err(std::io::Error::other("append stage"))
+        }
         fn rename(&self, _: &Path, _: &Path) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Other.into())
         }
-        fn sync(&self, _: &Path) -> std::io::Result<()> {
+        fn sync(&self, _: &Path, _: SyncKind) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Other.into())
         }
         fn list(&self, _: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
@@ -424,6 +429,9 @@ impl Vfs for StageVfs {
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.write(path, bytes)
     }
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.inner.open_append(path)
+    }
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.fail_rename {
             Err(std::io::Error::other("rename stage"))
@@ -431,12 +439,12 @@ impl Vfs for StageVfs {
             self.inner.rename(from, to)
         }
     }
-    fn sync(&self, path: &Path) -> std::io::Result<()> {
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
         let call = self.sync_calls.fetch_add(1, Ordering::Relaxed) + 1;
         if call == self.fail_sync_call {
             Err(std::io::Error::other(format!("sync stage {call}")))
         } else {
-            self.inner.sync(path)
+            self.inner.sync(path, kind)
         }
     }
     fn list(&self, directory: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
@@ -445,6 +453,19 @@ impl Vfs for StageVfs {
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }
+}
+
+#[test]
+fn vfs_open_append_preserves_existing_bytes_and_syncs_the_open_handle() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("wal.ze");
+    std::fs::write(&path, b"prefix").expect("prefix");
+    let mut handle = StdVfs.open_append(&path).expect("append handle");
+    handle.append(b"-one").expect("first append");
+    handle.append(b"-two").expect("second append");
+    handle.sync(SyncKind::Barrier).expect("barrier");
+    drop(handle);
+    assert_eq!(std::fs::read(&path).expect("read"), b"prefix-one-two");
 }
 
 #[test]

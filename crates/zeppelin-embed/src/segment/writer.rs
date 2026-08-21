@@ -8,7 +8,7 @@ use crate::format::frame::{FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN};
 use crate::format::{FormatFamily, FormatRegistry};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
-use crate::vfs::Vfs;
+use crate::vfs::{PART_A_ORDERED_SYNC, Vfs};
 
 use super::layout::{
     CHECKSUM_CHUNK_BYTES, Int8Factors, REGION_ALIGNMENT, REGION_ENTRY_LEN, RegionEntry, RegionKind,
@@ -364,11 +364,11 @@ pub fn write_segment(
     let temporary_path = temporary_path(directory, build.id);
     vfs.write(&temporary_path, &bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
-    vfs.sync(&temporary_path)
+    vfs.sync(&temporary_path, PART_A_ORDERED_SYNC)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
     vfs.rename(&temporary_path, &final_path)
         .map_err(|error| SegmentError::io(&final_path, error))?;
-    vfs.sync(directory)
+    vfs.sync(directory, PART_A_ORDERED_SYNC)
         .map_err(|error| SegmentError::io(directory, error))?;
     Ok(SegmentMeta {
         id: build.id,

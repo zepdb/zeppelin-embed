@@ -6,6 +6,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+if grep -R -n -E 'sync_(all|data)' crates/zeppelin-embed/src; then
+    echo "forbidden direct file synchronization under crates/zeppelin-embed/src" >&2
+    exit 1
+fi
+
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps

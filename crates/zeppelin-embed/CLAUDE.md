@@ -141,3 +141,21 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Manifest rename is the sole commit point. Open reads the manifest and bounded
   segment headers only, refuses snapshots ahead of the durable log, and derives
   orphan reachability from the manifest while honoring active-writer exclusions.
+
+## Task 08 Part A WAL invariants
+
+- Every synchronization names `SyncKind`; Darwin maps barrier/full to
+  `F_BARRIERFSYNC`/`F_FULLFSYNC`, while Linux maps them to `fdatasync`/`fsync`.
+  Direct standard-library file synchronization calls are CI-forbidden in core
+  source.
+- Every WAL begins with a 40-byte header: the shared 32-byte `ZEPEMBED` header
+  declares family 11, registry version 1, total header length 40, and a
+  must-be-zero file length; WAL-owned bytes 32..40 carry `first_seq`. There is
+  no whole-file checksum trailer.
+- WAL records after that header are little-endian payload-length, `LogSeq`,
+  operation, payload, and an xxh3-64 covering every preceding record byte. The
+  checked-in WAL goldens freeze this layout.
+- Replay validates the file header before any record, requires the first record
+  to match its declared `first_seq` and exact increments thereafter, and stops
+  before the first invalid record. A checksum-valid successor classifies the
+  failure as middle corruption but is never skipped or returned.

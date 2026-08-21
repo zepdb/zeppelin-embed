@@ -22,7 +22,7 @@ use zeppelin_embed::meta::{
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
-use zeppelin_embed::vfs::{CountingVfs, StdVfs, Vfs};
+use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
 
 struct Log(u64);
 
@@ -67,6 +67,10 @@ impl Vfs for RenameCrashVfs {
         self.inner.write(path, bytes)
     }
 
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.inner.open_append(path)
+    }
+
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.fail_rename.load(Ordering::Relaxed) {
             return Err(std::io::Error::new(
@@ -77,8 +81,8 @@ impl Vfs for RenameCrashVfs {
         self.inner.rename(from, to)
     }
 
-    fn sync(&self, path: &Path) -> std::io::Result<()> {
-        self.inner.sync(path)
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {

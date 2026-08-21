@@ -2,8 +2,34 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Storage-ordering primitive requested by a persisted commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncKind {
+    /// Order prior writes before later writes without requesting durable media.
+    ///
+    /// Linux has no barrier-only primitive, so `ordered` durability degrades
+    /// to `fdatasync` on Linux.
+    Barrier,
+    /// Flush prior writes through the platform's durable-media primitive.
+    Full,
+}
+
+/// Part-A placeholder for the `ordered` default; Part B must re-derive this
+/// synchronization choice from the real durability-tier policy.
+pub(crate) const PART_A_ORDERED_SYNC: SyncKind = SyncKind::Barrier;
+
+/// One open append-only file owned by a WAL writer.
+pub trait VfsFile: Send {
+    /// Appends every supplied byte without reopening the path.
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    /// Synchronizes this already-open handle using the named primitive.
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()>;
+}
 
 /// Minimal synchronous filesystem operations used by persisted commits.
 pub trait Vfs: Send + Sync {
@@ -15,10 +41,12 @@ pub trait Vfs: Send + Sync {
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>>;
     /// Creates or truncates a file and writes all bytes.
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Opens or creates one file for handle-oriented append-only writes.
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>>;
     /// Atomically renames one path over another according to platform semantics.
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
-    /// Opaquely synchronizes a file or directory; Task 08 owns policy.
-    fn sync(&self, path: &Path) -> std::io::Result<()>;
+    /// Synchronizes a file or directory using an explicit platform primitive.
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()>;
     /// Lists direct children of a directory.
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>>;
     /// Deletes one file.
@@ -28,6 +56,18 @@ pub trait Vfs: Send + Sync {
 /// Standard-library-backed production filesystem.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StdVfs;
+
+struct StdVfsFile(File);
+
+impl VfsFile for StdVfsFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0.write_all(bytes)
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        sync_file(&self.0, kind)
+    }
+}
 
 impl Vfs for StdVfs {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
@@ -72,12 +112,17 @@ impl Vfs for StdVfs {
         file.write_all(bytes)
     }
 
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Box::new(StdVfsFile(file)))
+    }
+
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, to)
     }
 
-    fn sync(&self, path: &Path) -> std::io::Result<()> {
-        File::open(path)?.sync_all()
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        sync_file(&File::open(path)?, kind)
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -169,12 +214,16 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         self.inner.write(path, bytes)
     }
 
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.inner.open_append(path)
+    }
+
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.inner.rename(from, to)
     }
 
-    fn sync(&self, path: &Path) -> std::io::Result<()> {
-        self.inner.sync(path)
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -184,4 +233,37 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
+    let result = match kind {
+        SyncKind::Barrier => crate::sys::darwin::barrier_fsync(file.as_raw_fd()),
+        SyncKind::Full => crate::sys::darwin::full_fsync(file.as_raw_fd()),
+    };
+    result.map_err(std::io::Error::other)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
+    let result = unsafe {
+        // SAFETY: both calls accept an owned live descriptor and report failures through errno.
+        match kind {
+            SyncKind::Barrier => libc::fdatasync(file.as_raw_fd()),
+            SyncKind::Full => libc::fsync(file.as_raw_fd()),
+        }
+    };
+    if result == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_file(_: &File, kind: SyncKind) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("{kind:?} synchronization requires a supported file-descriptor platform"),
+    ))
 }

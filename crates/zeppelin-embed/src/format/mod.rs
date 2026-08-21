@@ -27,6 +27,8 @@ pub enum FormatFamily {
     ChecksumTable = 9,
     /// Store manifests.
     Manifest = 10,
+    /// Append-only write-ahead-log records.
+    Wal = 11,
 }
 
 impl FormatFamily {
@@ -103,7 +105,7 @@ impl std::error::Error for RegistryError {}
 /// Static registry for every persisted family and quantization identifier.
 pub struct FormatRegistry;
 
-const FAMILIES: [FamilySpec; 10] = [
+const FAMILIES: [FamilySpec; 11] = [
     FamilySpec {
         family: FormatFamily::Frame,
         current_version: 1,
@@ -160,6 +162,12 @@ const FAMILIES: [FamilySpec; 10] = [
     },
     FamilySpec {
         family: FormatFamily::Manifest,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::Wal,
         current_version: 1,
         minimum_accepted_version: 1,
         maximum_accepted_version: 1,

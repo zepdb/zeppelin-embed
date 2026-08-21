@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::segment::reader::validate_header_with_vfs;
-use crate::vfs::Vfs;
+use crate::vfs::{PART_A_ORDERED_SYNC, Vfs};
 
 use super::{Manifest, ManifestError, decode_manifest, encode_manifest};
 
@@ -41,11 +41,11 @@ pub fn commit_manifest(
     let committed = directory.join(MANIFEST_FILE);
     vfs.write(&temporary, &bytes)
         .map_err(|error| ManifestError::io(&temporary, error))?;
-    vfs.sync(&temporary)
+    vfs.sync(&temporary, PART_A_ORDERED_SYNC)
         .map_err(|error| ManifestError::io(&temporary, error))?;
     vfs.rename(&temporary, &committed)
         .map_err(|error| ManifestError::io(&committed, error))?;
-    vfs.sync(directory)
+    vfs.sync(directory, PART_A_ORDERED_SYNC)
         .map_err(|error| ManifestError::io(directory, error))
 }
 

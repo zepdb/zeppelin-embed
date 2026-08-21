@@ -271,7 +271,14 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         fixture(include_str!("fixtures/format/postings_reserved_v1.hex")),
         Vec::<u8>::new()
     );
-    assert_eq!(FormatRegistry::families().len(), 10);
+    assert_eq!(FormatRegistry::families().len(), 11);
+    assert_eq!(FormatFamily::Wal.id(), 11);
+    assert_eq!(
+        FormatRegistry::require(FormatFamily::Wal.id(), 1)
+            .expect("WAL family")
+            .family,
+        FormatFamily::Wal
+    );
     assert_eq!(
         FormatRegistry::require_scheme(3),
         Err(RegistryError::RetiredScheme(3))
