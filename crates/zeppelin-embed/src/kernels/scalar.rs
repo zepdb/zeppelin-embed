@@ -20,9 +20,6 @@ pub(super) fn table() -> KernelTable {
         vertical_f16,
         vertical_i8,
         vertical_bit4,
-        f32_extrema_slab_bounds,
-        max_f32,
-        max_i32,
         vertical_rows_per_tile: super::BASELINE_KERNEL_CONFIG.vertical_rows_per_tile,
     }
 }
@@ -257,45 +254,6 @@ pub(super) fn vertical_bit4(query: &[i8], columns: &[u8], rows: usize, out: &mut
                 + odd_query.map_or(0, |query_value| i32::from(query_value) * low);
         }
     }
-}
-
-pub(super) fn f32_extrema_slab_bounds(
-    query: &[f32],
-    extrema: &[super::F32Extrema],
-    dimensions_per_slab: usize,
-    slab_bounds: &mut [f64],
-) -> super::F32BoundTotals {
-    debug_assert_eq!(query.len(), extrema.len());
-    debug_assert!(dimensions_per_slab > 0);
-    debug_assert_eq!(slab_bounds.len(), query.len().div_ceil(dimensions_per_slab));
-    slab_bounds.fill(0.0);
-    let mut maximum_contribution = 0.0_f64;
-    let mut absolute_contribution = 0.0_f64;
-    for (dimension, (&query_value, bounds)) in query.iter().zip(extrema).enumerate() {
-        let minimum = f32::from_bits(bounds.minimum_bits);
-        let maximum = f32::from_bits(bounds.maximum_bits);
-        let query_value = f64::from(query_value);
-        let minimum_product = query_value * f64::from(minimum);
-        let maximum_product = query_value * f64::from(maximum);
-        let contribution = minimum_product.max(maximum_product);
-        maximum_contribution += contribution;
-        absolute_contribution += minimum_product.abs().max(maximum_product.abs());
-        if let Some(slab) = slab_bounds.get_mut(dimension / dimensions_per_slab) {
-            *slab += contribution;
-        }
-    }
-    super::F32BoundTotals {
-        maximum_contribution,
-        absolute_contribution,
-    }
-}
-
-pub(super) fn max_f32(values: &[f32]) -> f32 {
-    values.iter().copied().fold(f32::NEG_INFINITY, f32::max)
-}
-
-pub(super) fn max_i32(values: &[i32]) -> i32 {
-    values.iter().copied().max().unwrap_or(i32::MIN)
 }
 
 fn dot_packed_batch(

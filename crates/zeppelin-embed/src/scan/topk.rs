@@ -63,14 +63,6 @@ impl BoundedTopK {
         }
     }
 
-    pub(crate) fn is_full(&self) -> bool {
-        self.heap.len() == self.limit && self.limit != 0
-    }
-
-    pub(crate) fn worst(&self) -> Option<ScanCandidate> {
-        self.heap.peek().map(|candidate| candidate.0)
-    }
-
     pub(crate) fn into_sorted(self) -> Vec<ScanCandidate> {
         let mut candidates = self
             .heap

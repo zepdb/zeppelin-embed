@@ -214,25 +214,6 @@ type VerticalF32Fn = fn(&[f32], &[u8], usize, &mut [f32]);
 type VerticalF16Fn = fn(&[u16], &[u8], usize, &mut [f32]);
 type VerticalI8Fn = fn(&[i8], &[u8], usize, &mut [i32]);
 type VerticalBit4Fn = fn(&[i8], &[u8], usize, &mut [i32]);
-type F32ExtremaSlabBoundsFn = fn(&[f32], &[F32Extrema], usize, &mut [f64]) -> F32BoundTotals;
-type MaxF32Fn = fn(&[f32]) -> f32;
-type MaxI32Fn = fn(&[i32]) -> i32;
-
-/// One full-precision coordinate's in-memory block extrema.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub(crate) struct F32Extrema {
-    pub(crate) minimum_bits: u32,
-    pub(crate) maximum_bits: u32,
-}
-
-/// Totals needed by the conservative F32 block bound.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct F32BoundTotals {
-    pub(crate) maximum_contribution: f64,
-    pub(crate) absolute_contribution: f64,
-}
-
 #[derive(Clone, Copy)]
 struct KernelTable {
     arm: KernelArm,
@@ -251,9 +232,6 @@ struct KernelTable {
     vertical_f16: VerticalF16Fn,
     vertical_i8: VerticalI8Fn,
     vertical_bit4: VerticalBit4Fn,
-    f32_extrema_slab_bounds: F32ExtremaSlabBoundsFn,
-    max_f32: MaxF32Fn,
-    max_i32: MaxI32Fn,
     vertical_rows_per_tile: usize,
 }
 
@@ -567,28 +545,6 @@ pub(crate) fn vertical_i8(query: &[i8], columns: &[u8], rows: usize, out: &mut [
 
 pub(crate) fn vertical_bit4(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
     (dispatch::active_table().vertical_bit4)(query, columns, rows, out);
-}
-
-pub(crate) fn f32_extrema_slab_bounds(
-    query: &[f32],
-    extrema: &[F32Extrema],
-    dimensions_per_slab: usize,
-    slab_bounds: &mut [f64],
-) -> F32BoundTotals {
-    (dispatch::active_table().f32_extrema_slab_bounds)(
-        query,
-        extrema,
-        dimensions_per_slab,
-        slab_bounds,
-    )
-}
-
-pub(crate) fn max_f32(values: &[f32]) -> f32 {
-    (dispatch::active_table().max_f32)(values)
-}
-
-pub(crate) fn max_i32(values: &[i32]) -> i32 {
-    (dispatch::active_table().max_i32)(values)
 }
 
 pub(crate) fn score_bit4_integer(

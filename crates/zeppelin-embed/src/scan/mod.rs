@@ -1,9 +1,10 @@
 //! Exact flat scanning over row-major and PDX vector layouts.
 
-mod abandon;
 pub mod parallel;
 pub mod pdx;
 pub(crate) mod topk;
+
+const BASELINE_DIMENSIONS_PER_SLAB: usize = 32;
 
 pub use parallel::{
     ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity, top_k_with_options,
@@ -14,7 +15,7 @@ pub use parallel::{
 pub struct ScanKnobSpace {
     /// Runtime-selectable PDX row-block sizes.
     pub rows_per_block: &'static [usize],
-    /// Partial-score dimensions processed between bound checks.
+    /// Coordinate dimensions processed per vertical-kernel call.
     pub dimensions_per_slab: &'static [usize],
 }
 
@@ -23,20 +24,20 @@ pub struct ScanKnobSpace {
 pub struct BaselineScanConfig {
     /// Maximum rows in a PDX block.
     pub rows_per_block: usize,
-    /// Dimensions processed between abandonment checks.
+    /// Coordinate dimensions processed per vertical-kernel call.
     pub dimensions_per_slab: usize,
 }
 
 /// Enumerated scan geometry available to the optimization ledger.
 pub const SCAN_KNOB_SPACE: ScanKnobSpace = ScanKnobSpace {
     rows_per_block: &[pdx::PDX_ROWS_PER_BLOCK, 128],
-    dimensions_per_slab: &[16, abandon::BASELINE_DIMENSIONS_PER_SLAB, 64],
+    dimensions_per_slab: &[16, BASELINE_DIMENSIONS_PER_SLAB, 64],
 };
 
 /// Current provisional scan geometry.
 pub const BASELINE_SCAN_CONFIG: BaselineScanConfig = BaselineScanConfig {
     rows_per_block: pdx::PDX_ROWS_PER_BLOCK,
-    dimensions_per_slab: abandon::BASELINE_DIMENSIONS_PER_SLAB,
+    dimensions_per_slab: BASELINE_DIMENSIONS_PER_SLAB,
 };
 
 use crate::kernels;
@@ -277,12 +278,6 @@ pub enum ScanError {
     WorkerPanicked,
     /// The operating system could not report a usable CPU count.
     CpuCount(String),
-    /// Early abandonment was requested for a scheme or layout without a
-    /// shipped conservative bound.
-    ///
-    /// This remains reserved for future narrow-scheme and row-major bounds;
-    /// callers must explicitly disable abandonment until that support ships.
-    EarlyAbandonmentUnsupported,
 }
 
 impl std::fmt::Display for ScanError {
@@ -323,9 +318,6 @@ impl std::fmt::Display for ScanError {
             Self::CpuCount(error) => {
                 write!(formatter, "could not determine scan CPU count: {error}")
             }
-            Self::EarlyAbandonmentUnsupported => formatter.write_str(
-                "early abandonment is supported only for F32 or Bit4 queries over matching PDX rows",
-            ),
         }
     }
 }
@@ -348,7 +340,7 @@ impl From<QuantError> for ScanError {
 ///
 /// Scores are ordered descending. Equal scores are always ordered by ascending
 /// row id. This is a permanent public contract shared by row-major, PDX,
-/// streaming, early-abandon, and parallel implementations.
+/// streaming and parallel implementations.
 ///
 /// # Errors
 ///
@@ -364,31 +356,27 @@ fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, 
             scan_f32(query, rows, request.row_mask, k)
         }
         (ScanQuery::F32(_), ScanRows::F32Pdx(matrix)) => {
-            scan_partition(request, k, 0..matrix.row_count(), None)
-                .map(|partition| partition.candidates)
+            scan_partition(request, k, 0..matrix.row_count()).map(|partition| partition.candidates)
         }
         (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
             scan_f16(query, rows, request.row_mask, k)
         }
         (ScanQuery::F16(_), ScanRows::F16Pdx(matrix)) => {
-            scan_partition(request, k, 0..matrix.row_count(), None)
-                .map(|partition| partition.candidates)
+            scan_partition(request, k, 0..matrix.row_count()).map(|partition| partition.candidates)
         }
         (ScanQuery::Int8(query), ScanRows::Int8RowMajor { codes, factors }) => {
             scan_int8(query, codes, factors, request.row_mask, k)
         }
         (ScanQuery::Int8(query), ScanRows::Int8Pdx { codes, factors }) => {
             let _ = (query, factors);
-            scan_partition(request, k, 0..codes.row_count(), None)
-                .map(|partition| partition.candidates)
+            scan_partition(request, k, 0..codes.row_count()).map(|partition| partition.candidates)
         }
         (ScanQuery::Bit4(query), ScanRows::Bit4RowMajor { codes, factors }) => {
             scan_bit4(query, codes, factors, request.row_mask, k)
         }
         (ScanQuery::Bit4(query), ScanRows::Bit4Pdx { codes, factors }) => {
             let _ = (query, factors);
-            scan_partition(request, k, 0..codes.row_count(), None)
-                .map(|partition| partition.candidates)
+            scan_partition(request, k, 0..codes.row_count()).map(|partition| partition.candidates)
         }
         (query, rows) => Err(ScanError::SchemeMismatch {
             query: query.scheme(),
@@ -401,8 +389,6 @@ fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, 
 pub(crate) struct PartitionScan {
     candidates: Vec<ScanCandidate>,
     dims_touched: u64,
-    rows_abandoned: u64,
-    blocks_skipped: u64,
     bytes_read: u64,
 }
 
@@ -522,16 +508,11 @@ pub(crate) fn scan_partition(
     request: ScanRequest<'_>,
     k: usize,
     range: std::ops::Range<usize>,
-    abandonment_seed: Option<&abandon::AbandonmentSeed>,
 ) -> Result<PartitionScan, ScanError> {
     let geometry = scan_geometry(request)?;
     if range.start > range.end || range.end > geometry.row_count {
         return Err(ScanError::ArithmeticOverflow);
     }
-    if let Some(seed) = abandonment_seed {
-        return abandon::scan_pdx_with_abandonment(request, k, range, seed);
-    }
-
     let first_row = range.start;
     let candidates = match (request.query, request.rows) {
         (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
@@ -593,10 +574,26 @@ pub(crate) fn scan_partition(
     Ok(PartitionScan {
         candidates,
         dims_touched,
-        rows_abandoned: 0,
-        blocks_skipped: 0,
         bytes_read: 0,
     })
+}
+
+fn validate_f32_pdx(query: &[f32], matrix: &PdxMatrix) -> Result<(), ScanError> {
+    if let Some((index, _)) = query
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(ScanError::NonFiniteInput { index });
+    }
+    if let Some(index) = matrix.f32_first_non_finite() {
+        let index = query
+            .len()
+            .checked_add(index)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        return Err(ScanError::NonFiniteInput { index });
+    }
+    Ok(())
 }
 
 fn scan_f32_pdx_vertical(
@@ -606,7 +603,7 @@ fn scan_f32_pdx_vertical(
     k: usize,
     range: std::ops::Range<usize>,
 ) -> Result<PartitionScan, ScanError> {
-    abandon::validate_f32_pdx(query, matrix)?;
+    validate_f32_pdx(query, matrix)?;
     let mut selected = BoundedTopK::new(k.min(range.end.saturating_sub(range.start)));
     let mut accumulators = vec![0.0_f32; matrix.rows_per_block()];
     let mut dims_touched = 0_u64;
@@ -624,7 +621,7 @@ fn scan_f32_pdx_vertical(
         let mut slab_start = 0_usize;
         while slab_start < query.len() {
             let slab_end = slab_start
-                .saturating_add(abandon::BASELINE_DIMENSIONS_PER_SLAB)
+                .saturating_add(BASELINE_DIMENSIONS_PER_SLAB)
                 .min(query.len());
             let query_slab = query
                 .get(slab_start..slab_end)
@@ -652,8 +649,6 @@ fn scan_f32_pdx_vertical(
     Ok(PartitionScan {
         candidates: selected.into_sorted(),
         dims_touched,
-        rows_abandoned: 0,
-        blocks_skipped: 0,
         bytes_read,
     })
 }
@@ -682,7 +677,7 @@ fn scan_f16_pdx_vertical(
         let mut slab_start = 0_usize;
         while slab_start < query.len() {
             let slab_end = slab_start
-                .saturating_add(abandon::BASELINE_DIMENSIONS_PER_SLAB)
+                .saturating_add(BASELINE_DIMENSIONS_PER_SLAB)
                 .min(query.len());
             let query_slab = query
                 .get(slab_start..slab_end)
@@ -710,8 +705,6 @@ fn scan_f16_pdx_vertical(
     Ok(PartitionScan {
         candidates: selected.into_sorted(),
         dims_touched,
-        rows_abandoned: 0,
-        blocks_skipped: 0,
         bytes_read,
     })
 }
@@ -741,7 +734,7 @@ fn scan_int8_pdx_vertical(
         let mut slab_start = 0_usize;
         while slab_start < query.len() {
             let slab_end = slab_start
-                .saturating_add(abandon::BASELINE_DIMENSIONS_PER_SLAB)
+                .saturating_add(BASELINE_DIMENSIONS_PER_SLAB)
                 .min(query.len());
             let query_slab = query
                 .codes()
@@ -779,8 +772,6 @@ fn scan_int8_pdx_vertical(
     Ok(PartitionScan {
         candidates: selected.into_sorted(),
         dims_touched,
-        rows_abandoned: 0,
-        blocks_skipped: 0,
         bytes_read,
     })
 }
@@ -810,7 +801,7 @@ fn scan_bit4_pdx_vertical(
         let mut slab_start = 0_usize;
         while slab_start < query.len() {
             let slab_end = slab_start
-                .saturating_add(abandon::BASELINE_DIMENSIONS_PER_SLAB)
+                .saturating_add(BASELINE_DIMENSIONS_PER_SLAB)
                 .min(query.len());
             let query_slab = query
                 .coordinate_codes()
@@ -850,8 +841,6 @@ fn scan_bit4_pdx_vertical(
     Ok(PartitionScan {
         candidates: selected.into_sorted(),
         dims_touched,
-        rows_abandoned: 0,
-        blocks_skipped: 0,
         bytes_read,
     })
 }
@@ -1180,16 +1169,10 @@ mod tests {
 
     use super::pdx::PdxMatrix;
     use super::{
-        CandidateStream, Int8Factors, ScanError, ScanOptions, ScanQuery, ScanRequest, ScanRows,
+        CandidateStream, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows,
         candidate_stream, top_k, top_k_with_options,
     };
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
-
-    #[test]
-    fn scan_options_default_disables_early_abandonment() {
-        let actual = ScanOptions::default().early_abandon;
-        assert!(!actual, "early_abandon={actual}, expected=false");
-    }
 
     #[test]
     fn all_identical_vectors_tie_by_ascending_row_id() {
@@ -1207,49 +1190,6 @@ mod tests {
             hits.iter().map(|hit| hit.row_id).collect::<Vec<_>>(),
             [0, 1, 2]
         );
-    }
-
-    #[test]
-    fn early_abandon_keeps_equal_score_rows_that_win_the_id_tie_break() {
-        let dimension = 64;
-        let row_count = 1_024;
-        let query = vec![1.0_f32; dimension];
-        let rows = vec![1.0_f32; row_count * dimension];
-        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("identical f32 PDX rows");
-        let request = ScanRequest {
-            query: ScanQuery::F32(&query),
-            rows: ScanRows::F32Pdx(&pdx),
-            row_mask: None,
-        };
-        let exhaustive = top_k_with_options(
-            request,
-            10,
-            ScanOptions {
-                early_abandon: false,
-                thread_budget: 1,
-            },
-        )
-        .expect("exhaustive tie scan");
-        let abandoned = top_k_with_options(
-            request,
-            10,
-            ScanOptions {
-                early_abandon: true,
-                thread_budget: 1,
-            },
-        )
-        .expect("early-abandon tie scan");
-
-        assert_eq!(abandoned.candidates, exhaustive.candidates);
-        assert_eq!(
-            abandoned
-                .candidates
-                .iter()
-                .map(|candidate| candidate.row_id)
-                .collect::<Vec<_>>(),
-            (0..10).collect::<Vec<_>>()
-        );
-        assert!(abandoned.stats.dims_touched > exhaustive.stats.dims_touched);
     }
 
     #[test]
@@ -1501,21 +1441,14 @@ mod tests {
     ) {
         let expected = top_k(row_request, k).expect("valid reference scan");
         for request in [row_request, pdx_request] {
-            let exhaustive_single = top_k_with_options(
-                request,
-                k,
-                ScanOptions {
-                    early_abandon: false,
-                    thread_budget: 1,
-                },
-            )
-            .expect("valid single-thread extended scan")
-            .candidates;
+            let exhaustive_single =
+                top_k_with_options(request, k, ScanOptions { thread_budget: 1 })
+                    .expect("valid single-thread extended scan")
+                    .candidates;
             let exhaustive = top_k_with_options(
                 request,
                 k,
                 ScanOptions {
-                    early_abandon: false,
                     thread_budget: case % 8 + 1,
                 },
             )
@@ -1537,42 +1470,6 @@ mod tests {
                 comparison,
                 &format!("extended case {case}"),
             );
-
-            let abandoned = top_k_with_options(
-                request,
-                k,
-                ScanOptions {
-                    early_abandon: true,
-                    thread_budget: case % 8 + 1,
-                },
-            );
-            if matches!(
-                (request.query, request.rows),
-                (ScanQuery::F32(_), ScanRows::F32Pdx(_))
-                    | (ScanQuery::Bit4(_), ScanRows::Bit4Pdx { .. })
-            ) {
-                let abandoned = abandoned.expect("supported abandonment").candidates;
-                let abandoned_single = top_k_with_options(
-                    request,
-                    k,
-                    ScanOptions {
-                        early_abandon: true,
-                        thread_budget: 1,
-                    },
-                )
-                .expect("supported single-thread abandonment")
-                .candidates;
-                assert_eq!(
-                    abandoned, exhaustive,
-                    "extended abandon case {case} must be bit-exact"
-                );
-                assert_eq!(
-                    abandoned_single, exhaustive_single,
-                    "extended single-thread abandon case {case} must be bit-exact"
-                );
-            } else {
-                assert_eq!(abandoned, Err(ScanError::EarlyAbandonmentUnsupported));
-            }
         }
     }
 
@@ -1720,202 +1617,6 @@ mod tests {
     }
 
     #[test]
-    fn prop_early_abandon_is_lossless() {
-        let mut random = crate::test_support::seeded_rng("scan::prop_early_abandon_is_lossless");
-        let cases = std::env::var("PROPTEST_CASES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(256);
-        for case in 0..cases {
-            let dimension = match case % 8 {
-                0 => 1,
-                1 => 8,
-                2 => 17,
-                3 => 32,
-                4 => 33,
-                5 => 64,
-                6 => 65,
-                _ => random.random_range(1..=96),
-            };
-            let row_count = random.random_range(1..=160);
-            let k = if case.is_multiple_of(13) {
-                row_count
-            } else {
-                random.random_range(1..=row_count)
-            };
-            match case % 3 {
-                0 => {
-                    let query = adversarial_f32_values(&mut random, dimension, case);
-                    let rows = adversarial_f32_values(
-                        &mut random,
-                        row_count * dimension,
-                        case.wrapping_add(1),
-                    );
-                    let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
-                    assert_abandon_pair(
-                        ScanRequest {
-                            query: ScanQuery::F32(&query),
-                            rows: ScanRows::F32RowMajor(&rows),
-                            row_mask: None,
-                        },
-                        ScanRequest {
-                            query: ScanQuery::F32(&query),
-                            rows: ScanRows::F32Pdx(&pdx),
-                            row_mask: None,
-                        },
-                        k,
-                        case,
-                    );
-                }
-                1 => {
-                    let query_values = adversarial_f32_values(&mut random, dimension, case);
-                    let query = prepare_int8_query(&query_values).expect("Int8 query");
-                    let codes = (0..row_count * dimension)
-                        .map(|_| random.random::<i8>())
-                        .collect::<Vec<_>>();
-                    let factors = (0..row_count)
-                        .map(|row| {
-                            let scale = if row.is_multiple_of(11) {
-                                0.0
-                            } else {
-                                random.random_range(f32::MIN_POSITIVE..=0.5)
-                            };
-                            Int8Factors::new(scale, random.random_range(-2.0..=2.0))
-                                .expect("Int8 factors")
-                        })
-                        .collect::<Vec<_>>();
-                    let pdx = PdxMatrix::encode_int8(&codes, dimension).expect("Int8 PDX");
-                    assert_abandon_pair(
-                        ScanRequest {
-                            query: ScanQuery::Int8(&query),
-                            rows: ScanRows::Int8RowMajor {
-                                codes: &codes,
-                                factors: &factors,
-                            },
-                            row_mask: None,
-                        },
-                        ScanRequest {
-                            query: ScanQuery::Int8(&query),
-                            rows: ScanRows::Int8Pdx {
-                                codes: &pdx,
-                                factors: &factors,
-                            },
-                            row_mask: None,
-                        },
-                        k,
-                        case,
-                    );
-                }
-                _ => {
-                    let query_values = adversarial_f32_values(&mut random, dimension, case);
-                    let query = prepare_bit4_query(&query_values, case as u64).expect("Bit4 query");
-                    let row_width = dimension.div_ceil(2);
-                    let mut codes = Vec::with_capacity(row_count * row_width);
-                    let mut factors = Vec::with_capacity(row_count);
-                    for row in 0..row_count {
-                        let source =
-                            adversarial_f32_values(&mut random, dimension, case.wrapping_add(row));
-                        let mut encoded = vec![0_u8; row_width];
-                        factors.push(quantize_bit4(&source, &mut encoded).expect("Bit4 row"));
-                        codes.extend(encoded);
-                    }
-                    let pdx = PdxMatrix::encode_bit4(&codes, dimension).expect("Bit4 PDX");
-                    assert_abandon_pair(
-                        ScanRequest {
-                            query: ScanQuery::Bit4(&query),
-                            rows: ScanRows::Bit4RowMajor {
-                                codes: &codes,
-                                factors: &factors,
-                            },
-                            row_mask: None,
-                        },
-                        ScanRequest {
-                            query: ScanQuery::Bit4(&query),
-                            rows: ScanRows::Bit4Pdx {
-                                codes: &pdx,
-                                factors: &factors,
-                            },
-                            row_mask: None,
-                        },
-                        k,
-                        case,
-                    );
-                }
-            }
-        }
-    }
-
-    fn assert_abandon_pair(
-        row_request: ScanRequest<'_>,
-        pdx_request: ScanRequest<'_>,
-        k: usize,
-        case: usize,
-    ) {
-        for request in [row_request, pdx_request] {
-            let exhaustive = top_k_with_options(
-                request,
-                k,
-                ScanOptions {
-                    early_abandon: false,
-                    thread_budget: 1,
-                },
-            )
-            .expect("exhaustive scan");
-            let abandoned = top_k_with_options(
-                request,
-                k,
-                ScanOptions {
-                    early_abandon: true,
-                    thread_budget: 1,
-                },
-            );
-            if matches!(
-                (request.query, request.rows),
-                (ScanQuery::F32(_), ScanRows::F32Pdx(_))
-                    | (ScanQuery::Bit4(_), ScanRows::Bit4Pdx { .. })
-            ) {
-                let abandoned = abandoned.expect("supported abandon scan");
-                assert_eq!(
-                    abandoned.candidates.len(),
-                    exhaustive.candidates.len(),
-                    "case {case} candidate count"
-                );
-                assert_eq!(abandoned.candidates, exhaustive.candidates, "case {case}");
-            } else {
-                assert_eq!(abandoned, Err(ScanError::EarlyAbandonmentUnsupported));
-            }
-        }
-    }
-
-    fn adversarial_f32_values(random: &mut impl Rng, length: usize, case: usize) -> Vec<f32> {
-        const VALUES: [f32; 12] = [
-            0.0,
-            -0.0,
-            f32::from_bits(1),
-            -f32::from_bits(1),
-            f32::MIN_POSITIVE,
-            -f32::MIN_POSITIVE,
-            1.0,
-            -1.0,
-            1.0e-20,
-            -1.0e-20,
-            1.0e10,
-            -1.0e10,
-        ];
-        (0..length)
-            .map(|index| {
-                if case.is_multiple_of(19) {
-                    0.0
-                } else if index < VALUES.len() {
-                    VALUES[index]
-                } else {
-                    random.random_range(-8.0_f32..=8.0_f32)
-                }
-            })
-            .collect()
-    }
-
-    #[test]
     fn prop_parallel_equals_single_thread() {
         let mut random =
             crate::test_support::seeded_rng("scan::prop_parallel_equals_single_thread");
@@ -1943,21 +1644,13 @@ mod tests {
                 rows: ScanRows::F32Pdx(&pdx),
                 row_mask: None,
             };
-            let single = top_k_with_options(
-                request,
-                k,
-                ScanOptions {
-                    early_abandon: case.is_multiple_of(2),
-                    thread_budget: 1,
-                },
-            )
-            .expect("single-thread scan");
+            let single = top_k_with_options(request, k, ScanOptions { thread_budget: 1 })
+                .expect("single-thread scan");
             let requested = case % 8 + 1;
             let parallel = top_k_with_options(
                 request,
                 k,
                 ScanOptions {
-                    early_abandon: case.is_multiple_of(2),
                     thread_budget: requested,
                 },
             )
@@ -1972,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn dims_touched_is_exact_when_abandonment_is_disabled() {
+    fn pdx_scan_reports_one_exhaustive_payload_pass() {
         let dimension = 37;
         let row_count = 137;
         let query = vec![1.0_f32; dimension];
@@ -1985,162 +1678,15 @@ mod tests {
                 row_mask: None,
             },
             10,
-            ScanOptions {
-                early_abandon: false,
-                thread_budget: 1,
-            },
+            ScanOptions { thread_budget: 1 },
         )
         .expect("exhaustive scan");
         assert_eq!(outcome.stats.dims_touched, (row_count * dimension) as u64);
-        assert_eq!(outcome.stats.rows_abandoned, 0);
-        assert_eq!(outcome.stats.blocks_skipped, 0);
         assert_eq!(
             outcome.stats.bytes_read,
             (row_count * dimension * std::mem::size_of::<f32>()) as u64,
             "PDX exhaustive scan must report every loaded payload byte"
         );
-    }
-
-    #[test]
-    fn bit4_pdx_early_abandonment_is_supported() {
-        let dimension = 64;
-        let row_count = 256;
-        let positive = vec![1.0_f32; dimension];
-        let negative = vec![-1.0_f32; dimension];
-        let query = prepare_bit4_query(&positive, 5).expect("Bit4 query");
-        let row_width = dimension.div_ceil(2);
-        let mut positive_row = vec![0_u8; row_width];
-        let positive_factor =
-            quantize_bit4(&positive, &mut positive_row).expect("positive Bit4 row");
-        let mut negative_row = vec![0_u8; row_width];
-        let negative_factor =
-            quantize_bit4(&negative, &mut negative_row).expect("negative Bit4 row");
-        let mut codes = Vec::with_capacity(row_count * row_width);
-        let mut factors = Vec::with_capacity(row_count);
-        for row_id in 0..row_count {
-            if row_id < super::pdx::PDX_ROWS_PER_BLOCK {
-                codes.extend_from_slice(&positive_row);
-                factors.push(positive_factor);
-            } else {
-                codes.extend_from_slice(&negative_row);
-                factors.push(negative_factor);
-            }
-        }
-        let pdx = PdxMatrix::encode_bit4(&codes, dimension).expect("Bit4 PDX");
-        let result = top_k_with_options(
-            ScanRequest {
-                query: ScanQuery::Bit4(&query),
-                rows: ScanRows::Bit4Pdx {
-                    codes: &pdx,
-                    factors: &factors,
-                },
-                row_mask: None,
-            },
-            10,
-            ScanOptions {
-                early_abandon: true,
-                thread_budget: 1,
-            },
-        );
-        assert_eq!(
-            result.as_ref().map(|outcome| outcome.candidates.len()),
-            Ok(10),
-            "Bit4 PDX must expose the same abandonment mode as F32 PDX"
-        );
-        let outcome = result.expect("supported Bit4 abandonment");
-        assert_eq!(outcome.stats.blocks_skipped, 3);
-        assert_eq!(outcome.stats.rows_abandoned, 192);
-        assert!(outcome.stats.bytes_read < (row_count * row_width) as u64);
-    }
-
-    #[test]
-    fn dims_touched_is_strictly_lower_when_abandonment_triggers() {
-        let dimension = 128;
-        let row_count = 768;
-        let query = vec![1.0_f32; dimension];
-        let mut rows = vec![-10.0_f32; row_count * dimension];
-        for value in rows.iter_mut().take(64 * dimension) {
-            *value = 10.0;
-        }
-        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
-        let request = ScanRequest {
-            query: ScanQuery::F32(&query),
-            rows: ScanRows::F32Pdx(&pdx),
-            row_mask: None,
-        };
-        let exhaustive = top_k_with_options(
-            request,
-            1,
-            ScanOptions {
-                early_abandon: false,
-                thread_budget: 1,
-            },
-        )
-        .expect("exhaustive scan");
-        let abandoned = top_k_with_options(
-            request,
-            1,
-            ScanOptions {
-                early_abandon: true,
-                thread_budget: 1,
-            },
-        )
-        .expect("abandon scan");
-        assert_eq!(abandoned.candidates, exhaustive.candidates);
-        assert!(
-            abandoned.stats.dims_touched < exhaustive.stats.dims_touched,
-            "assertion failed: abandon={} exhaustive={}",
-            abandoned.stats.dims_touched,
-            exhaustive.stats.dims_touched
-        );
-        assert_eq!(abandoned.stats.rows_abandoned, 704);
-        assert_eq!(abandoned.stats.blocks_skipped, 11);
-        assert!(abandoned.stats.bytes_read < exhaustive.stats.bytes_read);
-    }
-
-    #[test]
-    fn abandonment_never_exceeds_exhaustive_work_at_supported_thread_counts() {
-        let dimension = 128;
-        let row_count = 4_096;
-        let query = vec![1.0_f32; dimension];
-        let mut rows = vec![-1.0_f32; row_count * dimension];
-        for value in rows.iter_mut().take(64 * dimension) {
-            *value = 1.0;
-        }
-        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
-        let request = ScanRequest {
-            query: ScanQuery::F32(&query),
-            rows: ScanRows::F32Pdx(&pdx),
-            row_mask: None,
-        };
-        for requested in [1, 2, 4, 8, 12] {
-            let exhaustive = top_k_with_options(
-                request,
-                10,
-                ScanOptions {
-                    early_abandon: false,
-                    thread_budget: requested,
-                },
-            )
-            .expect("exhaustive scan");
-            let abandoned = top_k_with_options(
-                request,
-                10,
-                ScanOptions {
-                    early_abandon: true,
-                    thread_budget: requested,
-                },
-            )
-            .expect("abandon scan");
-            assert_eq!(abandoned.candidates, exhaustive.candidates);
-            assert!(
-                abandoned.stats.dims_touched < exhaustive.stats.dims_touched,
-                "requested={requested} used={} abandon={} exhaustive={}",
-                abandoned.stats.threads_used,
-                abandoned.stats.dims_touched,
-                exhaustive.stats.dims_touched
-            );
-        }
     }
 
     #[test]
@@ -2160,7 +1706,6 @@ mod tests {
                 },
                 1,
                 ScanOptions {
-                    early_abandon: false,
                     thread_budget: requested,
                 },
             )
@@ -2437,23 +1982,6 @@ mod tests {
         for error in errors {
             assert!(!error.to_string().is_empty());
         }
-        assert_eq!(
-            top_k_with_options(
-                mask_fixture(&f32_query, &[1.0, 2.0], None),
-                1,
-                ScanOptions {
-                    early_abandon: true,
-                    thread_budget: 0,
-                },
-            ),
-            Err(ScanError::EarlyAbandonmentUnsupported)
-        );
-        assert!(
-            !ScanError::EarlyAbandonmentUnsupported
-                .to_string()
-                .is_empty()
-        );
-
         let pdx = PdxMatrix::encode_f32(&[1.0, 2.0, 3.0], 3).expect("valid PDX");
         assert!(matches!(
             top_k(

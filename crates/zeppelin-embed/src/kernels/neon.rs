@@ -54,9 +54,6 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         vertical_f16: vertical_f16_kernel(features, 32),
         vertical_i8: vertical_i8_dotprod_r32,
         vertical_bit4: vertical_bit4_dotprod_r32,
-        f32_extrema_slab_bounds,
-        max_f32,
-        max_i32,
         vertical_rows_per_tile: 32,
     }
 }
@@ -79,9 +76,6 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
         vertical_f16: vertical_f16_kernel(features, 32),
         vertical_i8: vertical_i8_dotprod_r32,
         vertical_bit4: vertical_bit4_dotprod_r32,
-        f32_extrema_slab_bounds,
-        max_f32,
-        max_i32,
         vertical_rows_per_tile: 32,
     }
 }
@@ -124,9 +118,6 @@ fn dotprod_shape_table(
         vertical_f16: vertical_f16_kernel(features, 32),
         vertical_i8: vertical_i8_dotprod_r32,
         vertical_bit4: vertical_bit4_dotprod_r32,
-        f32_extrema_slab_bounds,
-        max_f32,
-        max_i32,
         vertical_rows_per_tile: 32,
     }
 }
@@ -149,9 +140,6 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         vertical_f16: vertical_f16_kernel(features, 32),
         vertical_i8: vertical_i8_widen_r32,
         vertical_bit4: vertical_bit4_widen_r32,
-        f32_extrema_slab_bounds,
-        max_f32,
-        max_i32,
         vertical_rows_per_tile: 32,
     }
 }
@@ -1554,152 +1542,6 @@ fn vertical_bit4_row_tail(
                 + odd_query.map_or(0, |query_value| i32::from(query_value) * low);
         }
     }
-}
-
-fn f32_extrema_slab_bounds(
-    query: &[f32],
-    extrema: &[super::F32Extrema],
-    dimensions_per_slab: usize,
-    slab_bounds: &mut [f64],
-) -> super::F32BoundTotals {
-    debug_assert_eq!(query.len(), extrema.len());
-    debug_assert!(dimensions_per_slab > 0);
-    debug_assert_eq!(slab_bounds.len(), query.len().div_ceil(dimensions_per_slab));
-    // SAFETY: dispatch established NEON support. F32Extrema is repr(C) with
-    // two adjacent u32 fields, so VLD2 deinterleaves four complete records.
-    unsafe { f32_extrema_slab_bounds_inner(query, extrema, dimensions_per_slab, slab_bounds) }
-}
-
-#[target_feature(enable = "neon")]
-unsafe fn f32_extrema_slab_bounds_inner(
-    query: &[f32],
-    extrema: &[super::F32Extrema],
-    dimensions_per_slab: usize,
-    slab_bounds: &mut [f64],
-) -> super::F32BoundTotals {
-    slab_bounds.fill(0.0);
-    let mut maximum_contribution = 0.0_f64;
-    let mut absolute_contribution = 0.0_f64;
-    for (slab_index, (query_slab, extrema_slab)) in query
-        .chunks(dimensions_per_slab)
-        .zip(extrema.chunks(dimensions_per_slab))
-        .enumerate()
-    {
-        let processed = query_slab.len() / 4 * 4;
-        let mut maximum_accumulator = vdupq_n_f64(0.0);
-        let mut absolute_accumulator = vdupq_n_f64(0.0);
-        let mut dimension = 0_usize;
-        while dimension < processed {
-            // SAFETY: four query and four repr(C) extrema records remain.
-            let query_values = unsafe { vld1q_f32(query_slab.as_ptr().add(dimension)) };
-            let bounds = unsafe { vld2q_u32(extrema_slab.as_ptr().add(dimension).cast::<u32>()) };
-            let minimum = vreinterpretq_f32_u32(bounds.0);
-            let maximum = vreinterpretq_f32_u32(bounds.1);
-            let query_low = vcvt_f64_f32(vget_low_f32(query_values));
-            let query_high = vcvt_high_f64_f32(query_values);
-            let minimum_low = vcvt_f64_f32(vget_low_f32(minimum));
-            let minimum_high = vcvt_high_f64_f32(minimum);
-            let maximum_low = vcvt_f64_f32(vget_low_f32(maximum));
-            let maximum_high = vcvt_high_f64_f32(maximum);
-            let minimum_product_low = vmulq_f64(query_low, minimum_low);
-            let minimum_product_high = vmulq_f64(query_high, minimum_high);
-            let maximum_product_low = vmulq_f64(query_low, maximum_low);
-            let maximum_product_high = vmulq_f64(query_high, maximum_high);
-            maximum_accumulator = vaddq_f64(
-                maximum_accumulator,
-                vaddq_f64(
-                    vmaxq_f64(minimum_product_low, maximum_product_low),
-                    vmaxq_f64(minimum_product_high, maximum_product_high),
-                ),
-            );
-            absolute_accumulator = vaddq_f64(
-                absolute_accumulator,
-                vaddq_f64(
-                    vmaxq_f64(
-                        vabsq_f64(minimum_product_low),
-                        vabsq_f64(maximum_product_low),
-                    ),
-                    vmaxq_f64(
-                        vabsq_f64(minimum_product_high),
-                        vabsq_f64(maximum_product_high),
-                    ),
-                ),
-            );
-            dimension += 4;
-        }
-        let mut slab_maximum = vaddvq_f64(maximum_accumulator);
-        let mut slab_absolute = vaddvq_f64(absolute_accumulator);
-        for (&query_value, bounds) in query_slab
-            .get(processed..)
-            .unwrap_or_default()
-            .iter()
-            .zip(extrema_slab.get(processed..).unwrap_or_default())
-        {
-            let minimum_product =
-                f64::from(query_value) * f64::from(f32::from_bits(bounds.minimum_bits));
-            let maximum_product =
-                f64::from(query_value) * f64::from(f32::from_bits(bounds.maximum_bits));
-            slab_maximum += minimum_product.max(maximum_product);
-            slab_absolute += minimum_product.abs().max(maximum_product.abs());
-        }
-        if let Some(output) = slab_bounds.get_mut(slab_index) {
-            *output = slab_maximum;
-        }
-        maximum_contribution += slab_maximum;
-        absolute_contribution += slab_absolute;
-    }
-    super::F32BoundTotals {
-        maximum_contribution,
-        absolute_contribution,
-    }
-}
-
-fn max_f32(values: &[f32]) -> f32 {
-    // SAFETY: runtime dispatch established NEON support; complete loads stay
-    // in `values` and the scalar tail handles the remainder.
-    unsafe { max_f32_inner(values) }
-}
-
-#[target_feature(enable = "neon")]
-unsafe fn max_f32_inner(values: &[f32]) -> f32 {
-    let processed = values.len() / 4 * 4;
-    let mut maximum = vdupq_n_f32(f32::NEG_INFINITY);
-    let mut base = 0_usize;
-    while base < processed {
-        // SAFETY: four values remain by `processed`.
-        maximum = vmaxq_f32(maximum, unsafe { vld1q_f32(values.as_ptr().add(base)) });
-        base += 4;
-    }
-    values
-        .get(processed..)
-        .unwrap_or_default()
-        .iter()
-        .copied()
-        .fold(vmaxvq_f32(maximum), f32::max)
-}
-
-fn max_i32(values: &[i32]) -> i32 {
-    // SAFETY: runtime dispatch established NEON support; complete loads stay
-    // in `values` and the scalar tail handles the remainder.
-    unsafe { max_i32_inner(values) }
-}
-
-#[target_feature(enable = "neon")]
-unsafe fn max_i32_inner(values: &[i32]) -> i32 {
-    let processed = values.len() / 4 * 4;
-    let mut maximum = vdupq_n_s32(i32::MIN);
-    let mut base = 0_usize;
-    while base < processed {
-        // SAFETY: four values remain by `processed`.
-        maximum = vmaxq_s32(maximum, unsafe { vld1q_s32(values.as_ptr().add(base)) });
-        base += 4;
-    }
-    values
-        .get(processed..)
-        .unwrap_or_default()
-        .iter()
-        .copied()
-        .fold(vmaxvq_s32(maximum), i32::max)
 }
 
 pub(super) fn wide_stream_checksum(bytes: &[u8]) -> u64 {

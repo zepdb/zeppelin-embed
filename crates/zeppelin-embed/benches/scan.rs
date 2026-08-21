@@ -35,7 +35,6 @@ struct Config {
     k: usize,
     threads: usize,
     block_rows: usize,
-    abandon: bool,
     iterations: usize,
     repeats: usize,
     smoke: bool,
@@ -120,7 +119,6 @@ impl Default for Config {
             k: 10,
             threads: 0,
             block_rows: 64,
-            abandon: false,
             iterations: 10,
             repeats: 1,
             smoke: false,
@@ -155,7 +153,7 @@ where
     let exhaustive_dimensions = u64::try_from(config.rows)?
         .checked_mul(u64::try_from(config.dimensions)?)
         .ok_or("benchmark dimension count overflowed")?;
-    if !config.abandon && first.stats.dims_touched != exhaustive_dimensions {
+    if first.stats.dims_touched != exhaustive_dimensions {
         return Err(format!(
             "exhaustive dims_touched mismatch: expected {exhaustive_dimensions}, got {}",
             first.stats.dims_touched
@@ -177,47 +175,22 @@ where
     let exhaustive_bytes = u64::try_from(config.rows)?
         .checked_mul(u64::try_from(payload_bytes_per_row)?)
         .ok_or("benchmark payload byte count overflowed")?;
-    if !config.abandon
-        && (first.stats.bytes_read != exhaustive_bytes
-            || first.stats.blocks_skipped != 0
-            || first.stats.rows_abandoned != 0)
-    {
+    if first.stats.bytes_read != exhaustive_bytes {
         return Err(format!(
-            "exhaustive counter mismatch: expected bytes_read={exhaustive_bytes} blocks_skipped=0 rows_abandoned=0, got bytes_read={} blocks_skipped={} rows_abandoned={}",
-            first.stats.bytes_read, first.stats.blocks_skipped, first.stats.rows_abandoned
-        )
-        .into());
-    }
-    if first.stats.rows_abandoned > u64::try_from(config.rows)? {
-        return Err("rows_abandoned exceeded the requested row count".into());
-    }
-    let block_count = config.rows.div_ceil(config.block_rows);
-    if first.stats.blocks_skipped > u64::try_from(block_count)? {
-        return Err("blocks_skipped exceeded the encoded block count".into());
-    }
-    if config.abandon
-        && config.fixture == FixtureKind::Clustered
-        && matches!(config.scheme, Scheme::F32 | Scheme::Bit4)
-        && config.rows >= 100_000
-        && first.stats.bytes_read >= exhaustive_bytes
-    {
-        return Err(format!(
-            "clustered abandonment did not reduce payload bytes: exhaustive={exhaustive_bytes}, actual={}",
+            "exhaustive bytes_read mismatch: expected {exhaustive_bytes}, got {}",
             first.stats.bytes_read
         )
         .into());
     }
     writeln!(
         output,
-        "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} blocks_skipped={} bytes_read={} exhaustive_bytes={} threads_used={}",
+        "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} bytes_read={} exhaustive_bytes={} threads_used={}",
         config.scheme,
         config.fixture,
         config.rows,
         config.dimensions,
         config.block_rows,
         first.stats.dims_touched,
-        first.stats.rows_abandoned,
-        first.stats.blocks_skipped,
         first.stats.bytes_read,
         exhaustive_bytes,
         first.stats.threads_used
@@ -475,7 +448,6 @@ fn build_clustered_bit4_values(
 
 fn scan_options(config: Config) -> ScanOptions {
     ScanOptions {
-        early_abandon: config.abandon,
         thread_budget: config.threads,
     }
 }
@@ -526,14 +498,6 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Config
             "--block-rows" => config.block_rows = parse_next(&mut arguments, "--block-rows")?,
             "--iterations" => config.iterations = parse_next(&mut arguments, "--iterations")?,
             "--repeats" => config.repeats = scan_repeat::parse_repeats(&mut arguments)?,
-            "--abandon" => {
-                let value = arguments.next().ok_or("--abandon requires on or off")?;
-                config.abandon = match value.as_str() {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err("--abandon requires on or off".into()),
-                };
-            }
             _ => return Err(format!("unknown scan benchmark argument {argument:?}").into()),
         }
     }

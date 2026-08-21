@@ -30,9 +30,6 @@ pub(super) fn table() -> KernelTable {
         vertical_f16: scalar::vertical_f16,
         vertical_i8: scalar::vertical_i8,
         vertical_bit4: scalar::vertical_bit4,
-        f32_extrema_slab_bounds: scalar::f32_extrema_slab_bounds,
-        max_f32: scalar::max_f32,
-        max_i32: scalar::max_i32,
         vertical_rows_per_tile: super::BASELINE_KERNEL_CONFIG.vertical_rows_per_tile,
     }
 }
