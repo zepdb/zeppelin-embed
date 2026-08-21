@@ -63,11 +63,13 @@ fn policy(tier: CommitTier) -> DurabilityPolicy {
 struct PayloadPointerVfs<V> {
     inner: V,
     appended_payload: Arc<AtomicUsize>,
+    appended_buffers: Arc<AtomicUsize>,
 }
 
 struct PayloadPointerVfsFile {
     inner: Box<dyn VfsFile>,
     appended_payload: Arc<AtomicUsize>,
+    appended_buffers: Arc<AtomicUsize>,
 }
 
 impl<V> PayloadPointerVfs<V> {
@@ -75,16 +77,22 @@ impl<V> PayloadPointerVfs<V> {
         Self {
             inner,
             appended_payload: Arc::new(AtomicUsize::new(0)),
+            appended_buffers: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn appended_payload(&self) -> usize {
         self.appended_payload.load(Ordering::Acquire)
     }
+
+    fn appended_buffers(&self) -> usize {
+        self.appended_buffers.load(Ordering::Acquire)
+    }
 }
 
 impl VfsFile for PayloadPointerVfsFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.appended_buffers.store(1, Ordering::Release);
         self.appended_payload.store(
             bytes.as_ptr() as usize
                 + zeppelin_embed::wal::header::WAL_HEADER_LEN
@@ -95,6 +103,8 @@ impl VfsFile for PayloadPointerVfsFile {
     }
 
     fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        self.appended_buffers
+            .store(buffers.len(), Ordering::Release);
         if let Some(record) = buffers.last() {
             self.appended_payload.store(
                 record.as_ptr() as usize + zeppelin_embed::wal::record::RECORD_HEADER_LEN,
@@ -130,6 +140,7 @@ impl<V: Vfs> Vfs for PayloadPointerVfs<V> {
         Ok(Box::new(PayloadPointerVfsFile {
             inner: self.inner.open_append(path)?,
             appended_payload: Arc::clone(&self.appended_payload),
+            appended_buffers: Arc::clone(&self.appended_buffers),
         }))
     }
 
@@ -181,6 +192,406 @@ fn commit_reuses_encoded_payload_for_visibility() {
         visible[0].payload().expect("checked payload").as_ptr() as usize,
         vfs.appended_payload(),
         "visibility must borrow the payload bytes already owned by the encoded WAL record"
+    );
+}
+
+#[test]
+fn commit_many_uses_one_append_and_one_sync_for_one_group() {
+    let counting = CountingVfs::new(MemoryVfs::new());
+    let writer = WalWriter::create_with_max_group_bytes(
+        &counting,
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::Durable),
+        1_024,
+    )
+    .expect("writer");
+    let payloads = [[0x11; 10], [0x22; 10], [0x33; 10], [0x44; 10]];
+    let records = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| (index as u16, payload.as_slice()))
+        .collect::<Vec<_>>();
+
+    let range = writer.commit_many(&records).expect("batch commit");
+    let stats = writer.stats().expect("stats");
+
+    assert_eq!(
+        (
+            range,
+            counting.append_calls(),
+            counting.handle_barrier_sync_calls(),
+            counting.handle_full_sync_calls(),
+            counting.bytes_appended(),
+            stats.recent_groups,
+        ),
+        (
+            LogSeq::new(1)..LogSeq::new(5),
+            1,
+            0,
+            1,
+            168,
+            vec![zeppelin_embed::wal::CompletedGroup {
+                records: 4,
+                encoded_bytes: 168,
+            }],
+        ),
+        "four records inside the byte bound must share exactly one append and full sync"
+    );
+}
+
+#[test]
+fn commit_many_uses_one_shared_encoded_allocation() {
+    let vfs = PayloadPointerVfs::new(MemoryVfs::new());
+    let writer = WalWriter::create(
+        &vfs,
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    writer.commit(0, b"prime").expect("flush WAL header");
+    writer
+        .retire_visible_through(LogSeq::new(1))
+        .expect("retire prime record");
+    let allocations_before = writer
+        .stats()
+        .expect("stats before batch")
+        .encoded_buffer_allocations;
+    let payloads = [[0x51; 10], [0x52; 10], [0x53; 10], [0x54; 10]];
+    let records = payloads
+        .iter()
+        .map(|payload| (9, payload.as_slice()))
+        .collect::<Vec<_>>();
+
+    writer.commit_many(&records).expect("batch commit");
+    let visible = writer
+        .visible_records(LogSeq::new(2), records.len())
+        .expect("visible batch");
+    let allocations_after = writer
+        .stats()
+        .expect("stats after batch")
+        .encoded_buffer_allocations;
+    let first_payload = visible
+        .first()
+        .expect("first visible batch record")
+        .payload()
+        .expect("checked payload")
+        .as_ptr() as usize;
+
+    assert_eq!(
+        (
+            allocations_after.saturating_sub(allocations_before),
+            vfs.appended_buffers(),
+            first_payload == vfs.appended_payload(),
+        ),
+        (1, 1, true),
+        "one batch must own one shared encoded allocation and append it as one iovec"
+    );
+}
+
+#[test]
+fn commit_many_splits_oversized_batch_into_exact_groups() {
+    let counting = CountingVfs::new(MemoryVfs::new());
+    let writer = WalWriter::create_with_max_group_bytes(
+        &counting,
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::Durable),
+        128,
+    )
+    .expect("writer");
+    writer.commit(0, &[0; 10]).expect("flush WAL header");
+    let groups_before = writer.stats().expect("prime stats").recent_groups.len();
+    counting.reset();
+    let payloads = [[0x61; 10]; 12];
+    let records = payloads
+        .iter()
+        .map(|payload| (11, payload.as_slice()))
+        .collect::<Vec<_>>();
+
+    let result = writer.commit_many(&records);
+    let actual = match result {
+        Ok(range) => {
+            let stats = writer.stats().expect("batch stats");
+            let groups = stats
+                .recent_groups
+                .iter()
+                .skip(groups_before)
+                .map(|group| (group.records, group.encoded_bytes))
+                .collect::<Vec<_>>();
+            format!(
+                "ok range={}..{} appends={} full_syncs={} bytes={} groups={groups:?}",
+                range.start.get(),
+                range.end.get(),
+                counting.append_calls(),
+                counting.handle_full_sync_calls(),
+                counting.bytes_appended(),
+            )
+        }
+        Err(error) => format!("error={error}"),
+    };
+
+    assert_eq!(
+        actual,
+        "ok range=2..14 appends=3 full_syncs=3 bytes=384 groups=[(4, 128), (4, 128), (4, 128)]",
+        "384 encoded batch bytes must split into exactly ceil(384/128) groups"
+    );
+}
+
+#[test]
+fn commit_many_mixed_sizes_still_uses_ceil_byte_groups() {
+    let counting = CountingVfs::new(MemoryVfs::new());
+    let writer = WalWriter::create_with_max_group_bytes(
+        &counting,
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::Durable),
+        128,
+    )
+    .expect("writer");
+    writer.commit(0, &[0; 10]).expect("flush WAL header");
+    let groups_before = writer.stats().expect("prime stats").recent_groups.len();
+    counting.reset();
+    let payloads = [[0x62; 48]; 3];
+    let records = payloads
+        .iter()
+        .map(|payload| (12, payload.as_slice()))
+        .collect::<Vec<_>>();
+
+    let range = writer.commit_many(&records).expect("batch commit");
+    let stats = writer.stats().expect("batch stats");
+    let groups = stats
+        .recent_groups
+        .iter()
+        .skip(groups_before)
+        .map(|group| (group.records, group.encoded_bytes))
+        .collect::<Vec<_>>();
+    let actual = format!(
+        "range={}..{} appends={} full_syncs={} bytes={} groups={groups:?}",
+        range.start.get(),
+        range.end.get(),
+        counting.append_calls(),
+        counting.handle_full_sync_calls(),
+        counting.bytes_appended(),
+    );
+
+    assert_eq!(
+        actual, "range=2..5 appends=2 full_syncs=2 bytes=210 groups=[(1, 128), (2, 82)]",
+        "mixed record sizes must still produce exactly ceil(batch_bytes/max_group_bytes) groups"
+    );
+}
+
+#[test]
+fn commit_many_returns_gap_free_sequences_visible_in_input_order() {
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(10),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    let payloads = [b"alpha".as_slice(), b"beta", b"gamma", b"delta", b"epsilon"];
+    let records = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| (20 + index as u16, *payload))
+        .collect::<Vec<_>>();
+
+    let range = writer.commit_many(&records).expect("batch commit");
+    let visible = writer
+        .visible_records(LogSeq::new(10), records.len())
+        .expect("visible batch");
+    let actual = visible
+        .iter()
+        .map(|record| {
+            (
+                record.seq.get(),
+                record.op,
+                record.payload().expect("checked payload").to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = records
+        .iter()
+        .enumerate()
+        .map(|(index, (op, payload))| (10 + index as u64, *op, payload.to_vec()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        (range, actual),
+        (LogSeq::new(10)..LogSeq::new(15), expected),
+        "the returned range and visible queue must contain the same gap-free input-ordered sequences"
+    );
+}
+
+#[test]
+fn one_record_commit_many_matches_commit_exactly() {
+    let single_vfs = CountingVfs::new(MemoryVfs::new());
+    let single_writer = WalWriter::create(
+        &single_vfs,
+        Path::new("/wal-recovery/single.ze"),
+        LogSeq::new(1),
+        policy(CommitTier::Durable),
+    )
+    .expect("single writer");
+    let single_seq = single_writer
+        .commit(17, b"same-record")
+        .expect("single commit");
+    let single_stats = single_writer.stats().expect("single stats");
+    let single_shape = (
+        single_vfs.append_calls(),
+        single_vfs.handle_barrier_sync_calls(),
+        single_vfs.handle_full_sync_calls(),
+        single_vfs.bytes_appended(),
+        single_stats.recent_groups,
+        single_stats.encoded_buffer_allocations,
+    );
+
+    let batch_vfs = CountingVfs::new(MemoryVfs::new());
+    let batch_writer = WalWriter::create(
+        &batch_vfs,
+        Path::new("/wal-recovery/batch.ze"),
+        LogSeq::new(1),
+        policy(CommitTier::Durable),
+    )
+    .expect("batch writer");
+    let empty_range = batch_writer.commit_many(&[]).expect("empty batch");
+    let empty_durable_range = batch_writer
+        .commit_many_durable(&[])
+        .expect("empty durable batch");
+    let empty_stats = batch_writer.stats().expect("empty batch stats");
+    let empty_shape = (
+        batch_vfs.append_calls(),
+        batch_vfs.handle_barrier_sync_calls(),
+        batch_vfs.handle_full_sync_calls(),
+        batch_vfs.bytes_appended(),
+        empty_stats.recent_groups,
+        empty_stats.encoded_buffer_allocations,
+    );
+    let records = [(17, b"same-record".as_slice())];
+    let batch_range = batch_writer
+        .commit_many(&records)
+        .expect("one-record batch");
+    let batch_stats = batch_writer.stats().expect("batch stats");
+    let batch_shape = (
+        batch_vfs.append_calls(),
+        batch_vfs.handle_barrier_sync_calls(),
+        batch_vfs.handle_full_sync_calls(),
+        batch_vfs.bytes_appended(),
+        batch_stats.recent_groups,
+        batch_stats.encoded_buffer_allocations,
+    );
+
+    assert_eq!(
+        (
+            empty_range,
+            empty_durable_range,
+            empty_shape,
+            batch_range,
+            batch_shape,
+        ),
+        (
+            LogSeq::new(1)..LogSeq::new(1),
+            LogSeq::new(1)..LogSeq::new(1),
+            (0, 0, 0, 0, Vec::new(), 0),
+            single_seq..LogSeq::new(single_seq.get().saturating_add(1)),
+            single_shape,
+        ),
+        "a one-record batch must have the same result, counters, and group composition as commit"
+    );
+}
+
+#[test]
+fn commit_many_staging_failure_consumes_nothing() {
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(u64::MAX - 1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    let records = [(31, b"first".as_slice()), (32, b"second".as_slice())];
+
+    let batch = match writer.commit_many(&records) {
+        Ok(range) => format!("ok={}..{}", range.start.get(), range.end.get()),
+        Err(error) => format!("error={error}"),
+    };
+    let visible = writer
+        .visible_records(LogSeq::new(u64::MAX - 1), records.len())
+        .expect("visibility after failed staging")
+        .iter()
+        .map(|record| record.seq.get())
+        .collect::<Vec<_>>();
+    let next = match writer.commit(33, b"after-failure") {
+        Ok(seq) => format!("ok={}", seq.get()),
+        Err(error) => format!("error={error}"),
+    };
+    let actual = format!("batch={batch} visible={visible:?} next={next}");
+
+    assert_eq!(
+        actual,
+        format!(
+            "batch=error=WAL sequence space exhausted visible=[] next=ok={}",
+            u64::MAX - 1
+        ),
+        "a batch that cannot assign every record must publish nothing and leave its first sequence reusable"
+    );
+}
+
+#[test]
+fn commit_many_durable_stages_all_then_waits_for_the_last_flush() {
+    let blocking = BlockingVfs::new(FaultVfs::new());
+    blocking.block_next_syncs(1).expect("arm batch barrier");
+    let counting = CountingVfs::new(blocking.clone());
+    let writer = Arc::new(
+        WalWriter::create(
+            &counting,
+            Path::new(WAL_PATH),
+            LogSeq::new(1),
+            policy(CommitTier::Ordered),
+        )
+        .expect("writer"),
+    );
+    let returned = Arc::new(AtomicBool::new(false));
+    let committing_writer = Arc::clone(&writer);
+    let committing_returned = Arc::clone(&returned);
+    let commit = thread::spawn(move || {
+        let payloads = [[0x71; 10], [0x72; 10], [0x73; 10], [0x74; 10]];
+        let records = payloads
+            .iter()
+            .map(|payload| (41, payload.as_slice()))
+            .collect::<Vec<_>>();
+        let result = committing_writer.commit_many_durable(&records);
+        committing_returned.store(true, Ordering::Release);
+        result
+    });
+
+    blocking
+        .wait_until_blocked(1)
+        .expect("batch barrier blocked");
+    let visible_while_blocked = writer
+        .visible_records(LogSeq::new(1), 4)
+        .expect("visible batch while barrier is blocked")
+        .len();
+    let returned_while_blocked = returned.load(Ordering::Acquire);
+    blocking.release_syncs(1).expect("release batch barrier");
+    let range = commit
+        .join()
+        .expect("batch commit thread")
+        .expect("durable batch");
+
+    assert_eq!(
+        (
+            visible_while_blocked,
+            returned_while_blocked,
+            range,
+            counting.append_calls(),
+            counting.handle_barrier_sync_calls(),
+            counting.handle_full_sync_calls(),
+        ),
+        (4, false, LogSeq::new(1)..LogSeq::new(5), 1, 1, 0,),
+        "the durable batch must stage every record atomically and return only after its covering flush"
     );
 }
 

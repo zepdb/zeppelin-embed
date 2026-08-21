@@ -158,14 +158,26 @@ pub(crate) fn encode_record_into(
     record: WalRecord<'_>,
     encoded: &mut Vec<u8>,
 ) -> Result<(), RecordEncodeError> {
+    encoded.clear();
+    append_record_into(record, encoded)
+}
+
+/// Appends one encoded record to caller-reserved batch storage.
+pub(crate) fn append_record_into(
+    record: WalRecord<'_>,
+    encoded: &mut Vec<u8>,
+) -> Result<(), RecordEncodeError> {
     let payload_length = u32::try_from(record.payload.len())
         .map_err(|_| RecordEncodeError::PayloadTooLarge(record.payload.len()))?;
-    encoded.clear();
+    let start = encoded.len();
     encoded.extend_from_slice(&payload_length.to_le_bytes());
     encoded.extend_from_slice(&record.seq.get().to_le_bytes());
     encoded.extend_from_slice(&record.op.to_le_bytes());
     encoded.extend_from_slice(record.payload);
-    let checksum = xxh3_64(encoded);
+    let checksummed = encoded
+        .get(start..)
+        .ok_or(RecordEncodeError::PayloadTooLarge(record.payload.len()))?;
+    let checksum = xxh3_64(checksummed);
     encoded.extend_from_slice(&checksum.to_le_bytes());
     Ok(())
 }

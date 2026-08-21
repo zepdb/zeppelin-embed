@@ -41,9 +41,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         "PROVISIONAL SANDBOX-TAINTED — harness shakeout only; no throughput conclusion is authoritative"
     );
     println!(
-        "config payloads={:?} threads={:?} tiers={} cell_seconds={} cell_bytes={} max_group_bytes={}",
+        "config payloads={:?} threads={:?} batches={:?} tiers={} cell_seconds={} cell_bytes={} max_group_bytes={}",
         config.payloads,
         config.threads,
+        config.batches,
         format_tiers(&config.tiers),
         config.cell_duration.as_secs_f64(),
         config.cell_bytes,
@@ -54,9 +55,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     for &payload_bytes in &config.payloads {
         for &threads in &config.threads {
             for &tier in &config.tiers {
-                let result = run_cell(&config, payload_bytes, threads, tier)?;
-                print_machine_line(&result);
-                results.push(result);
+                for &batch_size in &config.batches {
+                    let result = run_cell(&config, payload_bytes, threads, tier, batch_size)?;
+                    print_machine_line(&result);
+                    results.push(result);
+                }
             }
         }
     }
@@ -71,6 +74,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 struct Config {
     payloads: Vec<usize>,
     threads: Vec<usize>,
+    batches: Vec<usize>,
     tiers: Vec<CommitTier>,
     cell_duration: Duration,
     cell_bytes: u64,
@@ -83,6 +87,7 @@ impl Config {
         Self {
             payloads: vec![256, 1_024, 4_096],
             threads: vec![1, 4, 12, 16],
+            batches: vec![1],
             tiers: vec![CommitTier::None, CommitTier::Ordered, CommitTier::Durable],
             cell_duration: Duration::from_secs(DEFAULT_CELL_SECONDS),
             cell_bytes: DEFAULT_CELL_BYTES,
@@ -95,6 +100,7 @@ impl Config {
         Self {
             payloads: vec![1_024],
             threads: vec![4],
+            batches: vec![1],
             tiers: vec![CommitTier::None, CommitTier::Ordered, CommitTier::Durable],
             cell_duration: Duration::from_millis(75),
             cell_bytes: 4 * 1_024 * 1_024,
@@ -115,6 +121,7 @@ impl Config {
             match flag {
                 "--payloads" => config.payloads = parse_usize_list(value, "payloads")?,
                 "--threads" => config.threads = parse_usize_list(value, "threads")?,
+                "--batch" => config.batches = parse_usize_list(value, "batch")?,
                 "--tiers" => config.tiers = parse_tiers(value)?,
                 "--cell-seconds" => {
                     let seconds = parse_u64(value, "cell-seconds")?;
@@ -136,11 +143,17 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), Box<dyn Error>> {
-        if self.payloads.is_empty() || self.threads.is_empty() || self.tiers.is_empty() {
+        if self.payloads.is_empty()
+            || self.threads.is_empty()
+            || self.batches.is_empty()
+            || self.tiers.is_empty()
+        {
             return Err(invalid("sweep axes must not be empty"));
         }
-        if self.payloads.contains(&0) || self.threads.contains(&0) {
-            return Err(invalid("payload and thread values must be positive"));
+        if self.payloads.contains(&0) || self.threads.contains(&0) || self.batches.contains(&0) {
+            return Err(invalid(
+                "payload, thread, and batch values must be positive",
+            ));
         }
         let largest_record = self
             .payloads
@@ -154,9 +167,11 @@ impl Config {
                 "max-group-bytes must fit the WAL header plus the largest encoded record",
             ));
         }
-        if self.cell_bytes < (WAL_HEADER_LEN.saturating_add(largest_record)) as u64 {
+        let largest_batch = self.batches.iter().copied().max().unwrap_or(0);
+        let largest_batch_bytes = largest_record.saturating_mul(largest_batch);
+        if self.cell_bytes < WAL_HEADER_LEN.saturating_add(largest_batch_bytes) as u64 {
             return Err(invalid(
-                "cell-bytes must fit the WAL header plus the largest encoded record",
+                "cell-bytes must fit the WAL header plus one largest encoded batch",
             ));
         }
         Ok(())
@@ -202,7 +217,7 @@ fn parse_u64(value: &str, label: &str) -> Result<u64, Box<dyn Error>> {
 
 fn usage() -> Box<dyn Error> {
     invalid(
-        "usage: wal-throughput [--smoke | --payloads 256,1024,4096 --threads 1,4,12,16 --tiers none,ordered,durable --cell-seconds 3 --cell-bytes 2147483648 --max-group-bytes 1048576]",
+        "usage: wal-throughput [--smoke | --payloads 256,1024,4096 --threads 1,4,12,16 --batch 1 --tiers none,ordered,durable --cell-seconds 3 --cell-bytes 2147483648 --max-group-bytes 1048576]",
     )
 }
 
@@ -333,6 +348,7 @@ impl CellBound {
 struct CellResult {
     payload_bytes: usize,
     threads: usize,
+    batch_size: usize,
     tier: CommitTier,
     bound: CellBound,
     elapsed_ns: u128,
@@ -356,6 +372,7 @@ fn run_cell(
     payload_bytes: usize,
     thread_count: usize,
     tier: CommitTier,
+    batch_size: usize,
 ) -> Result<CellResult, Box<dyn Error>> {
     let directory = tempdir()?;
     let timed = TimedVfs::new(StdVfs);
@@ -373,6 +390,11 @@ fn run_cell(
     let hit_bound = Arc::new(AtomicU8::new(0));
     let timing = Arc::new(OnceLock::<(Instant, Instant)>::new());
     let record_bytes = payload_bytes.saturating_add(MIN_RECORD_LEN) as u64;
+    let batch_records =
+        u64::try_from(batch_size).map_err(|_| invalid("batch size exceeds the record counter"))?;
+    let batch_bytes = record_bytes
+        .checked_mul(batch_records)
+        .ok_or_else(|| invalid("encoded batch byte count overflowed"))?;
     let workers = (0..thread_count)
         .map(|worker| {
             let worker_writer = Arc::clone(&writer);
@@ -384,6 +406,9 @@ fn run_cell(
             let cell_bytes = config.cell_bytes;
             thread::spawn(move || -> Result<(), String> {
                 let payload = vec![worker as u8; payload_bytes];
+                let batch = (0..batch_size)
+                    .map(|_| (1, payload.as_slice()))
+                    .collect::<Vec<_>>();
                 worker_gate.wait();
                 let (_, deadline) = worker_timing
                     .get()
@@ -402,7 +427,7 @@ fn run_cell(
                         );
                         break;
                     }
-                    if !reserve_bytes(&worker_reserved, record_bytes, cell_bytes) {
+                    if !reserve_bytes(&worker_reserved, batch_bytes, cell_bytes) {
                         let _ = worker_bound.compare_exchange(
                             0,
                             BOUND_BYTES,
@@ -411,11 +436,18 @@ fn run_cell(
                         );
                         break;
                     }
-                    let sequence = worker_writer
-                        .commit(1, &payload)
-                        .map_err(|error| error.to_string())?;
-                    worker_records.fetch_add(1, Ordering::Relaxed);
-                    if sequence.get() % RETIRE_EVERY_RECORDS == 0 {
+                    let last_sequence = if batch_size == 1 {
+                        worker_writer
+                            .commit(1, &payload)
+                            .map_err(|error| error.to_string())?
+                    } else {
+                        let range = worker_writer
+                            .commit_many(&batch)
+                            .map_err(|error| error.to_string())?;
+                        LogSeq::new(range.end.get().saturating_sub(1))
+                    };
+                    worker_records.fetch_add(batch_records, Ordering::Relaxed);
+                    if last_sequence.get() % RETIRE_EVERY_RECORDS < batch_records {
                         retire_durable_prefix(&worker_writer).map_err(|error| error.to_string())?;
                     }
                 }
@@ -486,6 +518,7 @@ fn run_cell(
     Ok(CellResult {
         payload_bytes,
         threads: thread_count,
+        batch_size,
         tier,
         bound,
         elapsed_ns: elapsed.as_nanos(),
@@ -545,9 +578,10 @@ const fn tier_name(tier: CommitTier) -> &'static str {
 
 fn print_machine_line(result: &CellResult) {
     println!(
-        "WAL_THROUGHPUT payload_bytes={} threads={} tier={} bound={} elapsed_ns={} records={} docs_per_s={:.3} MB_per_s={:.3} flushes={} mean_group_records={:.3} group_hist={} sync_mean_ns={} implied_ceiling_docs_per_s={} achieved_fraction={} append_calls={} bytes_appended={} barrier_syncs={} full_syncs={} provisional=sandbox_tainted",
+        "WAL_THROUGHPUT payload_bytes={} threads={} batch_size={} tier={} bound={} elapsed_ns={} records={} docs_per_s={:.3} MB_per_s={:.3} flushes={} mean_group_records={:.3} group_hist={} sync_mean_ns={} implied_ceiling_docs_per_s={} achieved_fraction={} append_calls={} bytes_appended={} barrier_syncs={} full_syncs={} provisional=sandbox_tainted",
         result.payload_bytes,
         result.threads,
+        result.batch_size,
         tier_name(result.tier),
         result.bound.as_str(),
         result.elapsed_ns,
@@ -570,13 +604,14 @@ fn print_machine_line(result: &CellResult) {
 fn print_table(results: &[CellResult]) {
     println!("\n== provisional sandbox-tainted WAL throughput ==");
     println!(
-        "payload  thr  tier      bound  records    docs/s       MB/s     flushes  mean-group  achieved"
+        "payload  thr  batch  tier      bound  records    docs/s       MB/s     flushes  mean-group  achieved"
     );
     for result in results {
         println!(
-            "{:>7}  {:>3}  {:<8}  {:<5}  {:>8}  {:>11.1}  {:>9.1}  {:>7}  {:>10.2}  {:>8}",
+            "{:>7}  {:>3}  {:>5}  {:<8}  {:<5}  {:>8}  {:>11.1}  {:>9.1}  {:>7}  {:>10.2}  {:>8}",
             result.payload_bytes,
             result.threads,
+            result.batch_size,
             tier_name(result.tier),
             result.bound.as_str(),
             result.records,
@@ -655,6 +690,20 @@ mod tests {
         assert_eq!(config.cell_duration.as_secs(), 1);
         assert_eq!(config.cell_bytes, 4_096);
         assert_eq!(config.max_group_bytes, 2_048);
+    }
+
+    #[test]
+    fn cli_batch_axis_is_overridable() {
+        let arguments = ["--batch", "1,64,1024,4096"].map(String::from);
+        let actual = match Config::parse(&arguments) {
+            Ok(config) => format!("ok={:?}", config.batches),
+            Err(error) => format!("error={error}"),
+        };
+
+        assert_eq!(
+            actual, "ok=[1, 64, 1024, 4096]",
+            "--batch must accept the required comma-separated sweep axis"
+        );
     }
 
     #[test]
