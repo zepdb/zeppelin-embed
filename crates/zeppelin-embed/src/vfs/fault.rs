@@ -242,6 +242,7 @@ fn read_range(
 struct BlockState {
     armed: usize,
     blocked: usize,
+    observed: usize,
     permits: usize,
 }
 
@@ -278,14 +279,17 @@ impl<V> BlockingVfs<V> {
     /// Arms exactly the next `count` synchronization calls.
     pub fn block_next_syncs(&self, count: usize) -> std::io::Result<()> {
         let mut state = lock_block(&self.control)?;
+        if count != 0 && state.armed == 0 && state.blocked == 0 {
+            state.observed = 0;
+        }
         state.armed = state.armed.saturating_add(count);
         Ok(())
     }
 
-    /// Waits until at least `count` armed synchronization calls are blocked.
+    /// Waits until at least `count` synchronization calls in this armed batch have blocked.
     pub fn wait_until_blocked(&self, count: usize) -> std::io::Result<()> {
         let mut state = lock_block(&self.control)?;
-        while state.blocked < count {
+        while state.observed < count {
             state = self
                 .control
                 .changed
@@ -380,6 +384,7 @@ fn block_sync(control: &BlockControl) -> std::io::Result<()> {
     }
     state.armed = state.armed.saturating_sub(1);
     state.blocked = state.blocked.saturating_add(1);
+    state.observed = state.observed.saturating_add(1);
     control.changed.notify_all();
     while state.permits == 0 {
         state = control

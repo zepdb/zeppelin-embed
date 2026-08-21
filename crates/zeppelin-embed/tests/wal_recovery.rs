@@ -9,11 +9,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Instant;
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::io::Write;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
@@ -31,6 +34,10 @@ use zeppelin_embed::manifest::{EpochMeta, Manifest, ManifestError, encode_manife
 use zeppelin_embed::meta::Schema;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
+#[cfg(unix)]
+use zeppelin_embed::wal::header::WAL_HEADER_LEN;
+#[cfg(unix)]
+use zeppelin_embed::wal::record::MIN_RECORD_LEN;
 use zeppelin_embed::wal::{LogSeq, WalReader, WalWriter};
 
 #[path = "../src/vfs/fault.rs"]
@@ -362,27 +369,129 @@ fn flock(file: &std::fs::File, operation: libc::c_int) -> std::io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct KillPointVfs {
+    threshold: u64,
+}
+
+#[cfg(unix)]
+struct KillPointVfsFile {
+    inner: Box<dyn VfsFile>,
+    path: PathBuf,
+    threshold: u64,
+}
+
+#[cfg(unix)]
+impl VfsFile for KillPointVfsFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        for byte in bytes {
+            self.inner.append(std::slice::from_ref(byte))?;
+            if std::fs::metadata(&self.path)?.len() > self.threshold {
+                loop {
+                    thread::yield_now();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(kind)
+    }
+}
+
+#[cfg(unix)]
+impl Vfs for KillPointVfs {
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        StdVfs.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        StdVfs.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        StdVfs.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        StdVfs.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        Ok(Box::new(KillPointVfsFile {
+            inner: StdVfs.open_append(path)?,
+            path: path.to_path_buf(),
+            threshold: self.threshold,
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        StdVfs.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        StdVfs.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        StdVfs.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        StdVfs.delete(path)
+    }
+}
+
+#[cfg(unix)]
+fn read_acknowledged_sequences(path: &Path) -> Vec<u64> {
+    let bytes = std::fs::read(path).expect("read child progress");
+    assert_eq!(
+        bytes.len() % size_of::<u64>(),
+        0,
+        "child progress ended with a partial sequence"
+    );
+    bytes
+        .chunks_exact(size_of::<u64>())
+        .map(|raw| u64::from_le_bytes(raw.try_into().expect("progress sequence width")))
+        .collect()
+}
+
 #[test]
 #[ignore = "spawned only by kill9_recovery_requires_zero_manual_cleanup"]
 #[cfg(unix)]
 fn child_process() {
     let directory = PathBuf::from(std::env::var_os("ZE_KILL9_CHILD_DIR").expect("child dir"));
     let tier = parse_child_tier(&std::env::var("ZE_KILL9_CHILD_TIER").expect("child tier"));
+    let threshold = std::env::var("ZE_KILL9_THRESHOLD")
+        .expect("kill threshold")
+        .parse::<u64>()
+        .expect("numeric kill threshold");
     let _store_lock = StoreLock::acquire(&directory).expect("lock writer fd");
-    std::fs::write(directory.join("ready"), b"ready").expect("ready marker");
-
+    let vfs = KillPointVfs { threshold };
     let writer = WalWriter::create(
-        &StdVfs,
+        &vfs,
         &directory.join("wal.ze"),
         LogSeq::new(1),
         policy(tier),
     )
     .expect("child writer");
+    let mut progress = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("progress"))
+        .expect("child progress file");
+    std::fs::write(directory.join("ready"), b"ready").expect("ready marker");
+
     let mut sequence = 1_u64;
     loop {
-        writer
+        let acknowledged = writer
             .commit_durable(1, &sequence.to_le_bytes())
             .expect("child commit");
+        progress
+            .write_all(&acknowledged.get().to_le_bytes())
+            .expect("record acknowledged sequence");
         sequence = sequence.saturating_add(1);
     }
 }
@@ -398,14 +507,29 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
     let tiers = [CommitTier::None, CommitTier::Ordered, CommitTier::Durable];
     let mut rng = ChaCha8Rng::seed_from_u64(0x0008_b2b0_0000_0001);
     let mut manual_cleanup = 0_usize;
+    let mut recovered_counts = BTreeMap::new();
+    let mut recovered_counts_by_tier = BTreeMap::new();
+
+    const PAYLOAD_BYTES: usize = size_of::<u64>();
+    const RECORD_BYTES: usize = MIN_RECORD_LEN + PAYLOAD_BYTES;
 
     for iteration in 0..iterations {
         let tier = tiers[iteration % tiers.len()];
+        let records_before_torn_tail = rng.random_range(1..=16_u64);
+        let interior_offset = rng.random_range(0..u64::try_from(RECORD_BYTES - 1).expect("width"));
+        let kill_threshold = u64::try_from(WAL_HEADER_LEN)
+            .expect("header width")
+            .saturating_add(
+                records_before_torn_tail
+                    .saturating_mul(u64::try_from(RECORD_BYTES).expect("record width")),
+            )
+            .saturating_add(interior_offset);
         let directory = tempdir().expect("kill9 tempdir");
         let mut child = Command::new(std::env::current_exe().expect("test executable"))
             .args(["--exact", "child_process", "--ignored"])
             .env("ZE_KILL9_CHILD_DIR", directory.path())
             .env("ZE_KILL9_CHILD_TIER", tier_name(tier))
+            .env("ZE_KILL9_THRESHOLD", kill_threshold.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -421,7 +545,18 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
             }
             thread::yield_now();
         }
-        for _ in 0..rng.random_range(0..=256_u16) {
+
+        let wal_path = directory.path().join("wal.ze");
+        loop {
+            match std::fs::metadata(&wal_path) {
+                Ok(metadata) if metadata.len() > kill_threshold => break,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("iteration={iteration} tier={tier:?} poll WAL: {error}"),
+            }
+            if let Some(status) = child.try_wait().expect("poll child") {
+                panic!("child exited before WAL threshold: {status}");
+            }
             thread::yield_now();
         }
         let killed = unsafe {
@@ -444,21 +579,49 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
         if flock(&lock, libc::LOCK_EX | libc::LOCK_NB).is_err() {
             manual_cleanup = manual_cleanup.saturating_add(1);
         }
-        let reader = WalReader::open(&StdVfs, &directory.path().join("wal.ze"))
-            .expect("reopen without manual WAL cleanup");
+        let acknowledged = read_acknowledged_sequences(&directory.path().join("progress"));
+        assert!(
+            acknowledged
+                .iter()
+                .copied()
+                .eq(1..=acknowledged.len() as u64),
+            "iteration={iteration} tier={tier:?} child acknowledged non-prefix {acknowledged:?}"
+        );
+        let reader =
+            WalReader::open(&StdVfs, &wal_path).expect("reopen without manual WAL cleanup");
         let sequences = reader
             .records()
             .iter()
             .map(|record| record.seq.get())
             .collect::<Vec<_>>();
+        *recovered_counts.entry(sequences.len()).or_insert(0_usize) += 1;
+        *recovered_counts_by_tier
+            .entry(tier_name(tier))
+            .or_insert_with(BTreeMap::new)
+            .entry(sequences.len())
+            .or_insert(0_usize) += 1;
+        assert!(
+            !sequences.is_empty(),
+            "iteration={iteration} tier={tier:?} threshold after an acknowledged record recovered no records"
+        );
         assert!(
             sequences.iter().copied().eq(1..=sequences.len() as u64),
             "iteration={iteration} tier={tier:?} recovered non-prefix {sequences:?}"
         );
+        assert!(
+            sequences.len() <= acknowledged.len()
+                && sequences
+                    .iter()
+                    .copied()
+                    .eq(acknowledged.iter().copied().take(sequences.len())),
+            "iteration={iteration} tier={tier:?} recovered {sequences:?} is not a prefix of acknowledged {acknowledged:?}"
+        );
         flock(&lock, libc::LOCK_UN).expect("unlock parent fd");
     }
 
-    eprintln!("kill9 iterations={iterations} manual_cleanup={manual_cleanup}");
+    eprintln!(
+        "kill9 iterations={iterations} manual_cleanup={manual_cleanup} recovered_count_distribution={recovered_counts:?} recovered_count_distribution_by_tier={recovered_counts_by_tier:?}"
+    );
     assert_eq!(manual_cleanup, 0, "stale flock required manual cleanup");
 }
 
@@ -596,6 +759,55 @@ fn durable_retains_every_group_whose_flush_returned() {
         vec![1, 2],
         "full-sync groups that returned must survive power loss"
     );
+}
+
+#[test]
+fn durable_follower_waits_for_its_ordered_or_full_sync_to_return() {
+    for tier in [CommitTier::Ordered, CommitTier::Durable] {
+        let blocking = BlockingVfs::new(FaultVfs::new());
+        blocking.block_next_syncs(2).expect("arm two syncs");
+        let writer = Arc::new(
+            WalWriter::create(&blocking, Path::new(WAL_PATH), LogSeq::new(1), policy(tier))
+                .expect("writer"),
+        );
+
+        let leader_writer = Arc::clone(&writer);
+        let leader = thread::spawn(move || leader_writer.commit_durable(1, b"leader"));
+        blocking.wait_until_blocked(1).expect("first sync blocked");
+
+        let follower_returned = Arc::new(AtomicBool::new(false));
+        let follower_writer = Arc::clone(&writer);
+        let follower_flag = Arc::clone(&follower_returned);
+        let follower = thread::spawn(move || {
+            let result = follower_writer.commit_durable(1, b"follower");
+            follower_flag.store(true, Ordering::Release);
+            result
+        });
+        while writer.visible_records().expect("visible records").len() < 2 {
+            thread::yield_now();
+        }
+
+        blocking.release_syncs(1).expect("release first sync");
+        blocking.wait_until_blocked(2).expect("second sync blocked");
+        assert!(
+            !follower_returned.load(Ordering::Acquire),
+            "{tier:?} follower commit_durable returned before its sync returned"
+        );
+
+        blocking.release_syncs(1).expect("release second sync");
+        leader
+            .join()
+            .expect("leader thread")
+            .expect("leader commit");
+        follower
+            .join()
+            .expect("follower thread")
+            .expect("follower commit");
+        assert!(
+            follower_returned.load(Ordering::Acquire),
+            "{tier:?} follower did not return after its sync returned"
+        );
+    }
 }
 
 #[test]

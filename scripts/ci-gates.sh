@@ -11,6 +11,12 @@ if grep -R -n -E 'sync_(all|data)' crates/zeppelin-embed/src; then
     exit 1
 fi
 
+if grep -R -n -E 'sleep|Duration|Instant|timeout' crates/zeppelin-embed/src/wal \
+    | grep -v 'ZE_AMENDMENT_N_LIVENESS_WATCHDOG'; then
+    echo "forbidden timer-derived WAL control; amendment N watchdogs require ZE_AMENDMENT_N_LIVENESS_WATCHDOG" >&2
+    exit 1
+fi
+
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
