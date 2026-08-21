@@ -27,6 +27,7 @@ cargo test -p zeppelin-embed-workspace-tests \
 if [[ "$(uname -s)" == "Darwin" ]]; then
     cargo run -p zeppelin-embed-bench --bin platform-truth -- --smoke
 fi
+cargo run -p zeppelin-embed-bench --bin wal-throughput -- --smoke
 "$SCRIPT_DIR/coverage.sh"
 cargo deny check
 "$SCRIPT_DIR/size-budget.sh"

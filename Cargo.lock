@@ -642,6 +642,7 @@ dependencies = [
  "criterion",
  "libc",
  "serde_json",
+ "tempfile",
  "zeppelin-embed",
 ]
 

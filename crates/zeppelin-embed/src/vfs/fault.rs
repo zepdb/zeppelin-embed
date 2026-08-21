@@ -1,6 +1,7 @@
 //! Deterministic page-cache loss and explicitly blocked synchronization tests.
 
 use std::collections::BTreeMap;
+use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -67,6 +68,15 @@ impl VfsFile for FaultVfsFile {
             .entry(self.path.clone())
             .or_default()
             .extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let mut state = self.filesystem.lock_state()?;
+        let file = state.visible.entry(self.path.clone()).or_default();
+        for buffer in buffers {
+            file.extend_from_slice(buffer);
+        }
         Ok(())
     }
 
@@ -320,6 +330,10 @@ struct BlockingVfsFile {
 impl VfsFile for BlockingVfsFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.append(bytes)
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        self.inner.append_vectored(buffers)
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {

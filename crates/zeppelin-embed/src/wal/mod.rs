@@ -1,6 +1,10 @@
 //! Write-ahead logging, checked recovery, and self-tuning group commit.
 
+use std::collections::VecDeque;
+use std::io::IoSlice;
+use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
@@ -14,7 +18,7 @@ pub mod record;
 pub mod replay;
 
 use header::encode_header;
-use record::{RecordEncodeError, WalRecord, encode_record};
+use record::{RecordEncodeError, RecordError, WalRecord, encode_record_into, encoded_record_len};
 use replay::{ReplayTerminator, replay};
 
 /// Default upper bound for one group append, in encoded bytes.
@@ -38,6 +42,11 @@ impl LogSeq {
     }
 }
 
+/// Number of fixed group-size histogram buckets.
+pub const GROUP_SIZE_HISTOGRAM_BUCKETS: usize = 18;
+/// Maximum number of completed groups retained exactly for diagnostics/tests.
+pub const RECENT_GROUP_LIMIT: usize = 64;
+
 /// One record visible from in-memory state before its group reaches storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRecord {
@@ -45,47 +54,147 @@ pub struct VisibleRecord {
     pub seq: LogSeq,
     /// Caller-defined operation identifier.
     pub op: u16,
-    /// Owned operation payload.
-    pub payload: Vec<u8>,
+    encoded: Arc<Vec<u8>>,
+    encoded_range: Range<usize>,
+}
+
+impl VisibleRecord {
+    fn writer_owned(seq: LogSeq, op: u16, encoded: Arc<Vec<u8>>) -> Self {
+        let encoded_len = encoded.len();
+        Self {
+            seq,
+            op,
+            encoded,
+            encoded_range: 0..encoded_len,
+        }
+    }
+
+    fn recovered(seq: LogSeq, op: u16, encoded: Arc<Vec<u8>>, encoded_range: Range<usize>) -> Self {
+        Self {
+            seq,
+            op,
+            encoded,
+            encoded_range,
+        }
+    }
+
+    /// Returns the checked payload borrowed from the encoded WAL allocation.
+    pub fn payload(&self) -> Result<&[u8], VisibleRecordError> {
+        let encoded = self.encoded.get(self.encoded_range.clone()).ok_or(
+            VisibleRecordError::InvalidEncodedRange {
+                start: self.encoded_range.start,
+                end: self.encoded_range.end,
+                available: self.encoded.len(),
+            },
+        )?;
+        decode_visible(encoded).map_err(VisibleRecordError::Record)
+    }
+
+    /// Returns the complete encoded width retained for this record.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        self.encoded_range
+            .end
+            .saturating_sub(self.encoded_range.start)
+    }
+}
+
+fn decode_visible(encoded: &[u8]) -> Result<&[u8], RecordError> {
+    record::decode_record(encoded).map(|decoded| decoded.record.payload)
+}
+
+/// One exact completed group retained in the bounded recent-group ring.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletedGroup {
+    /// Number of records in the group.
+    pub records: usize,
+    /// Complete encoded bytes appended for the group.
+    pub encoded_bytes: usize,
+}
+
+/// Fixed-size logarithmic distribution of completed group record counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GroupSizeHistogram {
+    /// Counts for `1`, `2..=3`, `4..=7`, through a final overflow bucket.
+    pub buckets: [u64; GROUP_SIZE_HISTOGRAM_BUCKETS],
+}
+
+impl GroupSizeHistogram {
+    const fn new() -> Self {
+        Self {
+            buckets: [0; GROUP_SIZE_HISTOGRAM_BUCKETS],
+        }
+    }
+
+    fn record(&mut self, records: usize) {
+        let bucket = if records == 0 {
+            0
+        } else {
+            (usize::BITS
+                .saturating_sub(records.leading_zeros())
+                .saturating_sub(1) as usize)
+                .min(GROUP_SIZE_HISTOGRAM_BUCKETS.saturating_sub(1))
+        };
+        if let Some(count) = self.buckets.get_mut(bucket) {
+            *count = count.saturating_add(1);
+        }
+    }
 }
 
 /// Deterministic group-composition and progress snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalWriterStats {
-    /// Record count in each append group whose flush returned.
-    pub group_sizes: Vec<usize>,
-    /// Encoded byte count in each append group whose flush returned.
-    pub group_bytes: Vec<usize>,
+    /// Total append groups whose flush returned.
+    pub completed_groups: u64,
+    /// Total records across completed append groups.
+    pub completed_records: u64,
+    /// Total encoded bytes across completed append groups.
+    pub completed_bytes: u64,
+    /// Fixed-size logarithmic group-size distribution.
+    pub group_size_histogram: GroupSizeHistogram,
+    /// Exact most-recent groups, oldest to newest, capped by [`RECENT_GROUP_LIMIT`].
+    pub recent_groups: Vec<CompletedGroup>,
     /// Records waiting behind the currently in-flight group.
     pub pending_records: usize,
     /// Largest sequence visible in memory.
     pub visible_end: Option<LogSeq>,
     /// Largest sequence whose tier-specific flush returned.
-    pub durable_end: u64,
+    pub durable_end: Option<LogSeq>,
+    /// Records still retained for in-memory visibility.
+    pub retained_records: usize,
+    /// Encoded bytes still retained for in-memory visibility.
+    pub retained_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
 struct Failure {
     kind: std::io::ErrorKind,
-    detail: String,
+    detail: Arc<str>,
 }
 
 #[derive(Debug)]
 struct WriterState {
     next_seq: u64,
-    visible: Vec<VisibleRecord>,
-    durable_end: u64,
-    pending_bytes: Vec<u8>,
+    visible: VecDeque<VisibleRecord>,
+    retained_bytes: usize,
+    durable_end: Option<LogSeq>,
+    pending_chunks: Vec<Arc<Vec<u8>>>,
+    spare_chunks: Vec<Arc<Vec<u8>>>,
+    pending_encoded_bytes: usize,
     pending_records: usize,
     pending_last_seq: Option<LogSeq>,
     barrier_in_flight: bool,
-    failure: Option<Failure>,
-    group_sizes: Vec<usize>,
-    group_bytes: Vec<usize>,
+    failure: Option<Arc<Failure>>,
+    completed_groups: u64,
+    completed_records: u64,
+    completed_bytes: u64,
+    group_size_histogram: GroupSizeHistogram,
+    recent_groups: VecDeque<CompletedGroup>,
 }
 
 struct Group {
-    bytes: Vec<u8>,
+    chunks: Vec<Arc<Vec<u8>>>,
+    encoded_bytes: usize,
     records: usize,
     last_seq: LogSeq,
 }
@@ -137,19 +246,30 @@ impl WalWriter {
             });
         }
         let file = vfs.open_append(path).map_err(WalWriteError::from_io)?;
+        let header_len = header.len();
+        let mut pending_chunks = Vec::with_capacity(16);
+        pending_chunks.push(Arc::new(header));
+        let spare_chunks = Vec::with_capacity(16);
+        let recent_groups = VecDeque::with_capacity(RECENT_GROUP_LIMIT);
         Ok(Self {
             file: Mutex::new(file),
             state: Mutex::new(WriterState {
                 next_seq: first_seq.get(),
-                visible: Vec::new(),
-                durable_end: first_seq.get().saturating_sub(1),
-                pending_bytes: header,
+                visible: VecDeque::new(),
+                retained_bytes: 0,
+                durable_end: None,
+                pending_chunks,
+                spare_chunks,
+                pending_encoded_bytes: header_len,
                 pending_records: 0,
                 pending_last_seq: None,
                 barrier_in_flight: false,
                 failure: None,
-                group_sizes: Vec::new(),
-                group_bytes: Vec::new(),
+                completed_groups: 0,
+                completed_records: 0,
+                completed_bytes: 0,
+                group_size_histogram: GroupSizeHistogram::new(),
+                recent_groups,
             }),
             changed: Condvar::new(),
             sync: policy.data_file_sync(),
@@ -178,46 +298,176 @@ impl WalWriter {
         Ok(seq)
     }
 
-    /// Returns a copy of every record visible to in-memory readers.
-    pub fn visible_records(&self) -> Result<Vec<VisibleRecord>, WalWriteError> {
-        Ok(self.lock_state()?.visible.clone())
+    /// Waits until every record visible when this call observes the writer has flushed.
+    ///
+    /// No record is appended solely to force progress. If pending records have
+    /// no current leader, this caller assumes leadership and drains them.
+    pub fn flush(&self) -> Result<(), WalWriteError> {
+        let (target, leader) = {
+            let mut state = self.lock_state()?;
+            if let Some(failure) = &state.failure {
+                return Err(WalWriteError::failed(failure));
+            }
+            let Some(target) = state.visible.back().map(|record| record.seq) else {
+                return Ok(());
+            };
+            if state
+                .durable_end
+                .is_some_and(|durable_end| durable_end >= target)
+            {
+                return Ok(());
+            }
+            let leader = if state.barrier_in_flight {
+                false
+            } else if state.pending_records != 0 {
+                state.barrier_in_flight = true;
+                true
+            } else {
+                return Err(WalWriteError::Poisoned(
+                    "non-durable WAL record has neither a pending group nor a leader",
+                ));
+            };
+            (target, leader)
+        };
+        if leader {
+            self.flush_as_leader()?;
+        }
+        self.wait_until_durable(target)
+    }
+
+    /// Returns at most `limit` retained records at or after `first_seq`.
+    ///
+    /// Clones share the encoded WAL allocations. The explicit bound prevents
+    /// test-support callers from copying metadata for the writer's history.
+    pub fn visible_records(
+        &self,
+        first_seq: LogSeq,
+        limit: usize,
+    ) -> Result<Vec<VisibleRecord>, WalWriteError> {
+        let mut visible = Vec::with_capacity(limit);
+        let state = self.lock_state()?;
+        visible.extend(
+            state
+                .visible
+                .iter()
+                .filter(|record| record.seq >= first_seq)
+                .take(limit)
+                .cloned(),
+        );
+        Ok(visible)
+    }
+
+    /// Releases retained visibility records through an absorbed durable sequence.
+    ///
+    /// The ingest owner calls this only after incorporating the records into
+    /// its own in-memory state. Requests beyond the tier-specific durable end
+    /// fail explicitly and never clamp.
+    pub fn retire_visible_through(
+        &self,
+        absorbed_through: LogSeq,
+    ) -> Result<WalRetirement, WalRetireError> {
+        let capacity = {
+            let state = self.lock_state().map_err(WalRetireError::Writer)?;
+            if state
+                .durable_end
+                .is_none_or(|durable_end| absorbed_through > durable_end)
+            {
+                return Err(WalRetireError::BeyondDurable {
+                    requested: absorbed_through,
+                    durable_end: state.durable_end,
+                });
+            }
+            state
+                .visible
+                .iter()
+                .take_while(|record| record.seq <= absorbed_through)
+                .count()
+        };
+        let mut retired = Vec::with_capacity(capacity);
+        let retirement = {
+            let mut state = self.lock_state().map_err(WalRetireError::Writer)?;
+            if state
+                .durable_end
+                .is_none_or(|durable_end| absorbed_through > durable_end)
+            {
+                return Err(WalRetireError::BeyondDurable {
+                    requested: absorbed_through,
+                    durable_end: state.durable_end,
+                });
+            }
+            while state
+                .visible
+                .front()
+                .is_some_and(|record| record.seq <= absorbed_through)
+            {
+                let Some(record) = state.visible.pop_front() else {
+                    break;
+                };
+                state.retained_bytes = state.retained_bytes.saturating_sub(record.encoded_len());
+                retired.push(record);
+            }
+            WalRetirement {
+                absorbed_through,
+                records_released: retired.len(),
+                encoded_bytes_released: retired.iter().fold(0_usize, |total, record| {
+                    total.saturating_add(record.encoded_len())
+                }),
+                retained_records: state.visible.len(),
+                retained_bytes: state.retained_bytes,
+                durable_end: state.durable_end,
+            }
+        };
+        drop(retired);
+        Ok(retirement)
     }
 
     /// Returns deterministic progress and completed-group statistics.
     pub fn stats(&self) -> Result<WalWriterStats, WalWriteError> {
+        let mut recent_groups = Vec::with_capacity(RECENT_GROUP_LIMIT);
         let state = self.lock_state()?;
+        recent_groups.extend(state.recent_groups.iter().copied());
         Ok(WalWriterStats {
-            group_sizes: state.group_sizes.clone(),
-            group_bytes: state.group_bytes.clone(),
+            completed_groups: state.completed_groups,
+            completed_records: state.completed_records,
+            completed_bytes: state.completed_bytes,
+            group_size_histogram: state.group_size_histogram,
+            recent_groups,
             pending_records: state.pending_records,
-            visible_end: state.visible.last().map(|record| record.seq),
+            visible_end: state.visible.back().map(|record| record.seq),
             durable_end: state.durable_end,
+            retained_records: state.visible.len(),
+            retained_bytes: state.retained_bytes,
         })
     }
 
     fn stage(&self, op: u16, payload: &[u8]) -> Result<(LogSeq, bool), WalWriteError> {
+        let encoded_len = encoded_record_len(payload.len()).map_err(WalWriteError::Record)?;
+        let mut encoded = Arc::new(Vec::with_capacity(encoded_len));
         let mut state = self.lock_state()?;
         loop {
             if let Some(failure) = &state.failure {
-                return Err(WalWriteError::failed(failure.clone()));
+                return Err(WalWriteError::failed(failure));
             }
             let seq = LogSeq::new(state.next_seq);
-            let encoded =
-                encode_record(WalRecord { seq, op, payload }).map_err(WalWriteError::Record)?;
-            let required = state.pending_bytes.len().saturating_add(encoded.len());
+            let required = state.pending_encoded_bytes.saturating_add(encoded_len);
             if required <= self.max_group_bytes {
-                state.next_seq = state
+                let next_seq = state
                     .next_seq
                     .checked_add(1)
                     .ok_or(WalWriteError::SequenceExhausted)?;
-                state.pending_bytes.extend_from_slice(&encoded);
+                let storage = Arc::get_mut(&mut encoded)
+                    .ok_or(WalWriteError::Poisoned("unique preallocated WAL record"))?;
+                encode_record_into(WalRecord { seq, op, payload }, storage)
+                    .map_err(WalWriteError::Record)?;
+                state.next_seq = next_seq;
+                state.pending_chunks.push(Arc::clone(&encoded));
+                state.pending_encoded_bytes = required;
                 state.pending_records = state.pending_records.saturating_add(1);
                 state.pending_last_seq = Some(seq);
-                state.visible.push(VisibleRecord {
-                    seq,
-                    op,
-                    payload: payload.to_vec(),
-                });
+                state.retained_bytes = state.retained_bytes.saturating_add(encoded_len);
+                state
+                    .visible
+                    .push_back(VisibleRecord::writer_owned(seq, op, encoded));
                 let leader = !state.barrier_in_flight;
                 if leader {
                     state.barrier_in_flight = true;
@@ -244,51 +494,77 @@ impl WalWriter {
                 let last_seq = state.pending_last_seq.ok_or(WalWriteError::Poisoned(
                     "WAL leader found no pending sequence",
                 ))?;
-                let bytes = std::mem::take(&mut state.pending_bytes);
+                let spare = std::mem::take(&mut state.spare_chunks);
+                let chunks = std::mem::replace(&mut state.pending_chunks, spare);
+                let encoded_bytes = std::mem::take(&mut state.pending_encoded_bytes);
                 let records = std::mem::take(&mut state.pending_records);
                 state.pending_last_seq = None;
                 self.changed.notify_all();
                 Group {
-                    bytes,
+                    chunks,
+                    encoded_bytes,
                     records,
                     last_seq,
                 }
             };
-            let result = self.write_group(&group);
+            let failure = self.write_group(&group).err().map(|error| {
+                Arc::new(Failure {
+                    kind: error.kind(),
+                    detail: Arc::from(error.to_string()),
+                })
+            });
+            let completed = CompletedGroup {
+                records: group.records,
+                encoded_bytes: group.encoded_bytes,
+            };
+            let mut reusable_chunks = group.chunks;
+            reusable_chunks.clear();
             let mut state = self.lock_state()?;
-            match result {
-                Ok(()) => {
-                    state.durable_end = group.last_seq.get();
+            state.spare_chunks = reusable_chunks;
+            match failure {
+                None => {
+                    state.durable_end = Some(group.last_seq);
                     self.durable_progress
                         .store(group.last_seq.get(), Ordering::Release);
-                    state.group_sizes.push(group.records);
-                    state.group_bytes.push(group.bytes.len());
+                    state.completed_groups = state.completed_groups.saturating_add(1);
+                    state.completed_records = state
+                        .completed_records
+                        .saturating_add(completed.records as u64);
+                    state.completed_bytes = state
+                        .completed_bytes
+                        .saturating_add(completed.encoded_bytes as u64);
+                    state.group_size_histogram.record(completed.records);
+                    if state.recent_groups.len() == RECENT_GROUP_LIMIT {
+                        state.recent_groups.pop_front();
+                    }
+                    state.recent_groups.push_back(completed);
+                    self.changed.notify_all();
                     if state.pending_records == 0 {
                         state.barrier_in_flight = false;
-                        self.changed.notify_all();
                         return Ok(());
                     }
                 }
-                Err(error) => {
-                    let failure = Failure {
-                        kind: error.kind(),
-                        detail: error.to_string(),
-                    };
-                    state.failure = Some(failure.clone());
+                Some(failure) => {
+                    state.failure = Some(Arc::clone(&failure));
                     state.barrier_in_flight = false;
                     self.changed.notify_all();
-                    return Err(WalWriteError::failed(failure));
+                    return Err(WalWriteError::failed(&failure));
                 }
             }
         }
     }
 
     fn write_group(&self, group: &Group) -> std::io::Result<()> {
+        let mut buffers = group
+            .chunks
+            .iter()
+            .map(|chunk| IoSlice::new(chunk.as_slice()))
+            .collect::<Vec<_>>();
         let mut file = self
             .file
             .lock()
             .map_err(|_| std::io::Error::other("WAL file mutex poisoned"))?;
-        file.append(&group.bytes)?;
+        file.append_vectored(&mut buffers)?;
         match self.sync {
             SyncRequirement::Skip => Ok(()),
             SyncRequirement::Sync(kind) => file.sync(kind),
@@ -297,9 +573,12 @@ impl WalWriter {
 
     fn wait_until_durable(&self, seq: LogSeq) -> Result<(), WalWriteError> {
         let mut state = self.lock_state()?;
-        while state.durable_end < seq.get() {
+        while state
+            .durable_end
+            .is_none_or(|durable_end| durable_end < seq)
+        {
             if let Some(failure) = &state.failure {
-                return Err(WalWriteError::failed(failure.clone()));
+                return Err(WalWriteError::failed(failure));
             }
             state = self
                 .changed
@@ -319,6 +598,112 @@ impl WalWriter {
 impl DurableLog for WalWriter {
     fn durable_end(&self) -> u64 {
         self.durable_progress.load(Ordering::Acquire)
+    }
+}
+
+/// Checked access failure for a retained encoded record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisibleRecordError {
+    /// The retained range does not fit its shared encoded allocation.
+    InvalidEncodedRange {
+        /// Inclusive byte offset.
+        start: usize,
+        /// Exclusive byte offset.
+        end: usize,
+        /// Bytes available in the allocation.
+        available: usize,
+    },
+    /// The retained bytes no longer decode as the record published by the writer.
+    Record(RecordError),
+}
+
+impl std::fmt::Display for VisibleRecordError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidEncodedRange {
+                start,
+                end,
+                available,
+            } => write!(
+                formatter,
+                "visible WAL encoded range {start}..{end} exceeds {available} bytes"
+            ),
+            Self::Record(error) => write!(formatter, "visible WAL record: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for VisibleRecordError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidEncodedRange { .. } => None,
+            Self::Record(error) => Some(error),
+        }
+    }
+}
+
+/// Exact effect of one visibility-retirement request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WalRetirement {
+    /// Caller-declared sequence absorbed into its own in-memory state.
+    pub absorbed_through: LogSeq,
+    /// Retained records released by this call.
+    pub records_released: usize,
+    /// Encoded record bytes released by this call.
+    pub encoded_bytes_released: usize,
+    /// Records that remain retained by the writer.
+    pub retained_records: usize,
+    /// Encoded record bytes that remain retained by the writer.
+    pub retained_bytes: usize,
+    /// Durable end observed while applying retirement.
+    pub durable_end: Option<LogSeq>,
+}
+
+/// Visibility retirement failure.
+#[derive(Debug)]
+pub enum WalRetireError {
+    /// The caller asked to retire bytes whose tier-specific flush has not returned.
+    BeyondDurable {
+        /// Requested inclusive retirement sequence.
+        requested: LogSeq,
+        /// Largest sequence whose flush returned.
+        durable_end: Option<LogSeq>,
+    },
+    /// Writer state could not be inspected safely.
+    Writer(WalWriteError),
+}
+
+impl std::fmt::Display for WalRetireError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BeyondDurable {
+                requested,
+                durable_end: Some(durable_end),
+            } => write!(
+                formatter,
+                "cannot retire WAL sequence {} past durable end {}",
+                requested.get(),
+                durable_end.get()
+            ),
+            Self::BeyondDurable {
+                requested,
+                durable_end: None,
+            } => write!(
+                formatter,
+                "cannot retire WAL sequence {} before any sequence is durable",
+                requested.get()
+            ),
+            Self::Writer(error) => write!(formatter, "cannot retire visible WAL records: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for WalRetireError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BeyondDurable { .. } => None,
+            Self::Writer(error) => Some(error),
+        }
     }
 }
 
@@ -353,14 +738,22 @@ impl WalReader {
                 terminator: Some(terminator),
             });
         }
-        let records = replayed
+        let mut offset = header::WAL_HEADER_LEN;
+        let recovered = replayed
             .records
-            .into_iter()
-            .map(|record| VisibleRecord {
-                seq: record.seq,
-                op: record.op,
-                payload: record.payload.to_vec(),
+            .iter()
+            .map(|record| {
+                let encoded_len = record::MIN_RECORD_LEN.saturating_add(record.payload.len());
+                let range = offset..offset.saturating_add(encoded_len);
+                offset = range.end;
+                (record.seq, record.op, range)
             })
+            .collect::<Vec<_>>();
+        drop(replayed);
+        let encoded = Arc::new(bytes);
+        let records = recovered
+            .into_iter()
+            .map(|(seq, op, range)| VisibleRecord::recovered(seq, op, Arc::clone(&encoded), range))
             .collect::<Vec<_>>();
         let durable_end = records.last().map_or(0, |record| record.seq.get());
         Ok(Self {
@@ -417,7 +810,7 @@ pub enum WalWriteError {
         /// Underlying I/O error class.
         kind: std::io::ErrorKind,
         /// Stable error detail retained for followers.
-        detail: String,
+        detail: Arc<str>,
     },
 }
 
@@ -425,14 +818,14 @@ impl WalWriteError {
     fn from_io(error: std::io::Error) -> Self {
         Self::Failed {
             kind: error.kind(),
-            detail: error.to_string(),
+            detail: Arc::from(error.to_string()),
         }
     }
 
-    fn failed(failure: Failure) -> Self {
+    fn failed(failure: &Failure) -> Self {
         Self::Failed {
             kind: failure.kind,
-            detail: failure.detail,
+            detail: Arc::clone(&failure.detail),
         }
     }
 }

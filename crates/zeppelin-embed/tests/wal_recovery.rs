@@ -6,10 +6,11 @@
 )]
 
 use std::collections::BTreeMap;
+use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Barrier;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -38,7 +39,9 @@ use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
 use zeppelin_embed::wal::header::WAL_HEADER_LEN;
 #[cfg(unix)]
 use zeppelin_embed::wal::record::MIN_RECORD_LEN;
-use zeppelin_embed::wal::{LogSeq, WalReader, WalWriter};
+use zeppelin_embed::wal::{
+    GROUP_SIZE_HISTOGRAM_BUCKETS, LogSeq, RECENT_GROUP_LIMIT, WalReader, WalRetireError, WalWriter,
+};
 
 #[path = "../src/vfs/fault.rs"]
 mod fault_support;
@@ -57,6 +60,96 @@ fn policy(tier: CommitTier) -> DurabilityPolicy {
     DurabilityPolicy::new(DurabilityMode::Durable, tier).expect("supported policy")
 }
 
+struct PayloadPointerVfs<V> {
+    inner: V,
+    appended_payload: Arc<AtomicUsize>,
+}
+
+struct PayloadPointerVfsFile {
+    inner: Box<dyn VfsFile>,
+    appended_payload: Arc<AtomicUsize>,
+}
+
+impl<V> PayloadPointerVfs<V> {
+    fn new(inner: V) -> Self {
+        Self {
+            inner,
+            appended_payload: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn appended_payload(&self) -> usize {
+        self.appended_payload.load(Ordering::Acquire)
+    }
+}
+
+impl VfsFile for PayloadPointerVfsFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.appended_payload.store(
+            bytes.as_ptr() as usize
+                + zeppelin_embed::wal::header::WAL_HEADER_LEN
+                + zeppelin_embed::wal::record::RECORD_HEADER_LEN,
+            Ordering::Release,
+        );
+        self.inner.append(bytes)
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        if let Some(record) = buffers.last() {
+            self.appended_payload.store(
+                record.as_ptr() as usize + zeppelin_embed::wal::record::RECORD_HEADER_LEN,
+                Ordering::Release,
+            );
+        }
+        self.inner.append_vectored(buffers)
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(kind)
+    }
+}
+
+impl<V: Vfs> Vfs for PayloadPointerVfs<V> {
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        Ok(Box::new(PayloadPointerVfsFile {
+            inner: self.inner.open_append(path)?,
+            appended_payload: Arc::clone(&self.appended_payload),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.delete(path)
+    }
+}
+
 fn recovered_sequences(image: &FaultImage) -> Vec<u64> {
     WalReader::open(image, Path::new(WAL_PATH))
         .expect("recovery needs no manual steps")
@@ -64,6 +157,204 @@ fn recovered_sequences(image: &FaultImage) -> Vec<u64> {
         .iter()
         .map(|record| record.seq.get())
         .collect()
+}
+
+#[test]
+fn commit_reuses_encoded_payload_for_visibility() {
+    let vfs = PayloadPointerVfs::new(MemoryVfs::new());
+    let writer = WalWriter::create(
+        &vfs,
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+
+    writer
+        .commit_durable(7, &[0x5a; 1_024])
+        .expect("commit payload");
+    let visible = writer
+        .visible_records(LogSeq::new(1), 1)
+        .expect("visible records");
+
+    assert_eq!(
+        visible[0].payload().expect("checked payload").as_ptr() as usize,
+        vfs.appended_payload(),
+        "visibility must borrow the payload bytes already owned by the encoded WAL record"
+    );
+}
+
+#[test]
+fn retirement_refuses_a_visible_record_until_its_flush_returns() {
+    for first_sequence in [0, 1] {
+        let blocking = BlockingVfs::new(FaultVfs::new());
+        blocking.block_next_syncs(1).expect("arm first barrier");
+        let writer = Arc::new(
+            WalWriter::create(
+                &blocking,
+                Path::new(WAL_PATH),
+                LogSeq::new(first_sequence),
+                policy(CommitTier::Ordered),
+            )
+            .expect("writer"),
+        );
+
+        let committing_writer = Arc::clone(&writer);
+        let commit = thread::spawn(move || committing_writer.commit_durable(7, &[0x41; 64]));
+        blocking.wait_until_blocked(1).expect("barrier blocked");
+
+        let requested = LogSeq::new(first_sequence);
+        let error = writer
+            .retire_visible_through(requested)
+            .expect_err("visible but non-durable record must not retire");
+        assert!(
+            matches!(
+                error,
+                WalRetireError::BeyondDurable {
+                    requested: actual,
+                    durable_end: None
+                } if actual == requested
+            ),
+            "retirement past the durable end must return the typed boundary error: {error:?}"
+        );
+        assert_eq!(writer.stats().expect("stats").retained_records, 1);
+
+        blocking.release_syncs(1).expect("release barrier");
+        commit
+            .join()
+            .expect("commit thread")
+            .expect("durable commit");
+        let past_durable = LogSeq::new(first_sequence + 1);
+        assert!(
+            matches!(
+                writer.retire_visible_through(past_durable),
+                Err(WalRetireError::BeyondDurable {
+                    requested: actual,
+                    durable_end: Some(actual_durable),
+                }) if actual == past_durable && actual_durable == requested
+            ),
+            "retirement past a non-empty durable prefix must fail rather than clamp"
+        );
+        let retired = writer
+            .retire_visible_through(requested)
+            .expect("durable record retires");
+        assert_eq!(
+            (
+                retired.records_released,
+                retired.encoded_bytes_released,
+                retired.retained_records,
+                retired.retained_bytes,
+                retired.durable_end,
+            ),
+            (1, 86, 0, 0, Some(requested)),
+            "retirement must release the one shared encoded record allocation"
+        );
+    }
+}
+
+#[test]
+fn retirement_keeps_writer_retained_bytes_bounded() {
+    const BATCH: u64 = 8;
+    const COMMITS: u64 = 128;
+    const ENCODED_RECORD_BYTES: usize = 64 + zeppelin_embed::wal::record::MIN_RECORD_LEN;
+
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    let mut peak_retained_bytes = 0_usize;
+
+    for sequence in 1..=COMMITS {
+        writer
+            .commit_durable(9, &[0x42; 64])
+            .expect("bounded commit");
+        let retained = writer.stats().expect("stats").retained_bytes;
+        peak_retained_bytes = peak_retained_bytes.max(retained);
+        if sequence % BATCH == 0 {
+            writer
+                .retire_visible_through(LogSeq::new(sequence))
+                .expect("batch retirement");
+        }
+    }
+
+    let stats = writer.stats().expect("final stats");
+    assert_eq!((stats.retained_records, stats.retained_bytes), (0, 0));
+    assert_eq!(
+        peak_retained_bytes,
+        BATCH as usize * ENCODED_RECORD_BYTES,
+        "retained encoded bytes must be bounded by the caller's retirement cadence"
+    );
+}
+
+#[test]
+fn statistics_are_fixed_size_with_exact_recent_groups() {
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    let commits = RECENT_GROUP_LIMIT + 9;
+    for _ in 0..commits {
+        writer.commit_durable(3, &[0x43; 10]).expect("commit");
+    }
+
+    let stats = writer.stats().expect("stats");
+    assert_eq!(stats.completed_groups, commits as u64);
+    assert_eq!(stats.completed_records, commits as u64);
+    assert_eq!(stats.recent_groups.len(), RECENT_GROUP_LIMIT);
+    assert!(
+        stats
+            .recent_groups
+            .iter()
+            .all(|group| group.records == 1 && group.encoded_bytes == 32),
+        "the bounded ring must retain exact count/byte pairs for its last N groups"
+    );
+    assert_eq!(stats.group_size_histogram.buckets[0], commits as u64);
+    assert_eq!(
+        stats.group_size_histogram.buckets.iter().sum::<u64>(),
+        commits as u64
+    );
+    assert_eq!(
+        stats.group_size_histogram.buckets.len(),
+        GROUP_SIZE_HISTOGRAM_BUCKETS
+    );
+}
+
+#[test]
+fn visible_records_are_sequence_and_count_bounded() {
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    for value in 1_u8..=6 {
+        writer.commit_durable(2, &[value]).expect("commit");
+    }
+
+    let visible = writer
+        .visible_records(LogSeq::new(3), 2)
+        .expect("bounded visibility");
+    assert_eq!(
+        visible
+            .iter()
+            .map(|record| record.seq.get())
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert_eq!(
+        visible
+            .iter()
+            .map(|record| record.payload().expect("checked payload")[0])
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -682,17 +973,28 @@ fn evidence_ingest_throughput_per_tier() {
         let stats = writer.stats().expect("stats");
         let docs_per_second = DOCUMENTS as f64 / elapsed.as_secs_f64();
         let mut distribution = BTreeMap::new();
-        for group_size in &stats.group_sizes {
-            *distribution.entry(*group_size).or_insert(0_usize) += 1;
+        for group in &stats.recent_groups {
+            *distribution.entry(group.records).or_insert(0_usize) += 1;
         }
+        let group_sizes = stats
+            .recent_groups
+            .iter()
+            .map(|group| group.records)
+            .collect::<Vec<_>>();
         eprintln!(
             "wal_ingest tier={tier:?} documents={DOCUMENTS} payload_bytes={PAYLOAD_BYTES} threads={THREADS} elapsed_ns={} docs_per_second={docs_per_second:.3} flushes={} group_size_distribution={distribution:?} group_sizes={:?}",
             elapsed.as_nanos(),
-            stats.group_sizes.len(),
-            stats.group_sizes
+            stats.completed_groups,
+            group_sizes
         );
-        assert_eq!(writer.visible_records().expect("visible").len(), DOCUMENTS);
-        assert_eq!(stats.durable_end, DOCUMENTS as u64);
+        assert_eq!(
+            writer
+                .visible_records(LogSeq::new(1), DOCUMENTS)
+                .expect("visible")
+                .len(),
+            DOCUMENTS
+        );
+        assert_eq!(stats.durable_end, Some(LogSeq::new(DOCUMENTS as u64)));
     }
 }
 
@@ -783,7 +1085,12 @@ fn durable_follower_waits_for_its_ordered_or_full_sync_to_return() {
             follower_flag.store(true, Ordering::Release);
             result
         });
-        while writer.visible_records().expect("visible records").len() < 2 {
+        while writer
+            .visible_records(LogSeq::new(1), 2)
+            .expect("visible records")
+            .len()
+            < 2
+        {
             thread::yield_now();
         }
 
@@ -845,7 +1152,10 @@ fn n_appends_produce_ceil_n_over_group_flushes() {
             .expect("visible commit");
     }
     assert_eq!(
-        writer.visible_records().expect("visible records").len(),
+        writer
+            .visible_records(LogSeq::new(1), 5)
+            .expect("visible records")
+            .len(),
         5,
         "followers must become visible while the first barrier is parked"
     );
@@ -862,20 +1172,86 @@ fn n_appends_produce_ceil_n_over_group_flushes() {
         counting.append_calls(),
         counting.handle_barrier_sync_calls(),
         counting.handle_full_sync_calls(),
-        stats.group_sizes,
-        stats.group_bytes
+        stats
+            .recent_groups
+            .iter()
+            .map(|group| group.records)
+            .collect::<Vec<_>>(),
+        stats
+            .recent_groups
+            .iter()
+            .map(|group| group.encoded_bytes)
+            .collect::<Vec<_>>()
     );
+    let group_sizes = stats
+        .recent_groups
+        .iter()
+        .map(|group| group.records)
+        .collect::<Vec<_>>();
+    let group_bytes = stats
+        .recent_groups
+        .iter()
+        .map(|group| group.encoded_bytes)
+        .collect::<Vec<_>>();
     assert_eq!(
         (
             counting.append_calls(),
             counting.handle_barrier_sync_calls(),
             counting.handle_full_sync_calls(),
-            stats.group_sizes,
-            stats.group_bytes,
+            group_sizes,
+            group_bytes,
             stats.pending_records,
         ),
         (2, 2, 0, vec![1, 4], vec![72, 128], 0),
         "five commits with a four-record byte cap must produce exactly ceil(5/4) groups"
+    );
+}
+
+#[test]
+fn flush_waits_for_records_staged_behind_an_in_flight_sync() {
+    let blocking = BlockingVfs::new(FaultVfs::new());
+    blocking.block_next_syncs(1).expect("arm first barrier");
+    let writer = Arc::new(
+        WalWriter::create(
+            &blocking,
+            Path::new(WAL_PATH),
+            LogSeq::new(1),
+            policy(CommitTier::Ordered),
+        )
+        .expect("writer"),
+    );
+
+    let leader_writer = Arc::clone(&writer);
+    let leader = thread::spawn(move || leader_writer.commit_durable(7, b"leader"));
+    blocking
+        .wait_until_blocked(1)
+        .expect("first barrier blocked");
+    assert_eq!(
+        writer.commit(7, b"follower").expect("visible follower"),
+        LogSeq::new(2)
+    );
+
+    let flushing_writer = Arc::clone(&writer);
+    let flush = thread::spawn(move || flushing_writer.flush());
+    blocking.release_syncs(1).expect("release first barrier");
+
+    leader
+        .join()
+        .expect("leader thread")
+        .expect("durable leader");
+    flush
+        .join()
+        .expect("flush thread")
+        .expect("quiescent writer");
+    let stats = writer.stats().expect("stats");
+    assert_eq!(
+        (
+            stats.completed_records,
+            stats.pending_records,
+            stats.durable_end
+        ),
+        (2, 0, Some(LogSeq::new(2))),
+        "flush must return only after every record visible at its call is completed"
     );
 }
 

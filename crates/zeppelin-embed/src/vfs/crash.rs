@@ -1,6 +1,7 @@
 //! In-memory mutating-operation recorder and deterministic crash-state materializer.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -243,6 +244,24 @@ impl VfsFile for RecordedVfsFile {
         Ok(())
     }
 
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let length = buffers
+            .iter()
+            .fold(0_usize, |total, buffer| total.saturating_add(buffer.len()));
+        let mut bytes = Vec::with_capacity(length);
+        for buffer in buffers.iter() {
+            bytes.extend_from_slice(buffer);
+        }
+        let recorder = Arc::clone(&self.operations);
+        let mut operations = Self::lock_operations(&recorder)?;
+        self.inner.append_vectored(buffers)?;
+        operations.push(CrashOperation::Append {
+            path: self.path.clone(),
+            bytes,
+        });
+        Ok(())
+    }
+
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
         let mut operations = Self::lock_operations(&self.operations)?;
         self.inner.sync(kind)?;
@@ -261,6 +280,17 @@ impl VfsFile for MemoryVfsFile {
             std::io::Error::new(std::io::ErrorKind::NotFound, "append path is absent")
         })?;
         file.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let mut files = self.filesystem.lock_files()?;
+        let file = files.get_mut(&self.path).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "append path is absent")
+        })?;
+        for buffer in buffers {
+            file.extend_from_slice(buffer);
+        }
         Ok(())
     }
 

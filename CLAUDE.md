@@ -36,6 +36,13 @@ the test harness. Its BSL-1.0 license is narrowly excepted for that explicitly
 allowed crate in `deny.toml`. This is not a persisted-format decision; Task 07
 must specify format checksum semantics before bytes become durable.
 
+Task 08 B2b promoted `tempfile` from a dev-dependency to a regular dependency
+of the benchmark crate only, so the `wal-throughput` binary can create and
+delete a scratch directory per cell. `tempfile` was already an allowed
+dev-dependency, the benchmark crate already carries `serde_json` on the same
+"benchmark tooling only" basis, and `cargo deny check` passes with no new
+package entering `Cargo.lock`. The core crate's dependency graph is unchanged.
+
 The absolute blacklist includes Tokio, Arrow, DataFusion, jemalloc, ONNX
 Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
 C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling

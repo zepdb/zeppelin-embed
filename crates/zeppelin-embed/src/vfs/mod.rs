@@ -6,7 +6,7 @@ pub mod crash;
 pub mod fault;
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{IoSlice, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,17 @@ pub enum SyncKind {
 pub trait VfsFile: Send {
     /// Appends every supplied byte without reopening the path.
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    /// Appends one logical group from discontiguous owned buffers.
+    ///
+    /// The default preserves compatibility for test filesystems. Production
+    /// files override it with one vectored write sequence, so WAL visibility
+    /// and persistence can share encoded record storage without coalescing it.
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        for buffer in buffers {
+            self.append(buffer)?;
+        }
+        Ok(())
+    }
     /// Synchronizes this already-open handle using the named primitive.
     fn sync(&self, kind: SyncKind) -> std::io::Result<()>;
 }
@@ -64,6 +75,21 @@ struct StdVfsFile(File);
 impl VfsFile for StdVfsFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.0.write_all(bytes)
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let mut remaining = buffers;
+        while !remaining.is_empty() {
+            let written = self.0.write_vectored(remaining)?;
+            if written == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to append vectored WAL group",
+                ));
+            }
+            IoSlice::advance_slices(&mut remaining, written);
+        }
+        Ok(())
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
@@ -173,6 +199,18 @@ impl VfsFile for CountingVfsFile {
         self.counters
             .bytes_appended
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let bytes = buffers
+            .iter()
+            .fold(0_usize, |total, buffer| total.saturating_add(buffer.len()));
+        self.inner.append_vectored(buffers)?;
+        self.counters.append_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .bytes_appended
+            .fetch_add(bytes as u64, Ordering::Relaxed);
         Ok(())
     }
 

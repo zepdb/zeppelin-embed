@@ -138,17 +138,36 @@ impl std::error::Error for RecordError {}
 /// every payload byte `14..14+payload_len`. It excludes only the checksum
 /// field itself.
 pub fn encode_record(record: WalRecord<'_>) -> Result<Vec<u8>, RecordEncodeError> {
+    let encoded_len = encoded_record_len(record.payload.len())?;
+    let mut encoded = Vec::with_capacity(encoded_len);
+    encode_record_into(record, &mut encoded)?;
+    Ok(encoded)
+}
+
+/// Returns the exact framed width needed by one payload.
+pub(crate) fn encoded_record_len(payload_len: usize) -> Result<usize, RecordEncodeError> {
+    u32::try_from(payload_len).map_err(|_| RecordEncodeError::PayloadTooLarge(payload_len))?;
+    Ok(MIN_RECORD_LEN.saturating_add(payload_len))
+}
+
+/// Encodes one record into caller-reserved storage.
+///
+/// Callers that reserve [`encoded_record_len`] bytes before taking a shared
+/// lock can perform the only payload copy without allocating while locked.
+pub(crate) fn encode_record_into(
+    record: WalRecord<'_>,
+    encoded: &mut Vec<u8>,
+) -> Result<(), RecordEncodeError> {
     let payload_length = u32::try_from(record.payload.len())
         .map_err(|_| RecordEncodeError::PayloadTooLarge(record.payload.len()))?;
-    let encoded_len = MIN_RECORD_LEN.saturating_add(record.payload.len());
-    let mut encoded = Vec::with_capacity(encoded_len);
+    encoded.clear();
     encoded.extend_from_slice(&payload_length.to_le_bytes());
     encoded.extend_from_slice(&record.seq.get().to_le_bytes());
     encoded.extend_from_slice(&record.op.to_le_bytes());
     encoded.extend_from_slice(record.payload);
-    let checksum = xxh3_64(&encoded);
+    let checksum = xxh3_64(encoded);
     encoded.extend_from_slice(&checksum.to_le_bytes());
-    Ok(encoded)
+    Ok(())
 }
 
 /// Decodes one record and verifies xxh3-64 before returning any fields.
@@ -236,4 +255,34 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, RecordError> {
             available: bytes.len(),
         })?;
     Ok(u64::from_le_bytes(raw))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{WalRecord, encode_record_into, encoded_record_len};
+    use crate::wal::LogSeq;
+
+    #[test]
+    fn caller_reserved_encoding_keeps_its_allocation() {
+        let payload = [0x5a; 1_024];
+        let encoded_len = encoded_record_len(payload.len()).expect("valid payload length");
+        let mut encoded = Vec::with_capacity(encoded_len);
+        let allocation = encoded.as_ptr();
+        let capacity = encoded.capacity();
+
+        encode_record_into(
+            WalRecord {
+                seq: LogSeq::new(7),
+                op: 3,
+                payload: &payload,
+            },
+            &mut encoded,
+        )
+        .expect("encode into reserved allocation");
+
+        assert_eq!(encoded.as_ptr(), allocation);
+        assert_eq!(encoded.capacity(), capacity);
+        assert_eq!(encoded.len(), encoded_len);
+    }
 }
