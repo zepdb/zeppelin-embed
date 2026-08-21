@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::io::Write;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,9 @@ use zeppelin_embed::scan::pdx::PdxMatrix;
 use zeppelin_embed::scan::{
     Int8Factors, ScanOptions, ScanOutcome, ScanQuery, ScanRequest, ScanRows, top_k_with_options,
 };
+
+#[path = "scan/repeat.rs"]
+mod scan_repeat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scheme {
@@ -33,6 +37,7 @@ struct Config {
     block_rows: usize,
     abandon: bool,
     iterations: usize,
+    repeats: usize,
     smoke: bool,
 }
 
@@ -117,6 +122,7 @@ impl Default for Config {
             block_rows: 64,
             abandon: false,
             iterations: 10,
+            repeats: 1,
             smoke: false,
         }
     }
@@ -124,7 +130,23 @@ impl Default for Config {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let config = parse_args()?;
-    let fixture = build_fixture(config)?;
+    let stdout = std::io::stdout();
+    scan_repeat::with_single_fixture(
+        || build_fixture(config),
+        |fixture| run_with_fixture(config, &mut stdout.lock(), fixture, measure_fixture),
+    )
+}
+
+fn run_with_fixture<W, M>(
+    config: Config,
+    output: &mut W,
+    fixture: &Fixture,
+    mut measure: M,
+) -> Result<(), Box<dyn Error>>
+where
+    W: Write,
+    M: FnMut(&Fixture, Config) -> Result<Duration, Box<dyn Error>>,
+{
     let first = fixture.scan(config)?;
     let second = fixture.scan(config)?;
     if first != second {
@@ -185,7 +207,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    println!(
+    writeln!(
+        output,
         "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} blocks_skipped={} bytes_read={} exhaustive_bytes={} threads_used={}",
         config.scheme,
         config.fixture,
@@ -198,17 +221,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         first.stats.bytes_read,
         exhaustive_bytes,
         first.stats.threads_used
-    );
+    )?;
     if config.smoke {
         return Ok(());
     }
 
+    scan_repeat::write_timed_repeats(
+        output,
+        fixture,
+        config.repeats,
+        config.iterations,
+        |fixture| measure(fixture, config),
+    )
+}
+
+fn measure_fixture(fixture: &Fixture, config: Config) -> Result<Duration, Box<dyn Error>> {
     let started = Instant::now();
     for _ in 0..config.iterations {
         std::hint::black_box(fixture.scan(config)?);
     }
-    print_timing(started.elapsed(), config.iterations);
-    Ok(())
+    Ok(started.elapsed())
 }
 
 fn build_fixture(config: Config) -> Result<Fixture, Box<dyn Error>> {
@@ -449,9 +481,13 @@ fn scan_options(config: Config) -> ScanOptions {
 }
 
 fn parse_args() -> Result<Config, Box<dyn Error>> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Config, Box<dyn Error>> {
     let mut config = Config::default();
     let mut shape_was_supplied = false;
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--test" => config.smoke = true,
@@ -489,6 +525,7 @@ fn parse_args() -> Result<Config, Box<dyn Error>> {
             "--threads" => config.threads = parse_next(&mut arguments, "--threads")?,
             "--block-rows" => config.block_rows = parse_next(&mut arguments, "--block-rows")?,
             "--iterations" => config.iterations = parse_next(&mut arguments, "--iterations")?,
+            "--repeats" => config.repeats = scan_repeat::parse_repeats(&mut arguments)?,
             "--abandon" => {
                 let value = arguments.next().ok_or("--abandon requires on or off")?;
                 config.abandon = match value.as_str() {
@@ -582,9 +619,4 @@ fn parse_next(
         .next()
         .ok_or_else(|| format!("{flag} requires a value"))?
         .parse()?)
-}
-
-fn print_timing(elapsed: Duration, iterations: usize) {
-    let mean = elapsed.as_secs_f64() / iterations as f64;
-    println!("mean wall time per scan: {mean:.6} s over {iterations} iterations");
 }

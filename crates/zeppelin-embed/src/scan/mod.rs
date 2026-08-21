@@ -1186,6 +1186,12 @@ mod tests {
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
 
     #[test]
+    fn scan_options_default_disables_early_abandonment() {
+        let actual = ScanOptions::default().early_abandon;
+        assert!(!actual, "early_abandon={actual}, expected=false");
+    }
+
+    #[test]
     fn all_identical_vectors_tie_by_ascending_row_id() {
         let query = [1.0_f32, -2.0];
         let rows = [1.0_f32, -2.0, 1.0, -2.0, 1.0, -2.0];
@@ -2435,7 +2441,10 @@ mod tests {
             top_k_with_options(
                 mask_fixture(&f32_query, &[1.0, 2.0], None),
                 1,
-                ScanOptions::default(),
+                ScanOptions {
+                    early_abandon: true,
+                    thread_budget: 0,
+                },
             ),
             Err(ScanError::EarlyAbandonmentUnsupported)
         );

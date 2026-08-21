@@ -6,7 +6,15 @@ use super::topk::BoundedTopK;
 use super::{ScanError, ScanRequest, ScanRows, scan_geometry, scan_partition};
 
 /// Runtime controls for the extended exact scan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// Early abandonment is off by default because its per-block bounds over
+/// arbitrary, unsorted 64-row slices currently skip almost nothing on real
+/// corpora, so evaluating the bounds costs more than it saves. Bit4 bound
+/// evaluation is also scalar while the equivalent f32 work is SIMD. It is
+/// expected to become worthwhile once Tasks 19/20 group rows by similarity and
+/// once bound evaluation is vectorized; callers can still enable it per
+/// request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ScanOptions {
     /// Enables conservative early abandonment where the scheme and layout
     /// have a proven bound. Unsupported combinations return
@@ -16,15 +24,6 @@ pub struct ScanOptions {
     /// Requested worker count. Zero explicitly selects all detected physical
     /// performance cores; a nonzero request is capped at that count.
     pub thread_budget: usize,
-}
-
-impl Default for ScanOptions {
-    fn default() -> Self {
-        Self {
-            early_abandon: true,
-            thread_budget: 0,
-        }
-    }
 }
 
 /// Deterministic companion counters for one completed scan.
