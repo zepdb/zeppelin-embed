@@ -8,6 +8,7 @@
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use tempfile::tempdir;
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnType,
     ColumnValue, Schema,
@@ -18,6 +19,11 @@ use zeppelin_embed::segment::layout::{RegionKind, VECTOR_HEADER_LEN};
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::StdVfs;
+
+fn ordered_policy() -> DurabilityPolicy {
+    DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
+        .expect("ordered durability policy")
+}
 
 fn columns(rows: u32, salt: i16) -> ColumnStore {
     let schema = Schema::new(vec![
@@ -92,6 +98,7 @@ fn prop_segment_roundtrip() {
                 columns: &columns,
                 alive: &alive,
             },
+            ordered_policy(),
         )
         .expect("segment write");
         let reader =
@@ -165,6 +172,7 @@ fn segment_large_regions_are_validated_lazily_per_64k_chunk() {
             columns: &columns,
             alive: &alive,
         },
+        ordered_policy(),
     )
     .expect("segment");
     let reader = SegmentReader::open(&path, id).expect("open");

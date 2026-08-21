@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use zeppelin_embed::format::frame::FormatCheck;
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::manifest::decode_manifest;
 use zeppelin_embed::manifest::io::{
     DurableLog, MANIFEST_FILE, MANIFEST_TEMP_FILE, commit_manifest, load_manifest, open_manifest,
@@ -94,6 +95,11 @@ fn directory() -> &'static Path {
     Path::new(DIRECTORY)
 }
 
+fn ordered_policy() -> DurabilityPolicy {
+    DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
+        .expect("ordered durability policy")
+}
+
 fn schema() -> Schema {
     Schema::new(Vec::new()).expect("schema")
 }
@@ -149,6 +155,7 @@ fn publish_segment(recorder: &CrashVfs, id: SegmentId) -> SegmentMeta {
             columns: &columns,
             alive: &alive,
         },
+        ordered_policy(),
     )
     .expect("segment publish")
 }
@@ -394,7 +401,8 @@ fn run_manifest_case(case: CrashCase) {
     let (store, old_manifest, old_meta) = seed_previous_store();
     let recorder = CrashVfs::new(store).expect("recorder");
     let new_manifest = manifest(2, vec![old_meta]);
-    commit_manifest(&recorder, directory(), &new_manifest).expect("manifest commit");
+    commit_manifest(&recorder, directory(), &new_manifest, ordered_policy())
+        .expect("manifest commit");
     let states = recorder.crash_states().expect("crash states");
     assert_full_uncapped_coverage(case, &recorder, &states);
     for state in states.iter() {
@@ -464,7 +472,8 @@ fn run_combined_case(case: CrashCase) {
     let new_id = SegmentId::new(3, [3; 10]);
     let new_meta = publish_segment(&recorder, new_id);
     let new_manifest = manifest(2, vec![old_meta, new_meta.clone()]);
-    commit_manifest(&recorder, directory(), &new_manifest).expect("manifest commit");
+    commit_manifest(&recorder, directory(), &new_manifest, ordered_policy())
+        .expect("manifest commit");
     let states = recorder.crash_states().expect("crash states");
     assert_full_uncapped_coverage(case, &recorder, &states);
     for state in states.iter() {
@@ -527,6 +536,7 @@ fn new_corruption_classes_reach_checksum_checks_for_both_protocols() {
         &manifest_recorder,
         directory(),
         &manifest(2, vec![old_meta]),
+        ordered_policy(),
     )
     .expect("manifest commit");
     let manifest_states = manifest_recorder.crash_states().expect("manifest states");

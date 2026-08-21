@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use tempfile::tempdir;
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::manifest::io::{
     DurableLog, MANIFEST_FILE, commit_manifest, load_manifest, open_manifest,
 };
@@ -23,6 +24,11 @@ use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
+
+fn ordered_policy() -> DurabilityPolicy {
+    DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
+        .expect("ordered durability policy")
+}
 
 struct Log(u64);
 
@@ -134,6 +140,7 @@ fn write_empty_segment(directory: &Path, byte: u8) -> zeppelin_embed::segment::S
             columns: &columns,
             alive: &alive,
         },
+        ordered_policy(),
     )
     .expect("empty segment")
 }
@@ -142,18 +149,19 @@ fn write_empty_segment(directory: &Path, byte: u8) -> zeppelin_embed::segment::S
 fn manifest_commit_is_atomic_under_rename() {
     let directory = tempdir().expect("tempdir");
     let old = manifest(1, 10);
-    commit_manifest(&StdVfs, directory.path(), &old).expect("old commit");
+    commit_manifest(&StdVfs, directory.path(), &old, ordered_policy()).expect("old commit");
 
     let crash = RenameCrashVfs::new(true);
     let new = manifest(2, 11);
-    let error = commit_manifest(&crash, directory.path(), &new).expect_err("rename crash");
+    let error = commit_manifest(&crash, directory.path(), &new, ordered_policy())
+        .expect_err("rename crash");
     assert!(error.to_string().contains("simulated crash before rename"));
     let reopened = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), u64::MAX)
         .expect("old manifest remains");
     assert_eq!(reopened, old);
 
     crash.permit_rename();
-    commit_manifest(&crash, directory.path(), &new).expect("new commit");
+    commit_manifest(&crash, directory.path(), &new, ordered_policy()).expect("new commit");
     let reopened = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), u64::MAX)
         .expect("new manifest visible");
     assert_eq!(reopened.generation, 2);
@@ -162,7 +170,7 @@ fn manifest_commit_is_atomic_under_rename() {
 #[test]
 fn manifest_refuses_ahead_of_log() {
     let directory = tempdir().expect("tempdir");
-    commit_manifest(&StdVfs, directory.path(), &manifest(1, 5)).expect("commit");
+    commit_manifest(&StdVfs, directory.path(), &manifest(1, 5), ordered_policy()).expect("commit");
     let error = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), 4)
         .expect_err("ahead manifest must fail");
     match error {
@@ -183,7 +191,7 @@ fn manifest_orphan_sweep_uses_reachability_and_writing_exclusions() {
     let excluded_path = directory.path().join(excluded.id.file_name());
     let mut committed = manifest(1, 0);
     committed.segments.push(reachable.clone());
-    commit_manifest(&StdVfs, directory.path(), &committed).expect("commit");
+    commit_manifest(&StdVfs, directory.path(), &committed, ordered_policy()).expect("commit");
     let opened = open_manifest(
         &StdVfs,
         directory.path(),
@@ -204,7 +212,7 @@ fn open_touches_only_manifest_and_headers() {
     let second = write_empty_segment(directory.path(), 5);
     let mut committed = manifest(3, 2);
     committed.segments = vec![first, second];
-    commit_manifest(&StdVfs, directory.path(), &committed).expect("commit");
+    commit_manifest(&StdVfs, directory.path(), &committed, ordered_policy()).expect("commit");
     let counting = CountingVfs::new(StdVfs);
     let opened =
         open_manifest(&counting, directory.path(), &Log(2), &HashSet::new()).expect("bounded open");
@@ -249,7 +257,7 @@ fn prop_orphan_sweep_matches_random_reachable_unreachable_mixes() {
             }
             paths.push((path, status));
         }
-        commit_manifest(&StdVfs, directory.path(), &committed).expect("commit");
+        commit_manifest(&StdVfs, directory.path(), &committed, ordered_policy()).expect("commit");
         let opened = open_manifest(&StdVfs, directory.path(), &Log(0), &exclusions).expect("open");
         prop_assert_eq!(opened.bytes_reclaimed, expected_reclaimed);
         for (path, status) in paths {

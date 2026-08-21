@@ -6,9 +6,10 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use crate::format::frame::{FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN};
 use crate::format::{FormatFamily, FormatRegistry};
+use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
-use crate::vfs::{PART_A_ORDERED_SYNC, Vfs};
+use crate::vfs::Vfs;
 
 use super::layout::{
     CHECKSUM_CHUNK_BYTES, Int8Factors, REGION_ALIGNMENT, REGION_ENTRY_LEN, RegionEntry, RegionKind,
@@ -358,18 +359,27 @@ pub fn write_segment(
     vfs: &dyn Vfs,
     directory: &Path,
     build: SegmentBuild<'_>,
+    policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
     let bytes = encode_segment(build)?;
     let final_path = directory.join(build.id.file_name());
     let temporary_path = temporary_path(directory, build.id);
     vfs.write(&temporary_path, &bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
-    vfs.sync(&temporary_path, PART_A_ORDERED_SYNC)
-        .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    match policy.data_file_sync() {
+        SyncRequirement::Skip => {}
+        SyncRequirement::Sync(kind) => vfs
+            .sync(&temporary_path, kind)
+            .map_err(|error| SegmentError::io(&temporary_path, error))?,
+    }
     vfs.rename(&temporary_path, &final_path)
         .map_err(|error| SegmentError::io(&final_path, error))?;
-    vfs.sync(directory, PART_A_ORDERED_SYNC)
-        .map_err(|error| SegmentError::io(directory, error))?;
+    match policy.directory_sync() {
+        SyncRequirement::Skip => {}
+        SyncRequirement::Sync(kind) => vfs
+            .sync(directory, kind)
+            .map_err(|error| SegmentError::io(directory, error))?,
+    }
     Ok(SegmentMeta {
         id: build.id,
         row_count: build.columns.row_count(),

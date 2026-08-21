@@ -179,3 +179,14 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   schedules even when bytes coincide.
 - A sync closes the global reorder epoch. Never enumerate a state that omits or
   reorders a pre-sync write behind a later write.
+
+## Task 08 Part B2a durability-policy invariants
+
+- `DurabilityPolicy` resolves data-file and directory synchronization as
+  separate named `SyncRequirement` questions. `Derived` and the `None` tier
+  skip explicitly; ordered uses barriers; durable uses full syncs; `Attached`
+  returns `AttachedNotYetSupported` and never falls back.
+- Segment and manifest publication take the validated policy explicitly. Keep
+  both directory syncs: their ablations did not fail because the current matrix
+  permits an old prefix and does not model post-return directory-entry loss,
+  so that result is matrix weakness rather than deletion evidence.

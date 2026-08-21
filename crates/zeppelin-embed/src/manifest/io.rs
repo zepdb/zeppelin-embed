@@ -3,8 +3,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::segment::reader::validate_header_with_vfs;
-use crate::vfs::{PART_A_ORDERED_SYNC, Vfs};
+use crate::vfs::Vfs;
 
 use super::{Manifest, ManifestError, decode_manifest, encode_manifest};
 
@@ -35,18 +36,27 @@ pub fn commit_manifest(
     vfs: &dyn Vfs,
     directory: &Path,
     manifest: &Manifest,
+    policy: DurabilityPolicy,
 ) -> Result<(), ManifestError> {
     let bytes = encode_manifest(manifest)?;
     let temporary = directory.join(MANIFEST_TEMP_FILE);
     let committed = directory.join(MANIFEST_FILE);
     vfs.write(&temporary, &bytes)
         .map_err(|error| ManifestError::io(&temporary, error))?;
-    vfs.sync(&temporary, PART_A_ORDERED_SYNC)
-        .map_err(|error| ManifestError::io(&temporary, error))?;
+    match policy.data_file_sync() {
+        SyncRequirement::Skip => {}
+        SyncRequirement::Sync(kind) => vfs
+            .sync(&temporary, kind)
+            .map_err(|error| ManifestError::io(&temporary, error))?,
+    }
     vfs.rename(&temporary, &committed)
         .map_err(|error| ManifestError::io(&committed, error))?;
-    vfs.sync(directory, PART_A_ORDERED_SYNC)
-        .map_err(|error| ManifestError::io(directory, error))
+    match policy.directory_sync() {
+        SyncRequirement::Skip => Ok(()),
+        SyncRequirement::Sync(kind) => vfs
+            .sync(directory, kind)
+            .map_err(|error| ManifestError::io(directory, error)),
+    }
 }
 
 /// Loads and checksums a manifest and refuses snapshots ahead of the supplied log.

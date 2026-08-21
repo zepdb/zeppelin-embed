@@ -8,6 +8,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Storage-ordering primitive requested by a persisted commit.
@@ -21,10 +22,6 @@ pub enum SyncKind {
     /// Flush prior writes through the platform's durable-media primitive.
     Full,
 }
-
-/// Part-A placeholder for the `ordered` default; Part B must re-derive this
-/// synchronization choice from the real durability-tier policy.
-pub(crate) const PART_A_ORDERED_SYNC: SyncKind = SyncKind::Barrier;
 
 /// One open append-only file owned by a WAL writer.
 pub trait VfsFile: Send {
@@ -142,20 +139,59 @@ impl Vfs for StdVfs {
 /// Byte/call-counting decorator used by deterministic open-cost gates.
 pub struct CountingVfs<V> {
     inner: V,
+    counters: Arc<CountingVfsCounters>,
+}
+
+#[derive(Default)]
+struct CountingVfsCounters {
     open_calls: AtomicU64,
     read_calls: AtomicU64,
     read_bytes: AtomicU64,
+    write_calls: AtomicU64,
+    bytes_written: AtomicU64,
+    append_calls: AtomicU64,
+    bytes_appended: AtomicU64,
+    rename_calls: AtomicU64,
+    delete_calls: AtomicU64,
+    barrier_sync_calls: AtomicU64,
+    full_sync_calls: AtomicU64,
+    handle_barrier_sync_calls: AtomicU64,
+    handle_full_sync_calls: AtomicU64,
+}
+
+struct CountingVfsFile {
+    inner: Box<dyn VfsFile>,
+    counters: Arc<CountingVfsCounters>,
+}
+
+impl VfsFile for CountingVfsFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.append(bytes)?;
+        self.counters.append_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .bytes_appended
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(kind)?;
+        match kind {
+            SyncKind::Barrier => &self.counters.handle_barrier_sync_calls,
+            SyncKind::Full => &self.counters.handle_full_sync_calls,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl<V> CountingVfs<V> {
     /// Wraps a filesystem with zeroed counters.
     #[must_use]
-    pub const fn new(inner: V) -> Self {
+    pub fn new(inner: V) -> Self {
         Self {
             inner,
-            open_calls: AtomicU64::new(0),
-            read_calls: AtomicU64::new(0),
-            read_bytes: AtomicU64::new(0),
+            counters: Arc::new(CountingVfsCounters::default()),
         }
     }
 
@@ -168,65 +204,159 @@ impl<V> CountingVfs<V> {
     /// Returns observed open calls.
     #[must_use]
     pub fn open_calls(&self) -> u64 {
-        self.open_calls.load(Ordering::Relaxed)
+        self.counters.open_calls.load(Ordering::Relaxed)
     }
 
     /// Returns observed read calls.
     #[must_use]
     pub fn read_calls(&self) -> u64 {
-        self.read_calls.load(Ordering::Relaxed)
+        self.counters.read_calls.load(Ordering::Relaxed)
     }
 
     /// Returns exact bytes returned by reads.
     #[must_use]
     pub fn read_bytes(&self) -> u64 {
-        self.read_bytes.load(Ordering::Relaxed)
+        self.counters.read_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Returns observed whole-file write calls.
+    #[must_use]
+    pub fn write_calls(&self) -> u64 {
+        self.counters.write_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns exact bytes supplied to successful whole-file writes.
+    #[must_use]
+    pub fn bytes_written(&self) -> u64 {
+        self.counters.bytes_written.load(Ordering::Relaxed)
+    }
+
+    /// Returns observed successful handle append calls.
+    #[must_use]
+    pub fn append_calls(&self) -> u64 {
+        self.counters.append_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns exact bytes supplied to successful handle appends.
+    #[must_use]
+    pub fn bytes_appended(&self) -> u64 {
+        self.counters.bytes_appended.load(Ordering::Relaxed)
+    }
+
+    /// Returns observed successful rename calls.
+    #[must_use]
+    pub fn rename_calls(&self) -> u64 {
+        self.counters.rename_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns observed successful delete calls.
+    #[must_use]
+    pub fn delete_calls(&self) -> u64 {
+        self.counters.delete_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns path-based barrier synchronization calls.
+    #[must_use]
+    pub fn barrier_sync_calls(&self) -> u64 {
+        self.counters.barrier_sync_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns path-based full synchronization calls.
+    #[must_use]
+    pub fn full_sync_calls(&self) -> u64 {
+        self.counters.full_sync_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns open-handle barrier synchronization calls.
+    #[must_use]
+    pub fn handle_barrier_sync_calls(&self) -> u64 {
+        self.counters
+            .handle_barrier_sync_calls
+            .load(Ordering::Relaxed)
+    }
+
+    /// Returns open-handle full synchronization calls.
+    #[must_use]
+    pub fn handle_full_sync_calls(&self) -> u64 {
+        self.counters.handle_full_sync_calls.load(Ordering::Relaxed)
     }
 
     /// Resets all counters without changing the wrapped filesystem.
     pub fn reset(&self) {
-        self.open_calls.store(0, Ordering::Relaxed);
-        self.read_calls.store(0, Ordering::Relaxed);
-        self.read_bytes.store(0, Ordering::Relaxed);
+        self.counters.open_calls.store(0, Ordering::Relaxed);
+        self.counters.read_calls.store(0, Ordering::Relaxed);
+        self.counters.read_bytes.store(0, Ordering::Relaxed);
+        self.counters.write_calls.store(0, Ordering::Relaxed);
+        self.counters.bytes_written.store(0, Ordering::Relaxed);
+        self.counters.append_calls.store(0, Ordering::Relaxed);
+        self.counters.bytes_appended.store(0, Ordering::Relaxed);
+        self.counters.rename_calls.store(0, Ordering::Relaxed);
+        self.counters.delete_calls.store(0, Ordering::Relaxed);
+        self.counters.barrier_sync_calls.store(0, Ordering::Relaxed);
+        self.counters.full_sync_calls.store(0, Ordering::Relaxed);
+        self.counters
+            .handle_barrier_sync_calls
+            .store(0, Ordering::Relaxed);
+        self.counters
+            .handle_full_sync_calls
+            .store(0, Ordering::Relaxed);
     }
 }
 
 impl<V: Vfs> Vfs for CountingVfs<V> {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
-        self.open_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.open_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.open(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         let bytes = self.inner.read(path)?;
-        self.read_calls.fetch_add(1, Ordering::Relaxed);
-        self.read_bytes
+        self.counters.read_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         Ok(bytes)
     }
 
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
         let bytes = self.inner.read_range(path, offset, length)?;
-        self.read_calls.fetch_add(1, Ordering::Relaxed);
-        self.read_bytes
+        self.counters.read_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         Ok(bytes)
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        self.inner.write(path, bytes)
+        self.inner.write(path, bytes)?;
+        self.counters.write_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .bytes_written
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(())
     }
 
     fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
-        self.inner.open_append(path)
+        Ok(Box::new(CountingVfsFile {
+            inner: self.inner.open_append(path)?,
+            counters: Arc::clone(&self.counters),
+        }))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        self.inner.rename(from, to)
+        self.inner.rename(from, to)?;
+        self.counters.rename_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
-        self.inner.sync(path, kind)
+        self.inner.sync(path, kind)?;
+        match kind {
+            SyncKind::Barrier => &self.counters.barrier_sync_calls,
+            SyncKind::Full => &self.counters.full_sync_calls,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -234,7 +364,9 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
-        self.inner.delete(path)
+        self.inner.delete(path)?;
+        self.counters.delete_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -273,6 +405,11 @@ fn sync_file(_: &File, kind: SyncKind) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use super::crash::MemoryVfs;
+    use super::{CountingVfs, SyncKind, Vfs};
+
     #[test]
     fn crash_support_api_gate_is_identical_in_debug_and_release() {
         let source = include_str!("mod.rs");
@@ -281,5 +418,82 @@ mod tests {
             .zip(source.lines().skip(1))
             .find_map(|(line, next)| (next == "pub mod crash;").then_some(line));
         assert_eq!(gate, Some("#[cfg(any(test, feature = \"test-support\"))]"));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn counting_vfs_counts_every_mutation_and_sync_kind_exactly() {
+        let inner = MemoryVfs::new();
+        inner
+            .insert("/source", b"abc".to_vec())
+            .expect("seed source");
+        let counting = CountingVfs::new(inner);
+
+        assert_eq!(counting.open(Path::new("/source")).expect("open"), 3);
+        assert_eq!(counting.read(Path::new("/source")).expect("read"), b"abc");
+        assert_eq!(
+            counting
+                .read_range(Path::new("/source"), 1, 2)
+                .expect("range"),
+            b"bc"
+        );
+        counting.write(Path::new("/write"), b"1234").expect("write");
+        let mut handle = counting
+            .open_append(Path::new("/append"))
+            .expect("open append");
+        handle.append(b"12").expect("first append");
+        handle.append(b"345").expect("second append");
+        handle.sync(SyncKind::Barrier).expect("handle barrier");
+        handle.sync(SyncKind::Full).expect("handle full");
+        counting
+            .sync(Path::new("/write"), SyncKind::Barrier)
+            .expect("path barrier");
+        counting
+            .sync(Path::new("/write"), SyncKind::Full)
+            .expect("path full");
+        counting
+            .rename(Path::new("/write"), Path::new("/renamed"))
+            .expect("rename");
+        counting.delete(Path::new("/renamed")).expect("delete");
+
+        assert_eq!(
+            [
+                counting.open_calls(),
+                counting.read_calls(),
+                counting.read_bytes(),
+                counting.write_calls(),
+                counting.bytes_written(),
+                counting.append_calls(),
+                counting.bytes_appended(),
+                counting.rename_calls(),
+                counting.delete_calls(),
+                counting.barrier_sync_calls(),
+                counting.full_sync_calls(),
+                counting.handle_barrier_sync_calls(),
+                counting.handle_full_sync_calls(),
+            ],
+            [1, 2, 5, 1, 4, 2, 5, 1, 1, 1, 1, 1, 1],
+            "CountingVfs must expose every exact VFS and open-handle cost"
+        );
+        counting.reset();
+        assert_eq!(
+            [
+                counting.open_calls(),
+                counting.read_calls(),
+                counting.read_bytes(),
+                counting.write_calls(),
+                counting.bytes_written(),
+                counting.append_calls(),
+                counting.bytes_appended(),
+                counting.rename_calls(),
+                counting.delete_calls(),
+                counting.barrier_sync_calls(),
+                counting.full_sync_calls(),
+                counting.handle_barrier_sync_calls(),
+                counting.handle_full_sync_calls(),
+            ],
+            [0; 13],
+            "reset must zero decorator and shared-handle counters"
+        );
     }
 }

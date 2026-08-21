@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::tempdir;
 use xxhash_rust::xxh3::xxh3_64;
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
 use zeppelin_embed::quant::Bit4Factors;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
@@ -20,6 +21,11 @@ use zeppelin_embed::segment::writer::{
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId};
 use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
+
+fn ordered_policy() -> DurabilityPolicy {
+    DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
+        .expect("ordered durability policy")
+}
 
 fn empty_columns() -> ColumnStore {
     ColumnStoreBuilder::new(Schema::new(Vec::new()).expect("schema"))
@@ -404,6 +410,7 @@ fn segment_writer_surfaces_each_vfs_commit_stage() {
             columns: &columns,
             alive: &alive,
         },
+        ordered_policy(),
     )
     .expect_err("write stage");
     assert!(error.to_string().contains("write stage"));
@@ -497,6 +504,7 @@ fn segment_writer_names_sync_rename_and_directory_sync_failures() {
                 columns: &columns,
                 alive: &alive,
             },
+            ordered_policy(),
         )
         .expect_err("commit stage");
         assert!(error.to_string().contains(expected), "{error}");
