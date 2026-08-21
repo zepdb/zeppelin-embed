@@ -120,3 +120,24 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   Roaring calls stay behind that boundary. Dictionary codes widen from u16 to
   u32 when cardinality exceeds `u16::MAX` and report typed overflow beyond the
   u32 cardinality limit.
+
+## Task 07 persisted-format invariants
+
+- A row id is the dense segment-local `u32` insertion position. The alive
+  bitmap masks that id, and **graph node id equals row id**; no second graph id
+  space may be introduced.
+- Segment payloads are directory-addressed 16-KB-aligned regions. Unknown kind
+  ids are length-bounded and skipped. Reserved ids name postings, graph CSR,
+  graph-colocated codes, sign planes, optional clustered PDX blocks, checksum
+  tables, and additive vector-space-N triples; they do not reserve file space.
+- Vector codes, factors, and f32 rescore rows are separate structure-of-arrays
+  regions. Code rows are unpadded, factor records are exactly 12 bytes for
+  Bit4 and 8 bytes for Int8, and validated mmap slices feed kernels directly.
+- Vector geometry stores scheme, dims, row stride, factor stride, vector space,
+  and the identity transform descriptor explicitly. V1 requires vector space,
+  transform kind, and transform seed to be zero.
+- Xxh3-64 is the only checksum family: every region, every 64-KB chunk, framed
+  blocks, segment/manifest headers, and complete files use u64 checksums.
+- Manifest rename is the sole commit point. Open reads the manifest and bounded
+  segment headers only, refuses snapshots ahead of the durable log, and derives
+  orphan reachability from the manifest while honoring active-writer exclusions.

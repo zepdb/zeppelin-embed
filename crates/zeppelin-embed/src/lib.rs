@@ -15,6 +15,8 @@
 pub mod diag;
 /// Epoch identity and migration.
 pub mod epoch;
+/// Persisted-format framing, versions, and golden-fixture support.
+pub mod format;
 /// Full-text indexing and retrieval.
 pub mod fts;
 /// Hybrid result fusion.

@@ -163,6 +163,25 @@ jobs:
           tool: cargo-fuzz
       - run: scripts/cargo-fuzz-nightly run fuzz_smoke -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run kernels_equivalence -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run segment_reader -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run manifest_decode -- -max_total_time=60
+
+  address-sanitizer:
+    name: address-sanitizer-corruption (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the complete persisted-artifact corruption matrix under ASan
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          RUSTFLAGS: -Zsanitizer=address
+        run: >-
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p zeppelin-embed --test corruption
 
   kernel-perf-floor:
     name: kernel-perf-floor (macos-14)

@@ -44,3 +44,17 @@ path = "fuzz_targets/predicate_eval.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "segment_reader"
+path = "fuzz_targets/segment_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_decode"
+path = "fuzz_targets/manifest_decode.rs"
+test = false
+doc = false
+bench = false

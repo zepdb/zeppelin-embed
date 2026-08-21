@@ -28,6 +28,7 @@ const MAX_MAGNITUDE_LEVEL: u8 = 7;
 
 /// Per-row scalars required by the four-bit unbiased dot estimator.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
 pub struct Bit4Factors {
     scale: f32,
     normalized_norm: f32,
@@ -35,6 +36,26 @@ pub struct Bit4Factors {
 }
 
 impl Bit4Factors {
+    /// Reconstructs the permanent three-f32 persisted factor record.
+    #[must_use]
+    pub const fn from_persisted(
+        scale: f32,
+        normalized_norm: f32,
+        normalized_correction: f32,
+    ) -> Self {
+        Self {
+            scale,
+            normalized_norm,
+            normalized_correction,
+        }
+    }
+
+    /// Returns the permanent little-endian record fields in declaration order.
+    #[must_use]
+    pub const fn persisted_fields(self) -> [f32; 3] {
+        [self.scale, self.normalized_norm, self.normalized_correction]
+    }
+
     /// Returns the original row's Euclidean norm.
     ///
     /// A finite `f32` row scale and finite normalized `f32` norm are expanded

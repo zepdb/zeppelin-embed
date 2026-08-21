@@ -659,3 +659,347 @@ fn find_input<'a, 'value>(
 ) -> Option<&'a ColumnInput<'value>> {
     inputs.iter().find(|input| input.column == column)
 }
+
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{CodeWidth, ColumnDefinition};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed, TestRunner};
+    use rand::RngCore;
+
+    #[derive(Clone, Debug)]
+    struct ArbitraryRow {
+        timestamp: i64,
+        unsigned: Option<u64>,
+        signed: Option<i64>,
+        float: Option<f64>,
+        boolean: Option<bool>,
+        dictionary: Option<String>,
+        raw: Option<String>,
+    }
+
+    impl Arbitrary for ArbitraryRow {
+        type Parameters = ();
+        type Strategy = BoxedStrategy<Self>;
+
+        fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+            (
+                any::<i64>(),
+                proptest::option::of(any::<u64>()),
+                proptest::option::of(any::<i64>()),
+                proptest::option::of(any::<i32>().prop_map(f64::from)),
+                proptest::option::of(any::<bool>()),
+                proptest::option::of("[a-z]{0,12}"),
+                proptest::option::of("[ -~]{0,24}"),
+            )
+                .prop_map(
+                    |(timestamp, unsigned, signed, float, boolean, dictionary, raw)| Self {
+                        timestamp,
+                        unsigned,
+                        signed,
+                        float,
+                        boolean,
+                        dictionary,
+                        raw,
+                    },
+                )
+                .boxed()
+        }
+    }
+
+    fn complete_schema(nullable: bool) -> Schema {
+        Schema::new(vec![
+            ColumnDefinition::new(ColumnId::new(1), "u", ColumnType::U64, nullable),
+            ColumnDefinition::new(ColumnId::new(2), "i", ColumnType::I64, nullable),
+            ColumnDefinition::new(ColumnId::new(3), "f", ColumnType::F64, nullable),
+            ColumnDefinition::new(ColumnId::new(4), "b", ColumnType::Bool, nullable),
+            ColumnDefinition::new(
+                ColumnId::new(5),
+                "dictionary",
+                ColumnType::DictionaryString,
+                nullable,
+            ),
+            ColumnDefinition::new(ColumnId::new(6), "raw", ColumnType::RawString, nullable),
+        ])
+        .expect("schema is valid")
+    }
+
+    fn build_arbitrary_store(rows: &[ArbitraryRow]) -> ColumnStore {
+        let mut builder = ColumnStoreBuilder::new(complete_schema(true));
+        for row in rows {
+            let mut inputs = Vec::new();
+            if let Some(value) = row.unsigned {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::U64(value),
+                });
+            }
+            if let Some(value) = row.signed {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(2),
+                    value: ColumnValue::I64(value),
+                });
+            }
+            if let Some(value) = row.float {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(3),
+                    value: ColumnValue::F64(value),
+                });
+            }
+            if let Some(value) = row.boolean {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(4),
+                    value: ColumnValue::Bool(value),
+                });
+            }
+            if let Some(value) = row.dictionary.as_deref() {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(5),
+                    value: ColumnValue::String(value),
+                });
+            }
+            if let Some(value) = row.raw.as_deref() {
+                inputs.push(ColumnInput {
+                    column: ColumnId::new(6),
+                    value: ColumnValue::String(value),
+                });
+            }
+            builder
+                .push_row(row.timestamp, &inputs)
+                .expect("arbitrary row is schema-compatible");
+        }
+        builder.finish().expect("bounded store finishes")
+    }
+
+    #[test]
+    fn prop_column_store_builders_and_accessors_roundtrip() {
+        let name = "meta::columns::tests::prop_column_store_builders_and_accessors_roundtrip";
+        let mut seeded = crate::test_support::seeded_rng(name);
+        let config = Config {
+            rng_seed: RngSeed::Fixed(seeded.next_u64()),
+            cases: 256,
+            ..Config::default()
+        };
+        let mut runner = TestRunner::new(config);
+        let rows = prop::collection::vec(any::<ArbitraryRow>(), 0..=32);
+        let result = runner.run(&rows, |rows| {
+            let store = build_arbitrary_store(&rows);
+            prop_assert_eq!(store.row_count(), rows.len() as u32);
+            prop_assert_eq!(store.schema(), &complete_schema(true));
+            prop_assert_eq!(
+                store.timestamps(),
+                rows.iter().map(|row| row.timestamp).collect::<Vec<_>>()
+            );
+
+            for (offset, expected_type) in [
+                ColumnType::I64,
+                ColumnType::U64,
+                ColumnType::I64,
+                ColumnType::F64,
+                ColumnType::Bool,
+                ColumnType::DictionaryString,
+                ColumnType::RawString,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let column = store
+                    .column(ColumnId::new(offset as u32))
+                    .expect("defined column");
+                prop_assert_eq!(column.column_type(), expected_type);
+                prop_assert_eq!(column.len(), rows.len());
+                prop_assert_eq!(column.is_empty(), rows.is_empty());
+            }
+
+            for (position, row) in rows.iter().enumerate() {
+                let row_id = position as u32;
+                prop_assert_eq!(store.timestamp(row_id), Some(row.timestamp));
+                match store.column(ColumnId::new(1)) {
+                    Some(Column::U64(column)) => prop_assert_eq!(column.get(row_id), row.unsigned),
+                    actual => prop_assert!(false, "unexpected u64 column: {actual:?}"),
+                }
+                match store.column(ColumnId::new(2)) {
+                    Some(Column::I64(column)) => prop_assert_eq!(column.get(row_id), row.signed),
+                    actual => prop_assert!(false, "unexpected i64 column: {actual:?}"),
+                }
+                match store.column(ColumnId::new(3)) {
+                    Some(Column::F64(column)) => prop_assert_eq!(column.get(row_id), row.float),
+                    actual => prop_assert!(false, "unexpected f64 column: {actual:?}"),
+                }
+                match store.column(ColumnId::new(4)) {
+                    Some(Column::Bool(column)) => {
+                        prop_assert_eq!(column.get(row_id), row.boolean)
+                    }
+                    actual => prop_assert!(false, "unexpected bool column: {actual:?}"),
+                }
+                match store.column(ColumnId::new(5)) {
+                    Some(Column::DictionaryString(column)) => {
+                        prop_assert_eq!(column.get(row_id), row.dictionary.as_deref());
+                    }
+                    actual => prop_assert!(false, "unexpected dictionary column: {actual:?}"),
+                }
+                match store.column(ColumnId::new(6)) {
+                    Some(Column::RawString(column)) => {
+                        prop_assert_eq!(column.get(row_id), row.raw.as_deref());
+                    }
+                    actual => prop_assert!(false, "unexpected raw column: {actual:?}"),
+                }
+            }
+            let outside = rows.len() as u32;
+            prop_assert_eq!(store.timestamp(outside), None);
+            prop_assert_eq!(store.column(ColumnId::new(99)), None);
+            Ok(())
+        });
+        assert!(result.is_ok(), "property result: {result:?}");
+    }
+
+    #[test]
+    fn builder_errors_are_typed_and_atomic_at_capacity_edges() {
+        let mut builder = ColumnStoreBuilder::new(complete_schema(false));
+        let error = builder
+            .push_row(
+                7,
+                &[ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::Bool(true),
+                }],
+            )
+            .expect_err("wrong physical type must fail");
+        assert_eq!(
+            error,
+            BuildError::TypeMismatch {
+                column: ColumnId::new(1),
+                expected: ColumnType::U64,
+                actual: ColumnType::Bool,
+            }
+        );
+        assert_eq!(builder.row_count, 0);
+
+        assert_eq!(
+            builder.push_row(7, &[]),
+            Err(BuildError::MissingRequiredColumn(ColumnId::new(1)))
+        );
+        assert_eq!(builder.row_count, 0, "length mismatch must be atomic");
+
+        assert_eq!(
+            builder.push_row(
+                7,
+                &[ColumnInput {
+                    column: ColumnId::new(99),
+                    value: ColumnValue::U64(1),
+                }]
+            ),
+            Err(BuildError::UnknownColumn(ColumnId::new(99)))
+        );
+        assert_eq!(
+            builder.push_row(
+                7,
+                &[
+                    ColumnInput {
+                        column: ColumnId::new(1),
+                        value: ColumnValue::U64(1),
+                    },
+                    ColumnInput {
+                        column: ColumnId::new(1),
+                        value: ColumnValue::U64(2),
+                    },
+                ]
+            ),
+            Err(BuildError::DuplicateColumn(ColumnId::new(1)))
+        );
+        assert_eq!(
+            builder.push_row(
+                7,
+                &[ColumnInput {
+                    column: TIMESTAMP_COLUMN,
+                    value: ColumnValue::I64(7),
+                }]
+            ),
+            Err(BuildError::TimestampProvidedAsInput)
+        );
+        assert_eq!(builder.row_count, 0);
+
+        let mut at_capacity = ColumnStoreBuilder::new(complete_schema(true));
+        at_capacity.row_count = u32::MAX;
+        assert_eq!(at_capacity.push_row(8, &[]), Err(BuildError::TooManyRows));
+        assert_eq!(at_capacity.row_count, u32::MAX);
+
+        let mut nullable = ColumnStoreBuilder::new(complete_schema(true));
+        assert_eq!(nullable.push_row(11, &[]), Ok(0));
+        let store = nullable.finish().expect("null row finishes");
+        assert_eq!(store.timestamps(), &[11]);
+        for id in 1..=6 {
+            let column = store.column(ColumnId::new(id)).expect("nullable column");
+            assert_eq!(column.len(), 1);
+            assert_eq!(column.present().cardinality(), 0);
+        }
+        match store.column(ColumnId::new(1)) {
+            Some(Column::U64(column)) => assert_eq!(column.get(0), None),
+            actual => panic!("unexpected column: {actual:?}"),
+        }
+        match store.column(ColumnId::new(4)) {
+            Some(Column::Bool(column)) => assert_eq!(column.get(0), None),
+            actual => panic!("unexpected column: {actual:?}"),
+        }
+        match store.column(ColumnId::new(5)) {
+            Some(Column::DictionaryString(column)) => assert_eq!(column.get(0), None),
+            actual => panic!("unexpected column: {actual:?}"),
+        }
+        match store.column(ColumnId::new(6)) {
+            Some(Column::RawString(column)) => assert_eq!(column.get(0), None),
+            actual => panic!("unexpected column: {actual:?}"),
+        }
+    }
+
+    fn dictionary_store(cardinality: u32) -> ColumnStore {
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            ColumnId::new(1),
+            "dictionary",
+            ColumnType::DictionaryString,
+            false,
+        )])
+        .expect("schema is valid");
+        let mut builder = ColumnStoreBuilder::new(schema);
+        for value in 0..cardinality {
+            let text = value.to_string();
+            builder
+                .push_row(
+                    i64::from(value),
+                    &[ColumnInput {
+                        column: ColumnId::new(1),
+                        value: ColumnValue::String(&text),
+                    }],
+                )
+                .expect("bounded dictionary row");
+        }
+        builder.finish().expect("bounded dictionary finishes")
+    }
+
+    #[test]
+    fn column_builder_widens_dictionary_at_u16_boundary() {
+        let narrow = dictionary_store(u32::from(u16::MAX));
+        match narrow.column(ColumnId::new(1)) {
+            Some(Column::DictionaryString(column)) => {
+                assert_eq!(column.codes().width(), CodeWidth::U16);
+                assert_eq!(column.get(u32::from(u16::MAX) - 1), Some("65534"));
+            }
+            actual => panic!("unexpected dictionary column: {actual:?}"),
+        }
+
+        let wide = dictionary_store(u32::from(u16::MAX).saturating_add(1));
+        match wide.column(ColumnId::new(1)) {
+            Some(Column::DictionaryString(column)) => {
+                assert_eq!(column.codes().width(), CodeWidth::U32);
+                assert_eq!(column.get(u32::from(u16::MAX)), Some("65535"));
+            }
+            actual => panic!("unexpected dictionary column: {actual:?}"),
+        }
+    }
+}
