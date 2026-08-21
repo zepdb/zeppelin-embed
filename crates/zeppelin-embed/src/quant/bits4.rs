@@ -80,6 +80,8 @@ impl Bit4Factors {
 pub struct Bit4Query {
     /// Even coordinates followed by odd coordinates in each 32-value block.
     codes: Vec<i8>,
+    /// Coordinate-order codes used by vertical PDX kernels.
+    coordinate_codes: Vec<i8>,
     code_sum: i32,
     scale_half: f64,
 }
@@ -95,6 +97,14 @@ impl Bit4Query {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.codes.is_empty()
+    }
+
+    pub(crate) fn coordinate_codes(&self) -> &[i8] {
+        &self.coordinate_codes
+    }
+
+    pub(crate) const fn scale_half(&self) -> f64 {
+        self.scale_half
     }
 }
 
@@ -272,6 +282,7 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
     if max_absolute == 0.0 {
         return Ok(Bit4Query {
             codes: vec![0_i8; q.len()],
+            coordinate_codes: vec![0_i8; q.len()],
             code_sum: 0,
             scale_half: 0.0,
         });
@@ -295,6 +306,7 @@ pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError>
     let codes = interleave_bit4_query_blocks(&coordinate_codes);
     Ok(Bit4Query {
         codes,
+        coordinate_codes,
         code_sum,
         scale_half: scale * 0.5,
     })

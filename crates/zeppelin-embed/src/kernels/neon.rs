@@ -50,6 +50,14 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
         score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
+        vertical_f32: vertical_f32_r32,
+        vertical_f16: vertical_f16_kernel(features, 32),
+        vertical_i8: vertical_i8_dotprod_r32,
+        vertical_bit4: vertical_bit4_dotprod_r32,
+        f32_extrema_slab_bounds,
+        max_f32,
+        max_i32,
+        vertical_rows_per_tile: 32,
     }
 }
 
@@ -67,6 +75,14 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
         score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
+        vertical_f32: vertical_f32_r32,
+        vertical_f16: vertical_f16_kernel(features, 32),
+        vertical_i8: vertical_i8_dotprod_r32,
+        vertical_bit4: vertical_bit4_dotprod_r32,
+        f32_extrema_slab_bounds,
+        max_f32,
+        max_i32,
+        vertical_rows_per_tile: 32,
     }
 }
 
@@ -104,6 +120,14 @@ fn dotprod_shape_table(
         dot_bit4_prepared: dot_bit4_prepared_dotprod,
         dot_bit4_batch: dot_bit4_batch_dotprod,
         score_bit4_prepared_batch: score_bit4_prepared_batch_dotprod,
+        vertical_f32: vertical_f32_r32,
+        vertical_f16: vertical_f16_kernel(features, 32),
+        vertical_i8: vertical_i8_dotprod_r32,
+        vertical_bit4: vertical_bit4_dotprod_r32,
+        f32_extrema_slab_bounds,
+        max_f32,
+        max_i32,
+        vertical_rows_per_tile: 32,
     }
 }
 
@@ -121,7 +145,37 @@ pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
         dot_bit4_prepared: dot_bit4_prepared_widen,
         dot_bit4_batch: dot_bit4_batch_widen,
         score_bit4_prepared_batch: scalar::score_bit4_prepared_batch,
+        vertical_f32: vertical_f32_r32,
+        vertical_f16: vertical_f16_kernel(features, 32),
+        vertical_i8: vertical_i8_widen_r32,
+        vertical_bit4: vertical_bit4_widen_r32,
+        f32_extrema_slab_bounds,
+        max_f32,
+        max_i32,
+        vertical_rows_per_tile: 32,
     }
+}
+
+pub(super) fn vertical_r16_table(features: KernelFeatures) -> KernelTable {
+    let mut table = if features.dotprod {
+        dotprod_table(features)
+    } else {
+        widen_table(features)
+    };
+    table.vertical_f32 = vertical_f32_r16;
+    table.vertical_f16 = vertical_f16_kernel(features, 16);
+    table.vertical_i8 = if features.dotprod {
+        vertical_i8_dotprod_r16
+    } else {
+        vertical_i8_widen_r16
+    };
+    table.vertical_bit4 = if features.dotprod {
+        vertical_bit4_dotprod_r16
+    } else {
+        vertical_bit4_widen_r16
+    };
+    table.vertical_rows_per_tile = 16;
+    table
 }
 
 #[inline]
@@ -798,6 +852,854 @@ fn add_f16_tail(sum: f32, a: &[u16], b: &[u16], processed: usize) -> f32 {
     a_tail.iter().zip(b_tail).fold(sum, |acc, (&left, &right)| {
         acc + scalar::f16_to_f32(left) * scalar::f16_to_f32(right)
     })
+}
+
+fn vertical_f32_r16(query: &[f32], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f32::<4>(query, columns, rows, out);
+}
+
+fn vertical_f32_r32(query: &[f32], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f32::<8>(query, columns, rows, out);
+}
+
+fn vertical_f32<const ACCUMULATORS: usize>(
+    query: &[f32],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(
+        columns.len(),
+        query.len().saturating_mul(rows).saturating_mul(4)
+    );
+    // SAFETY: runtime dispatch established NEON support. The asserted slab
+    // shape bounds every complete row-tile load and store.
+    unsafe { vertical_f32_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn vertical_f32_inner<const ACCUMULATORS: usize>(
+    query: &[f32],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    let tile_rows = ACCUMULATORS * F32_LANES;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let column_width = rows * size_of::<f32>();
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_f32(0.0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses a complete tile in `out`.
+            *accumulator = unsafe { vld1q_f32(out.as_ptr().add(row_base + index * F32_LANES)) };
+        }
+        for (dimension, &query_value) in query.iter().enumerate() {
+            let query_vector = vdupq_n_f32(query_value);
+            let byte_offset = dimension * column_width + row_base * size_of::<f32>();
+            let column_ptr = columns.as_ptr().wrapping_add(byte_offset).cast::<f32>();
+            for (index, accumulator) in accumulators.iter_mut().enumerate() {
+                // SAFETY: each vector lies in the complete row tile and the
+                // byte payload contains native little-endian f32 bits.
+                let values = unsafe { vld1q_f32(column_ptr.add(index * F32_LANES)) };
+                *accumulator = vfmaq_f32(*accumulator, values, query_vector);
+            }
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe {
+                vst1q_f32(
+                    out.as_mut_ptr().add(row_base + index * F32_LANES),
+                    accumulator,
+                )
+            };
+        }
+        row_base += tile_rows;
+    }
+    vertical_f32_row_tail(query, columns, rows, processed_rows, out);
+}
+
+fn vertical_f32_row_tail(
+    query: &[f32],
+    columns: &[u8],
+    rows: usize,
+    first_row: usize,
+    out: &mut [f32],
+) {
+    let column_width = rows.saturating_mul(size_of::<f32>());
+    for (&query_value, column) in query.iter().zip(columns.chunks_exact(column_width)) {
+        let Some(tail) = column.get(first_row.saturating_mul(4)..) else {
+            continue;
+        };
+        let Some(out_tail) = out.get_mut(first_row..) else {
+            continue;
+        };
+        for (bytes, accumulator) in tail.chunks_exact(4).zip(out_tail) {
+            let Some(array) = bytes.try_into().ok() else {
+                continue;
+            };
+            *accumulator += query_value * f32::from_bits(u32::from_le_bytes(array));
+        }
+    }
+}
+
+fn vertical_f16_kernel(features: KernelFeatures, tile_rows: usize) -> super::VerticalF16Fn {
+    match (features.fp16, tile_rows) {
+        (true, 16) => vertical_f16_fp16_r16,
+        (true, _) => vertical_f16_fp16_r32,
+        (false, 16) => vertical_f16_fallback_r16,
+        (false, _) => vertical_f16_fallback_r32,
+    }
+}
+
+fn vertical_f16_fp16_r16(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f16_fp16::<4>(query, columns, rows, out);
+}
+
+fn vertical_f16_fp16_r32(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f16_fp16::<8>(query, columns, rows, out);
+}
+
+fn vertical_f16_fp16<const ACCUMULATORS: usize>(
+    query: &[u16],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(
+        columns.len(),
+        query.len().saturating_mul(rows).saturating_mul(2)
+    );
+    // SAFETY: the selected table established NEON and FP16 support.
+    unsafe { vertical_f16_fp16_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "neon,fp16")]
+unsafe fn vertical_f16_fp16_inner<const ACCUMULATORS: usize>(
+    query: &[u16],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    let tile_rows = ACCUMULATORS * F32_LANES;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let column_width = rows * size_of::<u16>();
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_f32(0.0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses one complete output tile.
+            *accumulator = unsafe { vld1q_f32(out.as_ptr().add(row_base + index * F32_LANES)) };
+        }
+        for (dimension, &query_bits) in query.iter().enumerate() {
+            let query_vector = vdupq_n_f32(scalar::f16_to_f32(query_bits));
+            let byte_offset = dimension * column_width + row_base * size_of::<u16>();
+            let column_ptr = columns.as_ptr().wrapping_add(byte_offset).cast::<u16>();
+            for (index, accumulator) in accumulators.iter_mut().enumerate() {
+                // SAFETY: four f16 values fit in the complete row tile.
+                let bits = unsafe { vld1_u16(column_ptr.add(index * F32_LANES)) };
+                let values = unsafe { f16x4_to_f32(bits) };
+                *accumulator = vfmaq_f32(*accumulator, values, query_vector);
+            }
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe {
+                vst1q_f32(
+                    out.as_mut_ptr().add(row_base + index * F32_LANES),
+                    accumulator,
+                )
+            };
+        }
+        row_base += tile_rows;
+    }
+    vertical_f16_row_tail(query, columns, rows, processed_rows, out);
+}
+
+fn vertical_f16_fallback_r16(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f16_fallback_columns::<4>(query, columns, rows, out);
+}
+
+fn vertical_f16_fallback_r32(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    vertical_f16_fallback_columns::<8>(query, columns, rows, out);
+}
+
+fn vertical_f16_fallback_columns<const ACCUMULATORS: usize>(
+    query: &[u16],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(
+        columns.len(),
+        query.len().saturating_mul(rows).saturating_mul(2)
+    );
+    // SAFETY: runtime dispatch established NEON support; f16 conversion is
+    // scalar but each four-row multiply-accumulate remains vertical SIMD.
+    unsafe { vertical_f16_fallback_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn vertical_f16_fallback_inner<const ACCUMULATORS: usize>(
+    query: &[u16],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [f32],
+) {
+    let tile_rows = ACCUMULATORS * F32_LANES;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let column_width = rows * size_of::<u16>();
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_f32(0.0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses one complete output tile.
+            *accumulator = unsafe { vld1q_f32(out.as_ptr().add(row_base + index * F32_LANES)) };
+        }
+        for (dimension, &query_bits) in query.iter().enumerate() {
+            let query_vector = vdupq_n_f32(scalar::f16_to_f32(query_bits));
+            let byte_offset = dimension * column_width + row_base * size_of::<u16>();
+            for (index, accumulator) in accumulators.iter_mut().enumerate() {
+                let start = byte_offset + index * F32_LANES * size_of::<u16>();
+                let Some(bytes) = columns.get(start..start + F32_LANES * size_of::<u16>()) else {
+                    continue;
+                };
+                let mut converted = [0.0_f32; F32_LANES];
+                for (pair, value) in bytes.chunks_exact(2).zip(converted.iter_mut()) {
+                    let Some(array) = pair.try_into().ok() else {
+                        continue;
+                    };
+                    *value = scalar::f16_to_f32(u16::from_le_bytes(array));
+                }
+                // SAFETY: converted contains four initialized f32 values.
+                let values = unsafe { vld1q_f32(converted.as_ptr()) };
+                *accumulator = vfmaq_f32(*accumulator, values, query_vector);
+            }
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe {
+                vst1q_f32(
+                    out.as_mut_ptr().add(row_base + index * F32_LANES),
+                    accumulator,
+                )
+            };
+        }
+        row_base += tile_rows;
+    }
+    vertical_f16_row_tail(query, columns, rows, processed_rows, out);
+}
+
+fn vertical_f16_row_tail(
+    query: &[u16],
+    columns: &[u8],
+    rows: usize,
+    first_row: usize,
+    out: &mut [f32],
+) {
+    let column_width = rows.saturating_mul(size_of::<u16>());
+    for (&query_bits, column) in query.iter().zip(columns.chunks_exact(column_width)) {
+        let query_value = scalar::f16_to_f32(query_bits);
+        let Some(tail) = column.get(first_row.saturating_mul(2)..) else {
+            continue;
+        };
+        let Some(out_tail) = out.get_mut(first_row..) else {
+            continue;
+        };
+        for (bytes, accumulator) in tail.chunks_exact(2).zip(out_tail) {
+            let Some(array) = bytes.try_into().ok() else {
+                continue;
+            };
+            *accumulator += query_value * scalar::f16_to_f32(u16::from_le_bytes(array));
+        }
+    }
+}
+
+fn vertical_i8_dotprod_r16(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_i8_dotprod::<4>(query, columns, rows, out);
+}
+
+fn vertical_i8_dotprod_r32(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_i8_dotprod::<8>(query, columns, rows, out);
+}
+
+fn vertical_i8_dotprod<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().saturating_mul(rows));
+    // SAFETY: the selected table established DotProd support.
+    unsafe { vertical_i8_dotprod_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn vertical_i8_dotprod_inner<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert!(ACCUMULATORS.is_multiple_of(4));
+    let tile_rows = ACCUMULATORS * 4;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let processed_dimensions = query.len() / 4 * 4;
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_s32(0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses one complete output tile.
+            *accumulator = unsafe { vld1q_s32(out.as_ptr().add(row_base + index * 4)) };
+        }
+        let mut dimension = 0_usize;
+        while dimension < processed_dimensions {
+            // SAFETY: four query bytes remain by processed_dimensions.
+            let query_word =
+                unsafe { std::ptr::read_unaligned(query.as_ptr().add(dimension).cast::<i32>()) };
+            let query_vector = vreinterpretq_s8_s32(vdupq_n_s32(query_word));
+            for group in 0..ACCUMULATORS / 4 {
+                let group_row = row_base + group * 16;
+                // SAFETY: the tile contains 16 rows in each of four complete
+                // dimension columns.
+                let column0 =
+                    unsafe { vld1q_s8(columns.as_ptr().add(dimension * rows + group_row).cast()) };
+                let column1 = unsafe {
+                    vld1q_s8(
+                        columns
+                            .as_ptr()
+                            .add((dimension + 1) * rows + group_row)
+                            .cast(),
+                    )
+                };
+                let column2 = unsafe {
+                    vld1q_s8(
+                        columns
+                            .as_ptr()
+                            .add((dimension + 2) * rows + group_row)
+                            .cast(),
+                    )
+                };
+                let column3 = unsafe {
+                    vld1q_s8(
+                        columns
+                            .as_ptr()
+                            .add((dimension + 3) * rows + group_row)
+                            .cast(),
+                    )
+                };
+                // SAFETY: all four inputs are initialized vector registers;
+                // transpose_i8_16x4 touches no memory.
+                let transposed = unsafe { transpose_i8_16x4(column0, column1, column2, column3) };
+                let accumulator_base = group * 4;
+                for (offset, values) in transposed.into_iter().enumerate() {
+                    let Some(accumulator) = accumulators.get_mut(accumulator_base + offset) else {
+                        continue;
+                    };
+                    *accumulator = unsafe { dotprod_mac(*accumulator, values, query_vector) };
+                }
+            }
+            dimension += 4;
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe { vst1q_s32(out.as_mut_ptr().add(row_base + index * 4), accumulator) };
+        }
+        row_base += tile_rows;
+    }
+    vertical_i8_row_tail(
+        query.get(..processed_dimensions).unwrap_or_default(),
+        columns,
+        rows,
+        processed_rows,
+        out,
+    );
+    let query_tail = query.get(processed_dimensions..).unwrap_or_default();
+    let columns_tail = columns
+        .get(processed_dimensions.saturating_mul(rows)..)
+        .unwrap_or_default();
+    scalar::vertical_i8(query_tail, columns_tail, rows, out);
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn transpose_i8_16x4(
+    column0: int8x16_t,
+    column1: int8x16_t,
+    column2: int8x16_t,
+    column3: int8x16_t,
+) -> [int8x16_t; 4] {
+    let pairs01_low = vzip1q_s8(column0, column1);
+    let pairs01_high = vzip2q_s8(column0, column1);
+    let pairs23_low = vzip1q_s8(column2, column3);
+    let pairs23_high = vzip2q_s8(column2, column3);
+    let low01 = vreinterpretq_s16_s8(pairs01_low);
+    let high01 = vreinterpretq_s16_s8(pairs01_high);
+    let low23 = vreinterpretq_s16_s8(pairs23_low);
+    let high23 = vreinterpretq_s16_s8(pairs23_high);
+    [
+        vreinterpretq_s8_s16(vzip1q_s16(low01, low23)),
+        vreinterpretq_s8_s16(vzip2q_s16(low01, low23)),
+        vreinterpretq_s8_s16(vzip1q_s16(high01, high23)),
+        vreinterpretq_s8_s16(vzip2q_s16(high01, high23)),
+    ]
+}
+
+fn vertical_i8_widen_r16(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_i8_widen::<4>(query, columns, rows, out);
+}
+
+fn vertical_i8_widen_r32(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_i8_widen::<8>(query, columns, rows, out);
+}
+
+fn vertical_i8_widen<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().saturating_mul(rows));
+    // SAFETY: runtime dispatch established NEON support.
+    unsafe { vertical_i8_widen_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn vertical_i8_widen_inner<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert!(ACCUMULATORS.is_multiple_of(4));
+    let tile_rows = ACCUMULATORS * 4;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_s32(0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses one complete output tile.
+            *accumulator = unsafe { vld1q_s32(out.as_ptr().add(row_base + index * 4)) };
+        }
+        for (dimension, &query_value) in query.iter().enumerate() {
+            for group in 0..ACCUMULATORS / 4 {
+                let group_row = row_base + group * 16;
+                // SAFETY: group_row starts a complete 16-row source vector.
+                let values =
+                    unsafe { vld1q_s8(columns.as_ptr().add(dimension * rows + group_row).cast()) };
+                let query_lanes = vdup_n_s8(query_value);
+                let low_products = vmull_s8(vget_low_s8(values), query_lanes);
+                let high_products = vmull_s8(vget_high_s8(values), query_lanes);
+                let base = group * 4;
+                add_widened_16(&mut accumulators, base, low_products, high_products);
+            }
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe { vst1q_s32(out.as_mut_ptr().add(row_base + index * 4), accumulator) };
+        }
+        row_base += tile_rows;
+    }
+    vertical_i8_row_tail(query, columns, rows, processed_rows, out);
+}
+
+fn vertical_i8_row_tail(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    first_row: usize,
+    out: &mut [i32],
+) {
+    for (&query_value, column) in query.iter().zip(columns.chunks_exact(rows)) {
+        let Some(column_tail) = column.get(first_row..) else {
+            continue;
+        };
+        let Some(out_tail) = out.get_mut(first_row..) else {
+            continue;
+        };
+        for (&row_value, accumulator) in column_tail.iter().zip(out_tail) {
+            *accumulator += i32::from(query_value) * i32::from(row_value as i8);
+        }
+    }
+}
+
+fn vertical_bit4_dotprod_r16(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_bit4_dotprod::<1>(query, columns, rows, out);
+}
+
+fn vertical_bit4_dotprod_r32(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_bit4_dotprod::<2>(query, columns, rows, out);
+}
+
+fn vertical_bit4_dotprod<const GROUPS_PER_TILE: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().div_ceil(2).saturating_mul(rows));
+    // SAFETY: the selected table established DotProd support.
+    unsafe { vertical_bit4_dotprod_inner::<GROUPS_PER_TILE>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "dotprod")]
+unsafe fn vertical_bit4_dotprod_inner<const GROUPS_PER_TILE: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    let tile_rows = GROUPS_PER_TILE * 16;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let processed_dimensions = query.len() / 8 * 8;
+    let processed_query_sum = query
+        .get(..processed_dimensions)
+        .unwrap_or_default()
+        .iter()
+        .map(|&value| i32::from(value))
+        .sum::<i32>();
+    let bias = vdupq_n_s32(15 * processed_query_sum);
+    let mut tile_base = 0_usize;
+    while tile_base < processed_rows {
+        for group in 0..GROUPS_PER_TILE {
+            let row_base = tile_base + group * 16;
+            let mut accumulators = [vdupq_n_s32(0); 4];
+            let mut unsigned_sums = [vdupq_n_s32(0); 4];
+            for (index, accumulator) in accumulators.iter_mut().enumerate() {
+                // SAFETY: row_base starts a complete 16-row group.
+                *accumulator = unsafe { vld1q_s32(out.as_ptr().add(row_base + index * 4)) };
+            }
+            let mut dimension = 0_usize;
+            while dimension < processed_dimensions {
+                let packed_column = dimension / 2;
+                // SAFETY: four packed columns and 16 rows remain.
+                let packed0 =
+                    unsafe { vld1q_u8(columns.as_ptr().add(packed_column * rows + row_base)) };
+                let packed1 = unsafe {
+                    vld1q_u8(columns.as_ptr().add((packed_column + 1) * rows + row_base))
+                };
+                let packed2 = unsafe {
+                    vld1q_u8(columns.as_ptr().add((packed_column + 2) * rows + row_base))
+                };
+                let packed3 = unsafe {
+                    vld1q_u8(columns.as_ptr().add((packed_column + 3) * rows + row_base))
+                };
+                let mask = vdupq_n_u8(0x0f);
+                let high0 = vreinterpretq_s8_u8(vshrq_n_u8(packed0, 4));
+                let low0 = vreinterpretq_s8_u8(vandq_u8(packed0, mask));
+                let high1 = vreinterpretq_s8_u8(vshrq_n_u8(packed1, 4));
+                let low1 = vreinterpretq_s8_u8(vandq_u8(packed1, mask));
+                let high2 = vreinterpretq_s8_u8(vshrq_n_u8(packed2, 4));
+                let low2 = vreinterpretq_s8_u8(vandq_u8(packed2, mask));
+                let high3 = vreinterpretq_s8_u8(vshrq_n_u8(packed3, 4));
+                let low3 = vreinterpretq_s8_u8(vandq_u8(packed3, mask));
+                // SAFETY: transpose helpers touch initialized registers only.
+                let rows0 = unsafe { transpose_i8_16x4(high0, low0, high1, low1) };
+                // SAFETY: transpose helpers touch initialized registers only.
+                let rows1 = unsafe { transpose_i8_16x4(high2, low2, high3, low3) };
+                // SAFETY: eight query bytes remain by processed_dimensions.
+                let query0 = unsafe {
+                    std::ptr::read_unaligned(query.as_ptr().add(dimension).cast::<i32>())
+                };
+                // SAFETY: the second four-byte query group also remains.
+                let query1 = unsafe {
+                    std::ptr::read_unaligned(query.as_ptr().add(dimension + 4).cast::<i32>())
+                };
+                let query0 = vreinterpretq_s8_s32(vdupq_n_s32(query0));
+                let query1 = vreinterpretq_s8_s32(vdupq_n_s32(query1));
+                for ((sum, values0), values1) in unsigned_sums.iter_mut().zip(rows0).zip(rows1) {
+                    *sum = unsafe { dotprod_mac(*sum, values0, query0) };
+                    *sum = unsafe { dotprod_mac(*sum, values1, query1) };
+                }
+                dimension += 8;
+            }
+            for ((index, accumulator), unsigned_sum) in
+                accumulators.iter_mut().enumerate().zip(unsigned_sums)
+            {
+                *accumulator =
+                    vaddq_s32(*accumulator, vsubq_s32(vshlq_n_s32(unsigned_sum, 1), bias));
+                // SAFETY: the matching four-row output group is writable.
+                unsafe { vst1q_s32(out.as_mut_ptr().add(row_base + index * 4), *accumulator) };
+            }
+        }
+        tile_base += tile_rows;
+    }
+    vertical_bit4_row_tail(
+        query.get(..processed_dimensions).unwrap_or_default(),
+        columns,
+        rows,
+        processed_rows,
+        out,
+    );
+    let query_tail = query.get(processed_dimensions..).unwrap_or_default();
+    let column_tail = columns
+        .get(processed_dimensions.div_ceil(2).saturating_mul(rows)..)
+        .unwrap_or_default();
+    scalar::vertical_bit4(query_tail, column_tail, rows, out);
+}
+
+fn vertical_bit4_widen_r16(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_bit4_widen::<4>(query, columns, rows, out);
+}
+
+fn vertical_bit4_widen_r32(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    vertical_bit4_widen::<8>(query, columns, rows, out);
+}
+
+fn vertical_bit4_widen<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().div_ceil(2).saturating_mul(rows));
+    // SAFETY: runtime dispatch established NEON support.
+    unsafe { vertical_bit4_widen_inner::<ACCUMULATORS>(query, columns, rows, out) };
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn vertical_bit4_widen_inner<const ACCUMULATORS: usize>(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    out: &mut [i32],
+) {
+    debug_assert!(ACCUMULATORS.is_multiple_of(4));
+    let tile_rows = ACCUMULATORS * 4;
+    let processed_rows = rows / tile_rows * tile_rows;
+    let mut row_base = 0_usize;
+    while row_base < processed_rows {
+        let mut accumulators = [vdupq_n_s32(0); ACCUMULATORS];
+        for (index, accumulator) in accumulators.iter_mut().enumerate() {
+            // SAFETY: row_base addresses one complete output tile.
+            *accumulator = unsafe { vld1q_s32(out.as_ptr().add(row_base + index * 4)) };
+        }
+        for (column_index, query_pair) in query.chunks(2).enumerate() {
+            let Some(&even_query) = query_pair.first() else {
+                continue;
+            };
+            let odd_query = query_pair.get(1).copied().unwrap_or(0);
+            for group in 0..ACCUMULATORS / 4 {
+                let group_row = row_base + group * 16;
+                // SAFETY: group_row starts a complete packed 16-row column.
+                let packed =
+                    unsafe { vld1q_u8(columns.as_ptr().add(column_index * rows + group_row)) };
+                // SAFETY: bit4_grid touches only initialized vector registers.
+                let high = unsafe { bit4_grid(vshrq_n_u8(packed, 4)) };
+                // SAFETY: bit4_grid touches only initialized vector registers.
+                let low = unsafe { bit4_grid(vandq_u8(packed, vdupq_n_u8(0x0f))) };
+                let high_low = vmull_s8(vget_low_s8(high), vdup_n_s8(even_query));
+                let high_high = vmull_s8(vget_high_s8(high), vdup_n_s8(even_query));
+                let low_low = vmull_s8(vget_low_s8(low), vdup_n_s8(odd_query));
+                let low_high = vmull_s8(vget_high_s8(low), vdup_n_s8(odd_query));
+                let low_products = vaddq_s16(high_low, low_low);
+                let high_products = vaddq_s16(high_high, low_high);
+                let base = group * 4;
+                add_widened_16(&mut accumulators, base, low_products, high_products);
+            }
+        }
+        for (index, accumulator) in accumulators.into_iter().enumerate() {
+            // SAFETY: the matching output tile is writable.
+            unsafe { vst1q_s32(out.as_mut_ptr().add(row_base + index * 4), accumulator) };
+        }
+        row_base += tile_rows;
+    }
+    vertical_bit4_row_tail(query, columns, rows, processed_rows, out);
+}
+
+#[target_feature(enable = "neon")]
+fn add_widened_16(accumulators: &mut [int32x4_t], base: usize, low: int16x8_t, high: int16x8_t) {
+    let additions = [
+        vget_low_s16(low),
+        vget_high_s16(low),
+        vget_low_s16(high),
+        vget_high_s16(high),
+    ];
+    let Some(group) = accumulators.get_mut(base..base.saturating_add(4)) else {
+        return;
+    };
+    for (accumulator, addition) in group.iter_mut().zip(additions) {
+        *accumulator = vaddw_s16(*accumulator, addition);
+    }
+}
+
+fn vertical_bit4_row_tail(
+    query: &[i8],
+    columns: &[u8],
+    rows: usize,
+    first_row: usize,
+    out: &mut [i32],
+) {
+    for (query_pair, column) in query.chunks(2).zip(columns.chunks_exact(rows)) {
+        let Some(&even_query) = query_pair.first() else {
+            continue;
+        };
+        let odd_query = query_pair.get(1).copied();
+        let Some(column_tail) = column.get(first_row..) else {
+            continue;
+        };
+        let Some(out_tail) = out.get_mut(first_row..) else {
+            continue;
+        };
+        for (&packed, accumulator) in column_tail.iter().zip(out_tail) {
+            let high = 2 * i32::from(packed >> 4) - 15;
+            let low = 2 * i32::from(packed & 0x0f) - 15;
+            *accumulator += i32::from(even_query) * high
+                + odd_query.map_or(0, |query_value| i32::from(query_value) * low);
+        }
+    }
+}
+
+fn f32_extrema_slab_bounds(
+    query: &[f32],
+    extrema: &[super::F32Extrema],
+    dimensions_per_slab: usize,
+    slab_bounds: &mut [f64],
+) -> super::F32BoundTotals {
+    debug_assert_eq!(query.len(), extrema.len());
+    debug_assert!(dimensions_per_slab > 0);
+    debug_assert_eq!(slab_bounds.len(), query.len().div_ceil(dimensions_per_slab));
+    // SAFETY: dispatch established NEON support. F32Extrema is repr(C) with
+    // two adjacent u32 fields, so VLD2 deinterleaves four complete records.
+    unsafe { f32_extrema_slab_bounds_inner(query, extrema, dimensions_per_slab, slab_bounds) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn f32_extrema_slab_bounds_inner(
+    query: &[f32],
+    extrema: &[super::F32Extrema],
+    dimensions_per_slab: usize,
+    slab_bounds: &mut [f64],
+) -> super::F32BoundTotals {
+    slab_bounds.fill(0.0);
+    let mut maximum_contribution = 0.0_f64;
+    let mut absolute_contribution = 0.0_f64;
+    for (slab_index, (query_slab, extrema_slab)) in query
+        .chunks(dimensions_per_slab)
+        .zip(extrema.chunks(dimensions_per_slab))
+        .enumerate()
+    {
+        let processed = query_slab.len() / 4 * 4;
+        let mut maximum_accumulator = vdupq_n_f64(0.0);
+        let mut absolute_accumulator = vdupq_n_f64(0.0);
+        let mut dimension = 0_usize;
+        while dimension < processed {
+            // SAFETY: four query and four repr(C) extrema records remain.
+            let query_values = unsafe { vld1q_f32(query_slab.as_ptr().add(dimension)) };
+            let bounds = unsafe { vld2q_u32(extrema_slab.as_ptr().add(dimension).cast::<u32>()) };
+            let minimum = vreinterpretq_f32_u32(bounds.0);
+            let maximum = vreinterpretq_f32_u32(bounds.1);
+            let query_low = vcvt_f64_f32(vget_low_f32(query_values));
+            let query_high = vcvt_high_f64_f32(query_values);
+            let minimum_low = vcvt_f64_f32(vget_low_f32(minimum));
+            let minimum_high = vcvt_high_f64_f32(minimum);
+            let maximum_low = vcvt_f64_f32(vget_low_f32(maximum));
+            let maximum_high = vcvt_high_f64_f32(maximum);
+            let minimum_product_low = vmulq_f64(query_low, minimum_low);
+            let minimum_product_high = vmulq_f64(query_high, minimum_high);
+            let maximum_product_low = vmulq_f64(query_low, maximum_low);
+            let maximum_product_high = vmulq_f64(query_high, maximum_high);
+            maximum_accumulator = vaddq_f64(
+                maximum_accumulator,
+                vaddq_f64(
+                    vmaxq_f64(minimum_product_low, maximum_product_low),
+                    vmaxq_f64(minimum_product_high, maximum_product_high),
+                ),
+            );
+            absolute_accumulator = vaddq_f64(
+                absolute_accumulator,
+                vaddq_f64(
+                    vmaxq_f64(
+                        vabsq_f64(minimum_product_low),
+                        vabsq_f64(maximum_product_low),
+                    ),
+                    vmaxq_f64(
+                        vabsq_f64(minimum_product_high),
+                        vabsq_f64(maximum_product_high),
+                    ),
+                ),
+            );
+            dimension += 4;
+        }
+        let mut slab_maximum = vaddvq_f64(maximum_accumulator);
+        let mut slab_absolute = vaddvq_f64(absolute_accumulator);
+        for (&query_value, bounds) in query_slab
+            .get(processed..)
+            .unwrap_or_default()
+            .iter()
+            .zip(extrema_slab.get(processed..).unwrap_or_default())
+        {
+            let minimum_product =
+                f64::from(query_value) * f64::from(f32::from_bits(bounds.minimum_bits));
+            let maximum_product =
+                f64::from(query_value) * f64::from(f32::from_bits(bounds.maximum_bits));
+            slab_maximum += minimum_product.max(maximum_product);
+            slab_absolute += minimum_product.abs().max(maximum_product.abs());
+        }
+        if let Some(output) = slab_bounds.get_mut(slab_index) {
+            *output = slab_maximum;
+        }
+        maximum_contribution += slab_maximum;
+        absolute_contribution += slab_absolute;
+    }
+    super::F32BoundTotals {
+        maximum_contribution,
+        absolute_contribution,
+    }
+}
+
+fn max_f32(values: &[f32]) -> f32 {
+    // SAFETY: runtime dispatch established NEON support; complete loads stay
+    // in `values` and the scalar tail handles the remainder.
+    unsafe { max_f32_inner(values) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn max_f32_inner(values: &[f32]) -> f32 {
+    let processed = values.len() / 4 * 4;
+    let mut maximum = vdupq_n_f32(f32::NEG_INFINITY);
+    let mut base = 0_usize;
+    while base < processed {
+        // SAFETY: four values remain by `processed`.
+        maximum = vmaxq_f32(maximum, unsafe { vld1q_f32(values.as_ptr().add(base)) });
+        base += 4;
+    }
+    values
+        .get(processed..)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .fold(vmaxvq_f32(maximum), f32::max)
+}
+
+fn max_i32(values: &[i32]) -> i32 {
+    // SAFETY: runtime dispatch established NEON support; complete loads stay
+    // in `values` and the scalar tail handles the remainder.
+    unsafe { max_i32_inner(values) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn max_i32_inner(values: &[i32]) -> i32 {
+    let processed = values.len() / 4 * 4;
+    let mut maximum = vdupq_n_s32(i32::MIN);
+    let mut base = 0_usize;
+    while base < processed {
+        // SAFETY: four values remain by `processed`.
+        maximum = vmaxq_s32(maximum, unsafe { vld1q_s32(values.as_ptr().add(base)) });
+        base += 4;
+    }
+    values
+        .get(processed..)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .fold(vmaxvq_s32(maximum), i32::max)
 }
 
 pub(super) fn wide_stream_checksum(bytes: &[u8]) -> u64 {

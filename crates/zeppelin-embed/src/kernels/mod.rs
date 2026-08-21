@@ -139,6 +139,8 @@ pub struct KnobSpace {
     pub accumulators: &'static [usize],
     /// Candidate rows grouped per scan block.
     pub rows_per_block: &'static [usize],
+    /// Candidate row tiles retained in vertical PDX accumulator registers.
+    pub vertical_rows_per_tile: &'static [usize],
     /// Candidate software-prefetch distances in rows; zero disables prefetch.
     pub prefetch_dist: &'static [usize],
     /// Current and reserved instruction tiers.
@@ -154,6 +156,8 @@ pub struct BaselineKernelConfig {
     pub accumulators: usize,
     /// Rows handled per row-major batch iteration.
     pub rows_per_block: usize,
+    /// Rows retained in registers by one vertical PDX kernel tile.
+    pub vertical_rows_per_tile: usize,
     /// Software-prefetch distance in rows.
     pub prefetch_dist: usize,
 }
@@ -164,6 +168,9 @@ pub const BASELINE_KERNEL_CONFIG: BaselineKernelConfig = BaselineKernelConfig {
     unroll: 4,
     accumulators: 4,
     rows_per_block: 1,
+    // Thirty-two f32/i32 accumulators consume eight of AArch64's 32 q
+    // registers, leaving room for four source columns and ZIP temporaries.
+    vertical_rows_per_tile: 32,
     prefetch_dist: 0,
 };
 
@@ -171,6 +178,7 @@ pub const BASELINE_KERNEL_CONFIG: BaselineKernelConfig = BaselineKernelConfig {
 const UNROLL_KNOBS: [usize; 4] = [2, 4, 6, 8];
 const ACCUMULATOR_KNOBS: [usize; 4] = [2, 4, 6, 8];
 const ROW_BLOCK_KNOBS: [usize; 5] = [1, 2, 4, 8, 16];
+const VERTICAL_ROW_TILE_KNOBS: [usize; 2] = [16, 32];
 const PREFETCH_KNOBS: [usize; 5] = [0, 1, 2, 4, 8];
 const TIER_KNOBS: [InstructionTier; 6] = [
     InstructionTier::Scalar,
@@ -186,6 +194,7 @@ pub const KERNEL_KNOB_SPACE: KnobSpace = KnobSpace {
     unroll: &UNROLL_KNOBS,
     accumulators: &ACCUMULATOR_KNOBS,
     rows_per_block: &ROW_BLOCK_KNOBS,
+    vertical_rows_per_tile: &VERTICAL_ROW_TILE_KNOBS,
     prefetch_dist: &PREFETCH_KNOBS,
     tier: &TIER_KNOBS,
 };
@@ -201,6 +210,28 @@ type DotBit4PreparedFn = fn(&[i8], i32, &[u8]) -> i32;
 type DotPackedBatchFn = fn(&[i8], &[u8], usize, &mut [i32]);
 type ScoreBit4PreparedBatchFn =
     fn(&[i8], i32, f64, &[u8], usize, &[crate::quant::Bit4Factors], &mut [f32]);
+type VerticalF32Fn = fn(&[f32], &[u8], usize, &mut [f32]);
+type VerticalF16Fn = fn(&[u16], &[u8], usize, &mut [f32]);
+type VerticalI8Fn = fn(&[i8], &[u8], usize, &mut [i32]);
+type VerticalBit4Fn = fn(&[i8], &[u8], usize, &mut [i32]);
+type F32ExtremaSlabBoundsFn = fn(&[f32], &[F32Extrema], usize, &mut [f64]) -> F32BoundTotals;
+type MaxF32Fn = fn(&[f32]) -> f32;
+type MaxI32Fn = fn(&[i32]) -> i32;
+
+/// One full-precision coordinate's in-memory block extrema.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct F32Extrema {
+    pub(crate) minimum_bits: u32,
+    pub(crate) maximum_bits: u32,
+}
+
+/// Totals needed by the conservative F32 block bound.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct F32BoundTotals {
+    pub(crate) maximum_contribution: f64,
+    pub(crate) absolute_contribution: f64,
+}
 
 #[derive(Clone, Copy)]
 struct KernelTable {
@@ -216,6 +247,14 @@ struct KernelTable {
     dot_bit4_prepared: DotBit4PreparedFn,
     dot_bit4_batch: DotPackedBatchFn,
     score_bit4_prepared_batch: ScoreBit4PreparedBatchFn,
+    vertical_f32: VerticalF32Fn,
+    vertical_f16: VerticalF16Fn,
+    vertical_i8: VerticalI8Fn,
+    vertical_bit4: VerticalBit4Fn,
+    f32_extrema_slab_bounds: F32ExtremaSlabBoundsFn,
+    max_f32: MaxF32Fn,
+    max_i32: MaxI32Fn,
+    vertical_rows_per_tile: usize,
 }
 
 /// One concrete runtime dispatch table.
@@ -265,6 +304,12 @@ impl KernelVariant {
     #[must_use]
     pub fn tier(self) -> InstructionTier {
         self.table.tier
+    }
+
+    /// Returns the row tile used by this table's vertical kernels.
+    #[must_use]
+    pub fn vertical_rows_per_tile(self) -> usize {
+        self.table.vertical_rows_per_tile
     }
 
     /// Computes an i8 dot product through this concrete table.
@@ -342,6 +387,30 @@ impl KernelVariant {
             factors,
             out,
         );
+    }
+
+    /// Accumulates dimension-major f32 columns into row scores.
+    #[doc(hidden)]
+    pub fn vertical_f32(self, query: &[f32], columns: &[u8], rows: usize, out: &mut [f32]) {
+        (self.table.vertical_f32)(query, columns, rows, out);
+    }
+
+    /// Accumulates dimension-major f16 columns into row scores.
+    #[doc(hidden)]
+    pub fn vertical_f16(self, query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+        (self.table.vertical_f16)(query, columns, rows, out);
+    }
+
+    /// Accumulates dimension-major signed-byte columns into row sums.
+    #[doc(hidden)]
+    pub fn vertical_i8(self, query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+        (self.table.vertical_i8)(query, columns, rows, out);
+    }
+
+    /// Accumulates packed dimension-major Bit4 columns into row sums.
+    #[doc(hidden)]
+    pub fn vertical_bit4(self, query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+        (self.table.vertical_bit4)(query, columns, rows, out);
     }
 }
 
@@ -482,6 +551,52 @@ pub(crate) fn score_bit4_prepared_batch(
         factors,
         out,
     );
+}
+
+pub(crate) fn vertical_f32(query: &[f32], columns: &[u8], rows: usize, out: &mut [f32]) {
+    (dispatch::active_table().vertical_f32)(query, columns, rows, out);
+}
+
+pub(crate) fn vertical_f16(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    (dispatch::active_table().vertical_f16)(query, columns, rows, out);
+}
+
+pub(crate) fn vertical_i8(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    (dispatch::active_table().vertical_i8)(query, columns, rows, out);
+}
+
+pub(crate) fn vertical_bit4(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    (dispatch::active_table().vertical_bit4)(query, columns, rows, out);
+}
+
+pub(crate) fn f32_extrema_slab_bounds(
+    query: &[f32],
+    extrema: &[F32Extrema],
+    dimensions_per_slab: usize,
+    slab_bounds: &mut [f64],
+) -> F32BoundTotals {
+    (dispatch::active_table().f32_extrema_slab_bounds)(
+        query,
+        extrema,
+        dimensions_per_slab,
+        slab_bounds,
+    )
+}
+
+pub(crate) fn max_f32(values: &[f32]) -> f32 {
+    (dispatch::active_table().max_f32)(values)
+}
+
+pub(crate) fn max_i32(values: &[i32]) -> i32 {
+    (dispatch::active_table().max_i32)(values)
+}
+
+pub(crate) fn score_bit4_integer(
+    integer_dot: i32,
+    factor: crate::quant::Bit4Factors,
+    query_scale_half: f64,
+) -> f32 {
+    scalar::bit4_score(integer_dot, factor, query_scale_half)
 }
 
 /// Scores one signed-byte query against contiguous packed four-bit rows.

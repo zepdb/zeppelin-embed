@@ -16,6 +16,14 @@ pub(super) fn table() -> KernelTable {
         dot_bit4_prepared,
         dot_bit4_batch,
         score_bit4_prepared_batch,
+        vertical_f32,
+        vertical_f16,
+        vertical_i8,
+        vertical_bit4,
+        f32_extrema_slab_bounds,
+        max_f32,
+        max_i32,
+        vertical_rows_per_tile: super::BASELINE_KERNEL_CONFIG.vertical_rows_per_tile,
     }
 }
 
@@ -187,6 +195,107 @@ pub(super) fn bit4_score(
     ((f64::from(scale) * f64::from(normalized_correction))
         * query_scale_half
         * f64::from(integer_dot)) as f32
+}
+
+pub(super) fn vertical_f32(query: &[f32], columns: &[u8], rows: usize, out: &mut [f32]) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(
+        columns.len(),
+        query.len().saturating_mul(rows).saturating_mul(4)
+    );
+    let column_width = rows.saturating_mul(4);
+    for (&query_value, column) in query.iter().zip(columns.chunks_exact(column_width)) {
+        for (bytes, accumulator) in column.chunks_exact(4).zip(out.iter_mut()) {
+            let Some(array) = bytes.try_into().ok() else {
+                continue;
+            };
+            *accumulator += query_value * f32::from_bits(u32::from_le_bytes(array));
+        }
+    }
+}
+
+pub(super) fn vertical_f16(query: &[u16], columns: &[u8], rows: usize, out: &mut [f32]) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(
+        columns.len(),
+        query.len().saturating_mul(rows).saturating_mul(2)
+    );
+    let column_width = rows.saturating_mul(2);
+    for (&query_bits, column) in query.iter().zip(columns.chunks_exact(column_width)) {
+        let query_value = f16_to_f32(query_bits);
+        for (bytes, accumulator) in column.chunks_exact(2).zip(out.iter_mut()) {
+            let Some(array) = bytes.try_into().ok() else {
+                continue;
+            };
+            *accumulator += query_value * f16_to_f32(u16::from_le_bytes(array));
+        }
+    }
+}
+
+pub(super) fn vertical_i8(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().saturating_mul(rows));
+    for (&query_value, column) in query.iter().zip(columns.chunks_exact(rows)) {
+        for (&row_value, accumulator) in column.iter().zip(out.iter_mut()) {
+            *accumulator += i32::from(query_value) * i32::from(row_value as i8);
+        }
+    }
+}
+
+pub(super) fn vertical_bit4(query: &[i8], columns: &[u8], rows: usize, out: &mut [i32]) {
+    debug_assert_eq!(out.len(), rows);
+    debug_assert_eq!(columns.len(), query.len().div_ceil(2).saturating_mul(rows));
+    for (query_pair, column) in query.chunks(2).zip(columns.chunks_exact(rows)) {
+        let Some(&even_query) = query_pair.first() else {
+            continue;
+        };
+        let odd_query = query_pair.get(1).copied();
+        for (&packed, accumulator) in column.iter().zip(out.iter_mut()) {
+            let high = 2 * i32::from(packed >> 4) - 15;
+            let low = 2 * i32::from(packed & 0x0f) - 15;
+            *accumulator += i32::from(even_query) * high
+                + odd_query.map_or(0, |query_value| i32::from(query_value) * low);
+        }
+    }
+}
+
+pub(super) fn f32_extrema_slab_bounds(
+    query: &[f32],
+    extrema: &[super::F32Extrema],
+    dimensions_per_slab: usize,
+    slab_bounds: &mut [f64],
+) -> super::F32BoundTotals {
+    debug_assert_eq!(query.len(), extrema.len());
+    debug_assert!(dimensions_per_slab > 0);
+    debug_assert_eq!(slab_bounds.len(), query.len().div_ceil(dimensions_per_slab));
+    slab_bounds.fill(0.0);
+    let mut maximum_contribution = 0.0_f64;
+    let mut absolute_contribution = 0.0_f64;
+    for (dimension, (&query_value, bounds)) in query.iter().zip(extrema).enumerate() {
+        let minimum = f32::from_bits(bounds.minimum_bits);
+        let maximum = f32::from_bits(bounds.maximum_bits);
+        let query_value = f64::from(query_value);
+        let minimum_product = query_value * f64::from(minimum);
+        let maximum_product = query_value * f64::from(maximum);
+        let contribution = minimum_product.max(maximum_product);
+        maximum_contribution += contribution;
+        absolute_contribution += minimum_product.abs().max(maximum_product.abs());
+        if let Some(slab) = slab_bounds.get_mut(dimension / dimensions_per_slab) {
+            *slab += contribution;
+        }
+    }
+    super::F32BoundTotals {
+        maximum_contribution,
+        absolute_contribution,
+    }
+}
+
+pub(super) fn max_f32(values: &[f32]) -> f32 {
+    values.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+}
+
+pub(super) fn max_i32(values: &[i32]) -> i32 {
+    values.iter().copied().max().unwrap_or(i32::MIN)
 }
 
 fn dot_packed_batch(

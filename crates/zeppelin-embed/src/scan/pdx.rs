@@ -98,12 +98,27 @@ pub struct PdxMatrix {
     blocks: Vec<PdxBlock>,
     encoded: Vec<u8>,
     f32_metadata: Vec<F32BlockMetadata>,
+    bit4_metadata: Vec<Bit4BlockMetadata>,
     f32_first_non_finite: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct F32BlockMetadata {
-    extrema_bits: Vec<(u32, u32)>,
+    extrema: Vec<crate::kernels::F32Extrema>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct Bit4ColumnExtrema {
+    pub(crate) high_minimum: u8,
+    pub(crate) high_maximum: u8,
+    pub(crate) low_minimum: u8,
+    pub(crate) low_maximum: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Bit4BlockMetadata {
+    extrema: Vec<Bit4ColumnExtrema>,
 }
 
 /// Typed failure from PDX geometry validation or decoding.
@@ -412,6 +427,7 @@ impl PdxMatrix {
             blocks,
             encoded: encoded.to_vec(),
             f32_metadata: Vec::new(),
+            bit4_metadata: Vec::new(),
             f32_first_non_finite: None,
         };
         let rows = matrix.decode_row_bytes()?;
@@ -422,6 +438,8 @@ impl PdxMatrix {
             build_f32_metadata(scheme, dimension, &matrix.blocks, &rows)?;
         matrix.f32_metadata = metadata;
         matrix.f32_first_non_finite = first_non_finite;
+        matrix.bit4_metadata =
+            build_bit4_metadata(scheme, dimension, &matrix.blocks, &rows, row_width)?;
         Ok(matrix)
     }
 
@@ -522,89 +540,64 @@ impl PdxMatrix {
         Ok(rows)
     }
 
-    pub(crate) fn decode_f32_range(
-        &self,
-        rows: std::ops::Range<usize>,
-    ) -> Result<Vec<f32>, PdxError> {
-        self.require_scheme(QuantScheme::F32)?;
-        let bytes = self.decode_row_byte_range(rows)?;
-        bytes
-            .chunks_exact(std::mem::size_of::<f32>())
-            .map(|chunk| {
-                let array = <[u8; 4]>::try_from(chunk).map_err(|_| PdxError::CorruptBlock)?;
-                Ok(f32::from_bits(u32::from_le_bytes(array)))
-            })
-            .collect()
-    }
-
-    pub(crate) fn decode_f16_range(
-        &self,
-        rows: std::ops::Range<usize>,
-    ) -> Result<Vec<u16>, PdxError> {
-        self.require_scheme(QuantScheme::F16)?;
-        let bytes = self.decode_row_byte_range(rows)?;
-        bytes
-            .chunks_exact(std::mem::size_of::<u16>())
-            .map(|chunk| {
-                let array = <[u8; 2]>::try_from(chunk).map_err(|_| PdxError::CorruptBlock)?;
-                Ok(u16::from_le_bytes(array))
-            })
-            .collect()
-    }
-
-    pub(crate) fn decode_int8_range(
-        &self,
-        rows: std::ops::Range<usize>,
-    ) -> Result<Vec<i8>, PdxError> {
-        self.require_scheme(QuantScheme::Int8)?;
-        Ok(self
-            .decode_row_byte_range(rows)?
-            .into_iter()
-            .map(|value| value as i8)
-            .collect())
-    }
-
-    pub(crate) fn decode_bit4_range(
-        &self,
-        rows: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, PdxError> {
-        self.require_scheme(QuantScheme::Bit4)?;
-        let decoded = self.decode_row_byte_range(rows)?;
-        validate_bit4_padding(&decoded, self.dimension, self.row_width)?;
-        Ok(decoded)
-    }
-
     pub(crate) fn f32_first_non_finite(&self) -> Option<usize> {
         self.f32_first_non_finite
     }
 
-    pub(crate) fn f32_extrema(&self, block_index: usize) -> Result<&[(u32, u32)], PdxError> {
+    pub(crate) fn f32_extrema(
+        &self,
+        block_index: usize,
+    ) -> Result<&[crate::kernels::F32Extrema], PdxError> {
         self.require_scheme(QuantScheme::F32)?;
         self.f32_metadata
             .get(block_index)
-            .map(|metadata| metadata.extrema_bits.as_slice())
+            .map(|metadata| metadata.extrema.as_slice())
             .ok_or(PdxError::CorruptBlock)
     }
 
-    pub(crate) fn f32_column(&self, block_index: usize, column: usize) -> Result<&[u8], PdxError> {
-        self.require_scheme(QuantScheme::F32)?;
+    pub(crate) fn bit4_extrema(
+        &self,
+        block_index: usize,
+    ) -> Result<&[Bit4ColumnExtrema], PdxError> {
+        self.require_scheme(QuantScheme::Bit4)?;
+        self.bit4_metadata
+            .get(block_index)
+            .map(|metadata| metadata.extrema.as_slice())
+            .ok_or(PdxError::CorruptBlock)
+    }
+
+    pub(crate) fn column_range(
+        &self,
+        block_index: usize,
+        columns: std::ops::Range<usize>,
+    ) -> Result<&[u8], PdxError> {
         let block = self.blocks.get(block_index).ok_or(PdxError::CorruptBlock)?;
-        if column >= self.dimension {
+        let column_count = block.column_count as usize;
+        if columns.start > columns.end || columns.end > column_count {
             return Err(PdxError::CorruptBlock);
         }
         let payload_offset =
             usize::try_from(block.payload_offset).map_err(|_| PdxError::CorruptBlock)?;
         let column_width = (block.row_count as usize)
-            .checked_mul(std::mem::size_of::<f32>())
+            .checked_mul(self.element_width)
             .ok_or(PdxError::CorruptBlock)?;
-        let start = column
+        let start = columns
+            .start
             .checked_mul(column_width)
             .and_then(|offset| payload_offset.checked_add(offset))
             .ok_or(PdxError::CorruptBlock)?;
-        let end = start
-            .checked_add(column_width)
+        let end = columns
+            .end
+            .checked_mul(column_width)
+            .and_then(|offset| payload_offset.checked_add(offset))
             .ok_or(PdxError::CorruptBlock)?;
         self.encoded.get(start..end).ok_or(PdxError::CorruptBlock)
+    }
+
+    pub(crate) fn f32_column(&self, block_index: usize, column: usize) -> Result<&[u8], PdxError> {
+        self.require_scheme(QuantScheme::F32)?;
+        let end = column.checked_add(1).ok_or(PdxError::CorruptBlock)?;
+        self.column_range(block_index, column..end)
     }
 
     fn encode_row_bytes(
@@ -628,6 +621,7 @@ impl PdxMatrix {
         let blocks = build_blocks(row_count, row_width, element_width, rows_per_block)?;
         let (f32_metadata, f32_first_non_finite) =
             build_f32_metadata(scheme, dimension, &blocks, rows)?;
+        let bit4_metadata = build_bit4_metadata(scheme, dimension, &blocks, rows, row_width)?;
         let mut encoded = Vec::with_capacity(expected);
         for block in &blocks {
             let first_row =
@@ -665,6 +659,7 @@ impl PdxMatrix {
             blocks,
             encoded,
             f32_metadata,
+            bit4_metadata,
             f32_first_non_finite,
         })
     }
@@ -741,81 +736,6 @@ impl PdxMatrix {
             }
         }
         Ok(rows)
-    }
-
-    fn decode_row_byte_range(&self, rows: std::ops::Range<usize>) -> Result<Vec<u8>, PdxError> {
-        if rows.start > rows.end || rows.end > self.row_count {
-            return Err(PdxError::CorruptBlock);
-        }
-        let output_rows = rows
-            .end
-            .checked_sub(rows.start)
-            .ok_or(PdxError::CorruptBlock)?;
-        let output_length = output_rows
-            .checked_mul(self.row_width)
-            .ok_or(PdxError::ArithmeticOverflow)?;
-        let mut decoded = vec![0_u8; output_length];
-        for block in &self.blocks {
-            let first_row = usize::try_from(block.first_row).map_err(|_| PdxError::CorruptBlock)?;
-            let block_rows = block.row_count as usize;
-            let block_end = first_row
-                .checked_add(block_rows)
-                .ok_or(PdxError::CorruptBlock)?;
-            let intersection_start = first_row.max(rows.start);
-            let intersection_end = block_end.min(rows.end);
-            if intersection_start >= intersection_end {
-                continue;
-            }
-            let payload_offset =
-                usize::try_from(block.payload_offset).map_err(|_| PdxError::CorruptBlock)?;
-            let payload_length =
-                usize::try_from(block.payload_length).map_err(|_| PdxError::CorruptBlock)?;
-            let payload_end = payload_offset
-                .checked_add(payload_length)
-                .ok_or(PdxError::CorruptBlock)?;
-            let payload = self
-                .encoded
-                .get(payload_offset..payload_end)
-                .ok_or(PdxError::CorruptBlock)?;
-            let columns = block.column_count as usize;
-            for column in 0..columns {
-                for row_id in intersection_start..intersection_end {
-                    let local_row = row_id
-                        .checked_sub(first_row)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let source = column
-                        .checked_mul(block_rows)
-                        .and_then(|offset| offset.checked_add(local_row))
-                        .and_then(|element| element.checked_mul(self.element_width))
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let source_end = source
-                        .checked_add(self.element_width)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let output_row = row_id
-                        .checked_sub(rows.start)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let target = output_row
-                        .checked_mul(self.row_width)
-                        .and_then(|offset| {
-                            column
-                                .checked_mul(self.element_width)
-                                .and_then(|column_offset| offset.checked_add(column_offset))
-                        })
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let target_end = target
-                        .checked_add(self.element_width)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let source = payload
-                        .get(source..source_end)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    let target = decoded
-                        .get_mut(target..target_end)
-                        .ok_or(PdxError::CorruptBlock)?;
-                    target.copy_from_slice(source);
-                }
-            }
-        }
-        Ok(decoded)
     }
 }
 
@@ -919,7 +839,7 @@ fn build_f32_metadata(
         let first_row =
             usize::try_from(block.first_row).map_err(|_| PdxError::ArithmeticOverflow)?;
         let block_rows = block.row_count as usize;
-        let mut extrema_bits = Vec::with_capacity(dimension);
+        let mut extrema = Vec::with_capacity(dimension);
         for column in 0..dimension {
             let mut minimum = f32::INFINITY;
             let mut maximum = f32::NEG_INFINITY;
@@ -956,11 +876,66 @@ fn build_f32_metadata(
                     );
                 }
             }
-            extrema_bits.push((minimum.to_bits(), maximum.to_bits()));
+            extrema.push(crate::kernels::F32Extrema {
+                minimum_bits: minimum.to_bits(),
+                maximum_bits: maximum.to_bits(),
+            });
         }
-        metadata.push(F32BlockMetadata { extrema_bits });
+        metadata.push(F32BlockMetadata { extrema });
     }
     Ok((metadata, first_non_finite))
+}
+
+fn build_bit4_metadata(
+    scheme: QuantScheme,
+    dimension: usize,
+    blocks: &[PdxBlock],
+    rows: &[u8],
+    row_width: usize,
+) -> Result<Vec<Bit4BlockMetadata>, PdxError> {
+    if scheme != QuantScheme::Bit4 {
+        return Ok(Vec::new());
+    }
+    let mut metadata = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let first_row =
+            usize::try_from(block.first_row).map_err(|_| PdxError::ArithmeticOverflow)?;
+        let block_rows = block.row_count as usize;
+        let mut extrema = Vec::with_capacity(dimension.div_ceil(2));
+        for column in 0..dimension.div_ceil(2) {
+            let mut high_minimum = u8::MAX;
+            let mut high_maximum = u8::MIN;
+            let mut low_minimum = u8::MAX;
+            let mut low_maximum = u8::MIN;
+            for local_row in 0..block_rows {
+                let row_id = first_row
+                    .checked_add(local_row)
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let byte_index = row_id
+                    .checked_mul(row_width)
+                    .and_then(|offset| offset.checked_add(column))
+                    .ok_or(PdxError::ArithmeticOverflow)?;
+                let packed = rows
+                    .get(byte_index)
+                    .copied()
+                    .ok_or(PdxError::CorruptBlock)?;
+                let high = packed >> 4;
+                let low = packed & 0x0f;
+                high_minimum = high_minimum.min(high);
+                high_maximum = high_maximum.max(high);
+                low_minimum = low_minimum.min(low);
+                low_maximum = low_maximum.max(low);
+            }
+            extrema.push(Bit4ColumnExtrema {
+                high_minimum,
+                high_maximum,
+                low_minimum,
+                low_maximum,
+            });
+        }
+        metadata.push(Bit4BlockMetadata { extrema });
+    }
+    Ok(metadata)
 }
 
 fn validate_bit4_padding(rows: &[u8], dimension: usize, row_width: usize) -> Result<(), PdxError> {

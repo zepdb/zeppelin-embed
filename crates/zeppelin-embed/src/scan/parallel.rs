@@ -30,11 +30,24 @@ impl Default for ScanOptions {
 /// Deterministic companion counters for one completed scan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanStats {
-    /// Logical score dimensions evaluated, including the final exact score of
-    /// every row that survives partial evaluation.
+    /// Logical row-coordinate multiply-accumulates represented by loaded PDX
+    /// columns, plus deterministic seed-prepass coordinates. A packed Bit4
+    /// byte contributes its one or two logical coordinates per row. Because
+    /// vertical SIMD sweeps whole blocks, masked lanes are included.
     pub dims_touched: u64,
-    /// Rows rejected by a proven partial-score upper bound.
+    /// Row-mask-eligible rows rejected when a conservative bound skips a
+    /// whole block or exits its column sweep early. No per-row masking or
+    /// abandonment is performed. This is a pure function of the request,
+    /// `k`, and scan options.
     pub rows_abandoned: u64,
+    /// PDX blocks rejected by a conservative whole-block bound before any
+    /// payload column is loaded. Row-mask-only omissions are not included.
+    /// This is a pure function of the request, `k`, and scan options.
+    pub blocks_skipped: u64,
+    /// PDX payload bytes in column ranges actually loaded by the scan.
+    /// Metadata and row-factor records are excluded. This counter is a pure
+    /// function of the request, `k`, and scan options.
+    pub bytes_read: u64,
     /// Scoped workers actually used after CPU and work-unit caps.
     pub threads_used: usize,
 }
@@ -99,6 +112,9 @@ pub fn top_k_with_options(
             (super::ScanQuery::F32(query), ScanRows::F32Pdx(matrix)) => Some(
                 super::abandon::prepare_f32_pdx_seed(query, matrix, request.row_mask, k)?,
             ),
+            (super::ScanQuery::Bit4(query), ScanRows::Bit4Pdx { codes, factors }) => Some(
+                super::abandon::prepare_bit4_pdx_seed(query, codes, factors, request.row_mask, k)?,
+            ),
             _ => return Err(ScanError::EarlyAbandonmentUnsupported),
         }
     } else {
@@ -148,17 +164,20 @@ pub fn top_k_with_options(
         .as_ref()
         .map_or(0, |seed| seed.dims_touched);
     let mut rows_abandoned = 0_u64;
-    if let Some(seed) = abandonment_seed {
-        for candidate in seed.candidates {
-            merged.push(candidate);
-        }
-    }
+    let mut blocks_skipped = 0_u64;
+    let mut bytes_read = abandonment_seed.as_ref().map_or(0, |seed| seed.bytes_read);
     for partition in partitions {
         dims_touched = dims_touched
             .checked_add(partition.dims_touched)
             .ok_or(ScanError::ArithmeticOverflow)?;
         rows_abandoned = rows_abandoned
             .checked_add(partition.rows_abandoned)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        blocks_skipped = blocks_skipped
+            .checked_add(partition.blocks_skipped)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        bytes_read = bytes_read
+            .checked_add(partition.bytes_read)
             .ok_or(ScanError::ArithmeticOverflow)?;
         for candidate in partition.candidates {
             merged.push(candidate);
@@ -169,6 +188,8 @@ pub fn top_k_with_options(
         stats: ScanStats {
             dims_touched,
             rows_abandoned,
+            blocks_skipped,
+            bytes_read,
             threads_used: workers,
         },
     })

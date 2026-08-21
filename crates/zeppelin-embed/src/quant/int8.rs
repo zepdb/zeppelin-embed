@@ -51,6 +51,21 @@ impl Int8Query {
     pub fn is_empty(&self) -> bool {
         self.codes.is_empty()
     }
+
+    pub(crate) fn codes(&self) -> &[i8] {
+        &self.codes
+    }
+
+    pub(crate) fn score_integer_dot(
+        &self,
+        integer_dot: i32,
+        row_scale: f32,
+        row_offset: f32,
+    ) -> f32 {
+        (self.scale
+            * (f64::from(row_scale) * f64::from(integer_dot)
+                + f64::from(row_offset) * f64::from(self.code_sum))) as f32
+    }
 }
 
 /// Quantizes one finite row to signed bytes using a per-vector affine map.
@@ -177,10 +192,7 @@ pub fn dot_int8_query(query: &Int8Query, row: Int8Vec<'_>) -> Result<f32, QuantE
         });
     }
     let integer_dot = dot_i8(&query.codes, row.codes);
-    let estimate = query.scale
-        * (f64::from(row.scale) * f64::from(integer_dot)
-            + f64::from(row.offset) * f64::from(query.code_sum));
-    Ok(estimate as f32)
+    Ok(query.score_integer_dot(integer_dot, row.scale, row.offset))
 }
 
 fn validate_vector(v: &[f32]) -> Result<(), QuantError> {

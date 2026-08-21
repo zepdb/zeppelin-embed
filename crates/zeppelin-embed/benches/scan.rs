@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::mem::size_of;
 use std::time::{Duration, Instant};
 
 use zeppelin_embed::quant::{Bit4Factors, Bit4Query, Int8Query, prepare_int8_query, quantize_bit4};
@@ -54,6 +55,12 @@ enum Fixture {
         rows: PdxMatrix,
         factors: Vec<Bit4Factors>,
     },
+}
+
+struct Bit4FixtureData {
+    query: Vec<f32>,
+    codes: Vec<u8>,
+    factors: Vec<Bit4Factors>,
 }
 
 impl Fixture {
@@ -126,17 +133,60 @@ fn main() -> Result<(), Box<dyn Error>> {
     let exhaustive_dimensions = u64::try_from(config.rows)?
         .checked_mul(u64::try_from(config.dimensions)?)
         .ok_or("benchmark dimension count overflowed")?;
-    if (!config.abandon || config.scheme != Scheme::F32)
-        && first.stats.dims_touched != exhaustive_dimensions
-    {
+    if !config.abandon && first.stats.dims_touched != exhaustive_dimensions {
         return Err(format!(
             "exhaustive dims_touched mismatch: expected {exhaustive_dimensions}, got {}",
             first.stats.dims_touched
         )
         .into());
     }
+    let payload_bytes_per_row = match config.scheme {
+        Scheme::F32 => config
+            .dimensions
+            .checked_mul(size_of::<f32>())
+            .ok_or("F32 payload width overflowed")?,
+        Scheme::F16 => config
+            .dimensions
+            .checked_mul(size_of::<u16>())
+            .ok_or("F16 payload width overflowed")?,
+        Scheme::Int8 => config.dimensions,
+        Scheme::Bit4 => config.dimensions.div_ceil(2),
+    };
+    let exhaustive_bytes = u64::try_from(config.rows)?
+        .checked_mul(u64::try_from(payload_bytes_per_row)?)
+        .ok_or("benchmark payload byte count overflowed")?;
+    if !config.abandon
+        && (first.stats.bytes_read != exhaustive_bytes
+            || first.stats.blocks_skipped != 0
+            || first.stats.rows_abandoned != 0)
+    {
+        return Err(format!(
+            "exhaustive counter mismatch: expected bytes_read={exhaustive_bytes} blocks_skipped=0 rows_abandoned=0, got bytes_read={} blocks_skipped={} rows_abandoned={}",
+            first.stats.bytes_read, first.stats.blocks_skipped, first.stats.rows_abandoned
+        )
+        .into());
+    }
+    if first.stats.rows_abandoned > u64::try_from(config.rows)? {
+        return Err("rows_abandoned exceeded the requested row count".into());
+    }
+    let block_count = config.rows.div_ceil(config.block_rows);
+    if first.stats.blocks_skipped > u64::try_from(block_count)? {
+        return Err("blocks_skipped exceeded the encoded block count".into());
+    }
+    if config.abandon
+        && config.fixture == FixtureKind::Clustered
+        && matches!(config.scheme, Scheme::F32 | Scheme::Bit4)
+        && config.rows >= 100_000
+        && first.stats.bytes_read >= exhaustive_bytes
+    {
+        return Err(format!(
+            "clustered abandonment did not reduce payload bytes: exhaustive={exhaustive_bytes}, actual={}",
+            first.stats.bytes_read
+        )
+        .into());
+    }
     println!(
-        "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} threads_used={}",
+        "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} blocks_skipped={} bytes_read={} exhaustive_bytes={} threads_used={}",
         config.scheme,
         config.fixture,
         config.rows,
@@ -144,6 +194,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.block_rows,
         first.stats.dims_touched,
         first.stats.rows_abandoned,
+        first.stats.blocks_skipped,
+        first.stats.bytes_read,
+        exhaustive_bytes,
         first.stats.threads_used
     );
     if config.smoke {
@@ -227,7 +280,6 @@ fn build_clustered_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), 
         normalize(&mut center);
         centers.push(center);
     }
-
     let total_weight = cluster_count
         .checked_mul(cluster_count + 1)
         .ok_or("cluster weight overflowed")?
@@ -294,28 +346,97 @@ fn build_int8(config: Config) -> Result<Fixture, Box<dyn Error>> {
 }
 
 fn build_bit4(config: Config) -> Result<Fixture, Box<dyn Error>> {
-    let query_values = vec![1.0_f32; config.dimensions];
-    let query = zeppelin_embed::quant::prepare_bit4_query(&query_values, 0x05)?;
     let row_width = config.dimensions.div_ceil(2);
-    let source = (0..config.dimensions)
-        .map(|index| if index.is_multiple_of(3) { 1.0 } else { -0.5 })
-        .collect::<Vec<_>>();
-    let mut template = vec![0_u8; row_width];
-    let factor = quantize_bit4(&source, &mut template)?;
     let byte_count = config
         .rows
         .checked_mul(row_width)
         .ok_or("Bit4 fixture size overflowed")?;
-    let mut codes = Vec::with_capacity(byte_count);
-    for _ in 0..config.rows {
-        codes.extend_from_slice(&template);
-    }
-    let factors = vec![factor; config.rows];
-    let pdx =
-        PdxMatrix::encode_bit4_with_rows_per_block(&codes, config.dimensions, config.block_rows)?;
+    let data = match config.fixture {
+        FixtureKind::Degenerate => {
+            let query = vec![1.0_f32; config.dimensions];
+            let source = (0..config.dimensions)
+                .map(|index| if index.is_multiple_of(3) { 1.0 } else { -0.5 })
+                .collect::<Vec<_>>();
+            let mut template = vec![0_u8; row_width];
+            let factor = quantize_bit4(&source, &mut template)?;
+            let mut codes = Vec::with_capacity(byte_count);
+            for _ in 0..config.rows {
+                codes.extend_from_slice(&template);
+            }
+            Bit4FixtureData {
+                query,
+                codes,
+                factors: vec![factor; config.rows],
+            }
+        }
+        FixtureKind::Clustered => build_clustered_bit4_values(config, row_width, byte_count)?,
+    };
+    let query = zeppelin_embed::quant::prepare_bit4_query(&data.query, 0x05)?;
+    let pdx = PdxMatrix::encode_bit4_with_rows_per_block(
+        &data.codes,
+        config.dimensions,
+        config.block_rows,
+    )?;
     Ok(Fixture::Bit4 {
         query,
         rows: pdx,
+        factors: data.factors,
+    })
+}
+
+fn build_clustered_bit4_values(
+    config: Config,
+    row_width: usize,
+    byte_count: usize,
+) -> Result<Bit4FixtureData, Box<dyn Error>> {
+    let cluster_count = (config.rows / 8).clamp(2, 12);
+    let mut random = SplitMix64::new(0x05_c1_a5_7e_ed);
+    let mut centers = Vec::with_capacity(cluster_count);
+    for _ in 0..cluster_count {
+        let mut center = (0..config.dimensions)
+            .map(|_| random.gaussian())
+            .collect::<Vec<_>>();
+        normalize(&mut center);
+        centers.push(center);
+    }
+    let mut templates = Vec::with_capacity(cluster_count);
+    for center in &centers {
+        let mut encoded = vec![0_u8; row_width];
+        let factor = quantize_bit4(center, &mut encoded)?;
+        templates.push((encoded, factor));
+    }
+    let total_weight = cluster_count
+        .checked_mul(cluster_count + 1)
+        .ok_or("cluster weight overflowed")?
+        / 2;
+    let mut codes = vec![0_u8; byte_count];
+    let mut factors = Vec::with_capacity(config.rows);
+    for (row_index, encoded) in codes.chunks_exact_mut(row_width).enumerate() {
+        let ticket = row_index % total_weight;
+        let mut cumulative = 0_usize;
+        let mut label = 0_usize;
+        for candidate in 0..cluster_count {
+            cumulative = cumulative
+                .checked_add(candidate + 1)
+                .ok_or("cluster weight overflowed")?;
+            if ticket < cumulative {
+                label = candidate;
+                break;
+            }
+        }
+        let (template, factor) = templates.get(label).ok_or("cluster label out of range")?;
+        encoded.copy_from_slice(template);
+        factors.push(*factor);
+    }
+    let center = centers.first().ok_or("clustered fixture has no centers")?;
+    let mut query = center
+        .iter()
+        .map(|value| *value + 0.035 * random.gaussian())
+        .collect::<Vec<_>>();
+    normalize(&mut query);
+    Ok(Bit4FixtureData {
+        query,
+        codes,
         factors,
     })
 }
