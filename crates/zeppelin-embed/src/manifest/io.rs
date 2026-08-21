@@ -14,7 +14,7 @@ pub const MANIFEST_FILE: &str = "manifest.ze";
 /// Canonical unpublished temp-manifest filename.
 pub const MANIFEST_TEMP_FILE: &str = ".manifest.ze.tmp";
 
-/// Stub seam exposing the durable WAL end; Task 08 supplies the real implementation.
+/// Exposes the largest trusted WAL sequence to snapshot-open validation.
 pub trait DurableLog: Send + Sync {
     /// Returns the largest sequence known durable.
     fn durable_end(&self) -> u64;

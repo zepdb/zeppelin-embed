@@ -2,6 +2,8 @@
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod crash;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fault;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

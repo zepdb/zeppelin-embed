@@ -190,3 +190,24 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   both directory syncs: their ablations did not fail because the current matrix
   permits an old prefix and does not model post-return directory-entry loss,
   so that result is matrix weakness rather than deletion evidence.
+
+## Task 08 Part B2b WAL write-path invariants
+
+- A complete unmodified operation prefix is a successful-return liveness state:
+  manifest and segment publication must expose the new state there. Crashed,
+  torn, and reordered states retain the prior prefix safety rules.
+- Group commit has no timer or background flusher. The idle caller leads
+  immediately; arrivals during its sync form the next group, capped by encoded
+  bytes at a default 1 MiB, and the same leader drains it immediately.
+- WAL visibility is published in memory before append/sync. `commit_durable`
+  additionally waits for the selected tier; barriers order without promoting
+  `FaultVfs` bytes to media, while full sync does.
+- Checked recovery returns only the trusted sequence prefix and preserves its
+  exact replay terminator for diagnostics. `WalReader` and `WalWriter` are the
+  real `DurableLog` implementations used by manifest ahead-of-log rejection.
+- Single-writer ownership is `flock` on a held open descriptor. The lock file
+  may remain after death; kernel lock ownership must not, so deletion is never
+  a recovery prerequisite.
+- Do not add `F_PREALLOCATE` until WAL rotation defines a finite full extent;
+  allocating an arbitrary amount does not turn an unbounded append into an
+  overwrite, despite the bounded crash model's 54-to-34 state reduction.

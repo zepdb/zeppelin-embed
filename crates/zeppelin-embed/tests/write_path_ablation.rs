@@ -311,11 +311,18 @@ struct AblationFailure {
     assertion: String,
 }
 
-fn first_manifest_failure(states: &CrashStates) -> Option<AblationFailure> {
+fn first_manifest_failure(states: &CrashStates, operation_count: usize) -> Option<AblationFailure> {
     states.iter().find_map(|state| {
         let assertion = match load_manifest(state.vfs(), &directory().join(MANIFEST_FILE), u64::MAX)
         {
-            Ok(actual) if actual == old_manifest() || actual == manifest() => return None,
+            Ok(actual) if actual == manifest() => return None,
+            Ok(actual)
+                if actual == old_manifest()
+                    && state.includes_complete_operation_sequence(operation_count) =>
+            {
+                "successfully returned manifest commit did not publish new state".to_owned()
+            }
+            Ok(actual) if actual == old_manifest() => return None,
             Ok(actual) => format!(
                 "committed manifest generation {} was neither previous nor new",
                 actual.generation
@@ -333,10 +340,20 @@ fn first_manifest_failure(states: &CrashStates) -> Option<AblationFailure> {
     })
 }
 
-fn first_segment_failure(states: &CrashStates, id: SegmentId) -> Option<AblationFailure> {
+fn first_segment_failure(
+    states: &CrashStates,
+    operation_count: usize,
+    id: SegmentId,
+) -> Option<AblationFailure> {
     states.iter().find_map(|state| {
         let path = directory().join(id.file_name());
         let assertion = match state.vfs().read(&path) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && state.includes_complete_operation_sequence(operation_count) =>
+            {
+                "successfully returned segment publish did not publish new state".to_owned()
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
             Err(error) => format!(
                 "published segment read failed {:?}, expected absent or valid",
@@ -441,7 +458,8 @@ fn commit_manifest_each_step_ablation_has_specific_verdict() {
             let states = recorder.crash_states().expect("manifest crash states");
             assert!(!states.is_empty(), "{ablated:?} enumerated no states");
             assert!(!states.was_capped(), "{ablated:?} hit crash-state cap");
-            let failure = first_manifest_failure(&states);
+            let operation_count = recorder.operations().expect("manifest operations").len();
+            let failure = first_manifest_failure(&states, operation_count);
             eprintln!(
                 "write_path_ablation protocol=commit_manifest step={ablated:?} states={} capped={} first_failure={failure:?}",
                 states.len(),
@@ -467,7 +485,14 @@ fn commit_manifest_each_step_ablation_has_specific_verdict() {
                     .to_owned(),
             }),
         ),
-        (ManifestStep::RenameTemp, None),
+        (
+            ManifestStep::RenameTemp,
+            Some(AblationFailure {
+                state: "Prefix { completed_operations: 3 }".to_owned(),
+                assertion: "successfully returned manifest commit did not publish new state"
+                    .to_owned(),
+            }),
+        ),
         (ManifestStep::SyncDirectory, None),
     ];
 
@@ -501,7 +526,8 @@ fn write_segment_each_step_ablation_has_specific_verdict() {
             let states = recorder.crash_states().expect("segment crash states");
             assert!(!states.is_empty(), "{ablated:?} enumerated no states");
             assert!(!states.was_capped(), "{ablated:?} hit crash-state cap");
-            let failure = first_segment_failure(&states, id);
+            let operation_count = recorder.operations().expect("segment operations").len();
+            let failure = first_segment_failure(&states, operation_count, id);
             eprintln!(
                 "write_path_ablation protocol=write_segment step={ablated:?} states={} capped={} first_failure={failure:?}",
                 states.len(),
@@ -527,7 +553,14 @@ fn write_segment_each_step_ablation_has_specific_verdict() {
                     .to_owned(),
             }),
         ),
-        (SegmentStep::RenameTemp, None),
+        (
+            SegmentStep::RenameTemp,
+            Some(AblationFailure {
+                state: "Prefix { completed_operations: 3 }".to_owned(),
+                assertion: "successfully returned segment publish did not publish new state"
+                    .to_owned(),
+            }),
+        ),
         (SegmentStep::SyncDirectory, None),
     ];
 

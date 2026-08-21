@@ -180,6 +180,7 @@ fn seed_previous_store() -> (MemoryVfs, Manifest, SegmentMeta) {
 fn assert_manifest_is_exactly_old_or_new(
     case: CrashCase,
     state: &CrashState,
+    operation_count: usize,
     old: &Manifest,
     new: &Manifest,
 ) -> Manifest {
@@ -193,6 +194,13 @@ fn assert_manifest_is_exactly_old_or_new(
                 state.kind(),
                 actual.generation,
                 old.generation,
+                new.generation
+            );
+            assert!(
+                !state.includes_complete_operation_sequence(operation_count) || actual == *new,
+                "{} {:?}: successfully returned manifest commit did not publish generation {}",
+                case.name,
+                state.kind(),
                 new.generation
             );
             actual
@@ -218,7 +226,12 @@ fn typed_manifest_error(error: &ManifestError) -> String {
     }
 }
 
-fn assert_segment_absent_or_fully_valid(case: CrashCase, state: &CrashState, meta: &SegmentMeta) {
+fn assert_segment_absent_or_fully_valid(
+    case: CrashCase,
+    state: &CrashState,
+    operation_count: usize,
+    meta: &SegmentMeta,
+) {
     let path = directory().join(meta.id.file_name());
     match state.vfs().read(&path) {
         Ok(bytes) => {
@@ -238,13 +251,22 @@ fn assert_segment_absent_or_fully_valid(case: CrashCase, state: &CrashState, met
                 state.kind()
             );
         }
-        Err(error) => assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::NotFound,
-            "{} {:?}: segment read error {error}",
-            case.name,
-            state.kind()
-        ),
+        Err(error) => {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::NotFound,
+                "{} {:?}: segment read error {error}",
+                case.name,
+                state.kind()
+            );
+            assert!(
+                !state.includes_complete_operation_sequence(operation_count),
+                "{} {:?}: successfully returned segment publish did not publish {}",
+                case.name,
+                state.kind(),
+                meta.id
+            );
+        }
     }
 }
 
@@ -404,10 +426,17 @@ fn run_manifest_case(case: CrashCase) {
     commit_manifest(&recorder, directory(), &new_manifest, ordered_policy())
         .expect("manifest commit");
     let states = recorder.crash_states().expect("crash states");
+    let operation_count = recorder.operations().expect("operations").len();
     assert_full_uncapped_coverage(case, &recorder, &states);
     for state in states.iter() {
         assert_temps_are_never_committed_names(case, state);
-        let _ = assert_manifest_is_exactly_old_or_new(case, state, &old_manifest, &new_manifest);
+        let _ = assert_manifest_is_exactly_old_or_new(
+            case,
+            state,
+            operation_count,
+            &old_manifest,
+            &new_manifest,
+        );
         open_manifest(state.vfs(), directory(), &Log, &HashSet::new()).unwrap_or_else(|error| {
             panic!(
                 "{} {:?}: reopen required manual intervention: {}",
@@ -430,6 +459,7 @@ fn run_segment_case(case: CrashCase) {
     let new_id = SegmentId::new(2, [2; 10]);
     let new_meta = publish_segment(&recorder, new_id);
     let states = recorder.crash_states().expect("crash states");
+    let operation_count = recorder.operations().expect("operations").len();
     assert_full_uncapped_coverage(case, &recorder, &states);
     for state in states.iter() {
         assert_temps_are_never_committed_names(case, state);
@@ -449,7 +479,7 @@ fn run_segment_case(case: CrashCase) {
             case.name,
             state.kind()
         );
-        assert_segment_absent_or_fully_valid(case, state, &new_meta);
+        assert_segment_absent_or_fully_valid(case, state, operation_count, &new_meta);
         open_manifest(state.vfs(), directory(), &Log, &HashSet::new()).unwrap_or_else(|error| {
             panic!(
                 "{} {:?}: reopen required manual intervention: {}",
@@ -475,11 +505,17 @@ fn run_combined_case(case: CrashCase) {
     commit_manifest(&recorder, directory(), &new_manifest, ordered_policy())
         .expect("manifest commit");
     let states = recorder.crash_states().expect("crash states");
+    let operation_count = recorder.operations().expect("operations").len();
     assert_full_uncapped_coverage(case, &recorder, &states);
     for state in states.iter() {
         assert_temps_are_never_committed_names(case, state);
-        let loaded =
-            assert_manifest_is_exactly_old_or_new(case, state, &old_manifest, &new_manifest);
+        let loaded = assert_manifest_is_exactly_old_or_new(
+            case,
+            state,
+            operation_count,
+            &old_manifest,
+            &new_manifest,
+        );
         if loaded == new_manifest {
             let bytes = state
                 .vfs()

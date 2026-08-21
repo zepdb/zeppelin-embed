@@ -24,10 +24,14 @@ pub enum CommitTier {
     /// Order earlier writes before later writes with the platform barrier.
     ///
     /// This default tier chooses a cheaper median than full durability on the
-    /// measured development device, with a materially wider latency tail.
+    /// measured development device, with a materially wider latency tail:
+    /// barrier p95 varied 7.40x while full-sync p95 varied 1.02x. That spread
+    /// is a device property, not buffering or timing behavior in this code.
     #[default]
     Ordered,
     /// Flush writes through to durable media with the platform full sync.
+    /// Its measured 4 KiB median was 20.8x the ordered barrier median, but its
+    /// latency distribution was substantially more stable on the same device.
     Durable,
 }
 

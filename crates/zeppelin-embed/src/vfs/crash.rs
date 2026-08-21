@@ -364,6 +364,18 @@ impl CrashState {
     pub const fn vfs(&self) -> &MemoryVfs {
         &self.filesystem
     }
+
+    /// Returns whether this state includes the complete successful operation
+    /// sequence without truncation, tearing, or reordering.
+    #[must_use]
+    pub fn includes_complete_operation_sequence(&self, operation_count: usize) -> bool {
+        matches!(
+            self.kind,
+            CrashStateKind::Prefix {
+                completed_operations
+            } if completed_operations == operation_count
+        )
+    }
 }
 
 /// Bounded deterministic crash-state enumeration plus explicit cap status.
