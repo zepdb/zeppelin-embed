@@ -104,3 +104,19 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   coarse stage plus every f32 corpus-row byte read in exact rescore. Query bytes
   and output metadata are common across schemes and excluded. No Task 04
   command records wall-clock performance.
+
+## Task 06 metadata invariants
+
+- Metadata filters accept only the closed typed `Predicate` AST keyed by
+  `ColumnId`; no parser, string DSL, unsupported marker, LIKE, regex, or GLOB
+  operation belongs in the engine.
+- Every metadata array, including the required `ts: i64` column, stays aligned
+  to segment-local u32 document IDs. Nullness is explicit and never encoded as
+  a sentinel value.
+- Predicate results are always bounded by the supplied `AliveSet`. In
+  particular, negation subtracts from the alive scope and can never resurrect a
+  tombstoned row.
+- Metadata owns compressed sets through `meta::bitmap::DocBitmap`; direct
+  Roaring calls stay behind that boundary. Dictionary codes widen from u16 to
+  u32 when cardinality exceeds `u16::MAX` and report typed overflow beyond the
+  u32 cardinality limit.

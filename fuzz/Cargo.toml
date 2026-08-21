@@ -44,3 +44,10 @@ path = "fuzz_targets/pdx_layout_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "predicate_eval"
+path = "fuzz_targets/predicate_eval.rs"
+test = false
+doc = false
+bench = false
