@@ -20,7 +20,7 @@ pub(super) fn table_for_arm(arm: KernelArm) -> Option<KernelTable> {
     }
 }
 
-pub(super) fn variant_tables() -> [Option<KernelTable>; 10] {
+pub(super) fn variant_tables() -> [Option<KernelTable>; 9] {
     let detected = features();
     [
         Some(scalar::table()),
@@ -31,7 +31,6 @@ pub(super) fn variant_tables() -> [Option<KernelTable>; 10] {
         neon_dotprod_u6_table(detected),
         neon_dotprod_u8_table(detected),
         neon_dotprod_prefetch_table(detected),
-        neon_vertical_r16_table(detected),
         avx2_table(detected),
     ]
 }
@@ -179,18 +178,6 @@ fn neon_dotprod_u8_table(_features: KernelFeatures) -> Option<KernelTable> {
 #[cfg(target_arch = "aarch64")]
 fn neon_dotprod_prefetch_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_prefetch_table(features))
-}
-
-#[cfg(target_arch = "aarch64")]
-fn neon_vertical_r16_table(features: KernelFeatures) -> Option<KernelTable> {
-    features
-        .neon
-        .then(|| super::neon::vertical_r16_table(features))
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn neon_vertical_r16_table(_features: KernelFeatures) -> Option<KernelTable> {
-    None
 }
 
 #[cfg(not(target_arch = "aarch64"))]

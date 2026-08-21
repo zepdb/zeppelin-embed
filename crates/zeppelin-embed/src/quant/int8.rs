@@ -52,6 +52,7 @@ impl Int8Query {
         self.codes.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn codes(&self) -> &[i8] {
         &self.codes
     }

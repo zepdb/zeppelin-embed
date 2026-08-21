@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use super::topk::BoundedTopK;
-use super::{ScanError, ScanRequest, ScanRows, scan_geometry, scan_partition};
+use super::{ScanError, ScanRequest, scan_geometry, scan_partition};
 
 /// Runtime controls for the extended exact scan.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -16,14 +16,12 @@ pub struct ScanOptions {
 /// Deterministic companion counters for one completed scan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanStats {
-    /// Logical row-coordinate multiply-accumulates represented by loaded PDX
-    /// columns. A packed Bit4 byte contributes its one or two logical
-    /// coordinates per row. Because vertical SIMD sweeps whole blocks, masked
-    /// lanes are included.
+    /// Logical row-coordinate multiply-accumulates scored by the scan. Packed
+    /// Bit4 batches score every row in a four-row window before applying masks,
+    /// so their masked lanes are included.
     pub dims_touched: u64,
-    /// PDX payload bytes in column ranges actually loaded by the scan.
-    /// Row-factor records are excluded. This counter is a pure function of the
-    /// request and scan options.
+    /// Row-major payload bytes read by scoring. Row-factor records are excluded.
+    /// This counter is a pure function of the request and scan options.
     pub bytes_read: u64,
     /// Scoped workers actually used after CPU and work-unit caps.
     pub threads_used: usize,
@@ -91,7 +89,7 @@ pub fn top_k_with_options(
         options.thread_budget.min(capacity)
     };
     let workers = requested.min(geometry.work_units.max(1));
-    let ranges = partition_ranges(request.rows, geometry.row_count, workers)?;
+    let ranges = partition_row_count(geometry.row_count, workers)?;
     let partitions = if workers == 1 {
         let range = ranges
             .first()
@@ -141,22 +139,6 @@ pub fn top_k_with_options(
     })
 }
 
-fn partition_ranges(
-    rows: ScanRows<'_>,
-    row_count: usize,
-    workers: usize,
-) -> Result<Vec<Range<usize>>, ScanError> {
-    match rows {
-        ScanRows::F32Pdx(matrix)
-        | ScanRows::F16Pdx(matrix)
-        | ScanRows::Int8Pdx { codes: matrix, .. }
-        | ScanRows::Bit4Pdx { codes: matrix, .. } => {
-            partition_pdx_blocks(matrix, row_count, workers)
-        }
-        _ => partition_row_count(row_count, workers),
-    }
-}
-
 fn partition_row_count(row_count: usize, workers: usize) -> Result<Vec<Range<usize>>, ScanError> {
     let mut ranges = Vec::with_capacity(workers);
     for worker in 0..workers {
@@ -169,46 +151,6 @@ fn partition_row_count(row_count: usize, workers: usize) -> Result<Vec<Range<usi
             .and_then(|value| value.checked_mul(row_count))
             .ok_or(ScanError::ArithmeticOverflow)?
             / workers;
-        ranges.push(start..end);
-    }
-    Ok(ranges)
-}
-
-fn partition_pdx_blocks(
-    matrix: &super::pdx::PdxMatrix,
-    row_count: usize,
-    workers: usize,
-) -> Result<Vec<Range<usize>>, ScanError> {
-    if matrix.blocks().is_empty() {
-        return Ok(std::iter::once(0..0).collect());
-    }
-    let block_count = matrix.blocks().len();
-    let mut ranges = Vec::with_capacity(workers);
-    for worker in 0..workers {
-        let first_block = worker
-            .checked_mul(block_count)
-            .ok_or(ScanError::ArithmeticOverflow)?
-            / workers;
-        let block_end = worker
-            .checked_add(1)
-            .and_then(|value| value.checked_mul(block_count))
-            .ok_or(ScanError::ArithmeticOverflow)?
-            / workers;
-        let first = matrix
-            .blocks()
-            .get(first_block)
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        let start =
-            usize::try_from(first.first_row()).map_err(|_| ScanError::ArithmeticOverflow)?;
-        let end = if block_end == block_count {
-            row_count
-        } else {
-            matrix
-                .blocks()
-                .get(block_end)
-                .and_then(|block| usize::try_from(block.first_row()).ok())
-                .ok_or(ScanError::ArithmeticOverflow)?
-        };
         ranges.push(start..end);
     }
     Ok(ranges)

@@ -24,13 +24,6 @@ pub(super) fn table() -> KernelTable {
         dot_bit4_prepared: scalar::dot_bit4_prepared,
         dot_bit4_batch: scalar::dot_bit4_batch,
         score_bit4_prepared_batch: scalar::score_bit4_prepared_batch,
-        // Task 05 keeps the AVX2 vertical slots shape-compatible while the
-        // scalar oracle substitutes for an x86-specific implementation.
-        vertical_f32: scalar::vertical_f32,
-        vertical_f16: scalar::vertical_f16,
-        vertical_i8: scalar::vertical_i8,
-        vertical_bit4: scalar::vertical_bit4,
-        vertical_rows_per_tile: super::BASELINE_KERNEL_CONFIG.vertical_rows_per_tile,
     }
 }
 
