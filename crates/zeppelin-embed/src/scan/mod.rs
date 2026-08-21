@@ -277,6 +277,12 @@ pub enum ScanError {
     WorkerPanicked,
     /// The operating system could not report a usable CPU count.
     CpuCount(String),
+    /// Early abandonment was requested for a scheme or layout without a
+    /// shipped conservative bound.
+    ///
+    /// This remains reserved for future narrow-scheme and row-major bounds;
+    /// callers must explicitly disable abandonment until that support ships.
+    EarlyAbandonmentUnsupported,
 }
 
 impl std::fmt::Display for ScanError {
@@ -317,6 +323,9 @@ impl std::fmt::Display for ScanError {
             Self::CpuCount(error) => {
                 write!(formatter, "could not determine scan CPU count: {error}")
             }
+            Self::EarlyAbandonmentUnsupported => formatter.write_str(
+                "early abandonment is supported only for an f32 query over f32 PDX rows",
+            ),
         }
     }
 }
@@ -527,16 +536,16 @@ pub(crate) fn scan_partition(
     request: ScanRequest<'_>,
     k: usize,
     range: std::ops::Range<usize>,
-    early_abandon: bool,
+    abandonment_seed: Option<&abandon::AbandonmentSeed>,
 ) -> Result<PartitionScan, ScanError> {
     let geometry = scan_geometry(request)?;
     if range.start > range.end || range.end > geometry.row_count {
         return Err(ScanError::ArithmeticOverflow);
     }
-    if early_abandon
+    if let Some(seed) = abandonment_seed
         && let (ScanQuery::F32(query), ScanRows::F32Pdx(matrix)) = (request.query, request.rows)
     {
-        return abandon::scan_f32_pdx(query, matrix, request.row_mask, k, range);
+        return abandon::scan_f32_pdx(query, matrix, request.row_mask, k, range, seed);
     }
 
     let first_row = range.start;
@@ -876,7 +885,7 @@ mod tests {
 
     use super::pdx::PdxMatrix;
     use super::{
-        CandidateStream, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows,
+        CandidateStream, Int8Factors, ScanError, ScanOptions, ScanQuery, ScanRequest, ScanRows,
         candidate_stream, top_k, top_k_with_options,
     };
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
@@ -897,6 +906,49 @@ mod tests {
             hits.iter().map(|hit| hit.row_id).collect::<Vec<_>>(),
             [0, 1, 2]
         );
+    }
+
+    #[test]
+    fn early_abandon_keeps_equal_score_rows_that_win_the_id_tie_break() {
+        let dimension = 64;
+        let row_count = 1_024;
+        let query = vec![1.0_f32; dimension];
+        let rows = vec![1.0_f32; row_count * dimension];
+        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("identical f32 PDX rows");
+        let request = ScanRequest {
+            query: ScanQuery::F32(&query),
+            rows: ScanRows::F32Pdx(&pdx),
+            row_mask: None,
+        };
+        let exhaustive = top_k_with_options(
+            request,
+            10,
+            ScanOptions {
+                early_abandon: false,
+                thread_budget: 1,
+            },
+        )
+        .expect("exhaustive tie scan");
+        let abandoned = top_k_with_options(
+            request,
+            10,
+            ScanOptions {
+                early_abandon: true,
+                thread_budget: 1,
+            },
+        )
+        .expect("early-abandon tie scan");
+
+        assert_eq!(abandoned.candidates, exhaustive.candidates);
+        assert_eq!(
+            abandoned
+                .candidates
+                .iter()
+                .map(|candidate| candidate.row_id)
+                .collect::<Vec<_>>(),
+            (0..10).collect::<Vec<_>>()
+        );
+        assert!(abandoned.stats.dims_touched > exhaustive.stats.dims_touched);
     }
 
     #[test]
@@ -1085,19 +1137,42 @@ mod tests {
     ) {
         let expected = top_k(row_request, k).expect("valid reference scan");
         for request in [row_request, pdx_request] {
-            for early_abandon in [false, true] {
-                let actual = top_k_with_options(
-                    request,
-                    k,
-                    ScanOptions {
-                        early_abandon,
-                        thread_budget: case % 8 + 1,
-                    },
-                )
-                .expect("valid extended scan")
-                .candidates;
-                assert_eq!(actual.len(), expected.len(), "extended case {case} length");
-                assert_eq!(actual, expected, "extended case {case}");
+            let exhaustive = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: false,
+                    thread_budget: case % 8 + 1,
+                },
+            )
+            .expect("valid extended scan")
+            .candidates;
+            assert_eq!(
+                exhaustive.len(),
+                expected.len(),
+                "extended case {case} length"
+            );
+            assert_eq!(exhaustive, expected, "extended case {case}");
+
+            let abandoned = top_k_with_options(
+                request,
+                k,
+                ScanOptions {
+                    early_abandon: true,
+                    thread_budget: case % 8 + 1,
+                },
+            );
+            if matches!(
+                (request.query, request.rows),
+                (ScanQuery::F32(_), ScanRows::F32Pdx(_))
+            ) {
+                assert_eq!(
+                    abandoned.expect("supported abandonment").candidates,
+                    expected,
+                    "extended case {case}"
+                );
+            } else {
+                assert_eq!(abandoned, Err(ScanError::EarlyAbandonmentUnsupported));
             }
         }
     }
@@ -1251,14 +1326,21 @@ mod tests {
                     early_abandon: true,
                     thread_budget: 1,
                 },
-            )
-            .expect("abandon scan");
-            assert_eq!(
-                abandoned.candidates.len(),
-                exhaustive.candidates.len(),
-                "case {case} candidate count"
             );
-            assert_eq!(abandoned.candidates, exhaustive.candidates, "case {case}");
+            if matches!(
+                (request.query, request.rows),
+                (ScanQuery::F32(_), ScanRows::F32Pdx(_))
+            ) {
+                let abandoned = abandoned.expect("supported abandon scan");
+                assert_eq!(
+                    abandoned.candidates.len(),
+                    exhaustive.candidates.len(),
+                    "case {case} candidate count"
+                );
+                assert_eq!(abandoned.candidates, exhaustive.candidates, "case {case}");
+            } else {
+                assert_eq!(abandoned, Err(ScanError::EarlyAbandonmentUnsupported));
+            }
         }
     }
 
@@ -1373,7 +1455,7 @@ mod tests {
     #[test]
     fn dims_touched_is_strictly_lower_when_abandonment_triggers() {
         let dimension = 128;
-        let row_count = 192;
+        let row_count = 768;
         let query = vec![1.0_f32; dimension];
         let mut rows = vec![-10.0_f32; row_count * dimension];
         for value in rows.iter_mut().take(64 * dimension) {
@@ -1410,7 +1492,52 @@ mod tests {
             abandoned.stats.dims_touched,
             exhaustive.stats.dims_touched
         );
-        assert_eq!(abandoned.stats.rows_abandoned, 128);
+        assert_eq!(abandoned.stats.rows_abandoned, 352);
+    }
+
+    #[test]
+    fn abandonment_never_exceeds_exhaustive_work_at_supported_thread_counts() {
+        let dimension = 128;
+        let row_count = 4_096;
+        let query = vec![1.0_f32; dimension];
+        let mut rows = vec![-1.0_f32; row_count * dimension];
+        for value in rows.iter_mut().take(64 * dimension) {
+            *value = 1.0;
+        }
+        let pdx = PdxMatrix::encode_f32(&rows, dimension).expect("f32 PDX");
+        let request = ScanRequest {
+            query: ScanQuery::F32(&query),
+            rows: ScanRows::F32Pdx(&pdx),
+            row_mask: None,
+        };
+        for requested in [1, 2, 4, 8, 12] {
+            let exhaustive = top_k_with_options(
+                request,
+                10,
+                ScanOptions {
+                    early_abandon: false,
+                    thread_budget: requested,
+                },
+            )
+            .expect("exhaustive scan");
+            let abandoned = top_k_with_options(
+                request,
+                10,
+                ScanOptions {
+                    early_abandon: true,
+                    thread_budget: requested,
+                },
+            )
+            .expect("abandon scan");
+            assert_eq!(abandoned.candidates, exhaustive.candidates);
+            assert!(
+                abandoned.stats.dims_touched < exhaustive.stats.dims_touched,
+                "requested={requested} used={} abandon={} exhaustive={}",
+                abandoned.stats.threads_used,
+                abandoned.stats.dims_touched,
+                exhaustive.stats.dims_touched
+            );
+        }
     }
 
     #[test]
@@ -1707,6 +1834,19 @@ mod tests {
         for error in errors {
             assert!(!error.to_string().is_empty());
         }
+        assert_eq!(
+            top_k_with_options(
+                mask_fixture(&f32_query, &[1.0, 2.0], None),
+                1,
+                ScanOptions::default(),
+            ),
+            Err(ScanError::EarlyAbandonmentUnsupported)
+        );
+        assert!(
+            !ScanError::EarlyAbandonmentUnsupported
+                .to_string()
+                .is_empty()
+        );
 
         let pdx = PdxMatrix::encode_f32(&[1.0, 2.0, 3.0], 3).expect("valid PDX");
         assert!(matches!(

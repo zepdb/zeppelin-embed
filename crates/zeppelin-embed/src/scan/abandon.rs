@@ -11,14 +11,75 @@ use super::topk::BoundedTopK;
 use super::{PartitionScan, ScanCandidate, ScanError};
 
 pub(crate) const BASELINE_DIMENSIONS_PER_SLAB: usize = 32;
+const STRATIFIED_SAMPLE_ROWS: usize = 512;
+const LEADING_BLOCK_SAMPLE_ROWS: usize = 16;
 
-pub(crate) fn scan_f32_pdx(
+#[derive(Debug)]
+pub(crate) struct AbandonmentSeed {
+    pub(crate) candidates: Vec<ScanCandidate>,
+    pub(crate) dims_touched: u64,
+    sampled_rows: Vec<usize>,
+    threshold: Option<f32>,
+}
+
+pub(crate) fn prepare_f32_pdx_seed(
     query: &[f32],
     matrix: &PdxMatrix,
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
-    range: Range<usize>,
-) -> Result<PartitionScan, ScanError> {
+) -> Result<AbandonmentSeed, ScanError> {
+    validate_f32_pdx(query, matrix)?;
+    if k == 0 || matrix.row_count() == 0 {
+        return Ok(AbandonmentSeed {
+            candidates: Vec::new(),
+            dims_touched: 0,
+            sampled_rows: Vec::new(),
+            threshold: None,
+        });
+    }
+
+    let baseline_sample_count = STRATIFIED_SAMPLE_ROWS.min(matrix.row_count().div_ceil(2));
+    let sample_count = baseline_sample_count.max(k).min(matrix.row_count());
+    let mut sampled_rows = Vec::with_capacity(sample_count.saturating_add(k));
+    append_stratified_rows(&mut sampled_rows, 0, matrix.row_count(), sample_count)?;
+    if let Some(first_block) = matrix.blocks().first() {
+        let block_rows = first_block.row_count() as usize;
+        let leading_count = LEADING_BLOCK_SAMPLE_ROWS.max(k).min(block_rows);
+        append_stratified_rows(&mut sampled_rows, 0, block_rows, leading_count)?;
+    }
+    sampled_rows.sort_unstable();
+    sampled_rows.dedup();
+
+    let mut selected = BoundedTopK::new(k.min(matrix.row_count()));
+    let mut dims_touched = 0_u64;
+    for &row_id in &sampled_rows {
+        if !row_is_allowed(row_mask, row_id) {
+            continue;
+        }
+        let row = decode_sample_row(matrix, row_id)?;
+        let score = crate::kernels::dot_f32(query, &row);
+        if !score.is_finite() {
+            return Err(ScanError::NonFiniteScore { row_id });
+        }
+        dims_touched = dims_touched
+            .checked_add(u64::try_from(query.len()).map_err(|_| ScanError::ArithmeticOverflow)?)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        selected.push(ScanCandidate { row_id, score });
+    }
+    let threshold = selected
+        .is_full()
+        .then(|| selected.worst())
+        .flatten()
+        .map(|hit| hit.score);
+    Ok(AbandonmentSeed {
+        candidates: selected.into_sorted(),
+        dims_touched,
+        sampled_rows,
+        threshold,
+    })
+}
+
+fn validate_f32_pdx(query: &[f32], matrix: &PdxMatrix) -> Result<(), ScanError> {
     if query.is_empty() {
         return Err(ScanError::ZeroDimension);
     }
@@ -42,6 +103,78 @@ pub(crate) fn scan_f32_pdx(
             .ok_or(ScanError::ArithmeticOverflow)?;
         return Err(ScanError::NonFiniteInput { index });
     }
+    Ok(())
+}
+
+fn append_stratified_rows(
+    output: &mut Vec<usize>,
+    start: usize,
+    length: usize,
+    count: usize,
+) -> Result<(), ScanError> {
+    if count == 0 {
+        return Ok(());
+    }
+    let count = count.min(length);
+    let base_width = length / count;
+    let wider_buckets = length % count;
+    let mut bucket_start = start;
+    for bucket in 0..count {
+        let width = base_width + usize::from(bucket < wider_buckets);
+        let row_id = bucket_start
+            .checked_add(width / 2)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        output.push(row_id);
+        bucket_start = bucket_start
+            .checked_add(width)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+    }
+    Ok(())
+}
+
+fn decode_sample_row(matrix: &PdxMatrix, row_id: usize) -> Result<Vec<f32>, ScanError> {
+    let (block_index, block_first) = matrix
+        .blocks()
+        .iter()
+        .copied()
+        .enumerate()
+        .find_map(|(block_index, block)| {
+            let first = usize::try_from(block.first_row()).ok()?;
+            let end = first.checked_add(block.row_count() as usize)?;
+            (row_id >= first && row_id < end).then_some((block_index, first))
+        })
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let local_row = row_id
+        .checked_sub(block_first)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let byte_start = local_row
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let byte_end = byte_start
+        .checked_add(std::mem::size_of::<f32>())
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let mut row = Vec::with_capacity(matrix.dimension());
+    for column in 0..matrix.dimension() {
+        let bytes = matrix
+            .f32_column(block_index, column)?
+            .get(byte_start..byte_end)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        let array = <[u8; 4]>::try_from(bytes)
+            .map_err(|_| ScanError::Pdx(super::pdx::PdxError::CorruptBlock))?;
+        row.push(f32::from_bits(u32::from_le_bytes(array)));
+    }
+    Ok(row)
+}
+
+pub(crate) fn scan_f32_pdx(
+    query: &[f32],
+    matrix: &PdxMatrix,
+    row_mask: Option<&roaring::RoaringBitmap>,
+    k: usize,
+    range: Range<usize>,
+    seed: &AbandonmentSeed,
+) -> Result<PartitionScan, ScanError> {
+    validate_f32_pdx(query, matrix)?;
     if range.start > range.end || range.end > matrix.row_count() {
         return Err(ScanError::Pdx(super::pdx::PdxError::CorruptBlock));
     }
@@ -62,13 +195,14 @@ pub(crate) fn scan_f32_pdx(
             continue;
         }
 
-        if !selected.is_full() {
+        if abandonment_threshold(&selected, seed).is_none() {
             let decoded = matrix.decode_f32_range(scan_start..scan_end)?;
             score_decoded_rows(
                 query,
                 &decoded,
                 scan_start,
                 row_mask,
+                seed,
                 &mut selected,
                 &mut dims_touched,
             )?;
@@ -84,6 +218,7 @@ pub(crate) fn scan_f32_pdx(
                 &decoded,
                 scan_start,
                 row_mask,
+                seed,
                 &mut selected,
                 &mut dims_touched,
             )?;
@@ -95,13 +230,18 @@ pub(crate) fn scan_f32_pdx(
             .ok_or(ScanError::ArithmeticOverflow)?;
         let mut row_scratch = vec![0.0_f32; scratch_len];
         let mut partial = vec![0.0_f64; block_rows];
+        let mut integer_exact = vec![true; block_rows];
+        let mut integer_absolute_sum = vec![0.0_f64; block_rows];
         let mut active = Vec::with_capacity(block_rows);
         for local_row in 0..block_rows {
             let row_id = block_first
                 .checked_add(local_row)
                 .ok_or(ScanError::ArithmeticOverflow)?;
             active.push(
-                row_id >= scan_start && row_id < scan_end && row_is_allowed(row_mask, row_id),
+                row_id >= scan_start
+                    && row_id < scan_end
+                    && !seed.is_sampled(row_id)
+                    && row_is_allowed(row_mask, row_id),
             );
         }
 
@@ -134,14 +274,27 @@ pub(crate) fn scan_f32_pdx(
                     let accumulator = partial
                         .get_mut(local_row)
                         .ok_or(ScanError::ArithmeticOverflow)?;
-                    *accumulator += f64::from(query_value) * f64::from(value);
+                    let product = f64::from(query_value) * f64::from(value);
+                    *accumulator += product;
+                    let absolute_sum = integer_absolute_sum
+                        .get_mut(local_row)
+                        .ok_or(ScanError::ArithmeticOverflow)?;
+                    *absolute_sum += product.abs();
+                    let exact = integer_exact
+                        .get_mut(local_row)
+                        .ok_or(ScanError::ArithmeticOverflow)?;
+                    *exact = *exact
+                        && query_value.fract() == 0.0
+                        && value.fract() == 0.0
+                        && product.abs() <= 16_777_216.0
+                        && *absolute_sum <= 16_777_216.0;
                     dims_touched = dims_touched
                         .checked_add(1)
                         .ok_or(ScanError::ArithmeticOverflow)?;
                 }
             }
 
-            if let Some(worst) = selected.worst() {
+            if let Some(threshold) = abandonment_threshold(&selected, seed) {
                 let remaining = bound.remaining_after(slab_end)?;
                 for (local_row, is_active) in active.iter_mut().enumerate() {
                     if !*is_active {
@@ -150,8 +303,15 @@ pub(crate) fn scan_f32_pdx(
                     let prefix = *partial
                         .get(local_row)
                         .ok_or(ScanError::ArithmeticOverflow)?;
-                    let upper = conservative_score_upper(prefix, remaining, bound.rounding_guard);
-                    if upper < f64::from(worst.score) {
+                    let rounding_guard = if slab_end == query.len()
+                        && integer_exact.get(local_row).copied().unwrap_or(false)
+                    {
+                        0.0
+                    } else {
+                        bound.rounding_guard
+                    };
+                    let upper = conservative_score_upper(prefix, remaining, rounding_guard);
+                    if upper < f64::from(threshold) {
                         *is_active = false;
                         rows_abandoned = rows_abandoned
                             .checked_add(1)
@@ -200,6 +360,7 @@ fn score_decoded_rows(
     rows: &[f32],
     first_row: usize,
     row_mask: Option<&roaring::RoaringBitmap>,
+    seed: &AbandonmentSeed,
     selected: &mut BoundedTopK,
     dims_touched: &mut u64,
 ) -> Result<(), ScanError> {
@@ -207,7 +368,7 @@ fn score_decoded_rows(
         let row_id = first_row
             .checked_add(local_row)
             .ok_or(ScanError::ArithmeticOverflow)?;
-        if !row_is_allowed(row_mask, row_id) {
+        if seed.is_sampled(row_id) || !row_is_allowed(row_mask, row_id) {
             continue;
         }
         let score = crate::kernels::dot_f32(query, row);
@@ -220,6 +381,26 @@ fn score_decoded_rows(
         selected.push(ScanCandidate { row_id, score });
     }
     Ok(())
+}
+
+fn abandonment_threshold(selected: &BoundedTopK, seed: &AbandonmentSeed) -> Option<f32> {
+    let local = selected
+        .is_full()
+        .then(|| selected.worst())
+        .flatten()
+        .map(|hit| hit.score);
+    match (seed.threshold, local) {
+        (Some(seed_score), Some(local_score)) => Some(seed_score.max(local_score)),
+        (Some(seed_score), None) => Some(seed_score),
+        (None, Some(local_score)) => Some(local_score),
+        (None, None) => None,
+    }
+}
+
+impl AbandonmentSeed {
+    fn is_sampled(&self, row_id: usize) -> bool {
+        self.sampled_rows.binary_search(&row_id).is_ok()
+    }
 }
 
 fn row_is_allowed(row_mask: Option<&roaring::RoaringBitmap>, row_id: usize) -> bool {

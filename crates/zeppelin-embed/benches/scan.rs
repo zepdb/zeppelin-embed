@@ -10,13 +10,21 @@ use zeppelin_embed::scan::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scheme {
     F32,
+    F16,
     Int8,
     Bit4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FixtureKind {
+    Degenerate,
+    Clustered,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Config {
     scheme: Scheme,
+    fixture: FixtureKind,
     rows: usize,
     dimensions: usize,
     k: usize,
@@ -30,6 +38,10 @@ struct Config {
 enum Fixture {
     F32 {
         query: Vec<f32>,
+        rows: PdxMatrix,
+    },
+    F16 {
+        query: Vec<u16>,
         rows: PdxMatrix,
     },
     Int8 {
@@ -50,6 +62,11 @@ impl Fixture {
             Self::F32 { query, rows } => ScanRequest {
                 query: ScanQuery::F32(query),
                 rows: ScanRows::F32Pdx(rows),
+                row_mask: None,
+            },
+            Self::F16 { query, rows } => ScanRequest {
+                query: ScanQuery::F16(query),
+                rows: ScanRows::F16Pdx(rows),
                 row_mask: None,
             },
             Self::Int8 {
@@ -85,12 +102,13 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             scheme: Scheme::Bit4,
+            fixture: FixtureKind::Degenerate,
             rows: 100_000,
             dimensions: 768,
             k: 10,
             threads: 0,
             block_rows: 64,
-            abandon: true,
+            abandon: false,
             iterations: 10,
             smoke: false,
         }
@@ -118,8 +136,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
     println!(
-        "deterministic counters: scheme={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} threads_used={}",
+        "deterministic counters: scheme={:?} fixture={:?} shape={}x{} block_rows={} dims_touched={} rows_abandoned={} threads_used={}",
         config.scheme,
+        config.fixture,
         config.rows,
         config.dimensions,
         config.block_rows,
@@ -142,12 +161,36 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn build_fixture(config: Config) -> Result<Fixture, Box<dyn Error>> {
     match config.scheme {
         Scheme::F32 => build_f32(config),
+        Scheme::F16 => build_f16(config),
         Scheme::Int8 => build_int8(config),
         Scheme::Bit4 => build_bit4(config),
     }
 }
 
 fn build_f32(config: Config) -> Result<Fixture, Box<dyn Error>> {
+    let (query, rows) = build_float_values(config)?;
+    let pdx =
+        PdxMatrix::encode_f32_with_rows_per_block(&rows, config.dimensions, config.block_rows)?;
+    Ok(Fixture::F32 { query, rows: pdx })
+}
+
+fn build_f16(config: Config) -> Result<Fixture, Box<dyn Error>> {
+    let (query, rows) = build_float_values(config)?;
+    let query = query.into_iter().map(f32_to_f16_bits).collect::<Vec<_>>();
+    let rows = rows.into_iter().map(f32_to_f16_bits).collect::<Vec<_>>();
+    let pdx =
+        PdxMatrix::encode_f16_with_rows_per_block(&rows, config.dimensions, config.block_rows)?;
+    Ok(Fixture::F16 { query, rows: pdx })
+}
+
+fn build_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Error>> {
+    match config.fixture {
+        FixtureKind::Degenerate => build_degenerate_float_values(config),
+        FixtureKind::Clustered => build_clustered_float_values(config),
+    }
+}
+
+fn build_degenerate_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Error>> {
     let query = vec![1.0_f32; config.dimensions];
     let first_block_values = config
         .block_rows
@@ -166,9 +209,60 @@ fn build_f32(config: Config) -> Result<Fixture, Box<dyn Error>> {
             }
         })
         .collect::<Vec<_>>();
-    let pdx =
-        PdxMatrix::encode_f32_with_rows_per_block(&rows, config.dimensions, config.block_rows)?;
-    Ok(Fixture::F32 { query, rows: pdx })
+    Ok((query, rows))
+}
+
+fn build_clustered_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Error>> {
+    let scalar_count = config
+        .rows
+        .checked_mul(config.dimensions)
+        .ok_or("clustered fixture size overflowed")?;
+    let cluster_count = (config.rows / 8).clamp(2, 12);
+    let mut random = SplitMix64::new(0x05_c1_a5_7e_ed);
+    let mut centers = Vec::with_capacity(cluster_count);
+    for _ in 0..cluster_count {
+        let mut center = (0..config.dimensions)
+            .map(|_| random.gaussian())
+            .collect::<Vec<_>>();
+        normalize(&mut center);
+        centers.push(center);
+    }
+
+    let total_weight = cluster_count
+        .checked_mul(cluster_count + 1)
+        .ok_or("cluster weight overflowed")?
+        / 2;
+    let mut rows = Vec::with_capacity(scalar_count);
+    for row_index in 0..config.rows {
+        let ticket = row_index % total_weight;
+        let mut cumulative = 0_usize;
+        let mut label = 0_usize;
+        for candidate in 0..cluster_count {
+            cumulative = cumulative
+                .checked_add(candidate + 1)
+                .ok_or("cluster weight overflowed")?;
+            if ticket < cumulative {
+                label = candidate;
+                break;
+            }
+        }
+        let center = centers.get(label).ok_or("cluster label out of range")?;
+        let spread = 0.015 + 0.012 * (label % 5) as f32;
+        let mut row = center
+            .iter()
+            .map(|value| *value + spread * random.gaussian())
+            .collect::<Vec<_>>();
+        normalize(&mut row);
+        rows.extend(row);
+    }
+
+    let center = centers.first().ok_or("clustered fixture has no centers")?;
+    let mut query = center
+        .iter()
+        .map(|value| *value + 0.035 * random.gaussian())
+        .collect::<Vec<_>>();
+    normalize(&mut query);
+    Ok((query, rows))
 }
 
 fn build_int8(config: Config) -> Result<Fixture, Box<dyn Error>> {
@@ -235,6 +329,7 @@ fn scan_options(config: Config) -> ScanOptions {
 
 fn parse_args() -> Result<Config, Box<dyn Error>> {
     let mut config = Config::default();
+    let mut shape_was_supplied = false;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -244,18 +339,30 @@ fn parse_args() -> Result<Config, Box<dyn Error>> {
                 let value = arguments.next().ok_or("--scheme requires a value")?;
                 config.scheme = match value.as_str() {
                     "f32" => Scheme::F32,
+                    "f16" => Scheme::F16,
                     "int8" => Scheme::Int8,
                     "bit4" => Scheme::Bit4,
                     _ => return Err(format!("unsupported scheme {value:?}").into()),
                 };
             }
             "--shape" => {
+                shape_was_supplied = true;
                 let value = arguments.next().ok_or("--shape requires ROWSxDIMENSIONS")?;
                 let (rows, dimensions) = value
                     .split_once('x')
                     .ok_or("--shape must be ROWSxDIMENSIONS")?;
                 config.rows = rows.parse()?;
                 config.dimensions = dimensions.parse()?;
+            }
+            "--fixture" => {
+                let value = arguments
+                    .next()
+                    .ok_or("--fixture requires degenerate or clustered")?;
+                config.fixture = match value.as_str() {
+                    "degenerate" => FixtureKind::Degenerate,
+                    "clustered" => FixtureKind::Clustered,
+                    _ => return Err("--fixture requires degenerate or clustered".into()),
+                };
             }
             "--k" => config.k = parse_next(&mut arguments, "--k")?,
             "--threads" => config.threads = parse_next(&mut arguments, "--threads")?,
@@ -272,7 +379,7 @@ fn parse_args() -> Result<Config, Box<dyn Error>> {
             _ => return Err(format!("unknown scan benchmark argument {argument:?}").into()),
         }
     }
-    if config.smoke {
+    if config.smoke && !shape_was_supplied {
         config.rows = config.rows.min(256);
         config.dimensions = config.dimensions.min(128);
         config.iterations = 1;
@@ -287,6 +394,63 @@ fn parse_args() -> Result<Config, Box<dyn Error>> {
         );
     }
     Ok(config)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    const fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = self.state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn open_unit(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64 + 0.5) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    fn gaussian(&mut self) -> f32 {
+        let radius = (-2.0 * self.open_unit().ln()).sqrt();
+        let angle = std::f64::consts::TAU * self.open_unit();
+        (radius * angle.cos()) as f32
+    }
+}
+
+fn normalize(values: &mut [f32]) {
+    let length = values
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    if length == 0.0 {
+        return;
+    }
+    for value in values {
+        *value = (f64::from(*value) / length) as f32;
+    }
+}
+
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let fraction = ((bits >> 13) & 0x03ff) as u16;
+    if exponent <= 0 {
+        sign
+    } else if exponent >= 0x1f {
+        sign | 0x7c00
+    } else {
+        sign | ((exponent as u16) << 10) | fraction
+    }
 }
 
 fn parse_next(

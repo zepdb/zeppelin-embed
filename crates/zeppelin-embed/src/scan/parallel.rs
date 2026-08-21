@@ -9,7 +9,9 @@ use super::{ScanError, ScanRequest, ScanRows, scan_geometry, scan_partition};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanOptions {
     /// Enables conservative early abandonment where the scheme and layout
-    /// have a proven bound. Unsupported combinations remain exhaustive.
+    /// have a proven bound. Unsupported combinations return
+    /// [`ScanError::EarlyAbandonmentUnsupported`] until their own conservative
+    /// bounds ship.
     pub early_abandon: bool,
     /// Requested worker count. Zero explicitly selects all detected physical
     /// performance cores; a nonzero request is capped at that count.
@@ -92,6 +94,16 @@ pub fn top_k_with_options(
     options: ScanOptions,
 ) -> Result<ScanOutcome, ScanError> {
     let geometry = scan_geometry(request)?;
+    let abandonment_seed = if options.early_abandon {
+        match (request.query, request.rows) {
+            (super::ScanQuery::F32(query), ScanRows::F32Pdx(matrix)) => Some(
+                super::abandon::prepare_f32_pdx_seed(query, matrix, request.row_mask, k)?,
+            ),
+            _ => return Err(ScanError::EarlyAbandonmentUnsupported),
+        }
+    } else {
+        None
+    };
     let capacity = physical_thread_capacity()?;
     let requested = if options.thread_budget == 0 {
         capacity
@@ -105,16 +117,20 @@ pub fn top_k_with_options(
             .first()
             .cloned()
             .ok_or(ScanError::ArithmeticOverflow)?;
-        vec![scan_partition(request, k, range, options.early_abandon)?]
+        vec![scan_partition(
+            request,
+            k,
+            range,
+            abandonment_seed.as_ref(),
+        )?]
     } else {
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
+            let seed = abandonment_seed.as_ref();
             for range in ranges {
                 let builder = std::thread::Builder::new();
                 let handle = builder
-                    .spawn_scoped(scope, move || {
-                        scan_partition(request, k, range, options.early_abandon)
-                    })
+                    .spawn_scoped(scope, move || scan_partition(request, k, range, seed))
                     .map_err(|error| ScanError::ThreadSpawn(error.to_string()))?;
                 handles.push(handle);
             }
@@ -128,8 +144,15 @@ pub fn top_k_with_options(
     };
 
     let mut merged = BoundedTopK::new(k.min(geometry.row_count));
-    let mut dims_touched = 0_u64;
+    let mut dims_touched = abandonment_seed
+        .as_ref()
+        .map_or(0, |seed| seed.dims_touched);
     let mut rows_abandoned = 0_u64;
+    if let Some(seed) = abandonment_seed {
+        for candidate in seed.candidates {
+            merged.push(candidate);
+        }
+    }
     for partition in partitions {
         dims_touched = dims_touched
             .checked_add(partition.dims_touched)
