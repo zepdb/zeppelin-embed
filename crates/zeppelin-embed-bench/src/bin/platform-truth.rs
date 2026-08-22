@@ -5,7 +5,9 @@ use std::io;
 use std::process::Command;
 use std::time::Duration;
 
-use zeppelin_embed_bench::platform::{bandwidth, energy, footprint, fsync, incumbent};
+use zeppelin_embed_bench::platform::{
+    bandwidth, energy, footprint, fsync, incumbent, memory_graph,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -27,13 +29,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         "bandwidth-compare" if arguments.len() == 1 => run_bandwidth_comparison_full(),
         "footprint" if arguments.len() == 1 => run_footprint_full(),
         "incumbent" if arguments.len() == 1 => run_incumbent_full(),
+        "memory-graph" => run_memory_graph(&arguments[1..]),
         "energy" => run_energy(&arguments[1..]),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: platform-truth [--smoke | all | fsync | bandwidth | bandwidth-compare | footprint | incumbent | energy -- <workload> [args...]]",
+            "usage: platform-truth [--smoke | all | fsync | bandwidth | bandwidth-compare | footprint | incumbent | memory-graph [all|h1|h2|h3] [options] | energy -- <workload> [args...]]",
         )
         .into()),
     }
+}
+
+fn run_memory_graph(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    print_machine_context();
+    memory_graph::run(arguments)
 }
 
 fn run_all() -> Result<(), Box<dyn Error>> {

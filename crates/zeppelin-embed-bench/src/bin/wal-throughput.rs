@@ -1,7 +1,6 @@
 //! Sustained-offered-load WAL throughput harness.
 
 use std::error::Error;
-use std::fmt;
 use std::io::{self, IoSlice};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -18,106 +17,17 @@ use zeppelin_embed::wal::record::MIN_RECORD_LEN;
 use zeppelin_embed::wal::{
     DEFAULT_MAX_GROUP_BYTES, GROUP_SIZE_HISTOGRAM_BUCKETS, GroupSizeHistogram, LogSeq, WalWriter,
 };
+#[cfg(test)]
+use zeppelin_embed_bench::platform::taint::{Taint, evaluate_taint};
+use zeppelin_embed_bench::platform::taint::{
+    TaintCheck, detect_taint, format_load1, format_taint_labels, print_taint_status,
+};
 
 const DEFAULT_CELL_SECONDS: u64 = 3;
 const DEFAULT_CELL_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
 const RETIRE_EVERY_RECORDS: u64 = 1_024;
 const BOUND_TIME: u8 = 1;
 const BOUND_BYTES: u8 = 2;
-#[cfg(target_os = "macos")]
-const SANDBOX_FILTER_NONE: libc::c_int = 0;
-
-#[cfg(target_os = "macos")]
-// SAFETY: This declaration matches sandbox_check(3) from the macOS Sandbox API.
-unsafe extern "C" {
-    fn sandbox_check(
-        pid: libc::pid_t,
-        operation: *const libc::c_char,
-        filter_type: libc::c_int,
-        ...
-    ) -> libc::c_int;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Taint {
-    Load { actual: f64, limit: f64 },
-    LoadUnreadable,
-    Sandbox,
-}
-
-impl Taint {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Load { .. } => "load",
-            Self::LoadUnreadable => "load_unreadable",
-            Self::Sandbox => "sandbox",
-        }
-    }
-}
-
-impl fmt::Display for Taint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Load { actual, limit } => {
-                write!(formatter, "load1={actual:.2} exceeds limit={limit:.2}")
-            }
-            Self::LoadUnreadable => formatter.write_str("load1=unreadable"),
-            Self::Sandbox => formatter.write_str("sandbox=detected"),
-        }
-    }
-}
-
-struct TaintCheck {
-    load1: Option<f64>,
-    sandboxed: bool,
-    taints: Vec<Taint>,
-}
-
-fn evaluate_taint(load1: Option<f64>, load_limit: f64, sandboxed: bool) -> Vec<Taint> {
-    let mut taints = Vec::new();
-    match load1 {
-        Some(actual) if actual > load_limit => taints.push(Taint::Load {
-            actual,
-            limit: load_limit,
-        }),
-        None => taints.push(Taint::LoadUnreadable),
-        Some(_) => {}
-    }
-    if sandboxed {
-        taints.push(Taint::Sandbox);
-    }
-    taints
-}
-
-fn detect_taint(load_limit: f64) -> TaintCheck {
-    let load1 = read_load1();
-    let sandboxed = process_is_sandboxed();
-    let taints = evaluate_taint(load1, load_limit, sandboxed);
-    TaintCheck {
-        load1,
-        sandboxed,
-        taints,
-    }
-}
-
-fn read_load1() -> Option<f64> {
-    let mut load1 = 0.0_f64;
-    // SAFETY: load1 points to writable storage for the one requested load average.
-    let read = unsafe { libc::getloadavg(&mut load1, 1) };
-    (read == 1).then_some(load1)
-}
-
-#[cfg(target_os = "macos")]
-fn process_is_sandboxed() -> bool {
-    // SAFETY: sandbox_check is called with the current PID, the documented null operation,
-    // and SANDBOX_FILTER_NONE, which takes no variadic filter arguments.
-    unsafe { sandbox_check(libc::getpid(), std::ptr::null(), SANDBOX_FILTER_NONE) > 0 }
-}
-
-#[cfg(not(target_os = "macos"))]
-const fn process_is_sandboxed() -> bool {
-    false
-}
 
 fn main() {
     if let Err(error) = run() {
@@ -133,7 +43,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if config.smoke {
         println!("wal-throughput smoke mode");
     }
-    print_taint_status(&taint, config.load_limit);
+    print_taint_status(&taint, config.load_limit, "throughput");
     println!(
         "config payloads={:?} threads={:?} batches={:?} tiers={} cell_seconds={} cell_bytes={} max_group_bytes={} load_limit={}",
         config.payloads,
@@ -686,26 +596,6 @@ const fn tier_name(tier: CommitTier) -> &'static str {
     }
 }
 
-fn print_taint_status(taint: &TaintCheck, load_limit: f64) {
-    if taint.taints.is_empty() {
-        println!(
-            "taint check: clean (load1={} limit={load_limit:.2} sandbox={})",
-            format_load1(taint.load1),
-            if taint.sandboxed { "detected" } else { "clear" }
-        );
-    } else {
-        println!(
-            "TAINTED — {} — no throughput conclusion is authoritative",
-            taint
-                .taints
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-}
-
 fn print_machine_line(result: &CellResult, taint: &TaintCheck) {
     println!(
         "WAL_THROUGHPUT payload_bytes={} threads={} batch_size={} tier={} bound={} elapsed_ns={} records={} docs_per_s={:.3} MB_per_s={:.3} flushes={} mean_group_records={:.3} group_hist={} sync_mean_ns={} implied_ceiling_docs_per_s={} achieved_fraction={} append_calls={} bytes_appended={} barrier_syncs={} full_syncs={} load1={} taint={}",
@@ -766,23 +656,6 @@ fn print_table(results: &[CellResult], taint: &TaintCheck) {
             format_histogram(&result.histogram)
         );
     }
-}
-
-fn format_load1(load1: Option<f64>) -> String {
-    load1
-        .map(|value| format!("{value:.2}"))
-        .unwrap_or_else(|| String::from("NA"))
-}
-
-fn format_taint_labels(taints: &[Taint]) -> String {
-    if taints.is_empty() {
-        return String::from("none");
-    }
-    taints
-        .iter()
-        .map(|taint| taint.label())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn format_optional(value: Option<f64>) -> String {
