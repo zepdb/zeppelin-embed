@@ -207,7 +207,10 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   torn, and reordered states retain the prior prefix safety rules.
 - Group commit has no timer or background flusher. The idle caller leads
   immediately; arrivals during its sync form the next group, capped by encoded
-  bytes at a default 1 MiB, and the same leader drains it immediately.
+  bytes at a 1 MiB default, except that a resolved data-file requirement of
+  `SyncRequirement::Sync(SyncKind::Full)` uses 16 MiB. An explicit
+  `create_with_max_group_bytes` override always wins, and the same leader drains
+  the group immediately.
 - WAL visibility is published in memory before append/sync. `commit_durable`
   additionally waits for the selected tier; barriers order without promoting
   `FaultVfs` bytes to media, while full sync does.

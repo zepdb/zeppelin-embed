@@ -11,7 +11,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use crate::format::RegistryError;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::manifest::io::DurableLog;
-use crate::vfs::{Vfs, VfsFile};
+use crate::vfs::{SyncKind, Vfs, VfsFile};
 
 pub mod header;
 pub mod record;
@@ -26,6 +26,13 @@ use replay::{ReplayTerminator, replay};
 
 /// Default upper bound for one group append, in encoded bytes.
 pub const DEFAULT_MAX_GROUP_BYTES: usize = 1_048_576;
+/// Default upper bound for a full-sync group append, in encoded bytes.
+///
+/// Fixed sync cost dominates, while the memory cost is one bounded buffer per
+/// writer. Sixteen MiB follows the InnoDB, PostgreSQL, and Lucene convention.
+/// Sync cost above one MiB is modeled, not yet measured; the plan 02 sweep is
+/// pending.
+pub const DEFAULT_MAX_GROUP_BYTES_DURABLE: usize = 16 * 1_048_576;
 
 /// Monotonic write-ahead-log sequence number.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -237,13 +244,22 @@ pub struct WalWriter {
 
 impl WalWriter {
     /// Creates a writer over a new or empty WAL path.
+    ///
+    /// A resolved full-sync data-file requirement uses the 16 MiB durable group
+    /// bound. Barrier and skip requirements retain the 1 MiB default.
     pub fn create(
         vfs: &dyn Vfs,
         path: &Path,
         first_seq: LogSeq,
         policy: DurabilityPolicy,
     ) -> Result<Self, WalWriteError> {
-        Self::create_with_max_group_bytes(vfs, path, first_seq, policy, DEFAULT_MAX_GROUP_BYTES)
+        let max_group_bytes = match policy.data_file_sync() {
+            SyncRequirement::Sync(SyncKind::Full) => DEFAULT_MAX_GROUP_BYTES_DURABLE,
+            SyncRequirement::Skip | SyncRequirement::Sync(SyncKind::Barrier) => {
+                DEFAULT_MAX_GROUP_BYTES
+            }
+        };
+        Self::create_with_max_group_bytes(vfs, path, first_seq, policy, max_group_bytes)
     }
 
     /// Creates a writer with an explicit encoded-byte group bound.
@@ -871,7 +887,118 @@ mod tests {
 
     use super::{LogSeq, RecordEncodeError, WalWriteError, WalWriter, append_record_into};
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+    use crate::vfs::CountingVfs;
     use crate::vfs::crash::MemoryVfs;
+
+    #[test]
+    fn durable_policy_defaults_to_a_sixteen_mib_group_cap() {
+        let counting = CountingVfs::new(MemoryVfs::new());
+        let policy = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable)
+            .expect("durable policy");
+        let writer = WalWriter::create(
+            &counting,
+            Path::new("/wal/default-durable-cap.ze"),
+            LogSeq::new(1),
+            policy,
+        )
+        .expect("writer");
+        let payload = vec![0x5a; 1_024];
+        let records = (0..1_024)
+            .map(|_| (7, payload.as_slice()))
+            .collect::<Vec<_>>();
+
+        writer.commit_many(&records).expect("large durable batch");
+        let stats = writer.stats().expect("writer stats");
+
+        assert_eq!(
+            (
+                counting.append_calls(),
+                counting.handle_full_sync_calls(),
+                stats.completed_groups,
+                stats.completed_records,
+            ),
+            (1, 1, 1, 1_024),
+            "a 1,071,144-byte durable batch must share one append and full sync"
+        );
+    }
+
+    #[test]
+    fn ordered_and_skip_policies_keep_the_one_mib_default() {
+        let payload = vec![0x6b; 1_024];
+        let records = (0..1_024)
+            .map(|_| (8, payload.as_slice()))
+            .collect::<Vec<_>>();
+        let mut actual = Vec::new();
+
+        for (tier, path) in [
+            (CommitTier::Ordered, "/wal/default-ordered-cap.ze"),
+            (CommitTier::None, "/wal/default-skip-cap.ze"),
+        ] {
+            let counting = CountingVfs::new(MemoryVfs::new());
+            let policy =
+                DurabilityPolicy::new(DurabilityMode::Durable, tier).expect("supported policy");
+            let writer = WalWriter::create(&counting, Path::new(path), LogSeq::new(1), policy)
+                .expect("writer");
+
+            writer.commit_many(&records).expect("large batch");
+            let stats = writer.stats().expect("writer stats");
+            actual.push((
+                tier,
+                counting.append_calls(),
+                counting.handle_barrier_sync_calls(),
+                counting.handle_full_sync_calls(),
+                stats.completed_groups,
+            ));
+        }
+
+        assert_eq!(
+            actual,
+            vec![
+                (CommitTier::Ordered, 2, 2, 0, 2),
+                (CommitTier::None, 2, 0, 0, 2),
+            ],
+            "ordered and skip policies must split a 1,071,144-byte batch at one MiB"
+        );
+    }
+
+    #[test]
+    fn an_explicit_group_cap_still_wins() {
+        let counting = CountingVfs::new(MemoryVfs::new());
+        let policy = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable)
+            .expect("durable policy");
+        let writer = WalWriter::create_with_max_group_bytes(
+            &counting,
+            Path::new("/wal/explicit-group-cap.ze"),
+            LogSeq::new(1),
+            policy,
+            128,
+        )
+        .expect("writer");
+        writer.commit(0, &[0; 10]).expect("flush WAL header");
+        let groups_before = writer.stats().expect("prime stats").recent_groups.len();
+        counting.reset();
+        let payload = [0x7c; 10];
+        let records = (0..12).map(|_| (9, payload.as_slice())).collect::<Vec<_>>();
+
+        writer.commit_many(&records).expect("explicit-cap batch");
+        let stats = writer.stats().expect("batch stats");
+        let groups = stats
+            .recent_groups
+            .iter()
+            .skip(groups_before)
+            .map(|group| (group.records, group.encoded_bytes))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            (
+                counting.append_calls(),
+                counting.handle_full_sync_calls(),
+                groups,
+            ),
+            (3, 3, vec![(4, 128), (4, 128), (4, 128)]),
+            "an explicit 128-byte cap must override the durable default"
+        );
+    }
 
     #[test]
     fn encoding_failure_in_middle_of_commit_many_is_atomic() {
