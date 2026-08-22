@@ -1,6 +1,7 @@
 //! Sustained-offered-load WAL throughput harness.
 
 use std::error::Error;
+use std::fmt;
 use std::io::{self, IoSlice};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -23,6 +24,100 @@ const DEFAULT_CELL_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
 const RETIRE_EVERY_RECORDS: u64 = 1_024;
 const BOUND_TIME: u8 = 1;
 const BOUND_BYTES: u8 = 2;
+#[cfg(target_os = "macos")]
+const SANDBOX_FILTER_NONE: libc::c_int = 0;
+
+#[cfg(target_os = "macos")]
+// SAFETY: This declaration matches sandbox_check(3) from the macOS Sandbox API.
+unsafe extern "C" {
+    fn sandbox_check(
+        pid: libc::pid_t,
+        operation: *const libc::c_char,
+        filter_type: libc::c_int,
+        ...
+    ) -> libc::c_int;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Taint {
+    Load { actual: f64, limit: f64 },
+    LoadUnreadable,
+    Sandbox,
+}
+
+impl Taint {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Load { .. } => "load",
+            Self::LoadUnreadable => "load_unreadable",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+impl fmt::Display for Taint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Load { actual, limit } => {
+                write!(formatter, "load1={actual:.2} exceeds limit={limit:.2}")
+            }
+            Self::LoadUnreadable => formatter.write_str("load1=unreadable"),
+            Self::Sandbox => formatter.write_str("sandbox=detected"),
+        }
+    }
+}
+
+struct TaintCheck {
+    load1: Option<f64>,
+    sandboxed: bool,
+    taints: Vec<Taint>,
+}
+
+fn evaluate_taint(load1: Option<f64>, load_limit: f64, sandboxed: bool) -> Vec<Taint> {
+    let mut taints = Vec::new();
+    match load1 {
+        Some(actual) if actual > load_limit => taints.push(Taint::Load {
+            actual,
+            limit: load_limit,
+        }),
+        None => taints.push(Taint::LoadUnreadable),
+        Some(_) => {}
+    }
+    if sandboxed {
+        taints.push(Taint::Sandbox);
+    }
+    taints
+}
+
+fn detect_taint(load_limit: f64) -> TaintCheck {
+    let load1 = read_load1();
+    let sandboxed = process_is_sandboxed();
+    let taints = evaluate_taint(load1, load_limit, sandboxed);
+    TaintCheck {
+        load1,
+        sandboxed,
+        taints,
+    }
+}
+
+fn read_load1() -> Option<f64> {
+    let mut load1 = 0.0_f64;
+    // SAFETY: load1 points to writable storage for the one requested load average.
+    let read = unsafe { libc::getloadavg(&mut load1, 1) };
+    (read == 1).then_some(load1)
+}
+
+#[cfg(target_os = "macos")]
+fn process_is_sandboxed() -> bool {
+    // SAFETY: sandbox_check is called with the current PID, the documented null operation,
+    // and SANDBOX_FILTER_NONE, which takes no variadic filter arguments.
+    unsafe { sandbox_check(libc::getpid(), std::ptr::null(), SANDBOX_FILTER_NONE) > 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn process_is_sandboxed() -> bool {
+    false
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -34,21 +129,21 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let config = Config::parse(&arguments)?;
+    let taint = detect_taint(config.load_limit);
     if config.smoke {
         println!("wal-throughput smoke mode");
     }
+    print_taint_status(&taint, config.load_limit);
     println!(
-        "PROVISIONAL SANDBOX-TAINTED — harness shakeout only; no throughput conclusion is authoritative"
-    );
-    println!(
-        "config payloads={:?} threads={:?} batches={:?} tiers={} cell_seconds={} cell_bytes={} max_group_bytes={}",
+        "config payloads={:?} threads={:?} batches={:?} tiers={} cell_seconds={} cell_bytes={} max_group_bytes={} load_limit={}",
         config.payloads,
         config.threads,
         config.batches,
         format_tiers(&config.tiers),
         config.cell_duration.as_secs_f64(),
         config.cell_bytes,
-        config.max_group_bytes
+        config.max_group_bytes,
+        config.load_limit,
     );
 
     let mut results = Vec::new();
@@ -57,20 +152,20 @@ fn run() -> Result<(), Box<dyn Error>> {
             for &tier in &config.tiers {
                 for &batch_size in &config.batches {
                     let result = run_cell(&config, payload_bytes, threads, tier, batch_size)?;
-                    print_machine_line(&result);
+                    print_machine_line(&result, &taint);
                     results.push(result);
                 }
             }
         }
     }
-    print_table(&results);
+    print_table(&results, &taint);
     if config.smoke {
         println!("wal-throughput smoke: ok");
     }
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Config {
     payloads: Vec<usize>,
     threads: Vec<usize>,
@@ -79,6 +174,7 @@ struct Config {
     cell_duration: Duration,
     cell_bytes: u64,
     max_group_bytes: usize,
+    load_limit: f64,
     smoke: bool,
 }
 
@@ -92,6 +188,7 @@ impl Config {
             cell_duration: Duration::from_secs(DEFAULT_CELL_SECONDS),
             cell_bytes: DEFAULT_CELL_BYTES,
             max_group_bytes: DEFAULT_MAX_GROUP_BYTES,
+            load_limit: 1.0,
             smoke: false,
         }
     }
@@ -105,18 +202,24 @@ impl Config {
             cell_duration: Duration::from_millis(75),
             cell_bytes: 4 * 1_024 * 1_024,
             max_group_bytes: DEFAULT_MAX_GROUP_BYTES,
+            load_limit: 1.0,
             smoke: true,
         }
     }
 
     fn parse(arguments: &[String]) -> Result<Self, Box<dyn Error>> {
-        if arguments == ["--smoke"] {
-            return Ok(Self::smoke());
-        }
-        let mut config = Self::full();
+        let mut config = if arguments.iter().any(|argument| argument == "--smoke") {
+            Self::smoke()
+        } else {
+            Self::full()
+        };
         let mut index = 0_usize;
         while index < arguments.len() {
             let flag = arguments.get(index).map(String::as_str).unwrap_or_default();
+            if flag == "--smoke" {
+                index = index.saturating_add(1);
+                continue;
+            }
             let value = arguments.get(index.saturating_add(1)).ok_or_else(usage)?;
             match flag {
                 "--payloads" => config.payloads = parse_usize_list(value, "payloads")?,
@@ -134,6 +237,7 @@ impl Config {
                 "--max-group-bytes" => {
                     config.max_group_bytes = parse_usize(value, "max-group-bytes")?;
                 }
+                "--load-limit" => config.load_limit = parse_f64(value, "load-limit")?,
                 _ => return Err(usage()),
             }
             index = index.saturating_add(2);
@@ -215,9 +319,15 @@ fn parse_u64(value: &str, label: &str) -> Result<u64, Box<dyn Error>> {
         .map_err(|error| invalid(&format!("invalid {label} value {value:?}: {error}")))
 }
 
+fn parse_f64(value: &str, label: &str) -> Result<f64, Box<dyn Error>> {
+    value
+        .parse::<f64>()
+        .map_err(|error| invalid(&format!("invalid {label} value {value:?}: {error}")))
+}
+
 fn usage() -> Box<dyn Error> {
     invalid(
-        "usage: wal-throughput [--smoke | --payloads 256,1024,4096 --threads 1,4,12,16 --batch 1 --tiers none,ordered,durable --cell-seconds 3 --cell-bytes 2147483648 --max-group-bytes 1048576]",
+        "usage: wal-throughput [--smoke] [--payloads 256,1024,4096 --threads 1,4,12,16 --batch 1 --tiers none,ordered,durable --cell-seconds 3 --cell-bytes 2147483648 --max-group-bytes 1048576 --load-limit 1.0]",
     )
 }
 
@@ -576,9 +686,29 @@ const fn tier_name(tier: CommitTier) -> &'static str {
     }
 }
 
-fn print_machine_line(result: &CellResult) {
+fn print_taint_status(taint: &TaintCheck, load_limit: f64) {
+    if taint.taints.is_empty() {
+        println!(
+            "taint check: clean (load1={} limit={load_limit:.2} sandbox={})",
+            format_load1(taint.load1),
+            if taint.sandboxed { "detected" } else { "clear" }
+        );
+    } else {
+        println!(
+            "TAINTED — {} — no throughput conclusion is authoritative",
+            taint
+                .taints
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
+fn print_machine_line(result: &CellResult, taint: &TaintCheck) {
     println!(
-        "WAL_THROUGHPUT payload_bytes={} threads={} batch_size={} tier={} bound={} elapsed_ns={} records={} docs_per_s={:.3} MB_per_s={:.3} flushes={} mean_group_records={:.3} group_hist={} sync_mean_ns={} implied_ceiling_docs_per_s={} achieved_fraction={} append_calls={} bytes_appended={} barrier_syncs={} full_syncs={} provisional=sandbox_tainted",
+        "WAL_THROUGHPUT payload_bytes={} threads={} batch_size={} tier={} bound={} elapsed_ns={} records={} docs_per_s={:.3} MB_per_s={:.3} flushes={} mean_group_records={:.3} group_hist={} sync_mean_ns={} implied_ceiling_docs_per_s={} achieved_fraction={} append_calls={} bytes_appended={} barrier_syncs={} full_syncs={} load1={} taint={}",
         result.payload_bytes,
         result.threads,
         result.batch_size,
@@ -598,11 +728,18 @@ fn print_machine_line(result: &CellResult) {
         result.bytes_appended,
         result.barrier_syncs,
         result.full_syncs,
+        format_load1(taint.load1),
+        format_taint_labels(&taint.taints),
     );
 }
 
-fn print_table(results: &[CellResult]) {
-    println!("\n== provisional sandbox-tainted WAL throughput ==");
+fn print_table(results: &[CellResult], taint: &TaintCheck) {
+    let labels = format_taint_labels(&taint.taints);
+    if taint.taints.is_empty() {
+        println!("\n== WAL throughput (taint: none) ==");
+    } else {
+        println!("\n== WAL throughput (TAINTED: {labels}) ==");
+    }
     println!(
         "payload  thr  batch  tier      bound  records    docs/s       MB/s     flushes  mean-group  achieved"
     );
@@ -629,6 +766,23 @@ fn print_table(results: &[CellResult]) {
             format_histogram(&result.histogram)
         );
     }
+}
+
+fn format_load1(load1: Option<f64>) -> String {
+    load1
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| String::from("NA"))
+}
+
+fn format_taint_labels(taints: &[Taint]) -> String {
+    if taints.is_empty() {
+        return String::from("none");
+    }
+    taints
+        .iter()
+        .map(|taint| taint.label())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn format_optional(value: Option<f64>) -> String {
@@ -663,8 +817,42 @@ fn histogram_label(bucket: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, histogram_label};
+    use super::{Config, Taint, evaluate_taint, histogram_label};
     use zeppelin_embed::lifecycle::durability::CommitTier;
+
+    #[test]
+    fn clean_conditions_produce_no_taint() {
+        assert_eq!(evaluate_taint(Some(0.42), 1.0, false), Vec::new());
+    }
+
+    #[test]
+    fn load_above_the_limit_is_tainted() {
+        assert_eq!(
+            evaluate_taint(Some(2.5), 1.0, false),
+            vec![Taint::Load {
+                actual: 2.5,
+                limit: 1.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_load_average_is_tainted() {
+        assert_eq!(
+            evaluate_taint(None, 1.0, false),
+            vec![Taint::LoadUnreadable]
+        );
+    }
+
+    #[test]
+    fn a_sandboxed_process_is_tainted() {
+        assert_eq!(evaluate_taint(Some(0.42), 1.0, true), vec![Taint::Sandbox]);
+    }
+
+    #[test]
+    fn load_exactly_at_the_limit_is_clean() {
+        assert_eq!(evaluate_taint(Some(1.0), 1.0, false), Vec::new());
+    }
 
     #[test]
     fn cli_axes_and_cell_bounds_are_overridable() {
@@ -704,6 +892,34 @@ mod tests {
             actual, "ok=[1, 64, 1024, 4096]",
             "--batch must accept the required comma-separated sweep axis"
         );
+    }
+
+    #[test]
+    fn cli_load_limit_is_overridable() {
+        let arguments = ["--load-limit", "2.5"].map(String::from);
+        let actual = match Config::parse(&arguments) {
+            Ok(config) => format!("ok={}", config.load_limit),
+            Err(error) => format!("error={error}"),
+        };
+
+        assert_eq!(actual, "ok=2.5", "--load-limit must accept a number");
+    }
+
+    #[test]
+    fn smoke_mode_accepts_cell_overrides() {
+        let arguments =
+            ["--smoke", "--cell-seconds", "1", "--cell-bytes", "4096"].map(String::from);
+        let actual = match Config::parse(&arguments) {
+            Ok(config) => format!(
+                "smoke={} seconds={} bytes={}",
+                config.smoke,
+                config.cell_duration.as_secs(),
+                config.cell_bytes
+            ),
+            Err(error) => format!("error={error}"),
+        };
+
+        assert_eq!(actual, "smoke=true seconds=1 bytes=4096");
     }
 
     #[test]
