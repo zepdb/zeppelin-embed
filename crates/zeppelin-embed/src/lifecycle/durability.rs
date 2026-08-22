@@ -2,20 +2,38 @@
 
 use crate::vfs::SyncKind;
 
-/// Which store owns authoritative state.
+/// Selects whether this store must make acknowledged writes durable on its own.
+///
+/// The default is [`Derived`](Self::Derived). In that mode [`CommitTier`] is
+/// ignored and no synchronization primitive is issued at any tier. An
+/// application crash or process kill does not lose acknowledged writes because
+/// the operating-system page cache retains them and writes them out afterward.
+/// A power cut or kernel panic can lose recently acknowledged writes. Recovery
+/// truncates the log at the first record whose checksum fails, so the store
+/// remains structurally valid: the failure is a missing recent tail, never
+/// silently wrong data.
+///
+/// Selecting `Derived` asserts that another store is authoritative and this
+/// store can be rebuilt from it. A caller for whom this store is the only copy
+/// of the data must select [`Durable`](Self::Durable) explicitly.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DurabilityMode {
-    /// The host store is authoritative and this store is rebuildable; hot-path
-    /// synchronization is always skipped.
-    Derived,
-    /// This store is the source of truth and applies the selected commit tier.
+    /// The default: another store is authoritative, this store is rebuildable,
+    /// and synchronization is skipped regardless of [`CommitTier`].
     #[default]
+    Derived,
+    /// This store is the source of truth and applies the selected [`CommitTier`].
     Durable,
-    /// Participate in a host transaction; v1 reports a typed unsupported error.
+    /// Participates in a host transaction; v1 returns a typed unsupported error.
     Attached,
 }
 
-/// Synchronization strength for one commit in [`DurabilityMode::Durable`].
+/// Synchronization strength for one commit.
+///
+/// This setting has no effect unless [`DurabilityMode::Durable`] is selected.
+/// In the default [`DurabilityMode::Derived`] mode it is ignored entirely and
+/// no synchronization primitive is issued, including when this value is
+/// [`Ordered`](Self::Ordered) or [`Durable`](Self::Durable).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CommitTier {
     /// Buffer writes without synchronization; the page cache covers an
@@ -116,6 +134,32 @@ mod tests {
 
     #[test]
     #[allow(clippy::expect_used)]
+    fn default_policy_skips_every_synchronization() {
+        let policy = DurabilityPolicy::new(DurabilityMode::default(), CommitTier::default())
+            .expect("default policy");
+
+        assert_eq!(policy.data_file_sync(), SyncRequirement::Skip);
+        assert_eq!(policy.directory_sync(), SyncRequirement::Skip);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn derived_and_durable_none_resolve_to_the_same_policy() {
+        let durable_none = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::None)
+            .expect("durable none policy");
+
+        for tier in [CommitTier::None, CommitTier::Ordered, CommitTier::Durable] {
+            let derived =
+                DurabilityPolicy::new(DurabilityMode::Derived, tier).expect("derived policy");
+            assert_eq!(
+                derived, durable_none,
+                "Derived with {tier:?} must match Durable with None"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
     fn maps_every_mode_and_tier_without_attached_fallback() {
         let cases = [
             (
@@ -166,7 +210,7 @@ mod tests {
                 "attached durability mode is not yet supported"
             );
         }
-        assert_eq!(DurabilityMode::default(), DurabilityMode::Durable);
+        assert_eq!(DurabilityMode::default(), DurabilityMode::Derived);
         assert_eq!(CommitTier::default(), CommitTier::Ordered);
     }
 }

@@ -1,4 +1,20 @@
 //! Embedded hybrid-search engine primitives.
+//!
+//! # Durability
+//!
+//! [`lifecycle::durability::DurabilityMode`] defaults to `Derived`. The default
+//! issues no synchronization primitive at any commit tier; under it,
+//! [`lifecycle::durability::CommitTier`] is ignored entirely. An application
+//! crash or process kill does not lose acknowledged writes because the
+//! operating-system page cache retains them and writes them out afterward. A
+//! power cut or kernel panic can lose recently acknowledged writes. Recovery
+//! truncates the log at the first record whose checksum fails, leaving a
+//! structurally valid store with a missing recent tail rather than silently
+//! wrong data.
+//!
+//! `Derived` asserts that another store is authoritative and this store can be
+//! rebuilt from it. If this store is the only copy of the data, select
+//! [`lifecycle::durability::DurabilityMode::Durable`] explicitly.
 
 #![deny(
     clippy::expect_used,

@@ -186,6 +186,15 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   separate named `SyncRequirement` questions. `Derived` and the `None` tier
   skip explicitly; ordered uses barriers; durable uses full syncs; `Attached`
   returns `AttachedNotYetSupported` and never falls back.
+- `DurabilityMode` defaults to `Derived` as a deliberate product contract after
+  the repository owner reviewed the durability behavior of competing embedded
+  vector stores. The default asserts that another store is authoritative and
+  this store is rebuildable; it ignores `CommitTier` and issues no
+  synchronization primitive. This is not a gate relaxation. Callers whose only
+  copy is this store must select `Durable` explicitly.
+- `(Derived, any tier)` and `(Durable, None)` must resolve to identical policies.
+  The `none` benchmark column therefore exercises the same resolved policy, but
+  it must not be relabeled or reported as a measurement of `Derived`.
 - Segment and manifest publication take the validated policy explicitly. Keep
   both directory syncs: their ablations did not fail because the current matrix
   permits an old prefix and does not model post-return directory-entry loss,

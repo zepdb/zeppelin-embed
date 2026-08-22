@@ -72,6 +72,124 @@ struct PayloadPointerVfsFile {
     appended_buffers: Arc<AtomicUsize>,
 }
 
+struct BlockingAppendVfs<V> {
+    inner: V,
+    target_call: usize,
+    append_calls: Arc<AtomicUsize>,
+    blocked: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+struct BlockingAppendVfsFile {
+    inner: Box<dyn VfsFile>,
+    target_call: usize,
+    append_calls: Arc<AtomicUsize>,
+    blocked: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+impl<V: Clone> Clone for BlockingAppendVfs<V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            target_call: self.target_call,
+            append_calls: Arc::clone(&self.append_calls),
+            blocked: Arc::clone(&self.blocked),
+            release: Arc::clone(&self.release),
+        }
+    }
+}
+
+impl<V> BlockingAppendVfs<V> {
+    fn new(inner: V, target_call: usize) -> Self {
+        Self {
+            inner,
+            target_call,
+            append_calls: Arc::new(AtomicUsize::new(0)),
+            blocked: Arc::new(Barrier::new(2)),
+            release: Arc::new(Barrier::new(2)),
+        }
+    }
+
+    fn wait_until_blocked(&self) {
+        self.blocked.wait();
+    }
+
+    fn release(&self) {
+        self.release.wait();
+    }
+}
+
+impl BlockingAppendVfsFile {
+    fn block_target_append(&self) {
+        let call = self.append_calls.fetch_add(1, Ordering::AcqRel) + 1;
+        if call == self.target_call {
+            self.blocked.wait();
+            self.release.wait();
+        }
+    }
+}
+
+impl VfsFile for BlockingAppendVfsFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.block_target_append();
+        self.inner.append(bytes)
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        self.block_target_append();
+        self.inner.append_vectored(buffers)
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(kind)
+    }
+}
+
+impl<V: Vfs> Vfs for BlockingAppendVfs<V> {
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        Ok(Box::new(BlockingAppendVfsFile {
+            inner: self.inner.open_append(path)?,
+            target_call: self.target_call,
+            append_calls: Arc::clone(&self.append_calls),
+            blocked: Arc::clone(&self.blocked),
+            release: Arc::clone(&self.release),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.delete(path)
+    }
+}
+
 impl<V> PayloadPointerVfs<V> {
     fn new(inner: V) -> Self {
         Self {
@@ -592,6 +710,99 @@ fn commit_many_durable_stages_all_then_waits_for_the_last_flush() {
         ),
         (4, false, LogSeq::new(1)..LogSeq::new(5), 1, 1, 0,),
         "the durable batch must stage every record atomically and return only after its covering flush"
+    );
+}
+
+#[test]
+fn commit_many_durable_waits_for_the_last_group_not_the_first() {
+    let fault = FaultVfs::new();
+    let last_group_append = BlockingAppendVfs::new(fault.clone(), 3);
+    let blocking = BlockingVfs::new(last_group_append.clone());
+    blocking.block_next_syncs(1).expect("arm first sync only");
+    let writer = Arc::new(
+        WalWriter::create_with_max_group_bytes(
+            &blocking,
+            Path::new(WAL_PATH),
+            LogSeq::new(1),
+            policy(CommitTier::Durable),
+            128,
+        )
+        .expect("writer"),
+    );
+
+    let leading_writer = Arc::clone(&writer);
+    let leading_commit = thread::spawn(move || leading_writer.commit_durable(40, &[0x70; 10]));
+    blocking.wait_until_blocked(1).expect("first sync blocked");
+
+    let returned = Arc::new(AtomicBool::new(false));
+    let committing_writer = Arc::clone(&writer);
+    let committing_returned = Arc::clone(&returned);
+    let batch_commit = thread::spawn(move || {
+        let payloads = [[0x71; 10], [0x72; 10], [0x73; 10], [0x74; 10], [0x75; 10]];
+        let records = payloads
+            .iter()
+            .map(|payload| (41, payload.as_slice()))
+            .collect::<Vec<_>>();
+        let result = committing_writer.commit_many_durable(&records);
+        committing_returned.store(true, Ordering::Release);
+        result
+    });
+
+    while writer
+        .visible_records(LogSeq::new(1), 6)
+        .expect("visible records")
+        .len()
+        < 6
+    {
+        thread::yield_now();
+    }
+    let returned_while_first_sync_blocked = returned.load(Ordering::Acquire);
+
+    blocking.release_syncs(1).expect("release first sync");
+    last_group_append.wait_until_blocked();
+    for _ in 0..10_000 {
+        if returned.load(Ordering::Acquire) {
+            break;
+        }
+        thread::yield_now();
+    }
+    let returned_while_last_group_unsynced = returned.load(Ordering::Acquire);
+    last_group_append.release();
+
+    leading_commit
+        .join()
+        .expect("leading commit thread")
+        .expect("leading durable commit");
+    let range = batch_commit
+        .join()
+        .expect("batch commit thread")
+        .expect("durable batch");
+    let stats = writer.stats().expect("stats");
+    let group_sizes = stats
+        .recent_groups
+        .iter()
+        .map(|group| group.records)
+        .collect::<Vec<_>>();
+    let recovered = recovered_sequences(&fault.power_cut().expect("power cut"));
+
+    assert_eq!(
+        (
+            returned_while_first_sync_blocked,
+            returned_while_last_group_unsynced,
+            range,
+            stats.durable_end,
+            group_sizes,
+            recovered,
+        ),
+        (
+            false,
+            false,
+            LogSeq::new(2)..LogSeq::new(7),
+            Some(LogSeq::new(6)),
+            vec![1, 4, 1],
+            vec![1, 2, 3, 4, 5, 6],
+        ),
+        "the durable batch must wait for its second group before returning"
     );
 }
 
