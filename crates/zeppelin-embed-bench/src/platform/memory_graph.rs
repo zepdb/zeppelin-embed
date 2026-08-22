@@ -243,7 +243,9 @@ fn resolve_cache_line_size(
     }
 }
 
-fn verify_bench_profile() -> Result<(), Box<dyn Error>> {
+/// Refuses size-optimized release and debug builds for latency measurements.
+#[doc(hidden)]
+pub fn verify_bench_profile() -> Result<(), Box<dyn Error>> {
     let opt_level = env!("ZEPPELIN_BENCH_OPT_LEVEL");
     if opt_level != "3" || cfg!(debug_assertions) {
         return Err(io::Error::other(format!(
@@ -301,14 +303,18 @@ fn validate_cache_line(cache_line_bytes: usize) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-struct CoreCalibration {
+/// Result from the shared P-core residency canary.
+#[doc(hidden)]
+pub struct CoreCalibration {
     implied_ghz: Option<f64>,
     elapsed: Duration,
     assumed_cycles: u64,
 }
 
 impl CoreCalibration {
-    fn print(&self) {
+    /// Prints the shared machine-readable canary verdict.
+    #[doc(hidden)]
+    pub fn print(&self) {
         match self.implied_ghz {
             Some(ghz) => println!(
                 "MEMORY_GRAPH_CANARY implied_clock_ghz={ghz:.6} assumed_cycles={} elapsed_ns={} verdict=P_CORE_RANGE",
@@ -325,7 +331,9 @@ impl CoreCalibration {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn calibrate_core() -> Result<CoreCalibration, Box<dyn Error>> {
+/// Runs the shared P-core residency canary used by latency benchmarks.
+#[doc(hidden)]
+pub fn calibrate_core() -> Result<CoreCalibration, Box<dyn Error>> {
     const OUTER_ITERATIONS: u64 = 5_000_000;
     const DEPENDENT_ADDS: u64 = 32;
     let mut loops = OUTER_ITERATIONS;
@@ -377,7 +385,9 @@ fn calibrate_core() -> Result<CoreCalibration, Box<dyn Error>> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-fn calibrate_core() -> Result<CoreCalibration, Box<dyn Error>> {
+/// Reports that P-core residency cannot be verified on non-AArch64 targets.
+#[doc(hidden)]
+pub fn calibrate_core() -> Result<CoreCalibration, Box<dyn Error>> {
     Ok(CoreCalibration {
         implied_ghz: None,
         elapsed: Duration::ZERO,

@@ -201,6 +201,15 @@ type DotBit4PreparedFn = fn(&[i8], i32, &[u8]) -> i32;
 type DotPackedBatchFn = fn(&[i8], &[u8], usize, &mut [i32]);
 type ScoreBit4PreparedBatchFn =
     fn(&[i8], i32, f64, &[u8], usize, &[crate::quant::Bit4Factors], &mut [f32]);
+type ScoreBit4PtrsFn = unsafe fn(
+    &[i8],
+    i32,
+    f64,
+    &[*const u8; 4],
+    usize,
+    &[crate::quant::Bit4Factors; 4],
+    &mut [f32; 4],
+);
 #[derive(Clone, Copy)]
 struct KernelTable {
     arm: KernelArm,
@@ -215,6 +224,183 @@ struct KernelTable {
     dot_bit4_prepared: DotBit4PreparedFn,
     dot_bit4_batch: DotPackedBatchFn,
     score_bit4_prepared_batch: ScoreBit4PreparedBatchFn,
+    score_bit4_ptrs: ScoreBit4PtrsFn,
+}
+
+/// One bounds-validated packed four-bit row borrowed from a mapped region.
+///
+/// The only constructor derives the row from an in-bounds offset and length,
+/// so the stored address remains readable while this handle is alive.
+#[derive(Clone, Copy)]
+pub struct Bit4Row<'a> {
+    bytes: &'a [u8],
+}
+
+impl std::fmt::Debug for Bit4Row<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Bit4Row")
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+impl<'a> Bit4Row<'a> {
+    /// Borrows one row at `offset` when the complete row lies in `region`.
+    ///
+    /// Returns `None` when `offset + row_bytes` overflows or exceeds the
+    /// mapped region. No alignment is required by any installed kernel.
+    #[must_use]
+    pub fn from_mapped_region(region: &'a [u8], offset: usize, row_bytes: usize) -> Option<Self> {
+        let end = offset.checked_add(row_bytes)?;
+        region.get(offset..end).map(|bytes| Self { bytes })
+    }
+
+    const fn as_ptr(self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
+
+    const fn len(self) -> usize {
+        self.bytes.len()
+    }
+}
+
+/// Four equally-sized packed rows whose addresses were validated before scoring.
+#[derive(Clone, Copy)]
+pub struct Bit4Rows4<'a> {
+    pointers: [*const u8; 4],
+    row_bytes: usize,
+    lifetime: std::marker::PhantomData<&'a [u8]>,
+}
+
+impl std::fmt::Debug for Bit4Rows4<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Bit4Rows4")
+            .field("row_bytes", &self.row_bytes)
+            .finish()
+    }
+}
+
+impl<'a> Bit4Rows4<'a> {
+    /// Validates four mapped-row handles once for the unchecked gather loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatherShapeError::RowLength`] when any handle was constructed
+    /// for a different readable width. No alignment is required.
+    pub fn from_rows(rows: [Bit4Row<'a>; 4], row_bytes: usize) -> Result<Self, GatherShapeError> {
+        for (index, row) in rows.iter().enumerate() {
+            if row.len() != row_bytes {
+                return Err(GatherShapeError::RowLength {
+                    index,
+                    expected: row_bytes,
+                    actual: row.len(),
+                });
+            }
+        }
+        Ok(Self {
+            pointers: rows.map(Bit4Row::as_ptr),
+            row_bytes,
+            lifetime: std::marker::PhantomData,
+        })
+    }
+}
+
+/// Rejected shape at the safe four-row gather boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GatherShapeError {
+    /// The prepared query exceeds the exact i8 accumulator bound.
+    DimensionTooLarge {
+        /// Supplied coordinate count.
+        actual: usize,
+        /// Largest supported coordinate count.
+        maximum: usize,
+    },
+    /// `row_bytes` does not match the packed query dimension.
+    RowBytes {
+        /// Required packed bytes per row.
+        expected: usize,
+        /// Supplied packed bytes per row.
+        actual: usize,
+    },
+    /// A validated row handle was constructed for a different row width.
+    RowLength {
+        /// Zero-based pointer slot.
+        index: usize,
+        /// Required readable bytes.
+        expected: usize,
+        /// Bytes proven readable by the row handle.
+        actual: usize,
+    },
+}
+
+impl std::fmt::Display for GatherShapeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DimensionTooLarge { actual, maximum } => write!(
+                formatter,
+                "gather dimension {actual} exceeds supported maximum {maximum}"
+            ),
+            Self::RowBytes { expected, actual } => write!(
+                formatter,
+                "gather row width mismatch: expected {expected}, got {actual}"
+            ),
+            Self::RowLength {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "gather row {index} has {actual} readable bytes, expected {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GatherShapeError {}
+
+/// Prefetches caller-selected packed rows into L1 for a later gather group.
+///
+/// Traversal can call this only for degrees where M0 found a benefit (R >= 32),
+/// leaving small-degree scoring unchanged. Every validated row handle supplies
+/// a live readable address. This is a no-op on non-AArch64 targets.
+pub fn prefetch_bit4_rows(rows: &[Bit4Row<'_>]) {
+    #[cfg(target_arch = "aarch64")]
+    for row in rows.iter().filter(|row| row.len() != 0) {
+        let address = row.as_ptr();
+        // SAFETY: Bit4Row construction proves address belongs to a live readable
+        // region. PRFM is a non-mutating hint and has no alignment requirement.
+        unsafe {
+            std::arch::asm!(
+                "prfm pldl1keep, [{address}]",
+                address = in(reg) address,
+                options(readonly, nostack)
+            );
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = rows;
+}
+
+/// Prefetches one already-validated four-row gather group.
+pub fn prefetch_bit4_row_group(rows: &Bit4Rows4<'_>) {
+    #[cfg(target_arch = "aarch64")]
+    if rows.row_bytes != 0 {
+        for &address in &rows.pointers {
+            // SAFETY: Bit4Rows4 construction proves every address belongs to a
+            // live region readable for row_bytes. PRFM is a non-mutating hint.
+            unsafe {
+                std::arch::asm!(
+                    "prfm pldl1keep, [{address}]",
+                    address = in(reg) address,
+                    options(readonly, nostack)
+                );
+            }
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = rows;
 }
 
 /// One concrete runtime dispatch table.
@@ -243,6 +429,15 @@ impl KernelVariant {
     pub fn scalar() -> Self {
         Self {
             table: scalar::table(),
+        }
+    }
+
+    /// Returns the once-selected runtime table for a repeated hot loop.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn selected() -> Self {
+        Self {
+            table: *dispatch::active_table(),
         }
     }
 
@@ -342,6 +537,63 @@ impl KernelVariant {
             out,
         );
     }
+
+    /// Scores four arbitrary validated packed four-bit rows through this table.
+    ///
+    /// # Safety
+    ///
+    /// [`Bit4Rows4::from_rows`] proves that every row address is readable for a
+    /// common width and that the mapped regions outlive this call. This method
+    /// checks that the width equals `q.len().div_ceil(2)` and that the supported
+    /// dimension bound holds. No row alignment is required.
+    pub fn score_bit4_ptrs(
+        &self,
+        query: (&[i8], i32, f64),
+        rows: &Bit4Rows4<'_>,
+        factors: &[crate::quant::Bit4Factors; 4],
+        out: &mut [f32; 4],
+    ) -> Result<(), GatherShapeError> {
+        score_bit4_ptrs_with_table(&self.table, query, rows, factors, out)
+    }
+}
+
+fn score_bit4_ptrs_with_table(
+    table: &KernelTable,
+    query: (&[i8], i32, f64),
+    rows: &Bit4Rows4<'_>,
+    factors: &[crate::quant::Bit4Factors; 4],
+    out: &mut [f32; 4],
+) -> Result<(), GatherShapeError> {
+    let (q, query_sum, query_scale_half) = query;
+    if q.len() > MAX_DOT_I8_DIMENSION {
+        return Err(GatherShapeError::DimensionTooLarge {
+            actual: q.len(),
+            maximum: MAX_DOT_I8_DIMENSION,
+        });
+    }
+    let expected_row_bytes = q.len().div_ceil(2);
+    if rows.row_bytes != expected_row_bytes {
+        return Err(GatherShapeError::RowBytes {
+            expected: expected_row_bytes,
+            actual: rows.row_bytes,
+        });
+    }
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+    debug_assert_eq!(rows.row_bytes, q.len().div_ceil(2));
+    // SAFETY: the validated row handles prove every pointer is readable for
+    // row_bytes and keep every backing region alive for the dispatched call.
+    unsafe {
+        (table.score_bit4_ptrs)(
+            q,
+            query_sum,
+            query_scale_half,
+            &rows.pointers,
+            rows.row_bytes,
+            factors,
+            out,
+        );
+    }
+    Ok(())
 }
 
 /// Applies runtime feature detection and the optional `ZE_KERNEL` override.
@@ -481,6 +733,31 @@ pub(crate) fn score_bit4_prepared_batch(
         factors,
         out,
     );
+}
+
+/// Scores four arbitrary validated packed four-bit rows through runtime dispatch.
+///
+/// # Safety
+///
+/// [`Bit4Rows4::from_rows`] proves that every row pointer is readable for one
+/// common width and that each backing region outlives the call. This function
+/// checks that the width equals `q.len().div_ceil(2)` and that the supported
+/// dimension bound holds. No alignment is required.
+pub fn score_bit4_ptrs(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &Bit4Rows4<'_>,
+    factors: &[crate::quant::Bit4Factors; 4],
+    out: &mut [f32; 4],
+) -> Result<(), GatherShapeError> {
+    score_bit4_ptrs_with_table(
+        dispatch::active_table(),
+        (q, query_sum, query_scale_half),
+        rows,
+        factors,
+        out,
+    )
 }
 
 /// Scores one signed-byte query against contiguous packed four-bit rows.

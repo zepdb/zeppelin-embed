@@ -12,12 +12,13 @@ mod kernels {
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
     use zeppelin_embed::kernels::{
-        InstructionTier, KERNEL_KNOB_SPACE, KernelArm, KernelInitError, KernelVariant,
-        MAX_DOT_I8_DIMENSION, detected_features, dot_bit4, dot_bit4_batch, dot_f16, dot_f32,
-        dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch, initialize, is_arm_supported,
+        Bit4Row, Bit4Rows4, GatherShapeError, InstructionTier, KERNEL_KNOB_SPACE, KernelArm,
+        KernelInitError, KernelVariant, MAX_DOT_I8_DIMENSION, detected_features, dot_bit4,
+        dot_bit4_batch, dot_f16, dot_f32, dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch,
+        initialize, is_arm_supported, prefetch_bit4_row_group, prefetch_bit4_rows, score_bit4_ptrs,
         selected_arm,
     };
-    use zeppelin_embed::quant::quantize_bit4;
+    use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 
     fn vector_pair_i8() -> impl Strategy<Value = (Vec<i8>, Vec<i8>)> {
         (1_usize..=4_096).prop_flat_map(|len| (vec(any::<i8>(), len), vec(any::<i8>(), len)))
@@ -39,6 +40,293 @@ mod kernels {
             prepared.extend(block.iter().skip(1).step_by(2).copied());
         }
         prepared
+    }
+
+    fn fixed_gather_fixture(d: usize) -> (Vec<i8>, i32, f64, Vec<u8>, [Bit4Factors; 4]) {
+        let query: Vec<i8> = (0..d)
+            .map(|index| (index.wrapping_mul(29) as i8).wrapping_sub(61))
+            .collect();
+        let query_sum = query.iter().map(|&code| i32::from(code)).sum();
+        let prepared = prepare_bit4_kernel_query(&query);
+        let row_bytes = d.div_ceil(2);
+        let rows = (0..row_bytes * 4)
+            .map(|index| (index.wrapping_mul(37) as u8).wrapping_add(11))
+            .collect();
+        let factors = [
+            Bit4Factors::from_persisted(1.0, 1.0, 0.75),
+            Bit4Factors::from_persisted(1.25, 1.0, 0.5),
+            Bit4Factors::from_persisted(0.75, 1.0, 1.25),
+            Bit4Factors::from_persisted(2.0, 1.0, 0.25),
+        ];
+        (prepared, query_sum, 0.125, rows, factors)
+    }
+
+    #[test]
+    fn gather_scores_are_bit_identical_to_the_contiguous_batch_kernel() {
+        let d = 128;
+        let (query, query_sum, query_scale_half, rows, factors) = fixed_gather_fixture(d);
+        let row_bytes = d.div_ceil(2);
+        let row_handles = std::array::from_fn(|index| {
+            Bit4Row::from_mapped_region(&rows, index * row_bytes, row_bytes)
+                .expect("fixture row is in bounds")
+        });
+        let gathered_rows =
+            Bit4Rows4::from_rows(row_handles, row_bytes).expect("fixture rows have one width");
+        for variant in KernelVariant::available() {
+            let mut contiguous = [f32::NAN; 4];
+            variant.score_bit4_prepared_batch(
+                (&query, query_sum, query_scale_half),
+                &rows,
+                d,
+                &factors,
+                &mut contiguous,
+            );
+            let mut gathered = [f32::NAN; 4];
+            variant
+                .score_bit4_ptrs(
+                    (&query, query_sum, query_scale_half),
+                    &gathered_rows,
+                    &factors,
+                    &mut gathered,
+                )
+                .expect("valid gather shape");
+            assert_eq!(
+                gathered.map(f32::to_bits),
+                contiguous.map(f32::to_bits),
+                "arm={:?} tier={:?}",
+                variant.arm(),
+                variant.tier(),
+            );
+        }
+    }
+
+    #[test]
+    fn gather_scores_are_bit_identical_to_the_scalar_oracle() {
+        let d = 131;
+        let (query, query_sum, query_scale_half, rows, factors) = fixed_gather_fixture(d);
+        let row_bytes = d.div_ceil(2);
+        let row_handles = std::array::from_fn(|index| {
+            Bit4Row::from_mapped_region(&rows, index * row_bytes, row_bytes)
+                .expect("fixture row is in bounds")
+        });
+        let gathered_rows =
+            Bit4Rows4::from_rows(row_handles, row_bytes).expect("fixture rows have one width");
+        let mut expected = [f32::NAN; 4];
+        KernelVariant::scalar()
+            .score_bit4_ptrs(
+                (&query, query_sum, query_scale_half),
+                &gathered_rows,
+                &factors,
+                &mut expected,
+            )
+            .expect("valid scalar gather shape");
+        for variant in KernelVariant::available() {
+            let mut actual = [f32::NAN; 4];
+            variant
+                .score_bit4_ptrs(
+                    (&query, query_sum, query_scale_half),
+                    &gathered_rows,
+                    &factors,
+                    &mut actual,
+                )
+                .expect("valid gather shape");
+            assert_eq!(
+                actual.map(f32::to_bits),
+                expected.map(f32::to_bits),
+                "arm={:?} tier={:?}",
+                variant.arm(),
+                variant.tier(),
+            );
+        }
+    }
+
+    #[test]
+    fn gather_handles_non_adjacent_rows_in_arbitrary_order() {
+        let d = 65_usize;
+        let row_bytes = d.div_ceil(2);
+        let (query, query_sum, query_scale_half, contiguous_rows, _) = fixed_gather_fixture(d);
+        let source_rows = contiguous_rows
+            .chunks_exact(row_bytes)
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>();
+        let offsets = [
+            7_usize,
+            7 + row_bytes + 19,
+            7 + 2 * (row_bytes + 19),
+            7 + 3 * (row_bytes + 19),
+        ];
+        let mut padded = vec![0xa5_u8; offsets[3] + row_bytes + 11];
+        for (&offset, source) in offsets.iter().zip(&source_rows) {
+            padded[offset..offset + row_bytes].copy_from_slice(source);
+        }
+        let pointer_order = [2_usize, 0, 3, 1];
+        let row_handles = pointer_order.map(|source_index| {
+            Bit4Row::from_mapped_region(&padded, offsets[source_index], row_bytes)
+                .expect("padded fixture row is in bounds")
+        });
+        let gathered_rows =
+            Bit4Rows4::from_rows(row_handles, row_bytes).expect("padded rows have one width");
+        let shuffled_contiguous = pointer_order
+            .iter()
+            .flat_map(|&source_index| source_rows[source_index].iter().copied())
+            .collect::<Vec<_>>();
+        let factors = [Bit4Factors::from_persisted(1.0, 1.0, 1.0); 4];
+        let mut expected = [f32::NAN; 4];
+        KernelVariant::scalar().score_bit4_prepared_batch(
+            (&query, query_sum, query_scale_half),
+            &shuffled_contiguous,
+            d,
+            &factors,
+            &mut expected,
+        );
+        for variant in KernelVariant::available() {
+            let mut actual = [f32::NAN; 4];
+            variant
+                .score_bit4_ptrs(
+                    (&query, query_sum, query_scale_half),
+                    &gathered_rows,
+                    &factors,
+                    &mut actual,
+                )
+                .expect("valid non-adjacent gather shape");
+            assert_eq!(
+                actual.map(f32::to_bits),
+                expected.map(f32::to_bits),
+                "arm={:?} tier={:?}",
+                variant.arm(),
+                variant.tier(),
+            );
+        }
+    }
+
+    #[test]
+    fn gather_rejects_or_debug_asserts_a_malformed_shape() {
+        let query = [1_i8, -2];
+        let row_bytes = 2;
+        let storage = [0x12_u8, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
+        let rows = std::array::from_fn(|index| {
+            Bit4Row::from_mapped_region(&storage, index * row_bytes, row_bytes)
+                .expect("fixture row is in bounds")
+        });
+        let rows = Bit4Rows4::from_rows(rows, row_bytes).expect("fixture rows have one width");
+        let factors = [Bit4Factors::from_persisted(1.0, 1.0, 1.0); 4];
+        let mut out = [f32::NAN; 4];
+        let result = score_bit4_ptrs(&query, -1, 0.25, &rows, &factors, &mut out);
+        assert_eq!(
+            result,
+            Err(GatherShapeError::RowBytes {
+                expected: 1,
+                actual: row_bytes,
+            })
+        );
+        assert_eq!(
+            result
+                .expect_err("malformed row width must be rejected")
+                .to_string(),
+            "gather row width mismatch: expected 1, got 2"
+        );
+
+        let empty = [0_u8; 0];
+        let empty_rows = std::array::from_fn(|_| {
+            Bit4Row::from_mapped_region(&empty, 0, 0).expect("empty row is in bounds")
+        });
+        let empty_rows = Bit4Rows4::from_rows(empty_rows, 0).expect("empty rows have one width");
+        let oversized_query = vec![0_i8; MAX_DOT_I8_DIMENSION + 1];
+        let oversized_result = KernelVariant::scalar().score_bit4_ptrs(
+            (&oversized_query, 0, 1.0),
+            &empty_rows,
+            &factors,
+            &mut out,
+        );
+        assert_eq!(
+            oversized_result,
+            Err(GatherShapeError::DimensionTooLarge {
+                actual: MAX_DOT_I8_DIMENSION + 1,
+                maximum: MAX_DOT_I8_DIMENSION,
+            })
+        );
+        assert_eq!(
+            oversized_result
+                .expect_err("oversized dimension must be rejected")
+                .to_string(),
+            format!(
+                "gather dimension {} exceeds supported maximum {}",
+                MAX_DOT_I8_DIMENSION + 1,
+                MAX_DOT_I8_DIMENSION
+            )
+        );
+    }
+
+    #[test]
+    fn gather_rejects_a_row_length_mismatch_in_each_pointer_slot() {
+        let row_bytes = 2_usize;
+        let short_row_bytes = row_bytes - 1;
+        let storage = [0_u8; 8];
+
+        for mismatched_index in 0..4 {
+            let rows = std::array::from_fn(|index| {
+                let actual = if index == mismatched_index {
+                    short_row_bytes
+                } else {
+                    row_bytes
+                };
+                Bit4Row::from_mapped_region(&storage, index * row_bytes, actual)
+                    .expect("fixture row is in bounds")
+            });
+
+            let error = Bit4Rows4::from_rows(rows, row_bytes)
+                .expect_err("a short row must be rejected at the gather boundary");
+            assert_eq!(
+                error,
+                GatherShapeError::RowLength {
+                    index: mismatched_index,
+                    expected: row_bytes,
+                    actual: short_row_bytes,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn prefetch_ladder_preserves_dispatched_gather_scores() {
+        let d = 128_usize;
+        let row_bytes = d.div_ceil(2);
+        let (query, query_sum, query_scale_half, first_group, factors) = fixed_gather_fixture(d);
+        let mut storage = first_group.clone();
+        storage
+            .extend((0..row_bytes * 4).map(|index| (index.wrapping_mul(53) as u8).wrapping_add(7)));
+        let current_handles = std::array::from_fn(|index| {
+            Bit4Row::from_mapped_region(&storage, index * row_bytes, row_bytes)
+                .expect("current row is in bounds")
+        });
+        let current =
+            Bit4Rows4::from_rows(current_handles, row_bytes).expect("current rows have one width");
+        let next: [Bit4Row<'_>; 4] = std::array::from_fn(|index| {
+            Bit4Row::from_mapped_region(&storage, (index + 4) * row_bytes, row_bytes)
+                .expect("next row is in bounds")
+        });
+        prefetch_bit4_rows(&next);
+        let next_group = Bit4Rows4::from_rows(next, row_bytes).expect("next rows have one width");
+        prefetch_bit4_row_group(&next_group);
+        let mut actual = [f32::NAN; 4];
+        score_bit4_ptrs(
+            &query,
+            query_sum,
+            query_scale_half,
+            &current,
+            &factors,
+            &mut actual,
+        )
+        .expect("prefetched gather shape is valid");
+        let mut expected = [f32::NAN; 4];
+        KernelVariant::scalar().score_bit4_prepared_batch(
+            (&query, query_sum, query_scale_half),
+            &first_group,
+            d,
+            &factors,
+            &mut expected,
+        );
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
     }
 
     fn vector_pair_f16() -> impl Strategy<Value = (Vec<u16>, Vec<u16>)> {
@@ -285,6 +573,64 @@ mod kernels {
                     variant.arm(),
                     variant.tier(),
                 );
+            }
+        }
+
+        #[test]
+        fn prop_gather_equals_scalar_oracle_bitwise(
+            random_d in 0_usize..=1_024,
+            query_seed in any::<i8>(),
+            row_seed in any::<u8>(),
+        ) {
+            for d in [0_usize, 1, 63, 65, 127, 129, random_d] {
+                let coordinate_query = (0..d)
+                    .map(|index| query_seed.wrapping_add(index.wrapping_mul(29) as i8))
+                    .collect::<Vec<_>>();
+                let query_sum = coordinate_query.iter().map(|&code| i32::from(code)).sum();
+                let query = prepare_bit4_kernel_query(&coordinate_query);
+                let row_bytes = d.div_ceil(2);
+                let rows = (0..row_bytes * 4)
+                    .map(|index| row_seed.wrapping_add(index.wrapping_mul(31) as u8))
+                    .collect::<Vec<_>>();
+                let row_handles = std::array::from_fn(|index| {
+                    Bit4Row::from_mapped_region(&rows, index * row_bytes, row_bytes)
+                        .expect("generated row is in bounds")
+                });
+                let gathered_rows = Bit4Rows4::from_rows(row_handles, row_bytes)
+                    .expect("generated rows have one width");
+                let factors = [
+                    Bit4Factors::from_persisted(1.0, 1.0, 0.75),
+                    Bit4Factors::from_persisted(1.25, 1.0, 0.5),
+                    Bit4Factors::from_persisted(0.75, 1.0, 1.25),
+                    Bit4Factors::from_persisted(2.0, 1.0, 0.25),
+                ];
+                let mut expected = [f32::NAN; 4];
+                KernelVariant::scalar().score_bit4_prepared_batch(
+                    (&query, query_sum, 0.125),
+                    &rows,
+                    d,
+                    &factors,
+                    &mut expected,
+                );
+                for variant in KernelVariant::available() {
+                    let mut actual = [f32::NAN; 4];
+                    variant
+                        .score_bit4_ptrs(
+                            (&query, query_sum, 0.125),
+                            &gathered_rows,
+                            &factors,
+                            &mut actual,
+                        )
+                        .expect("generated gather shape is valid");
+                    prop_assert_eq!(
+                        actual.map(f32::to_bits),
+                        expected.map(f32::to_bits),
+                        "d={} arm={:?} tier={:?}",
+                        d,
+                        variant.arm(),
+                        variant.tier(),
+                    );
+                }
             }
         }
 

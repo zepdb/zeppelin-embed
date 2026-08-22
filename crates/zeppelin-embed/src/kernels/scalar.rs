@@ -16,6 +16,37 @@ pub(super) fn table() -> KernelTable {
         dot_bit4_prepared,
         dot_bit4_batch,
         score_bit4_prepared_batch,
+        score_bit4_ptrs,
+    }
+}
+
+pub(super) unsafe fn score_bit4_ptrs(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[*const u8; 4],
+    row_bytes: usize,
+    factors: &[crate::quant::Bit4Factors; 4],
+    out: &mut [f32; 4],
+) {
+    debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
+    debug_assert_eq!(row_bytes, q.len().div_ceil(2));
+    if row_bytes == 0 {
+        out.fill(0.0);
+        return;
+    }
+    // SAFETY: the validated gather boundary proves each row pointer is readable
+    // for row_bytes and all four output lanes are writable.
+    unsafe {
+        score_bit4_ptrs_inner(
+            q,
+            query_sum,
+            query_scale_half,
+            rows,
+            row_bytes,
+            factors,
+            out.as_mut_ptr(),
+        );
     }
 }
 
@@ -165,13 +196,72 @@ pub(super) fn score_bit4_prepared_batch(
     debug_assert_eq!(factors.len(), out.len());
     let row_bytes = d.div_ceil(2);
     debug_assert_eq!(rows.len(), row_bytes.saturating_mul(out.len()));
+    if row_bytes == 0 {
+        out.fill(0.0);
+        return;
+    }
+    let grouped_rows = out.len() / 4 * 4;
+    let mut row_index = 0_usize;
+    // SAFETY: the asserted flat shape bounds every grouped row pointer, factor,
+    // and output. Each group delegates to the same four-pointer scalar routine
+    // installed in the gather table slot.
+    unsafe {
+        while row_index < grouped_rows {
+            let row0 = rows.as_ptr().add(row_index * row_bytes);
+            let pointers = [
+                row0,
+                row0.add(row_bytes),
+                row0.add(row_bytes * 2),
+                row0.add(row_bytes * 3),
+            ];
+            let group_factors = [
+                *factors.get_unchecked(row_index),
+                *factors.get_unchecked(row_index + 1),
+                *factors.get_unchecked(row_index + 2),
+                *factors.get_unchecked(row_index + 3),
+            ];
+            score_bit4_ptrs_inner(
+                q,
+                query_sum,
+                query_scale_half,
+                &pointers,
+                row_bytes,
+                &group_factors,
+                out.as_mut_ptr().add(row_index),
+            );
+            row_index += 4;
+        }
+    }
     for ((row, &factor), score) in rows
-        .chunks_exact(row_bytes)
-        .zip(factors)
-        .zip(out.iter_mut())
+        .get(grouped_rows * row_bytes..)
+        .into_iter()
+        .flat_map(|tail| tail.chunks_exact(row_bytes))
+        .zip(factors.get(grouped_rows..).into_iter().flatten())
+        .zip(out.get_mut(grouped_rows..).into_iter().flatten())
     {
         let integer_dot = dot_bit4_prepared(q, query_sum, row);
         *score = bit4_score(integer_dot, factor, query_scale_half);
+    }
+}
+
+unsafe fn score_bit4_ptrs_inner(
+    q: &[i8],
+    query_sum: i32,
+    query_scale_half: f64,
+    rows: &[*const u8; 4],
+    row_bytes: usize,
+    factors: &[crate::quant::Bit4Factors; 4],
+    out: *mut f32,
+) {
+    for (index, (&row_ptr, &factor)) in rows.iter().zip(factors).enumerate() {
+        // SAFETY: the caller proves each pointer is readable for row_bytes and
+        // the matching output lane is in the four-lane destination.
+        unsafe {
+            let row = std::slice::from_raw_parts(row_ptr, row_bytes);
+            let integer_dot = dot_bit4_prepared(q, query_sum, row);
+            out.add(index)
+                .write(bit4_score(integer_dot, factor, query_scale_half));
+        }
     }
 }
 
