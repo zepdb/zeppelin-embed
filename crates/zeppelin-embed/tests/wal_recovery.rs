@@ -912,6 +912,37 @@ fn retirement_keeps_writer_retained_bytes_bounded() {
 }
 
 #[test]
+fn wal_bytes_grow_monotonically_without_retirement() {
+    const RECORDS: usize = 128;
+    const PAYLOAD_BYTES: usize = 40;
+    const GROWTH_PER_RECORD: usize = PAYLOAD_BYTES + MIN_RECORD_LEN;
+
+    let writer = WalWriter::create(
+        &MemoryVfs::new(),
+        Path::new(WAL_PATH),
+        LogSeq::new(1),
+        policy(CommitTier::None),
+    )
+    .expect("writer");
+    let payload = [0x51; PAYLOAD_BYTES];
+    let mut previous = 0_usize;
+    for record in 1..=RECORDS {
+        writer.commit_durable(12, &payload).expect("append");
+        let measured = writer.stats().expect("WAL stats").retained_bytes;
+        assert_eq!(
+            measured,
+            record * GROWTH_PER_RECORD,
+            "retained WAL bytes changed by something other than one encoded record"
+        );
+        assert!(measured > previous, "retained WAL bytes did not grow");
+        previous = measured;
+    }
+    eprintln!(
+        "BL-081 current_retained_growth_per_record={GROWTH_PER_RECORD} payload_bytes={PAYLOAD_BYTES} records={RECORDS} final_wal_bytes={previous}"
+    );
+}
+
+#[test]
 fn statistics_are_fixed_size_with_exact_recent_groups() {
     let writer = WalWriter::create(
         &MemoryVfs::new(),

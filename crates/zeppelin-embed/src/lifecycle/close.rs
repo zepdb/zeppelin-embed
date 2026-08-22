@@ -6,6 +6,45 @@ use std::thread::JoinHandle;
 
 use super::{Store, StoreError, StoreState};
 
+#[cfg(test)]
+pub(crate) struct TeardownProbe {
+    sequence: AtomicU64,
+    background_stopped: AtomicU64,
+    snapshot_released: AtomicU64,
+}
+
+#[cfg(test)]
+impl TeardownProbe {
+    pub(crate) const fn new() -> Self {
+        Self {
+            sequence: AtomicU64::new(0),
+            background_stopped: AtomicU64::new(0),
+            snapshot_released: AtomicU64::new(0),
+        }
+    }
+
+    fn record_background_stopped(&self) {
+        let event = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ =
+            self.background_stopped
+                .compare_exchange(0, event, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_snapshot_released(&self) {
+        let event = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ =
+            self.snapshot_released
+                .compare_exchange(0, event, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    pub(crate) fn events(&self) -> (u64, u64) {
+        (
+            self.background_stopped.load(Ordering::SeqCst),
+            self.snapshot_released.load(Ordering::SeqCst),
+        )
+    }
+}
+
 struct BackgroundControl {
     stop: Mutex<bool>,
     changed: Condvar,
@@ -14,6 +53,8 @@ struct BackgroundControl {
 pub(crate) struct BackgroundThread {
     control: Arc<BackgroundControl>,
     handle: Option<JoinHandle<()>>,
+    #[cfg(test)]
+    teardown_probe: Option<Arc<TeardownProbe>>,
 }
 
 impl BackgroundThread {
@@ -48,6 +89,8 @@ impl BackgroundThread {
             let mut background = Self {
                 control,
                 handle: Some(handle),
+                #[cfg(test)]
+                teardown_probe: None,
             };
             background.stop_best_effort();
             return Err(StoreError::BackgroundHandshake);
@@ -55,7 +98,14 @@ impl BackgroundThread {
         Ok(Self {
             control,
             handle: Some(handle),
+            #[cfg(test)]
+            teardown_probe: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_teardown_probe(&mut self, probe: Arc<TeardownProbe>) {
+        self.teardown_probe = Some(probe);
     }
 
     fn stop_and_join(mut self) -> Result<(), StoreError> {
@@ -73,9 +123,16 @@ impl BackgroundThread {
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
-        handle
+        let result = handle
             .join()
-            .map_err(|_| StoreError::BackgroundThreadPanicked)
+            .map_err(|_| StoreError::BackgroundThreadPanicked);
+        #[cfg(test)]
+        if result.is_ok()
+            && let Some(probe) = &self.teardown_probe
+        {
+            probe.record_background_stopped();
+        }
+        result
     }
 
     fn stop_best_effort(&mut self) {
@@ -85,6 +142,10 @@ impl BackgroundThread {
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
+        }
+        #[cfg(test)]
+        if let Some(probe) = &self.teardown_probe {
+            probe.record_background_stopped();
         }
     }
 }
@@ -207,5 +268,32 @@ impl Store {
         drop(released);
         *state = StoreState::Closed;
         self.state_changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use crate::lifecycle::{OpenOptions, Store};
+
+    #[test]
+    fn background_thread_stops_before_snapshot_is_released_on_drop() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let probe = Arc::clone(&store.teardown_probe);
+
+        drop(store);
+
+        let (background_stopped, snapshot_released) = probe.events();
+        assert!(background_stopped > 0, "background stop was not observed");
+        assert!(snapshot_released > 0, "snapshot release was not observed");
+        assert!(
+            background_stopped < snapshot_released,
+            "snapshot released at event {snapshot_released} before background stopped at event {background_stopped}"
+        );
     }
 }

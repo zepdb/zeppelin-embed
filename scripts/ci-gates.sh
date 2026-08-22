@@ -19,8 +19,12 @@ fi
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p zeppelin-embed --all-targets --features allocation-audit -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo test --workspace
+cargo test -p zeppelin-embed --features allocation-audit \
+    lifecycle::stats::tests::nothing_allocates_outside_accounting \
+    -- --exact --test-threads=1
 cargo test -p zeppelin-embed-workspace-tests \
     --test scaffold_gates deny_blacklist_rejects_banned_dep \
     -- --ignored --exact

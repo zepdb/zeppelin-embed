@@ -223,3 +223,19 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Do not add `F_PREALLOCATE` until WAL rotation defines a finite full extent;
   allocating an arbitrary amount does not turn an unbounded append into an
   overwrite, despite the bounded crash model's 54-to-34 state reduction.
+
+## Task 09 Part B accounting invariants
+
+- `Store::stats()` is admitted only while `Open`. Every numeric field is an
+  exact component counter, a `mincore` residency count, or (for Darwin
+  `phys_footprint`) the existing `TASK_VM_INFO` kernel counter; never substitute
+  a process-wide estimate.
+- Anonymous byte accounting is attached to fixed-capacity component vectors.
+  A capacity is budgeted before `try_reserve_exact`, and `Accounted<Vec<_>>`
+  exposes no growing mutation beyond its pre-accounted element limit.
+- `max_resident_bytes` covers all component-owned anonymous arenas;
+  `max_temp_bytes` is an additional ceiling on the temporary component. A
+  rejected reservation changes neither counter and leaves the handle usable.
+- The production allocator remains unchanged. The global allocation wrapper is
+  compiled only by the `allocation-audit` feature, and its isolated CI test must
+  stay single-threaded.

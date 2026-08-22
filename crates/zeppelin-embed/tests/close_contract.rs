@@ -30,11 +30,21 @@ fn close_unmaps_all_segments() {
     let segment = snapshot.segments().first().expect("published segment");
     let codes = segment.bit4_codes().expect("mapped vector codes");
     let mapped_address = codes.as_ptr() as usize;
+    let expected_mapped_bytes =
+        std::fs::metadata(fixture.path().join(segment.meta().id.file_name()))
+            .expect("segment metadata")
+            .len();
+    let live_stats = store.stats().expect("live mapping stats");
+    assert_eq!(live_stats.mapped_bytes, expected_mapped_bytes);
+    assert_eq!(live_stats.mapped_bytes, live_stats.segment_bytes);
+    assert!(live_stats.mapped_resident_bytes > 0);
+    assert!(live_stats.mapped_resident_bytes <= live_stats.mapped_bytes);
     assert!(is_address_mapped(mapped_address).expect("query live mapping"));
     drop(snapshot);
 
     store.close().expect("close mapped store");
 
+    assert!(matches!(store.stats(), Err(StoreError::Closed)));
     assert!(
         !is_address_mapped(mapped_address).expect("query released mapping"),
         "the segment page remains in the process mapping table after close"
@@ -96,10 +106,11 @@ fn calls_after_close_return_typed_closed_error() {
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
     store.close().expect("close");
 
-    // Part A's complete `Store` surface is enumerated here: `open` constructs a
-    // new handle, `state` observes lifecycle, `close` is explicitly idempotent,
-    // and `snapshot` is the sole operation admitted only while open.
+    // `open` constructs a new handle, `state` observes lifecycle, and `close`
+    // is explicitly idempotent. Every operation admitted only while open is
+    // enumerated here as the surface grows.
     assert!(matches!(store.snapshot(), Err(StoreError::Closed)));
+    assert!(matches!(store.stats(), Err(StoreError::Closed)));
     assert_eq!(store.state().expect("closed state"), StoreState::Closed);
     store.close().expect("idempotent close remains valid");
 }
@@ -174,6 +185,22 @@ fn drop_without_close_best_effort_releases() {
     let reopened =
         Store::open(directory.path(), OpenOptions::default()).expect("reopen after drop");
     reopened.close().expect("close reopened store");
+}
+
+#[test]
+fn snapshot_lease_outliving_store_observes_read_cancelled() {
+    let _guard = test_guard();
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let lease = store.snapshot().expect("admitted lease");
+    lease.check_active().expect("lease starts active");
+
+    drop(store);
+
+    assert!(matches!(
+        lease.check_active(),
+        Err(StoreError::ReadCancelled)
+    ));
 }
 
 #[cfg(target_os = "macos")]

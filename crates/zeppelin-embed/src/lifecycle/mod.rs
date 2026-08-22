@@ -1,11 +1,14 @@
 //! Store lifecycle and memory accounting.
 
+mod budget;
 mod close;
 pub mod durability;
 pub mod lock;
 mod snapshot;
+mod stats;
 
 pub use snapshot::{PublishedSnapshot, SnapshotLease};
+pub use stats::Stats;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -37,6 +40,8 @@ pub struct OpenOptions {
     durability_mode: DurabilityMode,
     commit_tier: CommitTier,
     reader_drain_timeout: Duration,
+    max_resident_bytes: u64,
+    max_temp_bytes: u64,
 }
 
 /// Filesystem authority requested for one store handle.
@@ -57,6 +62,8 @@ impl OpenOptions {
             durability_mode: DurabilityMode::Derived,
             commit_tier: CommitTier::Ordered,
             reader_drain_timeout: DEFAULT_READER_DRAIN_TIMEOUT,
+            max_resident_bytes: u64::MAX,
+            max_temp_bytes: u64::MAX,
         }
     }
 
@@ -68,6 +75,8 @@ impl OpenOptions {
             durability_mode: DurabilityMode::Derived,
             commit_tier: CommitTier::Ordered,
             reader_drain_timeout: DEFAULT_READER_DRAIN_TIMEOUT,
+            max_resident_bytes: u64::MAX,
+            max_temp_bytes: u64::MAX,
         }
     }
 
@@ -83,6 +92,20 @@ impl OpenOptions {
     #[must_use]
     pub const fn with_reader_drain_timeout(mut self, timeout: Duration) -> Self {
         self.reader_drain_timeout = timeout;
+        self
+    }
+
+    /// Sets the exact ceiling for live engine-owned anonymous bytes.
+    #[must_use]
+    pub const fn with_max_resident_bytes(mut self, bytes: u64) -> Self {
+        self.max_resident_bytes = bytes;
+        self
+    }
+
+    /// Sets the exact ceiling for live temporary anonymous bytes.
+    #[must_use]
+    pub const fn with_max_temp_bytes(mut self, bytes: u64) -> Self {
+        self.max_temp_bytes = bytes;
         self
     }
 }
@@ -123,6 +146,29 @@ pub enum StoreError {
     Segment(crate::segment::SegmentError),
     /// The checked durable WAL prefix could not be opened.
     Wal(crate::wal::WalReadError),
+    /// A kernel probe needed for an exact statistics snapshot failed.
+    Statistics {
+        /// Counter or residency component that could not be read.
+        component: &'static str,
+        /// Underlying operating-system failure.
+        source: std::io::Error,
+    },
+    /// An accounted allocation would exceed a configured ceiling.
+    BudgetExceeded {
+        /// Total live bytes that would be needed if the operation proceeded.
+        needed: u64,
+        /// Configured ceiling in bytes.
+        budget: u64,
+        /// Engine component requesting the allocation.
+        component: &'static str,
+    },
+    /// The allocator rejected a checked reservation without aborting.
+    AllocationFailed {
+        /// Exact requested bytes.
+        needed: u64,
+        /// Engine component requesting the allocation.
+        component: &'static str,
+    },
     /// A new operation raced with close after admissions stopped.
     Closing,
     /// The handle has completed teardown.
@@ -166,6 +212,21 @@ impl std::fmt::Display for StoreError {
             Self::Manifest(error) => error.fmt(formatter),
             Self::Segment(error) => error.fmt(formatter),
             Self::Wal(error) => error.fmt(formatter),
+            Self::Statistics { component, source } => {
+                write!(formatter, "store statistics {component}: {source}")
+            }
+            Self::BudgetExceeded {
+                needed,
+                budget,
+                component,
+            } => write!(
+                formatter,
+                "store {component} allocation needs {needed} bytes, budget is {budget} bytes"
+            ),
+            Self::AllocationFailed { needed, component } => write!(
+                formatter,
+                "store {component} allocator rejected {needed} bytes"
+            ),
             Self::Closing => formatter.write_str("store is closing"),
             Self::Closed => formatter.write_str("store is closed"),
             Self::ReadCancelled => formatter.write_str("store close cancelled the admitted read"),
@@ -200,9 +261,12 @@ impl std::error::Error for StoreError {
             Self::Manifest(error) => Some(error),
             Self::Segment(error) => Some(error),
             Self::Wal(error) => Some(error),
+            Self::Statistics { source, .. } => Some(source),
             Self::BackgroundStart { source } => Some(source),
             Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
+            | Self::BudgetExceeded { .. }
+            | Self::AllocationFailed { .. }
             | Self::Closing
             | Self::Closed
             | Self::ReadCancelled
@@ -217,11 +281,14 @@ impl std::error::Error for StoreError {
 pub struct Store {
     pub(crate) state: Mutex<StoreState>,
     pub(crate) state_changed: Condvar,
-    pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     pub(crate) background: Mutex<Option<BackgroundThread>>,
+    pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
     pub(crate) _durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
+    pub(crate) accounting: Arc<stats::Accounting>,
+    #[cfg(test)]
+    pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
 
 impl Store {
@@ -230,6 +297,10 @@ impl Store {
         let path = path.as_ref();
         let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
             .map_err(StoreError::Durability)?;
+        let accounting = Arc::new(stats::Accounting::new(
+            options.max_resident_bytes,
+            options.max_temp_bytes,
+        ));
         if options.access_mode == AccessMode::ReadWrite {
             std::fs::create_dir_all(path).map_err(|source| StoreError::Io {
                 path: path.to_path_buf(),
@@ -260,19 +331,33 @@ impl Store {
             }
             AccessMode::ReadOnly => None,
         };
-        let snapshot = PublishedSnapshot::load(path)?;
+        let snapshot = PublishedSnapshot::load(path, &accounting)?;
         let background = match options.access_mode {
             AccessMode::ReadWrite => Some(BackgroundThread::start()?),
             AccessMode::ReadOnly => None,
         };
+        #[cfg(test)]
+        let (snapshot, background, teardown_probe) = {
+            let mut snapshot = snapshot;
+            let mut background = background;
+            let teardown_probe = Arc::new(close::TeardownProbe::new());
+            snapshot.set_teardown_probe(Arc::clone(&teardown_probe));
+            if let Some(background) = background.as_mut() {
+                background.set_teardown_probe(Arc::clone(&teardown_probe));
+            }
+            (snapshot, background, teardown_probe)
+        };
         let store = Self {
             state: Mutex::new(StoreState::Open),
             state_changed: Condvar::new(),
-            snapshot: RwLock::new(None),
             background: Mutex::new(background),
+            snapshot: RwLock::new(None),
             writer_lock: Mutex::new(writer_lock),
             _durability_policy: durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
+            accounting,
+            #[cfg(test)]
+            teardown_probe,
         };
         store.publish_snapshot(snapshot)?;
         Ok(store)
@@ -341,6 +426,8 @@ impl Drop for Store {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::error::Error;
+
     use tempfile::tempdir;
 
     use crate::lifecycle::durability::DurabilityPolicy;
@@ -351,6 +438,43 @@ mod tests {
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
     use super::{OpenOptions, Store, StoreError};
+
+    #[test]
+    fn accounting_errors_report_the_typed_context() {
+        let statistics = StoreError::Statistics {
+            component: "mapped resident bytes",
+            source: std::io::Error::other("mincore failed"),
+        };
+        assert_eq!(
+            statistics.to_string(),
+            "store statistics mapped resident bytes: mincore failed"
+        );
+        assert_eq!(
+            statistics.source().map(ToString::to_string),
+            Some("mincore failed".to_owned())
+        );
+
+        let budget = StoreError::BudgetExceeded {
+            needed: 65,
+            budget: 64,
+            component: "wal",
+        };
+        assert_eq!(
+            budget.to_string(),
+            "store wal allocation needs 65 bytes, budget is 64 bytes"
+        );
+        assert!(budget.source().is_none());
+
+        let allocation = StoreError::AllocationFailed {
+            needed: 23,
+            component: "snapshot",
+        };
+        assert_eq!(
+            allocation.to_string(),
+            "store snapshot allocator rejected 23 bytes"
+        );
+        assert!(allocation.source().is_none());
+    }
 
     #[test]
     fn open_options_resolve_durability_before_filesystem_mutation() {

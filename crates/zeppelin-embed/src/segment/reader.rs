@@ -1,6 +1,5 @@
 //! Read-only memory-mapped segment validation and lazy region access.
 
-use std::collections::HashSet;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -123,6 +122,32 @@ impl SegmentReader {
         })
     }
 
+    pub(crate) fn open_accounted(
+        path: &Path,
+        expected_id: SegmentId,
+        before_directory_allocation: impl FnOnce(usize) -> Result<(), crate::lifecycle::StoreError>,
+    ) -> Result<Self, crate::lifecycle::StoreError> {
+        let mapping = MappedFile::open(path).map_err(crate::lifecycle::StoreError::Segment)?;
+        let artifact = path.display().to_string();
+        let region_count =
+            preflight_region_count(&artifact, mapping.as_bytes(), mapping.length as u64)
+                .map_err(crate::lifecycle::StoreError::Segment)?;
+        before_directory_allocation(region_count)?;
+        let parsed = parse_segment_header(
+            &artifact,
+            mapping.as_bytes(),
+            mapping.length as u64,
+            expected_id,
+        )
+        .map_err(crate::lifecycle::StoreError::Segment)?;
+        Ok(Self {
+            mapping,
+            meta: parsed.meta,
+            header_length: parsed.header_length,
+            entries: parsed.entries,
+        })
+    }
+
     /// Returns immutable manifest-visible metadata decoded from the header.
     #[must_use]
     pub const fn meta(&self) -> &SegmentMeta {
@@ -133,6 +158,17 @@ impl SegmentReader {
     #[must_use]
     pub const fn header_length(&self) -> usize {
         self.header_length
+    }
+
+    /// Returns the exact virtual byte length of this immutable file mapping.
+    #[must_use]
+    pub(crate) const fn mapped_bytes(&self) -> usize {
+        self.mapping.length
+    }
+
+    /// Returns mapped bytes whose intersecting pages are resident per `mincore`.
+    pub(crate) fn mapped_resident_bytes(&self) -> std::io::Result<u64> {
+        crate::sys::memory::mincore_resident_bytes(self.mapping.as_bytes())
     }
 
     /// Returns the validated region directory, including unknown skippable kinds.
@@ -528,6 +564,40 @@ pub fn validate_segment_bytes(bytes: &[u8]) -> Result<SegmentMeta, SegmentError>
     Ok(parsed.meta)
 }
 
+fn preflight_region_count(
+    artifact: &str,
+    bytes: &[u8],
+    actual_file_length: u64,
+) -> Result<usize, SegmentError> {
+    let fixed = decode_header(artifact, FormatFamily::Segment, bytes)?;
+    if fixed.file_length != actual_file_length {
+        return Err(FormatError::new(
+            artifact,
+            FormatCheck::FileLength,
+            format!(
+                "declared {}, actual {actual_file_length}",
+                fixed.file_length
+            ),
+        )
+        .into());
+    }
+    let header_length = usize::try_from(fixed.header_length)
+        .map_err(|_| SegmentError::Geometry("header length exceeds usize".to_owned()))?;
+    validate_bounded_header_length(artifact, header_length, actual_file_length)?;
+    let header_bytes = bytes.get(..header_length).ok_or_else(|| {
+        FormatError::new(
+            artifact,
+            FormatCheck::Length,
+            format!("declared header {header_length}, available {}", bytes.len()),
+        )
+    })?;
+    Ok(usize::from(read_u16(
+        artifact,
+        header_bytes,
+        FILE_HEADER_LEN.saturating_add(20),
+    )?))
+}
+
 fn parse_segment_header(
     artifact: &str,
     bytes: &[u8],
@@ -621,8 +691,7 @@ fn parse_segment_header(
         .into());
     }
 
-    let mut entries = Vec::with_capacity(region_count);
-    let mut seen = HashSet::with_capacity(region_count);
+    let mut entries: Vec<RegionEntry> = Vec::with_capacity(region_count);
     let directory_start = FILE_HEADER_LEN.saturating_add(SEGMENT_PREFIX_LEN);
     for position in 0..region_count {
         let offset = directory_start
@@ -642,7 +711,7 @@ fn parse_segment_header(
                 entry.kind
             )));
         }
-        if !seen.insert(entry.kind) {
+        if entries.iter().any(|existing| existing.kind == entry.kind) {
             return Err(SegmentError::Geometry(format!(
                 "duplicate region kind {}",
                 entry.kind
@@ -736,20 +805,28 @@ fn validate_entry(
 }
 
 fn validate_non_overlapping(entries: &[RegionEntry]) -> Result<(), SegmentError> {
-    let mut sorted = entries.to_vec();
-    sorted.sort_unstable_by_key(|entry| entry.offset);
-    let mut previous_end = 0_u64;
-    for entry in sorted {
-        if entry.offset < previous_end {
-            return Err(SegmentError::Geometry(format!(
-                "region {} begins {} before previous end {previous_end}",
-                entry.kind, entry.offset
-            )));
-        }
-        previous_end = entry
+    for (position, entry) in entries.iter().enumerate() {
+        let entry_end = entry
             .offset
             .checked_add(entry.length)
             .ok_or_else(|| SegmentError::Geometry("region u64 end overflow".to_owned()))?;
+        for other in entries.iter().skip(position.saturating_add(1)) {
+            let other_end = other
+                .offset
+                .checked_add(other.length)
+                .ok_or_else(|| SegmentError::Geometry("region u64 end overflow".to_owned()))?;
+            if entry.offset < other_end && other.offset < entry_end {
+                let (previous, current, previous_end) = if entry.offset <= other.offset {
+                    (entry, other, entry_end)
+                } else {
+                    (other, entry, other_end)
+                };
+                return Err(SegmentError::Geometry(format!(
+                    "region {} begins {} before previous end {previous_end} for region {}",
+                    current.kind, current.offset, previous.kind
+                )));
+            }
+        }
     }
     Ok(())
 }

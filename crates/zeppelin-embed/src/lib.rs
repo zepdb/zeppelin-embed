@@ -27,6 +27,9 @@
 )]
 #![warn(missing_docs)]
 
+#[cfg(feature = "allocation-audit")]
+mod allocation_audit;
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.
