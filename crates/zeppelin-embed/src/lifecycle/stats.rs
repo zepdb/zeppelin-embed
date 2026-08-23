@@ -459,6 +459,8 @@ pub struct Stats {
     pub segment_bytes: u64,
     /// Exact allocation capacity held by the in-RAM active segment.
     pub active_segment_bytes: u64,
+    /// Exact number of rows currently represented by the in-RAM active segment.
+    pub active_row_count: u64,
     /// Exact number of in-memory active-segment tombstones.
     pub tombstone_count: u64,
     /// Exact bytes owned by active-segment tombstones.
@@ -521,6 +523,12 @@ impl Store {
             })?;
         let active_state = active_guard.as_ref().ok_or(StoreError::Closed)?;
         let active_segment_bytes = active_state.segment.resident_bytes();
+        let active_row_count = u64::try_from(active_state.segment.row_count()).map_err(|_| {
+            StoreError::Statistics {
+                component: "active row count",
+                source: std::io::Error::other("active row count exceeds u64"),
+            }
+        })?;
         let tombstone_count = active_state.segment.tombstone_count();
         let tombstone_bytes = active_state.segment.tombstone_bytes();
         let active_queries = self
@@ -593,6 +601,7 @@ impl Store {
             mapped_resident_bytes,
             segment_bytes: accounting.mapped_bytes,
             active_segment_bytes,
+            active_row_count,
             tombstone_count,
             tombstone_bytes,
             wal_bytes: accounting.wal_bytes,

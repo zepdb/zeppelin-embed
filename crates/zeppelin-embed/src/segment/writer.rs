@@ -7,6 +7,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::format::frame::{FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN};
 use crate::format::{FormatFamily, FormatRegistry};
 use crate::graph::block::{GraphNodeBlockBuild, encode_node_blocks};
+use crate::ingest::{DocId, Revision};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
@@ -49,6 +50,15 @@ pub struct SegmentBuild<'a> {
     pub alive: &'a AliveSet,
 }
 
+/// Dense application identities aligned to one segment's local row ids.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentDocumentVersions<'a> {
+    /// Stable application document ids.
+    pub doc_ids: &'a [DocId],
+    /// Monotonic application revisions aligned to `doc_ids`.
+    pub revisions: &'a [Revision],
+}
+
 struct RegionBytes {
     kind: RegionKind,
     family: FormatFamily,
@@ -57,7 +67,7 @@ struct RegionBytes {
 
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
-    encode_segment_inner(build, None)
+    encode_segment_inner(build, None, None)
 }
 
 /// Encodes a complete segment with one fixed-stride graph node-block region.
@@ -80,12 +90,13 @@ pub fn encode_segment_with_graph(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes))
+    encode_segment_inner(build, Some(graph_bytes), None)
 }
 
 fn encode_segment_inner(
     build: SegmentBuild<'_>,
     graph_bytes: Option<Vec<u8>>,
+    document_versions: Option<SegmentDocumentVersions<'_>>,
 ) -> Result<Vec<u8>, SegmentError> {
     let row_count = build.columns.row_count();
     if build.alive.row_count() != row_count {
@@ -196,7 +207,36 @@ fn encode_segment_inner(
             bytes,
         });
     }
+    if let Some(documents) = document_versions {
+        regions.push(RegionBytes {
+            kind: RegionKind::DocumentVersions,
+            family: FormatFamily::DocumentVersions,
+            bytes: encode_document_versions(documents, rows)?,
+        });
+    }
     encode_regions(build, &regions)
+}
+
+fn encode_document_versions(
+    documents: SegmentDocumentVersions<'_>,
+    rows: usize,
+) -> Result<Vec<u8>, SegmentError> {
+    if documents.doc_ids.len() != rows || documents.revisions.len() != rows {
+        return Err(SegmentError::Geometry(format!(
+            "document-version rows {}/{}, expected {rows}",
+            documents.doc_ids.len(),
+            documents.revisions.len()
+        )));
+    }
+    let capacity = rows
+        .checked_mul(24)
+        .ok_or_else(|| SegmentError::Geometry("document-version length overflow".to_owned()))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for (doc_id, revision) in documents.doc_ids.iter().zip(documents.revisions) {
+        bytes.extend_from_slice(&doc_id.get().to_le_bytes());
+        bytes.extend_from_slice(&revision.get().to_le_bytes());
+    }
+    Ok(bytes)
 }
 
 fn encode_factors(
@@ -400,6 +440,18 @@ pub fn write_segment(
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
     let bytes = encode_segment(build)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes and publishes a segment with dense application document identities.
+pub fn write_segment_with_documents(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents))?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 

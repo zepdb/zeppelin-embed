@@ -334,3 +334,17 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - The active-state generation is authoritative while a writer is open: it is
   initialized from the manifest generation and advanced by mutations. Sealing
   advances from that value, never from the possibly stale published snapshot.
+
+## Task 10 Part B seal invariants
+
+- `Manifest::log_seq` is the durable absorbed-through boundary. Open rejects it
+  when it exceeds the checked WAL end, rebuilds the active segment only from
+  greater sequences, and retires the absorbed in-memory WAL prefix only after
+  the appended manifest and read-only snapshot are published.
+- Active sealing appends one task-07 immutable segment to the complete manifest
+  segment set, folds the active alive/tombstone state, empties active storage,
+  and advances from the authoritative active generation. It never builds a
+  graph or assigns a clustering key.
+- Task-10 sealed rows carry optional region kind 12 / family 13 with exact
+  24-byte little-endian `(doc_id:u128, revision:u64)` records. Existing task-07
+  segments omit it and continue to return no application document identity.

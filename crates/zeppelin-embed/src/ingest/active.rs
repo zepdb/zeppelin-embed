@@ -31,6 +31,7 @@ impl ActiveState {
     pub(crate) fn recover(
         path: &Path,
         generation: u64,
+        absorbed_through: u64,
         accounting: &Arc<Accounting>,
     ) -> Result<(Self, Option<CleanWalReader>), StoreError> {
         match StdVfs.open(path) {
@@ -38,7 +39,7 @@ impl ActiveState {
             Ok(_) => {
                 let reader = WalReader::open(&StdVfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-                let active = Self::replay(generation, &clean, accounting)?;
+                let active = Self::replay(generation, absorbed_through, &clean, accounting)?;
                 Ok((active, Some(clean)))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -50,11 +51,15 @@ impl ActiveState {
 
     fn replay(
         mut generation: u64,
+        absorbed_through: u64,
         recovered: &CleanWalReader,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
         let mut segment = ActiveSegment::empty();
         for record in recovered.records() {
+            if record.seq.get() <= absorbed_through {
+                continue;
+            }
             let payload = record.payload().map_err(|source| StoreError::WalRecord {
                 seq: record.seq,
                 source,
@@ -412,12 +417,24 @@ impl ActiveSegment {
         self.doc_ids.len()
     }
 
+    pub(crate) const fn dims(&self) -> Option<usize> {
+        self.dims
+    }
+
     pub(crate) fn codes(&self) -> &[u8] {
         &self.codes
     }
 
     pub(crate) fn factors(&self) -> &[Bit4Factors] {
         &self.factors
+    }
+
+    pub(crate) fn doc_ids(&self) -> &[DocId] {
+        &self.doc_ids
+    }
+
+    pub(crate) fn revisions(&self) -> &[Revision] {
+        &self.revisions
     }
 
     pub(crate) fn vectors(&self) -> &[f32] {
@@ -510,13 +527,37 @@ impl StoreWal {
         path: &Path,
         recovered: CleanWalReader,
         policy: DurabilityPolicy,
+        absorbed_through: u64,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
         let writer =
             WalWriter::resume(&StdVfs, path, recovered, policy).map_err(StoreError::WalWrite)?;
+        if absorbed_through != 0 {
+            writer
+                .retire_visible_through(LogSeq::new(absorbed_through))
+                .map_err(StoreError::WalRetire)?;
+        }
         let mut retained = AccountedCounter::new(accounting, AllocationComponent::Wal)?;
         retained.set(writer.stats().map_err(StoreError::WalWrite)?.retained_bytes)?;
         Ok(Self { writer, retained })
+    }
+
+    pub(crate) fn durable_end(&self) -> u64 {
+        use crate::manifest::io::DurableLog as _;
+
+        self.writer.durable_end()
+    }
+
+    pub(crate) fn retire_visible_through(
+        &mut self,
+        absorbed_through: LogSeq,
+    ) -> Result<(), StoreError> {
+        let retirement = self
+            .writer
+            .retire_visible_through(absorbed_through)
+            .map_err(StoreError::WalRetire)?;
+        self.retained.set(retirement.retained_bytes)?;
+        Ok(())
     }
 
     pub(crate) fn commit(&mut self, op: u16, payload: &[u8]) -> Result<LogSeq, StoreError> {

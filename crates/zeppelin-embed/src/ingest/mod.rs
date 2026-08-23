@@ -2,6 +2,7 @@
 
 mod active;
 mod revise;
+mod seal;
 pub mod wal_payload;
 
 use std::sync::Arc;
@@ -308,8 +309,8 @@ impl SearchCandidate {
         self.row_id
     }
 
-    /// Returns the active document identity, or `None` for task-07 segments
-    /// whose frozen format predates persisted document ids and revisions.
+    /// Returns the document identity, or `None` for task-07 segments whose
+    /// frozen format predates task-10's document-version region.
     #[must_use]
     pub const fn document(self) -> Option<DocumentVersion> {
         self.document

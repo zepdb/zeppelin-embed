@@ -294,6 +294,7 @@ impl Store {
 /// One atomically published generation and its immutable segment readers.
 pub struct PublishedSnapshot {
     generation: u64,
+    absorbed_through: u64,
     segments: Accounted<Vec<SegmentReader>>,
     cancelled: AtomicBool,
     reader_changed: Condvar,
@@ -307,6 +308,7 @@ impl PublishedSnapshot {
     pub(crate) fn empty(generation: u64) -> Self {
         Self {
             generation,
+            absorbed_through: 0,
             segments: Accounted::unaccounted_empty(),
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -377,6 +379,7 @@ impl PublishedSnapshot {
         let mapping_reservation = accounting.track_mapping(mapped_bytes)?;
         Ok(Self {
             generation: manifest.generation,
+            absorbed_through: manifest.log_seq,
             segments,
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -396,6 +399,10 @@ impl PublishedSnapshot {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(crate) const fn absorbed_through(&self) -> u64 {
+        self.absorbed_through
     }
 
     /// Returns the complete immutable segment-reader set for this generation.

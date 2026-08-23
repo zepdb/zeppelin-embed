@@ -32,3 +32,7 @@
   28, and xxh3-64 at 32 over all preceding region bytes through trailer byte
   31. Bytes 40..128 are zero. Incompatible interpretation changes mint a new
   family version and new owner-approved goldens.
+- Sealed document versions are family id 13 in optional segment region kind id
+  12. Each dense row is exactly `doc_id:u128` little-endian followed by
+  `revision:u64` little-endian (24 bytes); task-07 segments without the region
+  remain readable and report no document identity.

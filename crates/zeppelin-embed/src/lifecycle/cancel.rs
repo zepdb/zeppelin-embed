@@ -41,6 +41,10 @@ impl CancelToken {
             self.state
                 .compare_exchange(ACTIVE, CANCELLED, Ordering::Relaxed, Ordering::Relaxed);
     }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.state.load(Ordering::Relaxed) == CANCELLED
+    }
 }
 
 impl Default for CancelToken {

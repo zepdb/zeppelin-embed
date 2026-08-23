@@ -10,6 +10,8 @@ use zeppelin_embed::format::frame::{
 };
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::format::{FormatFamily, FormatRegistry, RegistryError};
+use zeppelin_embed::ingest::{DocId, DocumentVersion, Revision};
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::manifest::{EpochMeta, Manifest, decode_manifest, encode_manifest};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType, ColumnValue,
@@ -19,7 +21,11 @@ use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::reader::SegmentReader;
-use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, encode_segment};
+use zeppelin_embed::segment::writer::{
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, encode_segment,
+    write_segment_with_documents,
+};
+use zeppelin_embed::vfs::StdVfs;
 
 fn fixture(text: &str) -> Vec<u8> {
     decode_hex(text).expect("fixture hex")
@@ -271,8 +277,9 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         fixture(include_str!("fixtures/format/postings_reserved_v1.hex")),
         Vec::<u8>::new()
     );
-    assert_eq!(FormatRegistry::families().len(), 12);
+    assert_eq!(FormatRegistry::families().len(), 13);
     assert_eq!(FormatFamily::Wal.id(), 11);
+    assert_eq!(FormatFamily::DocumentVersions.id(), 13);
     assert_eq!(
         FormatRegistry::require(FormatFamily::Wal.id(), 1)
             .expect("WAL family")
@@ -306,4 +313,52 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
     reader
         .validate_all()
         .expect("unknown region bytes validate");
+
+    let schema = Schema::new(Vec::new()).expect("document-version schema");
+    let mut columns = ColumnStoreBuilder::new(schema);
+    columns.push_row(0, &[]).expect("document-version row");
+    let columns = columns.finish().expect("document-version columns");
+    let version = DocumentVersion::new(
+        DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+        Revision::new(0x0102_0304_0506_0708),
+    );
+    let document_id = SegmentId::new(9, [0x13; 10]);
+    write_segment_with_documents(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: document_id,
+            scheme: 4,
+            dims: 2,
+            codes: &[0x88],
+            factors: SegmentFactors::Bit4(&[zeppelin_embed::quant::Bit4Factors::from_persisted(
+                1.0, 1.0, 1.0,
+            )]),
+            rescore: &[0.0, 0.0],
+            columns: &columns,
+            alive: &AliveSet::new(1),
+        },
+        SegmentDocumentVersions {
+            doc_ids: &[version.doc_id()],
+            revisions: &[version.revision()],
+        },
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("document-version policy"),
+    )
+    .expect("write document-version segment");
+    let document_path = directory.path().join(document_id.file_name());
+    let document_reader =
+        SegmentReader::open(&document_path, document_id).expect("open document-version segment");
+    assert_eq!(
+        document_reader
+            .region(RegionKind::DocumentVersions)
+            .expect("document-version region"),
+        fixture(include_str!("fixtures/format/document_versions_one_v1.hex"))
+    );
+    assert_eq!(
+        document_reader
+            .document_version(0)
+            .expect("decode document-version row"),
+        Some(version)
+    );
 }

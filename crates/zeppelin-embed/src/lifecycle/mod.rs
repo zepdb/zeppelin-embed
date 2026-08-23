@@ -310,6 +310,8 @@ pub enum StoreError {
     },
     /// The store-owned WAL writer could not be created or advanced.
     WalWrite(crate::wal::WalWriteError),
+    /// Retained WAL visibility could not be released through a committed seal.
+    WalRetire(crate::wal::WalRetireError),
     /// A kernel probe needed for an exact statistics snapshot failed.
     Statistics {
         /// Counter or residency component that could not be read.
@@ -342,6 +344,10 @@ pub enum StoreError {
     },
     /// The active segment exceeded its dense u32 row address space.
     ActiveRowOverflow,
+    /// An explicit seal was requested without any active rows.
+    EmptyActiveSegment,
+    /// Caller cancellation stopped a seal before its manifest commit point.
+    SealCancelled,
     /// A write-only lifecycle operation was requested from a read-only handle.
     ReadOnly,
     /// A prepared segment was accounted to a different store handle.
@@ -443,6 +449,7 @@ impl std::fmt::Display for StoreError {
                 write!(formatter, "WAL sequence {} vector: {source}", seq.get())
             }
             Self::WalWrite(error) => error.fmt(formatter),
+            Self::WalRetire(error) => error.fmt(formatter),
             Self::Statistics { component, source } => {
                 write!(formatter, "store statistics {component}: {source}")
             }
@@ -465,6 +472,8 @@ impl std::fmt::Display for StoreError {
             Self::ActiveRowOverflow => {
                 formatter.write_str("active segment row or byte geometry overflow")
             }
+            Self::EmptyActiveSegment => formatter.write_str("active segment is empty"),
+            Self::SealCancelled => formatter.write_str("seal was cancelled before commit"),
             Self::ReadOnly => formatter.write_str("store handle is read-only"),
             Self::ForeignPreparedSegment => {
                 formatter.write_str("prepared segment belongs to another store")
@@ -519,6 +528,7 @@ impl std::error::Error for StoreError {
             Self::WalMutation { source, .. } => Some(source),
             Self::WalVector { source, .. } => Some(source),
             Self::WalWrite(error) => Some(error),
+            Self::WalRetire(error) => Some(error),
             Self::Statistics { source, .. } => Some(source),
             Self::BackgroundStart { source } => Some(source),
             Self::QueryPoolStart { source } => Some(source),
@@ -531,6 +541,8 @@ impl std::error::Error for StoreError {
             | Self::AllocationFailed { .. }
             | Self::DimensionMismatch { .. }
             | Self::ActiveRowOverflow
+            | Self::EmptyActiveSegment
+            | Self::SealCancelled
             | Self::ReadOnly
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
@@ -609,15 +621,21 @@ impl Store {
             AccessMode::ReadOnly => None,
         };
         let snapshot = PublishedSnapshot::load(path, &accounting)?;
+        let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
-        let (active, recovered_wal) =
-            crate::ingest::ActiveState::recover(&wal_path, snapshot.generation(), &accounting)?;
+        let (active, recovered_wal) = crate::ingest::ActiveState::recover(
+            &wal_path,
+            snapshot.generation(),
+            absorbed_through,
+            &accounting,
+        )?;
         let wal_writer = match options.access_mode {
             AccessMode::ReadWrite => Some(match recovered_wal {
                 Some(recovered) => crate::ingest::StoreWal::resume(
                     &wal_path,
                     recovered,
                     durability_policy,
+                    absorbed_through,
                     &accounting,
                 )?,
                 None => crate::ingest::StoreWal::create(&wal_path, durability_policy, &accounting)?,
@@ -967,7 +985,7 @@ fn search_pinned(
         merge_store_outcome(
             outcome,
             RowSource::Active,
-            |row| active.document(row),
+            |row| Ok(active.document(row)),
             &mut candidates,
             &mut dims_touched,
             &mut bytes_read,
@@ -1241,7 +1259,12 @@ fn search_pinned(
         merge_store_outcome(
             outcome,
             source,
-            |_| None,
+            |row| {
+                segment
+                    .document_version(row)
+                    .map_err(StoreError::Segment)
+                    .map_err(QueryError::Store)
+            },
             &mut candidates,
             &mut dims_touched,
             &mut bytes_read,
@@ -1394,7 +1417,7 @@ fn map_scan_error(error: crate::scan::ScanError) -> QueryError {
 fn merge_store_outcome(
     outcome: crate::scan::ScanOutcome,
     source: crate::ingest::RowSource,
-    document: impl Fn(usize) -> Option<crate::ingest::DocumentVersion>,
+    document: impl Fn(usize) -> Result<Option<crate::ingest::DocumentVersion>, QueryError>,
     candidates: &mut Vec<crate::ingest::SearchCandidate>,
     dims_touched: &mut u64,
     bytes_read: &mut u64,
@@ -1416,7 +1439,7 @@ fn merge_store_outcome(
             .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
         candidates.push(crate::ingest::SearchCandidate::new(
             crate::ingest::GlobalRowId::new(source, local_row),
-            document(candidate.row_id),
+            document(candidate.row_id)?,
             candidate.score,
         ));
     }

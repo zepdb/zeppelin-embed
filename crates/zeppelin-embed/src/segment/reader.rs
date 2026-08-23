@@ -13,6 +13,7 @@ use crate::format::frame::{
 };
 use crate::format::{FormatFamily, FormatRegistry};
 use crate::graph::block::{GraphNodeBlocks, ValidatedGraphNodeBlocks, decode_node_blocks};
+use crate::ingest::{DocId, DocumentVersion, Revision};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
 use crate::vfs::Vfs;
@@ -368,6 +369,58 @@ impl SegmentReader {
             )));
         }
         Ok(alive)
+    }
+
+    /// Decodes one optional sealed-row document identity directly from the mapping.
+    pub fn document_version(&self, row: usize) -> Result<Option<DocumentVersion>, SegmentError> {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == RegionKind::DocumentVersions.id())
+        else {
+            return Ok(None);
+        };
+        let bytes = self.region_slice(entry)?;
+        if xxh3_64(bytes) != entry.checksum {
+            return Err(FormatError::new(
+                format!("segment:{}:document-versions", self.meta.id),
+                FormatCheck::BlockChecksum,
+                "document-version region checksum mismatch",
+            )
+            .into());
+        }
+        let expected = (self.meta.row_count as usize)
+            .checked_mul(24)
+            .ok_or_else(|| SegmentError::Geometry("document-version length overflow".to_owned()))?;
+        if bytes.len() != expected {
+            return Err(SegmentError::Geometry(format!(
+                "document-version bytes {}, expected {expected}",
+                bytes.len()
+            )));
+        }
+        let start = row
+            .checked_mul(24)
+            .ok_or_else(|| SegmentError::Geometry("document-version row overflow".to_owned()))?;
+        let doc_end = start
+            .checked_add(16)
+            .ok_or_else(|| SegmentError::Geometry("document id end overflow".to_owned()))?;
+        let revision_end = doc_end
+            .checked_add(8)
+            .ok_or_else(|| SegmentError::Geometry("revision end overflow".to_owned()))?;
+        let doc_id = bytes
+            .get(start..doc_end)
+            .and_then(|value| value.try_into().ok())
+            .map(u128::from_le_bytes)
+            .ok_or_else(|| SegmentError::Geometry(format!("document id row {row} is missing")))?;
+        let revision = bytes
+            .get(doc_end..revision_end)
+            .and_then(|value| value.try_into().ok())
+            .map(u64::from_le_bytes)
+            .ok_or_else(|| SegmentError::Geometry(format!("revision row {row} is missing")))?;
+        Ok(Some(DocumentVersion::new(
+            DocId::new(doc_id),
+            Revision::new(revision),
+        )))
     }
 
     /// Returns the validated, mmap-backed fixed-stride graph node-block region.
