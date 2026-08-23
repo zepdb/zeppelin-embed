@@ -6,3 +6,24 @@
 //! of it.
 
 pub mod tokenizer;
+
+/// The BM25 scorer and corpus statistics.
+pub mod bm25;
+
+/// Persisted posting blocks with positions.
+pub mod postings;
+
+/// Byte-quantized document length norms.
+pub mod norms;
+
+/// The sorted, front-coded term dictionary.
+pub mod dict;
+
+/// The lexical index across segments.
+pub mod index;
+
+/// The exhaustive-OR scorer and task 14 oracle.
+pub mod search;
+
+#[cfg(test)]
+mod properties;

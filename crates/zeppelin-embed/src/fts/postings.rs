@@ -1,0 +1,1145 @@
+//! The persisted posting format: bit-packed FOR blocks with positions.
+//!
+//! # Geometry, and why the block size is a header field
+//!
+//! Blocks hold [`DEFAULT_POSTINGS_PER_BLOCK`] postings. The research
+//! disagrees with itself usefully here: ~40 postings per block prunes best
+//! on GOV2 (3.6 ms against 4.2 ms at 128 — `research/02a:283`), but 128 is
+//! what makes SIMD decode clean in Lucene and tantivy. Both numbers are
+//! x86, on a 25M-document collection; neither transfers to a machine whose
+//! cache line is 128 bytes (`tasks/evidence/19-M0-platform-premises.md:14`).
+//!
+//! 64 is the judgement call: 64 sixteen-bit deltas is exactly one 128-byte
+//! line, and the block metadata row below is exactly 32 bytes, so four rows
+//! also fill one line and the array indexes by shift rather than by
+//! multiply. It is a cache-line argument, not a measurement, and it is
+//! **not** a size-saving choice.
+//!
+//! The block size is written into the region header, so re-tuning it later
+//! (task 27-B4 sweeps {32, 40, 64, 128}) changes a constant, never the
+//! format. Do not "fix" a golden by editing the constant.
+//!
+//! # Streams
+//!
+//! Structure-of-arrays, all little-endian, all hand-written:
+//!
+//! - **docid deltas**, frame-of-reference bit-packed per block;
+//! - **term frequencies**, bit-packed per block;
+//! - **positions**, delta-packed per posting, `tf` of them per posting —
+//!   the term frequency *is* the position count, so no separate count
+//!   stream exists.
+//!
+//! Positions are in the format from day one because retrofitting them is a
+//! format break (`research/03:484`). Task 15 reads them; task 13 only
+//! stores them.
+//!
+//! # Block maxima
+//!
+//! Each block carries a `u8` quantized ceiling on the BM25 contribution of
+//! any posting inside it. Task 14 reads it; task 13 writes it. Quantization
+//! **rounds up**, so a stored maximum is never below a true score — a bound
+//! that is too low would let pruning drop a document that belonged in the
+//! top-k, and that is a wrong answer, not a slow one.
+//!
+//! `u8` is enough: 8-bit uniform impact quantization is statistically
+//! indistinguishable from exact weights (Lin & Trotman, IRJ 2017). It is
+//! kept for metadata density per cache line, not to save bytes, and the
+//! same slot is deliberately shaped so a future caller-supplied impact
+//! could reuse it.
+
+use std::collections::BTreeMap;
+
+use super::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, term_score_ceiling};
+
+/// Postings per block. Persisted; see the module docs before changing it.
+pub const DEFAULT_POSTINGS_PER_BLOCK: u16 = 64;
+
+/// Bytes in one block-metadata row. Four rows fill a 128-byte cache line.
+pub const BLOCK_META_LEN: usize = 32;
+
+/// Magic prefixing an encoded posting list.
+const POSTINGS_MAGIC: [u8; 4] = *b"ZPST";
+
+/// Encoded-postings format version.
+const POSTINGS_VERSION: u16 = 1;
+
+/// A rejected or malformed posting stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostingsError {
+    /// The byte stream ended inside a structure.
+    Truncated {
+        /// Bytes the decoder needed.
+        needed: usize,
+        /// Bytes actually available.
+        available: usize,
+    },
+    /// The leading magic did not match.
+    BadMagic,
+    /// The declared version is not readable.
+    UnsupportedVersion {
+        /// Version found in the stream.
+        found: u16,
+    },
+    /// A declared bit width exceeded 32.
+    BitWidthTooLarge {
+        /// The rejected width.
+        bits: u8,
+    },
+    /// The block size in the header was zero.
+    ZeroBlockSize,
+    /// Document identifiers were not strictly ascending.
+    DocidsNotAscending {
+        /// The offending identifier.
+        docid: u32,
+    },
+    /// Positions within one posting were not strictly ascending.
+    PositionsNotAscending {
+        /// The offending position.
+        position: u32,
+    },
+    /// A term frequency was zero, which cannot occur in a posting list.
+    ZeroTermFrequency,
+    /// The stream declared more postings than its blocks can hold.
+    InconsistentPostingCount {
+        /// Postings declared in the header.
+        declared: u32,
+        /// Postings the blocks actually describe.
+        described: u32,
+    },
+}
+
+impl std::fmt::Display for PostingsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated { needed, available } => write!(
+                formatter,
+                "posting stream truncated: needed {needed} bytes, had {available}"
+            ),
+            Self::BadMagic => formatter.write_str("posting stream magic did not match"),
+            Self::UnsupportedVersion { found } => {
+                write!(formatter, "posting stream version {found} is not readable")
+            }
+            Self::BitWidthTooLarge { bits } => {
+                write!(formatter, "declared bit width {bits} exceeds 32")
+            }
+            Self::ZeroBlockSize => formatter.write_str("posting block size was zero"),
+            Self::DocidsNotAscending { docid } => {
+                write!(formatter, "document ids are not ascending at {docid}")
+            }
+            Self::PositionsNotAscending { position } => {
+                write!(formatter, "positions are not ascending at {position}")
+            }
+            Self::ZeroTermFrequency => formatter.write_str("a posting had a zero term frequency"),
+            Self::InconsistentPostingCount {
+                declared,
+                described,
+            } => write!(
+                formatter,
+                "header declares {declared} postings, blocks describe {described}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PostingsError {}
+
+/// One document's entry in a posting list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Posting {
+    /// Segment-local dense row id.
+    pub docid: u32,
+    /// Occurrences of the term in the document. Always at least one.
+    pub tf: u32,
+    /// Token positions, strictly ascending. Length equals `tf`.
+    pub positions: Vec<u32>,
+}
+
+/// An in-memory posting list for one term.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PostingList {
+    postings: Vec<Posting>,
+}
+
+impl PostingList {
+    /// Creates an empty list.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            postings: Vec::new(),
+        }
+    }
+
+    /// Returns the postings, ascending by document id.
+    #[must_use]
+    pub fn postings(&self) -> &[Posting] {
+        &self.postings
+    }
+
+    /// Returns the number of documents containing the term.
+    #[must_use]
+    pub fn document_frequency(&self) -> u32 {
+        u32::try_from(self.postings.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Returns true when no document contains the term.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.postings.is_empty()
+    }
+
+    /// Appends one posting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostingsError`] when document ids are not strictly
+    /// ascending, when positions are not strictly ascending, or when the
+    /// term frequency is zero. These are contract violations by the caller,
+    /// so they fail loudly rather than being repaired.
+    pub fn push(&mut self, posting: Posting) -> Result<(), PostingsError> {
+        if posting.tf == 0 || posting.positions.is_empty() {
+            return Err(PostingsError::ZeroTermFrequency);
+        }
+        if let Some(last) = self.postings.last()
+            && posting.docid <= last.docid
+        {
+            return Err(PostingsError::DocidsNotAscending {
+                docid: posting.docid,
+            });
+        }
+        let mut previous: Option<u32> = None;
+        for position in &posting.positions {
+            if let Some(earlier) = previous
+                && *position <= earlier
+            {
+                return Err(PostingsError::PositionsNotAscending {
+                    position: *position,
+                });
+            }
+            previous = Some(*position);
+        }
+        self.postings.push(posting);
+        Ok(())
+    }
+}
+
+/// Bits needed to represent the largest value in `values`.
+fn required_bits(values: &[u32]) -> u8 {
+    let maximum = values.iter().copied().max().unwrap_or(0);
+    if maximum == 0 {
+        0
+    } else {
+        // 32 - leading_zeros is in 1..=32 for a non-zero value.
+        u8::try_from(32 - maximum.leading_zeros()).unwrap_or(32)
+    }
+}
+
+/// Appends `values` to `output`, packed at `bits` each.
+fn pack_bits(values: &[u32], bits: u8, output: &mut Vec<u8>) {
+    if bits == 0 {
+        return;
+    }
+    let width = u32::from(bits);
+    let mut accumulator: u64 = 0;
+    let mut filled: u32 = 0;
+    for value in values {
+        accumulator |= u64::from(*value) << filled;
+        filled += width;
+        while filled >= 8 {
+            output.push((accumulator & 0xFF) as u8);
+            accumulator >>= 8;
+            filled -= 8;
+        }
+    }
+    if filled > 0 {
+        output.push((accumulator & 0xFF) as u8);
+    }
+}
+
+/// Bytes a packed run of `count` values at `bits` each occupies.
+const fn packed_len(count: usize, bits: u8) -> usize {
+    if bits == 0 {
+        return 0;
+    }
+    (count * bits as usize).div_ceil(8)
+}
+
+/// Unpacks `count` values at `bits` each from the front of `input`.
+///
+/// Returns the number of bytes consumed.
+///
+/// # Errors
+///
+/// Returns [`PostingsError::BitWidthTooLarge`] for a width above 32 and
+/// [`PostingsError::Truncated`] when `input` is too short. It never panics
+/// and never reads past `input`.
+pub fn unpack_bits(
+    input: &[u8],
+    bits: u8,
+    count: usize,
+    output: &mut [u32],
+) -> Result<usize, PostingsError> {
+    if bits > 32 {
+        return Err(PostingsError::BitWidthTooLarge { bits });
+    }
+    if bits == 0 {
+        for slot in output.iter_mut().take(count) {
+            *slot = 0;
+        }
+        return Ok(0);
+    }
+    let needed = packed_len(count, bits);
+    if input.len() < needed {
+        return Err(PostingsError::Truncated {
+            needed,
+            available: input.len(),
+        });
+    }
+    let width = u32::from(bits);
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1_u32 << width) - 1
+    };
+    let mut accumulator: u64 = 0;
+    let mut filled: u32 = 0;
+    let mut cursor = 0_usize;
+    for slot in output.iter_mut().take(count) {
+        while filled < width {
+            let byte = input.get(cursor).copied().unwrap_or(0);
+            cursor += 1;
+            accumulator |= u64::from(byte) << filled;
+            filled += 8;
+        }
+        *slot = (accumulator as u32) & mask;
+        accumulator >>= width;
+        filled -= width;
+    }
+    Ok(needed)
+}
+
+/// One block's metadata row, exactly [`BLOCK_META_LEN`] bytes on disk.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BlockMeta {
+    /// Largest document id in the block; the skip key.
+    pub last_docid: u32,
+    /// Byte offset of the block's packed docid deltas.
+    pub docids_offset: u32,
+    /// Byte offset of the block's packed term frequencies.
+    pub tfs_offset: u32,
+    /// Byte offset of the block's packed positions.
+    pub positions_offset: u32,
+    /// Packed positions in the block.
+    pub positions_count: u32,
+    /// Postings in the block; the final block may be partial.
+    pub count: u16,
+    /// Bit width of the docid deltas.
+    pub docid_bits: u8,
+    /// Bit width of the term frequencies.
+    pub tf_bits: u8,
+    /// Bit width of the position deltas.
+    pub position_bits: u8,
+    /// Quantized ceiling on any posting's BM25 contribution, rounded up.
+    pub block_max: u8,
+}
+
+impl BlockMeta {
+    fn write(&self, output: &mut Vec<u8>) {
+        output.extend_from_slice(&self.last_docid.to_le_bytes());
+        output.extend_from_slice(&self.docids_offset.to_le_bytes());
+        output.extend_from_slice(&self.tfs_offset.to_le_bytes());
+        output.extend_from_slice(&self.positions_offset.to_le_bytes());
+        output.extend_from_slice(&self.positions_count.to_le_bytes());
+        output.extend_from_slice(&self.count.to_le_bytes());
+        output.push(self.docid_bits);
+        output.push(self.tf_bits);
+        output.push(self.position_bits);
+        output.push(self.block_max);
+        // Explicit zero padding to BLOCK_META_LEN, reserved for future
+        // flags. 4 + 4 + 4 + 4 + 4 + 2 + 4 written above is 26 bytes.
+        output.extend_from_slice(&[0_u8; 6]);
+    }
+
+    fn read(input: &[u8]) -> Result<Self, PostingsError> {
+        let row = input.get(..BLOCK_META_LEN).ok_or(PostingsError::Truncated {
+            needed: BLOCK_META_LEN,
+            available: input.len(),
+        })?;
+        Ok(Self {
+            last_docid: read_u32(row, 0)?,
+            docids_offset: read_u32(row, 4)?,
+            tfs_offset: read_u32(row, 8)?,
+            positions_offset: read_u32(row, 12)?,
+            positions_count: read_u32(row, 16)?,
+            count: read_u16(row, 20)?,
+            docid_bits: read_u8(row, 22)?,
+            tf_bits: read_u8(row, 23)?,
+            position_bits: read_u8(row, 24)?,
+            block_max: read_u8(row, 25)?,
+        })
+    }
+}
+
+fn read_u8(input: &[u8], at: usize) -> Result<u8, PostingsError> {
+    input.get(at).copied().ok_or(PostingsError::Truncated {
+        needed: at + 1,
+        available: input.len(),
+    })
+}
+
+fn read_u16(input: &[u8], at: usize) -> Result<u16, PostingsError> {
+    let bytes = input.get(at..at + 2).ok_or(PostingsError::Truncated {
+        needed: at + 2,
+        available: input.len(),
+    })?;
+    let mut buffer = [0_u8; 2];
+    buffer.copy_from_slice(bytes);
+    Ok(u16::from_le_bytes(buffer))
+}
+
+fn read_u32(input: &[u8], at: usize) -> Result<u32, PostingsError> {
+    let bytes = input.get(at..at + 4).ok_or(PostingsError::Truncated {
+        needed: at + 4,
+        available: input.len(),
+    })?;
+    let mut buffer = [0_u8; 4];
+    buffer.copy_from_slice(bytes);
+    Ok(u32::from_le_bytes(buffer))
+}
+
+/// Quantizes a score ceiling into the `u8` block-max slot, rounding up.
+///
+/// `scale` is the largest ceiling in the index; scores are expressed as a
+/// fraction of it. Rounding up is mandatory: a stored maximum below a true
+/// score would let task 14 prune a document that belonged in the top-k.
+#[must_use]
+pub fn quantize_block_max(score: f64, scale: f64) -> u8 {
+    if !score.is_finite() || score <= 0.0 {
+        return 0;
+    }
+    if !scale.is_finite() || scale <= 0.0 {
+        return u8::MAX;
+    }
+    let fraction = score / scale;
+    if fraction >= 1.0 {
+        return u8::MAX;
+    }
+    let raw = (fraction * f64::from(u8::MAX)).ceil();
+    if raw >= f64::from(u8::MAX) {
+        u8::MAX
+    } else {
+        raw as u8
+    }
+}
+
+/// Reconstructs an upper bound from a quantized block maximum.
+///
+/// The result is always at or above the score that produced it, because
+/// [`quantize_block_max`] rounded up.
+#[must_use]
+pub fn dequantize_block_max(quantized: u8, scale: f64) -> f64 {
+    if !scale.is_finite() || scale <= 0.0 {
+        return f64::INFINITY;
+    }
+    f64::from(quantized) / f64::from(u8::MAX) * scale
+}
+
+/// An encoded posting list: header, block metadata rows, then the streams.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EncodedPostings {
+    bytes: Vec<u8>,
+}
+
+impl EncodedPostings {
+    /// Returns the encoded bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Wraps already-encoded bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+/// Header length: magic, version, block size, posting and block counts.
+const HEADER_LEN: usize = 16;
+
+/// Encodes one posting list.
+///
+/// `block_max_scores` supplies the per-block quantized ceilings; pass an
+/// empty slice to store zeros, which task 14 reads as "no bound available"
+/// and evaluates exhaustively.
+///
+/// # Errors
+///
+/// Returns [`PostingsError::ZeroBlockSize`] when the geometry is degenerate.
+pub fn encode(
+    list: &PostingList,
+    postings_per_block: u16,
+    block_maxima: &[u8],
+) -> Result<EncodedPostings, PostingsError> {
+    if postings_per_block == 0 {
+        return Err(PostingsError::ZeroBlockSize);
+    }
+    let per_block = usize::from(postings_per_block);
+    let postings = list.postings();
+    let block_count = postings.len().div_ceil(per_block);
+
+    let mut docid_stream: Vec<u8> = Vec::new();
+    let mut tf_stream: Vec<u8> = Vec::new();
+    let mut position_stream: Vec<u8> = Vec::new();
+    let mut metadata: Vec<BlockMeta> = Vec::with_capacity(block_count);
+
+    let mut previous_last_docid = 0_u32;
+    for (index, chunk) in postings.chunks(per_block).enumerate() {
+        let mut deltas: Vec<u32> = Vec::with_capacity(chunk.len());
+        let mut frequencies: Vec<u32> = Vec::with_capacity(chunk.len());
+        let mut position_deltas: Vec<u32> = Vec::new();
+
+        let mut base = previous_last_docid;
+        for (offset, posting) in chunk.iter().enumerate() {
+            // The very first posting of the list is stored absolutely; every
+            // other delta is a gap from the previous document id.
+            let delta = if index == 0 && offset == 0 {
+                posting.docid
+            } else {
+                posting.docid.saturating_sub(base)
+            };
+            deltas.push(delta);
+            frequencies.push(posting.tf);
+            let mut previous_position = 0_u32;
+            for (slot, position) in posting.positions.iter().enumerate() {
+                let gap = if slot == 0 {
+                    *position
+                } else {
+                    position.saturating_sub(previous_position)
+                };
+                position_deltas.push(gap);
+                previous_position = *position;
+            }
+            base = posting.docid;
+        }
+        previous_last_docid = base;
+
+        let docid_bits = required_bits(&deltas);
+        let tf_bits = required_bits(&frequencies);
+        let position_bits = required_bits(&position_deltas);
+
+        let meta = BlockMeta {
+            last_docid: base,
+            docids_offset: u32::try_from(docid_stream.len()).unwrap_or(u32::MAX),
+            tfs_offset: u32::try_from(tf_stream.len()).unwrap_or(u32::MAX),
+            positions_offset: u32::try_from(position_stream.len()).unwrap_or(u32::MAX),
+            positions_count: u32::try_from(position_deltas.len()).unwrap_or(u32::MAX),
+            count: u16::try_from(chunk.len()).unwrap_or(u16::MAX),
+            docid_bits,
+            tf_bits,
+            position_bits,
+            block_max: block_maxima.get(index).copied().unwrap_or(0),
+        };
+
+        pack_bits(&deltas, docid_bits, &mut docid_stream);
+        pack_bits(&frequencies, tf_bits, &mut tf_stream);
+        pack_bits(&position_deltas, position_bits, &mut position_stream);
+        metadata.push(meta);
+    }
+
+    let mut bytes = Vec::with_capacity(
+        HEADER_LEN
+            + metadata.len() * BLOCK_META_LEN
+            + docid_stream.len()
+            + tf_stream.len()
+            + position_stream.len(),
+    );
+    bytes.extend_from_slice(&POSTINGS_MAGIC);
+    bytes.extend_from_slice(&POSTINGS_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&postings_per_block.to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(postings.len()).unwrap_or(u32::MAX).to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(metadata.len()).unwrap_or(u32::MAX).to_le_bytes());
+    for meta in &metadata {
+        meta.write(&mut bytes);
+    }
+    bytes.extend_from_slice(&docid_stream);
+    bytes.extend_from_slice(&tf_stream);
+    bytes.extend_from_slice(&position_stream);
+
+    Ok(EncodedPostings { bytes })
+}
+
+/// A validated view over an encoded posting list.
+#[derive(Clone, Debug)]
+pub struct PostingsReader<'bytes> {
+    blocks: Vec<BlockMeta>,
+    docids: &'bytes [u8],
+    tfs: &'bytes [u8],
+    positions: &'bytes [u8],
+    posting_count: u32,
+    postings_per_block: u16,
+}
+
+impl<'bytes> PostingsReader<'bytes> {
+    /// Validates and opens an encoded posting list.
+    ///
+    /// Every structural claim the bytes make is checked here, so the
+    /// iteration methods below cannot fail on a reader that exists. Corrupt
+    /// bytes produce a typed error and never a panic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostingsError`] for bad magic, an unreadable version, a
+    /// zero block size, an oversized bit width, an inconsistent posting
+    /// count, or truncation anywhere.
+    pub fn open(bytes: &'bytes [u8]) -> Result<Self, PostingsError> {
+        let header = bytes.get(..HEADER_LEN).ok_or(PostingsError::Truncated {
+            needed: HEADER_LEN,
+            available: bytes.len(),
+        })?;
+        if header.get(..4) != Some(&POSTINGS_MAGIC[..]) {
+            return Err(PostingsError::BadMagic);
+        }
+        let version = read_u16(header, 4)?;
+        if version != POSTINGS_VERSION {
+            return Err(PostingsError::UnsupportedVersion { found: version });
+        }
+        let postings_per_block = read_u16(header, 6)?;
+        if postings_per_block == 0 {
+            return Err(PostingsError::ZeroBlockSize);
+        }
+        let posting_count = read_u32(header, 8)?;
+        let block_count = read_u32(header, 12)?;
+
+        let block_count_usize = usize::try_from(block_count).unwrap_or(usize::MAX);
+        let metadata_len = block_count_usize
+            .checked_mul(BLOCK_META_LEN)
+            .ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: bytes.len(),
+            })?;
+        let metadata_end =
+            HEADER_LEN
+                .checked_add(metadata_len)
+                .ok_or(PostingsError::Truncated {
+                    needed: usize::MAX,
+                    available: bytes.len(),
+                })?;
+        let metadata_bytes =
+            bytes
+                .get(HEADER_LEN..metadata_end)
+                .ok_or(PostingsError::Truncated {
+                    needed: metadata_end,
+                    available: bytes.len(),
+                })?;
+
+        let mut blocks = Vec::with_capacity(block_count_usize);
+        let mut described = 0_u32;
+        let mut docid_bytes = 0_usize;
+        let mut tf_bytes = 0_usize;
+        let mut position_bytes = 0_usize;
+        for index in 0..block_count_usize {
+            let start = index.saturating_mul(BLOCK_META_LEN);
+            let row = metadata_bytes
+                .get(start..start + BLOCK_META_LEN)
+                .ok_or(PostingsError::Truncated {
+                    needed: start + BLOCK_META_LEN,
+                    available: metadata_bytes.len(),
+                })?;
+            let meta = BlockMeta::read(row)?;
+            for bits in [meta.docid_bits, meta.tf_bits, meta.position_bits] {
+                if bits > 32 {
+                    return Err(PostingsError::BitWidthTooLarge { bits });
+                }
+            }
+            if meta.count == 0 || meta.count > postings_per_block {
+                return Err(PostingsError::InconsistentPostingCount {
+                    declared: posting_count,
+                    described: described.saturating_add(u32::from(meta.count)),
+                });
+            }
+            described = described.saturating_add(u32::from(meta.count));
+            let count = usize::from(meta.count);
+            docid_bytes = docid_bytes.max(
+                usize::try_from(meta.docids_offset).unwrap_or(usize::MAX)
+                    + packed_len(count, meta.docid_bits),
+            );
+            tf_bytes = tf_bytes.max(
+                usize::try_from(meta.tfs_offset).unwrap_or(usize::MAX)
+                    + packed_len(count, meta.tf_bits),
+            );
+            position_bytes = position_bytes.max(
+                usize::try_from(meta.positions_offset).unwrap_or(usize::MAX)
+                    + packed_len(
+                        usize::try_from(meta.positions_count).unwrap_or(usize::MAX),
+                        meta.position_bits,
+                    ),
+            );
+            blocks.push(meta);
+        }
+        if described != posting_count {
+            return Err(PostingsError::InconsistentPostingCount {
+                declared: posting_count,
+                described,
+            });
+        }
+
+        let streams = bytes.get(metadata_end..).ok_or(PostingsError::Truncated {
+            needed: metadata_end,
+            available: bytes.len(),
+        })?;
+        let tf_start = docid_bytes;
+        let position_start = tf_start
+            .checked_add(tf_bytes)
+            .ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: streams.len(),
+            })?;
+        let position_end =
+            position_start
+                .checked_add(position_bytes)
+                .ok_or(PostingsError::Truncated {
+                    needed: usize::MAX,
+                    available: streams.len(),
+                })?;
+        if streams.len() < position_end {
+            return Err(PostingsError::Truncated {
+                needed: position_end,
+                available: streams.len(),
+            });
+        }
+        let docids = streams.get(..tf_start).ok_or(PostingsError::Truncated {
+            needed: tf_start,
+            available: streams.len(),
+        })?;
+        let tfs = streams
+            .get(tf_start..position_start)
+            .ok_or(PostingsError::Truncated {
+                needed: position_start,
+                available: streams.len(),
+            })?;
+        let positions = streams
+            .get(position_start..position_end)
+            .ok_or(PostingsError::Truncated {
+                needed: position_end,
+                available: streams.len(),
+            })?;
+
+        Ok(Self {
+            blocks,
+            docids,
+            tfs,
+            positions,
+            posting_count,
+            postings_per_block,
+        })
+    }
+
+    /// Returns the block metadata rows.
+    #[must_use]
+    pub fn blocks(&self) -> &[BlockMeta] {
+        &self.blocks
+    }
+
+    /// Returns the postings-per-block geometry recorded in the header.
+    #[must_use]
+    pub const fn postings_per_block(&self) -> u16 {
+        self.postings_per_block
+    }
+
+    /// Returns the total posting count.
+    #[must_use]
+    pub const fn document_frequency(&self) -> u32 {
+        self.posting_count
+    }
+
+    /// Decodes one block into document ids, frequencies, and positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostingsError::Truncated`] when a stream is short. Bounds
+    /// were validated at [`PostingsReader::open`], so a well-formed reader
+    /// decodes every block successfully.
+    pub fn decode_block(&self, index: usize) -> Result<Vec<Posting>, PostingsError> {
+        let Some(meta) = self.blocks.get(index) else {
+            return Ok(Vec::new());
+        };
+        let count = usize::from(meta.count);
+        let mut deltas = vec![0_u32; count];
+        let docid_start = usize::try_from(meta.docids_offset).unwrap_or(usize::MAX);
+        let docid_slice = self
+            .docids
+            .get(docid_start..)
+            .ok_or(PostingsError::Truncated {
+                needed: docid_start,
+                available: self.docids.len(),
+            })?;
+        unpack_bits(docid_slice, meta.docid_bits, count, &mut deltas)?;
+
+        let mut frequencies = vec![0_u32; count];
+        let tf_start = usize::try_from(meta.tfs_offset).unwrap_or(usize::MAX);
+        let tf_slice = self.tfs.get(tf_start..).ok_or(PostingsError::Truncated {
+            needed: tf_start,
+            available: self.tfs.len(),
+        })?;
+        unpack_bits(tf_slice, meta.tf_bits, count, &mut frequencies)?;
+
+        let position_count = usize::try_from(meta.positions_count).unwrap_or(usize::MAX);
+        let mut position_deltas = vec![0_u32; position_count];
+        let position_start = usize::try_from(meta.positions_offset).unwrap_or(usize::MAX);
+        let position_slice =
+            self.positions
+                .get(position_start..)
+                .ok_or(PostingsError::Truncated {
+                    needed: position_start,
+                    available: self.positions.len(),
+                })?;
+        unpack_bits(
+            position_slice,
+            meta.position_bits,
+            position_count,
+            &mut position_deltas,
+        )?;
+
+        // Reconstruct absolute ids by prefix sum over the block.
+        let mut base = if index == 0 {
+            0
+        } else {
+            self.blocks
+                .get(index.saturating_sub(1))
+                .map_or(0, |previous| previous.last_docid)
+        };
+        let mut postings = Vec::with_capacity(count);
+        let mut position_cursor = 0_usize;
+        for slot in 0..count {
+            let delta = deltas.get(slot).copied().unwrap_or(0);
+            let docid = if index == 0 && slot == 0 {
+                delta
+            } else {
+                base.saturating_add(delta)
+            };
+            base = docid;
+            let tf = frequencies.get(slot).copied().unwrap_or(0);
+            if tf == 0 {
+                return Err(PostingsError::ZeroTermFrequency);
+            }
+            let tf_usize = usize::try_from(tf).unwrap_or(usize::MAX);
+            let mut positions = Vec::with_capacity(tf_usize.min(position_count));
+            let mut running = 0_u32;
+            for step in 0..tf_usize {
+                let Some(gap) = position_deltas.get(position_cursor + step).copied() else {
+                    return Err(PostingsError::Truncated {
+                        needed: position_cursor + step + 1,
+                        available: position_deltas.len(),
+                    });
+                };
+                running = if step == 0 {
+                    gap
+                } else {
+                    running.saturating_add(gap)
+                };
+                positions.push(running);
+            }
+            position_cursor = position_cursor.saturating_add(tf_usize);
+            postings.push(Posting {
+                docid,
+                tf,
+                positions,
+            });
+        }
+        Ok(postings)
+    }
+
+    /// Decodes the whole list.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`PostingsError`] from block decoding.
+    pub fn decode_all(&self) -> Result<PostingList, PostingsError> {
+        let mut list = PostingList::new();
+        for index in 0..self.blocks.len() {
+            for posting in self.decode_block(index)? {
+                list.push(posting)?;
+            }
+        }
+        Ok(list)
+    }
+}
+
+/// Computes the per-block quantized maxima for one term's postings.
+///
+/// The ceiling for a block is the largest BM25 contribution any posting in
+/// it can produce: the term's idf times the tf-saturation factor, evaluated
+/// at the block's largest term frequency and shortest document.
+#[must_use]
+pub fn block_maxima(
+    list: &PostingList,
+    postings_per_block: u16,
+    lengths: &BTreeMap<u32, u32>,
+    stats: &CorpusStats,
+    params: Bm25Params,
+    scale: f64,
+) -> Vec<u8> {
+    if postings_per_block == 0 {
+        return Vec::new();
+    }
+    let df = Df(list.document_frequency());
+    list.postings()
+        .chunks(usize::from(postings_per_block))
+        .map(|chunk| {
+            let mut best = 0.0_f64;
+            for posting in chunk {
+                let length = lengths.get(&posting.docid).copied().unwrap_or(1);
+                let score = super::bm25::term_score(
+                    Tf(posting.tf),
+                    df,
+                    DocLen(length),
+                    stats,
+                    params,
+                );
+                if score > best {
+                    best = score;
+                }
+            }
+            // The absolute ceiling is a safe fallback if the block is empty.
+            if best <= 0.0 {
+                best = term_score_ceiling(df, stats, params);
+            }
+            quantize_block_max(best, scale)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+mod tests {
+    use super::*;
+
+    fn list_from(entries: &[(u32, &[u32])]) -> PostingList {
+        let mut list = PostingList::new();
+        for (docid, positions) in entries {
+            list.push(Posting {
+                docid: *docid,
+                tf: u32::try_from(positions.len()).expect("small"),
+                positions: positions.to_vec(),
+            })
+            .expect("ascending fixture");
+        }
+        list
+    }
+
+    #[test]
+    fn a_single_block_round_trips() {
+        let list = list_from(&[(0, &[0, 5]), (3, &[2]), (9, &[1, 4, 7])]);
+        let encoded = encode(&list, DEFAULT_POSTINGS_PER_BLOCK, &[]).expect("encodes");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+        assert_eq!(reader.document_frequency(), 3);
+        assert_eq!(reader.postings_per_block(), DEFAULT_POSTINGS_PER_BLOCK);
+        assert_eq!(reader.decode_all().expect("decodes"), list);
+    }
+
+    #[test]
+    fn many_blocks_round_trip_across_the_geometry_boundary() {
+        for count in [1_usize, 63, 64, 65, 128, 200] {
+            let mut list = PostingList::new();
+            for index in 0..count {
+                let docid = u32::try_from(index * 3).expect("small");
+                list.push(Posting {
+                    docid,
+                    tf: 2,
+                    positions: vec![index as u32, index as u32 + 7],
+                })
+                .expect("ascending");
+            }
+            let encoded = encode(&list, DEFAULT_POSTINGS_PER_BLOCK, &[]).expect("encodes");
+            let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+            assert_eq!(
+                reader.blocks().len(),
+                count.div_ceil(usize::from(DEFAULT_POSTINGS_PER_BLOCK)),
+                "block count for {count} postings"
+            );
+            assert_eq!(reader.decode_all().expect("decodes"), list, "count {count}");
+        }
+    }
+
+    #[test]
+    fn the_block_metadata_row_is_exactly_one_quarter_of_a_cache_line() {
+        let mut bytes = Vec::new();
+        BlockMeta::default().write(&mut bytes);
+        assert_eq!(bytes.len(), BLOCK_META_LEN);
+        assert_eq!(BLOCK_META_LEN * 4, 128);
+    }
+
+    #[test]
+    fn an_empty_list_encodes_and_decodes() {
+        let list = PostingList::new();
+        let encoded = encode(&list, DEFAULT_POSTINGS_PER_BLOCK, &[]).expect("encodes");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+        assert_eq!(reader.document_frequency(), 0);
+        assert!(reader.decode_all().expect("decodes").is_empty());
+    }
+
+    #[test]
+    fn bit_widths_at_every_boundary_round_trip() {
+        for bits in 0..=32_u8 {
+            let value = if bits == 0 {
+                0
+            } else if bits == 32 {
+                u32::MAX
+            } else {
+                (1_u32 << bits) - 1
+            };
+            let values = vec![value; 64];
+            let mut packed = Vec::new();
+            pack_bits(&values, bits, &mut packed);
+            let mut output = vec![0_u32; 64];
+            let consumed = unpack_bits(&packed, bits, 64, &mut output).expect("unpacks");
+            assert_eq!(consumed, packed_len(64, bits), "width {bits}");
+            assert_eq!(output, values, "width {bits}");
+        }
+    }
+
+    #[test]
+    fn an_oversized_bit_width_is_a_typed_error() {
+        let mut output = [0_u32; 4];
+        assert_eq!(
+            unpack_bits(&[0; 32], 33, 4, &mut output),
+            Err(PostingsError::BitWidthTooLarge { bits: 33 })
+        );
+    }
+
+    #[test]
+    fn a_truncated_packed_run_is_a_typed_error() {
+        let mut output = [0_u32; 64];
+        let error = unpack_bits(&[0; 2], 8, 64, &mut output).expect_err("must refuse");
+        assert!(matches!(error, PostingsError::Truncated { .. }));
+    }
+
+    #[test]
+    fn out_of_order_docids_are_refused_rather_than_sorted() {
+        let mut list = PostingList::new();
+        list.push(Posting {
+            docid: 5,
+            tf: 1,
+            positions: vec![0],
+        })
+        .expect("first");
+        assert_eq!(
+            list.push(Posting {
+                docid: 5,
+                tf: 1,
+                positions: vec![0],
+            }),
+            Err(PostingsError::DocidsNotAscending { docid: 5 })
+        );
+    }
+
+    #[test]
+    fn out_of_order_positions_are_refused() {
+        let mut list = PostingList::new();
+        assert_eq!(
+            list.push(Posting {
+                docid: 0,
+                tf: 2,
+                positions: vec![4, 4],
+            }),
+            Err(PostingsError::PositionsNotAscending { position: 4 })
+        );
+    }
+
+    #[test]
+    fn a_zero_frequency_posting_is_refused() {
+        let mut list = PostingList::new();
+        assert_eq!(
+            list.push(Posting {
+                docid: 0,
+                tf: 0,
+                positions: vec![],
+            }),
+            Err(PostingsError::ZeroTermFrequency)
+        );
+    }
+
+    #[test]
+    fn quantization_of_block_maxima_always_rounds_up() {
+        let scale = 10.0;
+        for numerator in 0..=1000_u32 {
+            let score = f64::from(numerator) / 100.0;
+            if score > scale {
+                continue;
+            }
+            let quantized = quantize_block_max(score, scale);
+            let restored = dequantize_block_max(quantized, scale);
+            assert!(
+                restored >= score - 1e-12,
+                "bound {restored} fell below the score {score} it must cover"
+            );
+        }
+    }
+
+    #[test]
+    fn quantization_edges_are_saturating_not_wrapping() {
+        assert_eq!(quantize_block_max(0.0, 10.0), 0);
+        assert_eq!(quantize_block_max(-1.0, 10.0), 0);
+        assert_eq!(quantize_block_max(10.0, 10.0), u8::MAX);
+        assert_eq!(quantize_block_max(1e18, 10.0), u8::MAX);
+        assert_eq!(quantize_block_max(f64::NAN, 10.0), 0);
+        assert_eq!(quantize_block_max(1.0, 0.0), u8::MAX);
+    }
+
+    #[test]
+    fn bad_magic_and_version_are_typed_errors() {
+        let list = list_from(&[(0, &[0])]);
+        let encoded = encode(&list, 64, &[]).expect("encodes");
+        let mut bytes = encoded.as_bytes().to_vec();
+        bytes[0] = b'X';
+        assert_eq!(
+            PostingsReader::open(&bytes).err(),
+            Some(PostingsError::BadMagic)
+        );
+
+        let mut bytes = encoded.as_bytes().to_vec();
+        bytes[4] = 9;
+        assert_eq!(
+            PostingsReader::open(&bytes).err(),
+            Some(PostingsError::UnsupportedVersion { found: 9 })
+        );
+    }
+
+    #[test]
+    fn a_zero_block_size_header_is_refused() {
+        let list = list_from(&[(0, &[0])]);
+        let encoded = encode(&list, 64, &[]).expect("encodes");
+        let mut bytes = encoded.as_bytes().to_vec();
+        bytes[6] = 0;
+        bytes[7] = 0;
+        assert_eq!(
+            PostingsReader::open(&bytes).err(),
+            Some(PostingsError::ZeroBlockSize)
+        );
+        assert_eq!(
+            encode(&list, 0, &[]).err(),
+            Some(PostingsError::ZeroBlockSize)
+        );
+    }
+
+    #[test]
+    fn every_truncation_of_a_valid_stream_is_a_typed_error_not_a_panic() {
+        let list = list_from(&[(0, &[0, 3]), (7, &[1]), (100, &[2, 9, 40])]);
+        let encoded = encode(&list, 2, &[]).expect("encodes");
+        let bytes = encoded.as_bytes();
+        for cut in 0..bytes.len() {
+            let truncated = &bytes[..cut];
+            // A prefix that still parses must decode without panic.
+            if let Ok(reader) = PostingsReader::open(truncated) {
+                for index in 0..reader.blocks().len() {
+                    let _ = reader.decode_block(index);
+                }
+            }
+        }
+    }
+}
