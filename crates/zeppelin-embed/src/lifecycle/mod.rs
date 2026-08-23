@@ -1,18 +1,22 @@
 //! Store lifecycle and memory accounting.
 
 mod budget;
+pub(crate) mod cancel;
 mod close;
 pub mod durability;
 pub mod lock;
+mod pool;
 mod snapshot;
 mod stats;
 
+pub use cancel::{CancelToken, Deadline, DeadlineError, QueryControl, QueryError};
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
 };
 pub use stats::Stats;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
@@ -192,6 +196,20 @@ pub enum StoreError {
     BackgroundHandshake,
     /// The lifecycle background thread panicked before close joined it.
     BackgroundThreadPanicked,
+    /// A persistent query worker thread could not be created.
+    QueryPoolStart {
+        /// Operating-system thread creation failure.
+        source: std::io::Error,
+    },
+    /// A persistent query worker exited before its startup handshake.
+    QueryPoolHandshake,
+    /// A persistent query worker panicked before close joined it.
+    QueryPoolThreadPanicked,
+    /// The operating system could not report a usable query-worker count.
+    QueryPoolCapacity {
+        /// CPU-topology failure text.
+        source: String,
+    },
     /// A lifecycle synchronization primitive was poisoned.
     Synchronization {
         /// Synchronization component that rejected the operation.
@@ -255,6 +273,16 @@ impl std::fmt::Display for StoreError {
             Self::BackgroundThreadPanicked => {
                 formatter.write_str("store lifecycle thread panicked")
             }
+            Self::QueryPoolStart { source } => {
+                write!(formatter, "store query worker could not start: {source}")
+            }
+            Self::QueryPoolHandshake => {
+                formatter.write_str("store query worker startup handshake failed")
+            }
+            Self::QueryPoolThreadPanicked => formatter.write_str("store query worker panicked"),
+            Self::QueryPoolCapacity { source } => {
+                write!(formatter, "store query worker capacity failed: {source}")
+            }
             Self::Synchronization { component } => {
                 write!(
                     formatter,
@@ -276,6 +304,7 @@ impl std::error::Error for StoreError {
             Self::Wal(error) => Some(error),
             Self::Statistics { source, .. } => Some(source),
             Self::BackgroundStart { source } => Some(source),
+            Self::QueryPoolStart { source } => Some(source),
             Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
             | Self::BudgetExceeded { .. }
@@ -288,6 +317,9 @@ impl std::error::Error for StoreError {
             | Self::ReadCancelled
             | Self::BackgroundHandshake
             | Self::BackgroundThreadPanicked
+            | Self::QueryPoolHandshake
+            | Self::QueryPoolThreadPanicked
+            | Self::QueryPoolCapacity { .. }
             | Self::Synchronization { .. } => None,
         }
     }
@@ -299,11 +331,13 @@ pub struct Store {
     pub(crate) state: Mutex<StoreState>,
     pub(crate) state_changed: Condvar,
     pub(crate) background: Mutex<Option<BackgroundThread>>,
+    pub(crate) query_pool: Mutex<Option<Arc<pool::QueryPool>>>,
     pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
     pub(crate) durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
+    pub(crate) active_queries: AtomicU64,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
@@ -369,11 +403,13 @@ impl Store {
             state: Mutex::new(StoreState::Open),
             state_changed: Condvar::new(),
             background: Mutex::new(background),
+            query_pool: Mutex::new(None),
             snapshot: RwLock::new(None),
             writer_lock: Mutex::new(writer_lock),
             durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
+            active_queries: AtomicU64::new(0),
             #[cfg(test)]
             teardown_probe,
         };
@@ -432,6 +468,79 @@ impl Store {
         *published = Some(Arc::new(snapshot));
         drop(state);
         Ok(())
+    }
+
+    /// Runs one exact parallel scan admitted against this store's snapshot.
+    ///
+    /// The query holds one snapshot lease for its complete execution and uses
+    /// the store's lazily started persistent worker pool.
+    pub fn top_k_with_options(
+        &self,
+        request: crate::scan::ScanRequest<'_>,
+        k: usize,
+        options: crate::scan::ScanOptions,
+        control: QueryControl,
+    ) -> Result<crate::scan::ScanOutcome, QueryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed)),
+        }
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| {
+                QueryError::Store(StoreError::Synchronization {
+                    component: "published snapshot",
+                })
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(QueryError::Store(StoreError::Closed))?;
+        let mut pool_slot = self.query_pool.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "query pool",
+            })
+        })?;
+        if pool_slot.is_none() {
+            let capacity = crate::scan::physical_thread_capacity().map_err(|error| {
+                QueryError::Store(StoreError::QueryPoolCapacity {
+                    source: error.to_string(),
+                })
+            })?;
+            let pool =
+                pool::QueryPool::start(capacity, &self.accounting).map_err(QueryError::Store)?;
+            *pool_slot = Some(Arc::new(pool));
+        }
+        let pool = pool_slot.as_ref().cloned().ok_or({
+            QueryError::Store(StoreError::Synchronization {
+                component: "query pool initialization",
+            })
+        })?;
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let active = ActiveQuery {
+            count: &self.active_queries,
+        };
+        drop(pool_slot);
+        drop(state);
+
+        let result = pool.execute(request, k, options, control, SnapshotLease::new(snapshot));
+        drop(active);
+        result
+    }
+}
+
+struct ActiveQuery<'a> {
+    count: &'a AtomicU64,
+}
+
+impl Drop for ActiveQuery<'_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

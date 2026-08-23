@@ -35,3 +35,7 @@ harness = false
 [[bench]]
 name = "scan"
 harness = false
+
+[[bench]]
+name = "query_pool"
+harness = false

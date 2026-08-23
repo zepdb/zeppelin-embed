@@ -263,3 +263,22 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   20-iteration gate that requires the exact accounting sources for
   `Stats::mapped_bytes` and `Stats::resident_owned_bytes` to return to zero
   after every close; `Store::stats()` itself remains unavailable once closed.
+
+## Task 09 Part D query-lifecycle invariants
+
+- Every store-admitted parallel scan carries exactly one `Deadline` or
+  `CancelToken`, holds its snapshot lease until every partition has stopped,
+  and returns no candidates on timeout, caller cancellation, or close
+  cancellation. All three typed errors report `partial: false`.
+- Scan partitions check cancellation before work and every 64 rows (every 16
+  Bit4 four-row batches). The query caller converts a monotonic deadline into
+  the same relaxed atomic state while workers run, so hot loops do not read the
+  clock or take a mutex. Cancellation is never deferred to a partition edge.
+- Parallel scans run only on the store's lazily started persistent explicit
+  worker pool. Worker ids come from the threads that execute production
+  partitions, and `close()` cancels admitted queries, joins every parked
+  worker, then releases the mapped snapshot. The low-level `scan::top_k`
+  primitive remains single-threaded and outside store lifecycle admission.
+- The persistent worker-registry vector is an accounted store arena:
+  `Stats::query_pool_bytes` contributes exactly to `resident_owned_bytes` for
+  the pool's lifetime and returns to zero when close drops the pool.

@@ -13,6 +13,7 @@ pub(crate) enum AllocationComponent {
     Wal,
     Cache,
     Temporary,
+    QueryPool,
 }
 
 impl AllocationComponent {
@@ -22,6 +23,7 @@ impl AllocationComponent {
             Self::Wal => "wal",
             Self::Cache => "cache",
             Self::Temporary => "temporary",
+            Self::QueryPool => "query pool",
         }
     }
 
@@ -37,6 +39,7 @@ struct AccountingState {
     cache_bytes: u64,
     temporary_bytes: u64,
     snapshot_bytes: u64,
+    query_pool_bytes: u64,
     mapped_bytes: u64,
 }
 
@@ -55,6 +58,7 @@ impl Accounting {
                 cache_bytes: 0,
                 temporary_bytes: 0,
                 snapshot_bytes: 0,
+                query_pool_bytes: 0,
                 mapped_bytes: 0,
             }),
         }
@@ -94,6 +98,9 @@ impl Accounting {
                 state.cache_bytes = state.cache_bytes.saturating_add(bytes);
             }
             AllocationComponent::Temporary => state.temporary_bytes = temporary,
+            AllocationComponent::QueryPool => {
+                state.query_pool_bytes = state.query_pool_bytes.saturating_add(bytes);
+            }
         }
         drop(state);
         Ok(())
@@ -109,6 +116,7 @@ impl Accounting {
             cache_bytes: state.cache_bytes,
             temporary_bytes: state.temporary_bytes,
             snapshot_bytes: state.snapshot_bytes,
+            query_pool_bytes: state.query_pool_bytes,
             mapped_bytes: state.mapped_bytes,
         })
     }
@@ -143,6 +151,7 @@ pub(crate) struct AccountingAudit {
     pub(crate) cache_bytes: u64,
     pub(crate) temporary_bytes: u64,
     pub(crate) snapshot_bytes: u64,
+    pub(crate) query_pool_bytes: u64,
     pub(crate) mapped_bytes: u64,
 }
 
@@ -152,6 +161,7 @@ impl AccountingAudit {
             .saturating_add(self.cache_bytes)
             .saturating_add(self.temporary_bytes)
             .saturating_add(self.snapshot_bytes)
+            .saturating_add(self.query_pool_bytes)
     }
 }
 
@@ -210,6 +220,9 @@ impl Drop for Reservation {
             }
             AllocationComponent::Temporary => {
                 state.temporary_bytes = state.temporary_bytes.saturating_sub(self.bytes);
+            }
+            AllocationComponent::QueryPool => {
+                state.query_pool_bytes = state.query_pool_bytes.saturating_sub(self.bytes);
             }
         }
     }
@@ -319,6 +332,10 @@ impl<T> Accounted<Vec<T>> {
         Ok(())
     }
 
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
+        self.value.as_mut_slice()
+    }
+
     pub(crate) fn reserve_additional_bytes(&mut self, additional: u64) -> Result<(), StoreError> {
         match self._reservation.as_mut() {
             Some(reservation) => reservation.grow(additional),
@@ -373,8 +390,14 @@ pub struct Stats {
     pub cache_bytes: u64,
     /// Exact bytes in live, explicitly accounted temporary allocations.
     pub temporary_bytes: u64,
+    /// Exact capacity in bytes of the persistent query pool's worker registry.
+    pub query_pool_bytes: u64,
     /// Exact number of file descriptors retained by this store handle.
     pub open_files: u64,
+    /// Exact number of store-admitted queries that have not yet returned.
+    pub active_queries: u64,
+    /// Exact number of snapshot leases held outside the published snapshot slot.
+    pub active_snapshot_leases: u64,
     /// Darwin's `TASK_VM_INFO` physical-footprint kernel counter, or `None` on
     /// platforms where that counter does not exist.
     pub phys_footprint: Option<u64>,
@@ -403,6 +426,9 @@ impl Store {
                 component: "writer lock",
             })?;
         let open_files = u64::from(writer_lock.is_some());
+        let active_queries = self
+            .active_queries
+            .load(std::sync::atomic::Ordering::Relaxed);
         let accounting = self.accounting.audit()?;
         if accounting.resident_owned_bytes != accounting.component_sum() {
             return Err(StoreError::Statistics {
@@ -419,6 +445,11 @@ impl Store {
                 component: "published snapshot",
             })?;
         let snapshot = snapshot_guard.as_ref().ok_or(StoreError::Closed)?;
+        let active_snapshot_leases = u64::try_from(Arc::strong_count(snapshot).saturating_sub(1))
+            .map_err(|_| StoreError::Statistics {
+            component: "active snapshot leases",
+            source: std::io::Error::other("snapshot lease count exceeds u64"),
+        })?;
         let mut mapped_resident_bytes = 0_u64;
         for segment in snapshot.segments() {
             let resident =
@@ -459,7 +490,10 @@ impl Store {
             wal_bytes: accounting.wal_bytes,
             cache_bytes: accounting.cache_bytes,
             temporary_bytes: accounting.temporary_bytes,
+            query_pool_bytes: accounting.query_pool_bytes,
             open_files,
+            active_queries,
+            active_snapshot_leases,
             phys_footprint,
         })
     }
@@ -490,13 +524,14 @@ impl Store {
 mod tests {
     use tempfile::{TempDir, tempdir};
 
-    use super::super::{OpenOptions, Store, StoreError};
+    use super::super::{CancelToken, OpenOptions, QueryControl, Store, StoreError};
     use super::{Accounted, Accounting, AllocationComponent};
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::manifest::Manifest;
     use crate::manifest::io::commit_manifest;
     use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
     use crate::quant::Bit4Factors;
+    use crate::scan::{F32Rows, ScanOptions, ScanQuery, ScanRequest, ScanRows};
     use crate::segment::SegmentId;
     use crate::segment::layout::RegionEntry;
     use crate::segment::reader::SegmentReader;
@@ -583,11 +618,29 @@ mod tests {
         let published = published_store();
         for iteration in 0..ITERATIONS {
             let store = Store::open(published.path(), OpenOptions::default()).expect("mapped open");
+            let query = [1.0_f32];
+            let rows = F32Rows::new(vec![1.0_f32; 128]);
+            store
+                .top_k_with_options(
+                    ScanRequest {
+                        query: ScanQuery::F32(&query),
+                        rows: ScanRows::F32RowMajor(&rows),
+                        row_mask: None,
+                    },
+                    1,
+                    ScanOptions { thread_budget: 1 },
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("start the persistent query pool");
             let live = store.stats().expect("live stats");
             assert!(live.mapped_bytes > PRE_OPEN_MAPPED_BYTES);
             assert!(
                 live.resident_owned_bytes > PRE_OPEN_RESIDENT_OWNED_BYTES,
                 "iteration {iteration} must own mapped-snapshot bookkeeping"
+            );
+            assert!(
+                live.query_pool_bytes > 0,
+                "iteration {iteration} must own an accounted query pool"
             );
 
             store.close().expect("close mapped store");
@@ -603,6 +656,10 @@ mod tests {
             assert_eq!(
                 closed.resident_owned_bytes, PRE_OPEN_RESIDENT_OWNED_BYTES,
                 "Stats::resident_owned_bytes source leaked at iteration {iteration}"
+            );
+            assert_eq!(
+                closed.query_pool_bytes, 0,
+                "Stats::query_pool_bytes source leaked at iteration {iteration}"
             );
         }
     }

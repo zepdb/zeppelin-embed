@@ -2,10 +2,11 @@ use std::error::Error;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+use tempfile::tempdir;
+use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::quant::{Bit4Factors, Bit4Query, Int8Query, prepare_int8_query, quantize_bit4};
 use zeppelin_embed::scan::{
     F32Rows, Int8Factors, ScanOptions, ScanOutcome, ScanQuery, ScanRequest, ScanRows,
-    top_k_with_options,
 };
 
 #[path = "scan/repeat.rs"]
@@ -91,7 +92,7 @@ FLAGS:\n\
     --help, -h                  Print this help.\n";
 
 impl Fixture {
-    fn scan(&self, config: Config) -> Result<ScanOutcome, Box<dyn Error>> {
+    fn scan(&self, store: &Store, config: Config) -> Result<ScanOutcome, Box<dyn Error>> {
         let request = match self {
             Self::F32 { query, rows } => ScanRequest {
                 query: ScanQuery::F32(query),
@@ -128,7 +129,12 @@ impl Fixture {
                 row_mask: None,
             },
         };
-        Ok(top_k_with_options(request, config.k, scan_options(config))?)
+        Ok(store.top_k_with_options(
+            request,
+            config.k,
+            scan_options(config),
+            QueryControl::Cancel(CancelToken::new()),
+        )?)
     }
 }
 
@@ -170,9 +176,11 @@ fn run_with_fixture<W, M>(
 ) -> Result<(), Box<dyn Error>>
 where
     W: Write,
-    M: FnMut(&Fixture, Config) -> Result<Duration, Box<dyn Error>>,
+    M: FnMut(&Fixture, Config, &Store) -> Result<Duration, Box<dyn Error>>,
 {
-    let (_, counters) = validate_fixture(config, fixture)?;
+    let directory = tempdir()?;
+    let store = Store::open(directory.path(), OpenOptions::default())?;
+    let (_, counters) = validate_fixture(config, fixture, &store)?;
     write_counters(output, config, counters)?;
     if config.smoke {
         return Ok(());
@@ -182,16 +190,17 @@ where
         fixture,
         config.repeats,
         config.iterations,
-        |fixture| measure(fixture, config),
+        |fixture| measure(fixture, config, &store),
     )
 }
 
 fn validate_fixture(
     config: Config,
     fixture: &Fixture,
+    store: &Store,
 ) -> Result<(ScanOutcome, ComparableCounters), Box<dyn Error>> {
-    let first = fixture.scan(config)?;
-    let second = fixture.scan(config)?;
+    let first = fixture.scan(store, config)?;
+    let second = fixture.scan(store, config)?;
     if first != second {
         return Err(format!(
             "scan benchmark results or counters were nondeterministic: first={first:?} second={second:?}"
@@ -257,10 +266,14 @@ fn write_counters(
     Ok(())
 }
 
-fn measure_fixture(fixture: &Fixture, config: Config) -> Result<Duration, Box<dyn Error>> {
+fn measure_fixture(
+    fixture: &Fixture,
+    config: Config,
+    store: &Store,
+) -> Result<Duration, Box<dyn Error>> {
     let started = Instant::now();
     for _ in 0..config.iterations {
-        std::hint::black_box(fixture.scan(config)?);
+        std::hint::black_box(fixture.scan(store, config)?);
     }
     Ok(started.elapsed())
 }

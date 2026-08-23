@@ -209,6 +209,15 @@ impl Store {
         if let Some(snapshot) = released_snapshot.as_ref() {
             snapshot.drain_readers(self.reader_drain_timeout)?;
         }
+        let mut query_pool = self
+            .query_pool
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "query pool",
+            })?;
+        let stopped_query_pool = query_pool.take();
+        drop(query_pool);
+        let query_pool_result = stopped_query_pool.map_or(Ok(()), |pool| pool.stop_and_join());
         drop(released_snapshot);
 
         let mut writer_lock = self
@@ -227,7 +236,7 @@ impl Store {
             .map_err(|_| StoreError::Synchronization { component: "state" })?;
         *state = StoreState::Closed;
         self.state_changed.notify_all();
-        background_result
+        background_result.and(query_pool_result)
     }
 
     /// Runs close ordering during `Drop` without propagating failures or
@@ -255,10 +264,19 @@ impl Store {
             Ok(snapshot) => snapshot,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(snapshot) = snapshot_slot.take() {
+        let released_snapshot = snapshot_slot.take();
+        if let Some(snapshot) = released_snapshot.as_ref() {
             snapshot.cancel_readers();
-            drop(snapshot);
         }
+
+        let query_pool_slot = match self.query_pool.get_mut() {
+            Ok(query_pool) => query_pool,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(pool) = query_pool_slot.take() {
+            let _ = pool.stop_and_join();
+        }
+        drop(released_snapshot);
 
         let writer_slot = match self.writer_lock.get_mut() {
             Ok(writer_lock) => writer_lock,

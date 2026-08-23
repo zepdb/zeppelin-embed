@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use lifecycle_support::{published_store, test_guard};
 use tempfile::tempdir;
-use zeppelin_embed::lifecycle::{OpenOptions, Store, StoreError, StoreState};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreState,
+};
+use zeppelin_embed::scan::{F32Rows, ScanOptions, ScanQuery, ScanRequest, ScanRows};
 
 #[test]
 fn close_releases_file_locks_and_reopen_succeeds() {
@@ -111,6 +114,23 @@ fn calls_after_close_return_typed_closed_error() {
     // enumerated here as the surface grows.
     assert!(matches!(store.snapshot(), Err(StoreError::Closed)));
     assert!(matches!(store.stats(), Err(StoreError::Closed)));
+    let query = [1.0_f32];
+    let rows = F32Rows::new(vec![1.0_f32]);
+    assert!(matches!(
+        store.top_k_with_options(
+            ScanRequest {
+                query: ScanQuery::F32(&query),
+                rows: ScanRows::F32RowMajor(&rows),
+                row_mask: None,
+            },
+            1,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        ),
+        Err(zeppelin_embed::lifecycle::QueryError::Store(
+            StoreError::Closed
+        ))
+    ));
     assert_eq!(store.state().expect("closed state"), StoreState::Closed);
     store.close().expect("idempotent close remains valid");
 }
@@ -149,11 +169,12 @@ fn no_background_thread_survives_close() {
     let directory = tempdir().expect("store directory");
     let before = os_thread_ids().expect("census before open");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let capacity = start_query_pool(&store);
     let during = os_thread_ids().expect("census after open");
     let spawned = during.difference(&before).copied().collect::<Vec<_>>();
     assert!(
-        !spawned.is_empty(),
-        "writer open did not create the lifecycle background thread"
+        spawned.len() >= capacity.saturating_add(1),
+        "kernel census found {spawned:?}, fewer than {capacity} pool workers plus lifecycle thread"
     );
 
     store.close().expect("close");
@@ -171,9 +192,13 @@ fn drop_without_close_best_effort_releases() {
     let directory = tempdir().expect("store directory");
     let before = os_thread_ids().expect("census before open");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let capacity = start_query_pool(&store);
     let during = os_thread_ids().expect("census after open");
     let spawned = during.difference(&before).copied().collect::<Vec<_>>();
-    assert!(!spawned.is_empty(), "writer background thread exists");
+    assert!(
+        spawned.len() >= capacity.saturating_add(1),
+        "writer lifecycle and query pool threads exist"
+    );
 
     drop(store);
 
@@ -184,7 +209,34 @@ fn drop_without_close_best_effort_releases() {
     );
     let reopened =
         Store::open(directory.path(), OpenOptions::default()).expect("reopen after drop");
+    let reopened_stats = reopened
+        .stats()
+        .expect("stats after pool-owning store drop");
+    assert_eq!(reopened_stats.query_pool_bytes, 0);
+    assert_eq!(reopened_stats.resident_owned_bytes, 0);
     reopened.close().expect("close reopened store");
+}
+
+fn start_query_pool(store: &Store) -> usize {
+    let capacity = zeppelin_embed::scan::physical_thread_capacity().expect("worker capacity");
+    let query = [1.0_f32];
+    let rows = F32Rows::new(vec![1.0_f32; capacity.max(2) * 64]);
+    let outcome = store
+        .top_k_with_options(
+            ScanRequest {
+                query: ScanQuery::F32(&query),
+                rows: ScanRows::F32RowMajor(&rows),
+                row_mask: None,
+            },
+            1,
+            ScanOptions {
+                thread_budget: capacity,
+            },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("start and use persistent query pool");
+    assert_eq!(outcome.stats.worker_thread_ids.len(), capacity);
+    capacity
 }
 
 #[test]

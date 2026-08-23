@@ -455,11 +455,15 @@ impl SnapshotLease {
 
     /// Rejects work after close has cancelled this admitted read.
     pub fn check_active(&self) -> Result<(), StoreError> {
-        if self.snapshot.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             Err(StoreError::ReadCancelled)
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.snapshot.cancelled.load(Ordering::Relaxed)
     }
 
     /// Blocks without polling until close cancels this admitted read.

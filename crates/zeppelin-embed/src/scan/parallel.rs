@@ -1,9 +1,6 @@
-//! Deterministic scoped-thread partitioning and bounded top-k merge.
+//! Persistent-pool scan controls, outcomes, and CPU-capacity detection.
 
-use std::ops::Range;
-
-use super::topk::BoundedTopK;
-use super::{ScanError, ScanRequest, scan_geometry, scan_partition};
+use super::ScanError;
 
 /// Runtime controls for the extended exact scan.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -14,7 +11,7 @@ pub struct ScanOptions {
 }
 
 /// Deterministic companion counters for one completed scan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanStats {
     /// Logical row-coordinate multiply-accumulates scored by the scan. Packed
     /// Bit4 batches score every row in a four-row window before applying masks,
@@ -23,8 +20,10 @@ pub struct ScanStats {
     /// Row-major payload bytes read by scoring. Row-factor records are excluded.
     /// This counter is a pure function of the request and scan options.
     pub bytes_read: u64,
-    /// Scoped workers actually used after CPU and work-unit caps.
+    /// Persistent workers actually used after CPU and work-unit caps.
     pub threads_used: usize,
+    /// Actual worker thread ids that scored the partitions.
+    pub worker_thread_ids: Vec<std::thread::ThreadId>,
 }
 
 /// Ranked candidates and deterministic counters from an extended exact scan.
@@ -65,93 +64,4 @@ fn detect_physical_thread_capacity() -> Result<usize, String> {
             .map(std::num::NonZeroUsize::get)
             .map_err(|error| error.to_string())
     }
-}
-
-/// Runs an exact partitioned scan without changing Part A's `top_k` API.
-///
-/// Local partitions retain their own best `k`; a deterministic bounded merge
-/// then applies the permanent descending-score, ascending-row-id ordering.
-///
-/// # Errors
-///
-/// Returns [`ScanError`] for invalid scan inputs, CPU detection failure,
-/// scoped worker creation failure, or a worker panic.
-pub fn top_k_with_options(
-    request: ScanRequest<'_>,
-    k: usize,
-    options: ScanOptions,
-) -> Result<ScanOutcome, ScanError> {
-    let geometry = scan_geometry(request)?;
-    let capacity = physical_thread_capacity()?;
-    let requested = if options.thread_budget == 0 {
-        capacity
-    } else {
-        options.thread_budget.min(capacity)
-    };
-    let workers = requested.min(geometry.work_units.max(1));
-    let ranges = partition_row_count(geometry.row_count, workers)?;
-    let partitions = if workers == 1 {
-        let range = ranges
-            .first()
-            .cloned()
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        vec![scan_partition(request, k, range)?]
-    } else {
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(workers);
-            for range in ranges {
-                let builder = std::thread::Builder::new();
-                let handle = builder
-                    .spawn_scoped(scope, move || scan_partition(request, k, range))
-                    .map_err(|error| ScanError::ThreadSpawn(error.to_string()))?;
-                handles.push(handle);
-            }
-            let mut completed = Vec::with_capacity(workers);
-            for handle in handles {
-                let partition = handle.join().map_err(|_| ScanError::WorkerPanicked)??;
-                completed.push(partition);
-            }
-            Ok::<_, ScanError>(completed)
-        })?
-    };
-
-    let mut merged = BoundedTopK::new(k.min(geometry.row_count));
-    let mut dims_touched = 0_u64;
-    let mut bytes_read = 0_u64;
-    for partition in partitions {
-        dims_touched = dims_touched
-            .checked_add(partition.dims_touched)
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        bytes_read = bytes_read
-            .checked_add(partition.bytes_read)
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        for candidate in partition.candidates {
-            merged.push(candidate);
-        }
-    }
-    Ok(ScanOutcome {
-        candidates: merged.into_sorted(),
-        stats: ScanStats {
-            dims_touched,
-            bytes_read,
-            threads_used: workers,
-        },
-    })
-}
-
-fn partition_row_count(row_count: usize, workers: usize) -> Result<Vec<Range<usize>>, ScanError> {
-    let mut ranges = Vec::with_capacity(workers);
-    for worker in 0..workers {
-        let start = worker
-            .checked_mul(row_count)
-            .ok_or(ScanError::ArithmeticOverflow)?
-            / workers;
-        let end = worker
-            .checked_add(1)
-            .and_then(|value| value.checked_mul(row_count))
-            .ok_or(ScanError::ArithmeticOverflow)?
-            / workers;
-        ranges.push(start..end);
-    }
-    Ok(ranges)
 }

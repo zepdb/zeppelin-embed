@@ -14,10 +14,10 @@ use zeppelin_embed::vfs::StdVfs;
 
 pub fn test_guard() -> MutexGuard<'static, ()> {
     static TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    TEST_GUARD
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("lifecycle test guard")
+    match TEST_GUARD.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 pub fn published_store(generation: u64) -> TempDir {

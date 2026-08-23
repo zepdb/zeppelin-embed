@@ -3,11 +3,10 @@
 pub mod parallel;
 pub(crate) mod topk;
 
-pub use parallel::{
-    ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity, top_k_with_options,
-};
+pub use parallel::{ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity};
 
 use crate::kernels;
+use crate::lifecycle::cancel::QueryCancellation;
 use crate::quant::{
     Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
     est_dot_bit4_batch,
@@ -240,12 +239,25 @@ pub enum ScanError {
     Quant(QuantError),
     /// Candidate-window arithmetic overflowed `usize`.
     ArithmeticOverflow,
-    /// A scoped worker thread could not be created.
-    ThreadSpawn(String),
-    /// A scoped scan worker panicked before returning a typed result.
+    /// A persistent scan worker panicked before returning a typed result.
     WorkerPanicked,
     /// The operating system could not report a usable CPU count.
     CpuCount(String),
+    /// A store query deadline expired. Partial results are never returned.
+    Timeout {
+        /// Permanently false.
+        partial: bool,
+    },
+    /// A caller-provided token cancelled the store query.
+    Cancelled {
+        /// Permanently false.
+        partial: bool,
+    },
+    /// Store close cancelled an already admitted query.
+    ReadCancelled {
+        /// Permanently false.
+        partial: bool,
+    },
 }
 
 impl std::fmt::Display for ScanError {
@@ -276,10 +288,18 @@ impl std::fmt::Display for ScanError {
             Self::ArithmeticOverflow => {
                 formatter.write_str("scan candidate-window arithmetic overflowed")
             }
-            Self::ThreadSpawn(error) => write!(formatter, "could not spawn scan worker: {error}"),
-            Self::WorkerPanicked => formatter.write_str("a scoped scan worker panicked"),
+            Self::WorkerPanicked => formatter.write_str("a persistent scan worker panicked"),
             Self::CpuCount(error) => {
                 write!(formatter, "could not determine scan CPU count: {error}")
+            }
+            Self::Timeout { partial } => {
+                write!(formatter, "scan deadline expired (partial={partial})")
+            }
+            Self::Cancelled { partial } => {
+                write!(formatter, "scan was cancelled (partial={partial})")
+            }
+            Self::ReadCancelled { partial } => {
+                write!(formatter, "store close cancelled scan (partial={partial})")
             }
         }
     }
@@ -330,9 +350,10 @@ fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, 
 
 #[derive(Debug)]
 pub(crate) struct PartitionScan {
-    candidates: Vec<ScanCandidate>,
-    dims_touched: u64,
-    bytes_read: u64,
+    pub(crate) candidates: Vec<ScanCandidate>,
+    pub(crate) dims_touched: u64,
+    pub(crate) bytes_read: u64,
+    pub(crate) worker_thread_id: std::thread::ThreadId,
 }
 
 impl ScanQuery<'_> {
@@ -359,8 +380,8 @@ impl ScanRows<'_> {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScanGeometry {
-    row_count: usize,
-    work_units: usize,
+    pub(crate) row_count: usize,
+    pub(crate) work_units: usize,
 }
 
 pub(crate) fn scan_geometry(request: ScanRequest<'_>) -> Result<ScanGeometry, ScanError> {
@@ -431,7 +452,9 @@ pub(crate) fn scan_partition(
     request: ScanRequest<'_>,
     k: usize,
     range: std::ops::Range<usize>,
+    cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<PartitionScan, ScanError> {
+    check_cancellation(cancellation)?;
     let geometry = scan_geometry(request)?;
     if range.start > range.end || range.end > geometry.row_count {
         return Err(ScanError::ArithmeticOverflow);
@@ -440,25 +463,41 @@ pub(crate) fn scan_partition(
     let candidates = match (request.query, request.rows) {
         (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
             let rows = scalar_row_range(rows.values(), query.len(), range.clone())?;
-            scan_f32_rows(query, rows, request.row_mask, k, first_row)?
+            scan_f32_rows(query, rows, request.row_mask, k, first_row, cancellation)?
         }
         (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
             let rows = scalar_row_range(rows, query.len(), range.clone())?;
-            scan_f16_rows(query, rows, request.row_mask, k, first_row)?
+            scan_f16_rows(query, rows, request.row_mask, k, first_row, cancellation)?
         }
         (ScanQuery::Int8(query), ScanRows::Int8RowMajor { codes, factors }) => {
             let codes = scalar_row_range(codes, query.len(), range.clone())?;
             let factors = factors
                 .get(range.clone())
                 .ok_or(ScanError::ArithmeticOverflow)?;
-            scan_int8_rows(query, codes, factors, request.row_mask, k, first_row)?
+            scan_int8_rows(
+                query,
+                codes,
+                factors,
+                request.row_mask,
+                k,
+                first_row,
+                cancellation,
+            )?
         }
         (ScanQuery::Bit4(query), ScanRows::Bit4RowMajor { codes, factors }) => {
             let codes = scalar_row_range(codes, query.len().div_ceil(2), range.clone())?;
             let factors = factors
                 .get(range.clone())
                 .ok_or(ScanError::ArithmeticOverflow)?;
-            scan_bit4_rows(query, codes, factors, request.row_mask, k, first_row)?
+            scan_bit4_rows(
+                query,
+                codes,
+                factors,
+                request.row_mask,
+                k,
+                first_row,
+                cancellation,
+            )?
         }
         (query, rows) => {
             return Err(ScanError::SchemeMismatch {
@@ -469,7 +508,7 @@ pub(crate) fn scan_partition(
     };
     let scored_rows = match request.rows {
         ScanRows::Bit4RowMajor { .. } => range.end - range.start,
-        _ => allowed_row_count(request.row_mask, range.clone()),
+        _ => allowed_row_count(request.row_mask, range.clone(), cancellation)?,
     };
     let dimensions = u64::try_from(match request.query {
         ScanQuery::F32(query) => query.len(),
@@ -502,7 +541,24 @@ pub(crate) fn scan_partition(
         candidates,
         dims_touched,
         bytes_read,
+        worker_thread_id: std::thread::current().id(),
     })
+}
+
+const CANCELLATION_CHECK_ROWS: usize = 64;
+
+fn check_cancellation(cancellation: Option<&QueryCancellation<'_>>) -> Result<(), ScanError> {
+    cancellation.map_or(Ok(()), QueryCancellation::check)
+}
+
+fn check_cancellation_at_row(
+    cancellation: Option<&QueryCancellation<'_>>,
+    local_row: usize,
+) -> Result<(), ScanError> {
+    if local_row.is_multiple_of(CANCELLATION_CHECK_ROWS) {
+        check_cancellation(cancellation)?;
+    }
+    Ok(())
 }
 
 fn row_is_allowed(row_mask: Option<&roaring::RoaringBitmap>, row_id: usize) -> bool {
@@ -528,11 +584,19 @@ fn scalar_row_range<T>(
 fn allowed_row_count(
     row_mask: Option<&roaring::RoaringBitmap>,
     rows: std::ops::Range<usize>,
-) -> usize {
-    rows.filter(|&row_id| {
-        !row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
-    })
-    .count()
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<usize, ScanError> {
+    let mut allowed = 0_usize;
+    for (local_row, row_id) in rows.enumerate() {
+        check_cancellation_at_row(cancellation, local_row)?;
+        if !row_mask.is_some_and(|mask| u32::try_from(row_id).map_or(true, |id| !mask.contains(id)))
+        {
+            allowed = allowed
+                .checked_add(1)
+                .ok_or(ScanError::ArithmeticOverflow)?;
+        }
+    }
+    Ok(allowed)
 }
 
 fn scan_f32(
@@ -551,7 +615,7 @@ fn scan_f32(
         });
     }
     validate_f32(query, rows)?;
-    scan_f32_rows(query, rows.values(), row_mask, k, 0)
+    scan_f32_rows(query, rows.values(), row_mask, k, 0, None)
 }
 
 fn validate_f32(query: &[f32], rows: &F32Rows) -> Result<(), ScanError> {
@@ -574,10 +638,12 @@ fn scan_f32_rows(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
     first_row: usize,
+    cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
     let row_count = rows.len() / query.len();
     let mut selected = BoundedTopK::new(k.min(row_count));
     for (local_row, row) in rows.chunks_exact(query.len()).enumerate() {
+        check_cancellation_at_row(cancellation, local_row)?;
         let row_id = first_row
             .checked_add(local_row)
             .ok_or(ScanError::ArithmeticOverflow)?;
@@ -600,7 +666,7 @@ fn scan_f16(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
-    scan_f16_rows(query, rows, row_mask, k, 0)
+    scan_f16_rows(query, rows, row_mask, k, 0, None)
 }
 
 fn scan_f16_rows(
@@ -609,6 +675,7 @@ fn scan_f16_rows(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
     first_row: usize,
+    cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
     if query.is_empty() {
         return Err(ScanError::ZeroDimension);
@@ -622,6 +689,7 @@ fn scan_f16_rows(
     let row_count = rows.len() / query.len();
     let mut selected = BoundedTopK::new(k.min(row_count));
     for (local_row, row) in rows.chunks_exact(query.len()).enumerate() {
+        check_cancellation_at_row(cancellation, local_row)?;
         let row_id = first_row
             .checked_add(local_row)
             .ok_or(ScanError::ArithmeticOverflow)?;
@@ -645,7 +713,7 @@ fn scan_int8(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
-    scan_int8_rows(query, codes, factors, row_mask, k, 0)
+    scan_int8_rows(query, codes, factors, row_mask, k, 0, None)
 }
 
 fn scan_int8_rows(
@@ -655,6 +723,7 @@ fn scan_int8_rows(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
     first_row: usize,
+    cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
     let dimension = query.len();
     if dimension == 0 {
@@ -675,6 +744,7 @@ fn scan_int8_rows(
     }
     let mut selected = BoundedTopK::new(k.min(row_count));
     for (local_row, (row, factor)) in codes.chunks_exact(dimension).zip(factors).enumerate() {
+        check_cancellation_at_row(cancellation, local_row)?;
         let row_id = first_row
             .checked_add(local_row)
             .ok_or(ScanError::ArithmeticOverflow)?;
@@ -705,7 +775,7 @@ fn scan_bit4(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
-    scan_bit4_rows(query, codes, factors, row_mask, k, 0)
+    scan_bit4_rows(query, codes, factors, row_mask, k, 0, None)
 }
 
 fn scan_bit4_rows(
@@ -715,6 +785,7 @@ fn scan_bit4_rows(
     row_mask: Option<&roaring::RoaringBitmap>,
     k: usize,
     first_row: usize,
+    cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<Vec<ScanCandidate>, ScanError> {
     let dimension = query.len();
     if dimension == 0 {
@@ -738,6 +809,7 @@ fn scan_bit4_rows(
     let mut scores = [0.0_f32; 4];
     let mut batch_start = 0_usize;
     while batch_start < row_count {
+        check_cancellation_at_row(cancellation, batch_start)?;
         let batch_rows = (row_count - batch_start).min(scores.len());
         let batch_end = batch_start
             .checked_add(batch_rows)
@@ -788,12 +860,34 @@ fn scan_bit4_rows(
 mod tests {
     use rand::Rng;
     use roaring::RoaringBitmap;
+    use tempfile::{TempDir, tempdir};
 
     use super::{
         CandidateStream, F32Rows, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows,
-        candidate_stream, top_k, top_k_with_options,
+        candidate_stream, top_k,
     };
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, QueryError, Store};
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
+
+    fn query_store() -> (TempDir, Store) {
+        let directory = tempdir().expect("query store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("query store");
+        (directory, store)
+    }
+
+    fn pooled_top_k(
+        store: &Store,
+        request: ScanRequest<'_>,
+        k: usize,
+        options: ScanOptions,
+    ) -> Result<super::ScanOutcome, QueryError> {
+        store.top_k_with_options(
+            request,
+            k,
+            options,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    }
 
     #[test]
     fn all_identical_vectors_tie_by_ascending_row_id() {
@@ -904,6 +998,7 @@ mod tests {
 
     #[test]
     fn prop_row_major_scan_equals_naive_topk() {
+        let (_directory, store) = query_store();
         let mut random =
             crate::test_support::seeded_rng("scan::prop_row_major_scan_equals_naive_topk");
         let cases = std::env::var("PROPTEST_CASES")
@@ -940,6 +1035,7 @@ mod tests {
                         row_mask: None,
                     };
                     assert_row_major_scan(
+                        &store,
                         request,
                         k,
                         case,
@@ -962,6 +1058,7 @@ mod tests {
                         row_mask: None,
                     };
                     assert_row_major_scan(
+                        &store,
                         request,
                         k,
                         case,
@@ -996,7 +1093,7 @@ mod tests {
                         },
                         row_mask: None,
                     };
-                    assert_row_major_scan(request, k, case, ScanComparison::Exact);
+                    assert_row_major_scan(&store, request, k, case, ScanComparison::Exact);
                 }
                 _ => {
                     let query_values = (0..dimension)
@@ -1030,23 +1127,25 @@ mod tests {
                         },
                         row_mask: None,
                     };
-                    assert_row_major_scan(request, k, case, ScanComparison::Exact);
+                    assert_row_major_scan(&store, request, k, case, ScanComparison::Exact);
                 }
             }
         }
     }
 
     fn assert_row_major_scan(
+        store: &Store,
         request: ScanRequest<'_>,
         k: usize,
         case: usize,
         comparison: ScanComparison<'_>,
     ) {
         let expected = naive_top_k(request, k);
-        let single = top_k_with_options(request, k, ScanOptions { thread_budget: 1 })
+        let single = pooled_top_k(store, request, k, ScanOptions { thread_budget: 1 })
             .expect("valid single-thread row-major scan")
             .candidates;
-        let parallel = top_k_with_options(
+        let parallel = pooled_top_k(
+            store,
             request,
             k,
             ScanOptions {
@@ -1282,6 +1381,7 @@ mod tests {
 
     #[test]
     fn prop_parallel_equals_single_thread() {
+        let (_directory, store) = query_store();
         let mut random =
             crate::test_support::seeded_rng("scan::prop_parallel_equals_single_thread");
         let cases = std::env::var("PROPTEST_CASES")
@@ -1307,10 +1407,11 @@ mod tests {
                 rows: ScanRows::F32RowMajor(&rows),
                 row_mask: None,
             };
-            let single = top_k_with_options(request, k, ScanOptions { thread_budget: 1 })
+            let single = pooled_top_k(&store, request, k, ScanOptions { thread_budget: 1 })
                 .expect("single-thread scan");
             let requested = case % 12 + 1;
-            let parallel = top_k_with_options(
+            let parallel = pooled_top_k(
+                &store,
                 request,
                 k,
                 ScanOptions {
@@ -1337,11 +1438,13 @@ mod tests {
 
     #[test]
     fn row_major_scan_reports_one_exhaustive_payload_pass() {
+        let (_directory, store) = query_store();
         let dimension = 37;
         let row_count = 137;
         let query = vec![1.0_f32; dimension];
         let rows = F32Rows::new(vec![0.5_f32; row_count * dimension]);
-        let outcome = top_k_with_options(
+        let outcome = pooled_top_k(
+            &store,
             ScanRequest {
                 query: ScanQuery::F32(&query),
                 rows: ScanRows::F32RowMajor(&rows),
@@ -1361,12 +1464,14 @@ mod tests {
 
     #[test]
     fn explicit_thread_budget_is_honoured_up_to_physical_cap() {
+        let (_directory, store) = query_store();
         let capacity = super::physical_thread_capacity().expect("physical thread capacity");
         let row_count = capacity.max(8) * 64;
         let query = [1.0_f32];
         let rows = F32Rows::new(vec![1.0_f32; row_count]);
         for requested in 1..=capacity.saturating_add(2) {
-            let outcome = top_k_with_options(
+            let outcome = pooled_top_k(
+                &store,
                 ScanRequest {
                     query: ScanQuery::F32(&query),
                     rows: ScanRows::F32RowMajor(&rows),
