@@ -163,6 +163,7 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
             scheme: 4,
             dims: 65,
             file_size: 99,
+            clustering_key_range: zeppelin_embed::segment::ClusteringKeyRange::Unstamped,
         }],
         epochs: vec![EpochMeta {
             id: 1,

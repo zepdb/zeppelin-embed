@@ -46,6 +46,11 @@ pub trait VfsFile: Send {
 
 /// Minimal synchronous filesystem operations used by persisted commits.
 pub trait Vfs: Send + Sync {
+    /// Supplies an optional counter for mmap-backed segment payload accesses.
+    #[doc(hidden)]
+    fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
+        None
+    }
     /// Opens an existing path and returns its byte length.
     fn open(&self, path: &Path) -> std::io::Result<u64>;
     /// Reads an entire file.
@@ -175,6 +180,7 @@ struct CountingVfsCounters {
     open_calls: AtomicU64,
     read_calls: AtomicU64,
     read_bytes: AtomicU64,
+    segment_bytes_read: Arc<AtomicU64>,
     write_calls: AtomicU64,
     bytes_written: AtomicU64,
     append_calls: AtomicU64,
@@ -241,6 +247,15 @@ impl<V> CountingVfs<V> {
         &self.inner
     }
 
+    /// Runs a test probe with mmap-backed segment payload accounting enabled.
+    #[doc(hidden)]
+    pub fn audit_segment_data_reads<T>(&self, operation: impl FnOnce() -> T) -> T {
+        let _audit = crate::segment::reader::install_data_read_audit(Some(Arc::clone(
+            &self.counters.segment_bytes_read,
+        )));
+        operation()
+    }
+
     /// Returns observed open calls.
     #[must_use]
     pub fn open_calls(&self) -> u64 {
@@ -257,6 +272,12 @@ impl<V> CountingVfs<V> {
     #[must_use]
     pub fn read_bytes(&self) -> u64 {
         self.counters.read_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Returns exact bytes read from immutable segment paths.
+    #[must_use]
+    pub fn segment_bytes_read(&self) -> u64 {
+        self.counters.segment_bytes_read.load(Ordering::Relaxed)
     }
 
     /// Returns observed whole-file write calls.
@@ -326,6 +347,7 @@ impl<V> CountingVfs<V> {
         self.counters.open_calls.store(0, Ordering::Relaxed);
         self.counters.read_calls.store(0, Ordering::Relaxed);
         self.counters.read_bytes.store(0, Ordering::Relaxed);
+        self.counters.segment_bytes_read.store(0, Ordering::Relaxed);
         self.counters.write_calls.store(0, Ordering::Relaxed);
         self.counters.bytes_written.store(0, Ordering::Relaxed);
         self.counters.append_calls.store(0, Ordering::Relaxed);
@@ -344,6 +366,10 @@ impl<V> CountingVfs<V> {
 }
 
 impl<V: Vfs> Vfs for CountingVfs<V> {
+    fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
+        Some(Arc::clone(&self.counters.segment_bytes_read))
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.counters.open_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.open(path)
@@ -355,6 +381,11 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         self.counters
             .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        if is_segment_path(path) {
+            self.counters
+                .segment_bytes_read
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
         Ok(bytes)
     }
 
@@ -364,6 +395,11 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         self.counters
             .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        if is_segment_path(path) {
+            self.counters
+                .segment_bytes_read
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
         Ok(bytes)
     }
 
@@ -408,6 +444,12 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         self.counters.delete_calls.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+}
+
+fn is_segment_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
 }
 
 #[cfg(target_os = "macos")]

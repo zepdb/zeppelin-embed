@@ -3,8 +3,9 @@
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::ingest::wal_payload::{
     DELETE_V1, METADATA_EDIT_V1, MetadataEdit, MetadataValue, MutationPayload, PayloadError,
-    UPSERT_V1, decode_delete, decode_metadata_edit, decode_mutation, decode_upsert, encode_delete,
-    encode_metadata_edit, encode_upsert,
+    UPSERT_V1, UPSERT_WITH_TIMESTAMP_V1, decode_delete, decode_metadata_edit, decode_mutation,
+    decode_upsert, decode_upsert_with_timestamp, encode_delete, encode_metadata_edit,
+    encode_upsert, encode_upsert_with_timestamp,
 };
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
 use zeppelin_embed::meta::ColumnId;
@@ -43,6 +44,26 @@ fn wal_upsert_payload_v1_is_byte_exact() {
         UPSERT_V1,
         &payload,
         include_str!("fixtures/format/wal_upsert_record_v1.hex"),
+        MutationPayload::Upsert(document),
+    );
+}
+
+#[test]
+fn wal_timestamped_upsert_payload_v1_is_byte_exact() {
+    let document = IngestDocument::new(
+        DocumentVersion::new(
+            DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            Revision::new(0x1122_3344_5566_7788),
+        ),
+        vec![1.5, -2.25],
+    )
+    .with_timestamp(-1234);
+    let payload = encode_upsert_with_timestamp(&document).expect("encode timestamped upsert");
+    assert_eq!(decode_upsert_with_timestamp(&payload), Ok(document.clone()));
+    assert_record_golden(
+        UPSERT_WITH_TIMESTAMP_V1,
+        &payload,
+        include_str!("fixtures/format/wal_upsert_timestamp_record_v1.hex"),
         MutationPayload::Upsert(document),
     );
 }
@@ -95,7 +116,15 @@ fn mutation_payload_decoder_rejects_corruption_typed() {
 
 #[test]
 fn mutation_operation_ids_are_append_only() {
-    assert_eq!((UPSERT_V1, DELETE_V1, METADATA_EDIT_V1), (1, 2, 3));
+    assert_eq!(
+        (
+            UPSERT_V1,
+            DELETE_V1,
+            METADATA_EDIT_V1,
+            UPSERT_WITH_TIMESTAMP_V1,
+        ),
+        (1, 2, 3, 4)
+    );
 }
 
 fn edit(value: MetadataValue) -> MetadataEdit {

@@ -1,6 +1,7 @@
 //! Ingest and mutation coordination.
 
 mod active;
+mod retention;
 mod revise;
 mod seal;
 pub mod wal_payload;
@@ -11,6 +12,8 @@ use crate::lifecycle::{Store, StoreError, StoreState};
 use crate::scan::ScanStats;
 use crate::segment::SegmentId;
 use crate::wal::{LogSeq, WalWriteError};
+
+pub use retention::{DropPartitionReport, RetentionPolicy, RetentionPolicyError};
 
 pub(crate) use active::{ActiveSegment, ActiveState, StoreWal};
 
@@ -84,13 +87,25 @@ impl DocumentVersion {
 pub struct IngestDocument {
     version: DocumentVersion,
     vector: Vec<f32>,
+    timestamp: i64,
 }
 
 impl IngestDocument {
     /// Constructs one document upsert.
     #[must_use]
     pub fn new(version: DocumentVersion, vector: Vec<f32>) -> Self {
-        Self { version, vector }
+        Self {
+            version,
+            vector,
+            timestamp: 0,
+        }
+    }
+
+    /// Assigns the canonical `ts` clustering-key value.
+    #[must_use]
+    pub const fn with_timestamp(mut self, timestamp: i64) -> Self {
+        self.timestamp = timestamp;
+        self
     }
 
     /// Returns the document/revision idempotency key.
@@ -103,6 +118,12 @@ impl IngestDocument {
     #[must_use]
     pub fn vector(&self) -> &[f32] {
         &self.vector
+    }
+
+    /// Returns the canonical `ts` clustering-key value.
+    #[must_use]
+    pub const fn timestamp(&self) -> i64 {
+        self.timestamp
     }
 }
 
@@ -393,17 +414,15 @@ impl Store {
             match action {
                 revise::RevisionAction::Replace { row } => {
                     let next = segment.replace(row, document, &self.accounting)?;
-                    let payload =
-                        wal_payload::encode_upsert(document).map_err(IngestError::Payload)?;
+                    let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
-                    records.push((row, payload));
+                    records.push((row, op, payload));
                 }
                 revise::RevisionAction::Insert { row } => {
                     let next = segment.insert(document, &self.accounting)?;
-                    let payload =
-                        wal_payload::encode_upsert(document).map_err(IngestError::Payload)?;
+                    let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
-                    records.push((row, payload));
+                    records.push((row, op, payload));
                 }
                 revise::RevisionAction::Replay { seq } => {
                     replay_seq = Some(replay_seq.map_or(seq, |current: LogSeq| current.max(seq)));
@@ -432,10 +451,10 @@ impl Store {
             .ok_or(StoreError::GenerationOverflow)?;
         let record_refs = records
             .iter()
-            .map(|(_, payload)| (wal_payload::UPSERT_V1, payload.as_slice()))
+            .map(|(_, op, payload)| (*op, payload.as_slice()))
             .collect::<Vec<_>>();
         let sequences = writer.commit_many(&record_refs)?;
-        for ((row, _), sequence) in records
+        for ((row, _, _), sequence) in records
             .iter()
             .zip(sequences.start.get()..sequences.end.get())
         {
@@ -497,6 +516,18 @@ impl Store {
             segment: Arc::new(next),
         });
         Ok(IngestAck { seq, generation })
+    }
+}
+
+fn encode_persisted_upsert(document: &IngestDocument) -> Result<(u16, Vec<u8>), IngestError> {
+    if document.timestamp() == 0 {
+        wal_payload::encode_upsert(document)
+            .map(|payload| (wal_payload::UPSERT_V1, payload))
+            .map_err(IngestError::Payload)
+    } else {
+        wal_payload::encode_upsert_with_timestamp(document)
+            .map(|payload| (wal_payload::UPSERT_WITH_TIMESTAMP_V1, payload))
+            .map_err(IngestError::Payload)
     }
 }
 

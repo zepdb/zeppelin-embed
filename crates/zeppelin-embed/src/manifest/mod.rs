@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use crate::format::FormatFamily;
 use crate::format::frame::{FormatError, decode_artifact, encode_artifact};
 use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
-use crate::segment::{SegmentId, SegmentMeta};
+use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
+
+const CLUSTERING_RANGE_EXTENSION_MAGIC: [u8; 4] = *b"TSR1";
+const CLUSTERING_RANGE_RECORD_LEN: usize = 24;
 
 /// Interpretation-critical model/tokenizer identity for one coexistence epoch.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,7 +146,42 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
         payload.extend_from_slice(&u16::from(definition.is_nullable()).to_le_bytes());
         append_string(definition.name(), &mut payload)?;
     }
+    append_clustering_ranges(&manifest.segments, &mut payload)?;
     Ok(encode_artifact(FormatFamily::Manifest, 0, &payload))
+}
+
+fn append_clustering_ranges(
+    segments: &[SegmentMeta],
+    output: &mut Vec<u8>,
+) -> Result<(), ManifestError> {
+    if segments
+        .iter()
+        .all(|segment| segment.clustering_key_range == ClusteringKeyRange::Unstamped)
+    {
+        return Ok(());
+    }
+    output.extend_from_slice(&CLUSTERING_RANGE_EXTENSION_MAGIC);
+    append_u32_len(segments.len(), "clustering ranges", output)?;
+    for segment in segments {
+        let (tag, min_ts, max_ts) = match segment.clustering_key_range {
+            ClusteringKeyRange::Unstamped => (0_u8, 0_i64, 0_i64),
+            ClusteringKeyRange::Empty => (1_u8, 0_i64, 0_i64),
+            ClusteringKeyRange::Bounded { min_ts, max_ts } => {
+                if min_ts > max_ts {
+                    return Err(ManifestError::Decode(format!(
+                        "segment {} clustering range {min_ts}..={max_ts} is inverted",
+                        segment.id
+                    )));
+                }
+                (2_u8, min_ts, max_ts)
+            }
+        };
+        output.push(tag);
+        output.extend_from_slice(&[0_u8; 7]);
+        output.extend_from_slice(&min_ts.to_le_bytes());
+        output.extend_from_slice(&max_ts.to_le_bytes());
+    }
+    Ok(())
 }
 
 /// Decodes a complete manifest only after both xxh3-64 checksums validate.
@@ -181,6 +219,7 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
             scheme,
             dims: cursor.u32()?,
             file_size: cursor.u64()?,
+            clustering_key_range: crate::segment::ClusteringKeyRange::Unstamped,
         });
     }
     let mut epochs = Vec::with_capacity(epoch_count);
@@ -211,6 +250,9 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
             nullable,
         ));
     }
+    if cursor.remaining() != 0 {
+        decode_clustering_ranges(&mut cursor, &mut segments)?;
+    }
     cursor.finish()?;
     let schema =
         Schema::new(definitions).map_err(|error| ManifestError::Decode(error.to_string()))?;
@@ -221,6 +263,64 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
         epochs,
         schema,
     })
+}
+
+fn decode_clustering_ranges(
+    cursor: &mut ManifestCursor<'_>,
+    segments: &mut [SegmentMeta],
+) -> Result<(), ManifestError> {
+    if cursor.take(CLUSTERING_RANGE_EXTENSION_MAGIC.len())? != CLUSTERING_RANGE_EXTENSION_MAGIC {
+        return Err(ManifestError::Decode(
+            "unknown manifest extension after schema".to_owned(),
+        ));
+    }
+    let count = cursor.usize_from_u32()?;
+    if count != segments.len() {
+        return Err(ManifestError::Decode(format!(
+            "clustering range count {count} does not match segment count {}",
+            segments.len()
+        )));
+    }
+    let expected_bytes = count
+        .checked_mul(CLUSTERING_RANGE_RECORD_LEN)
+        .ok_or_else(|| ManifestError::Decode("clustering range bytes overflow".to_owned()))?;
+    if cursor.remaining() != expected_bytes {
+        return Err(ManifestError::Decode(format!(
+            "clustering range extension has {} bytes, expected {expected_bytes}",
+            cursor.remaining()
+        )));
+    }
+    for segment in segments {
+        let tag = cursor.u8()?;
+        if cursor.take(7)?.iter().any(|byte| *byte != 0) {
+            return Err(ManifestError::Decode(
+                "clustering range reserved bytes are non-zero".to_owned(),
+            ));
+        }
+        let min_ts = cursor.i64()?;
+        let max_ts = cursor.i64()?;
+        segment.clustering_key_range = match tag {
+            0 if min_ts == 0 && max_ts == 0 => ClusteringKeyRange::Unstamped,
+            1 if min_ts == 0 && max_ts == 0 => ClusteringKeyRange::Empty,
+            2 if min_ts <= max_ts => ClusteringKeyRange::Bounded { min_ts, max_ts },
+            0 | 1 => {
+                return Err(ManifestError::Decode(format!(
+                    "clustering range tag {tag} requires zero bounds"
+                )));
+            }
+            2 => {
+                return Err(ManifestError::Decode(format!(
+                    "clustering range {min_ts}..={max_ts} is inverted"
+                )));
+            }
+            unknown => {
+                return Err(ManifestError::Decode(format!(
+                    "unknown clustering range tag {unknown}"
+                )));
+            }
+        };
+    }
+    Ok(())
 }
 
 fn append_u32_len(length: usize, name: &str, output: &mut Vec<u8>) -> Result<(), ManifestError> {
@@ -293,6 +393,13 @@ impl<'a> ManifestCursor<'a> {
         Ok(u16::from_le_bytes(raw))
     }
 
+    fn u8(&mut self) -> Result<u8, ManifestError> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| ManifestError::Decode("invalid u8".to_owned()))
+    }
+
     fn u32(&mut self) -> Result<u32, ManifestError> {
         let raw: [u8; 4] = self
             .take(4)?
@@ -307,6 +414,18 @@ impl<'a> ManifestCursor<'a> {
             .try_into()
             .map_err(|_| ManifestError::Decode("invalid u64".to_owned()))?;
         Ok(u64::from_le_bytes(raw))
+    }
+
+    fn i64(&mut self) -> Result<i64, ManifestError> {
+        let raw: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| ManifestError::Decode("invalid i64".to_owned()))?;
+        Ok(i64::from_le_bytes(raw))
+    }
+
+    const fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.position)
     }
 
     fn usize_from_u32(&mut self) -> Result<usize, ManifestError> {

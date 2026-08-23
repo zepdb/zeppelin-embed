@@ -311,7 +311,7 @@ fn graph_segment_id(source: SegmentId, generation: u64) -> SegmentId {
 fn publish_transition(
     store: &Store,
     source_id: SegmentId,
-    replacement: crate::segment::SegmentMeta,
+    mut replacement: crate::segment::SegmentMeta,
 ) -> Result<bool, MaintenanceError> {
     let state = store
         .state
@@ -354,6 +354,7 @@ fn publish_transition(
     else {
         return Ok(false);
     };
+    replacement.clustering_key_range = slot.clustering_key_range;
     *slot = replacement;
     let mut active = store.active.lock().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {

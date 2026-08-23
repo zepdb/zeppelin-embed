@@ -18,13 +18,13 @@ use zeppelin_embed::meta::{
     Schema,
 };
 use zeppelin_embed::quant::quantize_bit4;
-use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, encode_segment,
     write_segment_with_documents,
 };
+use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use zeppelin_embed::vfs::StdVfs;
 
 fn fixture(text: &str) -> Vec<u8> {
@@ -360,5 +360,56 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
             .document_version(0)
             .expect("decode document-version row"),
         Some(version)
+    );
+}
+
+#[test]
+fn manifest_clustering_range_extension_is_byte_exact() {
+    let manifest = Manifest {
+        generation: 8,
+        log_seq: 7,
+        segments: vec![
+            SegmentMeta {
+                id: SegmentId::new(1, [2; 10]),
+                row_count: 3,
+                scheme: 4,
+                dims: 65,
+                file_size: 99,
+                clustering_key_range: ClusteringKeyRange::Bounded {
+                    min_ts: -7,
+                    max_ts: 14,
+                },
+            },
+            SegmentMeta {
+                id: SegmentId::new(2, [3; 10]),
+                row_count: 4,
+                scheme: 4,
+                dims: 65,
+                file_size: 88,
+                clustering_key_range: ClusteringKeyRange::Empty,
+            },
+            SegmentMeta {
+                id: SegmentId::new(3, [4; 10]),
+                row_count: 5,
+                scheme: 4,
+                dims: 65,
+                file_size: 77,
+                clustering_key_range: ClusteringKeyRange::Unstamped,
+            },
+        ],
+        epochs: Vec::new(),
+        schema: Schema::new(Vec::new()).expect("schema"),
+    };
+
+    let bytes = encode_manifest(&manifest).expect("range manifest");
+    assert_eq!(
+        bytes,
+        fixture(include_str!(
+            "fixtures/format/manifest_clustering_ranges_v1.hex"
+        ))
+    );
+    assert_eq!(
+        decode_manifest("manifest-ranges.golden", &bytes).expect("range manifest decode"),
+        manifest
     );
 }

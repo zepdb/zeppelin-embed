@@ -73,7 +73,7 @@ impl ActiveState {
             })?;
             segment = match mutation {
                 MutationPayload::Upsert(document) => {
-                    apply_recovered_upsert(&segment, &document, record.seq, accounting)?
+                    apply_recovered_upsert(&segment, &document, record.seq, record.op, accounting)?
                 }
                 MutationPayload::Delete(doc_ids) => {
                     let (mut next, rows) = segment
@@ -106,6 +106,7 @@ fn apply_recovered_upsert(
     segment: &ActiveSegment,
     document: &IngestDocument,
     seq: LogSeq,
+    op: u16,
     accounting: &Arc<Accounting>,
 ) -> Result<ActiveSegment, StoreError> {
     let (mut next, row) = match segment.existing(document.version().doc_id()) {
@@ -121,7 +122,7 @@ fn apply_recovered_upsert(
             (
                 segment
                     .replace(row, document, accounting)
-                    .map_err(|error| recovery_apply_error(seq, wal_payload::UPSERT_V1, error))?,
+                    .map_err(|error| recovery_apply_error(seq, op, error))?,
                 row,
             )
         }
@@ -130,7 +131,7 @@ fn apply_recovered_upsert(
             (
                 segment
                     .insert(document, accounting)
-                    .map_err(|error| recovery_apply_error(seq, wal_payload::UPSERT_V1, error))?,
+                    .map_err(|error| recovery_apply_error(seq, op, error))?,
                 row,
             )
         }
@@ -163,6 +164,7 @@ pub(crate) struct ActiveSegment {
     doc_ids: Accounted<Vec<DocId>>,
     revisions: Accounted<Vec<Revision>>,
     sequences: Accounted<Vec<LogSeq>>,
+    timestamps: Accounted<Vec<i64>>,
     vectors: Accounted<Vec<f32>>,
     codes: Accounted<Vec<u8>>,
     factors: Accounted<Vec<Bit4Factors>>,
@@ -176,6 +178,7 @@ impl ActiveSegment {
             doc_ids: Accounted::unaccounted_empty(),
             revisions: Accounted::unaccounted_empty(),
             sequences: Accounted::unaccounted_empty(),
+            timestamps: Accounted::unaccounted_empty(),
             vectors: Accounted::unaccounted_empty(),
             codes: Accounted::unaccounted_empty(),
             factors: Accounted::unaccounted_empty(),
@@ -222,6 +225,7 @@ impl ActiveSegment {
         let mut doc_ids = copy_accounted(accounting, &self.doc_ids, row_count)?;
         let mut revisions = copy_accounted(accounting, &self.revisions, row_count)?;
         let mut sequences = copy_accounted(accounting, &self.sequences, row_count)?;
+        let mut timestamps = copy_accounted(accounting, &self.timestamps, row_count)?;
         let mut vectors = copy_accounted(accounting, &self.vectors, vector_count)?;
         let mut codes = copy_accounted(accounting, &self.codes, code_count)?;
         let mut factors = copy_accounted(accounting, &self.factors, row_count)?;
@@ -230,6 +234,7 @@ impl ActiveSegment {
         doc_ids.push(document.version().doc_id())?;
         revisions.push(document.version().revision())?;
         sequences.push(LogSeq::new(0))?;
+        timestamps.push(document.timestamp())?;
         for value in document.vector() {
             vectors.push(*value)?;
         }
@@ -251,6 +256,7 @@ impl ActiveSegment {
             doc_ids,
             revisions,
             sequences,
+            timestamps,
             vectors,
             codes,
             factors,
@@ -277,6 +283,7 @@ impl ActiveSegment {
         let mut doc_ids = copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?;
         let mut revisions = copy_accounted(accounting, &self.revisions, self.revisions.len())?;
         let mut sequences = copy_accounted(accounting, &self.sequences, self.sequences.len())?;
+        let mut timestamps = copy_accounted(accounting, &self.timestamps, self.timestamps.len())?;
         let mut vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let mut codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let mut factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
@@ -311,6 +318,10 @@ impl ActiveSegment {
             .as_mut_slice()
             .get_mut(row)
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = LogSeq::new(0);
+        *timestamps
+            .as_mut_slice()
+            .get_mut(row)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = document.timestamp();
         let vector_start = row
             .checked_mul(dims)
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
@@ -342,6 +353,7 @@ impl ActiveSegment {
             doc_ids,
             revisions,
             sequences,
+            timestamps,
             vectors,
             codes,
             factors,
@@ -367,6 +379,7 @@ impl ActiveSegment {
         let doc_ids_buffer = copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?;
         let revisions = copy_accounted(accounting, &self.revisions, self.revisions.len())?;
         let sequences = copy_accounted(accounting, &self.sequences, self.sequences.len())?;
+        let timestamps = copy_accounted(accounting, &self.timestamps, self.timestamps.len())?;
         let vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
@@ -400,6 +413,7 @@ impl ActiveSegment {
                 doc_ids: doc_ids_buffer,
                 revisions,
                 sequences,
+                timestamps,
                 vectors,
                 codes,
                 factors,
@@ -435,6 +449,10 @@ impl ActiveSegment {
 
     pub(crate) fn revisions(&self) -> &[Revision] {
         &self.revisions
+    }
+
+    pub(crate) fn timestamps(&self) -> &[i64] {
+        &self.timestamps
     }
 
     pub(crate) fn vectors(&self) -> &[f32] {
@@ -476,6 +494,7 @@ impl ActiveSegment {
             .resident_bytes()
             .saturating_add(self.revisions.resident_bytes())
             .saturating_add(self.sequences.resident_bytes())
+            .saturating_add(self.timestamps.resident_bytes())
             .saturating_add(self.vectors.resident_bytes())
             .saturating_add(self.codes.resident_bytes())
             .saturating_add(self.factors.resident_bytes())

@@ -9,17 +9,21 @@ use super::{DocId, DocumentVersion, IngestDocument, Revision};
 //   1 = vector/document upsert v1
 //   2 = document delete v1
 //   3 = metadata edit v1
+//   4 = vector/document upsert with canonical ts v1
 /// Upsert payload v1.
 pub const UPSERT_V1: u16 = 1;
 /// Delete payload v1.
 pub const DELETE_V1: u16 = 2;
 /// Metadata-edit payload v1.
 pub const METADATA_EDIT_V1: u16 = 3;
+/// Upsert payload with canonical timestamp v1.
+pub const UPSERT_WITH_TIMESTAMP_V1: u16 = 4;
 
 const PAYLOAD_VERSION: u16 = 1;
 const COMMON_HEADER_LEN: usize = 4;
 const DOCUMENT_VERSION_LEN: usize = 24;
 const UPSERT_PREFIX_LEN: usize = COMMON_HEADER_LEN + DOCUMENT_VERSION_LEN + 4;
+const TIMESTAMPED_UPSERT_PREFIX_LEN: usize = COMMON_HEADER_LEN + DOCUMENT_VERSION_LEN + 8 + 4;
 const DELETE_PREFIX_LEN: usize = COMMON_HEADER_LEN + 4;
 const METADATA_PREFIX_LEN: usize = COMMON_HEADER_LEN + DOCUMENT_VERSION_LEN + 4 + 1 + 3 + 4;
 
@@ -193,6 +197,18 @@ pub enum MutationPayload {
 /// Encodes one upsert payload as little-endian
 /// `[version:u16, flags:u16, doc_id:u128, revision:u64, dims:u32, f32[dims]]`.
 pub fn encode_upsert(document: &IngestDocument) -> Result<Vec<u8>, PayloadError> {
+    encode_upsert_body(document, None)
+}
+
+/// Encodes one upsert with its canonical `ts` value before vector geometry.
+pub fn encode_upsert_with_timestamp(document: &IngestDocument) -> Result<Vec<u8>, PayloadError> {
+    encode_upsert_body(document, Some(document.timestamp()))
+}
+
+fn encode_upsert_body(
+    document: &IngestDocument,
+    timestamp: Option<i64>,
+) -> Result<Vec<u8>, PayloadError> {
     if document.vector().is_empty() {
         return Err(PayloadError::EmptyVector);
     }
@@ -209,12 +225,20 @@ pub fn encode_upsert(document: &IngestDocument) -> Result<Vec<u8>, PayloadError>
         .len()
         .checked_mul(std::mem::size_of::<f32>())
         .ok_or(PayloadError::LengthOverflow)?;
-    let capacity = UPSERT_PREFIX_LEN
+    let prefix = if timestamp.is_some() {
+        TIMESTAMPED_UPSERT_PREFIX_LEN
+    } else {
+        UPSERT_PREFIX_LEN
+    };
+    let capacity = prefix
         .checked_add(vector_bytes)
         .ok_or(PayloadError::LengthOverflow)?;
     let mut payload = Vec::with_capacity(capacity);
     append_header(&mut payload);
     append_version(&mut payload, document.version());
+    if let Some(timestamp) = timestamp {
+        payload.extend_from_slice(&timestamp.to_le_bytes());
+    }
     payload.extend_from_slice(&dims.to_le_bytes());
     for value in document.vector() {
         payload.extend_from_slice(&value.to_bits().to_le_bytes());
@@ -270,15 +294,32 @@ pub fn decode_mutation(op: u16, payload: &[u8]) -> Result<MutationPayload, Paylo
         UPSERT_V1 => decode_upsert(payload).map(MutationPayload::Upsert),
         DELETE_V1 => decode_delete(payload).map(MutationPayload::Delete),
         METADATA_EDIT_V1 => decode_metadata_edit(payload).map(MutationPayload::MetadataEdit),
+        UPSERT_WITH_TIMESTAMP_V1 => {
+            decode_upsert_with_timestamp(payload).map(MutationPayload::Upsert)
+        }
         unknown => Err(PayloadError::UnknownOperation(unknown)),
     }
 }
 
 /// Decodes and validates one complete upsert payload.
 pub fn decode_upsert(payload: &[u8]) -> Result<IngestDocument, PayloadError> {
+    decode_upsert_body(payload, false)
+}
+
+/// Decodes one complete upsert carrying the canonical `ts` value.
+pub fn decode_upsert_with_timestamp(payload: &[u8]) -> Result<IngestDocument, PayloadError> {
+    decode_upsert_body(payload, true)
+}
+
+fn decode_upsert_body(payload: &[u8], has_timestamp: bool) -> Result<IngestDocument, PayloadError> {
     let mut cursor = Cursor::new(payload);
     cursor.require_header()?;
     let version = cursor.read_version()?;
+    let timestamp = if has_timestamp {
+        i64::from_le_bytes(cursor.take()?)
+    } else {
+        0
+    };
     let dims = usize::try_from(cursor.read_u32()?).map_err(|_| PayloadError::LengthOverflow)?;
     if dims == 0 {
         return Err(PayloadError::EmptyVector);
@@ -296,7 +337,7 @@ pub fn decode_upsert(payload: &[u8]) -> Result<IngestDocument, PayloadError> {
         vector.push(value);
     }
     cursor.finish()?;
-    Ok(IngestDocument::new(version, vector))
+    Ok(IngestDocument::new(version, vector).with_timestamp(timestamp))
 }
 
 /// Decodes and validates one complete delete payload.

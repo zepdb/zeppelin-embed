@@ -356,6 +356,8 @@ pub enum StoreError {
     ForeignPreparedSegment,
     /// The current snapshot generation cannot be incremented.
     GenerationOverflow,
+    /// Exact reclaimed-byte reporting overflowed its u64 contract.
+    PartitionBytesOverflow,
     /// A new operation raced with close after admissions stopped.
     Closing,
     /// The handle has completed teardown.
@@ -481,6 +483,9 @@ impl std::fmt::Display for StoreError {
                 formatter.write_str("prepared segment belongs to another store")
             }
             Self::GenerationOverflow => formatter.write_str("store snapshot generation overflow"),
+            Self::PartitionBytesOverflow => {
+                formatter.write_str("partition reclaimed-byte count overflow")
+            }
             Self::Closing => formatter.write_str("store is closing"),
             Self::Closed => formatter.write_str("store is closed"),
             Self::ReadCancelled => formatter.write_str("store close cancelled the admitted read"),
@@ -548,6 +553,7 @@ impl std::error::Error for StoreError {
             | Self::ReadOnly
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
+            | Self::PartitionBytesOverflow
             | Self::Closing
             | Self::Closed
             | Self::ReadCancelled

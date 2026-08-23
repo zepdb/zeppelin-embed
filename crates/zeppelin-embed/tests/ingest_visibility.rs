@@ -626,6 +626,7 @@ fn every_active_segment_byte_is_accounted() {
     let expected = std::mem::size_of::<DocId>()
         + std::mem::size_of::<Revision>()
         + std::mem::size_of::<zeppelin_embed::wal::LogSeq>()
+        + std::mem::size_of::<i64>()
         + (2 * std::mem::size_of::<f32>())
         + 1
         + std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>();

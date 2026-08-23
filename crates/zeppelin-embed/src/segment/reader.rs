@@ -4,6 +4,8 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -27,7 +29,43 @@ use super::{SegmentError, SegmentId, SegmentMeta};
 
 const MAX_SEGMENT_HEADER_BYTES: usize = 1024 * 1024;
 
+thread_local! {
+    static DATA_READ_AUDIT: std::cell::RefCell<Option<Arc<AtomicU64>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(crate) struct DataReadAuditGuard {
+    previous: Option<Arc<AtomicU64>>,
+}
+
+impl Drop for DataReadAuditGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        DATA_READ_AUDIT.with(|slot| {
+            slot.replace(previous);
+        });
+    }
+}
+
+pub(crate) fn install_data_read_audit(counter: Option<Arc<AtomicU64>>) -> DataReadAuditGuard {
+    let previous = DATA_READ_AUDIT.with(|slot| slot.replace(counter));
+    DataReadAuditGuard { previous }
+}
+
+fn account_data_read(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    DATA_READ_AUDIT.with(|slot| {
+        if let Some(counter) = slot.borrow().as_ref() {
+            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(bytes))
+            });
+        }
+    });
+}
+
 struct MappedFile {
+    _file: File,
     pointer: NonNull<u8>,
     length: usize,
 }
@@ -68,7 +106,11 @@ impl MappedFile {
         let pointer = NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
             SegmentError::Geometry("mmap returned a null non-failure pointer".to_owned())
         })?;
-        Ok(Self { pointer, length })
+        Ok(Self {
+            _file: file,
+            pointer,
+            length,
+        })
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -130,7 +172,7 @@ impl SegmentReader {
 
     pub(crate) fn open_accounted(
         path: &Path,
-        expected_id: SegmentId,
+        expected: &SegmentMeta,
         before_directory_allocation: impl FnOnce(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
         let mapping = MappedFile::open(path).map_err(crate::lifecycle::StoreError::Segment)?;
@@ -143,12 +185,20 @@ impl SegmentReader {
             &artifact,
             mapping.as_bytes(),
             mapping.length as u64,
-            expected_id,
+            expected.id,
         )
         .map_err(crate::lifecycle::StoreError::Segment)?;
+        if !parsed.meta.same_segment_file(expected) {
+            return Err(crate::lifecycle::StoreError::Segment(
+                SegmentError::Geometry(format!(
+                    "manifest metadata {expected:?}, mapped header metadata {:?}",
+                    parsed.meta
+                )),
+            ));
+        }
         Ok(Self {
             mapping,
-            meta: parsed.meta,
+            meta: expected.clone(),
             header_length: parsed.header_length,
             entries: parsed.entries,
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
@@ -534,12 +584,14 @@ impl SegmentReader {
         let end = start
             .checked_add(length)
             .ok_or_else(|| SegmentError::Geometry("region end overflow".to_owned()))?;
-        self.mapping.as_bytes().get(start..end).ok_or_else(|| {
+        let bytes = self.mapping.as_bytes().get(start..end).ok_or_else(|| {
             SegmentError::Geometry(format!(
                 "region {} range {start}..{end} exceeds file {}",
                 entry.kind, self.mapping.length
             ))
-        })
+        })?;
+        account_data_read(bytes.len());
+        Ok(bytes)
     }
 
     fn chunk_checksum(&self, kind: RegionKind, chunk_index: u32) -> Result<u64, SegmentError> {
@@ -601,7 +653,7 @@ pub fn validate_header_with_vfs(
         header_bytes.extend_from_slice(&tail);
     }
     let parsed = parse_segment_header(&artifact, &header_bytes, actual_length, expected.id)?;
-    if &parsed.meta != expected {
+    if !parsed.meta.same_segment_file(expected) {
         return Err(SegmentError::Geometry(format!(
             "manifest metadata {expected:?}, header metadata {:?}",
             parsed.meta
@@ -848,6 +900,7 @@ fn parse_segment_header(
             scheme,
             dims,
             file_size: actual_file_length,
+            clustering_key_range: super::ClusteringKeyRange::Unstamped,
         },
         header_length,
         entries,
