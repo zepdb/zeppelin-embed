@@ -1121,19 +1121,6 @@ unsafe fn touch_block(address: *const u8) -> (u64, u64) {
     (sum, first)
 }
 
-#[cfg(test)]
-fn serialized_trace(blocks: &[[u8; 16]], start: usize, steps: usize) -> Vec<usize> {
-    let mut trace = Vec::with_capacity(steps);
-    let mut current = start;
-    for _ in 0..steps {
-        trace.push(current);
-        let mut encoded = [0_u8; 8];
-        encoded.copy_from_slice(&blocks[current][..8]);
-        current = u64::from_le_bytes(encoded) as usize % blocks.len();
-    }
-    trace
-}
-
 fn auto_scale_iterations_with<F>(
     target: Duration,
     minimum: u64,
@@ -1214,7 +1201,7 @@ mod tests {
 
     use super::{
         AlignedBuffer, Config, Harness, HopFixture, Statistics, auto_scale_iterations_with,
-        build_cycle, serialized_trace, working_set_bytes,
+        build_cycle, gather_serialized, working_set_bytes,
     };
 
     #[test]
@@ -1244,17 +1231,31 @@ mod tests {
 
     #[test]
     fn address_serialized_next_block_derives_from_current_block_contents() {
-        let mut blocks = [[0_u8; 16]; 4];
-        for (block, next) in blocks.iter_mut().zip([2_u64, 3, 1, 0]) {
-            block[..8].copy_from_slice(&next.to_le_bytes());
+        let mut fixture =
+            HopFixture::new(1_048_576, 128, 0xc0de).expect("address-serialized fixture");
+        fixture.buffer.write_u32(0, 0);
+        for node in 0..fixture.node_lines {
+            for word in 0..8 {
+                fixture
+                    .buffer
+                    .write_u64((fixture.node_start_line + node) * 128 + word * 8, 0);
+            }
         }
-        assert_eq!(serialized_trace(&blocks, 0, 5), vec![0, 2, 1, 3, 0]);
+        for (node, next) in [1_u64, 2, 3, 0].into_iter().enumerate() {
+            fixture
+                .buffer
+                .write_u64((fixture.node_start_line + node) * 128, next);
+        }
+        let adjacency = fixture.adjacency_ptr(0);
+        assert_eq!(gather_serialized(&fixture, adjacency, 4), 6);
 
-        blocks[2][..8].copy_from_slice(&3_u64.to_le_bytes());
+        fixture
+            .buffer
+            .write_u64((fixture.node_start_line + 2) * 128, 0);
         assert_eq!(
-            serialized_trace(&blocks, 0, 4),
-            vec![0, 2, 3, 0],
-            "changing block 2 contents must change block 3's address"
+            gather_serialized(&fixture, adjacency, 4),
+            5,
+            "changing block 2 contents must change the next address used by gather_serialized"
         );
     }
 

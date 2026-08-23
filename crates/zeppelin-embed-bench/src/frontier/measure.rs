@@ -51,6 +51,11 @@ pub trait SampleSource {
 
     /// Returns one elapsed observation in nanoseconds.
     fn sample_ns(&mut self) -> Result<f64, Self::Error>;
+
+    /// Fails closed when a competing build or benchmark is visible.
+    fn concurrent_load_check(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Accepted low-variance runs and the final min-of-medians statistic.
@@ -77,6 +82,8 @@ pub enum MeasurementError<E> {
     Source(E),
     /// A source returned a non-positive or non-finite duration.
     InvalidSample(f64),
+    /// A competing build or benchmark was visible at a run boundary.
+    ConcurrentLoad(String),
     /// Too many entire runs exceeded the variance cap.
     VarianceBudgetExhausted {
         /// Discarded run count.
@@ -93,6 +100,9 @@ impl<E: fmt::Display> fmt::Display for MeasurementError<E> {
             Self::Source(error) => write!(formatter, "measurement source failed: {error}"),
             Self::InvalidSample(value) => {
                 write!(formatter, "measurement returned invalid {value} ns sample")
+            }
+            Self::ConcurrentLoad(reason) => {
+                write!(formatter, "measurement refused concurrent load: {reason}")
             }
             Self::VarianceBudgetExhausted {
                 discarded_runs,
@@ -129,6 +139,9 @@ pub fn measure_source_with_provenance<S: SampleSource>(
     let mut accepted_run_rsd_percent = Vec::with_capacity(config.accepted_runs);
     let mut discarded_runs = 0;
     for _ in 0..config.maximum_attempts {
+        source
+            .concurrent_load_check()
+            .map_err(MeasurementError::ConcurrentLoad)?;
         let mut samples = Vec::with_capacity(config.repetitions_per_run);
         for _ in 0..config.repetitions_per_run {
             let sample = source.sample_ns().map_err(MeasurementError::Source)?;
@@ -137,6 +150,9 @@ pub fn measure_source_with_provenance<S: SampleSource>(
             }
             samples.push(sample);
         }
+        source
+            .concurrent_load_check()
+            .map_err(MeasurementError::ConcurrentLoad)?;
         let rsd_percent = relative_standard_deviation_percent(&samples);
         if rsd_percent > config.maximum_rsd_percent {
             discarded_runs += 1;
@@ -253,6 +269,9 @@ impl ProbeOutput {
 pub trait MachineProbe {
     /// Runs `pmset` with the supplied arguments.
     fn pmset(&self, arguments: &[&str]) -> io::Result<ProbeOutput>;
+
+    /// Refuses competing build and benchmark processes.
+    fn concurrent_load_check(&self) -> Result<(), String>;
 }
 
 /// Real process-based `pmset` probe.
@@ -267,6 +286,10 @@ impl MachineProbe for SystemMachineProbe {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
+    }
+
+    fn concurrent_load_check(&self) -> Result<(), String> {
+        system_concurrent_load_check()
     }
 }
 
@@ -291,6 +314,9 @@ pub enum PreflightOutcome {
 #[must_use]
 pub fn preflight(probe: &impl MachineProbe) -> PreflightOutcome {
     let mut reasons = Vec::new();
+    if let Err(reason) = probe.concurrent_load_check() {
+        reasons.push(format!("concurrent load not excluded: {reason}"));
+    }
     let power = probe.pmset(&["-g", "ps"]);
     let thermal = probe.pmset(&["-g", "therm"]);
     let power_evidence = match power {
@@ -618,6 +644,54 @@ impl<W: Workload> SampleSource for WorkloadSampler<'_, W> {
         let started = Instant::now();
         black_box(self.workload.execute_timed(self.variant)?);
         Ok(started.elapsed().as_secs_f64() * 1_000_000_000.0)
+    }
+
+    fn concurrent_load_check(&mut self) -> Result<(), String> {
+        system_concurrent_load_check()
+    }
+}
+
+pub(crate) fn system_concurrent_load_check() -> Result<(), String> {
+    let current = std::process::id();
+    // SAFETY: getppid has no pointer arguments and cannot violate memory safety.
+    let parent = unsafe { libc::getppid() };
+    let parent = u32::try_from(parent)
+        .map_err(|_| format!("getppid returned invalid process id {parent}"))?;
+    let mut competitors = Vec::new();
+    for process_name in [
+        "cargo",
+        "rustc",
+        "rustdoc",
+        "criterion",
+        "clang",
+        "cc",
+        "ld",
+    ] {
+        let output = Command::new("pgrep")
+            .args(["-x", process_name])
+            .output()
+            .map_err(|error| format!("pgrep {process_name} failed: {error}"))?;
+        if !output.status.success() && output.status.code() != Some(1) {
+            return Err(format!(
+                "pgrep {process_name} exited {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let pid = line
+                .trim()
+                .parse::<u32>()
+                .map_err(|error| format!("pgrep {process_name} returned {line:?}: {error}"))?;
+            if pid != current && pid != parent {
+                competitors.push(format!("{process_name}[{pid}]"));
+            }
+        }
+    }
+    if competitors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("competing processes: {}", competitors.join(", ")))
     }
 }
 

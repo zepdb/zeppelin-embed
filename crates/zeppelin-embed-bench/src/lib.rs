@@ -2,6 +2,8 @@
 
 /// Optimization-frontier measurement and search harness.
 pub mod frontier;
+/// Recall-only flat-Vamana construction and measurement scaffold for M3.
+pub mod graph_recall;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;

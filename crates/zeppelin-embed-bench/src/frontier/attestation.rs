@@ -297,6 +297,10 @@ impl<P: MachineProbe> MachineProbe for RecordingProbe<'_, P> {
         }
         result
     }
+
+    fn concurrent_load_check(&self) -> Result<(), String> {
+        self.inner.concurrent_load_check()
+    }
 }
 
 fn probe_output_is_unavailable(output: &super::measure::ProbeOutput) -> bool {

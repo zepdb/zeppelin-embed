@@ -302,6 +302,10 @@ impl AccountedCounter {
             .shrink(self.reservation.bytes.saturating_sub(bytes));
         Ok(())
     }
+
+    pub(crate) const fn bytes(&self) -> u64 {
+        self.reservation.bytes
+    }
 }
 
 /// An owned value whose exact requested allocation bytes have one component owner.

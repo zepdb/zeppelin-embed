@@ -1094,6 +1094,55 @@ impl SampleSource for ScriptedSamples {
     }
 }
 
+struct LoadStartsMidRun {
+    samples_remaining: usize,
+    boundary_checks: usize,
+}
+
+impl SampleSource for LoadStartsMidRun {
+    type Error = io::Error;
+
+    fn warm_up(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn sample_ns(&mut self) -> Result<f64, Self::Error> {
+        self.samples_remaining = self.samples_remaining.saturating_sub(1);
+        Ok(100.0)
+    }
+
+    fn concurrent_load_check(&mut self) -> Result<(), String> {
+        self.boundary_checks += 1;
+        if self.boundary_checks == 1 {
+            Ok(())
+        } else {
+            Err("competing cargo[4242]".to_owned())
+        }
+    }
+}
+
+#[test]
+fn frontier_measurement_rejects_load_that_starts_during_a_low_variance_run() {
+    let mut source = LoadStartsMidRun {
+        samples_remaining: 30,
+        boundary_checks: 0,
+    };
+    let error = measure_source(
+        &mut source,
+        MeasurementConfig {
+            warmup_repetitions: 0,
+            repetitions_per_run: 30,
+            accepted_runs: 1,
+            maximum_attempts: 1,
+            maximum_rsd_percent: 2.0,
+        },
+    )
+    .expect_err("post-run load must invalidate a stable sample set");
+    assert!(matches!(error, MeasurementError::ConcurrentLoad(reason) if reason.contains("4242")));
+    assert_eq!(source.samples_remaining, 0);
+    assert_eq!(source.boundary_checks, 2);
+}
+
 #[test]
 fn frontier_variance_cap_discards_noisy_run_and_retries_without_averaging_it() {
     let noisy = (0..30).map(|index| if index % 2 == 0 { 80.0 } else { 120.0 });
@@ -1598,6 +1647,10 @@ impl MachineProbe for ErrorProbe {
             format!("denied {}", arguments.join(" ")),
         ))
     }
+
+    fn concurrent_load_check(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl MachineProbe for MockProbe {
@@ -1610,6 +1663,10 @@ impl MachineProbe for MockProbe {
                 "unexpected pmset arguments",
             )),
         }
+    }
+
+    fn concurrent_load_check(&self) -> Result<(), String> {
+        Ok(())
     }
 }
 

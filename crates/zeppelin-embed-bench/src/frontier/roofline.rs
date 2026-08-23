@@ -514,7 +514,7 @@ pub fn calibrate_compute_tiers(
             return Ok(ComputeCalibrationOutcome::Idle { reasons });
         }
     }
-    calibrate_compute_tiers_ready(config, MachineStateProvenance::DirectProbe)
+    calibrate_compute_tiers_ready(config, MachineStateProvenance::DirectProbe, probe)
 }
 
 /// Measures compute ceilings after the unchanged direct probe, using a valid
@@ -533,21 +533,23 @@ pub fn calibrate_compute_tiers_with_attestation(
             return Ok(ComputeCalibrationOutcome::Idle { reasons });
         }
     };
-    calibrate_compute_tiers_ready(config, provenance)
+    calibrate_compute_tiers_ready(config, provenance, probe)
 }
 
 fn calibrate_compute_tiers_ready(
     config: ComputeCalibrationConfig,
     provenance: MachineStateProvenance,
+    probe: &impl MachineProbe,
 ) -> Result<ComputeCalibrationOutcome, ComputeCalibrationError> {
     #[cfg(target_arch = "aarch64")]
     {
-        calibrate_aarch64(config, provenance)
+        calibrate_aarch64(config, provenance, probe)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let _ = config;
         let _ = provenance;
+        let _ = probe;
         Ok(ComputeCalibrationOutcome::Measured {
             calibrations: Vec::new(),
             not_measured: vec![
@@ -572,6 +574,7 @@ fn calibrate_compute_tiers_ready(
 fn calibrate_aarch64(
     config: ComputeCalibrationConfig,
     machine_state: MachineStateProvenance,
+    probe: &impl MachineProbe,
 ) -> Result<ComputeCalibrationOutcome, ComputeCalibrationError> {
     let features = zeppelin_embed::kernels::detected_features();
     let mut calibrations = Vec::new();
@@ -599,6 +602,7 @@ fn calibrate_aarch64(
             tier,
             iterations: config.iterations_per_sample,
             checksum: 0,
+            load_probe: probe,
         };
         let measurement =
             measure_source_with_provenance(&mut source, config.measurement, machine_state.clone())
@@ -619,14 +623,15 @@ fn calibrate_aarch64(
 }
 
 #[cfg(target_arch = "aarch64")]
-struct SaturationSource {
+struct SaturationSource<'a, P> {
     tier: ComputeTier,
     iterations: u64,
     checksum: u64,
+    load_probe: &'a P,
 }
 
 #[cfg(target_arch = "aarch64")]
-impl SampleSource for SaturationSource {
+impl<P: MachineProbe> SampleSource for SaturationSource<'_, P> {
     type Error = std::io::Error;
 
     fn warm_up(&mut self) -> Result<(), Self::Error> {
@@ -638,6 +643,10 @@ impl SampleSource for SaturationSource {
         let started = std::time::Instant::now();
         self.checksum ^= run_saturation(self.tier, self.iterations);
         Ok(started.elapsed().as_secs_f64() * 1_000_000_000.0)
+    }
+
+    fn concurrent_load_check(&mut self) -> Result<(), String> {
+        self.load_probe.concurrent_load_check()
     }
 }
 

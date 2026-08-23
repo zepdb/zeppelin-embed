@@ -24,6 +24,7 @@ enum Scheme {
 enum FixtureKind {
     Degenerate,
     Clustered,
+    Random,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,8 +83,8 @@ USAGE:\n\
 FLAGS:\n\
     --scheme f32|f16|int8|bit4  Quantization scheme (default: bit4).\n\
     --shape ROWSxDIMENSIONS     Corpus shape (default: 100000x768).\n\
-    --fixture degenerate|clustered\n\
-                                 Source fixture (default: degenerate).\n\
+    --fixture degenerate|clustered|random\n\
+                                 Source fixture (default: random).\n\
     --k N                       Candidate count (default: 10).\n\
     --threads N                 Worker budget; zero selects detected P-cores.\n\
     --iterations N              Scans per timed repeat (default: 10).\n\
@@ -142,7 +143,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             scheme: Scheme::Bit4,
-            fixture: FixtureKind::Degenerate,
+            fixture: FixtureKind::Random,
             rows: 100_000,
             dimensions: 768,
             k: 10,
@@ -306,7 +307,23 @@ fn build_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Er
     match config.fixture {
         FixtureKind::Degenerate => build_degenerate_float_values(config),
         FixtureKind::Clustered => build_clustered_float_values(config),
+        FixtureKind::Random => build_random_float_values(config),
     }
+}
+
+fn build_random_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Error>> {
+    let scalar_count = config
+        .rows
+        .checked_mul(config.dimensions)
+        .ok_or("random fixture size overflowed")?;
+    let mut random = SplitMix64::new(0x05d1_5c21_51aa);
+    let query = (0..config.dimensions)
+        .map(|_| random.open_unit() as f32 * 2.0 - 1.0)
+        .collect::<Vec<_>>();
+    let rows = (0..scalar_count)
+        .map(|_| random.open_unit() as f32 * 2.0 - 1.0)
+        .collect::<Vec<_>>();
+    Ok((query, rows))
 }
 
 fn build_degenerate_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), Box<dyn Error>> {
@@ -385,21 +402,39 @@ fn build_clustered_float_values(config: Config) -> Result<(Vec<f32>, Vec<f32>), 
 }
 
 fn build_int8(config: Config) -> Result<Fixture, Box<dyn Error>> {
-    let query_values = vec![1.0_f32; config.dimensions];
+    let mut random = SplitMix64::new(0x051a_7851_51aa);
+    let query_values = match config.fixture {
+        FixtureKind::Random => (0..config.dimensions)
+            .map(|_| random.open_unit() as f32 * 2.0 - 1.0)
+            .collect::<Vec<_>>(),
+        FixtureKind::Degenerate | FixtureKind::Clustered => vec![1.0_f32; config.dimensions],
+    };
     let query = prepare_int8_query(&query_values)?;
     let scalar_count = config
         .rows
         .checked_mul(config.dimensions)
         .ok_or("Int8 fixture size overflowed")?;
-    let codes = (0..scalar_count)
-        .map(|index| {
-            if index.is_multiple_of(3) {
-                96_i8
-            } else {
-                -64_i8
-            }
-        })
-        .collect::<Vec<_>>();
+    let codes = match config.fixture {
+        FixtureKind::Degenerate => (0..scalar_count)
+            .map(|index| {
+                if index.is_multiple_of(3) {
+                    96_i8
+                } else {
+                    -64_i8
+                }
+            })
+            .collect::<Vec<_>>(),
+        FixtureKind::Clustered => (0..scalar_count)
+            .map(|index| {
+                let row = index / config.dimensions;
+                let coordinate = index % config.dimensions;
+                ((row % 12) as i16 * 17 + (coordinate % 7) as i16 * 5 - 112) as i8
+            })
+            .collect::<Vec<_>>(),
+        FixtureKind::Random => (0..scalar_count)
+            .map(|_| (random.next_u64() as u8 & 0x7f) as i8)
+            .collect::<Vec<_>>(),
+    };
     let factors = (0..config.rows)
         .map(|_| Int8Factors::new(0.01, 0.0))
         .collect::<Result<Vec<_>, _>>()?;
@@ -435,6 +470,32 @@ fn build_bit4(config: Config) -> Result<Fixture, Box<dyn Error>> {
             }
         }
         FixtureKind::Clustered => build_clustered_bit4_values(config, row_width, byte_count)?,
+        FixtureKind::Random => {
+            let mut random = SplitMix64::new(0x05b1_7451_51aa);
+            let query = (0..config.dimensions)
+                .map(|_| random.open_unit() as f32 * 2.0 - 1.0)
+                .collect::<Vec<_>>();
+            let mut codes = (0..byte_count)
+                .map(|_| random.next_u64() as u8)
+                .collect::<Vec<_>>();
+            if !config.dimensions.is_multiple_of(2) {
+                for row in codes.chunks_exact_mut(row_width) {
+                    if let Some(last) = row.last_mut() {
+                        *last &= 0xf0;
+                    }
+                }
+            }
+            let source = (0..config.dimensions)
+                .map(|index| if index.is_multiple_of(3) { 1.0 } else { -0.5 })
+                .collect::<Vec<_>>();
+            let mut template = vec![0_u8; row_width];
+            let factor = quantize_bit4(&source, &mut template)?;
+            Bit4FixtureData {
+                query,
+                codes,
+                factors: vec![factor; config.rows],
+            }
+        }
     };
     let query = zeppelin_embed::quant::prepare_bit4_query(&data.query, 0x05)?;
     Ok(Fixture::Bit4 {
@@ -542,11 +603,14 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Config
             "--fixture" => {
                 let value = arguments
                     .next()
-                    .ok_or("--fixture requires degenerate or clustered")?;
+                    .ok_or("--fixture requires degenerate, clustered, or random")?;
                 config.fixture = match value.as_str() {
                     "degenerate" => FixtureKind::Degenerate,
                     "clustered" => FixtureKind::Clustered,
-                    _ => return Err("--fixture requires degenerate or clustered".into()),
+                    "random" => FixtureKind::Random,
+                    _ => {
+                        return Err("--fixture requires degenerate, clustered, or random".into());
+                    }
                 };
             }
             "--k" => config.k = parse_next(&mut arguments, "--k")?,
@@ -622,6 +686,29 @@ fn f32_to_f16_bits(value: f32) -> u16 {
     } else {
         sign | ((exponent as u16) << 10) | fraction
     }
+}
+
+#[cfg(test)]
+pub fn random_int8_fixture_distinct_rows(
+    rows: usize,
+    dimensions: usize,
+) -> Result<(usize, bool), Box<dyn Error>> {
+    let config = Config {
+        scheme: Scheme::Int8,
+        fixture: FixtureKind::Random,
+        rows,
+        dimensions,
+        ..Config::default()
+    };
+    let Fixture::Int8 { rows: codes, .. } = build_int8(config)? else {
+        return Err("Int8 fixture builder returned another scheme".into());
+    };
+    let distinct = codes
+        .chunks_exact(dimensions)
+        .map(<[i8]>::to_vec)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    Ok((distinct, Config::default().fixture == FixtureKind::Random))
 }
 
 fn parse_next(
