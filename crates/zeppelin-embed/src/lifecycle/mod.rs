@@ -177,11 +177,13 @@ impl Default for GraphSearchOptions {
     }
 }
 
-/// Explicit per-query execution tier at the public store seam.
+/// Per-query execution tier at the public store seam.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchTier {
-    /// Preserve the existing exhaustive sealed-segment scan.
+    /// Select graph traversal per sealed segment when that graph is published.
     #[default]
+    Auto,
+    /// Preserve the existing exhaustive sealed-segment scan.
     Scan,
     /// Traverse every sealed segment's Vamana graph.
     Graph(GraphSearchOptions),
@@ -195,12 +197,12 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
-    /// Creates scan-tier options with the supplied scan worker budget.
+    /// Creates automatic-tier options with the supplied scan worker budget.
     #[must_use]
     pub const fn new(scan: crate::scan::ScanOptions) -> Self {
         Self {
             scan,
-            tier: SearchTier::Scan,
+            tier: SearchTier::Auto,
         }
     }
 
@@ -572,6 +574,7 @@ pub struct Store {
     pub(crate) active: Mutex<Option<crate::ingest::ActiveState>>,
     pub(crate) wal_writer: Mutex<Option<crate::ingest::StoreWal>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
+    pub(crate) maintenance: Mutex<()>,
     pub(crate) durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
@@ -670,6 +673,7 @@ impl Store {
             active: Mutex::new(Some(active)),
             wal_writer: Mutex::new(wal_writer),
             writer_lock: Mutex::new(writer_lock),
+            maintenance: Mutex::new(()),
             durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
@@ -861,7 +865,16 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(QueryError::Store(StoreError::Closed))?;
-        let needs_query_pool = matches!(options.tier(), SearchTier::Scan);
+        let needs_query_pool = !active_segment.is_empty()
+            || match options.tier() {
+                SearchTier::Auto => snapshot.segments().iter().any(|segment| {
+                    !segment.directory().iter().any(|entry| {
+                        entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id()
+                    })
+                }),
+                SearchTier::Scan => true,
+                SearchTier::Graph(_) => false,
+            };
         let pool = if needs_query_pool {
             let mut pool_slot = self.query_pool.lock().map_err(|_| {
                 QueryError::Store(StoreError::Synchronization {
@@ -957,7 +970,7 @@ fn search_pinned(
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
         let outcome = match options.tier() {
-            SearchTier::Scan => {
+            SearchTier::Auto | SearchTier::Scan => {
                 let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
                     component: "active scan-tier query pool",
                 }))?;
@@ -999,7 +1012,22 @@ fn search_pinned(
             .map_err(StoreError::Segment)
             .map_err(QueryError::Store)?;
         let source = RowSource::Sealed(segment.meta().id);
-        if let SearchTier::Graph(graph_options) = options.tier() {
+        // Automatic tiering follows the artifact that is atomically published
+        // now, not the tier policy's desired future state. A due-but-unbuilt
+        // graph is therefore scanned silently and correctly: that is the
+        // adaptive ladder working, not a fallback hiding a broken contract.
+        let graph_options = match options.tier() {
+            SearchTier::Graph(graph_options) => Some(graph_options),
+            SearchTier::Auto
+                if segment.directory().iter().any(|entry| {
+                    entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id()
+                }) =>
+            {
+                Some(GraphSearchOptions::default())
+            }
+            SearchTier::Auto | SearchTier::Scan => None,
+        };
+        if let Some(graph_options) = graph_options {
             let (graph, graph_validated) = segment
                 .graph_search_cache
                 .bind_graph(segment)
@@ -1029,6 +1057,15 @@ fn search_pinned(
             } else {
                 segment_k
             };
+            if let Some(ef) = graph_options.ef()
+                && ef < segment_k
+            {
+                return Err(QueryError::Graph(
+                    crate::graph::search::GraphSearchError::AdaptiveEf(
+                        crate::graph::search::AdaptiveEfError::ExplicitBelowK { k: segment_k, ef },
+                    ),
+                ));
+            }
             let request_for = |candidate_k| {
                 let graph_request = crate::graph::search::GraphSearchRequest::new(
                     request.vector(),
@@ -1036,9 +1073,13 @@ fn search_pinned(
                     graph_options.seed(),
                 )
                 .with_profile(graph_options.profile());
-                graph_options
-                    .ef()
-                    .map_or(graph_request, |ef| graph_request.with_ef(ef))
+                // An explicit ef controls the caller's live-candidate window.
+                // Tombstones are engine state, so reserve only the additional
+                // width needed to replace deleted rows instead of turning a
+                // previously valid ef=k request into an internal below-k error.
+                graph_options.ef().map_or(graph_request, |ef| {
+                    graph_request.with_ef(ef.max(candidate_k))
+                })
             };
             let mut candidate_k = segment_k;
             let mut graph_request = request_for(candidate_k);
@@ -1046,13 +1087,8 @@ fn search_pinned(
                 .effective_ef(graph.node_count() as usize)
                 .map_err(crate::graph::search::GraphSearchError::AdaptiveEf)
                 .map_err(QueryError::Graph)?;
-            let requestable_max_k = graph_options
-                .ef()
-                .map_or(maximum_candidate_k, |ef| maximum_candidate_k.min(ef));
-            let scratch_ef = if has_tombstones
-                && graph_options.ef().is_none()
-                && requestable_max_k > candidate_k
-            {
+            let requestable_max_k = maximum_candidate_k;
+            let scratch_ef = if has_tombstones && requestable_max_k > candidate_k {
                 request_for(requestable_max_k)
                     .effective_ef(node_count)
                     .map_err(crate::graph::search::GraphSearchError::AdaptiveEf)
@@ -1109,16 +1145,6 @@ fn search_pinned(
                     break result;
                 }
                 if candidate_k >= requestable_max_k {
-                    if requestable_max_k < maximum_candidate_k {
-                        return Err(QueryError::Graph(
-                            crate::graph::search::GraphSearchError::AdaptiveEf(
-                                crate::graph::search::AdaptiveEfError::ExplicitBelowK {
-                                    k: maximum_candidate_k,
-                                    ef: requestable_max_k,
-                                },
-                            ),
-                        ));
-                    }
                     return Err(QueryError::Graph(
                         crate::graph::search::GraphSearchError::Geometry(format!(
                             "graph traversal exhausted {candidate_k} candidates but retained {retained_live} live rows, expected {target_live_k}"
@@ -1184,7 +1210,10 @@ fn search_pinned(
                 }
                 candidates.push(crate::ingest::SearchCandidate::new(
                     crate::ingest::GlobalRowId::new(source, candidate.row_id()),
-                    None,
+                    segment
+                        .document_version(candidate.row_id() as usize)
+                        .map_err(StoreError::Segment)
+                        .map_err(QueryError::Store)?,
                     score,
                 ));
             }

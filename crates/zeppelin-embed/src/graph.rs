@@ -7,11 +7,8 @@ pub mod build;
 /// Single-core fixed-stride graph traversal.
 pub mod search;
 
-/// Minimum sealed-segment row count that earns a graph instead of exact scan.
-/// This is the provisional single-core crossover derived in
-/// `tasks/reports/index-design-research.md` section 3.3; see the explicit
-/// not-yet-measured caveat in `docs/19-m5-defaults.md`.
-pub const MIN_GRAPH_ROWS: u32 = 10_000;
+/// Compatibility name for the tier policy's single provisional threshold.
+pub const MIN_GRAPH_ROWS: u32 = crate::tier::PROVISIONAL_TIER_THRESHOLDS.graph_min_rows;
 
 /// Validated construction controls for one flat per-segment graph.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -345,7 +345,7 @@ pub struct SearchOutcome {
     pub candidates: Vec<SearchCandidate>,
     /// Aggregate work from all per-segment query-pool executions.
     pub stats: ScanStats,
-    /// Graph-only deterministic work; all fields are zero for the default scan tier.
+    /// Graph-only deterministic work; fields are zero when no segment used a graph.
     pub graph_stats: GraphSearchStats,
     /// Pinned active-state generation searched by this request.
     pub generation: u64,

@@ -17,7 +17,10 @@ use crate::lifecycle::{QueryControl, SnapshotLease, Store, StoreError};
 use crate::quant::{Bit4Factors, QuantError, est_dot_bit4, prepare_bit4_query};
 use crate::scan::ScanError;
 use crate::segment::reader::SegmentReader;
-use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment_with_graph};
+use crate::segment::writer::{
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_graph,
+    write_segment_with_graph_and_documents,
+};
 use crate::segment::{SegmentError, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
 
@@ -44,6 +47,7 @@ pub enum GraphBuildPasses {
 pub struct GraphBuildArtifact {
     encoded_region: Vec<u8>,
     entry_points: Vec<u32>,
+    work_rows_completed: u64,
     _memory: Option<AccountedCounter>,
 }
 
@@ -58,6 +62,12 @@ impl GraphBuildArtifact {
     #[must_use]
     pub fn entry_points(&self) -> &[u32] {
         &self.entry_points
+    }
+
+    /// Returns rows advanced by this checkpointed invocation, excluding prior work.
+    #[must_use]
+    pub const fn work_rows_completed(&self) -> u64 {
+        self.work_rows_completed
     }
 
     /// Atomically publishes the sealed input plus this graph through M2's writer.
@@ -93,6 +103,23 @@ impl GraphBuildArtifact {
         let columns = input.columns()?;
         let alive = input.alive()?;
         let factors = input.bit4_factors()?;
+        let mut doc_ids = Vec::with_capacity(input.meta().row_count as usize);
+        let mut revisions = Vec::with_capacity(input.meta().row_count as usize);
+        let mut has_documents = None;
+        for row in 0..input.meta().row_count as usize {
+            let document = input.document_version(row)?;
+            let present = document.is_some();
+            if has_documents.is_some_and(|expected| expected != present) {
+                return Err(GraphBuildError::Segment(SegmentError::Geometry(
+                    "document-version region is present for only part of the segment".to_owned(),
+                )));
+            }
+            has_documents = Some(present);
+            if let Some(document) = document {
+                doc_ids.push(document.doc_id());
+                revisions.push(document.revision());
+            }
+        }
         let build = SegmentBuild {
             id: output_id,
             scheme: input.meta().scheme,
@@ -103,17 +130,27 @@ impl GraphBuildArtifact {
             columns: &columns,
             alive: &alive,
         };
-        write_segment_with_graph(
-            vfs,
-            directory,
-            build,
-            GraphNodeBlockBuild {
-                layout: decoded.layout(),
-                nodes: &nodes,
-            },
-            policy,
-        )
-        .map_err(GraphBuildError::Segment)
+        let graph = GraphNodeBlockBuild {
+            layout: decoded.layout(),
+            nodes: &nodes,
+        };
+        if has_documents == Some(true) {
+            write_segment_with_graph_and_documents(
+                vfs,
+                directory,
+                build,
+                graph,
+                SegmentDocumentVersions {
+                    doc_ids: &doc_ids,
+                    revisions: &revisions,
+                },
+                policy,
+            )
+            .map_err(GraphBuildError::Segment)
+        } else {
+            write_segment_with_graph(vfs, directory, build, graph, policy)
+                .map_err(GraphBuildError::Segment)
+        }
     }
 }
 
@@ -129,6 +166,11 @@ pub enum GraphBuildError {
     },
     /// Checkpoint bytes failed their closed structural or identity contract.
     CheckpointCorrupt(String),
+    /// A caller work limit stopped after atomically checkpointing completed batches.
+    BudgetExhausted {
+        /// Rows advanced by this invocation and persisted in the checkpoint.
+        rows_completed: u64,
+    },
     /// Caller cancellation stopped a batch without publishing partial results.
     Cancelled {
         /// Permanently false: graph builds never return partial artifacts.
@@ -176,6 +218,10 @@ impl std::fmt::Display for GraphBuildError {
             Self::CheckpointCorrupt(detail) => {
                 write!(formatter, "graph build checkpoint is corrupt: {detail}")
             }
+            Self::BudgetExhausted { rows_completed } => write!(
+                formatter,
+                "graph build work budget exhausted after {rows_completed} checkpointed rows"
+            ),
             Self::Cancelled { partial } => {
                 write!(formatter, "graph build was cancelled (partial={partial})")
             }
@@ -214,6 +260,7 @@ impl std::error::Error for GraphBuildError {
             Self::NodeBlock(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::CheckpointCorrupt(_)
+            | Self::BudgetExhausted { .. }
             | Self::Cancelled { .. }
             | Self::Timeout { .. }
             | Self::ReadCancelled { .. }
@@ -310,6 +357,25 @@ impl<'a> GraphBuildSession<'a> {
         Ok(complete)
     }
 
+    fn completed_work_rows(&self) -> Result<u64, GraphBuildError> {
+        let rows = u64::try_from(self.state.order.len())
+            .map_err(|_| GraphBuildError::Geometry("graph row count exceeds u64".to_owned()))?;
+        let next = u64::try_from(self.state.next_index)
+            .map_err(|_| GraphBuildError::Geometry("graph progress exceeds u64".to_owned()))?;
+        match self.state.phase {
+            BuildPhase::Build => Ok(next),
+            BuildPhase::Refine => rows
+                .checked_add(next)
+                .ok_or_else(|| GraphBuildError::Geometry("graph progress overflow".to_owned())),
+            BuildPhase::Complete => match self.passes {
+                GraphBuildPasses::One => Ok(rows),
+                GraphBuildPasses::Two => rows
+                    .checked_mul(2)
+                    .ok_or_else(|| GraphBuildError::Geometry("graph progress overflow".to_owned())),
+            },
+        }
+    }
+
     fn artifact(self) -> Result<GraphBuildArtifact, GraphBuildError> {
         if !self.state.is_complete(self.passes) {
             return Err(GraphBuildError::Geometry(
@@ -379,6 +445,7 @@ pub struct CheckpointedGraphBuild<'a> {
     passes: GraphBuildPasses,
     checkpoint_path: &'a Path,
     control: &'a QueryControl,
+    max_work_rows: Option<u64>,
 }
 
 impl<'a> CheckpointedGraphBuild<'a> {
@@ -397,7 +464,17 @@ impl<'a> CheckpointedGraphBuild<'a> {
             passes,
             checkpoint_path,
             control,
+            max_work_rows: None,
         }
+    }
+
+    /// Stops after checkpointing at least this many rows in the current invocation.
+    ///
+    /// Callers that need a strict row limit align it to `checkpoint_batch_rows`.
+    #[must_use]
+    pub const fn with_max_work_rows(mut self, max_work_rows: u64) -> Self {
+        self.max_work_rows = Some(max_work_rows);
+        self
     }
 }
 
@@ -412,6 +489,7 @@ pub fn build_graph_checkpointed(
     lease: &SnapshotLease,
 ) -> Result<GraphBuildArtifact, GraphBuildError> {
     let cancellation = QueryCancellation::new(request.control, lease);
+    check_cancellation(&cancellation)?;
     let mut session = GraphBuildSession::new(
         reader,
         request.params,
@@ -420,8 +498,27 @@ pub fn build_graph_checkpointed(
         request.checkpoint_path,
         Some(&store.accounting),
     )?;
-    while !session.advance_batch(&cancellation)? {}
-    session.artifact()
+    let started_rows = session.completed_work_rows()?;
+    loop {
+        let complete = session.advance_batch(&cancellation)?;
+        let completed_rows = session
+            .completed_work_rows()?
+            .checked_sub(started_rows)
+            .ok_or_else(|| GraphBuildError::Geometry("graph work progress regressed".to_owned()))?;
+        if complete {
+            let mut artifact = session.artifact()?;
+            artifact.work_rows_completed = completed_rows;
+            return Ok(artifact);
+        }
+        if request
+            .max_work_rows
+            .is_some_and(|maximum| completed_rows >= maximum)
+        {
+            return Err(GraphBuildError::BudgetExhausted {
+                rows_completed: completed_rows,
+            });
+        }
+    }
 }
 
 struct SegmentVectors<'a> {
@@ -787,7 +884,7 @@ impl BuildState {
 }
 
 fn check_cancellation(cancellation: &QueryCancellation<'_>) -> Result<(), GraphBuildError> {
-    match cancellation.check() {
+    match cancellation.check_graph() {
         Ok(()) => Ok(()),
         Err(ScanError::Cancelled { .. }) => Err(GraphBuildError::Cancelled { partial: false }),
         Err(ScanError::Timeout { .. }) => Err(GraphBuildError::Timeout { partial: false }),
@@ -1770,6 +1867,7 @@ fn encode_artifact(
     Ok(GraphBuildArtifact {
         encoded_region,
         entry_points,
+        work_rows_completed: 0,
         _memory: memory,
     })
 }

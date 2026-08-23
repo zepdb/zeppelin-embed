@@ -552,3 +552,30 @@ fn graph_tier_returns_full_k_when_many_rows_are_tombstoned() {
     );
     store.close().expect("close store");
 }
+
+#[test]
+fn explicit_ef_equal_to_k_still_answers_when_rows_are_deleted() {
+    let mut alive = AliveSet::new(ROWS as u32);
+    alive.tombstone(5).expect("fixture tombstone");
+    let fixture = publish_graph_fixture(alive);
+    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
+    let query = query(5.0);
+
+    let outcome = store
+        .search(
+            SearchRequest::new(&query),
+            4,
+            graph_options(4),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit ef=k must reserve deleted-row headroom");
+
+    assert_eq!(outcome.candidates.len(), 4);
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|candidate| candidate.row_id().local_row() != 5)
+    );
+    store.close().expect("close store");
+}

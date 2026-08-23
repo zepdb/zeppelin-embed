@@ -93,6 +93,30 @@ pub fn encode_segment_with_graph(
     encode_segment_inner(build, Some(graph_bytes), None)
 }
 
+/// Encodes a graph segment while preserving dense application document identities.
+pub fn encode_segment_with_graph_and_documents(
+    build: SegmentBuild<'_>,
+    graph: GraphNodeBlockBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+) -> Result<Vec<u8>, SegmentError> {
+    if graph.layout.dims() != build.dims {
+        return Err(SegmentError::Geometry(format!(
+            "graph dimensions {}, segment dimensions {}",
+            graph.layout.dims(),
+            build.dims
+        )));
+    }
+    if graph.nodes.len() != build.columns.row_count() as usize {
+        return Err(SegmentError::Geometry(format!(
+            "graph nodes {}, segment rows {}",
+            graph.nodes.len(),
+            build.columns.row_count()
+        )));
+    }
+    let graph_bytes = encode_node_blocks(graph)?.into_bytes();
+    encode_segment_inner(build, Some(graph_bytes), Some(documents))
+}
+
 fn encode_segment_inner(
     build: SegmentBuild<'_>,
     graph_bytes: Option<Vec<u8>>,
@@ -464,6 +488,19 @@ pub fn write_segment_with_graph(
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
     let bytes = encode_segment_with_graph(build, graph)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes and atomically publishes graph blocks plus dense document identities.
+pub fn write_segment_with_graph_and_documents(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    graph: GraphNodeBlockBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_with_graph_and_documents(build, graph, documents)?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
