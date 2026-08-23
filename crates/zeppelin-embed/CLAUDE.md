@@ -239,3 +239,27 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - The production allocator remains unchanged. The global allocation wrapper is
   compiled only by the `allocation-audit` feature, and its isolated CI test must
   stay single-threaded.
+
+## Task 09 Part C snapshot-remap invariants
+
+- `Store::prepare_segment` is an ownership-transfer seam for already-built
+  fixed-capacity vector buffers, not an ingest API. Metadata and alive state
+  remain borrowed until task 10 supplies the mutation path.
+- `Store::seal_snapshot` writes through task 07, commits a complete one-segment
+  snapshot, remaps it only through `SegmentReader`, publishes the read-only
+  mapping, and then drops the accounted anonymous vector buffers. It replaces
+  the complete snapshot; it does not append or compact segments.
+- Read-only protection is a kernel-observed contract. The integration test must
+  inspect the live VM region. The BL-105 production-`mincore` test uses a
+  no-cache mapping larger than the 1,024-page status batch, observes at most 10%
+  residency before touching it, volatile-reads every page, and then requires at
+  least 90% residency plus an 80%-of-mapping rise on that same mapping. Do not
+  claim deterministic post-touch eviction on macOS: successful public discard
+  advice can leave clean file-backed pages resident in the unified cache.
+- `rss_flatness` is ignored outside the macOS measurement lane. Until task 10,
+  it loops open/publish/lease/mmap-query/close over one task-07 fixture; it does
+  not claim to cover per-iteration ingest, WAL mutation, or sealing. Its 5 MiB
+  `phys_footprint` target remains supporting evidence beside a non-ignored
+  20-iteration gate that requires the exact accounting sources for
+  `Stats::mapped_bytes` and `Stats::resident_owned_bytes` to return to zero
+  after every close; `Store::stats()` itself remains unavailable once closed.

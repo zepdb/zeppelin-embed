@@ -7,7 +7,9 @@ pub mod lock;
 mod snapshot;
 mod stats;
 
-pub use snapshot::{PublishedSnapshot, SnapshotLease};
+pub use snapshot::{
+    InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
+};
 pub use stats::Stats;
 
 use std::path::{Path, PathBuf};
@@ -169,6 +171,12 @@ pub enum StoreError {
         /// Engine component requesting the allocation.
         component: &'static str,
     },
+    /// A write-only lifecycle operation was requested from a read-only handle.
+    ReadOnly,
+    /// A prepared segment was accounted to a different store handle.
+    ForeignPreparedSegment,
+    /// The current snapshot generation cannot be incremented.
+    GenerationOverflow,
     /// A new operation raced with close after admissions stopped.
     Closing,
     /// The handle has completed teardown.
@@ -227,6 +235,11 @@ impl std::fmt::Display for StoreError {
                 formatter,
                 "store {component} allocator rejected {needed} bytes"
             ),
+            Self::ReadOnly => formatter.write_str("store handle is read-only"),
+            Self::ForeignPreparedSegment => {
+                formatter.write_str("prepared segment belongs to another store")
+            }
+            Self::GenerationOverflow => formatter.write_str("store snapshot generation overflow"),
             Self::Closing => formatter.write_str("store is closing"),
             Self::Closed => formatter.write_str("store is closed"),
             Self::ReadCancelled => formatter.write_str("store close cancelled the admitted read"),
@@ -267,6 +280,9 @@ impl std::error::Error for StoreError {
             | Self::StoreBusy { .. }
             | Self::BudgetExceeded { .. }
             | Self::AllocationFailed { .. }
+            | Self::ReadOnly
+            | Self::ForeignPreparedSegment
+            | Self::GenerationOverflow
             | Self::Closing
             | Self::Closed
             | Self::ReadCancelled
@@ -279,12 +295,13 @@ impl std::error::Error for StoreError {
 
 /// One explicitly closeable embedded-store handle.
 pub struct Store {
+    pub(crate) directory: PathBuf,
     pub(crate) state: Mutex<StoreState>,
     pub(crate) state_changed: Condvar,
     pub(crate) background: Mutex<Option<BackgroundThread>>,
     pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
-    pub(crate) _durability_policy: DurabilityPolicy,
+    pub(crate) durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
     #[cfg(test)]
@@ -348,12 +365,13 @@ impl Store {
             (snapshot, background, teardown_probe)
         };
         let store = Self {
+            directory: path.to_path_buf(),
             state: Mutex::new(StoreState::Open),
             state_changed: Condvar::new(),
             background: Mutex::new(background),
             snapshot: RwLock::new(None),
             writer_lock: Mutex::new(writer_lock),
-            _durability_policy: durability_policy,
+            durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             #[cfg(test)]

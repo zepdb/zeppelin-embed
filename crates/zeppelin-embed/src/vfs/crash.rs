@@ -222,6 +222,120 @@ struct RecordedVfsFile {
     operations: Arc<Mutex<Vec<CrashOperation>>>,
 }
 
+/// Records successful mutating operations while delegating to any backing VFS.
+///
+/// This is the operation-observation half of [`CrashVfs`] without the
+/// in-memory crash-state materializer. Tests that need real filesystem effects
+/// (for example, a subsequent `mmap`) can therefore assert the same ordered
+/// [`CrashOperation`] stream used by the crash harness.
+#[allow(dead_code)]
+pub struct RecordingVfs<V> {
+    inner: V,
+    operations: Arc<Mutex<Vec<CrashOperation>>>,
+}
+
+#[allow(dead_code)]
+impl<V> RecordingVfs<V> {
+    /// Wraps `inner` with an initially empty operation stream.
+    #[must_use]
+    pub fn new(inner: V) -> Self {
+        Self {
+            inner,
+            operations: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Returns a snapshot of the complete ordered mutation stream.
+    pub fn operations(&self) -> std::io::Result<Vec<CrashOperation>> {
+        self.operations
+            .lock()
+            .map(|operations| operations.clone())
+            .map_err(|_| std::io::Error::other("recording VFS mutex poisoned"))
+    }
+
+    /// Returns the wrapped filesystem.
+    #[must_use]
+    pub const fn inner(&self) -> &V {
+        &self.inner
+    }
+
+    fn lock_operations(&self) -> std::io::Result<MutexGuard<'_, Vec<CrashOperation>>> {
+        self.operations
+            .lock()
+            .map_err(|_| std::io::Error::other("recording VFS mutex poisoned"))
+    }
+}
+
+impl<V: Vfs> Vfs for RecordingVfs<V> {
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.write(path, bytes)?;
+        operations.push(CrashOperation::Write {
+            path: path.to_path_buf(),
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        let mut operations = self.lock_operations()?;
+        let inner = self.inner.open_append(path)?;
+        operations.push(CrashOperation::OpenAppend {
+            path: path.to_path_buf(),
+        });
+        Ok(Box::new(RecordedVfsFile {
+            inner,
+            path: path.to_path_buf(),
+            operations: Arc::clone(&self.operations),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.rename(from, to)?;
+        operations.push(CrashOperation::Rename {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+        });
+        Ok(())
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.sync(path, kind)?;
+        operations.push(CrashOperation::Sync {
+            path: path.to_path_buf(),
+            kind,
+        });
+        Ok(())
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.delete(path)?;
+        operations.push(CrashOperation::Delete {
+            path: path.to_path_buf(),
+        });
+        Ok(())
+    }
+}
+
 impl RecordedVfsFile {
     fn lock_operations(
         operations: &Mutex<Vec<CrashOperation>>,
@@ -1352,6 +1466,38 @@ mod tests {
                 CrashOperation::Delete { path: path("b") },
             ]
         );
+    }
+
+    #[test]
+    fn real_filesystem_recorder_delegates_reads_and_records_mutations() {
+        let backing = MemoryVfs::new();
+        backing
+            .insert(path("seed"), b"abcdef".to_vec())
+            .expect("seed");
+        let recorder = RecordingVfs::new(backing);
+
+        assert_eq!(recorder.inner().open(&path("seed")).expect("inner"), 6);
+        assert_eq!(recorder.open(&path("seed")).expect("open"), 6);
+        assert_eq!(recorder.read(&path("seed")).expect("read"), b"abcdef");
+        assert_eq!(
+            recorder
+                .read_range(&path("seed"), 2, 3)
+                .expect("read range"),
+            b"cde"
+        );
+        assert_eq!(recorder.list(Path::new("/store")).expect("list").len(), 1);
+
+        recorder.write(&path("a"), b"first").expect("write");
+        let mut append = recorder.open_append(&path("a")).expect("open append");
+        append.append(b"-second").expect("append");
+        append.sync(SyncKind::Full).expect("handle sync");
+        recorder
+            .sync(&path("a"), SyncKind::Barrier)
+            .expect("path sync");
+        recorder.rename(&path("a"), &path("b")).expect("rename");
+        recorder.delete(&path("b")).expect("delete");
+
+        assert_eq!(recorder.operations().expect("operations").len(), 7);
     }
 
     #[test]

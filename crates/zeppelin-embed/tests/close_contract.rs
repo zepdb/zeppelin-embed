@@ -276,7 +276,8 @@ fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
 #[cfg(target_os = "macos")]
 fn is_address_mapped(address: usize) -> std::io::Result<bool> {
     const VM_REGION_BASIC_INFO_64: libc::c_int = 9;
-    #[repr(C)]
+    const VM_REGION_BASIC_INFO_COUNT_64: libc::mach_msg_type_number_t = 9;
+    #[repr(C, packed(4))]
     #[derive(Default)]
     struct VmRegionBasicInfo64 {
         protection: libc::vm_prot_t,
@@ -305,22 +306,29 @@ fn is_address_mapped(address: usize) -> std::io::Result<bool> {
         ) -> libc::kern_return_t;
     }
 
+    if std::mem::size_of::<VmRegionBasicInfo64>() != 36
+        || std::mem::offset_of!(VmRegionBasicInfo64, offset) != 20
+        || std::mem::offset_of!(VmRegionBasicInfo64, behavior) != 28
+        || std::mem::offset_of!(VmRegionBasicInfo64, user_wired_count) != 32
+    {
+        return Err(std::io::Error::other(
+            "vm_region_basic_info_64 Rust layout does not match Darwin pack(4)",
+        ));
+    }
     let target = u64::try_from(address)
         .map_err(|_| std::io::Error::other("mapping address exceeds mach_vm_address_t"))?;
     let mut region_address = target;
     let mut region_size = 0_u64;
     let mut info = VmRegionBasicInfo64::default();
-    let mut info_count = u32::try_from(
-        std::mem::size_of::<VmRegionBasicInfo64>() / std::mem::size_of::<libc::c_int>(),
-    )
-    .map_err(|_| std::io::Error::other("VM region info count exceeds u32"))?;
+    let mut info_count = VM_REGION_BASIC_INFO_COUNT_64;
     let mut object_name = 0;
     let task = unsafe {
         // SAFETY: libSystem initializes the current-task port before Rust `main`.
         mach_task_self_
     };
     let result = unsafe {
-        // SAFETY: every out pointer refers to a correctly sized writable C representation.
+        // SAFETY: every out pointer refers to writable storage matching Darwin's
+        // pack(4), 36-byte `vm_region_basic_info_64` layout and count 9.
         mach_vm_region(
             task,
             &raw mut region_address,

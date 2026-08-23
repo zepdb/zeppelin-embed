@@ -81,3 +81,12 @@ pub(crate) fn mincore_resident_bytes(range: &[u8]) -> io::Result<u64> {
     }
     Ok(resident)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn empty_range_has_no_resident_bytes() -> std::io::Result<()> {
+        assert_eq!(super::mincore_resident_bytes(&[])?, 0);
+        Ok(())
+    }
+}

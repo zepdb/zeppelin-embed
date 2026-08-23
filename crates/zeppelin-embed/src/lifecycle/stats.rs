@@ -274,6 +274,39 @@ impl<T> Accounted<Vec<T>> {
         })
     }
 
+    pub(crate) fn try_from_vec(
+        accounting: &Arc<Accounting>,
+        value: Vec<T>,
+        component: AllocationComponent,
+    ) -> Result<Self, StoreError> {
+        let capacity = value.capacity();
+        let requested =
+            capacity
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or(StoreError::BudgetExceeded {
+                    needed: u64::MAX,
+                    budget: u64::MAX,
+                    component: component.name(),
+                })?;
+        let bytes = u64::try_from(requested).map_err(|_| StoreError::BudgetExceeded {
+            needed: u64::MAX,
+            budget: u64::MAX,
+            component: component.name(),
+        })?;
+        let reservation = accounting.reserve(bytes, component)?;
+        Ok(Self {
+            value,
+            _reservation: Some(reservation),
+            element_limit: Some(capacity),
+        })
+    }
+
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        self._reservation
+            .as_ref()
+            .map_or(0, |reservation| reservation.bytes)
+    }
+
     pub(crate) fn push(&mut self, value: T) -> Result<(), StoreError> {
         let accounted_elements = self.element_limit.unwrap_or(usize::MAX);
         if self.value.len() >= accounted_elements || self.value.len() == self.value.capacity() {
@@ -539,6 +572,39 @@ mod tests {
             "close must release the exact mapped-byte accounting"
         );
         assert!(matches!(mapped.stats(), Err(StoreError::Closed)));
+    }
+
+    #[test]
+    fn repeated_close_returns_exact_stats_counters_to_pre_open_baseline() {
+        const ITERATIONS: usize = 20;
+        const PRE_OPEN_MAPPED_BYTES: u64 = 0;
+        const PRE_OPEN_RESIDENT_OWNED_BYTES: u64 = 0;
+
+        let published = published_store();
+        for iteration in 0..ITERATIONS {
+            let store = Store::open(published.path(), OpenOptions::default()).expect("mapped open");
+            let live = store.stats().expect("live stats");
+            assert!(live.mapped_bytes > PRE_OPEN_MAPPED_BYTES);
+            assert!(
+                live.resident_owned_bytes > PRE_OPEN_RESIDENT_OWNED_BYTES,
+                "iteration {iteration} must own mapped-snapshot bookkeeping"
+            );
+
+            store.close().expect("close mapped store");
+
+            let closed = store
+                .accounting
+                .audit()
+                .expect("post-close accounting source for Stats");
+            assert_eq!(
+                closed.mapped_bytes, PRE_OPEN_MAPPED_BYTES,
+                "Stats::mapped_bytes source leaked at iteration {iteration}"
+            );
+            assert_eq!(
+                closed.resident_owned_bytes, PRE_OPEN_RESIDENT_OWNED_BYTES,
+                "Stats::resident_owned_bytes source leaked at iteration {iteration}"
+            );
+        }
     }
 
     #[test]

@@ -6,17 +6,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::manifest::Manifest;
+use crate::manifest::io::commit_manifest;
 use crate::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
+use crate::meta::{AliveSet, ColumnStore};
+use crate::quant::Bit4Factors;
 use crate::segment::SegmentError;
-use crate::segment::layout::RegionEntry;
+use crate::segment::SegmentId;
+use crate::segment::layout::{Int8Factors, RegionEntry};
 use crate::segment::reader::SegmentReader;
+use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use crate::vfs::{StdVfs, Vfs};
 use crate::wal::WalReader;
 
-use super::StoreError;
 #[cfg(test)]
 use super::close::TeardownProbe;
 use super::stats::{Accounted, Accounting, AllocationComponent, MappingReservation};
+use super::{Store, StoreError, StoreState};
 
 #[cfg(test)]
 struct SnapshotReleaseProbe(Option<Arc<TeardownProbe>>);
@@ -31,6 +37,251 @@ impl Drop for SnapshotReleaseProbe {
 }
 
 const STORE_WAL_FILE: &str = "wal.ze";
+
+/// Owned vector-factor buffers for one already-built in-memory segment.
+///
+/// This is an ownership-transfer seam for sealing, not an ingest API. Task 10
+/// supplies the mutation path that eventually builds these buffers.
+pub enum InMemorySegmentFactors {
+    /// Permanent 12-byte Bit4 factor records.
+    Bit4(Vec<Bit4Factors>),
+    /// Permanent 8-byte affine Int8 factor records.
+    Int8(Vec<Int8Factors>),
+}
+
+/// One complete already-built segment whose vector buffers can be adopted by a store.
+///
+/// Metadata and alive state remain caller-borrowed during the synchronous seal.
+/// The store takes ownership only of the three vector buffers whose exact
+/// capacities become part of `resident_owned_bytes`.
+pub struct InMemorySegment<'a> {
+    /// Sortable immutable identity.
+    pub id: SegmentId,
+    /// Permanent per-segment quantization scheme id.
+    pub scheme: u16,
+    /// Logical vector dimension.
+    pub dims: u32,
+    /// Contiguous row-major packed codes with no row padding.
+    pub codes: Vec<u8>,
+    /// Contiguous factor records matching `scheme`.
+    pub factors: InMemorySegmentFactors,
+    /// Contiguous row-major f32 exact-rescore source.
+    pub rescore: Vec<f32>,
+    /// Typed metadata arrays aligned to row ids.
+    pub columns: &'a ColumnStore,
+    /// Alive/tombstone state aligned to row ids.
+    pub alive: &'a AliveSet,
+}
+
+enum PreparedFactors {
+    Bit4(Accounted<Vec<Bit4Factors>>),
+    Int8(Accounted<Vec<Int8Factors>>),
+}
+
+/// Store-owned, exactly accounted anonymous buffers waiting to be sealed.
+pub struct PreparedSegment<'a> {
+    accounting: Arc<Accounting>,
+    id: SegmentId,
+    scheme: u16,
+    dims: u32,
+    codes: Accounted<Vec<u8>>,
+    factors: PreparedFactors,
+    rescore: Accounted<Vec<f32>>,
+    columns: &'a ColumnStore,
+    alive: &'a AliveSet,
+    resident_bytes: u64,
+}
+
+impl PreparedSegment<'_> {
+    /// Returns the exact anonymous allocation capacity transferred to the store.
+    #[must_use]
+    pub const fn resident_bytes(&self) -> u64 {
+        self.resident_bytes
+    }
+
+    fn as_build(&self) -> SegmentBuild<'_> {
+        let factors = match &self.factors {
+            PreparedFactors::Bit4(values) => SegmentFactors::Bit4(values.as_slice()),
+            PreparedFactors::Int8(values) => SegmentFactors::Int8(values.as_slice()),
+        };
+        SegmentBuild {
+            id: self.id,
+            scheme: self.scheme,
+            dims: self.dims,
+            codes: self.codes.as_slice(),
+            factors,
+            rescore: self.rescore.as_slice(),
+            columns: self.columns,
+            alive: self.alive,
+        }
+    }
+}
+
+impl Store {
+    /// Adopts already-built vector buffers and charges their exact capacities.
+    ///
+    /// No ingest, graph construction, scheduling, or background work occurs at
+    /// this seam. The returned value must be consumed by [`Self::seal_snapshot`].
+    pub fn prepare_segment<'a>(
+        &self,
+        segment: InMemorySegment<'a>,
+    ) -> Result<PreparedSegment<'a>, StoreError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(StoreError::Closing),
+            StoreState::Closed => return Err(StoreError::Closed),
+        }
+        let writer_lock = self
+            .writer_lock
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "writer lock",
+            })?;
+        if writer_lock.is_none() {
+            return Err(StoreError::ReadOnly);
+        }
+        let InMemorySegment {
+            id,
+            scheme,
+            dims,
+            codes,
+            factors,
+            rescore,
+            columns,
+            alive,
+        } = segment;
+        let codes =
+            Accounted::try_from_vec(&self.accounting, codes, AllocationComponent::Snapshot)?;
+        let factors = match factors {
+            InMemorySegmentFactors::Bit4(values) => PreparedFactors::Bit4(Accounted::try_from_vec(
+                &self.accounting,
+                values,
+                AllocationComponent::Snapshot,
+            )?),
+            InMemorySegmentFactors::Int8(values) => PreparedFactors::Int8(Accounted::try_from_vec(
+                &self.accounting,
+                values,
+                AllocationComponent::Snapshot,
+            )?),
+        };
+        let rescore =
+            Accounted::try_from_vec(&self.accounting, rescore, AllocationComponent::Snapshot)?;
+        let factor_bytes = match &factors {
+            PreparedFactors::Bit4(values) => values.resident_bytes(),
+            PreparedFactors::Int8(values) => values.resident_bytes(),
+        };
+        let resident_bytes = codes
+            .resident_bytes()
+            .checked_add(factor_bytes)
+            .and_then(|bytes| bytes.checked_add(rescore.resident_bytes()))
+            .ok_or(StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        drop(writer_lock);
+        drop(state);
+        Ok(PreparedSegment {
+            accounting: Arc::clone(&self.accounting),
+            id,
+            scheme,
+            dims,
+            codes,
+            factors,
+            rescore,
+            columns,
+            alive,
+            resident_bytes,
+        })
+    }
+
+    /// Writes, commits, read-only remaps, and publishes one complete snapshot.
+    ///
+    /// The prepared anonymous vector buffers are consumed only after the new
+    /// [`SegmentReader`] snapshot is live. The committed manifest contains the
+    /// one complete segment supplied here; this is snapshot replacement, not
+    /// task 10's future append/ingest behavior.
+    pub fn seal_snapshot(&self, segment: PreparedSegment<'_>) -> Result<u64, StoreError> {
+        self.seal_snapshot_with_vfs(segment, &StdVfs)
+    }
+
+    fn seal_snapshot_with_vfs(
+        &self,
+        segment: PreparedSegment<'_>,
+        vfs: &dyn Vfs,
+    ) -> Result<u64, StoreError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(StoreError::Closing),
+            StoreState::Closed => return Err(StoreError::Closed),
+        }
+        let writer_lock = self
+            .writer_lock
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "writer lock",
+            })?;
+        if writer_lock.is_none() {
+            return Err(StoreError::ReadOnly);
+        }
+        if !Arc::ptr_eq(&segment.accounting, &self.accounting) {
+            return Err(StoreError::ForeignPreparedSegment);
+        }
+        let generation = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .ok_or(StoreError::Closed)?
+            .generation()
+            .checked_add(1)
+            .ok_or(StoreError::GenerationOverflow)?;
+        let meta = write_segment(
+            vfs,
+            &self.directory,
+            segment.as_build(),
+            self.durability_policy,
+        )
+        .map_err(StoreError::Segment)?;
+        commit_manifest(
+            vfs,
+            &self.directory,
+            &Manifest {
+                generation,
+                log_seq: 0,
+                segments: vec![meta],
+                epochs: Vec::new(),
+                schema: segment.columns.schema().clone(),
+            },
+            self.durability_policy,
+        )
+        .map_err(StoreError::Manifest)?;
+        let remapped = PublishedSnapshot::load(&self.directory, &self.accounting)?;
+        let mut published = self
+            .snapshot
+            .write()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?;
+        let previous = published.replace(Arc::new(remapped));
+        drop(published);
+        drop(previous);
+        drop(segment);
+        drop(writer_lock);
+        drop(state);
+        Ok(generation)
+    }
+}
 
 /// One atomically published generation and its immutable segment readers.
 pub struct PublishedSnapshot {
@@ -254,8 +505,17 @@ impl Drop for SnapshotLease {
 mod tests {
     use tempfile::tempdir;
 
-    use super::PublishedSnapshot;
+    use super::{InMemorySegment, InMemorySegmentFactors, PublishedSnapshot};
+    use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::lifecycle::{OpenOptions, Store, StoreError};
+    use crate::manifest::Manifest;
+    use crate::manifest::io::commit_manifest;
+    use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
+    use crate::quant::Bit4Factors;
+    use crate::segment::SegmentId;
+    use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
+    use crate::vfs::crash::{CrashOperation, RecordingVfs};
+    use crate::vfs::{StdVfs, SyncKind};
 
     #[test]
     fn publish_swaps_a_whole_snapshot_while_existing_readers_keep_their_generation() {
@@ -284,5 +544,91 @@ mod tests {
         let result = store.publish_snapshot(PublishedSnapshot::empty(10));
 
         assert!(matches!(result, Err(StoreError::Closed)));
+    }
+
+    #[test]
+    fn seal_uses_the_opened_durable_policy_for_segment_and_manifest() {
+        const DIMS: usize = 4;
+
+        let directory = tempdir().expect("store directory");
+        let schema = Schema::new(Vec::new()).expect("timestamp-only schema");
+        let mut builder = ColumnStoreBuilder::new(schema.clone());
+        builder.push_row(7, &[]).expect("fixture row");
+        let columns = builder.finish().expect("fixture columns");
+        let alive = AliveSet::new(1);
+        let initial_id = SegmentId::new(0x0102_0304_0506, [0x41; 10]);
+        let codes = [0x88_u8; DIMS.div_ceil(2)];
+        let factors = [Bit4Factors::from_persisted(1.0, 1.0, 1.0)];
+        let rescore = [0.0_f32; DIMS];
+        let derived = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::Ordered)
+            .expect("derived policy");
+        let initial = write_segment(
+            &StdVfs,
+            directory.path(),
+            SegmentBuild {
+                id: initial_id,
+                scheme: 4,
+                dims: DIMS as u32,
+                codes: &codes,
+                factors: SegmentFactors::Bit4(&factors),
+                rescore: &rescore,
+                columns: &columns,
+                alive: &alive,
+            },
+            derived,
+        )
+        .expect("initial segment");
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &Manifest {
+                generation: 1,
+                log_seq: 0,
+                segments: vec![initial],
+                epochs: Vec::new(),
+                schema: schema.clone(),
+            },
+            derived,
+        )
+        .expect("initial manifest");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+        )
+        .expect("durable store open");
+        let replacement_id = SegmentId::new(0x0102_0304_0507, [0x42; 10]);
+        let prepared = store
+            .prepare_segment(InMemorySegment {
+                id: replacement_id,
+                scheme: 4,
+                dims: DIMS as u32,
+                codes: codes.to_vec(),
+                factors: InMemorySegmentFactors::Bit4(factors.to_vec()),
+                rescore: rescore.to_vec(),
+                columns: &columns,
+                alive: &alive,
+            })
+            .expect("prepare replacement");
+        let recorder = RecordingVfs::new(StdVfs);
+
+        store
+            .seal_snapshot_with_vfs(prepared, &recorder)
+            .expect("durable seal");
+
+        let sync_kinds = recorder
+            .operations()
+            .expect("recorded seal operations")
+            .into_iter()
+            .filter_map(|operation| match operation {
+                CrashOperation::Sync { kind, .. } => Some(kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sync_kinds,
+            vec![SyncKind::Full; 4],
+            "seal must preserve the opened policy's exact SyncKind sequence"
+        );
+        store.close().expect("close");
     }
 }
