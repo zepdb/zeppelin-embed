@@ -9,7 +9,7 @@ use std::time::Instant;
 use zeppelin_embed::graph::block::CACHE_LINE_BYTES;
 use zeppelin_embed::graph::build::GraphBuildPasses;
 use zeppelin_embed::graph::search::{
-    GraphSearchRequest, GraphSearcher, QueryCoreClass, TraversalPrefetch,
+    GraphSearchProfile, GraphSearchRequest, GraphSearcher, QueryCoreClass, TraversalPrefetch,
 };
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
@@ -25,7 +25,6 @@ use zeppelin_embed_bench::platform::taint::{
 const SIFT_DIMS: usize = 128;
 const SIFT_ROWS: usize = 1_000_000;
 const TOP_K: usize = 100;
-const DEFAULT_EF: usize = 200;
 const DEFAULT_QUERIES: usize = 10_000;
 const WARMUP_QUERIES: usize = 128;
 const LOAD_LIMIT: f64 = 1.0;
@@ -41,11 +40,28 @@ struct Config {
     dataset_name: String,
     build_passes: BuildPasses,
     prefetch: TraversalPrefetch,
-    ef: usize,
+    ef: Option<usize>,
     queries: usize,
     run: usize,
     cache_directory: Option<PathBuf>,
     data_directory: PathBuf,
+}
+
+fn graph_search_request<'a>(
+    query: &'a [f32],
+    k: usize,
+    seed: u64,
+    profile: GraphSearchProfile,
+    ef: Option<usize>,
+    prefetch: TraversalPrefetch,
+) -> GraphSearchRequest<'a> {
+    let request = GraphSearchRequest::new(query, k, seed)
+        .with_profile(profile)
+        .with_prefetch(prefetch);
+    match ef {
+        Some(ef) => request.with_ef(ef),
+        None => request,
+    }
 }
 
 enum CachedGraph {
@@ -88,13 +104,21 @@ fn run() -> Result<(), Box<dyn Error>> {
         TraversalPrefetch::Enabled => "on",
         TraversalPrefetch::Disabled => "off",
     };
-    let default_cache = if config.dataset_name == "sift-128-euclidean" {
-        PathBuf::from("/private/tmp/zeppelin-embed-m3-sift1m")
-    } else {
-        PathBuf::from(format!(
+    let default_cache = match (config.dataset_name.as_str(), config.build_passes) {
+        ("sift-128-euclidean", BuildPasses::One) => {
+            PathBuf::from("/private/tmp/zeppelin-embed-m5-sift1m-one")
+        }
+        ("sift-128-euclidean", BuildPasses::Two) => {
+            PathBuf::from("/private/tmp/zeppelin-embed-m3-sift1m")
+        }
+        (_, BuildPasses::One) => PathBuf::from(format!(
+            "/private/tmp/zeppelin-embed-m5-{}-one",
+            config.dataset_name
+        )),
+        (_, BuildPasses::Two) => PathBuf::from(format!(
             "/private/tmp/zeppelin-embed-m4b-{}",
             config.dataset_name
-        ))
+        )),
     };
     let cache_directory = config.cache_directory.as_deref().unwrap_or(&default_cache);
     let (cached, queries, truth, dimensions, rows, metric_label) =
@@ -149,11 +173,22 @@ fn run() -> Result<(), Box<dyn Error>> {
         .checked_add(12)
         .ok_or_else(|| io::Error::other("scored candidate byte count overflow"))?;
     let score_cache_lines = score_bytes.div_ceil(CACHE_LINE_BYTES);
+    let profile = if metric_label == "cosine" {
+        GraphSearchProfile::Angular
+    } else {
+        GraphSearchProfile::SiftClass
+    };
+    let base_request = graph_search_request(&[], TOP_K, SEED, profile, config.ef, config.prefetch);
+    let effective_ef = base_request.effective_ef(graph.node_count() as usize)?;
+    let ef_source = if config.ef.is_some() {
+        "explicit"
+    } else {
+        "adaptive"
+    };
     println!(
-        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_profile=bench opt_level={} build_passes={build_passes_label} prefetch={prefetch_label} ef={} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_profile=bench opt_level={} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
         config.dataset_name,
         env!("ZEPPELIN_BENCH_OPT_LEVEL"),
-        config.ef,
         config.queries,
         config.run,
         zero_norm_rows.len(),
@@ -175,15 +210,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         ))
         .into());
     }
-    if config.ef < TOP_K || config.ef > graph.node_count() as usize {
-        return Err(io::Error::other(format!(
-            "ef {} must be in {TOP_K}..={} ",
-            config.ef,
-            graph.node_count()
-        ))
-        .into());
-    }
-    let exclusion_margin = zero_norm_rows.len().min(config.ef.saturating_sub(TOP_K));
+    let exclusion_margin = zero_norm_rows.len().min(effective_ef.saturating_sub(TOP_K));
     let search_k = TOP_K
         .checked_add(exclusion_margin)
         .ok_or_else(|| io::Error::other("zero-row exclusion width overflow"))?;
@@ -193,8 +220,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         let query = query_row(&queries, query_index, dimensions)?;
         if !query.iter().all(|value| *value == 0.0) {
             let _ = searcher.search(
-                GraphSearchRequest::new(query, search_k, config.ef, SEED ^ query_index as u64)
-                    .with_prefetch(config.prefetch),
+                graph_search_request(
+                    query,
+                    search_k,
+                    SEED ^ query_index as u64,
+                    profile,
+                    Some(effective_ef),
+                    config.prefetch,
+                ),
                 None,
             )?;
         }
@@ -206,6 +239,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut recall_hits = 0_u64;
     let mut total_hops = 0_u64;
     let mut total_candidates = 0_u64;
+    let mut total_rescored = 0_u64;
     let mut total_pushes = 0_u64;
     let mut qos_class = None;
     let mut qos_priority = None;
@@ -219,9 +253,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             None
         } else {
             let result = searcher.search(
-                GraphSearchRequest::new(query, search_k, config.ef, SEED ^ query_index as u64)
-                    .with_observed_core_class(QueryCoreClass::Performance)
-                    .with_prefetch(config.prefetch),
+                graph_search_request(
+                    query,
+                    search_k,
+                    SEED ^ query_index as u64,
+                    profile,
+                    Some(effective_ef),
+                    config.prefetch,
+                )
+                .with_observed_core_class(QueryCoreClass::Performance),
                 None,
             )?;
             let mut returned_count = 0_usize;
@@ -254,6 +294,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         };
         total_hops = total_hops.saturating_add(counters.hops() as u64);
         total_candidates = total_candidates.saturating_add(counters.candidates_scored() as u64);
+        total_rescored = total_rescored.saturating_add(counters.candidates_rescored() as u64);
         total_pushes = total_pushes.saturating_add(counters.pushes() as u64);
         let observed_qos = format!("{:?}", counters.qos_class());
         match qos_class.as_ref() {
@@ -280,14 +321,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let denominator = (config.queries * TOP_K) as f64;
     let query_denominator = config.queries as f64;
     println!(
-        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} prefetch={prefetch_label} ef={} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class={} load1={} taint={}",
+        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_rescored={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class={} load1={} taint={}",
         config.dataset_name,
-        config.ef,
         config.queries,
         config.run,
         recall_hits as f64 / denominator,
         total_hops as f64 / query_denominator,
         total_candidates as f64 / query_denominator,
+        total_rescored as f64 / query_denominator,
         total_pushes as f64 / query_denominator,
         zero_norm_rows.len(),
         layout.stride(),
@@ -307,9 +348,9 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut config = Config {
         dataset_name: String::from("sift-128-euclidean"),
-        build_passes: BuildPasses::Two,
+        build_passes: BuildPasses::One,
         prefetch: TraversalPrefetch::Enabled,
-        ef: DEFAULT_EF,
+        ef: None,
         queries: DEFAULT_QUERIES,
         run: 0,
         cache_directory: None,
@@ -346,7 +387,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
                     }
                 }
             }
-            "--ef" => config.ef = value.parse()?,
+            "--ef" => config.ef = Some(value.parse()?),
             "--queries" => config.queries = value.parse()?,
             "--run" => config.run = value.parse()?,
             "--cache-dir" => config.cache_directory = Some(PathBuf::from(value)),

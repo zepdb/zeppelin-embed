@@ -783,7 +783,7 @@ pub fn measure_sift1m_recall(
             .ok_or("truth row missing")?;
         for (total, ef) in totals.iter_mut().zip(ef_values) {
             let result = searcher.search(
-                GraphSearchRequest::new(query, TOP_K, *ef, seed ^ query_index as u64),
+                GraphSearchRequest::new(query, TOP_K, seed ^ query_index as u64).with_ef(*ef),
                 None,
             )?;
             *total += result

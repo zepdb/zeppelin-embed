@@ -8,6 +8,9 @@ pub mod build;
 pub mod search;
 
 /// Minimum sealed-segment row count that earns a graph instead of exact scan.
+/// This is the provisional single-core crossover derived in
+/// `tasks/reports/index-design-research.md` section 3.3; see the explicit
+/// not-yet-measured caveat in `docs/19-m5-defaults.md`.
 pub const MIN_GRAPH_ROWS: u32 = 10_000;
 
 /// Validated construction controls for one flat per-segment graph.
@@ -64,11 +67,19 @@ impl GraphParams {
     #[must_use]
     pub const fn sift_1m() -> Self {
         Self {
+            // M3/M5 SIFT measurements: `docs/19-m5-defaults.md`.
             r_target: 32,
+            // M3/M5 SIFT measurements: `docs/19-m5-defaults.md`.
             r_max: 44,
+            // Shipped one-pass alpha measured in `docs/19-m5-defaults.md`.
             alpha_build: 1.0,
+            // Explicit two-pass arm only; rejected as a default by the matched
+            // measurement in `docs/19-m5-defaults.md`.
             alpha_refine: 1.2,
+            // M3/M5 SIFT measurements: `docs/19-m5-defaults.md`.
             l_build: 100,
+            // Operational M3 choice, NOT MEASURED; documented plainly in
+            // `docs/19-m5-defaults.md`.
             checkpoint_batch_rows: 65_536,
         }
     }

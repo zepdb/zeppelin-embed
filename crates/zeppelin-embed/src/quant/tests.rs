@@ -13,9 +13,9 @@ use rand::Rng;
 use crate::kernels::MAX_DOT_I8_DIMENSION;
 
 use super::{
-    Int8Vec, QuantError, QuantScheme, RescoreError, dequantize_bit4, dequantize_int8,
-    dot_int8_query, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query, prepare_int8_query,
-    quantize_bit4, quantize_int8, rescore_top_k,
+    Int8Vec, QuantError, QuantScheme, RescoreError, RescoreMetric, RescorePool, dequantize_bit4,
+    dequantize_int8, dot_int8_query, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query,
+    prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
 };
 
 fn fixture_f32(path: &str) -> Vec<f32> {
@@ -506,16 +506,8 @@ fn rescore_returns_exact_topk_when_oversample_covers() {
         .collect::<Vec<_>>();
     let expected = rank_descending(&exact_scores, K);
 
-    let result = rescore_top_k(
-        &query,
-        &rows,
-        DIMENSION,
-        &coarse_scores,
-        K,
-        OVERSAMPLE,
-        COARSE_BYTES_PER_ROW,
-    )
-    .expect("valid two-stage search");
+    let pool = RescorePool::dense(&coarse_scores, OVERSAMPLE, COARSE_BYTES_PER_ROW);
+    let result = rescore_top_k(&query, &rows, DIMENSION, pool, K).expect("valid two-stage search");
     let actual = result
         .hits
         .iter()
@@ -532,50 +524,107 @@ fn rescore_returns_exact_topk_when_oversample_covers() {
 }
 
 #[test]
+fn retained_pool_rescore_uses_exact_squared_l2_and_original_row_ids() {
+    let query = [0.0_f32, 0.0];
+    let rows = [100.0_f32, 0.0, 2.0, 0.0, 0.0, 2.0];
+    let row_indices = [0_u32, 2, 1];
+    let coarse_scores = [10.0_f32, 9.0, 8.0];
+    let pool = RescorePool::retained(
+        &row_indices,
+        &coarse_scores,
+        RescoreMetric::SquaredL2,
+        17,
+        76,
+    );
+
+    let result = rescore_top_k(&query, &rows, 2, pool, 2).expect("retained pool is valid");
+
+    assert_eq!(
+        result
+            .hits
+            .iter()
+            .map(|hit| hit.row_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(result.candidates_rescored, 3);
+    assert_eq!(result.bytes.coarse, 17 * 76);
+    assert_eq!(result.bytes.rescore, 3 * 2 * 4);
+}
+
+#[test]
+fn retained_pool_rejects_out_of_range_row_without_panicking() {
+    let row_indices = [u32::MAX];
+    let coarse_scores = [1.0_f32];
+    let pool = RescorePool::retained(&row_indices, &coarse_scores, RescoreMetric::SquaredL2, 1, 1);
+
+    assert_eq!(
+        rescore_top_k(&[0.0], &[0.0], 1, pool, 1),
+        Err(RescoreError::CandidateRowOutOfRange {
+            position: 0,
+            row_index: u32::MAX as usize,
+            row_count: 1,
+        })
+    );
+}
+
+#[test]
 fn rescore_shape_and_counter_errors_are_typed() {
     assert_eq!(
-        rescore_top_k(&[], &[], 0, &[], 1, 1, 1),
+        rescore_top_k(&[], &[], 0, RescorePool::dense(&[], 1, 1), 1),
         Err(RescoreError::ZeroDimension)
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0, 2.0], 2, &[1.0], 1, 1, 1),
+        rescore_top_k(&[1.0], &[1.0, 2.0], 2, RescorePool::dense(&[1.0], 1, 1), 1,),
         Err(RescoreError::QueryDimension {
             expected: 2,
             actual: 1,
         })
     );
     assert_eq!(
-        rescore_top_k(&[1.0, 2.0], &[1.0], 2, &[], 1, 1, 1),
+        rescore_top_k(&[1.0, 2.0], &[1.0], 2, RescorePool::dense(&[], 1, 1), 1,),
         Err(RescoreError::RowDataLength {
             dimension: 2,
             actual: 1,
         })
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0], 1, &[], 1, 1, 1),
+        rescore_top_k(&[1.0], &[1.0], 1, RescorePool::dense(&[], 1, 1), 1,),
         Err(RescoreError::CoarseScoreCount {
             expected: 1,
             actual: 0,
         })
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0], 1, &[1.0], 0, 1, 1),
+        rescore_top_k(&[1.0], &[1.0], 1, RescorePool::dense(&[1.0], 1, 1), 0,),
         Err(RescoreError::ZeroK)
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0], 1, &[1.0], 1, 0, 1),
+        rescore_top_k(&[1.0], &[1.0], 1, RescorePool::dense(&[1.0], 0, 1), 1,),
         Err(RescoreError::ZeroOversample)
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0], 1, &[f32::NAN], 1, 1, 1),
+        rescore_top_k(&[1.0], &[1.0], 1, RescorePool::dense(&[f32::NAN], 1, 1), 1,),
         Err(RescoreError::NonFiniteCoarseScore { index: 0 })
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0], 1, &[1.0], usize::MAX, 2, 1),
+        rescore_top_k(
+            &[1.0],
+            &[1.0],
+            1,
+            RescorePool::dense(&[1.0], 2, 1),
+            usize::MAX,
+        ),
         Err(RescoreError::ArithmeticOverflow)
     );
     assert_eq!(
-        rescore_top_k(&[1.0], &[1.0, 2.0], 1, &[1.0, 2.0], 1, 1, usize::MAX,),
+        rescore_top_k(
+            &[1.0],
+            &[1.0, 2.0],
+            1,
+            RescorePool::dense(&[1.0, 2.0], 1, usize::MAX),
+            1,
+        ),
         Err(RescoreError::ArithmeticOverflow)
     );
 
@@ -593,9 +642,23 @@ fn rescore_shape_and_counter_errors_are_typed() {
             expected: 2,
             actual: 1,
         },
+        RescoreError::CandidateRowCount {
+            expected: 2,
+            actual: 1,
+        },
+        RescoreError::CandidateRowOutOfRange {
+            position: 0,
+            row_index: 2,
+            row_count: 1,
+        },
         RescoreError::ZeroK,
         RescoreError::ZeroOversample,
         RescoreError::NonFiniteCoarseScore { index: 0 },
+        RescoreError::NonFiniteExactScore { row_index: 0 },
+        RescoreError::InsufficientCandidates {
+            k: 2,
+            candidates: 1,
+        },
         RescoreError::ArithmeticOverflow,
     ];
     for error in errors {

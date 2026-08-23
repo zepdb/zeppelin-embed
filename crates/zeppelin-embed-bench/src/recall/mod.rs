@@ -1,7 +1,7 @@
 //! Recall-retention sweeps with exact rescore byte accounting.
 
 use zeppelin_embed::quant::{
-    Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError, SearchByteCounts,
+    Bit4Factors, Int8Vec, QuantError, QuantScheme, RescoreError, RescorePool, SearchByteCounts,
     est_dot_bit4_batch, prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8,
     rescore_top_k,
 };
@@ -165,14 +165,14 @@ pub fn run_recall(
                 .enumerate()
             {
                 let coarse_scores = encoded.score(query, query_index as u64)?;
+                let pool =
+                    RescorePool::dense(&coarse_scores, oversample, encoded.stored_bytes_per_row());
                 let result = rescore_top_k(
                     query,
                     &dataset.vectors.values,
                     dataset.vectors.dimension,
-                    &coarse_scores,
+                    pool,
                     k,
-                    oversample,
-                    encoded.stored_bytes_per_row(),
                 )?;
                 if let Some(bytes) = expected_bytes {
                     if bytes != result.bytes {

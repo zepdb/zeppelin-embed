@@ -3,11 +3,13 @@
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Observation {
     p50_us: f64,
     recall_at_100: f64,
     ef: usize,
+    ef_source: String,
+    build_passes: String,
 }
 
 #[test]
@@ -26,9 +28,10 @@ fn sift1m_p50_under_250us_at_recall_at_least_093() {
     let process_median = *p50_values.get(1).expect("exactly three observations");
 
     assert!(
-        observations
-            .iter()
-            .all(|observation| observation.ef == 200 && observation.recall_at_100 >= 0.93),
+        observations.iter().all(|observation| observation.ef == 200
+            && observation.ef_source == "adaptive"
+            && observation.build_passes == "one"
+            && observation.recall_at_100 >= 0.93),
         "recall/ef gate failed: {observations:?}"
     );
     assert!(
@@ -69,16 +72,7 @@ fn build_bench_binary(workspace: &Path) -> Result<std::path::PathBuf, String> {
 
 fn run_process(run: usize, binary: &Path) -> Result<Observation, String> {
     let output = Command::new(binary)
-        .args([
-            "--build-passes",
-            "two",
-            "--prefetch",
-            "on",
-            "--queries",
-            "10000",
-            "--run",
-            &run.to_string(),
-        ])
+        .args(["--queries", "10000", "--run", &run.to_string()])
         .output()
         .map_err(|error| format!("run {run} failed to start: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,6 +91,8 @@ fn run_process(run: usize, binary: &Path) -> Result<Observation, String> {
         p50_us: parse_value(line, "p50_us")?,
         recall_at_100: parse_value(line, "recall_at_100")?,
         ef: parse_value(line, "ef")?,
+        ef_source: parse_value(line, "ef_source")?,
+        build_passes: parse_value(line, "build_passes")?,
     })
 }
 

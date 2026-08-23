@@ -34,12 +34,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     verify_bench_profile()?;
     let config = parse_config()?;
     let dataset = CrossGraphDataset::named(&config.dataset_name, &config.data_directory)?;
-    let cache_directory = config.cache_directory.unwrap_or_else(|| {
-        PathBuf::from(format!(
-            "/private/tmp/zeppelin-embed-m4b-{}",
-            dataset.name()
-        ))
-    });
+    let cache_directory = config
+        .cache_directory
+        .unwrap_or_else(|| match config.passes {
+            GraphBuildPasses::One => PathBuf::from(format!(
+                "/private/tmp/zeppelin-embed-m5-{}-one",
+                dataset.name()
+            )),
+            GraphBuildPasses::Two => PathBuf::from(format!(
+                "/private/tmp/zeppelin-embed-m4b-{}",
+                dataset.name()
+            )),
+        });
     let pass_label = match config.passes {
         GraphBuildPasses::One => "one",
         GraphBuildPasses::Two => "two",
@@ -89,7 +95,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut dataset_name = None;
     let mut data_directory = workspace.join("tasks/cross-benchmark/data");
     let mut cache_directory = None;
-    let mut passes = GraphBuildPasses::Two;
+    let mut passes = GraphBuildPasses::default();
     let mut seed = DEFAULT_SEED;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {

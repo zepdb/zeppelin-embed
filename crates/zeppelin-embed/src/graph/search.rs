@@ -3,15 +3,100 @@
 use crate::graph::block::{CheckedNodeId, GraphNodeBlocks, GraphNodeError};
 use crate::kernels::{Bit4Rows4, GatherShapeError, score_bit4_ptrs};
 use crate::lifecycle::QueryCancellation;
-use crate::quant::{Bit4Query, QuantError, prepare_bit4_query};
+use crate::quant::{
+    Bit4Query, QuantError, RescoreError, RescoreMetric, RescorePool, prepare_bit4_query,
+    rescore_top_k,
+};
 use crate::scan::ScanError;
+
+/// Research lower-bound multiplier from `tasks/reports/index-design-research.md` section 3.1.
+const SIFT_RESEARCH_FLOOR_TENTHS: usize = 14;
+/// Denominator for the section-3.1 `1.4 * k` lower bound.
+const EF_TENTHS_DENOMINATOR: usize = 10;
+/// Section-3.1's absolute SIFT-class floor; the measured `ef=140` smoke point
+/// in `tasks/cross-benchmark/results/zeppelin-embed/sift-128-euclidean/2026-08-23T16:38:53.443Z-a34b3b7c-graph-ef-140.json`
+/// reached only 0.862 recall, so this is deliberately not the shipped target.
+const SIFT_RESEARCH_ABSOLUTE_FLOOR: usize = 140;
+/// The measured SIFT smoke curve's first arm above hnswlib recall was `ef=200`
+/// at `k=100` (0.932 recall, 0.109417 ms p50), recorded in
+/// `tasks/cross-benchmark/results/zeppelin-embed/sift-128-euclidean/2026-08-23T16:38:53.443Z-a34b3b7c-graph-ef-200.json`.
+const SIFT_SHIPPED_EF_PER_K: usize = 2;
+/// Owner-specified angular floor from research section 3.1. The full M4b
+/// measurement in `tasks/evidence/19-M4b-cross-dataset-graphs.md` shows that
+/// `2 * k` is insufficient on glove; `4 * k` remains a provisional floor for
+/// M10 rather than a measured sufficient operating point.
+const ANGULAR_EF_PER_K: usize = 4;
+
+/// Dataset-shape profile used when the caller leaves `ef` adaptive.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GraphSearchProfile {
+    /// SIFT-class Euclidean data, shipping at the first measured passing curve arm.
+    #[default]
+    SiftClass,
+    /// Angular data, using the section-3.1 provisional `4 * k` floor.
+    Angular,
+}
+
+/// Typed rejection while resolving an adaptive or explicit `ef`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveEfError {
+    /// Top-k must request at least one result.
+    ZeroK,
+    /// Top-k exceeded the graph's row count.
+    KExceedsRows {
+        /// Requested result count.
+        k: usize,
+        /// Available graph rows.
+        rows: usize,
+    },
+    /// An explicit override was narrower than top-k.
+    ExplicitBelowK {
+        /// Requested result count.
+        k: usize,
+        /// Supplied traversal width.
+        ef: usize,
+    },
+    /// An explicit override exceeded the graph's row count.
+    ExplicitExceedsRows {
+        /// Supplied traversal width.
+        ef: usize,
+        /// Available graph rows.
+        rows: usize,
+    },
+    /// Adaptive multiplier arithmetic overflowed `usize`.
+    ArithmeticOverflow,
+}
+
+impl std::fmt::Display for AdaptiveEfError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroK => formatter.write_str("adaptive graph top-k must be positive"),
+            Self::KExceedsRows { k, rows } => {
+                write!(formatter, "graph top-k {k} exceeds graph row count {rows}")
+            }
+            Self::ExplicitBelowK { k, ef } => {
+                write!(formatter, "explicit graph ef {ef} is below top-k {k}")
+            }
+            Self::ExplicitExceedsRows { ef, rows } => {
+                write!(
+                    formatter,
+                    "explicit graph ef {ef} exceeds graph row count {rows}"
+                )
+            }
+            Self::ArithmeticOverflow => formatter.write_str("adaptive graph ef overflowed usize"),
+        }
+    }
+}
+
+impl std::error::Error for AdaptiveEfError {}
 
 /// One graph-query invocation.
 #[derive(Clone, Copy, Debug)]
 pub struct GraphSearchRequest<'a> {
     query: &'a [f32],
     k: usize,
-    ef: usize,
+    ef: Option<usize>,
+    profile: GraphSearchProfile,
     seed: u64,
     trace_candidates: bool,
     observed_core_class: QueryCoreClass,
@@ -19,18 +104,90 @@ pub struct GraphSearchRequest<'a> {
 }
 
 impl<'a> GraphSearchRequest<'a> {
-    /// Creates a deterministic single-segment traversal request.
+    /// Creates a deterministic SIFT-class request with adaptive shipped `ef`.
     #[must_use]
-    pub const fn new(query: &'a [f32], k: usize, ef: usize, seed: u64) -> Self {
+    pub const fn new(query: &'a [f32], k: usize, seed: u64) -> Self {
         Self {
             query,
             k,
-            ef,
+            ef: None,
+            profile: GraphSearchProfile::SiftClass,
             seed,
             trace_candidates: false,
             observed_core_class: QueryCoreClass::Unverified,
             prefetch: TraversalPrefetch::Enabled,
         }
+    }
+
+    /// Selects the dataset-shape profile used by adaptive `ef`.
+    #[must_use]
+    pub const fn with_profile(mut self, profile: GraphSearchProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    /// Overrides adaptive `ef` with one explicit traversal width.
+    #[must_use]
+    pub const fn with_ef(mut self, ef: usize) -> Self {
+        self.ef = Some(ef);
+        self
+    }
+
+    /// Returns the profile's documented research floor before row-count clamping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdaptiveEfError`] for zero `k` or multiplier overflow.
+    pub fn research_floor_ef(self) -> Result<usize, AdaptiveEfError> {
+        if self.k == 0 {
+            return Err(AdaptiveEfError::ZeroK);
+        }
+        match self.profile {
+            GraphSearchProfile::SiftClass => self
+                .k
+                .checked_mul(SIFT_RESEARCH_FLOOR_TENTHS)
+                .map(|value| value.div_ceil(EF_TENTHS_DENOMINATOR))
+                .map(|value| value.max(SIFT_RESEARCH_ABSOLUTE_FLOOR))
+                .ok_or(AdaptiveEfError::ArithmeticOverflow),
+            GraphSearchProfile::Angular => self
+                .k
+                .checked_mul(ANGULAR_EF_PER_K)
+                .ok_or(AdaptiveEfError::ArithmeticOverflow),
+        }
+    }
+
+    /// Resolves the explicit override or adaptive profile against one graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdaptiveEfError`] when `k` or an explicit override is outside
+    /// the graph, or when adaptive multiplier arithmetic overflows.
+    pub fn effective_ef(self, rows: usize) -> Result<usize, AdaptiveEfError> {
+        if self.k == 0 {
+            return Err(AdaptiveEfError::ZeroK);
+        }
+        if self.k > rows {
+            return Err(AdaptiveEfError::KExceedsRows { k: self.k, rows });
+        }
+        if let Some(ef) = self.ef {
+            if ef < self.k {
+                return Err(AdaptiveEfError::ExplicitBelowK { k: self.k, ef });
+            }
+            if ef > rows {
+                return Err(AdaptiveEfError::ExplicitExceedsRows { ef, rows });
+            }
+            return Ok(ef);
+        }
+        let floor = self.research_floor_ef()?;
+        let target = match self.profile {
+            GraphSearchProfile::SiftClass => self
+                .k
+                .checked_mul(SIFT_SHIPPED_EF_PER_K)
+                .map(|ef| ef.max(floor))
+                .ok_or(AdaptiveEfError::ArithmeticOverflow)?,
+            GraphSearchProfile::Angular => floor,
+        };
+        Ok(target.min(rows))
     }
 
     /// Records the logical Bit4 candidate sequence for deterministic diagnostics.
@@ -126,8 +283,10 @@ pub enum QueryCoreClass {
 /// Deterministic work counters for one completed query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphSearchCounters {
+    effective_ef: usize,
     hops: usize,
     candidates_scored: usize,
+    candidates_rescored: usize,
     pushes: usize,
     visited: usize,
     visited_epoch_cleared: bool,
@@ -139,10 +298,14 @@ pub struct GraphSearchCounters {
 /// Scheduling-independent counters suitable for deterministic comparisons.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeterministicGraphWork {
+    /// Adaptive or explicit traversal width used for this query.
+    pub effective_ef: usize,
     /// Expanded frontier nodes.
     pub hops: usize,
     /// Distinct Bit4 candidates scored.
     pub candidates_scored: usize,
+    /// Rows from the retained pool read from f32 storage.
+    pub candidates_rescored: usize,
     /// Successful frontier insertions.
     pub pushes: usize,
     /// Distinct visited nodes.
@@ -154,11 +317,19 @@ impl GraphSearchCounters {
     #[must_use]
     pub const fn deterministic_work(self) -> DeterministicGraphWork {
         DeterministicGraphWork {
+            effective_ef: self.effective_ef,
             hops: self.hops,
             candidates_scored: self.candidates_scored,
+            candidates_rescored: self.candidates_rescored,
             pushes: self.pushes,
             visited: self.visited,
         }
+    }
+
+    /// Returns the adaptive or explicit traversal width used by the query.
+    #[must_use]
+    pub const fn effective_ef(self) -> usize {
+        self.effective_ef
     }
 
     /// Returns expanded frontier nodes.
@@ -171,6 +342,12 @@ impl GraphSearchCounters {
     #[must_use]
     pub const fn candidates_scored(self) -> usize {
         self.candidates_scored
+    }
+
+    /// Returns the number of retained candidates exactly rescored from f32 rows.
+    #[must_use]
+    pub const fn candidates_rescored(self) -> usize {
+        self.candidates_rescored
     }
 
     /// Returns successful frontier insertions.
@@ -258,6 +435,10 @@ pub enum GraphSearchError {
     Quant(QuantError),
     /// The four-row gather boundary rejected a graph/query shape mismatch.
     Gather(GatherShapeError),
+    /// Adaptive or explicit `ef` resolution rejected the request.
+    AdaptiveEf(AdaptiveEfError),
+    /// The canonical f32 pool-rescore path rejected its inputs.
+    Rescore(RescoreError),
     /// Unfiltered traversal crossed the Task-16 collapse guard; M6 owns fallback.
     VisitedCapExceeded {
         /// Distinct nodes marked before traversal stopped.
@@ -293,6 +474,8 @@ impl std::fmt::Display for GraphSearchError {
             Self::Graph(error) => error.fmt(formatter),
             Self::Quant(error) => error.fmt(formatter),
             Self::Gather(error) => error.fmt(formatter),
+            Self::AdaptiveEf(error) => error.fmt(formatter),
+            Self::Rescore(error) => error.fmt(formatter),
             Self::VisitedCapExceeded { visited, cap } => write!(
                 formatter,
                 "graph search visited {visited} nodes, exceeding the fail-closed cap {cap}"
@@ -321,6 +504,8 @@ impl std::error::Error for GraphSearchError {
             Self::Graph(error) => Some(error),
             Self::Quant(error) => Some(error),
             Self::Gather(error) => Some(error),
+            Self::AdaptiveEf(error) => Some(error),
+            Self::Rescore(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Geometry(_)
             | Self::VisitedCapExceeded { .. }
@@ -349,6 +534,18 @@ impl From<GatherShapeError> for GraphSearchError {
     }
 }
 
+impl From<AdaptiveEfError> for GraphSearchError {
+    fn from(error: AdaptiveEfError) -> Self {
+        Self::AdaptiveEf(error)
+    }
+}
+
+impl From<RescoreError> for GraphSearchError {
+    fn from(error: RescoreError) -> Self {
+        Self::Rescore(error)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ScoredNode {
     row_id: CheckedNodeId,
@@ -366,6 +563,8 @@ pub struct GraphSearcher<'a> {
     pool: Vec<ScoredNode>,
     frontier: Vec<ScoredNode>,
     hop_candidates: Vec<CheckedNodeId>,
+    rescore_row_ids: Vec<u32>,
+    rescore_coarse_scores: Vec<f32>,
 }
 
 impl<'a> GraphSearcher<'a> {
@@ -408,6 +607,8 @@ impl<'a> GraphSearcher<'a> {
             pool: Vec::new(),
             frontier: Vec::new(),
             hop_candidates,
+            rescore_row_ids: Vec::new(),
+            rescore_coarse_scores: Vec::new(),
         })
     }
 
@@ -425,7 +626,7 @@ impl<'a> GraphSearcher<'a> {
         request: GraphSearchRequest<'_>,
         cancellation: Option<&QueryCancellation<'_>>,
     ) -> Result<GraphSearchResult, GraphSearchError> {
-        self.validate_request(request)?;
+        let ef = self.validate_request(request)?;
         check_cancellation(cancellation)?;
         let (qos_class, qos_relative_priority) = observed_qos();
         let padded_dimensions = self.graph.layout().padded_dims() as usize;
@@ -442,25 +643,14 @@ impl<'a> GraphSearcher<'a> {
             request.seed,
         )?;
         let query_norm = squared_norm(request.query);
-        let visited_cap = request
-            .ef
+        let visited_cap = ef
             .checked_mul(usize::from(self.graph.layout().max_degree()))
             .and_then(|value| value.checked_mul(4))
             .ok_or_else(|| GraphSearchError::Geometry("visited cap overflow".to_owned()))?;
         let visited_epoch_cleared = self.next_epoch();
-        self.pool.clear();
-        self.frontier.clear();
-        if self.pool.capacity() < request.ef {
-            self.pool.try_reserve(request.ef).map_err(|error| {
-                GraphSearchError::Geometry(format!("pool allocation failed: {error}"))
-            })?;
-        }
-        if self.frontier.capacity() < request.ef {
-            self.frontier.try_reserve(request.ef).map_err(|error| {
-                GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
-            })?;
-        }
         let mut counters = GraphSearchCounters {
+            effective_ef: ef,
+            candidates_rescored: 0,
             hops: 0,
             candidates_scored: 0,
             pushes: 0,
@@ -470,9 +660,19 @@ impl<'a> GraphSearcher<'a> {
             qos_relative_priority,
             core_class: request.observed_core_class,
         };
-        let mut candidate_sequence = request
-            .trace_candidates
-            .then(|| Vec::with_capacity(request.ef));
+        self.pool.clear();
+        self.frontier.clear();
+        if self.pool.capacity() < ef {
+            self.pool.try_reserve(ef).map_err(|error| {
+                GraphSearchError::Geometry(format!("pool allocation failed: {error}"))
+            })?;
+        }
+        if self.frontier.capacity() < ef {
+            self.frontier.try_reserve(ef).map_err(|error| {
+                GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
+            })?;
+        }
+        let mut candidate_sequence = request.trace_candidates.then(|| Vec::with_capacity(ef));
         let entries = self.entries;
         if request.prefetch.is_enabled() {
             for entry in &entries {
@@ -499,7 +699,7 @@ impl<'a> GraphSearcher<'a> {
             query_norm,
             &seed_group,
             seed_count,
-            request.ef,
+            ef,
             request.prefetch,
             &mut counters,
             &mut candidate_sequence,
@@ -509,7 +709,7 @@ impl<'a> GraphSearcher<'a> {
             let Some(candidate) = min_heap_pop(&mut self.frontier)? else {
                 break;
             };
-            if self.pool.len() >= request.ef
+            if self.pool.len() >= ef
                 && self
                     .pool
                     .first()
@@ -553,7 +753,7 @@ impl<'a> GraphSearcher<'a> {
                     query_norm,
                     &group,
                     group_count,
-                    request.ef,
+                    ef,
                     request.prefetch,
                     &mut counters,
                     &mut candidate_sequence,
@@ -561,15 +761,66 @@ impl<'a> GraphSearcher<'a> {
                 group_start += group_count;
             }
         }
-        let candidates = exact_rescore(
-            &self.pool,
-            self.rescore,
+        check_cancellation(cancellation)?;
+        self.rescore_row_ids.clear();
+        self.rescore_coarse_scores.clear();
+        self.rescore_row_ids
+            .try_reserve(self.pool.len())
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("rescore row-id allocation failed: {error}"))
+            })?;
+        self.rescore_coarse_scores
+            .try_reserve(self.pool.len())
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("rescore score allocation failed: {error}"))
+            })?;
+        for candidate in &self.pool {
+            self.rescore_row_ids.push(candidate.row_id.raw());
+            let score = -(candidate.distance as f32);
+            if !score.is_finite() {
+                return Err(GraphSearchError::Geometry(format!(
+                    "coarse distance for row {} is not representable as f32",
+                    candidate.row_id.raw()
+                )));
+            }
+            self.rescore_coarse_scores.push(score);
+        }
+        let coarse_bytes_per_row = self
+            .graph
+            .layout()
+            .code_bytes()
+            .checked_add(12)
+            .ok_or_else(|| GraphSearchError::Geometry("coarse row bytes overflow".to_owned()))?;
+        let pool = RescorePool::retained(
+            &self.rescore_row_ids,
+            &self.rescore_coarse_scores,
+            RescoreMetric::SquaredL2,
+            counters.candidates_scored,
+            coarse_bytes_per_row,
+        )
+        .with_prefetch(request.prefetch.is_enabled());
+        let rescored = rescore_top_k(
             request.query,
+            self.rescore,
             self.graph.layout().dims() as usize,
+            pool,
             request.k,
-            cancellation,
-            request.prefetch,
         )?;
+        check_cancellation(cancellation)?;
+        counters.candidates_rescored = rescored.candidates_rescored;
+        let candidates = rescored
+            .hits
+            .into_iter()
+            .map(|hit| {
+                let row_id = u32::try_from(hit.row_index).map_err(|_| {
+                    GraphSearchError::Geometry("rescored row id exceeds u32".to_owned())
+                })?;
+                Ok(GraphSearchCandidate {
+                    row_id,
+                    distance: (-hit.score).max(0.0),
+                })
+            })
+            .collect::<Result<Vec<_>, GraphSearchError>>()?;
         Ok(GraphSearchResult {
             candidates,
             counters,
@@ -577,7 +828,7 @@ impl<'a> GraphSearcher<'a> {
         })
     }
 
-    fn validate_request(&self, request: GraphSearchRequest<'_>) -> Result<(), GraphSearchError> {
+    fn validate_request(&self, request: GraphSearchRequest<'_>) -> Result<usize, GraphSearchError> {
         let dimensions = self.graph.layout().dims() as usize;
         if request.query.len() != dimensions {
             return Err(GraphSearchError::Geometry(format!(
@@ -585,20 +836,9 @@ impl<'a> GraphSearcher<'a> {
                 request.query.len()
             )));
         }
-        if request.k == 0 || request.k > request.ef {
-            return Err(GraphSearchError::Geometry(format!(
-                "k {} must be positive and no greater than ef {}",
-                request.k, request.ef
-            )));
-        }
-        if request.ef > self.graph.node_count() as usize {
-            return Err(GraphSearchError::Geometry(format!(
-                "ef {} exceeds graph row count {}",
-                request.ef,
-                self.graph.node_count()
-            )));
-        }
-        Ok(())
+        request
+            .effective_ef(self.graph.node_count() as usize)
+            .map_err(Into::into)
     }
 
     fn next_epoch(&mut self) -> bool {
@@ -925,88 +1165,6 @@ fn heap_store(
     Ok(())
 }
 
-fn exact_rescore(
-    pool: &[ScoredNode],
-    base: &[f32],
-    query: &[f32],
-    dimensions: usize,
-    k: usize,
-    cancellation: Option<&QueryCancellation<'_>>,
-    prefetch: TraversalPrefetch,
-) -> Result<Vec<GraphSearchCandidate>, GraphSearchError> {
-    let mut exact = Vec::with_capacity(pool.len());
-    for (index, candidate) in pool.iter().enumerate() {
-        if index.is_multiple_of(4) {
-            check_cancellation(cancellation)?;
-        }
-        if prefetch.is_enabled()
-            && let Some(ahead) = pool.get(index.saturating_add(4))
-        {
-            prefetch_f32_row(base, ahead.row_id.raw(), dimensions);
-        }
-        let start = (candidate.row_id.raw() as usize)
-            .checked_mul(dimensions)
-            .ok_or_else(|| GraphSearchError::Geometry("rescore offset overflow".to_owned()))?;
-        let end = start
-            .checked_add(dimensions)
-            .ok_or_else(|| GraphSearchError::Geometry("rescore end overflow".to_owned()))?;
-        let row = base.get(start..end).ok_or_else(|| {
-            GraphSearchError::Geometry(format!(
-                "rescore row {} is unavailable",
-                candidate.row_id.raw()
-            ))
-        })?;
-        let distance = row
-            .iter()
-            .zip(query)
-            .map(|(left, right)| {
-                let delta = f64::from(*left) - f64::from(*right);
-                delta * delta
-            })
-            .sum();
-        exact.push(GraphSearchCandidate {
-            row_id: candidate.row_id.raw(),
-            distance,
-        });
-    }
-    if exact.len() > k {
-        let _ = exact.select_nth_unstable_by(k, exact_best_first);
-        exact.truncate(k);
-    }
-    exact.sort_unstable_by(exact_best_first);
-    Ok(exact)
-}
-
-fn exact_best_first(
-    left: &GraphSearchCandidate,
-    right: &GraphSearchCandidate,
-) -> std::cmp::Ordering {
-    left.distance
-        .total_cmp(&right.distance)
-        .then_with(|| left.row_id.cmp(&right.row_id))
-}
-
-fn prefetch_f32_row(base: &[f32], row_id: u32, dimensions: usize) {
-    let Some(start) = (row_id as usize).checked_mul(dimensions) else {
-        return;
-    };
-    let Some(value) = base.get(start) else {
-        return;
-    };
-    let address = std::ptr::from_ref(value);
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: the address points into the live immutable f32 rescore mapping.
-    unsafe {
-        std::arch::asm!(
-            "prfm pldl1keep, [{address}]",
-            address = in(reg) address,
-            options(readonly, nostack)
-        );
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = address;
-}
-
 fn squared_norm(values: &[f32]) -> f64 {
     values
         .iter()
@@ -1054,7 +1212,9 @@ mod tests {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     use rand::RngCore;
 
-    use super::{GraphSearchRequest, GraphSearcher, TraversalPrefetch};
+    use super::{
+        AdaptiveEfError, GraphSearchProfile, GraphSearchRequest, GraphSearcher, TraversalPrefetch,
+    };
     use crate::graph::block::{
         GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout, decode_node_blocks,
         encode_node_blocks,
@@ -1065,6 +1225,63 @@ mod tests {
     const DIMS: usize = 128;
 
     #[test]
+    fn adaptive_defaults_follow_the_measured_profile_rules() {
+        let query = [0.0_f32; DIMS];
+
+        let sift = GraphSearchRequest::new(&query, 100, 0x19_05);
+        assert_eq!(sift.research_floor_ef(), Ok(140));
+        assert_eq!(sift.effective_ef(1_000_000), Ok(200));
+        assert_eq!(sift.effective_ef(180), Ok(180));
+
+        let angular =
+            GraphSearchRequest::new(&query, 100, 0x19_05).with_profile(GraphSearchProfile::Angular);
+        assert_eq!(angular.research_floor_ef(), Ok(400));
+        assert_eq!(angular.effective_ef(1_000_000), Ok(400));
+
+        let explicit = GraphSearchRequest::new(&query, 100, 0x19_05).with_ef(300);
+        assert_eq!(explicit.effective_ef(1_000_000), Ok(300));
+    }
+
+    #[test]
+    fn adaptive_ef_overflow_is_typed() {
+        let request = GraphSearchRequest::new(&[], usize::MAX, 0x19_05);
+        assert_eq!(
+            request.effective_ef(usize::MAX),
+            Err(AdaptiveEfError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn adaptive_ef_stays_between_k_and_rows_under_adversarial_shapes() {
+        let mut seeded = crate::test_support::seeded_rng(
+            "graph::search::tests::adaptive_ef_stays_between_k_and_rows_under_adversarial_shapes",
+        );
+        let mut runner = TestRunner::new(Config {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(seeded.next_u64()),
+            ..Config::default()
+        });
+        let result = runner.run(
+            &(1_usize..1_000_001, 1_usize..1_000_001, any::<bool>()),
+            |(rows, raw_k, angular)| {
+                let k = raw_k.min(rows);
+                let profile = if angular {
+                    GraphSearchProfile::Angular
+                } else {
+                    GraphSearchProfile::SiftClass
+                };
+                let request = GraphSearchRequest::new(&[], k, 0x19_05).with_profile(profile);
+                let ef = request.effective_ef(rows).expect("valid shape resolves");
+                prop_assert!(ef >= k);
+                prop_assert!(ef <= rows);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok(), "property result: {result:?}");
+    }
+
+    #[test]
     fn traversal_returns_the_same_topk_as_brute_force_at_high_ef() {
         let (encoded, rescore) = complete_graph_fixture(12);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
@@ -1073,7 +1290,7 @@ mod tests {
         let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
         let result = searcher
-            .search(GraphSearchRequest::new(&query, 5, 12, 0x19_04), None)
+            .search(GraphSearchRequest::new(&query, 5, 0x19_04), None)
             .expect("high-ef traversal succeeds");
         let actual = result
             .candidates()
@@ -1082,6 +1299,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+        assert_eq!(result.counters().effective_ef(), 12);
+        assert_eq!(result.counters().candidates_rescored(), 12);
     }
 
     #[test]
@@ -1093,12 +1312,15 @@ mod tests {
 
         for query_index in 0..255 {
             let result = searcher
-                .search(GraphSearchRequest::new(&query, 5, 12, query_index), None)
+                .search(
+                    GraphSearchRequest::new(&query, 5, query_index).with_ef(12),
+                    None,
+                )
                 .expect("epoch before wrap succeeds");
             assert!(!result.counters().visited_epoch_cleared());
         }
         let wrapped = searcher
-            .search(GraphSearchRequest::new(&query, 5, 12, 255), None)
+            .search(GraphSearchRequest::new(&query, 5, 255).with_ef(12), None)
             .expect("first query after 255 epochs succeeds");
 
         assert!(wrapped.counters().visited_epoch_cleared());
@@ -1121,7 +1343,9 @@ mod tests {
 
         let result = searcher
             .search(
-                GraphSearchRequest::new(&query, 5, 12, 0x19_04).with_candidate_trace(),
+                GraphSearchRequest::new(&query, 5, 0x19_04)
+                    .with_ef(12)
+                    .with_candidate_trace(),
                 None,
             )
             .expect("traced traversal succeeds");
@@ -1145,7 +1369,9 @@ mod tests {
         let (encoded, rescore) = complete_graph_fixture(12);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(4.25);
-        let request = GraphSearchRequest::new(&query, 5, 9, 0x19_0400).with_candidate_trace();
+        let request = GraphSearchRequest::new(&query, 5, 0x19_0400)
+            .with_ef(9)
+            .with_candidate_trace();
         let mut first = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
         let mut second = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
@@ -1176,13 +1402,16 @@ mod tests {
         let mut disabled = GraphSearcher::new(graph, &rescore).expect("disabled searcher");
         let enabled_result = enabled
             .search(
-                GraphSearchRequest::new(&query, 5, 9, 0x19_0400).with_candidate_trace(),
+                GraphSearchRequest::new(&query, 5, 0x19_0400)
+                    .with_ef(9)
+                    .with_candidate_trace(),
                 None,
             )
             .expect("prefetch-enabled traversal succeeds");
         let disabled_result = disabled
             .search(
-                GraphSearchRequest::new(&query, 5, 9, 0x19_0400)
+                GraphSearchRequest::new(&query, 5, 0x19_0400)
+                    .with_ef(9)
                     .with_candidate_trace()
                     .with_prefetch(TraversalPrefetch::Disabled),
                 None,
@@ -1208,7 +1437,10 @@ mod tests {
         let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
         let error = searcher
-            .search(GraphSearchRequest::new(&query, 1, 1, 0x19_0405), None)
+            .search(
+                GraphSearchRequest::new(&query, 1, 0x19_0405).with_ef(1),
+                None,
+            )
             .expect_err("the visited guard must fail closed");
 
         assert_eq!(
@@ -1236,7 +1468,7 @@ mod tests {
                 token.cancel();
             });
             let result = searcher.search(
-                GraphSearchRequest::new(&query, 1, 200, 0x19_0406),
+                GraphSearchRequest::new(&query, 1, 0x19_0406).with_ef(200),
                 Some(&cancellation),
             );
             canceller.join().expect("canceller thread joins");
@@ -1272,10 +1504,16 @@ mod tests {
             let mut first = GraphSearcher::new(graph, &rescore).expect("first searcher");
             let mut second = GraphSearcher::new(graph, &rescore).expect("second searcher");
             let result1 = first
-                .search(GraphSearchRequest::new(&query, 5, ef1, 0x19_0408), None)
+                .search(
+                    GraphSearchRequest::new(&query, 5, 0x19_0408).with_ef(ef1),
+                    None,
+                )
                 .expect("ef1 traversal");
             let result2 = second
-                .search(GraphSearchRequest::new(&query, 5, ef2, 0x19_0408), None)
+                .search(
+                    GraphSearchRequest::new(&query, 5, 0x19_0408).with_ef(ef2),
+                    None,
+                )
                 .expect("ef2 traversal");
             prop_assert!(result2.recall_against(&truth) >= result1.recall_against(&truth));
             Ok(())

@@ -11,7 +11,10 @@ pub use bits4::{
 pub use int8::{
     Int8Query, Int8Vec, dequantize_int8, dot_int8_query, prepare_int8_query, quantize_int8,
 };
-pub use rescore::{RescoreError, RescoreHit, RescoreResult, SearchByteCounts, rescore_top_k};
+pub use rescore::{
+    RescoreError, RescoreHit, RescoreMetric, RescorePool, RescoreResult, SearchByteCounts,
+    rescore_top_k,
+};
 
 /// Typed failure from a training-free quantizer or estimator.
 #[derive(Clone, Debug, Eq, PartialEq)]

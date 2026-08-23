@@ -30,11 +30,13 @@ const CHECKPOINT_CHECKSUM_BYTES: usize = 8;
 const CANCELLATION_CHECK_ROWS: usize = 64;
 
 /// Number of alpha-pruning passes applied by one measurement/build request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GraphBuildPasses {
-    /// The alpha=1.0 build pass only, retained to measure its recall honestly.
+    /// The shipped alpha=1.0 build: faster at matched recall across 10 processes.
+    /// Provenance: `docs/19-m5-defaults.md`.
+    #[default]
     One,
-    /// The alpha=1.0 build pass followed by alpha=1.2 refinement.
+    /// Explicit research arm; M5 found its hop reduction did not pay for itself.
     Two,
 }
 

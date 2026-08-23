@@ -167,6 +167,20 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   retains that error and returns complete exact-scan results. It does not
   generalize fallback behavior to another segment contract.
 
+## Task 19-M5 query-default invariants
+
+- `GraphSearchRequest::new` is the no-tuning shipped path. SIFT-class adaptive
+  ef is `max(2*k, max(ceil(1.4*k), 140))`; angular is the provisional `4*k`
+  profile. Both clamp to graph rows. An explicit ef uses `with_ef` and is
+  typed-closed when it is below k or beyond the graph.
+- Traversal exactly rescores the complete retained pool from f32 rows through
+  `quant::rescore::rescore_top_k`; no graph-local exact-rescore loop may fork
+  ordering, byte accounting, row validation, or prefetch behavior again.
+- One alpha=1.0 build pass is the shipped default. The explicit alpha=1.2
+  second-pass arm stays available for research, but M5 measured it slower at
+  matched recall despite saving 2.643% hops. Constants and the load-tainted
+  10-process evidence live in `docs/19-m5-defaults.md`.
+
 ## Task 08 Part A WAL invariants
 
 - Every synchronization names `SyncKind`; Darwin maps barrier/full to
