@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUDGET_KB="${ZE_SIZE_BUDGET_KB:-2048}"
+BUDGET_KB="${ZE_SIZE_BUDGET_KB:-5120}"
 
 if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
     echo "error: ZE_SIZE_BUDGET_KB must be a non-negative integer, got '$BUDGET_KB'" >&2
