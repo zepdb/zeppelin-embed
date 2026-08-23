@@ -2,7 +2,7 @@
 
 use crate::graph::block::{CheckedNodeId, GraphNodeBlocks, GraphNodeError};
 use crate::kernels::{Bit4Rows4, GatherShapeError, score_bit4_ptrs};
-use crate::lifecycle::cancel::QueryCancellation;
+use crate::lifecycle::QueryCancellation;
 use crate::quant::{Bit4Query, QuantError, prepare_bit4_query};
 use crate::scan::ScanError;
 
@@ -15,6 +15,7 @@ pub struct GraphSearchRequest<'a> {
     seed: u64,
     trace_candidates: bool,
     observed_core_class: QueryCoreClass,
+    prefetch: TraversalPrefetch,
 }
 
 impl<'a> GraphSearchRequest<'a> {
@@ -28,6 +29,7 @@ impl<'a> GraphSearchRequest<'a> {
             seed,
             trace_candidates: false,
             observed_core_class: QueryCoreClass::Unverified,
+            prefetch: TraversalPrefetch::Enabled,
         }
     }
 
@@ -43,6 +45,28 @@ impl<'a> GraphSearchRequest<'a> {
     pub const fn with_observed_core_class(mut self, core_class: QueryCoreClass) -> Self {
         self.observed_core_class = core_class;
         self
+    }
+
+    /// Selects whether traversal and rescore issue software prefetch hints.
+    #[must_use]
+    pub const fn with_prefetch(mut self, prefetch: TraversalPrefetch) -> Self {
+        self.prefetch = prefetch;
+        self
+    }
+}
+
+/// Runtime-selectable software-prefetch arm for traversal A/B measurements.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraversalPrefetch {
+    /// Issue graph-node and f32-rescore prefetch hints.
+    Enabled,
+    /// Execute the identical traversal without software prefetch hints.
+    Disabled,
+}
+
+impl TraversalPrefetch {
+    const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
     }
 }
 
@@ -341,6 +365,7 @@ pub struct GraphSearcher<'a> {
     epoch: u8,
     pool: Vec<ScoredNode>,
     frontier: Vec<ScoredNode>,
+    hop_candidates: Vec<CheckedNodeId>,
 }
 
 impl<'a> GraphSearcher<'a> {
@@ -368,6 +393,12 @@ impl<'a> GraphSearcher<'a> {
                 "graph contains {entry_count} persisted entry seeds, expected medoid plus three refined seeds"
             ))
         })?;
+        let mut hop_candidates = Vec::new();
+        hop_candidates
+            .try_reserve_exact(usize::from(graph.layout().max_degree()))
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("hop-candidate allocation failed: {error}"))
+            })?;
         Ok(Self {
             graph,
             rescore,
@@ -376,6 +407,7 @@ impl<'a> GraphSearcher<'a> {
             epoch: 0,
             pool: Vec::new(),
             frontier: Vec::new(),
+            hop_candidates,
         })
     }
 
@@ -383,17 +415,9 @@ impl<'a> GraphSearcher<'a> {
     pub fn search(
         &mut self,
         request: GraphSearchRequest<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
     ) -> Result<GraphSearchResult, GraphSearchError> {
-        self.search_inner(request, None)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn search_with_cancellation(
-        &mut self,
-        request: GraphSearchRequest<'_>,
-        cancellation: &QueryCancellation<'_>,
-    ) -> Result<GraphSearchResult, GraphSearchError> {
-        self.search_inner(request, Some(cancellation))
+        self.search_inner(request, cancellation)
     }
 
     fn search_inner(
@@ -450,8 +474,10 @@ impl<'a> GraphSearcher<'a> {
             .trace_candidates
             .then(|| Vec::with_capacity(request.ef));
         let entries = self.entries;
-        for entry in &entries {
-            self.graph.prefetch_line0(*entry);
+        if request.prefetch.is_enabled() {
+            for entry in &entries {
+                self.graph.prefetch_line0(*entry);
+            }
         }
         let mut seed_group = [None; 4];
         let mut seed_count = 0_usize;
@@ -474,6 +500,7 @@ impl<'a> GraphSearcher<'a> {
             &seed_group,
             seed_count,
             request.ef,
+            request.prefetch,
             &mut counters,
             &mut candidate_sequence,
         )?;
@@ -491,34 +518,29 @@ impl<'a> GraphSearcher<'a> {
                 break;
             }
             counters.hops += 1;
-            let block = self.graph.block_checked(candidate.row_id)?;
-            let degree = usize::from(block.degree());
-            let mut hop_candidates = [None; u8::MAX as usize];
-            let mut hop_candidate_count = 0_usize;
-            for raw_neighbor in block.neighbors_padded().take(degree) {
+            let (degree, neighbors) = self.graph.adjacency_checked(candidate.row_id)?;
+            let degree = usize::from(degree);
+            self.hop_candidates.clear();
+            for raw_neighbor in neighbors.take(degree) {
                 let neighbor = self.graph.checked_node_id(raw_neighbor)?;
                 if !mark_visited(&mut self.visited, self.epoch, neighbor)? {
                     continue;
                 }
                 counters.visited += 1;
                 ensure_visited_cap(counters.visited, visited_cap)?;
-                self.graph.prefetch_line0(neighbor);
-                let Some(slot) = hop_candidates.get_mut(hop_candidate_count) else {
-                    return Err(GraphSearchError::Geometry(format!(
-                        "node {} degree exceeds u8 format bound",
-                        candidate.row_id.raw()
-                    )));
-                };
-                *slot = Some(neighbor);
-                hop_candidate_count += 1;
+                if request.prefetch.is_enabled() {
+                    self.graph.prefetch_line0(neighbor);
+                }
+                self.hop_candidates.push(neighbor);
             }
             let mut group_start = 0_usize;
+            let hop_candidate_count = self.hop_candidates.len();
             while group_start < hop_candidate_count {
                 check_cancellation(cancellation)?;
                 let group_count = (hop_candidate_count - group_start).min(4);
                 let mut group = [None; 4];
                 for lane in 0..group_count {
-                    let source = hop_candidates.get(group_start + lane).copied().flatten();
+                    let source = self.hop_candidates.get(group_start + lane).copied();
                     let Some(destination) = group.get_mut(lane) else {
                         return Err(GraphSearchError::Geometry(
                             "candidate gather lane is unavailable".to_owned(),
@@ -532,6 +554,7 @@ impl<'a> GraphSearcher<'a> {
                     &group,
                     group_count,
                     request.ef,
+                    request.prefetch,
                     &mut counters,
                     &mut candidate_sequence,
                 )?;
@@ -545,6 +568,7 @@ impl<'a> GraphSearcher<'a> {
             self.graph.layout().dims() as usize,
             request.k,
             cancellation,
+            request.prefetch,
         )?;
         Ok(GraphSearchResult {
             candidates,
@@ -595,6 +619,7 @@ impl<'a> GraphSearcher<'a> {
         row_ids: &[Option<CheckedNodeId>; 4],
         row_count: usize,
         ef: usize,
+        prefetch: TraversalPrefetch,
         counters: &mut GraphSearchCounters,
         candidate_sequence: &mut Option<Vec<u32>>,
     ) -> Result<(), GraphSearchError> {
@@ -613,7 +638,9 @@ impl<'a> GraphSearcher<'a> {
                 counters.pushes = counters.pushes.checked_add(1).ok_or_else(|| {
                     GraphSearchError::Geometry("push counter overflow".to_owned())
                 })?;
-                if let Some(head) = self.frontier.first() {
+                if prefetch.is_enabled()
+                    && let Some(head) = self.frontier.first()
+                {
                     self.graph.prefetch_head_block(head.row_id);
                 }
             }
@@ -679,18 +706,15 @@ fn score_group(
         .copied()
         .flatten()
         .ok_or_else(|| GraphSearchError::Geometry("empty gather group".to_owned()))?;
-    let first_block = graph.block_checked(first_id)?;
-    let first_row = graph.code_row_checked(first_id)?;
-    let first_factors = first_block.factors();
+    let (first_row, first_factors) = graph.score_row_checked(first_id)?;
     let mut rows = [first_row; 4];
     let mut factors = [first_factors; 4];
-    for lane in 0..row_count {
+    for lane in 1..row_count {
         let row_id =
             row_ids.get(lane).copied().flatten().ok_or_else(|| {
                 GraphSearchError::Geometry(format!("gather lane {lane} is empty"))
             })?;
-        let block = graph.block_checked(row_id)?;
-        let row = graph.code_row_checked(row_id)?;
+        let (row, factors_for_row) = graph.score_row_checked(row_id)?;
         let row_slot = rows
             .get_mut(lane)
             .ok_or_else(|| GraphSearchError::Geometry("gather row lane overflow".to_owned()))?;
@@ -698,7 +722,7 @@ fn score_group(
         let factor_slot = factors
             .get_mut(lane)
             .ok_or_else(|| GraphSearchError::Geometry("gather factor lane overflow".to_owned()))?;
-        *factor_slot = block.factors();
+        *factor_slot = factors_for_row;
     }
     let gathered = Bit4Rows4::from_rows(rows, graph.layout().code_bytes())?;
     let (query_codes, query_sum, query_scale_half) = query.kernel_parts();
@@ -784,41 +808,51 @@ fn min_heap_pop(frontier: &mut Vec<ScoredNode>) -> Result<Option<ScoredNode>, Gr
 }
 
 fn min_heap_sift_up(heap: &mut [ScoredNode], mut child: usize) -> Result<(), GraphSearchError> {
+    let start = child;
+    let moving = heap_node(heap, child)?;
     while child != 0 {
         let parent = child.saturating_sub(1) / 2;
-        let child_node = heap_node(heap, child)?;
         let parent_node = heap_node(heap, parent)?;
-        if !scored_best_first(&child_node, &parent_node).is_lt() {
+        if !scored_best_first(&moving, &parent_node).is_lt() {
             break;
         }
-        heap_swap(heap, child, parent)?;
+        heap_store(heap, child, parent_node)?;
         child = parent;
+    }
+    if child != start {
+        heap_store(heap, child, moving)?;
     }
     Ok(())
 }
 
 fn max_heap_sift_up(heap: &mut [ScoredNode], mut child: usize) -> Result<(), GraphSearchError> {
+    let start = child;
+    let moving = heap_node(heap, child)?;
     while child != 0 {
         let parent = child.saturating_sub(1) / 2;
-        let child_node = heap_node(heap, child)?;
         let parent_node = heap_node(heap, parent)?;
-        if !scored_best_first(&child_node, &parent_node).is_gt() {
+        if !scored_best_first(&moving, &parent_node).is_gt() {
             break;
         }
-        heap_swap(heap, child, parent)?;
+        heap_store(heap, child, parent_node)?;
         child = parent;
+    }
+    if child != start {
+        heap_store(heap, child, moving)?;
     }
     Ok(())
 }
 
 fn min_heap_sift_down(heap: &mut [ScoredNode], mut parent: usize) -> Result<(), GraphSearchError> {
+    let start = parent;
+    let moving = heap_node(heap, parent)?;
     loop {
         let left = parent
             .checked_mul(2)
             .and_then(|value| value.checked_add(1))
             .ok_or_else(|| GraphSearchError::Geometry("min-heap child overflow".to_owned()))?;
         if left >= heap.len() {
-            return Ok(());
+            break;
         }
         let right = left.saturating_add(1);
         let best_child = if right < heap.len()
@@ -828,22 +862,29 @@ fn min_heap_sift_down(heap: &mut [ScoredNode], mut parent: usize) -> Result<(), 
         } else {
             left
         };
-        if !scored_best_first(&heap_node(heap, best_child)?, &heap_node(heap, parent)?).is_lt() {
-            return Ok(());
+        let child_node = heap_node(heap, best_child)?;
+        if !scored_best_first(&child_node, &moving).is_lt() {
+            break;
         }
-        heap_swap(heap, parent, best_child)?;
+        heap_store(heap, parent, child_node)?;
         parent = best_child;
     }
+    if parent != start {
+        heap_store(heap, parent, moving)?;
+    }
+    Ok(())
 }
 
 fn max_heap_sift_down(heap: &mut [ScoredNode], mut parent: usize) -> Result<(), GraphSearchError> {
+    let start = parent;
+    let moving = heap_node(heap, parent)?;
     loop {
         let left = parent
             .checked_mul(2)
             .and_then(|value| value.checked_add(1))
             .ok_or_else(|| GraphSearchError::Geometry("max-heap child overflow".to_owned()))?;
         if left >= heap.len() {
-            return Ok(());
+            break;
         }
         let right = left.saturating_add(1);
         let worst_child = if right < heap.len()
@@ -853,12 +894,17 @@ fn max_heap_sift_down(heap: &mut [ScoredNode], mut parent: usize) -> Result<(), 
         } else {
             left
         };
-        if !scored_best_first(&heap_node(heap, worst_child)?, &heap_node(heap, parent)?).is_gt() {
-            return Ok(());
+        let child_node = heap_node(heap, worst_child)?;
+        if !scored_best_first(&child_node, &moving).is_gt() {
+            break;
         }
-        heap_swap(heap, parent, worst_child)?;
+        heap_store(heap, parent, child_node)?;
         parent = worst_child;
     }
+    if parent != start {
+        heap_store(heap, parent, moving)?;
+    }
+    Ok(())
 }
 
 fn heap_node(heap: &[ScoredNode], index: usize) -> Result<ScoredNode, GraphSearchError> {
@@ -867,20 +913,15 @@ fn heap_node(heap: &[ScoredNode], index: usize) -> Result<ScoredNode, GraphSearc
         .ok_or_else(|| GraphSearchError::Geometry(format!("heap slot {index} is unavailable")))
 }
 
-fn heap_swap(heap: &mut [ScoredNode], left: usize, right: usize) -> Result<(), GraphSearchError> {
-    if left == right {
-        return Ok(());
-    }
-    let left_value = heap_node(heap, left)?;
-    let right_value = heap_node(heap, right)?;
-    let left_slot = heap
-        .get_mut(left)
-        .ok_or_else(|| GraphSearchError::Geometry(format!("heap slot {left} is unavailable")))?;
-    *left_slot = right_value;
-    let right_slot = heap
-        .get_mut(right)
-        .ok_or_else(|| GraphSearchError::Geometry(format!("heap slot {right} is unavailable")))?;
-    *right_slot = left_value;
+fn heap_store(
+    heap: &mut [ScoredNode],
+    index: usize,
+    value: ScoredNode,
+) -> Result<(), GraphSearchError> {
+    let slot = heap
+        .get_mut(index)
+        .ok_or_else(|| GraphSearchError::Geometry(format!("heap slot {index} is unavailable")))?;
+    *slot = value;
     Ok(())
 }
 
@@ -891,13 +932,16 @@ fn exact_rescore(
     dimensions: usize,
     k: usize,
     cancellation: Option<&QueryCancellation<'_>>,
+    prefetch: TraversalPrefetch,
 ) -> Result<Vec<GraphSearchCandidate>, GraphSearchError> {
     let mut exact = Vec::with_capacity(pool.len());
     for (index, candidate) in pool.iter().enumerate() {
         if index.is_multiple_of(4) {
             check_cancellation(cancellation)?;
         }
-        if let Some(ahead) = pool.get(index.saturating_add(4)) {
+        if prefetch.is_enabled()
+            && let Some(ahead) = pool.get(index.saturating_add(4))
+        {
             prefetch_f32_row(base, ahead.row_id.raw(), dimensions);
         }
         let start = (candidate.row_id.raw() as usize)
@@ -1010,13 +1054,12 @@ mod tests {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     use rand::RngCore;
 
-    use super::{GraphSearchRequest, GraphSearcher};
+    use super::{GraphSearchRequest, GraphSearcher, TraversalPrefetch};
     use crate::graph::block::{
         GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout, decode_node_blocks,
         encode_node_blocks,
     };
-    use crate::lifecycle::cancel::QueryCancellation;
-    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryCancellation, QueryControl, Store};
     use crate::quant::{Bit4Factors, quantize_bit4};
 
     const DIMS: usize = 128;
@@ -1030,7 +1073,7 @@ mod tests {
         let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
         let result = searcher
-            .search(GraphSearchRequest::new(&query, 5, 12, 0x19_04))
+            .search(GraphSearchRequest::new(&query, 5, 12, 0x19_04), None)
             .expect("high-ef traversal succeeds");
         let actual = result
             .candidates()
@@ -1050,12 +1093,12 @@ mod tests {
 
         for query_index in 0..255 {
             let result = searcher
-                .search(GraphSearchRequest::new(&query, 5, 12, query_index))
+                .search(GraphSearchRequest::new(&query, 5, 12, query_index), None)
                 .expect("epoch before wrap succeeds");
             assert!(!result.counters().visited_epoch_cleared());
         }
         let wrapped = searcher
-            .search(GraphSearchRequest::new(&query, 5, 12, 255))
+            .search(GraphSearchRequest::new(&query, 5, 12, 255), None)
             .expect("first query after 255 epochs succeeds");
 
         assert!(wrapped.counters().visited_epoch_cleared());
@@ -1077,7 +1120,10 @@ mod tests {
         let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
         let result = searcher
-            .search(GraphSearchRequest::new(&query, 5, 12, 0x19_04).with_candidate_trace())
+            .search(
+                GraphSearchRequest::new(&query, 5, 12, 0x19_04).with_candidate_trace(),
+                None,
+            )
             .expect("traced traversal succeeds");
         let sequence = result
             .candidate_sequence()
@@ -1091,6 +1137,7 @@ mod tests {
 
         assert_eq!(sequence.len(), result.counters().candidates_scored());
         assert_eq!(sequence.len(), result.counters().visited());
+        assert_eq!(sequence, &(0_u32..12).collect::<Vec<_>>());
     }
 
     #[test]
@@ -1102,8 +1149,12 @@ mod tests {
         let mut first = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
         let mut second = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
-        let first_result = first.search(request).expect("first traversal succeeds");
-        let second_result = second.search(request).expect("second traversal succeeds");
+        let first_result = first
+            .search(request, None)
+            .expect("first traversal succeeds");
+        let second_result = second
+            .search(request, None)
+            .expect("second traversal succeeds");
 
         assert_eq!(
             first_result.candidate_sequence(),
@@ -1117,6 +1168,39 @@ mod tests {
     }
 
     #[test]
+    fn prefetch_switch_preserves_results_work_and_candidate_sequence() {
+        let (encoded, rescore) = complete_graph_fixture(12);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(4.25);
+        let mut enabled = GraphSearcher::new(graph, &rescore).expect("enabled searcher");
+        let mut disabled = GraphSearcher::new(graph, &rescore).expect("disabled searcher");
+        let enabled_result = enabled
+            .search(
+                GraphSearchRequest::new(&query, 5, 9, 0x19_0400).with_candidate_trace(),
+                None,
+            )
+            .expect("prefetch-enabled traversal succeeds");
+        let disabled_result = disabled
+            .search(
+                GraphSearchRequest::new(&query, 5, 9, 0x19_0400)
+                    .with_candidate_trace()
+                    .with_prefetch(TraversalPrefetch::Disabled),
+                None,
+            )
+            .expect("prefetch-disabled traversal succeeds");
+
+        assert_eq!(
+            enabled_result.candidate_sequence(),
+            disabled_result.candidate_sequence()
+        );
+        assert_eq!(
+            enabled_result.counters().deterministic_work(),
+            disabled_result.counters().deterministic_work()
+        );
+        assert_eq!(enabled_result.candidates(), disabled_result.candidates());
+    }
+
+    #[test]
     fn visited_cap_returns_a_typed_error_not_a_wrong_answer() {
         let (encoded, rescore) = chain_graph_fixture(10);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
@@ -1124,7 +1208,7 @@ mod tests {
         let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
 
         let error = searcher
-            .search(GraphSearchRequest::new(&query, 1, 1, 0x19_0405))
+            .search(GraphSearchRequest::new(&query, 1, 1, 0x19_0405), None)
             .expect_err("the visited guard must fail closed");
 
         assert_eq!(
@@ -1145,21 +1229,26 @@ mod tests {
         let token = CancelToken::new();
         let control = QueryControl::Cancel(token.clone());
         let cancellation = QueryCancellation::new(&control, &lease);
-        token.cancel();
-
         let started = Instant::now();
-        let error = searcher
-            .search_with_cancellation(
+        let error = std::thread::scope(|scope| {
+            let canceller = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(2));
+                token.cancel();
+            });
+            let result = searcher.search(
                 GraphSearchRequest::new(&query, 1, 200, 0x19_0406),
-                &cancellation,
-            )
-            .expect_err("pre-cancelled traversal must stop");
+                Some(&cancellation),
+            );
+            canceller.join().expect("canceller thread joins");
+            result
+        })
+        .expect_err("in-flight traversal must stop");
         let elapsed = started.elapsed();
 
         assert_eq!(error, super::GraphSearchError::Cancelled { partial: false });
         assert!(
             elapsed < Duration::from_millis(25),
-            "pre-cancelled traversal took {elapsed:?}"
+            "in-flight cancelled traversal took {elapsed:?}"
         );
     }
 
@@ -1183,10 +1272,10 @@ mod tests {
             let mut first = GraphSearcher::new(graph, &rescore).expect("first searcher");
             let mut second = GraphSearcher::new(graph, &rescore).expect("second searcher");
             let result1 = first
-                .search(GraphSearchRequest::new(&query, 5, ef1, 0x19_0408))
+                .search(GraphSearchRequest::new(&query, 5, ef1, 0x19_0408), None)
                 .expect("ef1 traversal");
             let result2 = second
-                .search(GraphSearchRequest::new(&query, 5, ef2, 0x19_0408))
+                .search(GraphSearchRequest::new(&query, 5, ef2, 0x19_0408), None)
                 .expect("ef2 traversal");
             prop_assert!(result2.recall_against(&truth) >= result1.recall_against(&truth));
             Ok(())

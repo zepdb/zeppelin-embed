@@ -6,7 +6,7 @@ pub(crate) mod topk;
 pub use parallel::{ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity};
 
 use crate::kernels;
-use crate::lifecycle::cancel::QueryCancellation;
+use crate::lifecycle::QueryCancellation;
 use crate::quant::{
     Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
     est_dot_bit4_batch,

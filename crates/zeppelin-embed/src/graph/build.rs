@@ -10,7 +10,7 @@ use crate::graph::block::{
     GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeError, GraphNodeLayout,
     NODE_BLOCK_TRAILER_LEN, decode_node_blocks, encode_node_blocks,
 };
-use crate::lifecycle::cancel::QueryCancellation;
+use crate::lifecycle::QueryCancellation;
 use crate::lifecycle::durability::DurabilityPolicy;
 use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent};
 use crate::lifecycle::{QueryControl, SnapshotLease, Store, StoreError};
@@ -1818,7 +1818,7 @@ mod tests {
     use xxhash_rust::xxh3::xxh3_64;
 
     use crate::graph::block::decode_node_blocks;
-    use crate::lifecycle::cancel::QueryCancellation;
+    use crate::lifecycle::QueryCancellation;
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
     use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};

@@ -182,13 +182,16 @@ impl QueryControl {
     }
 }
 
-pub(crate) struct QueryCancellation<'a> {
+/// Cheap cooperative stop check shared by one query and its snapshot lease.
+pub struct QueryCancellation<'a> {
     control: &'a QueryControl,
     lease: &'a SnapshotLease,
 }
 
 impl<'a> QueryCancellation<'a> {
-    pub(crate) const fn new(control: &'a QueryControl, lease: &'a SnapshotLease) -> Self {
+    /// Binds caller cancellation/deadline state to the admitted snapshot read.
+    #[must_use]
+    pub const fn new(control: &'a QueryControl, lease: &'a SnapshotLease) -> Self {
         Self { control, lease }
     }
 

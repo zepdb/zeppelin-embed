@@ -256,6 +256,12 @@ impl<'a> Bit4Row<'a> {
         region.get(offset..end).map(|bytes| Self { bytes })
     }
 
+    /// Wraps bytes whose complete persisted row range was already validated.
+    #[must_use]
+    pub(crate) const fn from_validated_bytes(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
     const fn as_ptr(self) -> *const u8 {
         self.bytes.as_ptr()
     }

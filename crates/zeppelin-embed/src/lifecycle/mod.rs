@@ -1,7 +1,7 @@
 //! Store lifecycle and memory accounting.
 
 mod budget;
-pub(crate) mod cancel;
+mod cancel;
 mod close;
 pub mod durability;
 pub mod lock;
@@ -9,7 +9,9 @@ mod pool;
 mod snapshot;
 pub(crate) mod stats;
 
-pub use cancel::{CancelToken, Deadline, DeadlineError, QueryControl, QueryError};
+pub use cancel::{
+    CancelToken, Deadline, DeadlineError, QueryCancellation, QueryControl, QueryError,
+};
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
 };

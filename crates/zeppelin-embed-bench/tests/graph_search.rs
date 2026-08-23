@@ -70,8 +70,10 @@ fn build_bench_binary(workspace: &Path) -> Result<std::path::PathBuf, String> {
 fn run_process(run: usize, binary: &Path) -> Result<Observation, String> {
     let output = Command::new(binary)
         .args([
-            "--passes",
+            "--build-passes",
             "two",
+            "--prefetch",
+            "on",
             "--queries",
             "10000",
             "--run",

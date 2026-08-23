@@ -205,15 +205,88 @@ impl GraphNodeBlocks<'_> {
         decode_block_view(self.layout, node_id.raw, block)
     }
 
-    pub(super) fn code_row_checked(
+    pub(super) fn score_row_checked(
         &self,
         node_id: CheckedNodeId,
-    ) -> Result<Bit4Row<'_>, GraphNodeError> {
-        Bit4Row::from_mapped_region(self.bytes, node_id.offset, self.layout.code_bytes())
+    ) -> Result<(Bit4Row<'_>, Bit4Factors), GraphNodeError> {
+        let code_bytes = self.layout.code_bytes();
+        let row_bytes = code_bytes
+            .checked_add(12)
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let end = node_id
+            .offset
+            .checked_add(row_bytes)
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let score_row =
+            self.bytes
+                .get(node_id.offset..end)
+                .ok_or_else(|| GraphNodeError::InvalidNode {
+                    node_id: node_id.raw,
+                    detail: "validated score row is unavailable".to_owned(),
+                })?;
+        let Some((codes, factor_bytes)) = score_row.split_at_checked(code_bytes) else {
+            return Err(GraphNodeError::InvalidNode {
+                node_id: node_id.raw,
+                detail: "validated score row width is invalid".to_owned(),
+            });
+        };
+        let factors: [u8; 12] =
+            factor_bytes
+                .try_into()
+                .map_err(|_| GraphNodeError::InvalidNode {
+                    node_id: node_id.raw,
+                    detail: "validated factor width is invalid".to_owned(),
+                })?;
+        let [s0, s1, s2, s3, n0, n1, n2, n3, c0, c1, c2, c3] = factors;
+        Ok((
+            Bit4Row::from_validated_bytes(codes),
+            Bit4Factors::from_persisted(
+                f32::from_le_bytes([s0, s1, s2, s3]),
+                f32::from_le_bytes([n0, n1, n2, n3]),
+                f32::from_le_bytes([c0, c1, c2, c3]),
+            ),
+        ))
+    }
+
+    pub(super) fn adjacency_checked(
+        &self,
+        node_id: CheckedNodeId,
+    ) -> Result<(u8, NeighborIds<'_>), GraphNodeError> {
+        let degree_offset = self
+            .layout
+            .code_bytes()
+            .checked_add(12)
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let adjacency_bytes = usize::from(self.layout.max_degree)
+            .checked_mul(std::mem::size_of::<u32>())
+            .and_then(|value| value.checked_add(4))
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let start = node_id
+            .offset
+            .checked_add(degree_offset)
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let end = start
+            .checked_add(adjacency_bytes)
+            .ok_or(GraphNodeError::ArithmeticOverflow)?;
+        let adjacency = self
+            .bytes
+            .get(start..end)
             .ok_or_else(|| GraphNodeError::InvalidNode {
                 node_id: node_id.raw,
-                detail: "validated Bit4 row is unavailable".to_owned(),
-            })
+                detail: "validated adjacency is unavailable".to_owned(),
+            })?;
+        let [degree, _flags, _reserved0, _reserved1, neighbors @ ..] = adjacency else {
+            return Err(GraphNodeError::InvalidNode {
+                node_id: node_id.raw,
+                detail: "validated adjacency width is invalid".to_owned(),
+            });
+        };
+        Ok((
+            *degree,
+            NeighborIds {
+                chunks: neighbors.chunks_exact(std::mem::size_of::<u32>()),
+            },
+        ))
     }
 
     pub(super) fn prefetch_line0(&self, node_id: CheckedNodeId) {

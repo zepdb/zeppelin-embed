@@ -200,12 +200,10 @@ pub fn measure_sift1m_recall(
             .get(truth_start..truth_end)
             .ok_or("truth row missing")?;
         for (total, ef) in totals.iter_mut().zip(ef_values) {
-            let result = searcher.search(GraphSearchRequest::new(
-                query,
-                TOP_K,
-                *ef,
-                seed ^ query_index as u64,
-            ))?;
+            let result = searcher.search(
+                GraphSearchRequest::new(query, TOP_K, *ef, seed ^ query_index as u64),
+                None,
+            )?;
             *total += result
                 .candidates()
                 .iter()

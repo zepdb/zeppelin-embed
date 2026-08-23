@@ -6,7 +6,9 @@ use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearcher, QueryCoreClass};
+use zeppelin_embed::graph::search::{
+    GraphSearchRequest, GraphSearcher, QueryCoreClass, TraversalPrefetch,
+};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed_bench::graph_recall::Sift1mPaths;
@@ -24,13 +26,14 @@ const LOAD_LIMIT: f64 = 1.0;
 const SEED: u64 = 0x19_0003_51f7_1a00;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Passes {
+enum BuildPasses {
     One,
     Two,
 }
 
 struct Config {
-    passes: Passes,
+    build_passes: BuildPasses,
+    prefetch: TraversalPrefetch,
     ef: usize,
     queries: usize,
     run: usize,
@@ -49,12 +52,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     verify_bench_profile()?;
     let config = parse_config()?;
     let taint = detect_taint(LOAD_LIMIT);
-    let pass_label = match config.passes {
-        Passes::One => "one",
-        Passes::Two => "two",
+    let build_passes_label = match config.build_passes {
+        BuildPasses::One => "one",
+        BuildPasses::Two => "two",
+    };
+    let prefetch_label = match config.prefetch {
+        TraversalPrefetch::Enabled => "on",
+        TraversalPrefetch::Disabled => "off",
     };
     println!(
-        "GRAPH_SEARCH_CONTEXT build_profile=bench opt_level={} pass={pass_label} ef={} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_SEARCH_CONTEXT build_profile=bench opt_level={} build_passes={build_passes_label} prefetch={prefetch_label} ef={} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true load_limit={LOAD_LIMIT:.2}",
         env!("ZEPPELIN_BENCH_OPT_LEVEL"),
         config.ef,
         config.queries,
@@ -62,7 +69,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     );
     print_taint_status(&taint, LOAD_LIMIT, "graph-search");
 
-    let reader = open_cached_graph(&config.cache_directory, config.passes)?;
+    let reader = open_cached_graph(&config.cache_directory, config.build_passes)?;
     let graph = reader.graph_node_blocks()?;
     let rescore = reader.rescore_f32()?;
     let mut searcher = GraphSearcher::new(graph, rescore)?;
@@ -89,12 +96,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let warmup = WARMUP_QUERIES.min(available_queries);
     for query_index in available_queries.saturating_sub(warmup)..available_queries {
         let query = query_row(&queries, query_index)?;
-        let _ = searcher.search(GraphSearchRequest::new(
-            query,
-            TOP_K,
-            config.ef,
-            SEED ^ query_index as u64,
-        ))?;
+        let _ = searcher.search(
+            GraphSearchRequest::new(query, TOP_K, config.ef, SEED ^ query_index as u64)
+                .with_prefetch(config.prefetch),
+            None,
+        )?;
     }
     let canary = calibrate_core()?;
     canary.print();
@@ -112,7 +118,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         let started = Instant::now();
         let result = searcher.search(
             GraphSearchRequest::new(query, TOP_K, config.ef, SEED ^ query_index as u64)
-                .with_observed_core_class(QueryCoreClass::Performance),
+                .with_observed_core_class(QueryCoreClass::Performance)
+                .with_prefetch(config.prefetch),
+            None,
         )?;
         elapsed_us.push(started.elapsed().as_secs_f64() * 1e6);
         let expected = truth_row(&truth, query_index)?;
@@ -150,7 +158,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let denominator = (config.queries * TOP_K) as f64;
     let query_denominator = config.queries as f64;
     println!(
-        "GRAPH_SEARCH_RESULT pass={pass_label} ef={} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} qos_class={} qos_priority={} core_class={} load1={} taint={}",
+        "GRAPH_SEARCH_RESULT build_passes={build_passes_label} prefetch={prefetch_label} ef={} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} qos_class={} qos_priority={} core_class={} load1={} taint={}",
         config.ef,
         config.queries,
         config.run,
@@ -172,7 +180,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn parse_config() -> Result<Config, Box<dyn Error>> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut config = Config {
-        passes: Passes::Two,
+        build_passes: BuildPasses::Two,
+        prefetch: TraversalPrefetch::Enabled,
         ef: DEFAULT_EF,
         queries: DEFAULT_QUERIES,
         run: 0,
@@ -185,13 +194,25 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
             .next()
             .ok_or_else(|| io::Error::other(format!("{argument} needs a value")))?;
         match argument.as_str() {
-            "--passes" => {
-                config.passes = match value.as_str() {
-                    "one" => Passes::One,
-                    "two" => Passes::Two,
+            "--build-passes" => {
+                config.build_passes = match value.as_str() {
+                    "one" => BuildPasses::One,
+                    "two" => BuildPasses::Two,
                     _ => {
                         return Err(io::Error::other(format!(
-                            "--passes must be one or two, got {value}"
+                            "--build-passes must be one or two, got {value}"
+                        ))
+                        .into());
+                    }
+                }
+            }
+            "--prefetch" => {
+                config.prefetch = match value.as_str() {
+                    "on" => TraversalPrefetch::Enabled,
+                    "off" => TraversalPrefetch::Disabled,
+                    _ => {
+                        return Err(io::Error::other(format!(
+                            "--prefetch must be on or off, got {value}"
                         ))
                         .into());
                     }
@@ -210,7 +231,10 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-fn open_cached_graph(directory: &Path, passes: Passes) -> Result<SegmentReader, Box<dyn Error>> {
+fn open_cached_graph(
+    directory: &Path,
+    build_passes: BuildPasses,
+) -> Result<SegmentReader, Box<dyn Error>> {
     let marker_path = directory.join("sift1m-graph-build.meta");
     let marker = fs::read_to_string(&marker_path).map_err(|error| {
         io::Error::new(
@@ -221,9 +245,9 @@ fn open_cached_graph(directory: &Path, passes: Passes) -> Result<SegmentReader, 
             ),
         )
     })?;
-    let expected_pass = match passes {
-        Passes::One => "pass=one",
-        Passes::Two => "pass=two",
+    let expected_pass = match build_passes {
+        BuildPasses::One => "pass=one",
+        BuildPasses::Two => "pass=two",
     };
     if !marker
         .split_whitespace()
