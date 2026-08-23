@@ -66,6 +66,10 @@ impl DocBitmap {
         self.inner.iter()
     }
 
+    pub(crate) const fn as_roaring(&self) -> &RoaringBitmap {
+        &self.inner
+    }
+
     /// Mutates this bitmap to its union with `other`.
     pub fn union_with(&mut self, other: &Self) {
         self.inner |= &other.inner;

@@ -263,6 +263,31 @@ impl SegmentReader {
         Ok(payload)
     }
 
+    /// Casts signed-byte vector codes directly from the validated mmap region.
+    pub fn int8_codes(&self) -> Result<&[i8], SegmentError> {
+        if self.meta.scheme != 2 {
+            return Err(SegmentError::Geometry(format!(
+                "Int8 codes requested for scheme {}",
+                self.meta.scheme
+            )));
+        }
+        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
+        let expected = (self.meta.dims as usize)
+            .checked_mul(self.meta.row_count as usize)
+            .ok_or_else(|| SegmentError::Geometry("Int8 code length overflow".to_owned()))?;
+        if header.row_stride_bytes as usize != self.meta.dims as usize || payload.len() != expected
+        {
+            return Err(SegmentError::Geometry(format!(
+                "Int8 code stride/length {}/{}, expected {}/{}",
+                header.row_stride_bytes,
+                payload.len(),
+                self.meta.dims,
+                expected
+            )));
+        }
+        cast_slice::<i8>(payload, expected, "Int8 codes")
+    }
+
     /// Casts the validated factor region directly to permanent Bit4 records.
     pub fn bit4_factors(&self) -> Result<&[Bit4Factors], SegmentError> {
         if self.meta.scheme != 4 {

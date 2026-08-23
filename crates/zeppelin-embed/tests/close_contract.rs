@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use lifecycle_support::{published_store, test_guard};
 use tempfile::tempdir;
+use zeppelin_embed::ingest::{
+    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+};
 use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreState,
 };
@@ -114,6 +117,15 @@ fn calls_after_close_return_typed_closed_error() {
     // enumerated here as the surface grows.
     assert!(matches!(store.snapshot(), Err(StoreError::Closed)));
     assert!(matches!(store.stats(), Err(StoreError::Closed)));
+    assert!(matches!(
+        store.ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0_f32],
+        )])),
+        Err(zeppelin_embed::ingest::IngestError::Store(
+            StoreError::Closed
+        ))
+    ));
     let query = [1.0_f32];
     let rows = F32Rows::new(vec![1.0_f32]);
     assert!(matches!(
@@ -123,6 +135,17 @@ fn calls_after_close_return_typed_closed_error() {
                 rows: ScanRows::F32RowMajor(&rows),
                 row_mask: None,
             },
+            1,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        ),
+        Err(zeppelin_embed::lifecycle::QueryError::Store(
+            StoreError::Closed
+        ))
+    ));
+    assert!(matches!(
+        store.search(
+            SearchRequest::new(&query),
             1,
             ScanOptions { thread_budget: 1 },
             QueryControl::Cancel(CancelToken::new()),

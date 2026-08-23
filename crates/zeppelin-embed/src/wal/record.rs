@@ -1,6 +1,6 @@
 //! Byte-exact WAL record framing.
 
-use xxhash_rust::xxh3::xxh3_64;
+use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 use super::LogSeq;
 
@@ -169,16 +169,19 @@ pub(crate) fn append_record_into(
 ) -> Result<(), RecordEncodeError> {
     let payload_length = u32::try_from(record.payload.len())
         .map_err(|_| RecordEncodeError::PayloadTooLarge(record.payload.len()))?;
-    let start = encoded.len();
-    encoded.extend_from_slice(&payload_length.to_le_bytes());
-    encoded.extend_from_slice(&record.seq.get().to_le_bytes());
-    encoded.extend_from_slice(&record.op.to_le_bytes());
+    let payload_length_bytes = payload_length.to_le_bytes();
+    let sequence_bytes = record.seq.get().to_le_bytes();
+    let operation_bytes = record.op.to_le_bytes();
+    let mut checksum = Xxh3::new();
+    checksum.update(&payload_length_bytes);
+    checksum.update(&sequence_bytes);
+    checksum.update(&operation_bytes);
+    checksum.update(record.payload);
+    encoded.extend_from_slice(&payload_length_bytes);
+    encoded.extend_from_slice(&sequence_bytes);
+    encoded.extend_from_slice(&operation_bytes);
     encoded.extend_from_slice(record.payload);
-    let checksummed = encoded
-        .get(start..)
-        .ok_or(RecordEncodeError::PayloadTooLarge(record.payload.len()))?;
-    let checksum = xxh3_64(checksummed);
-    encoded.extend_from_slice(&checksum.to_le_bytes());
+    encoded.extend_from_slice(&checksum.digest().to_le_bytes());
     Ok(())
 }
 

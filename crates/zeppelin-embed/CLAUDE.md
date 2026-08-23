@@ -307,3 +307,16 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - The persistent worker-registry vector is an accounted store arena:
   `Stats::query_pool_bytes` contributes exactly to `resident_owned_bytes` for
   the pool's lifetime and returns to zero when close drops the pool.
+
+## Task 10 Part A active-mutation invariants
+
+- Opening a non-empty `wal.ze` requires replay to reach `CleanEnd`; invalid
+  headers, torn tails, checksum failures, and sequence corruption are typed
+  open errors. Recovery never truncates the file or publishes a partial prefix.
+- Task 10-A has no sealed-segment fold boundary. Every clean WAL mutation is
+  therefore rebuilt into the active segment on open. Task 10-B must persist an
+  explicit absorbed-through boundary before it may exclude records already
+  represented by a sealed segment.
+- The active-state generation is authoritative while a writer is open: it is
+  initialized from the manifest generation and advanced by mutations. Sealing
+  advances from that value, never from the possibly stale published snapshot.

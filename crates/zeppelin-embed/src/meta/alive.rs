@@ -115,6 +115,10 @@ impl AliveSet {
         self.alive.iter()
     }
 
+    pub(crate) const fn scan_mask(&self) -> &roaring::RoaringBitmap {
+        self.alive.as_roaring()
+    }
+
     /// Audits the disjoint-union counter invariant in debug builds.
     pub fn debug_assert_consistent(&self) {
         debug_assert_eq!(

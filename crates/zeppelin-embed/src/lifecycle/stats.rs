@@ -10,6 +10,7 @@ use super::{Store, StoreError, StoreState};
 #[derive(Clone, Copy)]
 pub(crate) enum AllocationComponent {
     Snapshot,
+    Active,
     Wal,
     Cache,
     Temporary,
@@ -20,6 +21,7 @@ impl AllocationComponent {
     const fn name(self) -> &'static str {
         match self {
             Self::Snapshot => "snapshot",
+            Self::Active => "active segment",
             Self::Wal => "wal",
             Self::Cache => "cache",
             Self::Temporary => "temporary",
@@ -39,6 +41,7 @@ struct AccountingState {
     cache_bytes: u64,
     temporary_bytes: u64,
     snapshot_bytes: u64,
+    active_bytes: u64,
     query_pool_bytes: u64,
     mapped_bytes: u64,
 }
@@ -58,6 +61,7 @@ impl Accounting {
                 cache_bytes: 0,
                 temporary_bytes: 0,
                 snapshot_bytes: 0,
+                active_bytes: 0,
                 query_pool_bytes: 0,
                 mapped_bytes: 0,
             }),
@@ -93,6 +97,9 @@ impl Accounting {
             AllocationComponent::Snapshot => {
                 state.snapshot_bytes = state.snapshot_bytes.saturating_add(bytes);
             }
+            AllocationComponent::Active => {
+                state.active_bytes = state.active_bytes.saturating_add(bytes);
+            }
             AllocationComponent::Wal => state.wal_bytes = state.wal_bytes.saturating_add(bytes),
             AllocationComponent::Cache => {
                 state.cache_bytes = state.cache_bytes.saturating_add(bytes);
@@ -116,6 +123,7 @@ impl Accounting {
             cache_bytes: state.cache_bytes,
             temporary_bytes: state.temporary_bytes,
             snapshot_bytes: state.snapshot_bytes,
+            active_bytes: state.active_bytes,
             query_pool_bytes: state.query_pool_bytes,
             mapped_bytes: state.mapped_bytes,
         })
@@ -151,6 +159,7 @@ pub(crate) struct AccountingAudit {
     pub(crate) cache_bytes: u64,
     pub(crate) temporary_bytes: u64,
     pub(crate) snapshot_bytes: u64,
+    pub(crate) active_bytes: u64,
     pub(crate) query_pool_bytes: u64,
     pub(crate) mapped_bytes: u64,
 }
@@ -161,6 +170,7 @@ impl AccountingAudit {
             .saturating_add(self.cache_bytes)
             .saturating_add(self.temporary_bytes)
             .saturating_add(self.snapshot_bytes)
+            .saturating_add(self.active_bytes)
             .saturating_add(self.query_pool_bytes)
     }
 }
@@ -199,6 +209,36 @@ impl Reservation {
                 })?;
         Ok(())
     }
+
+    fn shrink(&mut self, released_bytes: u64) {
+        let released = released_bytes.min(self.bytes);
+        self.bytes = self.bytes.saturating_sub(released);
+        let mut state = match self.accounting.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.resident_owned_bytes = state.resident_owned_bytes.saturating_sub(released);
+        match self.component {
+            AllocationComponent::Snapshot => {
+                state.snapshot_bytes = state.snapshot_bytes.saturating_sub(released);
+            }
+            AllocationComponent::Active => {
+                state.active_bytes = state.active_bytes.saturating_sub(released);
+            }
+            AllocationComponent::Wal => {
+                state.wal_bytes = state.wal_bytes.saturating_sub(released);
+            }
+            AllocationComponent::Cache => {
+                state.cache_bytes = state.cache_bytes.saturating_sub(released);
+            }
+            AllocationComponent::Temporary => {
+                state.temporary_bytes = state.temporary_bytes.saturating_sub(released);
+            }
+            AllocationComponent::QueryPool => {
+                state.query_pool_bytes = state.query_pool_bytes.saturating_sub(released);
+            }
+        }
+    }
 }
 
 impl Drop for Reservation {
@@ -211,6 +251,9 @@ impl Drop for Reservation {
         match self.component {
             AllocationComponent::Snapshot => {
                 state.snapshot_bytes = state.snapshot_bytes.saturating_sub(self.bytes);
+            }
+            AllocationComponent::Active => {
+                state.active_bytes = state.active_bytes.saturating_sub(self.bytes);
             }
             AllocationComponent::Wal => {
                 state.wal_bytes = state.wal_bytes.saturating_sub(self.bytes);
@@ -225,6 +268,39 @@ impl Drop for Reservation {
                 state.query_pool_bytes = state.query_pool_bytes.saturating_sub(self.bytes);
             }
         }
+    }
+}
+
+/// Exact non-allocating component bytes whose backing allocation is owned by
+/// another subsystem, such as the WAL's shared encoded record buffers.
+pub(crate) struct AccountedCounter {
+    reservation: Reservation,
+}
+
+impl AccountedCounter {
+    pub(crate) fn new(
+        accounting: &Arc<Accounting>,
+        component: AllocationComponent,
+    ) -> Result<Self, StoreError> {
+        Ok(Self {
+            reservation: accounting.reserve(0, component)?,
+        })
+    }
+
+    pub(crate) fn set(&mut self, bytes: usize) -> Result<(), StoreError> {
+        let bytes = u64::try_from(bytes).map_err(|_| StoreError::BudgetExceeded {
+            needed: u64::MAX,
+            budget: u64::MAX,
+            component: self.reservation.component.name(),
+        })?;
+        if bytes >= self.reservation.bytes {
+            return self
+                .reservation
+                .grow(bytes.saturating_sub(self.reservation.bytes));
+        }
+        self.reservation
+            .shrink(self.reservation.bytes.saturating_sub(bytes));
+        Ok(())
     }
 }
 
@@ -377,11 +453,11 @@ pub struct Stats {
     pub mapped_resident_bytes: u64,
     /// Exact bytes in immutable segment mappings.
     pub segment_bytes: u64,
-    /// Exact number of in-memory tombstones. This is zero until task 10
-    /// introduces tombstones, because no tombstone component exists yet.
+    /// Exact allocation capacity held by the in-RAM active segment.
+    pub active_segment_bytes: u64,
+    /// Exact number of in-memory active-segment tombstones.
     pub tombstone_count: u64,
-    /// Exact bytes owned by tombstones. This is zero until task 10 introduces
-    /// tombstones, because no tombstone allocation exists yet.
+    /// Exact bytes owned by active-segment tombstones.
     pub tombstone_bytes: u64,
     /// Exact bytes retained by the store's in-memory WAL component. This is
     /// zero while [`Store`] has no WAL writer component.
@@ -425,7 +501,24 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "writer lock",
             })?;
-        let open_files = u64::from(writer_lock.is_some());
+        let wal_writer = self
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?;
+        let open_files =
+            u64::from(writer_lock.is_some()).saturating_add(u64::from(wal_writer.is_some()));
+        let active_guard = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let active_state = active_guard.as_ref().ok_or(StoreError::Closed)?;
+        let active_segment_bytes = active_state.segment.resident_bytes();
+        let tombstone_count = active_state.segment.tombstone_count();
+        let tombstone_bytes = active_state.segment.tombstone_bytes();
         let active_queries = self
             .active_queries
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -435,6 +528,14 @@ impl Store {
                 component: "resident accounting conservation",
                 source: std::io::Error::other(
                     "resident-owned total disagrees with component counters",
+                ),
+            });
+        }
+        if accounting.active_bytes != active_segment_bytes {
+            return Err(StoreError::Statistics {
+                component: "active segment accounting",
+                source: std::io::Error::other(
+                    "active segment capacity disagrees with accounting component",
                 ),
             });
         }
@@ -478,6 +579,8 @@ impl Store {
         #[cfg(not(target_os = "macos"))]
         let phys_footprint = None;
         drop(snapshot_guard);
+        drop(active_guard);
+        drop(wal_writer);
         drop(writer_lock);
         drop(state);
         Ok(Stats {
@@ -485,8 +588,9 @@ impl Store {
             mapped_bytes: accounting.mapped_bytes,
             mapped_resident_bytes,
             segment_bytes: accounting.mapped_bytes,
-            tombstone_count: 0,
-            tombstone_bytes: 0,
+            active_segment_bytes,
+            tombstone_count,
+            tombstone_bytes,
             wal_bytes: accounting.wal_bytes,
             cache_bytes: accounting.cache_bytes,
             temporary_bytes: accounting.temporary_bytes,
@@ -592,7 +696,7 @@ mod tests {
         assert_eq!(mapped_stats.wal_bytes, 0);
         assert_eq!(mapped_stats.cache_bytes, 0);
         assert_eq!(mapped_stats.temporary_bytes, 0);
-        assert_eq!(mapped_stats.open_files, 1);
+        assert_eq!(mapped_stats.open_files, 2);
         #[cfg(target_os = "macos")]
         assert!(mapped_stats.phys_footprint.is_some_and(|bytes| bytes > 0));
 

@@ -236,14 +236,14 @@ impl Store {
             return Err(StoreError::ForeignPreparedSegment);
         }
         let generation = self
-            .snapshot
-            .read()
+            .active
+            .lock()
             .map_err(|_| StoreError::Synchronization {
-                component: "published snapshot",
+                component: "active segment",
             })?
             .as_ref()
             .ok_or(StoreError::Closed)?
-            .generation()
+            .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
         let meta = write_segment(
@@ -277,6 +277,14 @@ impl Store {
         drop(published);
         drop(previous);
         drop(segment);
+        let mut active_guard = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        active_guard.as_mut().ok_or(StoreError::Closed)?.generation = generation;
+        drop(active_guard);
         drop(writer_lock);
         drop(state);
         Ok(generation)
@@ -446,11 +454,29 @@ impl PublishedSnapshot {
 /// One admitted read's strong ownership of its published snapshot.
 pub struct SnapshotLease {
     snapshot: Arc<PublishedSnapshot>,
+    generation: u64,
 }
 
 impl SnapshotLease {
-    pub(crate) const fn new(snapshot: Arc<PublishedSnapshot>) -> Self {
-        Self { snapshot }
+    pub(crate) fn new(snapshot: Arc<PublishedSnapshot>) -> Self {
+        let generation = snapshot.generation();
+        Self {
+            snapshot,
+            generation,
+        }
+    }
+
+    pub(crate) const fn new_at(snapshot: Arc<PublishedSnapshot>, generation: u64) -> Self {
+        Self {
+            snapshot,
+            generation,
+        }
+    }
+
+    /// Returns the active-state generation pinned when this lease was admitted.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Rejects work after close has cancelled this admitted read.

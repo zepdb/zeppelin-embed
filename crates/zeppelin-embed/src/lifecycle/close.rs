@@ -220,6 +220,26 @@ impl Store {
         let query_pool_result = stopped_query_pool.map_or(Ok(()), |pool| pool.stop_and_join());
         drop(released_snapshot);
 
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let released_active = active.take();
+        drop(active);
+        drop(released_active);
+
+        let mut wal_writer = self
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?;
+        let released_wal = wal_writer.take();
+        drop(wal_writer);
+        drop(released_wal);
+
         let mut writer_lock = self
             .writer_lock
             .lock()
@@ -277,6 +297,18 @@ impl Store {
             let _ = pool.stop_and_join();
         }
         drop(released_snapshot);
+
+        let active_slot = match self.active.get_mut() {
+            Ok(active) => active,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        drop(active_slot.take());
+
+        let wal_slot = match self.wal_writer.get_mut() {
+            Ok(wal) => wal,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        drop(wal_slot.take());
 
         let writer_slot = match self.writer_lock.get_mut() {
             Ok(writer_lock) => writer_lock,

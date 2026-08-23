@@ -4,18 +4,26 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
+use xxhash_rust::xxh3::xxh3_64;
+use zeppelin_embed::format::frame::{FILE_HEADER_LEN, FILE_TRAILER_LEN};
+use zeppelin_embed::ingest::{
+    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource, SearchRequest,
+};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
-    InMemorySegment, InMemorySegmentFactors, OpenOptions, Store, StoreError,
+    CancelToken, InMemorySegment, InMemorySegmentFactors, OpenOptions, QueryControl, Store,
+    StoreError,
 };
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
 use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
 use zeppelin_embed::quant::{Bit4Factors, prepare_bit4_query, quantize_bit4};
-use zeppelin_embed::scan::{ScanQuery, ScanRequest, ScanRows, top_k};
+use zeppelin_embed::scan::{ScanOptions, ScanQuery, ScanRequest, ScanRows, top_k};
 use zeppelin_embed::segment::SegmentId;
-use zeppelin_embed::segment::layout::{Int8Factors, RegionKind, VECTOR_HEADER_LEN};
-use zeppelin_embed::segment::reader::SegmentReader;
+use zeppelin_embed::segment::layout::{
+    Int8Factors, REGION_ENTRY_LEN, RegionKind, SEGMENT_PREFIX_LEN, VECTOR_HEADER_LEN,
+};
+use zeppelin_embed::segment::reader::{SegmentReader, validate_segment_bytes};
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
@@ -198,6 +206,60 @@ fn sealing_drops_the_anonymous_copy_and_serves_from_the_mapping() {
 }
 
 #[test]
+fn seal_generation_is_strictly_after_ingest_generations() {
+    let directory = tempdir().expect("store directory");
+    let original = Fixture::new(0x31);
+    publish_fixture(directory.path(), &original, 1);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open mapped store");
+    let mut mutation_generations = Vec::new();
+    for value in 0_u128..3 {
+        let ack = store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(200 + value), Revision::new(1)),
+                vec![1.0_f32; DIMS],
+            )]))
+            .expect("ingest before seal");
+        mutation_generations.push(ack.generation());
+    }
+
+    let replacement = Fixture::new(0x32);
+    let Fixture {
+        id,
+        codes,
+        factors,
+        rescore,
+        columns,
+        alive,
+    } = replacement;
+    let prepared = store
+        .prepare_segment(InMemorySegment {
+            id,
+            scheme: 4,
+            dims: DIMS as u32,
+            codes,
+            factors: InMemorySegmentFactors::Bit4(factors),
+            rescore,
+            columns: &columns,
+            alive: &alive,
+        })
+        .expect("adopt replacement segment");
+
+    let sealed_generation = store.seal_snapshot(prepared).expect("seal snapshot");
+
+    assert!(
+        mutation_generations
+            .iter()
+            .all(|generation| sealed_generation > *generation),
+        "sealed generation {sealed_generation} did not follow {mutation_generations:?}"
+    );
+    assert_eq!(
+        store.snapshot().expect("sealed snapshot").generation(),
+        sealed_generation
+    );
+    store.close().expect("close");
+}
+
+#[test]
 fn int8_buffers_use_the_same_accounted_seal_path() {
     let directory = tempdir().expect("store directory");
     let original = Fixture::new(0x66);
@@ -241,6 +303,24 @@ fn int8_buffers_use_the_same_accounted_seal_path() {
 
     store.seal_snapshot(prepared).expect("seal Int8 snapshot");
 
+    let query = vec![1.0_f32; DIMS];
+    let outcome = store
+        .search(
+            SearchRequest::new(&query),
+            ROWS,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search sealed Int8 snapshot through Store");
+    assert_eq!(outcome.candidates.len(), ROWS);
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|candidate| candidate.row_id().source()
+                == RowSource::Sealed(SegmentId::new(0x0102_0304_0506, [0x77; 10])))
+    );
+
     let lease = store.snapshot().expect("Int8 snapshot lease");
     let segment = lease.segments().first().expect("Int8 segment");
     assert_eq!(segment.meta().scheme, 2);
@@ -251,6 +331,159 @@ fn int8_buffers_use_the_same_accounted_seal_path() {
     assert_eq!(segment.rescore_f32().expect("mapped rescore")[0], 0.25);
     drop(lease);
     store.close().expect("close");
+}
+
+#[test]
+fn int8_store_search_rejects_checksum_valid_wrong_stride() {
+    let directory = tempdir().expect("store directory");
+    let schema = Schema::new(Vec::new()).expect("timestamp-only schema");
+    let mut builder = ColumnStoreBuilder::new(schema.clone());
+    for timestamp in 0_i64..ROWS as i64 {
+        builder.push_row(timestamp, &[]).expect("fixture row");
+    }
+    let columns = builder.finish().expect("fixture columns");
+    let alive = AliveSet::new(ROWS as u32);
+    let id = SegmentId::new(0x0102_0304_0506, [0x79; 10]);
+    let codes = vec![1_u8; DIMS * ROWS];
+    let factors = vec![
+        Int8Factors {
+            scale: 0.5,
+            offset: -1.0,
+        };
+        ROWS
+    ];
+    let rescore = vec![0.25_f32; DIMS * ROWS];
+    let meta = write_segment(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id,
+            scheme: 2,
+            dims: DIMS as u32,
+            codes: &codes,
+            factors: SegmentFactors::Int8(&factors),
+            rescore: &rescore,
+            columns: &columns,
+            alive: &alive,
+        },
+        derived_policy(),
+    )
+    .expect("write Int8 fixture");
+    rewrite_int8_stride_with_valid_checksums(
+        &directory.path().join(id.file_name()),
+        DIMS as u32 + 1,
+    );
+    commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: vec![meta],
+            epochs: Vec::new(),
+            schema,
+        },
+        derived_policy(),
+    )
+    .expect("publish wrong-stride fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let query = vec![1.0_f32; DIMS];
+
+    let error = store
+        .search(
+            SearchRequest::new(&query),
+            ROWS,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect_err("wrong Int8 stride must fail Store search");
+
+    assert!(matches!(
+        error,
+        zeppelin_embed::lifecycle::QueryError::Store(StoreError::Segment(
+            zeppelin_embed::segment::SegmentError::Geometry(ref detail)
+        )) if detail == "Int8 code stride/length 33/96, expected 32/96"
+    ));
+    store.close().expect("close");
+}
+
+fn rewrite_int8_stride_with_valid_checksums(path: &Path, wrong_stride: u32) {
+    let mut bytes = std::fs::read(path).expect("read Int8 segment");
+    let header_length = usize::try_from(read_u64_at(&bytes, 16)).expect("header length fits");
+    let region_count = usize::from(read_u16_at(&bytes, FILE_HEADER_LEN + 20));
+    let directory_start = FILE_HEADER_LEN + SEGMENT_PREFIX_LEN;
+    let codes_entry = find_region_entry(
+        &bytes,
+        directory_start,
+        region_count,
+        RegionKind::VectorCodes,
+    );
+    let checksum_entry = find_region_entry(
+        &bytes,
+        directory_start,
+        region_count,
+        RegionKind::ChecksumTable,
+    );
+    let codes_start = usize::try_from(read_u64_at(&bytes, codes_entry + 8)).expect("codes offset");
+    let codes_length =
+        usize::try_from(read_u64_at(&bytes, codes_entry + 16)).expect("codes length");
+    bytes[codes_start + 8..codes_start + 12].copy_from_slice(&wrong_stride.to_le_bytes());
+    let codes_checksum = xxh3_64(&bytes[codes_start..codes_start + codes_length]);
+    bytes[codes_entry + 24..codes_entry + 32].copy_from_slice(&codes_checksum.to_le_bytes());
+
+    let table_start =
+        usize::try_from(read_u64_at(&bytes, checksum_entry + 8)).expect("table offset");
+    let table_length =
+        usize::try_from(read_u64_at(&bytes, checksum_entry + 16)).expect("table length");
+    let table_count = usize::try_from(read_u32_at(&bytes, table_start)).expect("table count");
+    let mut updated_chunk = false;
+    for index in 0..table_count {
+        let entry = table_start + 8 + index * 16;
+        if read_u16_at(&bytes, entry) == RegionKind::VectorCodes.id()
+            && read_u32_at(&bytes, entry + 4) == 0
+        {
+            bytes[entry + 8..entry + 16].copy_from_slice(&codes_checksum.to_le_bytes());
+            updated_chunk = true;
+        }
+    }
+    assert!(
+        updated_chunk,
+        "checksum table omitted VectorCodes chunk zero"
+    );
+    let table_checksum = xxh3_64(&bytes[table_start..table_start + table_length]);
+    bytes[checksum_entry + 24..checksum_entry + 32].copy_from_slice(&table_checksum.to_le_bytes());
+
+    let header_checksum = xxh3_64(&bytes[..header_length - 8]);
+    bytes[header_length - 8..header_length].copy_from_slice(&header_checksum.to_le_bytes());
+    let trailer = bytes.len() - FILE_TRAILER_LEN;
+    let file_checksum = xxh3_64(&bytes[..trailer]);
+    bytes[trailer..].copy_from_slice(&file_checksum.to_le_bytes());
+    validate_segment_bytes(&bytes).expect("wrong-stride fixture remains fully checksummed");
+    std::fs::write(path, bytes).expect("write wrong-stride segment");
+}
+
+fn find_region_entry(
+    bytes: &[u8],
+    directory_start: usize,
+    region_count: usize,
+    kind: RegionKind,
+) -> usize {
+    (0..region_count)
+        .map(|index| directory_start + index * REGION_ENTRY_LEN)
+        .find(|offset| read_u16_at(bytes, *offset) == kind.id())
+        .expect("region directory entry")
+}
+
+fn read_u16_at(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("u16 bytes"))
+}
+
+fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 bytes"))
+}
+
+fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 bytes"))
 }
 
 #[test]

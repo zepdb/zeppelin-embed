@@ -253,13 +253,50 @@ impl WalWriter {
         first_seq: LogSeq,
         policy: DurabilityPolicy,
     ) -> Result<Self, WalWriteError> {
-        let max_group_bytes = match policy.data_file_sync() {
-            SyncRequirement::Sync(SyncKind::Full) => DEFAULT_MAX_GROUP_BYTES_DURABLE,
-            SyncRequirement::Skip | SyncRequirement::Sync(SyncKind::Barrier) => {
-                DEFAULT_MAX_GROUP_BYTES
-            }
-        };
+        let max_group_bytes = default_max_group_bytes(policy);
         Self::create_with_max_group_bytes(vfs, path, first_seq, policy, max_group_bytes)
+    }
+
+    pub(crate) fn resume(
+        vfs: &dyn Vfs,
+        path: &Path,
+        recovered: CleanWalReader,
+        policy: DurabilityPolicy,
+    ) -> Result<Self, WalWriteError> {
+        let max_group_bytes = default_max_group_bytes(policy);
+        let next_seq = recovered.next_seq;
+        let durable_end = recovered.durable_end;
+        let durable_progress = durable_end.map_or(0, LogSeq::get);
+        let visible = VecDeque::from(recovered.records);
+        let retained_bytes = visible.iter().try_fold(0_usize, |total, record| {
+            total
+                .checked_add(record.encoded_len())
+                .ok_or(WalWriteError::RecoveredBytesOverflow)
+        })?;
+        let file = vfs.open_append(path).map_err(WalWriteError::from_io)?;
+        Ok(Self {
+            file: Mutex::new(file),
+            state: Mutex::new(WriterState {
+                next_seq,
+                visible,
+                retained_bytes,
+                durable_end,
+                pending_groups: VecDeque::with_capacity(2),
+                spare_chunks: Vec::with_capacity(16),
+                barrier_in_flight: false,
+                failure: None,
+                completed_groups: 0,
+                completed_records: 0,
+                completed_bytes: 0,
+                encoded_buffer_allocations: 0,
+                group_size_histogram: GroupSizeHistogram::new(),
+                recent_groups: VecDeque::with_capacity(RECENT_GROUP_LIMIT),
+            }),
+            changed: Condvar::new(),
+            sync: policy.data_file_sync(),
+            max_group_bytes,
+            durable_progress: AtomicU64::new(durable_progress),
+        })
     }
 
     /// Creates a writer with an explicit encoded-byte group bound.
@@ -880,6 +917,13 @@ impl WalWriter {
     }
 }
 
+fn default_max_group_bytes(policy: DurabilityPolicy) -> usize {
+    match policy.data_file_sync() {
+        SyncRequirement::Sync(SyncKind::Full) => DEFAULT_MAX_GROUP_BYTES_DURABLE,
+        SyncRequirement::Skip | SyncRequirement::Sync(SyncKind::Barrier) => DEFAULT_MAX_GROUP_BYTES,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -1162,8 +1206,21 @@ impl std::error::Error for WalRetireError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalReader {
     records: Vec<VisibleRecord>,
+    next_seq: u64,
     durable_end: u64,
     terminator: Option<ReplayTerminator>,
+}
+
+pub(crate) struct CleanWalReader {
+    records: Vec<VisibleRecord>,
+    next_seq: u64,
+    durable_end: Option<LogSeq>,
+}
+
+impl CleanWalReader {
+    pub(crate) fn records(&self) -> &[VisibleRecord] {
+        &self.records
+    }
 }
 
 impl WalReader {
@@ -1174,6 +1231,7 @@ impl WalReader {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self {
                     records: Vec::new(),
+                    next_seq: 0,
                     durable_end: 0,
                     terminator: None,
                 });
@@ -1185,10 +1243,12 @@ impl WalReader {
         if matches!(terminator, ReplayTerminator::InvalidHeader(_)) {
             return Ok(Self {
                 records: Vec::new(),
+                next_seq: 0,
                 durable_end: 0,
                 terminator: Some(terminator),
             });
         }
+        let header = header::decode_header(&bytes).map_err(WalReadError::Header)?;
         let mut offset = header::WAL_HEADER_LEN;
         let recovered = replayed
             .records
@@ -1201,14 +1261,30 @@ impl WalReader {
             })
             .collect::<Vec<_>>();
         drop(replayed);
-        let encoded = Arc::new(bytes);
         let records = recovered
             .into_iter()
-            .map(|(seq, op, range)| VisibleRecord::recovered(seq, op, Arc::clone(&encoded), range))
-            .collect::<Vec<_>>();
+            .map(|(seq, op, range)| {
+                let start = range.start;
+                let end = range.end;
+                let encoded = bytes
+                    .get(range)
+                    .ok_or(WalReadError::InvalidRecoveredRange {
+                        start,
+                        end,
+                        available: bytes.len(),
+                    })?;
+                let encoded = Arc::new(encoded.to_vec());
+                let length = encoded.len();
+                Ok(VisibleRecord::recovered(seq, op, encoded, 0..length))
+            })
+            .collect::<Result<Vec<_>, WalReadError>>()?;
         let durable_end = records.last().map_or(0, |record| record.seq.get());
+        let next_seq = records.last().map_or(header.first_seq.get(), |record| {
+            record.seq.get().saturating_add(1)
+        });
         Ok(Self {
             records,
+            next_seq,
             durable_end,
             terminator: Some(terminator),
         })
@@ -1224,6 +1300,26 @@ impl WalReader {
     #[must_use]
     pub const fn terminator(&self) -> Option<ReplayTerminator> {
         self.terminator
+    }
+
+    pub(crate) fn into_clean(self) -> Result<CleanWalReader, WalRecoveryError> {
+        match self.terminator {
+            Some(ReplayTerminator::CleanEnd) => {
+                let durable_end = self.records.last().map(|record| record.seq);
+                Ok(CleanWalReader {
+                    records: self.records,
+                    next_seq: self.next_seq,
+                    durable_end,
+                })
+            }
+            Some(ReplayTerminator::InvalidHeader(error)) => {
+                Err(WalRecoveryError::InvalidHeader(error))
+            }
+            Some(ReplayTerminator::CorruptAt { offset, reason }) => {
+                Err(WalRecoveryError::CorruptAt { offset, reason })
+            }
+            None => Err(WalRecoveryError::MissingFile),
+        }
     }
 }
 
@@ -1241,6 +1337,8 @@ pub enum WalWriteError {
         /// Existing byte length.
         length: u64,
     },
+    /// Recovered record byte accounting exceeded the address space.
+    RecoveredBytesOverflow,
     /// One encoded record cannot fit the configured byte bound.
     GroupTooLarge {
         /// Bytes required by the pending group and record.
@@ -1287,6 +1385,9 @@ impl std::fmt::Display for WalWriteError {
             Self::NonEmptyWal { length } => {
                 write!(formatter, "WAL path is not empty: {length} bytes")
             }
+            Self::RecoveredBytesOverflow => {
+                formatter.write_str("recovered WAL record bytes overflow usize")
+            }
             Self::GroupTooLarge {
                 encoded_bytes,
                 max_group_bytes,
@@ -1307,17 +1408,77 @@ impl std::fmt::Display for WalWriteError {
 
 impl std::error::Error for WalWriteError {}
 
+/// A non-empty WAL cannot be resumed because replay did not reach a clean end.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalRecoveryError {
+    /// The requested WAL path did not exist and therefore cannot be resumed.
+    MissingFile,
+    /// The persisted WAL header is absent, truncated, or invalid.
+    InvalidHeader(header::WalHeaderError),
+    /// Record replay stopped at a typed corruption boundary.
+    CorruptAt {
+        /// Byte offset of the first invalid record.
+        offset: usize,
+        /// Exact framing, checksum, or sequence failure.
+        reason: replay::CorruptionReason,
+    },
+}
+
+impl std::fmt::Display for WalRecoveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingFile => formatter.write_str("WAL recovery path is missing"),
+            Self::InvalidHeader(error) => write!(formatter, "WAL recovery header: {error}"),
+            Self::CorruptAt { offset, reason } => {
+                write!(
+                    formatter,
+                    "WAL recovery stopped at byte {offset}: {reason:?}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WalRecoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidHeader(error) => Some(error),
+            Self::MissingFile | Self::CorruptAt { .. } => None,
+        }
+    }
+}
+
 /// WAL recovery failure requiring the caller to stop rather than hide corruption.
 #[derive(Debug)]
 pub enum WalReadError {
     /// Filesystem read failed.
     Io(std::io::Error),
+    /// A header accepted by replay could not be decoded for resume state.
+    Header(header::WalHeaderError),
+    /// A replay-derived encoded record range exceeded the WAL image.
+    InvalidRecoveredRange {
+        /// First encoded byte of the recovered record.
+        start: usize,
+        /// Exclusive end of the recovered record.
+        end: usize,
+        /// Complete WAL image length.
+        available: usize,
+    },
 }
 
 impl std::fmt::Display for WalReadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "WAL read: {error}"),
+            Self::Header(error) => write!(formatter, "WAL read header: {error}"),
+            Self::InvalidRecoveredRange {
+                start,
+                end,
+                available,
+            } => write!(
+                formatter,
+                "WAL recovered range {start}..{end} exceeds {available} bytes"
+            ),
         }
     }
 }
@@ -1326,6 +1487,8 @@ impl std::error::Error for WalReadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            Self::Header(error) => Some(error),
+            Self::InvalidRecoveredRange { .. } => None,
         }
     }
 }

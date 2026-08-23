@@ -7,7 +7,7 @@ pub mod durability;
 pub mod lock;
 mod pool;
 mod snapshot;
-mod stats;
+pub(crate) mod stats;
 
 pub use cancel::{CancelToken, Deadline, DeadlineError, QueryControl, QueryError};
 pub use snapshot::{
@@ -152,6 +152,51 @@ pub enum StoreError {
     Segment(crate::segment::SegmentError),
     /// The checked durable WAL prefix could not be opened.
     Wal(crate::wal::WalReadError),
+    /// A non-empty WAL did not replay through a clean end boundary.
+    WalRecovery(crate::wal::WalRecoveryError),
+    /// A replayed record's retained encoded bytes could not be decoded.
+    WalRecord {
+        /// Sequence assigned to the invalid retained record.
+        seq: crate::wal::LogSeq,
+        /// Checked record-access failure.
+        source: crate::wal::VisibleRecordError,
+    },
+    /// A checksummed WAL mutation payload violated its versioned contract.
+    WalMutation {
+        /// Sequence assigned to the invalid mutation.
+        seq: crate::wal::LogSeq,
+        /// Persisted operation identifier.
+        op: u16,
+        /// Typed mutation-payload failure.
+        source: crate::ingest::wal_payload::PayloadError,
+    },
+    /// A recovered upsert would make one document's revision non-monotonic.
+    WalRevisionOrder {
+        /// Sequence assigned to the invalid upsert.
+        seq: crate::wal::LogSeq,
+        /// Document whose recovered history is invalid.
+        doc_id: crate::ingest::DocId,
+        /// Revision already rebuilt from the trusted prefix.
+        current: crate::ingest::Revision,
+        /// Revision carried by this record.
+        attempted: crate::ingest::Revision,
+    },
+    /// A valid mutation kind has no active-segment application path yet.
+    UnsupportedWalMutation {
+        /// Sequence assigned to the unsupported mutation.
+        seq: crate::wal::LogSeq,
+        /// Persisted operation identifier.
+        op: u16,
+    },
+    /// A recovered vector passed payload validation but failed quantization.
+    WalVector {
+        /// Sequence assigned to the invalid vector mutation.
+        seq: crate::wal::LogSeq,
+        /// Typed vector-contract failure.
+        source: crate::quant::QuantError,
+    },
+    /// The store-owned WAL writer could not be created or advanced.
+    WalWrite(crate::wal::WalWriteError),
     /// A kernel probe needed for an exact statistics snapshot failed.
     Statistics {
         /// Counter or residency component that could not be read.
@@ -175,6 +220,15 @@ pub enum StoreError {
         /// Engine component requesting the allocation.
         component: &'static str,
     },
+    /// An active vector did not match the collection's established dimension.
+    DimensionMismatch {
+        /// Established active dimension.
+        expected: usize,
+        /// Supplied vector dimension.
+        actual: usize,
+    },
+    /// The active segment exceeded its dense u32 row address space.
+    ActiveRowOverflow,
     /// A write-only lifecycle operation was requested from a read-only handle.
     ReadOnly,
     /// A prepared segment was accounted to a different store handle.
@@ -238,6 +292,41 @@ impl std::fmt::Display for StoreError {
             Self::Manifest(error) => error.fmt(formatter),
             Self::Segment(error) => error.fmt(formatter),
             Self::Wal(error) => error.fmt(formatter),
+            Self::WalRecovery(error) => error.fmt(formatter),
+            Self::WalRecord { seq, source } => {
+                write!(
+                    formatter,
+                    "WAL sequence {} retained record: {source}",
+                    seq.get()
+                )
+            }
+            Self::WalMutation { seq, op, source } => write!(
+                formatter,
+                "WAL sequence {} operation {op} payload: {source}",
+                seq.get()
+            ),
+            Self::WalRevisionOrder {
+                seq,
+                doc_id,
+                current,
+                attempted,
+            } => write!(
+                formatter,
+                "WAL sequence {} document {} revision {} does not follow {}",
+                seq.get(),
+                doc_id.get(),
+                attempted.get(),
+                current.get()
+            ),
+            Self::UnsupportedWalMutation { seq, op } => write!(
+                formatter,
+                "WAL sequence {} operation {op} has no active-segment recovery path",
+                seq.get()
+            ),
+            Self::WalVector { seq, source } => {
+                write!(formatter, "WAL sequence {} vector: {source}", seq.get())
+            }
+            Self::WalWrite(error) => error.fmt(formatter),
             Self::Statistics { component, source } => {
                 write!(formatter, "store statistics {component}: {source}")
             }
@@ -253,6 +342,13 @@ impl std::fmt::Display for StoreError {
                 formatter,
                 "store {component} allocator rejected {needed} bytes"
             ),
+            Self::DimensionMismatch { expected, actual } => write!(
+                formatter,
+                "active vector dimension {actual} does not match {expected}"
+            ),
+            Self::ActiveRowOverflow => {
+                formatter.write_str("active segment row or byte geometry overflow")
+            }
             Self::ReadOnly => formatter.write_str("store handle is read-only"),
             Self::ForeignPreparedSegment => {
                 formatter.write_str("prepared segment belongs to another store")
@@ -302,13 +398,22 @@ impl std::error::Error for StoreError {
             Self::Manifest(error) => Some(error),
             Self::Segment(error) => Some(error),
             Self::Wal(error) => Some(error),
+            Self::WalRecovery(error) => Some(error),
+            Self::WalRecord { source, .. } => Some(source),
+            Self::WalMutation { source, .. } => Some(source),
+            Self::WalVector { source, .. } => Some(source),
+            Self::WalWrite(error) => Some(error),
             Self::Statistics { source, .. } => Some(source),
             Self::BackgroundStart { source } => Some(source),
             Self::QueryPoolStart { source } => Some(source),
             Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
+            | Self::WalRevisionOrder { .. }
+            | Self::UnsupportedWalMutation { .. }
             | Self::BudgetExceeded { .. }
             | Self::AllocationFailed { .. }
+            | Self::DimensionMismatch { .. }
+            | Self::ActiveRowOverflow
             | Self::ReadOnly
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
@@ -333,6 +438,10 @@ pub struct Store {
     pub(crate) background: Mutex<Option<BackgroundThread>>,
     pub(crate) query_pool: Mutex<Option<Arc<pool::QueryPool>>>,
     pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
+    // Drop order is deliberate: immutable mappings, active buffers, and the
+    // WAL descriptor all release before the kernel writer lock.
+    pub(crate) active: Mutex<Option<crate::ingest::ActiveState>>,
+    pub(crate) wal_writer: Mutex<Option<crate::ingest::StoreWal>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
     pub(crate) durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
@@ -383,6 +492,24 @@ impl Store {
             AccessMode::ReadOnly => None,
         };
         let snapshot = PublishedSnapshot::load(path, &accounting)?;
+        let wal_path = path.join("wal.ze");
+        let (active, recovered_wal) =
+            crate::ingest::ActiveState::recover(&wal_path, snapshot.generation(), &accounting)?;
+        let wal_writer = match options.access_mode {
+            AccessMode::ReadWrite => Some(match recovered_wal {
+                Some(recovered) => crate::ingest::StoreWal::resume(
+                    &wal_path,
+                    recovered,
+                    durability_policy,
+                    &accounting,
+                )?,
+                None => crate::ingest::StoreWal::create(&wal_path, durability_policy, &accounting)?,
+            }),
+            AccessMode::ReadOnly => {
+                drop(recovered_wal);
+                None
+            }
+        };
         let background = match options.access_mode {
             AccessMode::ReadWrite => Some(BackgroundThread::start()?),
             AccessMode::ReadOnly => None,
@@ -405,6 +532,8 @@ impl Store {
             background: Mutex::new(background),
             query_pool: Mutex::new(None),
             snapshot: RwLock::new(None),
+            active: Mutex::new(Some(active)),
+            wal_writer: Mutex::new(wal_writer),
             writer_lock: Mutex::new(writer_lock),
             durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
@@ -436,6 +565,13 @@ impl Store {
             StoreState::Closing => return Err(StoreError::Closing),
             StoreState::Closed => return Err(StoreError::Closed),
         }
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let generation = active.as_ref().ok_or(StoreError::Closed)?.generation;
         let snapshot = self
             .snapshot
             .read()
@@ -445,8 +581,9 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
+        drop(active);
         drop(state);
-        Ok(SnapshotLease::new(snapshot))
+        Ok(SnapshotLease::new_at(snapshot, generation))
     }
 
     pub(crate) fn publish_snapshot(&self, snapshot: PublishedSnapshot) -> Result<(), StoreError> {
@@ -459,6 +596,15 @@ impl Store {
             StoreState::Closing => return Err(StoreError::Closing),
             StoreState::Closed => return Err(StoreError::Closed),
         }
+        let generation = snapshot.generation();
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let active_generation = &mut active.as_mut().ok_or(StoreError::Closed)?.generation;
+        *active_generation = (*active_generation).max(generation);
         let mut published = self
             .snapshot
             .write()
@@ -466,6 +612,7 @@ impl Store {
                 component: "published snapshot",
             })?;
         *published = Some(Arc::new(snapshot));
+        drop(active);
         drop(state);
         Ok(())
     }
@@ -532,6 +679,276 @@ impl Store {
         drop(active);
         result
     }
+
+    /// Searches the active segment plus every immutable segment in one pinned
+    /// store generation, then merges one global top-k.
+    ///
+    /// Every per-segment scan runs on the same persistent query pool and the
+    /// same cancellation state as [`Self::top_k_with_options`]. Row addresses
+    /// are `(RowSource, local_row)`, so two immutable segments' row zero can
+    /// never collide and manifest reordering cannot rename a sealed row.
+    pub fn search(
+        &self,
+        request: crate::ingest::SearchRequest<'_>,
+        k: usize,
+        options: crate::scan::ScanOptions,
+        control: QueryControl,
+    ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed)),
+        }
+        let active_guard = self.active.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "active segment",
+            })
+        })?;
+        let active_state = active_guard
+            .as_ref()
+            .ok_or(QueryError::Store(StoreError::Closed))?;
+        let generation = active_state.generation;
+        let active_segment = Arc::clone(&active_state.segment);
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| {
+                QueryError::Store(StoreError::Synchronization {
+                    component: "published snapshot",
+                })
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(QueryError::Store(StoreError::Closed))?;
+        let mut pool_slot = self.query_pool.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "query pool",
+            })
+        })?;
+        if pool_slot.is_none() {
+            let capacity = crate::scan::physical_thread_capacity().map_err(|error| {
+                QueryError::Store(StoreError::QueryPoolCapacity {
+                    source: error.to_string(),
+                })
+            })?;
+            let pool =
+                pool::QueryPool::start(capacity, &self.accounting).map_err(QueryError::Store)?;
+            *pool_slot = Some(Arc::new(pool));
+        }
+        let pool = pool_slot.as_ref().cloned().ok_or({
+            QueryError::Store(StoreError::Synchronization {
+                component: "query pool initialization",
+            })
+        })?;
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let active_query = ActiveQuery {
+            count: &self.active_queries,
+        };
+        drop(pool_slot);
+        drop(active_guard);
+        drop(state);
+
+        let result = search_pinned(
+            &pool,
+            &snapshot,
+            &active_segment,
+            generation,
+            request,
+            k,
+            options,
+            control,
+        );
+        drop(active_query);
+        result
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_pinned(
+    pool: &pool::QueryPool,
+    snapshot: &Arc<PublishedSnapshot>,
+    active: &crate::ingest::ActiveSegment,
+    generation: u64,
+    request: crate::ingest::SearchRequest<'_>,
+    k: usize,
+    options: crate::scan::ScanOptions,
+    control: QueryControl,
+) -> Result<crate::ingest::SearchOutcome, QueryError> {
+    use crate::ingest::{RowSource, SearchOutcome};
+    use crate::quant::{prepare_bit4_query, prepare_int8_query};
+    use crate::scan::{Int8Factors, ScanQuery, ScanRequest, ScanRows, ScanStats};
+
+    let bit4_query = prepare_bit4_query(request.vector(), 0)
+        .map_err(crate::scan::ScanError::Quant)
+        .map_err(QueryError::Scan)?;
+    let int8_query = prepare_int8_query(request.vector())
+        .map_err(crate::scan::ScanError::Quant)
+        .map_err(QueryError::Scan)?;
+    let mut candidates = Vec::new();
+    let mut dims_touched = 0_u64;
+    let mut bytes_read = 0_u64;
+    let mut worker_thread_ids = Vec::new();
+
+    if !active.is_empty() {
+        let alive = active.alive().map_err(QueryError::Store)?;
+        let outcome = pool.execute(
+            ScanRequest {
+                query: ScanQuery::Bit4(&bit4_query),
+                rows: ScanRows::Bit4RowMajor {
+                    codes: active.codes(),
+                    factors: active.factors(),
+                },
+                row_mask: Some(alive.scan_mask()),
+            },
+            k,
+            options,
+            control.clone(),
+            SnapshotLease::new_at(Arc::clone(snapshot), generation),
+        )?;
+        merge_store_outcome(
+            outcome,
+            RowSource::Active,
+            |row| active.document(row),
+            &mut candidates,
+            &mut dims_touched,
+            &mut bytes_read,
+            &mut worker_thread_ids,
+        )?;
+    }
+
+    for segment in snapshot.segments() {
+        let alive = segment
+            .alive()
+            .map_err(StoreError::Segment)
+            .map_err(QueryError::Store)?;
+        let source = RowSource::Sealed(segment.meta().id);
+        let outcome = match segment.meta().scheme {
+            4 => pool.execute(
+                ScanRequest {
+                    query: ScanQuery::Bit4(&bit4_query),
+                    rows: ScanRows::Bit4RowMajor {
+                        codes: segment
+                            .bit4_codes()
+                            .map_err(StoreError::Segment)
+                            .map_err(QueryError::Store)?,
+                        factors: segment
+                            .bit4_factors()
+                            .map_err(StoreError::Segment)
+                            .map_err(QueryError::Store)?,
+                    },
+                    row_mask: Some(alive.scan_mask()),
+                },
+                k,
+                options,
+                control.clone(),
+                SnapshotLease::new_at(Arc::clone(snapshot), generation),
+            )?,
+            2 => {
+                let factors = segment
+                    .int8_factors()
+                    .map_err(StoreError::Segment)
+                    .map_err(QueryError::Store)?
+                    .iter()
+                    .map(|factor| Int8Factors::new(factor.scale, factor.offset))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| {
+                        QueryError::Store(StoreError::Segment(
+                            crate::segment::SegmentError::Geometry(
+                                "Int8 factor is not finite and non-negative".to_owned(),
+                            ),
+                        ))
+                    })?;
+                pool.execute(
+                    ScanRequest {
+                        query: ScanQuery::Int8(&int8_query),
+                        rows: ScanRows::Int8RowMajor {
+                            codes: segment
+                                .int8_codes()
+                                .map_err(StoreError::Segment)
+                                .map_err(QueryError::Store)?,
+                            factors: &factors,
+                        },
+                        row_mask: Some(alive.scan_mask()),
+                    },
+                    k,
+                    options,
+                    control.clone(),
+                    SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                )?
+            }
+            scheme => {
+                return Err(QueryError::Store(StoreError::Segment(
+                    crate::segment::SegmentError::Geometry(format!(
+                        "store search does not support sealed scheme {scheme}"
+                    )),
+                )));
+            }
+        };
+        merge_store_outcome(
+            outcome,
+            source,
+            |_| None,
+            &mut candidates,
+            &mut dims_touched,
+            &mut bytes_read,
+            &mut worker_thread_ids,
+        )?;
+    }
+
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score()
+            .total_cmp(&left.score())
+            .then_with(|| left.row_id().cmp(&right.row_id()))
+    });
+    candidates.truncate(k);
+    Ok(SearchOutcome {
+        candidates,
+        stats: ScanStats {
+            dims_touched,
+            bytes_read,
+            threads_used: worker_thread_ids.len(),
+            worker_thread_ids,
+        },
+        generation,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_store_outcome(
+    outcome: crate::scan::ScanOutcome,
+    source: crate::ingest::RowSource,
+    document: impl Fn(usize) -> Option<crate::ingest::DocumentVersion>,
+    candidates: &mut Vec<crate::ingest::SearchCandidate>,
+    dims_touched: &mut u64,
+    bytes_read: &mut u64,
+    worker_thread_ids: &mut Vec<std::thread::ThreadId>,
+) -> Result<(), QueryError> {
+    *dims_touched = dims_touched
+        .checked_add(outcome.stats.dims_touched)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    *bytes_read = bytes_read
+        .checked_add(outcome.stats.bytes_read)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    for worker in outcome.stats.worker_thread_ids {
+        if !worker_thread_ids.contains(&worker) {
+            worker_thread_ids.push(worker);
+        }
+    }
+    for candidate in outcome.candidates {
+        let local_row = u32::try_from(candidate.row_id)
+            .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        candidates.push(crate::ingest::SearchCandidate::new(
+            crate::ingest::GlobalRowId::new(source, local_row),
+            document(candidate.row_id),
+            candidate.score,
+        ));
+    }
+    Ok(())
 }
 
 struct ActiveQuery<'a> {

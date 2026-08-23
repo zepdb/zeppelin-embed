@@ -272,7 +272,7 @@ fn persistent_query_pool_reuses_threads_across_queries() {
         "production partitions ran on different OS threads across queries"
     );
     let stats = store.stats().expect("stats with parked query pool");
-    assert_eq!(stats.open_files, 1, "parked workers are not file handles");
+    assert_eq!(stats.open_files, 2, "parked workers are not file handles");
     assert_eq!(stats.active_queries, 0);
     assert!(stats.query_pool_bytes > 0, "worker arena was not accounted");
     assert_eq!(
