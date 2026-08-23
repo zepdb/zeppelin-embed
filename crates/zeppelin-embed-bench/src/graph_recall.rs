@@ -9,7 +9,7 @@ use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::build::{
     CheckpointedGraphBuild, GraphBuildArtifact, GraphBuildPasses, build_graph_checkpointed,
 };
-use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearcher};
+use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearchScratch, GraphSearcher};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
@@ -771,7 +771,8 @@ pub fn measure_sift1m_recall(
     let truth = read_i32_raw(&paths.ground_truth, QUERIES * TOP_K)?;
     let graph = reader.graph_node_blocks()?;
     let base = reader.rescore_f32()?;
-    let mut searcher = GraphSearcher::new(graph, base)?;
+    let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())?;
+    let mut searcher = GraphSearcher::new(graph, base, &mut scratch)?;
     let mut totals = vec![0_u64; ef_values.len()];
     for (query_index, query) in queries.chunks_exact(DIMS).enumerate() {
         let truth_start = query_index

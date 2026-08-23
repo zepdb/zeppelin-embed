@@ -9,7 +9,8 @@ use std::time::Instant;
 use zeppelin_embed::graph::block::CACHE_LINE_BYTES;
 use zeppelin_embed::graph::build::GraphBuildPasses;
 use zeppelin_embed::graph::search::{
-    GraphSearchProfile, GraphSearchRequest, GraphSearcher, QueryCoreClass, TraversalPrefetch,
+    GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher, QueryCoreClass,
+    TraversalPrefetch,
 };
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
@@ -201,7 +202,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     print_taint_status(&taint, LOAD_LIMIT, "graph-search");
 
     let rescore = reader.rescore_f32()?;
-    let mut searcher = GraphSearcher::new(graph, rescore)?;
+    let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())?;
+    let mut searcher = GraphSearcher::new(graph, rescore, &mut scratch)?;
     let available_queries = (queries.len() / dimensions).min(truth.len() / TOP_K);
     if config.queries == 0 || config.queries > available_queries {
         return Err(io::Error::other(format!(

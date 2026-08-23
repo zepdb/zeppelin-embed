@@ -466,7 +466,7 @@ pub struct Stats {
     /// Exact bytes retained by the store's in-memory WAL component. This is
     /// zero while [`Store`] has no WAL writer component.
     pub wal_bytes: u64,
-    /// Exact bytes owned by caches. This is zero because no cache exists yet.
+    /// Exact bytes owned by reusable per-segment graph-search scratch caches.
     pub cache_bytes: u64,
     /// Exact bytes in live, explicitly accounted temporary allocations.
     pub temporary_bytes: u64,

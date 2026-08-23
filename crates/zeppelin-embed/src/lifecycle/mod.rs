@@ -4,6 +4,7 @@ mod budget;
 mod cancel;
 mod close;
 pub mod durability;
+pub(crate) mod graph_cache;
 pub mod lock;
 mod pool;
 mod snapshot;
@@ -124,6 +125,111 @@ impl Default for OpenOptions {
     }
 }
 
+/// Traversal controls carried only when a caller explicitly selects the graph tier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphSearchOptions {
+    profile: crate::graph::search::GraphSearchProfile,
+    ef: Option<usize>,
+    seed: u64,
+}
+
+impl GraphSearchOptions {
+    /// Creates an adaptive-width graph request for one dataset-shape profile.
+    #[must_use]
+    pub const fn new(profile: crate::graph::search::GraphSearchProfile) -> Self {
+        Self {
+            profile,
+            ef: None,
+            seed: 0,
+        }
+    }
+
+    /// Overrides the profile's adaptive traversal width.
+    #[must_use]
+    pub const fn with_ef(mut self, ef: usize) -> Self {
+        self.ef = Some(ef);
+        self
+    }
+
+    /// Selects the deterministic Bit4 query-preparation seed.
+    #[must_use]
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    const fn profile(self) -> crate::graph::search::GraphSearchProfile {
+        self.profile
+    }
+
+    const fn ef(self) -> Option<usize> {
+        self.ef
+    }
+
+    const fn seed(self) -> u64 {
+        self.seed
+    }
+}
+
+impl Default for GraphSearchOptions {
+    fn default() -> Self {
+        Self::new(crate::graph::search::GraphSearchProfile::SiftClass)
+    }
+}
+
+/// Explicit per-query execution tier at the public store seam.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SearchTier {
+    /// Preserve the existing exhaustive sealed-segment scan.
+    #[default]
+    Scan,
+    /// Traverse every sealed segment's Vamana graph.
+    Graph(GraphSearchOptions),
+}
+
+/// Store-search controls, separating scan worker budget from tier selection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchOptions {
+    scan: crate::scan::ScanOptions,
+    tier: SearchTier,
+}
+
+impl SearchOptions {
+    /// Creates scan-tier options with the supplied scan worker budget.
+    #[must_use]
+    pub const fn new(scan: crate::scan::ScanOptions) -> Self {
+        Self {
+            scan,
+            tier: SearchTier::Scan,
+        }
+    }
+
+    /// Explicitly selects one store-search tier.
+    #[must_use]
+    pub const fn with_tier(mut self, tier: SearchTier) -> Self {
+        self.tier = tier;
+        self
+    }
+
+    /// Returns the scan worker controls used by scan-tier work.
+    #[must_use]
+    pub const fn scan(self) -> crate::scan::ScanOptions {
+        self.scan
+    }
+
+    /// Returns the caller-selected execution tier.
+    #[must_use]
+    pub const fn tier(self) -> SearchTier {
+        self.tier
+    }
+}
+
+impl From<crate::scan::ScanOptions> for SearchOptions {
+    fn from(scan: crate::scan::ScanOptions) -> Self {
+        Self::new(scan)
+    }
+}
+
 /// An open, lifecycle, or close operation was rejected.
 #[derive(Debug)]
 pub enum StoreError {
@@ -152,6 +258,11 @@ pub enum StoreError {
     Manifest(crate::manifest::ManifestError),
     /// A referenced immutable segment could not be mapped or validated.
     Segment(crate::segment::SegmentError),
+    /// The caller selected graph traversal for a sealed segment without a graph.
+    GraphUnavailable {
+        /// Immutable segment that cannot satisfy the explicit graph-tier request.
+        segment_id: crate::segment::SegmentId,
+    },
     /// The checked durable WAL prefix could not be opened.
     Wal(crate::wal::WalReadError),
     /// A non-empty WAL did not replay through a clean end boundary.
@@ -293,6 +404,9 @@ impl std::fmt::Display for StoreError {
             Self::Durability(error) => error.fmt(formatter),
             Self::Manifest(error) => error.fmt(formatter),
             Self::Segment(error) => error.fmt(formatter),
+            Self::GraphUnavailable { segment_id } => {
+                write!(formatter, "sealed segment {segment_id} has no graph region")
+            }
             Self::Wal(error) => error.fmt(formatter),
             Self::WalRecovery(error) => error.fmt(formatter),
             Self::WalRecord { seq, source } => {
@@ -410,6 +524,7 @@ impl std::error::Error for StoreError {
             Self::QueryPoolStart { source } => Some(source),
             Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
+            | Self::GraphUnavailable { .. }
             | Self::WalRevisionOrder { .. }
             | Self::UnsupportedWalMutation { .. }
             | Self::BudgetExceeded { .. }
@@ -685,17 +800,19 @@ impl Store {
     /// Searches the active segment plus every immutable segment in one pinned
     /// store generation, then merges one global top-k.
     ///
-    /// Every per-segment scan runs on the same persistent query pool and the
-    /// same cancellation state as [`Self::top_k_with_options`]. Row addresses
-    /// are `(RowSource, local_row)`, so two immutable segments' row zero can
-    /// never collide and manifest reordering cannot rename a sealed row.
+    /// Scan-tier segments use the persistent query pool. Explicit graph-tier
+    /// segments traverse serially on the calling thread, while the active
+    /// segment is still scanned. Both tiers share one cancellation state and
+    /// `(RowSource, local_row)` addressing, so immutable row zero never collides
+    /// across segments and manifest reordering cannot rename a sealed row.
     pub fn search(
         &self,
         request: crate::ingest::SearchRequest<'_>,
         k: usize,
-        options: crate::scan::ScanOptions,
+        options: impl Into<SearchOptions>,
         control: QueryControl,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        let options = options.into();
         let state = self
             .state
             .lock()
@@ -726,38 +843,45 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(QueryError::Store(StoreError::Closed))?;
-        let mut pool_slot = self.query_pool.lock().map_err(|_| {
-            QueryError::Store(StoreError::Synchronization {
-                component: "query pool",
-            })
-        })?;
-        if pool_slot.is_none() {
-            let capacity = crate::scan::physical_thread_capacity().map_err(|error| {
-                QueryError::Store(StoreError::QueryPoolCapacity {
-                    source: error.to_string(),
+        let needs_query_pool = matches!(options.tier(), SearchTier::Scan);
+        let pool = if needs_query_pool {
+            let mut pool_slot = self.query_pool.lock().map_err(|_| {
+                QueryError::Store(StoreError::Synchronization {
+                    component: "query pool",
                 })
             })?;
-            let pool =
-                pool::QueryPool::start(capacity, &self.accounting).map_err(QueryError::Store)?;
-            *pool_slot = Some(Arc::new(pool));
-        }
-        let pool = pool_slot.as_ref().cloned().ok_or({
-            QueryError::Store(StoreError::Synchronization {
-                component: "query pool initialization",
-            })
-        })?;
+            if pool_slot.is_none() {
+                let capacity = crate::scan::physical_thread_capacity().map_err(|error| {
+                    QueryError::Store(StoreError::QueryPoolCapacity {
+                        source: error.to_string(),
+                    })
+                })?;
+                let pool = pool::QueryPool::start(capacity, &self.accounting)
+                    .map_err(QueryError::Store)?;
+                *pool_slot = Some(Arc::new(pool));
+            }
+            let pool = pool_slot.as_ref().cloned().ok_or({
+                QueryError::Store(StoreError::Synchronization {
+                    component: "query pool initialization",
+                })
+            })?;
+            drop(pool_slot);
+            Some(pool)
+        } else {
+            None
+        };
         self.active_queries.fetch_add(1, Ordering::Relaxed);
         let active_query = ActiveQuery {
             count: &self.active_queries,
         };
-        drop(pool_slot);
         drop(active_guard);
         drop(state);
 
         let result = search_pinned(
-            &pool,
+            pool.as_deref(),
             &snapshot,
             &active_segment,
+            &self.accounting,
             generation,
             request,
             k,
@@ -771,19 +895,21 @@ impl Store {
 
 #[allow(clippy::too_many_arguments)]
 fn search_pinned(
-    pool: &pool::QueryPool,
+    pool: Option<&pool::QueryPool>,
     snapshot: &Arc<PublishedSnapshot>,
     active: &crate::ingest::ActiveSegment,
+    accounting: &Arc<stats::Accounting>,
     generation: u64,
     request: crate::ingest::SearchRequest<'_>,
     k: usize,
-    options: crate::scan::ScanOptions,
+    options: SearchOptions,
     control: QueryControl,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
-    use crate::ingest::{RowSource, SearchOutcome};
+    use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
     use crate::quant::{prepare_bit4_query, prepare_int8_query};
     use crate::scan::{Int8Factors, ScanQuery, ScanRequest, ScanRows, ScanStats};
 
+    let scan_options = options.scan();
     let bit4_query = prepare_bit4_query(request.vector(), 0)
         .map_err(crate::scan::ScanError::Quant)
         .map_err(QueryError::Scan)?;
@@ -794,23 +920,50 @@ fn search_pinned(
     let mut dims_touched = 0_u64;
     let mut bytes_read = 0_u64;
     let mut worker_thread_ids = Vec::new();
+    let mut graph_stats = GraphSearchStats::default();
+
+    if matches!(options.tier(), SearchTier::Graph(_)) {
+        for segment in snapshot.segments() {
+            if !segment
+                .directory()
+                .iter()
+                .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+            {
+                return Err(QueryError::Store(StoreError::GraphUnavailable {
+                    segment_id: segment.meta().id,
+                }));
+            }
+        }
+    }
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
-        let outcome = pool.execute(
-            ScanRequest {
-                query: ScanQuery::Bit4(&bit4_query),
-                rows: ScanRows::Bit4RowMajor {
-                    codes: active.codes(),
-                    factors: active.factors(),
-                },
-                row_mask: Some(alive.scan_mask()),
-            },
-            k,
-            options,
-            control.clone(),
-            SnapshotLease::new_at(Arc::clone(snapshot), generation),
-        )?;
+        let outcome = match options.tier() {
+            SearchTier::Scan => {
+                let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
+                    component: "active scan-tier query pool",
+                }))?;
+                query_pool.execute(
+                    ScanRequest {
+                        query: ScanQuery::Bit4(&bit4_query),
+                        rows: ScanRows::Bit4RowMajor {
+                            codes: active.codes(),
+                            factors: active.factors(),
+                        },
+                        row_mask: Some(alive.scan_mask()),
+                    },
+                    k,
+                    scan_options,
+                    control.clone(),
+                    SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                )?
+            }
+            SearchTier::Graph(_) => {
+                let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+                let cancellation = QueryCancellation::new(&control, &lease);
+                scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
+            }
+        };
         merge_store_outcome(
             outcome,
             RowSource::Active,
@@ -828,8 +981,203 @@ fn search_pinned(
             .map_err(StoreError::Segment)
             .map_err(QueryError::Store)?;
         let source = RowSource::Sealed(segment.meta().id);
+        if let SearchTier::Graph(graph_options) = options.tier() {
+            let (graph, graph_validated) = segment
+                .graph_search_cache
+                .bind_graph(segment)
+                .map_err(map_graph_cache_error)?;
+            let rescore = segment
+                .rescore_f32()
+                .map_err(StoreError::Segment)
+                .map_err(QueryError::Store)?;
+            let node_count = graph.node_count() as usize;
+            let segment_k = k.min(node_count);
+            let has_tombstones = alive.tombstone_count() != 0;
+            let target_live_k = if has_tombstones {
+                usize::try_from(alive.live_count())
+                    .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?
+                    .min(k)
+            } else {
+                segment_k
+            };
+            let maximum_candidate_k = if has_tombstones {
+                let tombstone_count = usize::try_from(alive.tombstone_count())
+                    .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                target_live_k
+                    .checked_add(tombstone_count)
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?
+                    .min(node_count)
+                    .max(segment_k)
+            } else {
+                segment_k
+            };
+            let request_for = |candidate_k| {
+                let graph_request = crate::graph::search::GraphSearchRequest::new(
+                    request.vector(),
+                    candidate_k,
+                    graph_options.seed(),
+                )
+                .with_profile(graph_options.profile());
+                graph_options
+                    .ef()
+                    .map_or(graph_request, |ef| graph_request.with_ef(ef))
+            };
+            let mut candidate_k = segment_k;
+            let mut graph_request = request_for(candidate_k);
+            let effective_ef = graph_request
+                .effective_ef(graph.node_count() as usize)
+                .map_err(crate::graph::search::GraphSearchError::AdaptiveEf)
+                .map_err(QueryError::Graph)?;
+            let requestable_max_k = graph_options
+                .ef()
+                .map_or(maximum_candidate_k, |ef| maximum_candidate_k.min(ef));
+            let scratch_ef = if has_tombstones
+                && graph_options.ef().is_none()
+                && requestable_max_k > candidate_k
+            {
+                request_for(requestable_max_k)
+                    .effective_ef(node_count)
+                    .map_err(crate::graph::search::GraphSearchError::AdaptiveEf)
+                    .map_err(QueryError::Graph)?
+            } else {
+                effective_ef
+            };
+            let mut scratch = segment
+                .graph_search_cache
+                .checkout(graph, scratch_ef, accounting)
+                .map_err(map_graph_cache_error)?;
+            let entry_seed_discovered = scratch.entry_seed_discovered();
+            let entries = scratch.entries();
+            let mut searcher = crate::graph::search::GraphSearcher::with_entry_row_ids(
+                graph,
+                rescore,
+                entries,
+                scratch.scratch_mut().map_err(map_graph_error)?,
+            )
+            .map_err(map_graph_error)?;
+            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+            let cancellation = QueryCancellation::new(&control, &lease);
+            let mut traversal_dims_touched = 0_u64;
+            let mut traversal_bytes_read = 0_u64;
+            let mut traversal_epoch_clears = 0_usize;
+            let mut traversal_candidates_rescored = 0_usize;
+            let result = loop {
+                let result = searcher
+                    .search(graph_request, Some(&cancellation))
+                    .map_err(map_graph_error)?;
+                let counters = result.counters();
+                traversal_dims_touched = traversal_dims_touched
+                    .checked_add(counters.dims_touched())
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                traversal_bytes_read = traversal_bytes_read
+                    .checked_add(counters.bytes_read())
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                traversal_epoch_clears = traversal_epoch_clears
+                    .checked_add(usize::from(counters.visited_epoch_cleared()))
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                traversal_candidates_rescored = traversal_candidates_rescored
+                    .checked_add(counters.candidates_rescored())
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+
+                if !has_tombstones {
+                    break result;
+                }
+                let retained_live = result
+                    .candidates()
+                    .iter()
+                    .filter(|candidate| alive.is_alive(candidate.row_id()))
+                    .count();
+                if retained_live >= target_live_k {
+                    break result;
+                }
+                if candidate_k >= requestable_max_k {
+                    if requestable_max_k < maximum_candidate_k {
+                        return Err(QueryError::Graph(
+                            crate::graph::search::GraphSearchError::AdaptiveEf(
+                                crate::graph::search::AdaptiveEfError::ExplicitBelowK {
+                                    k: maximum_candidate_k,
+                                    ef: requestable_max_k,
+                                },
+                            ),
+                        ));
+                    }
+                    return Err(QueryError::Graph(
+                        crate::graph::search::GraphSearchError::Geometry(format!(
+                            "graph traversal exhausted {candidate_k} candidates but retained {retained_live} live rows, expected {target_live_k}"
+                        )),
+                    ));
+                }
+                let widened_k = candidate_k
+                    .saturating_mul(2)
+                    .max(candidate_k.saturating_add(1))
+                    .min(requestable_max_k);
+                if widened_k <= candidate_k {
+                    return Err(QueryError::Graph(
+                        crate::graph::search::GraphSearchError::Geometry(format!(
+                            "graph traversal could not widen beyond {candidate_k} candidates"
+                        )),
+                    ));
+                }
+                candidate_k = widened_k;
+                graph_request = request_for(candidate_k);
+            };
+            dims_touched = dims_touched
+                .checked_add(traversal_dims_touched)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            bytes_read = bytes_read
+                .checked_add(traversal_bytes_read)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            let caller_thread = std::thread::current().id();
+            if !worker_thread_ids.contains(&caller_thread) {
+                worker_thread_ids.push(caller_thread);
+            }
+            graph_stats.segments_traversed = graph_stats
+                .segments_traversed
+                .checked_add(1)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            graph_stats.graph_validations = graph_stats
+                .graph_validations
+                .checked_add(usize::from(graph_validated))
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            graph_stats.entry_seed_discoveries = graph_stats
+                .entry_seed_discoveries
+                .checked_add(usize::from(entry_seed_discovered))
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            graph_stats.visited_epoch_clears = graph_stats
+                .visited_epoch_clears
+                .checked_add(traversal_epoch_clears)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            graph_stats.candidates_rescored = graph_stats
+                .candidates_rescored
+                .checked_add(traversal_candidates_rescored)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            for candidate in result.candidates() {
+                if !alive.is_alive(candidate.row_id()) {
+                    continue;
+                }
+                let score = -(candidate.distance() as f32);
+                if !score.is_finite() {
+                    return Err(QueryError::Graph(
+                        crate::graph::search::GraphSearchError::Geometry(format!(
+                            "graph result distance for row {} is not representable as f32",
+                            candidate.row_id()
+                        )),
+                    ));
+                }
+                candidates.push(crate::ingest::SearchCandidate::new(
+                    crate::ingest::GlobalRowId::new(source, candidate.row_id()),
+                    None,
+                    score,
+                ));
+            }
+            continue;
+        }
+
+        let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
+            component: "sealed scan-tier query pool",
+        }))?;
         let outcome = match segment.meta().scheme {
-            4 => pool.execute(
+            4 => query_pool.execute(
                 ScanRequest {
                     query: ScanQuery::Bit4(&bit4_query),
                     rows: ScanRows::Bit4RowMajor {
@@ -845,7 +1193,7 @@ fn search_pinned(
                     row_mask: Some(alive.scan_mask()),
                 },
                 k,
-                options,
+                scan_options,
                 control.clone(),
                 SnapshotLease::new_at(Arc::clone(snapshot), generation),
             )?,
@@ -864,7 +1212,7 @@ fn search_pinned(
                             ),
                         ))
                     })?;
-                pool.execute(
+                query_pool.execute(
                     ScanRequest {
                         query: ScanQuery::Int8(&int8_query),
                         rows: ScanRows::Int8RowMajor {
@@ -877,7 +1225,7 @@ fn search_pinned(
                         row_mask: Some(alive.scan_mask()),
                     },
                     k,
-                    options,
+                    scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
                 )?
@@ -916,8 +1264,130 @@ fn search_pinned(
             threads_used: worker_thread_ids.len(),
             worker_thread_ids,
         },
+        graph_stats,
         generation,
     })
+}
+
+fn map_graph_cache_error(error: graph_cache::GraphCacheError) -> QueryError {
+    match error {
+        graph_cache::GraphCacheError::Store(error) => QueryError::Store(error),
+        graph_cache::GraphCacheError::Search(error) => map_graph_error(error),
+    }
+}
+
+fn map_graph_error(error: crate::graph::search::GraphSearchError) -> QueryError {
+    match error {
+        crate::graph::search::GraphSearchError::Cancelled { partial } => {
+            QueryError::Cancelled { partial }
+        }
+        crate::graph::search::GraphSearchError::Timeout { partial } => {
+            QueryError::Timeout { partial }
+        }
+        crate::graph::search::GraphSearchError::ReadCancelled { partial } => {
+            QueryError::ReadCancelled { partial }
+        }
+        crate::graph::search::GraphSearchError::Scan(error) => QueryError::Scan(error),
+        error => QueryError::Graph(error),
+    }
+}
+
+fn scan_active_squared_l2(
+    active: &crate::ingest::ActiveSegment,
+    alive: &crate::meta::AliveSet,
+    query: &[f32],
+    k: usize,
+    cancellation: &QueryCancellation<'_>,
+) -> Result<crate::scan::ScanOutcome, QueryError> {
+    if query.is_empty() {
+        return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension));
+    }
+    let expected = active
+        .row_count()
+        .checked_mul(query.len())
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    if active.vectors().len() != expected {
+        return Err(QueryError::Scan(crate::scan::ScanError::RowDataLength {
+            dimension: query.len(),
+            actual: active.vectors().len(),
+        }));
+    }
+    let mut candidates = Vec::new();
+    let mut scored_rows = 0_u64;
+    for row in 0..active.row_count() {
+        if row.is_multiple_of(64) {
+            cancellation.check_graph().map_err(map_scan_error)?;
+        }
+        let local_row = u32::try_from(row)
+            .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        if !alive.is_alive(local_row) {
+            continue;
+        }
+        let start = row
+            .checked_mul(query.len())
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        let end = start
+            .checked_add(query.len())
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        let vector = active.vectors().get(start..end).ok_or(QueryError::Scan(
+            crate::scan::ScanError::RowDataLength {
+                dimension: query.len(),
+                actual: active.vectors().len(),
+            },
+        ))?;
+        let distance = vector
+            .iter()
+            .zip(query)
+            .map(|(left, right)| {
+                let delta = f64::from(*left) - f64::from(*right);
+                delta * delta
+            })
+            .sum::<f64>();
+        let score = -(distance as f32);
+        if !score.is_finite() {
+            return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
+                row_id: row,
+            }));
+        }
+        candidates.push(crate::scan::ScanCandidate { row_id: row, score });
+        scored_rows = scored_rows
+            .checked_add(1)
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    }
+    cancellation.check_graph().map_err(map_scan_error)?;
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.row_id.cmp(&right.row_id))
+    });
+    candidates.truncate(k);
+    let dims = u64::try_from(query.len())
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let dims_touched = scored_rows
+        .checked_mul(dims)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let bytes_read = dims_touched
+        .checked_mul(std::mem::size_of::<f32>() as u64)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    Ok(crate::scan::ScanOutcome {
+        candidates,
+        stats: crate::scan::ScanStats {
+            dims_touched,
+            bytes_read,
+            threads_used: 1,
+            worker_thread_ids: vec![std::thread::current().id()],
+        },
+    })
+}
+
+fn map_scan_error(error: crate::scan::ScanError) -> QueryError {
+    match error {
+        crate::scan::ScanError::Cancelled { partial } => QueryError::Cancelled { partial },
+        crate::scan::ScanError::Timeout { partial } => QueryError::Timeout { partial },
+        crate::scan::ScanError::ReadCancelled { partial } => QueryError::ReadCancelled { partial },
+        error => QueryError::Scan(error),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

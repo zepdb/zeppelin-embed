@@ -122,6 +122,8 @@ pub enum QueryError {
     Store(StoreError),
     /// Scan validation or scoring failed.
     Scan(ScanError),
+    /// Graph validation or traversal failed.
+    Graph(crate::graph::search::GraphSearchError),
 }
 
 impl std::fmt::Display for QueryError {
@@ -138,6 +140,7 @@ impl std::fmt::Display for QueryError {
             }
             Self::Store(error) => error.fmt(formatter),
             Self::Scan(error) => error.fmt(formatter),
+            Self::Graph(error) => error.fmt(formatter),
         }
     }
 }
@@ -147,6 +150,7 @@ impl std::error::Error for QueryError {
         match self {
             Self::Store(error) => Some(error),
             Self::Scan(error) => Some(error),
+            Self::Graph(error) => Some(error),
             Self::Timeout { .. } | Self::Cancelled { .. } | Self::ReadCancelled { .. } => None,
         }
     }
@@ -204,5 +208,16 @@ impl<'a> QueryCancellation<'a> {
             TIMED_OUT => Err(ScanError::Timeout { partial: false }),
             _ => Ok(()),
         }
+    }
+
+    pub(crate) fn check_graph(&self) -> Result<(), ScanError> {
+        if self
+            .control
+            .deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.control.mark_timed_out();
+        }
+        self.check()
     }
 }

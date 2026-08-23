@@ -290,6 +290,8 @@ pub struct GraphSearchCounters {
     pushes: usize,
     visited: usize,
     visited_epoch_cleared: bool,
+    dims_touched: u64,
+    bytes_read: u64,
     qos_class: QueryQosClass,
     qos_relative_priority: i32,
     core_class: QueryCoreClass,
@@ -366,6 +368,18 @@ impl GraphSearchCounters {
     #[must_use]
     pub const fn visited_epoch_cleared(self) -> bool {
         self.visited_epoch_cleared
+    }
+
+    /// Returns logical coordinates scored by coarse traversal plus exact rescore.
+    #[must_use]
+    pub const fn dims_touched(self) -> u64 {
+        self.dims_touched
+    }
+
+    /// Returns exact stored coarse and f32-rescore bytes read by this query.
+    #[must_use]
+    pub const fn bytes_read(self) -> u64 {
+        self.bytes_read
     }
 
     /// Returns the caller thread's observed QoS class.
@@ -552,12 +566,11 @@ struct ScoredNode {
     distance: f64,
 }
 
-/// Reusable, allocation-stable state for single-core queries over one segment.
+/// Owned, lifetime-free reusable state for single-core graph queries.
 #[derive(Debug)]
-pub struct GraphSearcher<'a> {
-    graph: GraphNodeBlocks<'a>,
-    rescore: &'a [f32],
-    entries: [CheckedNodeId; 4],
+pub struct GraphSearchScratch {
+    node_count: u32,
+    max_degree: u8,
     visited: Vec<u8>,
     epoch: u8,
     pool: Vec<ScoredNode>,
@@ -567,9 +580,164 @@ pub struct GraphSearcher<'a> {
     rescore_coarse_scores: Vec<f32>,
 }
 
+impl GraphSearchScratch {
+    /// Allocates the node-count and maximum-degree state that is independent of `ef`.
+    pub fn new(node_count: u32, max_degree: u8) -> Result<Self, GraphSearchError> {
+        Self::with_ef_capacity(node_count, max_degree, 0)
+    }
+
+    pub(crate) fn with_ef_capacity(
+        node_count: u32,
+        max_degree: u8,
+        ef: usize,
+    ) -> Result<Self, GraphSearchError> {
+        let node_count_usize = node_count as usize;
+        let mut visited = Vec::new();
+        visited
+            .try_reserve_exact(node_count_usize)
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("visited allocation failed: {error}"))
+            })?;
+        visited.resize(node_count_usize, 0);
+        let mut pool = Vec::new();
+        pool.try_reserve_exact(ef).map_err(|error| {
+            GraphSearchError::Geometry(format!("pool allocation failed: {error}"))
+        })?;
+        let mut frontier = Vec::new();
+        frontier.try_reserve_exact(ef).map_err(|error| {
+            GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
+        })?;
+        let mut hop_candidates = Vec::new();
+        hop_candidates
+            .try_reserve_exact(usize::from(max_degree))
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("hop-candidate allocation failed: {error}"))
+            })?;
+        let mut rescore_row_ids = Vec::new();
+        rescore_row_ids.try_reserve_exact(ef).map_err(|error| {
+            GraphSearchError::Geometry(format!("rescore row-id allocation failed: {error}"))
+        })?;
+        let mut rescore_coarse_scores = Vec::new();
+        rescore_coarse_scores
+            .try_reserve_exact(ef)
+            .map_err(|error| {
+                GraphSearchError::Geometry(format!("rescore score allocation failed: {error}"))
+            })?;
+        Ok(Self {
+            node_count,
+            max_degree,
+            visited,
+            epoch: 0,
+            pool,
+            frontier,
+            hop_candidates,
+            rescore_row_ids,
+            rescore_coarse_scores,
+        })
+    }
+
+    /// Returns the exact requested bytes for one scratch at the supplied geometry.
+    pub fn allocation_bytes(
+        node_count: u32,
+        max_degree: u8,
+        ef: usize,
+    ) -> Result<usize, GraphSearchError> {
+        let scored = ef
+            .checked_mul(std::mem::size_of::<ScoredNode>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| GraphSearchError::Geometry("scratch byte count overflow".to_owned()))?;
+        let hops = usize::from(max_degree)
+            .checked_mul(std::mem::size_of::<CheckedNodeId>())
+            .ok_or_else(|| GraphSearchError::Geometry("scratch byte count overflow".to_owned()))?;
+        let rescore = ef
+            .checked_mul(std::mem::size_of::<u32>() + std::mem::size_of::<f32>())
+            .ok_or_else(|| GraphSearchError::Geometry("scratch byte count overflow".to_owned()))?;
+        (node_count as usize)
+            .checked_add(scored)
+            .and_then(|bytes| bytes.checked_add(hops))
+            .and_then(|bytes| bytes.checked_add(rescore))
+            .ok_or_else(|| GraphSearchError::Geometry("scratch byte count overflow".to_owned()))
+    }
+
+    /// Returns the exact capacities, in bytes, of every owned scratch vector.
+    pub fn resident_bytes(&self) -> Result<usize, GraphSearchError> {
+        let widths = [
+            (self.visited.capacity(), std::mem::size_of::<u8>()),
+            (self.pool.capacity(), std::mem::size_of::<ScoredNode>()),
+            (self.frontier.capacity(), std::mem::size_of::<ScoredNode>()),
+            (
+                self.hop_candidates.capacity(),
+                std::mem::size_of::<CheckedNodeId>(),
+            ),
+            (self.rescore_row_ids.capacity(), std::mem::size_of::<u32>()),
+            (
+                self.rescore_coarse_scores.capacity(),
+                std::mem::size_of::<f32>(),
+            ),
+        ];
+        widths.iter().try_fold(0_usize, |total, (capacity, width)| {
+            capacity
+                .checked_mul(*width)
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or_else(|| GraphSearchError::Geometry("scratch byte count overflow".to_owned()))
+        })
+    }
+
+    pub(crate) fn supports(&self, node_count: u32, max_degree: u8, ef: usize) -> bool {
+        self.node_count == node_count
+            && self.max_degree == max_degree
+            && self.pool.capacity() >= ef
+            && self.frontier.capacity() >= ef
+            && self.rescore_row_ids.capacity() >= ef
+            && self.rescore_coarse_scores.capacity() >= ef
+    }
+}
+
+/// Per-query binding of mmap-backed graph views to owned reusable scratch.
+#[derive(Debug)]
+pub struct GraphSearcher<'a> {
+    graph: GraphNodeBlocks<'a>,
+    rescore: &'a [f32],
+    entries: [CheckedNodeId; 4],
+    scratch: &'a mut GraphSearchScratch,
+}
+
 impl<'a> GraphSearcher<'a> {
-    /// Validates fixed graph/rescore geometry and discovers the four persisted entry seeds.
-    pub fn new(graph: GraphNodeBlocks<'a>, rescore: &'a [f32]) -> Result<Self, GraphSearchError> {
+    /// Validates geometry and retains the existing O(N) entry-seed discovery behavior.
+    pub fn new(
+        graph: GraphNodeBlocks<'a>,
+        rescore: &'a [f32],
+        scratch: &'a mut GraphSearchScratch,
+    ) -> Result<Self, GraphSearchError> {
+        let entries = Self::discover_entry_row_ids(graph)?;
+        Self::with_entry_row_ids(graph, rescore, entries, scratch)
+    }
+
+    /// Discovers all four persisted entry seeds by validating every graph block.
+    pub fn discover_entry_row_ids(
+        graph: GraphNodeBlocks<'_>,
+    ) -> Result<[u32; 4], GraphSearchError> {
+        let mut entries = Vec::with_capacity(4);
+        for row_id in 0..graph.node_count() {
+            if graph.block(row_id)?.flags() & 1 != 0 {
+                entries.push(row_id);
+            }
+        }
+        let entry_count = entries.len();
+        entries.try_into().map_err(|_: Vec<u32>| {
+            GraphSearchError::Geometry(format!(
+                "graph contains {entry_count} persisted entry seeds, expected medoid plus three refined seeds"
+            ))
+        })
+    }
+
+    /// Binds cached entry row ids after validating only those four graph blocks.
+    pub fn with_entry_row_ids(
+        graph: GraphNodeBlocks<'a>,
+        rescore: &'a [f32],
+        entry_row_ids: [u32; 4],
+        scratch: &'a mut GraphSearchScratch,
+    ) -> Result<Self, GraphSearchError> {
         let dimensions = graph.layout().dims() as usize;
         let expected_rescore = (graph.node_count() as usize)
             .checked_mul(dimensions)
@@ -580,35 +748,39 @@ impl<'a> GraphSearcher<'a> {
                 rescore.len()
             )));
         }
-        let mut entries = Vec::with_capacity(4);
-        for row_id in 0..graph.node_count() {
-            if graph.block(row_id)?.flags() & 1 != 0 {
-                entries.push(graph.checked_node_id(row_id)?);
-            }
+        if scratch.node_count != graph.node_count()
+            || scratch.max_degree != graph.layout().max_degree()
+        {
+            return Err(GraphSearchError::Geometry(format!(
+                "scratch geometry nodes/degree {}/{}, graph {}/{}",
+                scratch.node_count,
+                scratch.max_degree,
+                graph.node_count(),
+                graph.layout().max_degree()
+            )));
         }
-        let entry_count = entries.len();
-        let entries = entries.try_into().map_err(|_: Vec<CheckedNodeId>| {
-            GraphSearchError::Geometry(format!(
-                "graph contains {entry_count} persisted entry seeds, expected medoid plus three refined seeds"
-            ))
-        })?;
-        let mut hop_candidates = Vec::new();
-        hop_candidates
-            .try_reserve_exact(usize::from(graph.layout().max_degree()))
-            .map_err(|error| {
-                GraphSearchError::Geometry(format!("hop-candidate allocation failed: {error}"))
+        let mut entries = [None; 4];
+        for (position, row_id) in entry_row_ids.into_iter().enumerate() {
+            let block = graph.block(row_id)?;
+            if block.flags() & 1 == 0 {
+                return Err(GraphSearchError::Geometry(format!(
+                    "cached entry row {row_id} does not carry the persisted entry flag"
+                )));
+            }
+            let destination = entries.get_mut(position).ok_or_else(|| {
+                GraphSearchError::Geometry("cached entry position overflow".to_owned())
             })?;
+            *destination = Some(graph.checked_node_id(row_id)?);
+        }
+        let entries = entries.map(|entry| {
+            entry.ok_or_else(|| GraphSearchError::Geometry("cached entry is absent".to_owned()))
+        });
+        let [first, second, third, fourth] = entries;
         Ok(Self {
             graph,
             rescore,
-            entries,
-            visited: vec![0_u8; graph.node_count() as usize],
-            epoch: 0,
-            pool: Vec::new(),
-            frontier: Vec::new(),
-            hop_candidates,
-            rescore_row_ids: Vec::new(),
-            rescore_coarse_scores: Vec::new(),
+            entries: [first?, second?, third?, fourth?],
+            scratch,
         })
     }
 
@@ -656,21 +828,26 @@ impl<'a> GraphSearcher<'a> {
             pushes: 0,
             visited: 0,
             visited_epoch_cleared,
+            dims_touched: 0,
+            bytes_read: 0,
             qos_class,
             qos_relative_priority,
             core_class: request.observed_core_class,
         };
-        self.pool.clear();
-        self.frontier.clear();
-        if self.pool.capacity() < ef {
-            self.pool.try_reserve(ef).map_err(|error| {
+        self.scratch.pool.clear();
+        self.scratch.frontier.clear();
+        if self.scratch.pool.capacity() < ef {
+            self.scratch.pool.try_reserve_exact(ef).map_err(|error| {
                 GraphSearchError::Geometry(format!("pool allocation failed: {error}"))
             })?;
         }
-        if self.frontier.capacity() < ef {
-            self.frontier.try_reserve(ef).map_err(|error| {
-                GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
-            })?;
+        if self.scratch.frontier.capacity() < ef {
+            self.scratch
+                .frontier
+                .try_reserve_exact(ef)
+                .map_err(|error| {
+                    GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
+                })?;
         }
         let mut candidate_sequence = request.trace_candidates.then(|| Vec::with_capacity(ef));
         let entries = self.entries;
@@ -682,7 +859,7 @@ impl<'a> GraphSearcher<'a> {
         let mut seed_group = [None; 4];
         let mut seed_count = 0_usize;
         for entry in entries {
-            if mark_visited(&mut self.visited, self.epoch, entry)? {
+            if mark_visited(&mut self.scratch.visited, self.scratch.epoch, entry)? {
                 counters.visited += 1;
                 ensure_visited_cap(counters.visited, visited_cap)?;
                 let Some(slot) = seed_group.get_mut(seed_count) else {
@@ -706,11 +883,12 @@ impl<'a> GraphSearcher<'a> {
         )?;
         loop {
             check_cancellation(cancellation)?;
-            let Some(candidate) = min_heap_pop(&mut self.frontier)? else {
+            let Some(candidate) = min_heap_pop(&mut self.scratch.frontier)? else {
                 break;
             };
-            if self.pool.len() >= ef
+            if self.scratch.pool.len() >= ef
                 && self
+                    .scratch
                     .pool
                     .first()
                     .is_some_and(|worst| candidate.distance > worst.distance)
@@ -720,10 +898,10 @@ impl<'a> GraphSearcher<'a> {
             counters.hops += 1;
             let (degree, neighbors) = self.graph.adjacency_checked(candidate.row_id)?;
             let degree = usize::from(degree);
-            self.hop_candidates.clear();
+            self.scratch.hop_candidates.clear();
             for raw_neighbor in neighbors.take(degree) {
                 let neighbor = self.graph.checked_node_id(raw_neighbor)?;
-                if !mark_visited(&mut self.visited, self.epoch, neighbor)? {
+                if !mark_visited(&mut self.scratch.visited, self.scratch.epoch, neighbor)? {
                     continue;
                 }
                 counters.visited += 1;
@@ -731,16 +909,16 @@ impl<'a> GraphSearcher<'a> {
                 if request.prefetch.is_enabled() {
                     self.graph.prefetch_line0(neighbor);
                 }
-                self.hop_candidates.push(neighbor);
+                self.scratch.hop_candidates.push(neighbor);
             }
             let mut group_start = 0_usize;
-            let hop_candidate_count = self.hop_candidates.len();
+            let hop_candidate_count = self.scratch.hop_candidates.len();
             while group_start < hop_candidate_count {
                 check_cancellation(cancellation)?;
                 let group_count = (hop_candidate_count - group_start).min(4);
                 let mut group = [None; 4];
                 for lane in 0..group_count {
-                    let source = self.hop_candidates.get(group_start + lane).copied();
+                    let source = self.scratch.hop_candidates.get(group_start + lane).copied();
                     let Some(destination) = group.get_mut(lane) else {
                         return Err(GraphSearchError::Geometry(
                             "candidate gather lane is unavailable".to_owned(),
@@ -762,20 +940,27 @@ impl<'a> GraphSearcher<'a> {
             }
         }
         check_cancellation(cancellation)?;
-        self.rescore_row_ids.clear();
-        self.rescore_coarse_scores.clear();
-        self.rescore_row_ids
-            .try_reserve(self.pool.len())
-            .map_err(|error| {
-                GraphSearchError::Geometry(format!("rescore row-id allocation failed: {error}"))
-            })?;
-        self.rescore_coarse_scores
-            .try_reserve(self.pool.len())
-            .map_err(|error| {
-                GraphSearchError::Geometry(format!("rescore score allocation failed: {error}"))
-            })?;
-        for candidate in &self.pool {
-            self.rescore_row_ids.push(candidate.row_id.raw());
+        self.scratch.rescore_row_ids.clear();
+        self.scratch.rescore_coarse_scores.clear();
+        let retained = self.scratch.pool.len();
+        if self.scratch.rescore_row_ids.capacity() < retained {
+            self.scratch
+                .rescore_row_ids
+                .try_reserve_exact(retained)
+                .map_err(|error| {
+                    GraphSearchError::Geometry(format!("rescore row-id allocation failed: {error}"))
+                })?;
+        }
+        if self.scratch.rescore_coarse_scores.capacity() < retained {
+            self.scratch
+                .rescore_coarse_scores
+                .try_reserve_exact(retained)
+                .map_err(|error| {
+                    GraphSearchError::Geometry(format!("rescore score allocation failed: {error}"))
+                })?;
+        }
+        for candidate in &self.scratch.pool {
+            self.scratch.rescore_row_ids.push(candidate.row_id.raw());
             let score = -(candidate.distance as f32);
             if !score.is_finite() {
                 return Err(GraphSearchError::Geometry(format!(
@@ -783,7 +968,7 @@ impl<'a> GraphSearcher<'a> {
                     candidate.row_id.raw()
                 )));
             }
-            self.rescore_coarse_scores.push(score);
+            self.scratch.rescore_coarse_scores.push(score);
         }
         let coarse_bytes_per_row = self
             .graph
@@ -792,8 +977,8 @@ impl<'a> GraphSearcher<'a> {
             .checked_add(12)
             .ok_or_else(|| GraphSearchError::Geometry("coarse row bytes overflow".to_owned()))?;
         let pool = RescorePool::retained(
-            &self.rescore_row_ids,
-            &self.rescore_coarse_scores,
+            &self.scratch.rescore_row_ids,
+            &self.scratch.rescore_coarse_scores,
             RescoreMetric::SquaredL2,
             counters.candidates_scored,
             coarse_bytes_per_row,
@@ -808,6 +993,16 @@ impl<'a> GraphSearcher<'a> {
         )?;
         check_cancellation(cancellation)?;
         counters.candidates_rescored = rescored.candidates_rescored;
+        let touched_rows = counters
+            .candidates_scored
+            .checked_add(counters.candidates_rescored)
+            .ok_or_else(|| GraphSearchError::Geometry("dimension counter overflow".to_owned()))?;
+        counters.dims_touched = u64::try_from(touched_rows)
+            .ok()
+            .and_then(|rows| rows.checked_mul(u64::from(self.graph.layout().dims())))
+            .ok_or_else(|| GraphSearchError::Geometry("dimension counter overflow".to_owned()))?;
+        counters.bytes_read = u64::try_from(rescored.bytes.total())
+            .map_err(|_| GraphSearchError::Geometry("byte counter exceeds u64".to_owned()))?;
         let candidates = rescored
             .hits
             .into_iter()
@@ -842,10 +1037,10 @@ impl<'a> GraphSearcher<'a> {
     }
 
     fn next_epoch(&mut self) -> bool {
-        self.epoch = self.epoch.wrapping_add(1);
-        if self.epoch == 0 {
-            self.visited.fill(0);
-            self.epoch = 1;
+        self.scratch.epoch = self.scratch.epoch.wrapping_add(1);
+        if self.scratch.epoch == 0 {
+            self.scratch.visited.fill(0);
+            self.scratch.epoch = 1;
             return true;
         }
         false
@@ -872,14 +1067,14 @@ impl<'a> GraphSearcher<'a> {
             if let Some(sequence) = candidate_sequence.as_mut() {
                 sequence.push(candidate.row_id.raw());
             }
-            if max_heap_would_keep(&self.pool, candidate, ef) {
-                max_heap_insert_bounded(&mut self.pool, candidate, ef)?;
-                min_heap_push(&mut self.frontier, candidate)?;
+            if max_heap_would_keep(&self.scratch.pool, candidate, ef) {
+                max_heap_insert_bounded(&mut self.scratch.pool, candidate, ef)?;
+                min_heap_push(&mut self.scratch.frontier, candidate)?;
                 counters.pushes = counters.pushes.checked_add(1).ok_or_else(|| {
                     GraphSearchError::Geometry("push counter overflow".to_owned())
                 })?;
                 if prefetch.is_enabled()
-                    && let Some(head) = self.frontier.first()
+                    && let Some(head) = self.scratch.frontier.first()
                 {
                     self.graph.prefetch_head_block(head.row_id);
                 }
@@ -917,7 +1112,7 @@ fn check_cancellation(
     let Some(cancellation) = cancellation else {
         return Ok(());
     };
-    match cancellation.check() {
+    match cancellation.check_graph() {
         Ok(()) => Ok(()),
         Err(ScanError::Cancelled { partial }) => Err(GraphSearchError::Cancelled { partial }),
         Err(ScanError::Timeout { partial }) => Err(GraphSearchError::Timeout { partial }),
@@ -1213,7 +1408,8 @@ mod tests {
     use rand::RngCore;
 
     use super::{
-        AdaptiveEfError, GraphSearchProfile, GraphSearchRequest, GraphSearcher, TraversalPrefetch,
+        AdaptiveEfError, GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher,
+        TraversalPrefetch,
     };
     use crate::graph::block::{
         GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout, decode_node_blocks,
@@ -1287,7 +1483,10 @@ mod tests {
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(4.25);
         let expected = brute_force_topk(&rescore, &query, 5);
-        let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
 
         let result = searcher
             .search(GraphSearchRequest::new(&query, 5, 0x19_04), None)
@@ -1308,7 +1507,10 @@ mod tests {
         let (encoded, rescore) = complete_graph_fixture(12);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(4.25);
-        let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
 
         for query_index in 0..255 {
             let result = searcher
@@ -1339,7 +1541,10 @@ mod tests {
         let (encoded, rescore) = complete_graph_fixture(12);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(4.25);
-        let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
 
         let result = searcher
             .search(
@@ -1372,8 +1577,16 @@ mod tests {
         let request = GraphSearchRequest::new(&query, 5, 0x19_0400)
             .with_ef(9)
             .with_candidate_trace();
-        let mut first = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
-        let mut second = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut first_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("first scratch");
+        let mut second_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("second scratch");
+        let mut first = GraphSearcher::new(graph, &rescore, &mut first_scratch)
+            .expect("fixture geometry is valid");
+        let mut second = GraphSearcher::new(graph, &rescore, &mut second_scratch)
+            .expect("fixture geometry is valid");
 
         let first_result = first
             .search(request, None)
@@ -1398,8 +1611,16 @@ mod tests {
         let (encoded, rescore) = complete_graph_fixture(12);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(4.25);
-        let mut enabled = GraphSearcher::new(graph, &rescore).expect("enabled searcher");
-        let mut disabled = GraphSearcher::new(graph, &rescore).expect("disabled searcher");
+        let mut enabled_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("enabled scratch");
+        let mut disabled_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("disabled scratch");
+        let mut enabled =
+            GraphSearcher::new(graph, &rescore, &mut enabled_scratch).expect("enabled searcher");
+        let mut disabled =
+            GraphSearcher::new(graph, &rescore, &mut disabled_scratch).expect("disabled searcher");
         let enabled_result = enabled
             .search(
                 GraphSearchRequest::new(&query, 5, 0x19_0400)
@@ -1434,7 +1655,10 @@ mod tests {
         let (encoded, rescore) = chain_graph_fixture(10);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vector(9.0);
-        let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
 
         let error = searcher
             .search(
@@ -1454,7 +1678,10 @@ mod tests {
         let (encoded, rescore) = long_chain_graph_fixture(40_000);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vec![0.0_f32; DIMS];
-        let mut searcher = GraphSearcher::new(graph, &rescore).expect("fixture geometry is valid");
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
         let directory = tempfile::tempdir().expect("temporary store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("store opens");
         let lease = store.snapshot().expect("snapshot lease");
@@ -1501,8 +1728,16 @@ mod tests {
             prop_assume!(ef1 < ef2);
             let query = vector(query_value);
             let truth = brute_force_topk(&rescore, &query, 5);
-            let mut first = GraphSearcher::new(graph, &rescore).expect("first searcher");
-            let mut second = GraphSearcher::new(graph, &rescore).expect("second searcher");
+            let mut first_scratch =
+                GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                    .expect("first scratch");
+            let mut second_scratch =
+                GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                    .expect("second scratch");
+            let mut first =
+                GraphSearcher::new(graph, &rescore, &mut first_scratch).expect("first searcher");
+            let mut second =
+                GraphSearcher::new(graph, &rescore, &mut second_scratch).expect("second searcher");
             let result1 = first
                 .search(
                     GraphSearchRequest::new(&query, 5, 0x19_0408).with_ef(ef1),

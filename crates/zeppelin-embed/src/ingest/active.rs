@@ -420,6 +420,10 @@ impl ActiveSegment {
         &self.factors
     }
 
+    pub(crate) fn vectors(&self) -> &[f32] {
+        &self.vectors
+    }
+
     pub(crate) fn document(&self, row: usize) -> Option<DocumentVersion> {
         self.doc_ids
             .get(row)

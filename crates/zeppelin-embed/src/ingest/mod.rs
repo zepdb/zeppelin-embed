@@ -323,12 +323,29 @@ impl SearchCandidate {
 }
 
 /// Global top-k results and aggregate deterministic scan counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GraphSearchStats {
+    /// Sealed segments that completed graph traversal.
+    pub segments_traversed: usize,
+    /// Complete immutable graph validations performed before descriptor reuse.
+    pub graph_validations: usize,
+    /// Full segment scans performed to discover persisted entry seeds.
+    pub entry_seed_discoveries: usize,
+    /// Visited arrays cleared after their epoch byte wrapped.
+    pub visited_epoch_clears: usize,
+    /// Retained graph candidates read from full-precision storage.
+    pub candidates_rescored: usize,
+}
+
+/// Global top-k results and aggregate deterministic query counters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchOutcome {
     /// Candidates merged across the active and every sealed segment.
     pub candidates: Vec<SearchCandidate>,
     /// Aggregate work from all per-segment query-pool executions.
     pub stats: ScanStats,
+    /// Graph-only deterministic work; all fields are zero for the default scan tier.
+    pub graph_stats: GraphSearchStats,
     /// Pinned active-state generation searched by this request.
     pub generation: u64,
 }

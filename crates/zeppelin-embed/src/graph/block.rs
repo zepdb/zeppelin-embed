@@ -140,6 +140,15 @@ pub struct GraphNodeBlocks<'a> {
     block_bytes: usize,
 }
 
+/// Owned geometry retained after one complete immutable graph validation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ValidatedGraphNodeBlocks {
+    layout: GraphNodeLayout,
+    node_count: u32,
+    block_bytes: usize,
+    region_bytes: usize,
+}
+
 /// Dense node id whose fixed-stride byte offset was checked once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CheckedNodeId {
@@ -165,6 +174,15 @@ impl GraphNodeBlocks<'_> {
     #[must_use]
     pub const fn node_count(&self) -> u32 {
         self.node_count
+    }
+
+    pub(crate) const fn validated_descriptor(&self) -> ValidatedGraphNodeBlocks {
+        ValidatedGraphNodeBlocks {
+            layout: self.layout,
+            node_count: self.node_count,
+            block_bytes: self.block_bytes,
+            region_bytes: self.bytes.len(),
+        }
     }
 
     /// Returns one validated node block by its identical segment row id.
@@ -305,6 +323,24 @@ impl GraphNodeBlocks<'_> {
         {
             prefetch_address(second_line.as_ptr());
         }
+    }
+}
+
+impl ValidatedGraphNodeBlocks {
+    pub(crate) fn bind<'a>(self, bytes: &'a [u8]) -> Result<GraphNodeBlocks<'a>, GraphNodeError> {
+        if bytes.len() != self.region_bytes {
+            return Err(GraphNodeError::InvalidHeader(format!(
+                "cached graph region length {}, current length {}",
+                self.region_bytes,
+                bytes.len()
+            )));
+        }
+        Ok(GraphNodeBlocks {
+            bytes,
+            layout: self.layout,
+            node_count: self.node_count,
+            block_bytes: self.block_bytes,
+        })
     }
 }
 

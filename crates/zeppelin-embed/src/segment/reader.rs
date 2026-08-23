@@ -12,7 +12,7 @@ use crate::format::frame::{
     read_u64,
 };
 use crate::format::{FormatFamily, FormatRegistry};
-use crate::graph::block::{GraphNodeBlocks, decode_node_blocks};
+use crate::graph::block::{GraphNodeBlocks, ValidatedGraphNodeBlocks, decode_node_blocks};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
 use crate::vfs::Vfs;
@@ -102,6 +102,9 @@ pub struct SegmentReader {
     meta: SegmentMeta,
     header_length: usize,
     entries: Vec<RegionEntry>,
+    // Inline cached graph metadata is covered by this reader's exactly
+    // accounted snapshot slot; its heap-backed scratch is charged to Cache.
+    pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
 }
 
 impl SegmentReader {
@@ -120,6 +123,7 @@ impl SegmentReader {
             meta: parsed.meta,
             header_length: parsed.header_length,
             entries: parsed.entries,
+            graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
 
@@ -146,6 +150,7 @@ impl SegmentReader {
             meta: parsed.meta,
             header_length: parsed.header_length,
             entries: parsed.entries,
+            graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
 
@@ -383,6 +388,15 @@ impl SegmentReader {
             )));
         }
         Ok(blocks)
+    }
+
+    pub(crate) fn bind_validated_graph_node_blocks(
+        &self,
+        descriptor: ValidatedGraphNodeBlocks,
+    ) -> Result<GraphNodeBlocks<'_>, SegmentError> {
+        let entry = self.entry(RegionKind::GraphNodeBlocks)?;
+        let bytes = self.region_slice(entry)?;
+        descriptor.bind(bytes).map_err(SegmentError::Graph)
     }
 
     /// Validates every region, alignment padding, and the whole-file trailer.
