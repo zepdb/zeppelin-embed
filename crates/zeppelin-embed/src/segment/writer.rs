@@ -6,6 +6,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use crate::format::frame::{FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN};
 use crate::format::{FormatFamily, FormatRegistry};
+use crate::graph::block::{GraphNodeBlockBuild, encode_node_blocks};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
@@ -56,6 +57,36 @@ struct RegionBytes {
 
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
+    encode_segment_inner(build, None)
+}
+
+/// Encodes a complete segment with one fixed-stride graph node-block region.
+pub fn encode_segment_with_graph(
+    build: SegmentBuild<'_>,
+    graph: GraphNodeBlockBuild<'_>,
+) -> Result<Vec<u8>, SegmentError> {
+    if graph.layout.dims() != build.dims {
+        return Err(SegmentError::Geometry(format!(
+            "graph dimensions {}, segment dimensions {}",
+            graph.layout.dims(),
+            build.dims
+        )));
+    }
+    if graph.nodes.len() != build.columns.row_count() as usize {
+        return Err(SegmentError::Geometry(format!(
+            "graph nodes {}, segment rows {}",
+            graph.nodes.len(),
+            build.columns.row_count()
+        )));
+    }
+    let graph_bytes = encode_node_blocks(graph)?.into_bytes();
+    encode_segment_inner(build, Some(graph_bytes))
+}
+
+fn encode_segment_inner(
+    build: SegmentBuild<'_>,
+    graph_bytes: Option<Vec<u8>>,
+) -> Result<Vec<u8>, SegmentError> {
     let row_count = build.columns.row_count();
     if build.alive.row_count() != row_count {
         return Err(SegmentError::Geometry(format!(
@@ -131,7 +162,7 @@ pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> 
         rescore.extend_from_slice(&value.to_bits().to_le_bytes());
     }
 
-    let regions = vec![
+    let mut regions = vec![
         RegionBytes {
             kind: RegionKind::Columns,
             family: FormatFamily::Columns,
@@ -158,6 +189,13 @@ pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> 
             bytes: rescore,
         },
     ];
+    if let Some(bytes) = graph_bytes {
+        regions.push(RegionBytes {
+            kind: RegionKind::GraphNodeBlocks,
+            family: FormatFamily::GraphNodeBlocks,
+            bytes,
+        });
+    }
     encode_regions(build, &regions)
 }
 
@@ -362,9 +400,31 @@ pub fn write_segment(
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
     let bytes = encode_segment(build)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes and atomically publishes a segment containing fixed-stride graph blocks.
+pub fn write_segment_with_graph(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    graph: GraphNodeBlockBuild<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_with_graph(build, graph)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+fn publish_segment(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    policy: DurabilityPolicy,
+    bytes: &[u8],
+) -> Result<SegmentMeta, SegmentError> {
     let final_path = directory.join(build.id.file_name());
     let temporary_path = temporary_path(directory, build.id);
-    vfs.write(&temporary_path, &bytes)
+    vfs.write(&temporary_path, bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
     match policy.data_file_sync() {
         SyncRequirement::Skip => {}

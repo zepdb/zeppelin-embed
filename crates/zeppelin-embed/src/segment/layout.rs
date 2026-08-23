@@ -36,8 +36,8 @@ pub enum RegionKind {
     VectorRescore = 5,
     /// Reserved for Task 13 postings.
     Postings = 6,
-    /// Reserved for separate graph-artifact CSR adjacency.
-    GraphAdjacencyCsr = 7,
+    /// Fixed-stride graph node blocks; originally reserved under the obsolete CSR name.
+    GraphNodeBlocks = 7,
     /// Reserved for graph-neighbor-colocated codes.
     GraphColocatedCodes = 8,
     /// Reserved for a future sign-plane payload.
@@ -67,7 +67,7 @@ impl RegionKind {
             4 => Some(Self::VectorFactors),
             5 => Some(Self::VectorRescore),
             6 => Some(Self::Postings),
-            7 => Some(Self::GraphAdjacencyCsr),
+            7 => Some(Self::GraphNodeBlocks),
             8 => Some(Self::GraphColocatedCodes),
             9 => Some(Self::SignPlane),
             10 => Some(Self::PdxClusteredBlocks),
@@ -85,9 +85,9 @@ impl RegionKind {
             Self::VectorFactors => Some(FormatFamily::VectorFactors),
             Self::VectorRescore => Some(FormatFamily::VectorRescore),
             Self::Postings => Some(FormatFamily::Postings),
+            Self::GraphNodeBlocks => Some(FormatFamily::GraphNodeBlocks),
             Self::ChecksumTable => Some(FormatFamily::ChecksumTable),
-            Self::GraphAdjacencyCsr
-            | Self::GraphColocatedCodes
+            Self::GraphColocatedCodes
             | Self::SignPlane
             | Self::PdxClusteredBlocks
             | Self::VectorSpaceN => None,

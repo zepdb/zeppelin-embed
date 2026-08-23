@@ -17,3 +17,18 @@
   trailer. Each record header is little-endian `payload_len:u32`, `seq:u64`,
   and `op:u16`; its trailing xxh3-64 covers that complete header plus the
   payload. The four `wal_*_v1.hex` fixtures freeze the complete file bytes.
+- Fixed-stride graph node blocks are family id 12 in segment region kind id 7.
+  The region begins directly with dense row-id blocks so block `i` is at
+  `i * stride`; no leading header may break that address arithmetic. The two
+  `graph_node_blocks_*_FROZEN_v1.hex` fixtures are the byte authority.
+- Each graph block is `ceil(padded_dims/2)` frozen Bit4 code bytes, the 12-byte
+  persisted `Bit4Factors` record, `degree:u8`, `flags:u8`, two zero bytes,
+  `max_degree` little-endian u32 neighbour slots, then zero bytes through the
+  next 128-byte boundary. Unused slots are `u32::MAX`; flag bits above 1 are
+  reserved zero.
+- The final 128-byte graph trailer is: magic `ZEGRNB01` at 0, version u16 at 8,
+  zero flags u16 at 10, logical dims u32 at 12, padded dims u32 at 16,
+  max-degree u8 at 20, zero bytes 21..24, stride u32 at 24, node count u32 at
+  28, and xxh3-64 at 32 over all preceding region bytes through trailer byte
+  31. Bytes 40..128 are zero. Incompatible interpretation changes mint a new
+  family version and new owner-approved goldens.

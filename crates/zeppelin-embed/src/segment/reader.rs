@@ -12,6 +12,7 @@ use crate::format::frame::{
     read_u64,
 };
 use crate::format::{FormatFamily, FormatRegistry};
+use crate::graph::block::{GraphNodeBlocks, decode_node_blocks};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
 use crate::vfs::Vfs;
@@ -337,6 +338,26 @@ impl SegmentReader {
             )));
         }
         Ok(alive)
+    }
+
+    /// Returns the validated, mmap-backed fixed-stride graph node-block region.
+    pub fn graph_node_blocks(&self) -> Result<GraphNodeBlocks<'_>, SegmentError> {
+        let blocks = decode_node_blocks(self.region(RegionKind::GraphNodeBlocks)?)?;
+        if blocks.layout().dims() != self.meta.dims {
+            return Err(SegmentError::Geometry(format!(
+                "graph dimensions {}, segment dimensions {}",
+                blocks.layout().dims(),
+                self.meta.dims
+            )));
+        }
+        if blocks.node_count() != self.meta.row_count {
+            return Err(SegmentError::Geometry(format!(
+                "graph nodes {}, segment rows {}",
+                blocks.node_count(),
+                self.meta.row_count
+            )));
+        }
+        Ok(blocks)
     }
 
     /// Validates every region, alignment padding, and the whole-file trailer.

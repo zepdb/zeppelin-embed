@@ -142,6 +142,31 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   segment headers only, refuses snapshots ahead of the durable log, and derives
   orphan reachability from the manifest while honoring active-writer exclusions.
 
+## Task 19-M2 fixed-stride graph format invariants
+
+- Region kind id 7 is the fixed-stride graph node-block region. Task 07
+  originally reserved that numeric id under the obsolete
+  `graph-adjacency-csr` name; the id is preserved while the source name and
+  family-12 registry entry describe the format that actually shipped.
+- Graph node id is exactly the dense segment-local row id. Block address is
+  `region_base + row_id * stride`; block zero starts at region offset zero, so
+  Task 07's 16-KB region alignment also aligns every block to 128 bytes.
+- V1 stride is `round_up_128(ceil(padded_dims / 2) + 16 + 4 * max_degree)`.
+  Padded dimensions are a multiple of 128 and every padded Bit4 nibble is zero.
+  Bit4 codes retain the frozen MSB-first layout and the following three f32s
+  retain `Bit4Factors::persisted_fields()` order.
+- Degree is u8, flags use only bits 0 (entry seed) and 1 (hub), the following
+  two bytes are zero, active neighbours are little-endian dense row ids, and
+  every unused slot is `u32::MAX`. Cache-line tail padding is zero.
+- A 128-byte trailer follows `node_count * stride` block bytes. Its xxh3-64
+  authenticates every block plus the interpretation-critical trailer prefix;
+  the task-07 directory checksum, 64-KB chunk checksums, and whole-file
+  checksum remain independently required.
+- Corrupt graph bytes surface a typed error. The only recovery exception to
+  fail-loudly is this derived accelerator: the query-facing graph-load seam
+  retains that error and returns complete exact-scan results. It does not
+  generalize fallback behavior to another segment contract.
+
 ## Task 08 Part A WAL invariants
 
 - Every synchronization names `SyncKind`; Darwin maps barrier/full to

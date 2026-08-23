@@ -164,6 +164,7 @@ jobs:
       - run: scripts/cargo-fuzz-nightly run fuzz_smoke -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run kernels_equivalence -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run segment_reader -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run graph_node_block_decode -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run manifest_decode -- -max_total_time=60
 
   address-sanitizer:

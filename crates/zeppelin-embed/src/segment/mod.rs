@@ -107,6 +107,8 @@ pub enum SegmentError {
     Columns(String),
     /// Alive-set bytes were invalid.
     Alive(String),
+    /// Fixed-stride graph node-block bytes were invalid.
+    Graph(crate::graph::block::GraphNodeError),
 }
 
 impl SegmentError {
@@ -139,6 +141,7 @@ impl std::fmt::Display for SegmentError {
             Self::Geometry(detail) => write!(formatter, "segment geometry is invalid: {detail}"),
             Self::Columns(detail) => write!(formatter, "segment columns are invalid: {detail}"),
             Self::Alive(detail) => write!(formatter, "segment alive set is invalid: {detail}"),
+            Self::Graph(error) => write!(formatter, "segment graph region is invalid: {error}"),
         }
     }
 }
@@ -148,6 +151,7 @@ impl std::error::Error for SegmentError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Format(error) => Some(error),
+            Self::Graph(error) => Some(error),
             Self::WrongObject { .. }
             | Self::MissingRegion(_)
             | Self::Geometry(_)
@@ -160,5 +164,11 @@ impl std::error::Error for SegmentError {
 impl From<FormatError> for SegmentError {
     fn from(error: FormatError) -> Self {
         Self::Format(error)
+    }
+}
+
+impl From<crate::graph::block::GraphNodeError> for SegmentError {
+    fn from(error: crate::graph::block::GraphNodeError) -> Self {
+        Self::Graph(error)
     }
 }

@@ -29,6 +29,8 @@ pub enum FormatFamily {
     Manifest = 10,
     /// Append-only write-ahead-log records.
     Wal = 11,
+    /// Fixed-stride graph node-block regions.
+    GraphNodeBlocks = 12,
 }
 
 impl FormatFamily {
@@ -105,7 +107,7 @@ impl std::error::Error for RegistryError {}
 /// Static registry for every persisted family and quantization identifier.
 pub struct FormatRegistry;
 
-const FAMILIES: [FamilySpec; 11] = [
+const FAMILIES: [FamilySpec; 12] = [
     FamilySpec {
         family: FormatFamily::Frame,
         current_version: 1,
@@ -168,6 +170,12 @@ const FAMILIES: [FamilySpec; 11] = [
     },
     FamilySpec {
         family: FormatFamily::Wal,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::GraphNodeBlocks,
         current_version: 1,
         minimum_accepted_version: 1,
         maximum_accepted_version: 1,
