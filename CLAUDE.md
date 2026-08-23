@@ -48,11 +48,18 @@ Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
 C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling
 and is deliberately excluded from the production workspace graph.
 
-The 2 MB static-library gate measures post-strip linkable sections with the
+The 5 MB static-library gate measures post-strip linkable sections with the
 platform `size` tool and separately reports physical archive KB from `du`.
 Embedded fat-LTO LLVM bitcode and archive metadata are not runtime footprint;
 the linked-section total still includes Rust `std`, unwind support, and every
 engine section, so later code growth remains gated on each architecture.
+
+The gate was 2 MB from Task 01 through Track L. The repository owner raised it
+to 5 MB on 2026-08-23 by explicit instruction, so that lexical-engine
+structures are sized for retrieval quality and decode speed rather than for
+bytes. This is a deliberate widening of a budget, not a gate relaxed to reach
+green, and it does not authorise a single new dependency: the allowlist above
+is unchanged and adding to it remains an owner decision.
 
 ## Engineering method
 
