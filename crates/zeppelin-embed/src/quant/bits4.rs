@@ -118,7 +118,6 @@ impl Bit4Query {
         self.codes.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn kernel_parts(&self) -> (&[i8], i32, f64) {
         (&self.codes, self.code_sum, self.scale_half)
     }

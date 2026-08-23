@@ -1,20 +1,18 @@
-//! Recall-only measurement scaffold for the M3 flat-Vamana build.
-//!
-//! This deliberately is not the latency-tuned product traversal owned by M4.
+//! SIFT-1M graph construction and recall support.
 
 use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use zeppelin_embed::graph::GraphParams;
-use zeppelin_embed::graph::block::GraphNodeBlocks;
 use zeppelin_embed::graph::build::{
     CheckpointedGraphBuild, GraphBuildArtifact, GraphBuildPasses, build_graph_checkpointed,
 };
+use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearcher};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
-use zeppelin_embed::quant::{Bit4Query, est_dot_bit4, prepare_bit4_query, quantize_bit4};
+use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::segment::{SegmentId, SegmentMeta};
@@ -191,13 +189,9 @@ pub fn measure_sift1m_recall(
     let truth = read_i32_raw(&paths.ground_truth, QUERIES * TOP_K)?;
     let graph = reader.graph_node_blocks()?;
     let base = reader.rescore_f32()?;
-    let entries = graph_entry_points(&graph)?;
-    let mut visited = vec![0_u32; graph.node_count() as usize];
-    let mut epoch = 0_u32;
+    let mut searcher = GraphSearcher::new(graph, base)?;
     let mut totals = vec![0_u64; ef_values.len()];
     for (query_index, query) in queries.chunks_exact(DIMS).enumerate() {
-        let prepared = prepare_bit4_query(query, seed ^ query_index as u64)?;
-        let query_norm = squared_norm(query);
         let truth_start = query_index
             .checked_mul(TOP_K)
             .ok_or("ground-truth offset overflow")?;
@@ -206,24 +200,16 @@ pub fn measure_sift1m_recall(
             .get(truth_start..truth_end)
             .ok_or("truth row missing")?;
         for (total, ef) in totals.iter_mut().zip(ef_values) {
-            epoch = epoch.wrapping_add(1);
-            if epoch == 0 {
-                visited.fill(0);
-                epoch = 1;
-            }
-            let pool = best_first_pool(
-                &graph,
-                &prepared,
-                query_norm,
-                &entries,
+            let result = searcher.search(GraphSearchRequest::new(
+                query,
+                TOP_K,
                 *ef,
-                &mut visited,
-                epoch,
-            )?;
-            let exact = exact_rescore(&pool, base, query, DIMS, TOP_K)?;
-            *total += exact
+                seed ^ query_index as u64,
+            ))?;
+            *total += result
+                .candidates()
                 .iter()
-                .filter(|node| expected.contains(&(**node as i32)))
+                .filter(|candidate| expected.contains(&(candidate.row_id() as i32)))
                 .count() as u64;
         }
     }
@@ -236,160 +222,6 @@ pub fn measure_sift1m_recall(
             recall_at_100: total as f64 / denominator,
         })
         .collect())
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ScoredNode {
-    node_id: u32,
-    distance: f64,
-}
-
-fn graph_entry_points(graph: &GraphNodeBlocks<'_>) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let mut entries = Vec::new();
-    for node_id in 0..graph.node_count() {
-        if graph.block(node_id)?.flags() & 1 != 0 {
-            entries.push(node_id);
-        }
-    }
-    if entries.is_empty() {
-        return Err("graph contains no entry points".into());
-    }
-    Ok(entries)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn best_first_pool(
-    graph: &GraphNodeBlocks<'_>,
-    query: &Bit4Query,
-    query_norm: f64,
-    entries: &[u32],
-    ef: usize,
-    visited: &mut [u32],
-    epoch: u32,
-) -> Result<Vec<ScoredNode>, Box<dyn std::error::Error>> {
-    let mut pool = Vec::with_capacity(ef);
-    let mut frontier = Vec::with_capacity(ef * 2);
-    for &entry in entries {
-        mark_visited(visited, entry, epoch)?;
-        let scored = graph_score(graph, query, query_norm, entry)?;
-        insert_scored(&mut pool, scored, ef);
-        frontier.push(scored);
-    }
-    while !frontier.is_empty() {
-        frontier.sort_unstable_by(scored_worst_first);
-        let candidate = frontier.pop().ok_or("frontier became empty")?;
-        if pool.len() >= ef
-            && pool
-                .last()
-                .is_some_and(|worst| candidate.distance > worst.distance)
-        {
-            break;
-        }
-        let block = graph.block(candidate.node_id)?;
-        for neighbor in block.neighbors_padded().take(usize::from(block.degree())) {
-            let node = usize::try_from(neighbor)?;
-            let marker = visited.get_mut(node).ok_or("neighbor id is out of range")?;
-            if *marker == epoch {
-                continue;
-            }
-            *marker = epoch;
-            let scored = graph_score(graph, query, query_norm, neighbor)?;
-            if pool.len() < ef
-                || pool
-                    .last()
-                    .is_some_and(|worst| scored.distance < worst.distance)
-            {
-                insert_scored(&mut pool, scored, ef);
-                frontier.push(scored);
-            }
-        }
-    }
-    Ok(pool)
-}
-
-fn mark_visited(visited: &mut [u32], node_id: u32, epoch: u32) -> Result<(), &'static str> {
-    let node = usize::try_from(node_id).map_err(|_| "entry id exceeds usize")?;
-    let marker = visited.get_mut(node).ok_or("entry id is out of range")?;
-    *marker = epoch;
-    Ok(())
-}
-
-fn graph_score(
-    graph: &GraphNodeBlocks<'_>,
-    query: &Bit4Query,
-    query_norm: f64,
-    node_id: u32,
-) -> Result<ScoredNode, Box<dyn std::error::Error>> {
-    let block = graph.block(node_id)?;
-    let dot = f64::from(est_dot_bit4(query, block.codes(), block.factors())?);
-    let norm = block.factors().norm();
-    Ok(ScoredNode {
-        node_id,
-        distance: (query_norm + norm * norm - 2.0 * dot).max(0.0),
-    })
-}
-
-fn insert_scored(pool: &mut Vec<ScoredNode>, scored: ScoredNode, limit: usize) {
-    pool.push(scored);
-    pool.sort_unstable_by(scored_best_first);
-    if pool.len() > limit {
-        let _ = pool.pop();
-    }
-}
-
-fn scored_best_first(left: &ScoredNode, right: &ScoredNode) -> std::cmp::Ordering {
-    left.distance
-        .total_cmp(&right.distance)
-        .then_with(|| left.node_id.cmp(&right.node_id))
-}
-
-fn scored_worst_first(left: &ScoredNode, right: &ScoredNode) -> std::cmp::Ordering {
-    scored_best_first(right, left)
-}
-
-fn exact_rescore(
-    candidates: &[ScoredNode],
-    base: &[f32],
-    query: &[f32],
-    dimensions: usize,
-    k: usize,
-) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let mut exact = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        let row = usize::try_from(candidate.node_id)?;
-        let start = row
-            .checked_mul(dimensions)
-            .ok_or("rescore offset overflow")?;
-        let end = start
-            .checked_add(dimensions)
-            .ok_or("rescore end overflow")?;
-        let vector = base.get(start..end).ok_or("rescore row missing")?;
-        let distance = vector
-            .iter()
-            .zip(query)
-            .map(|(left, right)| {
-                let delta = f64::from(*left) - f64::from(*right);
-                delta * delta
-            })
-            .sum();
-        exact.push(ScoredNode {
-            node_id: candidate.node_id,
-            distance,
-        });
-    }
-    exact.sort_unstable_by(scored_best_first);
-    Ok(exact
-        .into_iter()
-        .take(k)
-        .map(|candidate| candidate.node_id)
-        .collect())
-}
-
-fn squared_norm(values: &[f32]) -> f64 {
-    values
-        .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum()
 }
 
 fn read_f32_raw(

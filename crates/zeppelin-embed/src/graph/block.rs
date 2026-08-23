@@ -1,5 +1,6 @@
 //! Fixed-stride, cache-line-aligned graph node-block persistence.
 
+use crate::kernels::Bit4Row;
 use crate::quant::Bit4Factors;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -139,6 +140,20 @@ pub struct GraphNodeBlocks<'a> {
     block_bytes: usize,
 }
 
+/// Dense node id whose fixed-stride byte offset was checked once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CheckedNodeId {
+    raw: u32,
+    offset: usize,
+}
+
+impl CheckedNodeId {
+    #[must_use]
+    pub(super) const fn raw(self) -> u32 {
+        self.raw
+    }
+}
+
 impl GraphNodeBlocks<'_> {
     /// Returns the geometry validated from the fixed metadata trailer.
     #[must_use]
@@ -154,26 +169,85 @@ impl GraphNodeBlocks<'_> {
 
     /// Returns one validated node block by its identical segment row id.
     pub fn block(&self, node_id: u32) -> Result<GraphNodeBlock<'_>, GraphNodeError> {
+        self.block_checked(self.checked_node_id(node_id)?)
+    }
+
+    pub(super) fn checked_node_id(&self, node_id: u32) -> Result<CheckedNodeId, GraphNodeError> {
         if node_id >= self.node_count {
             return Err(GraphNodeError::NodeIdOutOfRange {
                 node_id,
                 node_count: self.node_count,
             });
         }
-        let start = usize::try_from(self.layout.block_offset(node_id)?)
+        let offset = usize::try_from(self.layout.block_offset(node_id)?)
             .map_err(|_| GraphNodeError::ArithmeticOverflow)?;
-        let end = start
+        Ok(CheckedNodeId {
+            raw: node_id,
+            offset,
+        })
+    }
+
+    pub(super) fn block_checked(
+        &self,
+        node_id: CheckedNodeId,
+    ) -> Result<GraphNodeBlock<'_>, GraphNodeError> {
+        let end = node_id
+            .offset
             .checked_add(self.layout.stride as usize)
             .ok_or(GraphNodeError::ArithmeticOverflow)?;
         let block = self
             .bytes
-            .get(start..end.min(self.block_bytes))
+            .get(node_id.offset..end.min(self.block_bytes))
             .ok_or_else(|| GraphNodeError::InvalidNode {
-                node_id,
+                node_id: node_id.raw,
                 detail: "validated block range is unavailable".to_owned(),
             })?;
-        decode_block_view(self.layout, node_id, block)
+        decode_block_view(self.layout, node_id.raw, block)
     }
+
+    pub(super) fn code_row_checked(
+        &self,
+        node_id: CheckedNodeId,
+    ) -> Result<Bit4Row<'_>, GraphNodeError> {
+        Bit4Row::from_mapped_region(self.bytes, node_id.offset, self.layout.code_bytes())
+            .ok_or_else(|| GraphNodeError::InvalidNode {
+                node_id: node_id.raw,
+                detail: "validated Bit4 row is unavailable".to_owned(),
+            })
+    }
+
+    pub(super) fn prefetch_line0(&self, node_id: CheckedNodeId) {
+        if let Some(bytes) = self.bytes.get(node_id.offset..) {
+            prefetch_address(bytes.as_ptr());
+        }
+    }
+
+    pub(super) fn prefetch_head_block(&self, node_id: CheckedNodeId) {
+        let Some(bytes) = self.bytes.get(node_id.offset..) else {
+            return;
+        };
+        prefetch_address(bytes.as_ptr());
+        if self.layout.stride as usize > CACHE_LINE_BYTES
+            && let Some(second_line) = bytes.get(CACHE_LINE_BYTES..)
+        {
+            prefetch_address(second_line.as_ptr());
+        }
+    }
+}
+
+#[inline]
+fn prefetch_address(address: *const u8) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: callers derive the address from a live immutable graph-region slice.
+    unsafe {
+        std::arch::asm!(
+            "prfm pldl1keep, [{address}]",
+            address = in(reg) address,
+            options(readonly, nostack)
+        );
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = address;
 }
 
 /// Borrowed fields from one validated fixed-stride node block.

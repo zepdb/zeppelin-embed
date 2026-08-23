@@ -4,6 +4,8 @@
 pub mod block;
 /// Deterministic, checkpointable flat Vamana construction.
 pub mod build;
+/// Single-core fixed-stride graph traversal.
+pub mod search;
 
 /// Minimum sealed-segment row count that earns a graph instead of exact scan.
 pub const MIN_GRAPH_ROWS: u32 = 10_000;
