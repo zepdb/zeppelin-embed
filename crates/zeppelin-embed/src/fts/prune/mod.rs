@@ -204,16 +204,57 @@ impl TopK {
         }
     }
 
+    /// The pinned ranking order: descending score, then ascending id.
+    ///
+    /// One definition, used by both the insertion and the tests that check
+    /// it against a full sort. Two spellings of a comparator is how a
+    /// tie-break drifts.
+    fn rank(
+        left: &(GlobalDocId, f64),
+        right: &(GlobalDocId, f64),
+    ) -> std::cmp::Ordering {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.0.cmp(&right.0))
+    }
+
     /// Offers one scored document.
+    ///
+    /// Insertion into a sorted array, not a sort on every offer. For `k` of
+    /// order one hundred that is strictly less work, and it reproduces the
+    /// pinned tie-break exactly: the comparator is the same one, and the
+    /// scan stops at the first entry the newcomer does not precede, which is
+    /// where a stable sort would have placed it.
     pub fn offer(&mut self, doc: GlobalDocId, score: f64) {
-        self.entries.push((doc, score));
-        self.entries.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(left.0.cmp(&right.0))
-        });
+        if self.capacity == 0 {
+            return;
+        }
+        let entry = (doc, score);
+        // A full heap whose worst entry already outranks the newcomer would
+        // have sorted it into the truncated tail. Dropping it here is the
+        // same decision, taken without touching the array.
+        if self.entries.len() >= self.capacity
+            && self
+                .entries
+                .last()
+                .is_some_and(|last| Self::rank(&entry, last) != std::cmp::Ordering::Less)
+        {
+            return;
+        }
+        let mut slot = self.entries.len();
+        while slot > 0 {
+            let Some(previous) = self.entries.get(slot.saturating_sub(1)) else {
+                break;
+            };
+            if Self::rank(&entry, previous) == std::cmp::Ordering::Less {
+                slot = slot.saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+        self.entries.insert(slot, entry);
         self.entries.truncate(self.capacity);
     }
 
@@ -433,6 +474,55 @@ mod tests {
         heap.offer(GlobalDocId { segment: 0, row: 1 }, 4.0);
         assert!(heap.is_full());
         assert!((heap.threshold() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn top_k_insertion_matches_a_full_sort_exactly() {
+        // The sort-per-offer heap P1.4 replaced, as an oracle. Ties matter
+        // most here, so scores are drawn from a deliberately small set: a
+        // tie-break that drifts by one position is a changed result and the
+        // equivalence property is right to reject it.
+        use rand::Rng as _;
+        let mut rng = crate::test_support::seeded_rng(
+            "fts::prune::tests::top_k_insertion_matches_a_full_sort_exactly",
+        );
+        for capacity in [0_usize, 1, 2, 10, 100] {
+            for _ in 0..64 {
+                let mut heap = TopK::new(capacity);
+                let mut oracle: Vec<(GlobalDocId, f64)> = Vec::new();
+                for _ in 0..250 {
+                    let doc = GlobalDocId {
+                        segment: rng.random_range(0..3_u32),
+                        row: rng.random_range(0..40_u32),
+                    };
+                    let score = f64::from(rng.random_range(0..5_u32));
+                    heap.offer(doc, score);
+                    oracle.push((doc, score));
+                    oracle.sort_by(TopK::rank);
+                    oracle.truncate(capacity);
+                    assert_eq!(
+                        heap.clone().into_hits(),
+                        oracle
+                            .iter()
+                            .map(|(doc, score)| ScoredDoc {
+                                doc: *doc,
+                                score: *score
+                            })
+                            .collect::<Vec<_>>(),
+                        "insertion diverged from a full sort at capacity {capacity}"
+                    );
+                    assert_eq!(
+                        heap.threshold().to_bits(),
+                        if oracle.len() < capacity {
+                            0.0_f64
+                        } else {
+                            oracle.last().map_or(0.0, |(_, score)| *score)
+                        }
+                        .to_bits()
+                    );
+                }
+            }
+        }
     }
 
     /// The linear implementations P1.3 replaced, kept as test oracles.

@@ -21,6 +21,7 @@
 
 use crate::fts::bm25::Bm25Params;
 use crate::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+use crate::fts::prune::{Strategy, search_pruned};
 use crate::fts::search::{TermQuery, search};
 use crate::fts::tokenizer::{Analyzer, Profile};
 
@@ -81,6 +82,41 @@ fn exhaustive_query_allocations_do_not_scale_with_postings() {
     assert!(
         large <= small.saturating_add(GROWTH_ALLOWANCE),
         "the exhaustive scorer allocates per posting: {small} allocations at \
+         {SMALL_MATCHES} matches, {large} at {LARGE_MATCHES}"
+    );
+}
+
+/// Returns the allocator calls one pruned query makes.
+fn pruned_allocations(matches: usize) -> u64 {
+    let index = corpus(matches);
+    let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
+    drop(search_pruned(
+        &index,
+        &query,
+        10,
+        Bm25Params::default(),
+        Strategy::BlockMaxWand,
+    ));
+    let (result, report) = crate::allocation_audit::audit_engine_path(|| {
+        search_pruned(
+            &index,
+            &query,
+            10,
+            Bm25Params::default(),
+            Strategy::BlockMaxWand,
+        )
+    });
+    drop(result);
+    report.allocations
+}
+
+#[test]
+fn pruned_query_allocations_do_not_scale_with_postings() {
+    let small = pruned_allocations(SMALL_MATCHES);
+    let large = pruned_allocations(LARGE_MATCHES);
+    assert!(
+        large <= small.saturating_add(GROWTH_ALLOWANCE),
+        "the pruned scorer allocates per posting: {small} allocations at \
          {SMALL_MATCHES} matches, {large} at {LARGE_MATCHES}"
     );
 }

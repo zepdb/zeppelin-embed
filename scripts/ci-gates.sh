@@ -25,6 +25,11 @@ cargo test --workspace
 cargo test -p zeppelin-embed --features allocation-audit \
     lifecycle::stats::tests::nothing_allocates_outside_accounting \
     -- --exact --test-threads=1
+# The query-path allocation gate (FTS optimization plan P0.4). Deterministic
+# allocator call counts, so zero flake budget; single-threaded for the same
+# reason the accounting audit above is.
+cargo test -p zeppelin-embed --features allocation-audit --lib \
+    fts::alloc_gate -- --test-threads=1
 cargo test -p zeppelin-embed-workspace-tests \
     --test scaffold_gates deny_blacklist_rejects_banned_dep \
     -- --ignored --exact

@@ -55,14 +55,23 @@ pub fn run(
         cursor.position = 0;
     }
 
+    // Hoisted to the query frame. This buffer used to be allocated and freed
+    // once per pivot iteration, which on a single-term query is once per
+    // posting -- the dominant allocation on the pruned path.
+    let mut live: Vec<usize> = Vec::with_capacity(cursors.len());
+
     loop {
         // Order live cursors by current document.
-        let mut live: Vec<usize> = (0..cursors.len())
-            .filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted()))
-            .collect();
+        live.clear();
+        live.extend(
+            (0..cursors.len())
+                .filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted())),
+        );
         if live.is_empty() {
             break;
         }
+        // Stable, so cursors sharing a current row keep slot order and the
+        // pivot choice stays reproducible.
         live.sort_by_key(|slot| cursors.get(*slot).and_then(TermCursor::current));
 
         let threshold = heap.threshold();

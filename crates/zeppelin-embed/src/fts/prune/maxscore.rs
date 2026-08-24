@@ -46,18 +46,26 @@ pub fn score_all(
     heap: &mut TopK,
     counters: &mut SearchCounters,
 ) {
+    // Kept sorted by row so accumulation is a binary search rather than a
+    // linear scan. The list is bounded at SHORT_LIST_POSTINGS today, which
+    // makes the quadratic form harmless -- but it is exactly the defect
+    // class already found and fixed three times elsewhere in this engine,
+    // and being harmless is not the same as being right.
     let mut totals: Vec<(u32, f64)> = Vec::new();
     for cursor in cursors {
         for (row, tf) in &cursor.entries {
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
             let score = cursor.scorer.score(Tf(*tf), DocLen(length_of(lengths, *row)));
-            match totals.iter_mut().find(|(candidate, _)| candidate == row) {
-                Some((_, total)) => *total += score,
-                None => totals.push((*row, score)),
+            match totals.binary_search_by_key(row, |(candidate, _)| *candidate) {
+                Ok(slot) => {
+                    if let Some((_, total)) = totals.get_mut(slot) {
+                        *total += score;
+                    }
+                }
+                Err(slot) => totals.insert(slot, (*row, score)),
             }
         }
     }
-    totals.sort_by_key(|(row, _)| *row);
     for (row, score) in totals {
         counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
         heap.offer(GlobalDocId { segment, row }, score);
@@ -87,6 +95,17 @@ pub fn run(
     for cursor in cursors.iter_mut() {
         cursor.position = 0;
     }
+
+    // Both are loop-invariant in shape, and the bound total is invariant in
+    // value: upper bounds never change during a run. Recomputing the sum per
+    // candidate was O(terms) work and the Vec was an allocation per
+    // candidate.
+    let mut contributions: Vec<f64> = vec![0.0; cursors.len()];
+    let total_bound: f64 = order
+        .iter()
+        .filter_map(|slot| cursors.get(*slot))
+        .map(|cursor| cursor.upper_bound)
+        .sum();
 
     loop {
         let threshold = heap.threshold();
@@ -137,13 +156,9 @@ pub fn run(
         // a different order than the exhaustive scorer differs from it by
         // an ULP — which is a changed result, and the equivalence property
         // is right to reject it.
-        let mut contributions: Vec<f64> = vec![0.0; cursors.len()];
+        contributions.fill(0.0);
         let mut running = 0.0_f64;
-        let mut remaining_bound: f64 = order
-            .iter()
-            .filter_map(|slot| cursors.get(*slot))
-            .map(|cursor| cursor.upper_bound)
-            .sum();
+        let mut remaining_bound = total_bound;
         let mut abandoned = false;
         for slot in &order {
             let Some(cursor) = cursors.get_mut(*slot) else {
