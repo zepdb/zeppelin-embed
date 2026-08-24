@@ -181,10 +181,67 @@ engine `Cargo.lock` never see them.
    single-threaded seal, disclosed in section 3 rather than corrected.
 3. **FiQA is our weakest corpus relative to the field**, the only one where
    tantivy outranks us (0.2380 against 0.2290). Nothing has been tried.
-4. **FTS5 was not re-run** on 2026-08-24. Its column in section 3 is
-   dropped rather than carried over from the contaminated table; the
-   earlier finding that we beat it on both axes is unchallenged but is now
-   older than the rest of the record.
+4. **FTS5 re-run 2026-08-24, section 7.** Closed: we beat it on every
+   corpus on query latency (26x-40x) and on quality; it still indexes
+   faster than we do, which folds into owed item 2.
 5. Multifield TREC-COVID measured 0.5906 against a 0.656 secondary target.
    The 3:1 title weighting is a guess, not Pyserini's; the weighting needs
    to be matched before that number means anything.
+
+## 7. Addendum 2026-08-24: MAXSCORE probe order, machinery cuts
+
+Three commits after the section-3 measurement (`db3cb24`, `164d7c6`,
+`44644ac` on `fts-next`):
+
+- **MAXSCORE probes descending by bound and tests a metadata-only block
+  bound before every seek.** The old ascending order paid the long lists'
+  seeks before the abandon test could spare them. Deterministic counters,
+  zipf 100k six-term k=10: postings_decoded 108,452 to **60,803** (-44%),
+  blocks_decoded 3,831 to **2,719** (-29%). MAXSCORE became uniformly
+  cheaper, so the strategy rule re-derived to **MAXSCORE at <= 3 terms,
+  WAND at >= 4** (was <= 2 / >= 3); the three dissenting 2,000-doc k=100
+  cells are recorded in `strategy_rule.contract` rather than fitted.
+- **Bit-exact per-posting machinery cuts**: block impact pair cached at
+  decode; whole-list impact computed at seal (upper bounds stop walking
+  every metadata row per query); one-run unit-weight streams skip the
+  merge machinery; in-block seek landing is a binary search. Counters
+  unchanged.
+- **Seal stops re-decoding for union document frequencies**: the union is
+  counted from the in-memory sorted lists during the seal loop.
+
+**Quality is bit-identical**: 0.6004 / 0.2290 / 0.3183 / 0.6972 under
+`ZE_BEIR_PRUNE=1`, the equivalence contract holding through all three
+changes.
+
+**Latency**, three repetitions, arms alternated within each repetition,
+medians, ms/query. NOT verified single-tenant — no foreign process check
+was made — so the defence is the alternation and the spreads (ours 4%,
+tantivy 10% min-to-max on TREC-COVID). FTS5 is one repetition, closing
+owed item 4.
+
+| corpus | zeppelin @ release (o3) | tantivy | FTS5 | verdict vs tantivy |
+| --- | ---: | ---: | ---: | :--- |
+| TREC-COVID | 5.400 | **4.560** | 213.4 | tantivy 1.18x |
+| FiQA | **1.323** | 1.560 | 56.9 | we win 1.18x |
+| NFCorpus | **0.025** | 0.164 | 1.019 | we win 6.6x |
+| SciFact | **0.237** | 0.647 | 6.25 | we win 2.7x |
+
+TREC-COVID moved from the section-3 tie to a 1.18x loss in this run;
+tantivy also ran faster than its own quiesced section-3 number (4.56
+against 5.02), so machine state differs from that run in tantivy's
+favour. The corpus remains the one to watch, and its query shape (long
+queries, WAND) is untouched by the MAXSCORE work above.
+
+Indexing, medians of the same repetitions, whole corpus, ms — the union
+fix bought roughly 5% and the gap remains owed to P3:
+
+| corpus | zeppelin | tantivy | ratio | FTS5 |
+| --- | ---: | ---: | ---: | ---: |
+| TREC-COVID | 22,178 | **670** | 33.1x | 4,711 |
+| FiQA | 5,425 | **182** | 29.8x | 1,025 |
+| NFCorpus | 628 | **25** | 25.1x | 81 |
+| SciFact | 855 | **34** | 25.1x | 122 |
+
+Standing, quality (unchanged from section 2): mean nDCG@10 **0.4612**
+against tantivy 0.4429 and FTS5 0.4436; three corpora won outright,
+FiQA still tantivy's (owed item 3).
