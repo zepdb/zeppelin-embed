@@ -29,7 +29,7 @@
 //! oversized field is a typed rejection at the tokenizer boundary, not a
 //! silent cut.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
@@ -304,18 +304,32 @@ impl LexicalIndex {
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
         let mut total = 0_u32;
         for segment in &self.segments {
-            let mut seen: Vec<u32> = Vec::new();
-            for field in fields {
-                let Some(list) = segment.posting_list(term, *field) else {
-                    continue;
-                };
-                for posting in list.postings() {
-                    if !seen.contains(&posting.docid) {
-                        seen.push(posting.docid);
+            // A linear membership scan per posting is quadratic in the
+            // posting-list length; on a large corpus that alone makes a
+            // query untimeable. The single-field case needs no set at all,
+            // because one field's postings already carry each row once.
+            let present: Vec<FieldId> = fields
+                .iter()
+                .copied()
+                .filter(|field| segment.posting_list(term, *field).is_some())
+                .collect();
+            let counted = if let [only] = present.as_slice() {
+                segment
+                    .posting_list(term, *only)
+                    .map_or(0, |list| list.postings().len())
+            } else {
+                let mut seen: BTreeSet<u32> = BTreeSet::new();
+                for field in present {
+                    let Some(list) = segment.posting_list(term, field) else {
+                        continue;
+                    };
+                    for posting in list.postings() {
+                        seen.insert(posting.docid);
                     }
                 }
-            }
-            total = total.saturating_add(u32::try_from(seen.len()).unwrap_or(u32::MAX));
+                seen.len()
+            };
+            total = total.saturating_add(u32::try_from(counted).unwrap_or(u32::MAX));
         }
         total
     }

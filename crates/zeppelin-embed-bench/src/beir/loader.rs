@@ -196,7 +196,15 @@ pub fn parse_qrels(text: &str, path: &Path) -> Result<Qrels, BeirError> {
         };
         // The header row is "query-id\tcorpus-id\tscore"; detect it by the
         // grade failing to parse, but only on the first line.
-        let Ok(grade) = grade.trim().parse::<u32>() else {
+        //
+        // Grades are read as SIGNED. TREC-COVID's qrels carry two `-1`
+        // judgements, which in TREC convention mean "explicitly assessed and
+        // not relevant" and contribute zero gain — the same treatment
+        // `pytrec_eval` applies. Clamping here rather than rejecting is what
+        // keeps the number comparable to the published one; rejecting would
+        // have silently excluded the whole corpus, which is exactly what
+        // happened before this was handled.
+        let Ok(signed) = grade.trim().parse::<i64>() else {
             if index == 0 {
                 continue;
             }
@@ -206,6 +214,7 @@ pub fn parse_qrels(text: &str, path: &Path) -> Result<Qrels, BeirError> {
                 reason: format!("grade {grade:?} is not an integer"),
             });
         };
+        let grade = u32::try_from(signed.max(0)).unwrap_or(0);
         qrels
             .entry(query.to_owned())
             .or_default()

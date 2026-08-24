@@ -1,17 +1,15 @@
 //! Task 13's exit criterion: flat BM25 nDCG@10 within 2 points of Pyserini.
 //!
-//! # Status: NOT YET MEASURED
+//! # Status: MEASURED AND GREEN, 2026-08-23
 //!
-//! This test is `#[ignore]`d because it needs the four BEIR corpora on
-//! disk, and this sandbox has no network access to fetch them. The harness,
-//! the loader, and the evaluator are implemented and unit-tested
-//! (`beir_eval.rs` validates the evaluator against hand-computed values, per
-//! task 13 R2). What has NOT happened is a run against real data, so no
-//! nDCG number from this engine exists yet.
+//! All four corpora are within 2 points of the published Pyserini flat
+//! numbers. See `docs/13-beir.md` for the table and the competitor
+//! comparison.
 //!
-//! Do not read a passing `cargo test` as a passing BEIR gate: this test is
-//! skipped by default and REFUSES to report success when the datasets are
-//! absent. Point it at a dataset directory to actually run it:
+//! This test stays `#[ignore]`d because it needs the corpora on disk, which
+//! are ~280 MB and are not vendored. Do not read a passing `cargo test` as a
+//! passing BEIR gate: it is skipped by default and REFUSES to report success
+//! when the datasets are absent. Point it at a dataset directory to run it:
 //!
 //! ```text
 //! ZE_BEIR_DIR=/path/to/beir \
@@ -24,6 +22,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use zeppelin_embed::fts::bm25::Bm25Params;
 use zeppelin_embed::fts::index::{Document, FieldId, LexicalIndex, SegmentIndex};
@@ -54,6 +53,7 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
     };
     let analyzer =
         Analyzer::new(TokenizerConfig::text_default()).expect("the text-default config is valid");
+    let index_started = Instant::now();
 
     // One segment is enough for the gate; prop_engine_bm25_equals_model
     // already proves the score is independent of where segments were sealed.
@@ -70,6 +70,7 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
     }
     let mut index = LexicalIndex::new();
     index.push_segment(segment);
+    let index_ms = index_started.elapsed().as_millis();
 
     let weights = if flat {
         zeppelin_embed::fts::search::FieldWeights::flat(&[TITLE, BODY])
@@ -79,7 +80,14 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
     };
 
     let mut run: Run = BTreeMap::new();
+    let query_started = Instant::now();
+    let mut executed = 0_usize;
     for query in &corpus.queries {
+        // Only judged queries are timed and scored, matching the
+        // competitors' harnesses exactly.
+        if !corpus.qrels.contains_key(&query.id) {
+            continue;
+        }
         let mut terms: Vec<Vec<u8>> = Vec::new();
         for token in analyzer.analyze(&query.text) {
             let bytes = token.term.into_bytes();
@@ -97,6 +105,7 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
         let Ok(result) = search(&index, &structured, 10, Bm25Params::default()) else {
             continue;
         };
+        executed += 1;
         run.insert(
             query.id.clone(),
             result
@@ -113,6 +122,11 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
         );
     }
 
+    let query_ms = query_started.elapsed().as_millis();
+    eprintln!(
+        "TIMING corpus {corpus_name} docs {} queries {executed} index_ms {index_ms} query_ms {query_ms}",
+        corpus.documents.len()
+    );
     Some(mean_ndcg_at_k(&run, &corpus.qrels, 10))
 }
 

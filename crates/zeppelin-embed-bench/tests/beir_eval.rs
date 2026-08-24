@@ -220,6 +220,23 @@ fn qrels_parse_with_and_without_the_header_row() {
 }
 
 #[test]
+fn a_negative_grade_is_clamped_to_non_relevant_not_rejected() {
+    // TREC-COVID ships two `-1` judgements: "assessed, not relevant". TREC
+    // convention gives them zero gain. Rejecting the row would drop the
+    // whole corpus from the gate, which is a far worse failure than the
+    // quirk it guards against.
+    let path = Path::new("qrels/test.tsv");
+    let parsed = parse_qrels("q1\td1\t-1\nq1\td2\t2\n", path).expect("negative grade parses");
+    assert_eq!(parsed["q1"]["d1"], 0);
+    assert_eq!(parsed["q1"]["d2"], 2);
+    // And a clamped grade must not become an ideal-DCG contributor.
+    assert_eq!(
+        ndcg_at_k_for_query(&ranked(&["d1"]), &judgements(&[("d1", 0)]), 10),
+        None
+    );
+}
+
+#[test]
 fn a_malformed_qrels_row_is_a_typed_error_not_a_silent_skip() {
     let path = Path::new("qrels/test.tsv");
     assert!(parse_qrels("q1\td1\t2\nq1\td2\tnope\n", path).is_err());

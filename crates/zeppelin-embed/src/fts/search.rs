@@ -21,6 +21,8 @@
 //! identity has to carry both. Ordering is by segment then row, which is
 //! insertion order, which is time order.
 
+use std::collections::BTreeMap;
+
 use super::bm25::{Bm25Params, Df, DocLen, Tf, term_score};
 use super::index::{FieldId, IndexError, LexicalIndex};
 
@@ -161,24 +163,50 @@ pub fn merge_term(
     term: &[u8],
     weights: &FieldWeights,
 ) -> MergedPostings {
-    let mut weighted: Vec<(u32, u64)> = Vec::new();
-    for field in weights.fields() {
-        let weight = u64::from(weights.weight(field));
-        if weight == 0 {
-            continue;
-        }
+    // Accumulating into a Vec and scanning it per posting is quadratic in
+    // the posting-list length. That is invisible on a 5,000-document
+    // fixture and fatal on a 171,000-document corpus, so the merge is
+    // ordered-map based, and the single-field case — by far the common one
+    // — skips the map entirely.
+    let contributing: Vec<(FieldId, u64)> = weights
+        .fields()
+        .into_iter()
+        .filter_map(|field| {
+            let weight = u64::from(weights.weight(field));
+            (weight > 0 && segment.posting_list(term, field).is_some())
+                .then_some((field, weight))
+        })
+        .collect();
+
+    if let [(field, weight)] = contributing.as_slice() {
+        let Some(list) = segment.posting_list(term, *field) else {
+            return MergedPostings::default();
+        };
+        // Postings are already ascending by row, so this is a linear copy.
+        return MergedPostings {
+            entries: list
+                .postings()
+                .iter()
+                .filter_map(|posting| {
+                    let total = u64::from(posting.tf).saturating_mul(*weight);
+                    let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
+                    (tf > 0).then_some((posting.docid, tf))
+                })
+                .collect(),
+        };
+    }
+
+    let mut weighted: BTreeMap<u32, u64> = BTreeMap::new();
+    for (field, weight) in contributing {
         let Some(list) = segment.posting_list(term, field) else {
             continue;
         };
         for posting in list.postings() {
             let contribution = u64::from(posting.tf).saturating_mul(weight);
-            match weighted.iter_mut().find(|(row, _)| *row == posting.docid) {
-                Some((_, total)) => *total = total.saturating_add(contribution),
-                None => weighted.push((posting.docid, contribution)),
-            }
+            let slot = weighted.entry(posting.docid).or_insert(0);
+            *slot = slot.saturating_add(contribution);
         }
     }
-    weighted.sort_by_key(|(row, _)| *row);
     MergedPostings {
         entries: weighted
             .into_iter()
@@ -225,8 +253,14 @@ pub fn search(
 
     for (segment_ordinal, segment) in index.segments().iter().enumerate() {
         let segment_index = u32::try_from(segment_ordinal).unwrap_or(u32::MAX);
-        // Weighted term frequency and weighted length per row.
-        let mut row_scores: Vec<(u32, f64)> = Vec::new();
+        // Row ids are dense, so a flat array indexed by row is both the
+        // fastest accumulator and the one that keeps per-document summation
+        // in query-term order — which task 14's pruning must reproduce to
+        // the last bit. `touched` keeps the sweep proportional to matches
+        // rather than to corpus size.
+        let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
+        let mut row_scores: Vec<f64> = vec![0.0; row_count];
+        let mut touched: Vec<u32> = Vec::new();
 
         for (position, term) in query.terms.iter().enumerate() {
             let df = frequencies
@@ -242,14 +276,26 @@ pub fn search(
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 let length = weighted_length(segment, row, &query.fields);
                 let score = term_score(Tf(tf), Df(df), DocLen(length), &stats, params);
-                match row_scores.iter_mut().find(|(candidate, _)| *candidate == row) {
-                    Some((_, total)) => *total += score,
-                    None => row_scores.push((row, score)),
+                let Ok(slot) = usize::try_from(row) else {
+                    continue;
+                };
+                let Some(entry) = row_scores.get_mut(slot) else {
+                    continue;
+                };
+                if *entry == 0.0 {
+                    touched.push(row);
                 }
+                *entry += score;
             }
         }
 
-        for (row, score) in row_scores {
+        touched.sort_unstable();
+        touched.dedup();
+        for row in touched {
+            let score = usize::try_from(row)
+                .ok()
+                .and_then(|slot| row_scores.get(slot).copied())
+                .unwrap_or(0.0);
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             accumulator.push((
                 GlobalDocId {
