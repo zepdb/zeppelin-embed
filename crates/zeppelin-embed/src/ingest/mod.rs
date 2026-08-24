@@ -372,8 +372,12 @@ pub struct GraphSearchStats {
     pub entry_seed_discoveries: usize,
     /// Visited arrays cleared after their epoch byte wrapped.
     pub visited_epoch_clears: usize,
+    /// Distinct graph candidates scored by the Bit4 traversal estimator.
+    pub candidates_scored: usize,
     /// Retained graph candidates read from full-precision storage.
     pub candidates_rescored: usize,
+    /// Sealed graph segments rejected by the query-local competitive bound.
+    pub segments_pruned_by_bound: usize,
 }
 
 /// Global top-k results and aggregate deterministic query counters.

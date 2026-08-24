@@ -7,6 +7,8 @@ pub mod durability;
 pub(crate) mod graph_cache;
 pub mod lock;
 mod pool;
+#[cfg(test)]
+mod shared_bound_tests;
 mod snapshot;
 pub(crate) mod stats;
 
@@ -194,6 +196,13 @@ pub enum SearchTier {
 pub struct SearchOptions {
     scan: crate::scan::ScanOptions,
     tier: SearchTier,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GraphBoundMode {
+    Shared,
+    #[cfg(test)]
+    Independent,
 }
 
 impl SearchOptions {
@@ -854,7 +863,23 @@ impl Store {
         options: impl Into<SearchOptions>,
         control: QueryControl,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
-        let options = options.into();
+        self.search_with_graph_bound_mode(
+            request,
+            k,
+            options.into(),
+            control,
+            GraphBoundMode::Shared,
+        )
+    }
+
+    fn search_with_graph_bound_mode(
+        &self,
+        request: crate::ingest::SearchRequest<'_>,
+        k: usize,
+        options: SearchOptions,
+        control: QueryControl,
+        graph_bound_mode: GraphBoundMode,
+    ) -> Result<crate::ingest::SearchOutcome, QueryError> {
         let state = self
             .state
             .lock()
@@ -938,9 +963,21 @@ impl Store {
             k,
             options,
             control,
+            graph_bound_mode,
         );
         drop(active_query);
         result
+    }
+
+    #[cfg(test)]
+    fn search_independent_for_test(
+        &self,
+        request: crate::ingest::SearchRequest<'_>,
+        k: usize,
+        options: SearchOptions,
+        control: QueryControl,
+    ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        self.search_with_graph_bound_mode(request, k, options, control, GraphBoundMode::Independent)
     }
 }
 
@@ -955,6 +992,7 @@ fn search_pinned(
     k: usize,
     options: SearchOptions,
     control: QueryControl,
+    graph_bound_mode: GraphBoundMode,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
     use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
     use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -1024,9 +1062,26 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
         )?;
+        if matches!(graph_bound_mode, GraphBoundMode::Shared) {
+            retain_global_top_k(&mut candidates, k);
+        }
     }
 
-    for segment in snapshot.segments() {
+    let mut ordered_segments = snapshot.segments().iter().collect::<Vec<_>>();
+    if matches!(graph_bound_mode, GraphBoundMode::Shared) {
+        // Larger immutable segments have more opportunities to supply the
+        // first competitive top-k. Row count is already in the manifest, so
+        // this ordering tightens the bound without query-time artifact I/O.
+        ordered_segments.sort_unstable_by(|left, right| {
+            right
+                .meta()
+                .row_count
+                .cmp(&left.meta().row_count)
+                .then_with(|| left.meta().id.cmp(&right.meta().id))
+        });
+    }
+
+    for segment in ordered_segments {
         let alive = segment
             .alive()
             .map_err(StoreError::Segment)
@@ -1048,10 +1103,32 @@ fn search_pinned(
             SearchTier::Auto | SearchTier::Scan => None,
         };
         if let Some(graph_options) = graph_options {
-            let (graph, graph_validated) = segment
-                .graph_search_cache
-                .bind_graph(segment)
-                .map_err(map_graph_cache_error)?;
+            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+            let cancellation = QueryCancellation::new(&control, &lease);
+            cancellation.check_graph().map_err(map_scan_error)?;
+            let (graph, graph_validated, prepared_entry_seed_discovered, norm_range) =
+                match graph_bound_mode {
+                    GraphBoundMode::Shared => {
+                        let prepared = segment
+                            .graph_search_cache
+                            .prepare_shared(segment, &cancellation)
+                            .map_err(map_graph_cache_error)?;
+                        (
+                            prepared.graph,
+                            prepared.graph_validated,
+                            prepared.entry_seed_discovered,
+                            Some(prepared.norm_range),
+                        )
+                    }
+                    #[cfg(test)]
+                    GraphBoundMode::Independent => {
+                        let (graph, graph_validated) = segment
+                            .graph_search_cache
+                            .bind_graph(segment)
+                            .map_err(map_graph_cache_error)?;
+                        (graph, graph_validated, false, None)
+                    }
+                };
             let rescore = segment
                 .rescore_f32()
                 .map_err(StoreError::Segment)
@@ -1116,11 +1193,33 @@ fn search_pinned(
             } else {
                 effective_ef
             };
+            if let (Some(norm_range), Some(competitive_distance)) =
+                (norm_range, global_competitive_distance(&candidates, k))
+                && norm_range.squared_l2_upper_bound(request.vector()) <= f64::from(f32::MAX)
+                && (norm_range.squared_l2_lower_bound(request.vector()) as f32)
+                    > competitive_distance
+            {
+                cancellation.check_graph().map_err(map_scan_error)?;
+                graph_stats.graph_validations = graph_stats
+                    .graph_validations
+                    .checked_add(usize::from(graph_validated))
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                graph_stats.entry_seed_discoveries = graph_stats
+                    .entry_seed_discoveries
+                    .checked_add(usize::from(prepared_entry_seed_discovered))
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                graph_stats.segments_pruned_by_bound = graph_stats
+                    .segments_pruned_by_bound
+                    .checked_add(1)
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                continue;
+            }
             let mut scratch = segment
                 .graph_search_cache
                 .checkout(graph, scratch_ef, accounting)
                 .map_err(map_graph_cache_error)?;
-            let entry_seed_discovered = scratch.entry_seed_discovered();
+            let entry_seed_discovered =
+                prepared_entry_seed_discovered || scratch.entry_seed_discovered();
             let entries = scratch.entries();
             let mut searcher = crate::graph::search::GraphSearcher::with_entry_row_ids(
                 graph,
@@ -1129,11 +1228,10 @@ fn search_pinned(
                 scratch.scratch_mut().map_err(map_graph_error)?,
             )
             .map_err(map_graph_error)?;
-            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
-            let cancellation = QueryCancellation::new(&control, &lease);
             let mut traversal_dims_touched = 0_u64;
             let mut traversal_bytes_read = 0_u64;
             let mut traversal_epoch_clears = 0_usize;
+            let mut traversal_candidates_scored = 0_usize;
             let mut traversal_candidates_rescored = 0_usize;
             let result = loop {
                 let result = searcher
@@ -1148,6 +1246,9 @@ fn search_pinned(
                     .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
                 traversal_epoch_clears = traversal_epoch_clears
                     .checked_add(usize::from(counters.visited_epoch_cleared()))
+                    .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                traversal_candidates_scored = traversal_candidates_scored
+                    .checked_add(counters.candidates_scored())
                     .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
                 traversal_candidates_rescored = traversal_candidates_rescored
                     .checked_add(counters.candidates_rescored())
@@ -1211,6 +1312,10 @@ fn search_pinned(
                 .visited_epoch_clears
                 .checked_add(traversal_epoch_clears)
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            graph_stats.candidates_scored = graph_stats
+                .candidates_scored
+                .checked_add(traversal_candidates_scored)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
             graph_stats.candidates_rescored = graph_stats
                 .candidates_rescored
                 .checked_add(traversal_candidates_rescored)
@@ -1236,6 +1341,9 @@ fn search_pinned(
                         .map_err(QueryError::Store)?,
                     score,
                 ));
+            }
+            if matches!(graph_bound_mode, GraphBoundMode::Shared) {
+                retain_global_top_k(&mut candidates, k);
             }
             continue;
         }
@@ -1319,15 +1427,12 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
         )?;
+        if matches!(graph_bound_mode, GraphBoundMode::Shared) {
+            retain_global_top_k(&mut candidates, k);
+        }
     }
 
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .score()
-            .total_cmp(&left.score())
-            .then_with(|| left.row_id().cmp(&right.row_id()))
-    });
-    candidates.truncate(k);
+    retain_global_top_k(&mut candidates, k);
     Ok(SearchOutcome {
         candidates,
         stats: ScanStats {
@@ -1339,6 +1444,29 @@ fn search_pinned(
         graph_stats,
         generation,
     })
+}
+
+fn retain_global_top_k(candidates: &mut Vec<crate::ingest::SearchCandidate>, k: usize) {
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score()
+            .total_cmp(&left.score())
+            .then_with(|| left.row_id().cmp(&right.row_id()))
+    });
+    candidates.truncate(k);
+}
+
+fn global_competitive_distance(
+    candidates: &[crate::ingest::SearchCandidate],
+    k: usize,
+) -> Option<f32> {
+    if k == 0 || candidates.len() < k {
+        return None;
+    }
+    candidates
+        .get(k.saturating_sub(1))
+        .map(|candidate| -candidate.score())
+        .filter(|distance| distance.is_finite() && *distance >= 0.0)
 }
 
 fn map_graph_cache_error(error: graph_cache::GraphCacheError) -> QueryError {

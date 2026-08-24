@@ -181,6 +181,22 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   matched recall despite saving 2.643% hops. Constants and the load-tainted
   10-process evidence live in `docs/19-m5-defaults.md`.
 
+## Task 19-M7 multi-segment graph-search invariants
+
+- One query-local exact-distance bound is tightened after each serial segment.
+  Sealed segments are ordered by descending row count, then ascending segment
+  id, so the most likely source of an early global top-k runs first using only
+  manifest metadata.
+- A segment may be skipped only when its persisted original-row norm enclosure
+  proves every exact squared-L2 result strictly worse than the current global
+  k-th distance. Equality is never pruned, tombstones remain conservative, and
+  the independent per-segment path remains available only to unit tests as the
+  byte-exact differential oracle.
+- The shared bound is stack-owned by `search_pinned`; reusable graph cache state
+  contains only query-independent validation, entry seeds, norm ranges, and
+  exactly accounted scratch. Concurrent or later queries never inherit a
+  competitive distance.
+
 ## Task 08 Part A WAL invariants
 
 - Every synchronization names `SyncKind`; Darwin maps barrier/full to

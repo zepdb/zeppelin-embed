@@ -3,11 +3,13 @@
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::graph::block::{GraphNodeBlocks, ValidatedGraphNodeBlocks};
-use crate::graph::search::{GraphSearchError, GraphSearchScratch, GraphSearcher};
+use crate::graph::search::{
+    GraphSearchError, GraphSearchScratch, GraphSearcher, GraphSegmentNormRange,
+};
 use crate::segment::reader::SegmentReader;
 
-use super::StoreError;
 use super::stats::{AccountedCounter, Accounting, AllocationComponent};
+use super::{QueryCancellation, StoreError};
 
 struct CachedScratch {
     scratch: GraphSearchScratch,
@@ -19,6 +21,7 @@ struct CachedScratch {
 struct CacheState {
     graph: Option<ValidatedGraphNodeBlocks>,
     entries: Option<[u32; 4]>,
+    norm_range: Option<GraphSegmentNormRange>,
     scratch: Option<CachedScratch>,
     checked_out: bool,
 }
@@ -34,6 +37,7 @@ impl SegmentGraphSearchCache {
             state: Mutex::new(CacheState {
                 graph: None,
                 entries: None,
+                norm_range: None,
                 scratch: None,
                 checked_out: false,
             }),
@@ -41,6 +45,7 @@ impl SegmentGraphSearchCache {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn bind_graph<'a>(
         &self,
         segment: &'a SegmentReader,
@@ -60,6 +65,48 @@ impl SegmentGraphSearchCache {
         state.graph = Some(graph.validated_descriptor());
         drop(state);
         Ok((graph, true))
+    }
+
+    pub(crate) fn prepare_shared<'a>(
+        &self,
+        segment: &'a SegmentReader,
+        cancellation: &QueryCancellation<'_>,
+    ) -> Result<SharedGraphPreparation<'a>, GraphCacheError> {
+        let mut state = self.state.lock().map_err(|_| {
+            GraphCacheError::Store(StoreError::Synchronization {
+                component: "graph search cache",
+            })
+        })?;
+        let (graph, graph_validated) = if let Some(descriptor) = state.graph {
+            (
+                segment
+                    .bind_validated_graph_node_blocks(descriptor)
+                    .map_err(StoreError::Segment)?,
+                false,
+            )
+        } else {
+            let graph = segment.graph_node_blocks().map_err(StoreError::Segment)?;
+            state.graph = Some(graph.validated_descriptor());
+            (graph, true)
+        };
+        let entry_seed_discovered = state.entries.is_none();
+        if entry_seed_discovered {
+            state.entries = Some(GraphSearcher::discover_entry_row_ids(graph)?);
+        }
+        let norm_range = match state.norm_range {
+            Some(norm_range) => norm_range,
+            None => {
+                let norm_range = GraphSegmentNormRange::from_graph(graph, Some(cancellation))?;
+                state.norm_range = Some(norm_range);
+                norm_range
+            }
+        };
+        Ok(SharedGraphPreparation {
+            graph,
+            graph_validated,
+            entry_seed_discovered,
+            norm_range,
+        })
     }
 
     pub(crate) fn checkout<'a>(
@@ -130,6 +177,13 @@ impl SegmentGraphSearchCache {
             entry_seed_discovered,
         })
     }
+}
+
+pub(crate) struct SharedGraphPreparation<'a> {
+    pub(crate) graph: GraphNodeBlocks<'a>,
+    pub(crate) graph_validated: bool,
+    pub(crate) entry_seed_discovered: bool,
+    pub(crate) norm_range: GraphSegmentNormRange,
 }
 
 pub(crate) enum GraphCacheError {

@@ -566,6 +566,148 @@ struct ScoredNode {
     distance: f64,
 }
 
+/// Query-independent exact-row norm enclosure for one immutable graph segment.
+///
+/// The graph stores the original row norm as `scale * normalized_norm`, where
+/// only the normalized factor is rounded to f32. One full normalized-factor
+/// ULP on either side therefore encloses the norm used to build the segment.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GraphSegmentNormRange {
+    minimum: f64,
+    maximum: f64,
+}
+
+impl GraphSegmentNormRange {
+    pub(crate) fn from_graph(
+        graph: GraphNodeBlocks<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
+    ) -> Result<Self, GraphSearchError> {
+        let mut minimum = f64::INFINITY;
+        let mut maximum = 0.0_f64;
+        for raw_row_id in 0..graph.node_count() {
+            if raw_row_id.is_multiple_of(256) {
+                check_cancellation(cancellation)?;
+            }
+            let row_id = graph.checked_node_id(raw_row_id)?;
+            let (_, factors) = graph.score_row_checked(row_id)?;
+            let [scale, normalized_norm, _] = factors.persisted_fields();
+            if scale < 0.0 || normalized_norm < 0.0 {
+                return Ok(Self::unbounded());
+            }
+            let center = f64::from(scale) * f64::from(normalized_norm);
+            let normalized_ulp = f64::from(next_up_f32(normalized_norm) - normalized_norm);
+            let uncertainty = f64::from(scale) * normalized_ulp;
+            minimum = minimum.min((center - uncertainty).max(0.0));
+            maximum = maximum.max(center + uncertainty);
+        }
+        check_cancellation(cancellation)?;
+        if !minimum.is_finite() || !maximum.is_finite() {
+            return Ok(Self::unbounded());
+        }
+        Ok(Self { minimum, maximum })
+    }
+
+    const fn unbounded() -> Self {
+        Self {
+            minimum: 0.0,
+            maximum: f64::INFINITY,
+        }
+    }
+
+    /// Returns a conservative lower bound in the exact-rescore f64 arithmetic.
+    ///
+    /// The query norm interval covers positive f64 accumulation error for the
+    /// crate-wide maximum dimension. The final factor covers the same bounded
+    /// accumulation error in `squared_l2_f64`; both endpoints are rounded
+    /// outward. A returned value is therefore never above a distance that the
+    /// existing independent exact-rescore path can compute for this segment.
+    pub(crate) fn squared_l2_lower_bound(self, query: &[f32]) -> f64 {
+        if !self.maximum.is_finite() || query.is_empty() {
+            return 0.0;
+        }
+        let squared_norm = query
+            .iter()
+            .map(|value| {
+                let value = f64::from(*value);
+                value * value
+            })
+            .sum::<f64>();
+        let relative_error = accumulation_relative_error(query.len());
+        let query_minimum = next_down_f64((squared_norm / (1.0 + relative_error)).max(0.0).sqrt());
+        let query_maximum = next_up_f64((squared_norm / (1.0 - relative_error)).max(0.0).sqrt());
+        let gap = if query_maximum < self.minimum {
+            self.minimum - query_maximum
+        } else if query_minimum > self.maximum {
+            query_minimum - self.maximum
+        } else {
+            0.0
+        };
+        next_down_f64(gap * gap * (1.0 - relative_error))
+    }
+
+    /// Returns an upper bound used only to preserve today's finite-f32 result
+    /// validation when deciding whether a whole segment may be skipped.
+    pub(crate) fn squared_l2_upper_bound(self, query: &[f32]) -> f64 {
+        if !self.maximum.is_finite() || query.is_empty() {
+            return f64::INFINITY;
+        }
+        let squared_norm = query
+            .iter()
+            .map(|value| {
+                let value = f64::from(*value);
+                value * value
+            })
+            .sum::<f64>();
+        let relative_error = accumulation_relative_error(query.len());
+        let query_maximum = next_up_f64((squared_norm / (1.0 - relative_error)).max(0.0).sqrt());
+        next_up_f64(
+            (query_maximum + self.maximum)
+                * (query_maximum + self.maximum)
+                * (1.0 + relative_error),
+        )
+    }
+}
+
+fn accumulation_relative_error(terms: usize) -> f64 {
+    let scaled = terms as f64 * f64::EPSILON;
+    (scaled / (1.0 - scaled)) * 2.0
+}
+
+fn next_up_f32(value: f32) -> f32 {
+    if value == f32::INFINITY {
+        return value;
+    }
+    if value == -0.0 {
+        return f32::from_bits(1);
+    }
+    if value >= 0.0 {
+        f32::from_bits(value.to_bits().saturating_add(1))
+    } else {
+        f32::from_bits(value.to_bits().saturating_sub(1))
+    }
+}
+
+fn next_up_f64(value: f64) -> f64 {
+    if value == f64::INFINITY {
+        return value;
+    }
+    if value == -0.0 {
+        return f64::from_bits(1);
+    }
+    if value >= 0.0 {
+        f64::from_bits(value.to_bits().saturating_add(1))
+    } else {
+        f64::from_bits(value.to_bits().saturating_sub(1))
+    }
+}
+
+fn next_down_f64(value: f64) -> f64 {
+    if value <= 0.0 {
+        return 0.0;
+    }
+    f64::from_bits(value.to_bits().saturating_sub(1))
+}
+
 /// Owned, lifetime-free reusable state for single-core graph queries.
 #[derive(Debug)]
 pub struct GraphSearchScratch {
