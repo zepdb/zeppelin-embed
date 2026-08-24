@@ -30,3 +30,18 @@ mod properties;
 
 /// Dynamic pruning: block-max MAXSCORE and WAND.
 pub mod prune;
+
+/// Phrase matching over stored positions.
+pub mod phrase;
+
+/// Prefix queries over the sorted dictionary.
+pub mod prefix;
+
+/// Bounded fuzzy matching.
+pub mod fuzzy;
+
+/// Double Metaphone phonetic encoding.
+pub mod phonetic;
+
+/// Snippets and match offsets.
+pub mod snippet;
