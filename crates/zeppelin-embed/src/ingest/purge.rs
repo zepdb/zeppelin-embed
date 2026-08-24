@@ -502,6 +502,22 @@ impl Store {
             active_state.segment.purge(&[], &self.accounting)?.0
         };
         let (records, tombstoned) = active_wal_records(&next_active)?;
+        if records.is_empty() && manifest.generation < active_state.generation {
+            manifest.generation = active_state.generation;
+            let remapped =
+                PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
+                .map_err(StoreError::Manifest)?;
+            let mut published = self
+                .snapshot
+                .write()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let previous = published.replace(Arc::new(remapped));
+            drop(published);
+            drop(previous);
+        }
         let first_seq = LogSeq::new(
             manifest
                 .log_seq

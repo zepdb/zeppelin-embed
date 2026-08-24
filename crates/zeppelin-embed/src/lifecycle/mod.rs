@@ -1024,10 +1024,22 @@ fn search_pinned(
             }
         }
     }
+    let auto_uses_graph = matches!(options.tier(), SearchTier::Auto)
+        && snapshot.segments().iter().any(|segment| {
+            segment
+                .directory()
+                .iter()
+                .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+        });
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
         let outcome = match options.tier() {
+            SearchTier::Auto if auto_uses_graph => {
+                let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+                let cancellation = QueryCancellation::new(&control, &lease);
+                scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
+            }
             SearchTier::Auto | SearchTier::Scan => {
                 let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
                     component: "active scan-tier query pool",
@@ -1348,54 +1360,38 @@ fn search_pinned(
             continue;
         }
 
-        let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
-            component: "sealed scan-tier query pool",
-        }))?;
-        let outcome = match segment.meta().scheme {
-            4 => query_pool.execute(
-                ScanRequest {
-                    query: ScanQuery::Bit4(&bit4_query),
-                    rows: ScanRows::Bit4RowMajor {
-                        codes: segment
-                            .bit4_codes()
-                            .map_err(StoreError::Segment)
-                            .map_err(QueryError::Store)?,
-                        factors: segment
-                            .bit4_factors()
-                            .map_err(StoreError::Segment)
-                            .map_err(QueryError::Store)?,
-                    },
-                    row_mask: Some(alive.scan_mask()),
-                },
+        let outcome = if auto_uses_graph {
+            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+            let cancellation = QueryCancellation::new(&control, &lease);
+            let vectors = segment
+                .rescore_f32()
+                .map_err(StoreError::Segment)
+                .map_err(QueryError::Store)?;
+            scan_squared_l2(
+                vectors,
+                segment.meta().row_count as usize,
+                &alive,
+                request.vector(),
                 k,
-                scan_options,
-                control.clone(),
-                SnapshotLease::new_at(Arc::clone(snapshot), generation),
-            )?,
-            2 => {
-                let factors = segment
-                    .int8_factors()
-                    .map_err(StoreError::Segment)
-                    .map_err(QueryError::Store)?
-                    .iter()
-                    .map(|factor| Int8Factors::new(factor.scale, factor.offset))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| {
-                        QueryError::Store(StoreError::Segment(
-                            crate::segment::SegmentError::Geometry(
-                                "Int8 factor is not finite and non-negative".to_owned(),
-                            ),
-                        ))
-                    })?;
-                query_pool.execute(
+                &cancellation,
+            )?
+        } else {
+            let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
+                component: "sealed scan-tier query pool",
+            }))?;
+            match segment.meta().scheme {
+                4 => query_pool.execute(
                     ScanRequest {
-                        query: ScanQuery::Int8(&int8_query),
-                        rows: ScanRows::Int8RowMajor {
+                        query: ScanQuery::Bit4(&bit4_query),
+                        rows: ScanRows::Bit4RowMajor {
                             codes: segment
-                                .int8_codes()
+                                .bit4_codes()
                                 .map_err(StoreError::Segment)
                                 .map_err(QueryError::Store)?,
-                            factors: &factors,
+                            factors: segment
+                                .bit4_factors()
+                                .map_err(StoreError::Segment)
+                                .map_err(QueryError::Store)?,
                         },
                         row_mask: Some(alive.scan_mask()),
                     },
@@ -1403,14 +1399,47 @@ fn search_pinned(
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
-                )?
-            }
-            scheme => {
-                return Err(QueryError::Store(StoreError::Segment(
-                    crate::segment::SegmentError::Geometry(format!(
-                        "store search does not support sealed scheme {scheme}"
-                    )),
-                )));
+                )?,
+                2 => {
+                    let factors = segment
+                        .int8_factors()
+                        .map_err(StoreError::Segment)
+                        .map_err(QueryError::Store)?
+                        .iter()
+                        .map(|factor| Int8Factors::new(factor.scale, factor.offset))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| {
+                            QueryError::Store(StoreError::Segment(
+                                crate::segment::SegmentError::Geometry(
+                                    "Int8 factor is not finite and non-negative".to_owned(),
+                                ),
+                            ))
+                        })?;
+                    query_pool.execute(
+                        ScanRequest {
+                            query: ScanQuery::Int8(&int8_query),
+                            rows: ScanRows::Int8RowMajor {
+                                codes: segment
+                                    .int8_codes()
+                                    .map_err(StoreError::Segment)
+                                    .map_err(QueryError::Store)?,
+                                factors: &factors,
+                            },
+                            row_mask: Some(alive.scan_mask()),
+                        },
+                        k,
+                        scan_options,
+                        control.clone(),
+                        SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                    )?
+                }
+                scheme => {
+                    return Err(QueryError::Store(StoreError::Segment(
+                        crate::segment::SegmentError::Geometry(format!(
+                            "store search does not support sealed scheme {scheme}"
+                        )),
+                    )));
+                }
             }
         };
         merge_store_outcome(
@@ -1499,22 +1528,39 @@ fn scan_active_squared_l2(
     k: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
+    scan_squared_l2(
+        active.vectors(),
+        active.row_count(),
+        alive,
+        query,
+        k,
+        cancellation,
+    )
+}
+
+fn scan_squared_l2(
+    vectors: &[f32],
+    row_count: usize,
+    alive: &crate::meta::AliveSet,
+    query: &[f32],
+    k: usize,
+    cancellation: &QueryCancellation<'_>,
+) -> Result<crate::scan::ScanOutcome, QueryError> {
     if query.is_empty() {
         return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension));
     }
-    let expected = active
-        .row_count()
+    let expected = row_count
         .checked_mul(query.len())
         .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-    if active.vectors().len() != expected {
+    if vectors.len() != expected {
         return Err(QueryError::Scan(crate::scan::ScanError::RowDataLength {
             dimension: query.len(),
-            actual: active.vectors().len(),
+            actual: vectors.len(),
         }));
     }
     let mut candidates = Vec::new();
     let mut scored_rows = 0_u64;
-    for row in 0..active.row_count() {
+    for row in 0..row_count {
         if row.is_multiple_of(64) {
             cancellation.check_graph().map_err(map_scan_error)?;
         }
@@ -1529,10 +1575,10 @@ fn scan_active_squared_l2(
         let end = start
             .checked_add(query.len())
             .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-        let vector = active.vectors().get(start..end).ok_or(QueryError::Scan(
+        let vector = vectors.get(start..end).ok_or(QueryError::Scan(
             crate::scan::ScanError::RowDataLength {
                 dimension: query.len(),
-                actual: active.vectors().len(),
+                actual: vectors.len(),
             },
         ))?;
         let distance = vector

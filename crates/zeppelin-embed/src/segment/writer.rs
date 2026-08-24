@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::format::frame::{FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN};
+use crate::format::frame::{
+    FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN, FormatCheck, FormatError,
+};
 use crate::format::{FormatFamily, FormatRegistry};
 use crate::graph::block::{GraphNodeBlockBuild, encode_node_blocks};
 use crate::ingest::{DocId, Revision};
@@ -591,6 +593,27 @@ fn publish_segment(
     let temporary_path = temporary_path(directory, build.id);
     vfs.write(&temporary_path, bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    let observed = vfs
+        .read(&temporary_path)
+        .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    if observed != bytes {
+        let (check, detail) = if observed.len() != bytes.len() {
+            (
+                FormatCheck::FileLength,
+                format!(
+                    "temporary segment write retained {} bytes, expected {}",
+                    observed.len(),
+                    bytes.len()
+                ),
+            )
+        } else {
+            (
+                FormatCheck::FileChecksum,
+                "temporary segment bytes differ from the encoded image".to_owned(),
+            )
+        };
+        return Err(FormatError::new(temporary_path.display().to_string(), check, detail).into());
+    }
     match policy.data_file_sync() {
         SyncRequirement::Skip => {}
         SyncRequirement::Sync(kind) => vfs

@@ -653,6 +653,12 @@ version = "0.1.0"
 [[package]]
 name = "zeppelin-embed-workspace-tests"
 version = "0.1.0"
+dependencies = [
+ "rand",
+ "rand_chacha",
+ "tempfile",
+ "zeppelin-embed",
+]
 
 [[package]]
 name = "zerocopy"
