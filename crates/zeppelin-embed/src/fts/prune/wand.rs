@@ -119,11 +119,62 @@ pub fn run(
             }
 
             if heap.is_full() && block_bound <= threshold {
-                // Nothing in these blocks can qualify: step past the pivot.
-                counters.blocks_skipped = counters.blocks_skipped.saturating_add(1);
+                // Nothing in these blocks can qualify. Jump the whole span
+                // they cover rather than stepping one posting.
+                //
+                // # Why the span is safe, and where it ends
+                //
+                // Two things bound how far this may go.
+                //
+                // `horizon` is the first block boundary any cursor on the
+                // pivot crosses. Up to it, every one of those cursors is
+                // still inside the block whose impact pair `block_bound`
+                // was built from, so `block_bound` still dominates.
+                //
+                // `next_row` is the first row any OTHER live cursor sits
+                // at. Below it, no cursor outside the pivot set contains
+                // the row at all, so none of them can add anything that
+                // `block_bound` failed to account for.
+                //
+                // For every row in `[pivot_row, target - 1]` the total is
+                // therefore at or below `block_bound`, which is at or below
+                // a threshold already achieved by `k` documents. None of
+                // them could have entered the results.
+                let mut horizon: Option<u32> = None;
+                for slot in &live {
+                    let Some(cursor) = cursors.get(*slot) else {
+                        continue;
+                    };
+                    if cursor.current() != Some(pivot_row) {
+                        continue;
+                    }
+                    horizon = match (horizon, cursor.stream.block_horizon()) {
+                        (Some(held), Some(found)) => Some(held.min(found)),
+                        (None, found) => found,
+                        (held, None) => held,
+                    };
+                }
+                let next_row = live
+                    .iter()
+                    .filter_map(|slot| cursors.get(*slot).and_then(TermCursor::current))
+                    .filter(|row| *row > pivot_row)
+                    .min();
+                let target = match (horizon, next_row) {
+                    (Some(edge), Some(next)) => edge.saturating_add(1).min(next),
+                    (Some(edge), None) => edge.saturating_add(1),
+                    (None, Some(next)) => next,
+                    (None, None) => pivot_row.saturating_add(1),
+                }
+                // A span that does not move is an infinite loop. Both
+                // candidates are strictly above the pivot, so this only
+                // guards against a degenerate cursor.
+                .max(pivot_row.saturating_add(1));
+
                 for cursor in cursors.iter_mut() {
-                    if cursor.current() == Some(pivot_row) {
-                        cursor.advance();
+                    if cursor.current().is_some_and(|row| row < target) {
+                        // Blocks jumped are tallied on the stream itself
+                        // and collected once the segment finishes.
+                        cursor.seek(target);
                     }
                 }
                 continue;

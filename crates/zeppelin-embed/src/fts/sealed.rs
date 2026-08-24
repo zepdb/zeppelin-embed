@@ -621,6 +621,18 @@ impl ListCursor<'_> {
         self.impact_at(self.block)
     }
 
+    /// Returns the last document id of the block the cursor sits in.
+    ///
+    /// The skip key of the current block, read from its four metadata
+    /// bytes without decoding anything.
+    #[must_use]
+    pub fn current_block_last(&self) -> Option<u32> {
+        if self.block == NO_BLOCK {
+            return None;
+        }
+        self.last_docid(self.block)
+    }
+
     /// Returns the impact pair dominating every block of the list.
     #[must_use]
     pub fn overall_impact(&self) -> BlockImpact {
@@ -795,6 +807,28 @@ impl<'segment> TermStream<'segment> {
     #[must_use]
     pub fn block_bound(&self, scorer: &TermScorer) -> f64 {
         self.bound_from(scorer, ListCursor::current_impact)
+    }
+
+    /// The largest row for which [`Self::block_bound`] still dominates.
+    ///
+    /// # Why a traversal needs this
+    ///
+    /// `block_bound` is built from the impact pairs of the blocks the runs
+    /// are sitting in *right now*. It bounds any row up to the first block
+    /// boundary any run crosses, and no further: past that, one run has
+    /// left the block whose pair the bound was taken from.
+    ///
+    /// That makes this the horizon a block-max traversal may jump to. When
+    /// a pivot's bound cannot reach the top-k threshold, every row from the
+    /// pivot to this horizon is provably unreachable too, so the whole span
+    /// can be skipped instead of one posting.
+    #[must_use]
+    pub fn block_horizon(&self) -> Option<u32> {
+        self.runs
+            .iter()
+            .filter(|run| !run.exhausted())
+            .filter_map(ListCursor::current_block_last)
+            .min()
     }
 
     /// The bound over every block of every run: the term's upper bound.
