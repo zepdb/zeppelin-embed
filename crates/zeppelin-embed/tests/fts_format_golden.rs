@@ -18,7 +18,8 @@ use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::fts::dict::{TERMS_PER_BLOCK, TermDictionary, TermInfo};
 use zeppelin_embed::fts::norms::{Norms, encode_length};
 use zeppelin_embed::fts::postings::{
-    BLOCK_META_LEN, DEFAULT_POSTINGS_PER_BLOCK, Posting, PostingList, PostingsReader, encode,
+    BLOCK_META_LEN, BlockImpact, DEFAULT_POSTINGS_PER_BLOCK, POSTINGS_VERSION, POSTINGS_VERSION_V1,
+    Posting, PostingList, PostingsReader, block_impacts, encode, encode_v2,
 };
 
 fn fixture(text: &str) -> Vec<u8> {
@@ -112,6 +113,83 @@ fn sealed_postings_golden_bytes_are_frozen() {
         .map(|block| block.block_max)
         .collect();
     assert_eq!(maxima, vec![17, 200, 255]);
+}
+
+/// The dense row lengths the v2 fixture's impact pairs are computed from.
+fn golden_lengths() -> Vec<u32> {
+    let mut lengths = vec![0_u32; 302];
+    for (row, length) in [(0, 40_u32), (1, 12), (5, 900), (300, 7), (301, 65_600)] {
+        lengths[row] = length;
+    }
+    lengths
+}
+
+#[test]
+fn sealed_postings_v2_golden_bytes_are_frozen() {
+    // The same fixture, the same geometry, the same reserved u8 slot: the
+    // ONLY difference from the v1 golden is the version word and the six
+    // formerly-zero bytes per block that now carry the impact pair. Freezing
+    // both is what proves version 2 is additive rather than a rewrite.
+    let list = golden_list();
+    let lengths = golden_lengths();
+    let impacts = block_impacts(&list, 2, &lengths);
+    assert_eq!(
+        impacts,
+        vec![
+            BlockImpact {
+                max_tf: 2,
+                min_len: 12
+            },
+            BlockImpact {
+                max_tf: 3,
+                min_len: 7
+            },
+            // Row 301 is 65,600 tokens long, past the u16 slot, so the
+            // stored length saturates DOWN and the bound stays above the
+            // truth rather than below it.
+            BlockImpact {
+                max_tf: 2,
+                min_len: u16::MAX
+            },
+        ]
+    );
+
+    let encoded = encode_v2(&list, 2, &[17, 200, 255], &impacts).expect("encodes");
+    assert_eq!(
+        render_hex(encoded.as_bytes()),
+        include_str!("fixtures/format/fts_postings_v2.hex"),
+        "the version 2 posting layout changed"
+    );
+
+    let reader = PostingsReader::open(encoded.as_bytes()).expect("golden v2 decode");
+    assert_eq!(reader.version(), POSTINGS_VERSION);
+    assert_eq!(reader.decode_all().expect("decodes"), list);
+    let read: Vec<BlockImpact> = reader.blocks().iter().map(BlockImpact::from_meta).collect();
+    assert_eq!(read, impacts);
+
+    // Byte for byte, v1 and v2 differ only in the version word and the six
+    // reserved bytes of each metadata row.
+    let v1 = encode(&list, 2, &[17, 200, 255]).expect("encodes");
+    let old = v1.as_bytes();
+    let new = encoded.as_bytes();
+    assert_eq!(old.len(), new.len(), "version 2 must not resize a stream");
+    for (offset, (left, right)) in old.iter().zip(new.iter()).enumerate() {
+        if left == right {
+            continue;
+        }
+        let differs = (4..6).contains(&offset)
+            || (16..16 + 3 * BLOCK_META_LEN).contains(&offset)
+                && (26..32).contains(&((offset - 16) % BLOCK_META_LEN));
+        assert!(
+            differs,
+            "version 2 moved byte {offset}, which is neither the version \
+             word nor a reserved metadata byte"
+        );
+    }
+    assert_eq!(
+        PostingsReader::open(old).expect("v1 opens").version(),
+        POSTINGS_VERSION_V1
+    );
 }
 
 #[test]

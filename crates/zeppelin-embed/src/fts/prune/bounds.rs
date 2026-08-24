@@ -2,23 +2,45 @@
 //!
 //! # The one invariant
 //!
-//! A block's stored bound must be at or above every true score inside it.
-//! If it is ever below, pruning drops a document that belonged in the
-//! top-k, and that is a wrong answer rather than a slow one — the exact
-//! failure task 14's equivalence property exists to catch.
+//! A block's bound must be at or above every true score inside it. If it is
+//! ever below, pruning drops a document that belonged in the top-k, and that
+//! is a wrong answer rather than a slow one — the exact failure task 14's
+//! equivalence property exists to catch.
 //!
-//! Two things push the bound upward and neither may be reversed:
+//! # The bound is an impact pair, evaluated late
 //!
-//! 1. **Quantization rounds up.** `quantize_block_max` takes a ceiling, so
-//!    a `u8` slot always over-states rather than under-states.
-//! 2. **The shortest document in the block sets the length term.** BM25
-//!    scores rise as a document gets shorter, so the block's minimum length
-//!    paired with its maximum term frequency bounds every posting in it.
-//!    Those two need not come from the same document; using the pair is
-//!    looser than the true maximum and therefore still an upper bound.
+//! A block is summarized by two integers: the largest term frequency it
+//! holds and the shortest document it touches. Neither carries a statistic,
+//! so neither can go stale. The bound is `term_score(max_tf, min_len)` under
+//! whatever `avgdl` and `(k1, b)` the caller is scoring with right now.
+//!
+//! Soundness is monotonicity: BM25 rises with `tf` and falls with `len`, so
+//! that pair dominates every posting in the block. The two extremes need not
+//! come from the same document; pairing them is looser than the true maximum
+//! and therefore still an upper bound.
+//!
+//! # Why not the exact per-block maximum
+//!
+//! Because it is not a summary — it is a score, and a score is a number
+//! computed under one set of statistics. `score / ceiling` cancels `idf` but
+//! not `avgdl` or `(k1, b)`, so a stored maximum sealed when documents were
+//! short falls **below** a true score once longer documents arrive: 15.21%
+//! below on an `avgdl` rise from 10 to 100, 19.56% below on a
+//! `beir()`-to-`anserini()` change. `tests/block_max_soundness.rs` gates it.
+//!
+//! The pair is looser, and a looser bound skips less. That is the price of
+//! an answer that is right under drift, and it is the one direction of error
+//! that is safe: a loose bound costs time, a stale one costs a result.
+//!
+//! # Cost
+//!
+//! Building bounds this way costs one `term_score` call per BLOCK. The
+//! previous form scored every posting in order to bound it, which is why the
+//! pruned path was slower than the scan it exists to avoid.
 
-use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, TermScorer, Tf};
-use crate::fts::postings::{dequantize_block_max, quantize_block_max};
+use crate::fts::bm25::TermScorer;
+use crate::fts::bm25::{DocLen, Tf};
+use crate::fts::postings::BlockImpact;
 
 /// One block's bound over a run of `(row, weighted tf)` entries.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,64 +51,65 @@ pub struct BlockBound {
     pub end: usize,
     /// Largest row id in the block; the skip key.
     pub last_row: u32,
-    /// Upper bound on any posting's contribution, after quantization.
+    /// The block's impact pair, as a sealed segment would store it.
+    pub impact: BlockImpact,
+    /// Upper bound on any posting's contribution under the live scorer.
     pub max_score: f64,
+}
+
+/// Summarizes one run of `(row, weighted tf)` entries as an impact pair.
+///
+/// `lengths` supplies the weighted analyzed length of each row. A row beyond
+/// the array contributes the shortest possible length, which pushes the
+/// bound up rather than down.
+#[must_use]
+pub fn impact_of(entries: &[(u32, u32)], lengths: &[u32]) -> BlockImpact {
+    let mut max_tf = 0_u32;
+    let mut min_len = u32::MAX;
+    for (row, tf) in entries {
+        max_tf = max_tf.max(*tf);
+        let length = usize::try_from(*row)
+            .ok()
+            .and_then(|slot| lengths.get(slot).copied())
+            .unwrap_or(1);
+        min_len = min_len.min(length);
+    }
+    BlockImpact {
+        max_tf,
+        // Saturating DOWN; see `BlockImpact::min_len`.
+        min_len: u16::try_from(min_len).unwrap_or(u16::MAX),
+    }
 }
 
 /// Builds per-block bounds for one term's merged postings.
 ///
-/// `lengths` supplies the weighted analyzed length of each row. `scale` is
-/// the quantization scale, normally the term's absolute score ceiling, so
-/// the `u8` slot spans the range the term can actually reach.
-///
-/// The bound returned is the DEQUANTIZED value, so it is exactly what a
-/// sealed segment would hand back. Computing bounds from exact scores here
-/// and quantized ones on disk would let the property pass in memory and fail
-/// against a real segment.
+/// The bound is exactly what a sealed segment hands back: the same impact
+/// pair, evaluated by the same scorer. Computing bounds one way in memory
+/// and another way on disk would let the equivalence property pass against a
+/// fixture and fail against a real segment.
 #[must_use]
 pub fn build_block_bounds(
     entries: &[(u32, u32)],
     lengths: &[u32],
     block_size: usize,
-    df: Df,
-    stats: &CorpusStats,
-    params: Bm25Params,
+    scorer: &TermScorer,
 ) -> Vec<BlockBound> {
     if block_size == 0 || entries.is_empty() {
         return Vec::new();
     }
-    let scorer = TermScorer::new(df, stats, params);
-    let scale = scorer.ceiling();
     let mut bounds = Vec::with_capacity(entries.len().div_ceil(block_size));
     let mut start = 0_usize;
     while start < entries.len() {
         let end = (start + block_size).min(entries.len());
-        let mut best = 0.0_f64;
-        let mut last_row = 0_u32;
-        for index in start..end {
-            let Some((row, tf)) = entries.get(index).copied() else {
-                continue;
-            };
-            last_row = row;
-            let length = usize::try_from(row)
-                .ok()
-                .and_then(|slot| lengths.get(slot).copied())
-                .unwrap_or(1);
-            let score = scorer.score(Tf(tf), DocLen(length));
-            if score > best {
-                best = score;
-            }
-        }
-        // Round-trip through the persisted representation so the bound used
-        // here is exactly the bound a sealed segment would provide.
-        let quantized = quantize_block_max(best, scale);
-        let restored = dequantize_block_max(quantized, scale);
+        let chunk = entries.get(start..end).unwrap_or(&[]);
+        let impact = impact_of(chunk, lengths);
         bounds.push(BlockBound {
             start,
             end,
-            last_row,
-            // Guard against a scale of zero making the bound collapse.
-            max_score: if restored >= best { restored } else { best },
+            last_row: chunk.last().map_or(0, |(row, _)| *row),
+            impact,
+            // One score per block, not one per posting.
+            max_score: scorer.score(Tf(impact.max_tf), DocLen(u32::from(impact.min_len))),
         });
         start = end;
     }
@@ -111,23 +134,23 @@ pub fn term_upper_bound(bounds: &[BlockBound]) -> f64 {
 )]
 mod tests {
     use super::*;
-    use crate::fts::bm25::term_score;
+    use crate::fts::bm25::{Bm25Params, CorpusStats, Df, term_score};
 
     fn stats() -> CorpusStats {
         CorpusStats::new(1_000, 40_000).expect("valid stats")
     }
 
     #[test]
-    fn quantized_block_max_is_never_below_any_true_score_in_its_block() {
+    fn a_block_bound_is_never_below_any_true_score_in_its_block() {
         let stats = stats();
         let params = Bm25Params::default();
         let lengths: Vec<u32> = (0..200_u32).map(|row| 1 + row % 97).collect();
         let entries: Vec<(u32, u32)> = (0..200_u32).map(|row| (row, 1 + row % 13)).collect();
 
         for df in [1_u32, 5, 200, 999] {
+            let scorer = TermScorer::new(Df(df), &stats, params);
             for block_size in [1_usize, 2, 7, 64, 128] {
-                let bounds =
-                    build_block_bounds(&entries, &lengths, block_size, Df(df), &stats, params);
+                let bounds = build_block_bounds(&entries, &lengths, block_size, &scorer);
                 for block in &bounds {
                     for entry in entries.iter().take(block.end).skip(block.start) {
                         let (row, tf) = *entry;
@@ -146,12 +169,56 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_built_here_matches_one_built_from_a_sealed_impact_pair() {
+        // The in-memory bound and the persisted one must be the same number,
+        // or the equivalence property passes against a fixture and fails
+        // against a real segment.
+        let stats = stats();
+        let scorer = TermScorer::new(Df(7), &stats, Bm25Params::default());
+        let lengths: Vec<u32> = (0..64_u32).map(|row| 3 + row % 11).collect();
+        let entries: Vec<(u32, u32)> = (0..64_u32).map(|row| (row, 1 + row % 5)).collect();
+        let bounds = build_block_bounds(&entries, &lengths, 16, &scorer);
+        assert_eq!(bounds.len(), 4);
+        for block in &bounds {
+            assert!((block.impact.bound(&scorer) - block.max_score).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn the_bound_survives_statistics_and_parameter_drift() {
+        // The whole point of a pair over a stored score: the summary carries
+        // no statistics, so re-evaluating it under drifted ones stays sound.
+        let lengths: Vec<u32> = (0..64_u32).map(|row| 1 + row % 40).collect();
+        let entries: Vec<(u32, u32)> = (0..64_u32).map(|row| (row, 1 + row % 9)).collect();
+        let sealed = CorpusStats::new(100, 1_000).expect("avgdl 10");
+        let sealed_scorer = TermScorer::new(Df(64), &sealed, Bm25Params::beir());
+        let bounds = build_block_bounds(&entries, &lengths, 16, &sealed_scorer);
+
+        for (docs, tokens) in [(1_000_u64, 100_000_u64), (10, 50), (5_000, 5_000)] {
+            let live = CorpusStats::new(docs, tokens).expect("valid stats");
+            for params in [Bm25Params::beir(), Bm25Params::anserini()] {
+                let live_scorer = TermScorer::new(Df(64), &live, params);
+                for block in &bounds {
+                    // The reader re-evaluates the stored pair; it never
+                    // reuses the number computed at seal time.
+                    let bound = block.impact.bound(&live_scorer);
+                    for entry in entries.iter().take(block.end).skip(block.start) {
+                        let (row, tf) = *entry;
+                        let truth = live_scorer.score(Tf(tf), DocLen(lengths[row as usize]));
+                        assert!(bound >= truth - 1e-12, "bound {bound} below {truth}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_term_upper_bound_dominates_every_block_bound() {
         let stats = stats();
+        let scorer = TermScorer::new(Df(10), &stats, Bm25Params::default());
         let lengths: Vec<u32> = (0..64_u32).map(|row| 1 + row).collect();
         let entries: Vec<(u32, u32)> = (0..64_u32).map(|row| (row, 1 + row % 5)).collect();
-        let bounds =
-            build_block_bounds(&entries, &lengths, 8, Df(10), &stats, Bm25Params::default());
+        let bounds = build_block_bounds(&entries, &lengths, 8, &scorer);
         let overall = term_upper_bound(&bounds);
         for block in &bounds {
             assert!(block.max_score <= overall + 1e-12);
@@ -161,17 +228,11 @@ mod tests {
     #[test]
     fn blocks_partition_the_entries_exactly_once() {
         let stats = stats();
+        let scorer = TermScorer::new(Df(4), &stats, Bm25Params::default());
         let lengths: Vec<u32> = vec![10; 100];
         let entries: Vec<(u32, u32)> = (0..100_u32).map(|row| (row, 2)).collect();
         for block_size in [1_usize, 3, 64, 200] {
-            let bounds = build_block_bounds(
-                &entries,
-                &lengths,
-                block_size,
-                Df(4),
-                &stats,
-                Bm25Params::default(),
-            );
+            let bounds = build_block_bounds(&entries, &lengths, block_size, &scorer);
             let mut cursor = 0_usize;
             for block in &bounds {
                 assert_eq!(block.start, cursor, "blocks must be contiguous");
@@ -185,10 +246,10 @@ mod tests {
     #[test]
     fn the_last_row_of_each_block_is_its_skip_key() {
         let stats = stats();
+        let scorer = TermScorer::new(Df(2), &stats, Bm25Params::default());
         let lengths: Vec<u32> = vec![5; 40];
         let entries: Vec<(u32, u32)> = (0..10_u32).map(|row| (row * 3, 1)).collect();
-        let bounds =
-            build_block_bounds(&entries, &lengths, 4, Df(2), &stats, Bm25Params::default());
+        let bounds = build_block_bounds(&entries, &lengths, 4, &scorer);
         assert_eq!(bounds.len(), 3);
         assert_eq!(bounds[0].last_row, 9);
         assert_eq!(bounds[1].last_row, 21);
@@ -198,11 +259,11 @@ mod tests {
     #[test]
     fn degenerate_inputs_produce_no_bounds_rather_than_panicking() {
         let stats = stats();
-        assert!(build_block_bounds(&[], &[], 8, Df(1), &stats, Bm25Params::default()).is_empty());
-        assert!(
-            build_block_bounds(&[(0, 1)], &[5], 0, Df(1), &stats, Bm25Params::default()).is_empty()
-        );
+        let scorer = TermScorer::new(Df(1), &stats, Bm25Params::default());
+        assert!(build_block_bounds(&[], &[], 8, &scorer).is_empty());
+        assert!(build_block_bounds(&[(0, 1)], &[5], 0, &scorer).is_empty());
         assert_eq!(term_upper_bound(&[]), 0.0);
+        assert!(impact_of(&[], &[]).is_absent());
     }
 
     #[test]
@@ -210,14 +271,21 @@ mod tests {
         // A length array shorter than the highest row must not silently
         // produce a bound below the truth.
         let stats = stats();
+        let scorer = TermScorer::new(Df(2), &stats, Bm25Params::default());
         let entries = vec![(0_u32, 3_u32), (500, 3)];
         let lengths = vec![10_u32];
-        let bounds =
-            build_block_bounds(&entries, &lengths, 8, Df(2), &stats, Bm25Params::default());
+        let bounds = build_block_bounds(&entries, &lengths, 8, &scorer);
         assert_eq!(bounds.len(), 1);
         // The fallback length of 1 is the shortest possible, so its score is
         // the largest possible: the bound stays an upper bound.
         let fallback = term_score(Tf(3), Df(2), DocLen(1), &stats, Bm25Params::default());
         assert!(bounds[0].max_score >= fallback - 1e-12);
+    }
+
+    #[test]
+    fn a_length_beyond_the_slot_saturates_downward() {
+        let entries = vec![(0_u32, 2_u32)];
+        let lengths = vec![100_000_u32];
+        assert_eq!(impact_of(&entries, &lengths).min_len, u16::MAX);
     }
 }

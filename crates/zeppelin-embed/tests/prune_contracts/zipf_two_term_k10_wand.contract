@@ -1,5 +1,13 @@
 # Zipf 2,000 documents, terms t0 and t5, k=10, block-max WAND
-docs_evaluated = 379
+#
+# Re-baselined when block bounds became impact pairs. The bound is now
+# term_score(max_tf, min_len) evaluated at query time, replacing a
+# quantized per-block maximum that was unsound under statistics drift.
+# Neither form dominates the other: quantization rounded UP to a multiple
+# of ceiling/255, which inflated a tight block, while a pair is loose when
+# a block's largest tf and its shortest document are different documents.
+# Here the first effect wins and the query evaluates FEWER documents.
+docs_evaluated = 354
 blocks_decoded = 38
 blocks_skipped = 31
-postings_decoded = 713
+postings_decoded = 688

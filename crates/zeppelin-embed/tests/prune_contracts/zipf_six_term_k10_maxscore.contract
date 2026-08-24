@@ -1,5 +1,12 @@
 # Zipf 2,000 documents, terms t0..t5, k=10, block-max MAXSCORE
-docs_evaluated = 53
+#
+# Re-baselined when block bounds became impact pairs; see the WAND contract
+# for the reason. Here the second effect wins: the pair is looser than the
+# quantized maximum, so 19 more documents are evaluated. That is the price
+# of a bound that stays above every true score when avgdl or (k1, b) drift,
+# and it is the safe direction of error -- a loose bound costs time, a
+# stale one costs a result.
+docs_evaluated = 72
 blocks_decoded = 80
 blocks_skipped = 46
-postings_decoded = 2254
+postings_decoded = 2253

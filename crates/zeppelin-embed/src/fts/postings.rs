@@ -47,9 +47,7 @@
 //! same slot is deliberately shaped so a future caller-supplied impact
 //! could reuse it.
 
-use std::collections::BTreeMap;
-
-use super::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, term_score_ceiling};
+use super::bm25::{DocLen, Tf};
 
 /// Postings per block. Persisted; see the module docs before changing it.
 pub const DEFAULT_POSTINGS_PER_BLOCK: u16 = 64;
@@ -60,8 +58,20 @@ pub const BLOCK_META_LEN: usize = 32;
 /// Magic prefixing an encoded posting list.
 const POSTINGS_MAGIC: [u8; 4] = *b"ZPST";
 
-/// Encoded-postings format version.
-const POSTINGS_VERSION: u16 = 1;
+/// The original encoded-postings format version.
+///
+/// Its six reserved metadata bytes are zero. It remains readable, and the
+/// frozen golden is a v1 stream, but the query path refuses it: a v1 block
+/// carries no impact pair, and a silent exhaustive fallback would make a
+/// stale index look correct and slow forever.
+pub const POSTINGS_VERSION_V1: u16 = 1;
+
+/// The current encoded-postings format version.
+///
+/// Version 2 spends the six reserved metadata bytes on the impact pair
+/// `(max_tf: u32, min_len: u16)`. See [`BlockImpact`] for why that is a
+/// soundness fix and not merely a wider bound.
+pub const POSTINGS_VERSION: u16 = 2;
 
 /// A rejected or malformed posting stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -338,8 +348,22 @@ pub struct BlockMeta {
     pub tf_bits: u8,
     /// Bit width of the position deltas.
     pub position_bits: u8,
-    /// Quantized ceiling on any posting's BM25 contribution, rounded up.
+    /// Reserved for a caller-supplied impact. Written zero by this engine.
+    ///
+    /// Version 1 stored `quantize(score / ceiling)` here and computed the
+    /// pruning bound from it. That was unsound: the quotient bakes in
+    /// seal-time `avgdl` and seal-time `(k1, b)`, neither of which cancels,
+    /// so the stored bound fell below a true score once statistics drifted.
+    /// The slot is kept — its shape suits a caller-supplied learned impact —
+    /// but nothing in the engine reads it for a bound.
     pub block_max: u8,
+    /// Largest term frequency in the block. Zero in a version 1 stream.
+    pub max_tf: u32,
+    /// Smallest document length in the block, saturating DOWN to `u16::MAX`.
+    ///
+    /// Down, because a shorter document scores higher: saturating upward
+    /// would put the stored bound below a true score.
+    pub min_len: u16,
 }
 
 impl BlockMeta {
@@ -354,9 +378,12 @@ impl BlockMeta {
         output.push(self.tf_bits);
         output.push(self.position_bits);
         output.push(self.block_max);
-        // Explicit zero padding to BLOCK_META_LEN, reserved for future
-        // flags. 4 + 4 + 4 + 4 + 4 + 2 + 4 written above is 26 bytes.
-        output.extend_from_slice(&[0_u8; 6]);
+        // 4 + 4 + 4 + 4 + 4 + 2 + 4 written above is 26 bytes; the impact
+        // pair spends the remaining six exactly. A version 1 encode leaves
+        // both fields zero, which reproduces the original zero padding byte
+        // for byte, so the v1 golden is unmoved.
+        output.extend_from_slice(&self.max_tf.to_le_bytes());
+        output.extend_from_slice(&self.min_len.to_le_bytes());
     }
 
     fn read(input: &[u8]) -> Result<Self, PostingsError> {
@@ -377,6 +404,8 @@ impl BlockMeta {
             tf_bits: read_u8(row, 23)?,
             position_bits: read_u8(row, 24)?,
             block_max: read_u8(row, 25)?,
+            max_tf: read_u32(row, 26)?,
+            min_len: read_u16(row, 30)?,
         })
     }
 }
@@ -408,43 +437,6 @@ fn read_u32(input: &[u8], at: usize) -> Result<u32, PostingsError> {
     Ok(u32::from_le_bytes(buffer))
 }
 
-/// Quantizes a score ceiling into the `u8` block-max slot, rounding up.
-///
-/// `scale` is the largest ceiling in the index; scores are expressed as a
-/// fraction of it. Rounding up is mandatory: a stored maximum below a true
-/// score would let task 14 prune a document that belonged in the top-k.
-#[must_use]
-pub fn quantize_block_max(score: f64, scale: f64) -> u8 {
-    if !score.is_finite() || score <= 0.0 {
-        return 0;
-    }
-    if !scale.is_finite() || scale <= 0.0 {
-        return u8::MAX;
-    }
-    let fraction = score / scale;
-    if fraction >= 1.0 {
-        return u8::MAX;
-    }
-    let raw = (fraction * f64::from(u8::MAX)).ceil();
-    if raw >= f64::from(u8::MAX) {
-        u8::MAX
-    } else {
-        raw as u8
-    }
-}
-
-/// Reconstructs an upper bound from a quantized block maximum.
-///
-/// The result is always at or above the score that produced it, because
-/// [`quantize_block_max`] rounded up.
-#[must_use]
-pub fn dequantize_block_max(quantized: u8, scale: f64) -> f64 {
-    if !scale.is_finite() || scale <= 0.0 {
-        return f64::INFINITY;
-    }
-    f64::from(quantized) / f64::from(u8::MAX) * scale
-}
-
 /// An encoded posting list: header, block metadata rows, then the streams.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EncodedPostings {
@@ -468,11 +460,14 @@ impl EncodedPostings {
 /// Header length: magic, version, block size, posting and block counts.
 const HEADER_LEN: usize = 16;
 
-/// Encodes one posting list.
+/// Encodes one posting list in the original version 1 layout.
 ///
-/// `block_max_scores` supplies the per-block quantized ceilings; pass an
-/// empty slice to store zeros, which task 14 reads as "no bound available"
-/// and evaluates exhaustively.
+/// `block_maxima` supplies the per-block reserved `u8` slot; pass an empty
+/// slice to store zeros. The impact-pair bytes stay zero, which is what
+/// keeps the frozen v1 golden byte-identical.
+///
+/// New writers use [`encode_v2`]. This entry point exists so the v1 golden
+/// stays exercised and so a v1 stream can still be produced deliberately.
 ///
 /// # Errors
 ///
@@ -481,6 +476,47 @@ pub fn encode(
     list: &PostingList,
     postings_per_block: u16,
     block_maxima: &[u8],
+) -> Result<EncodedPostings, PostingsError> {
+    encode_versioned(
+        list,
+        postings_per_block,
+        block_maxima,
+        &[],
+        POSTINGS_VERSION_V1,
+    )
+}
+
+/// Encodes one posting list in the version 2 layout, carrying impact pairs.
+///
+/// `impacts` supplies one [`BlockImpact`] per block, normally from
+/// [`block_impacts`]. A missing entry stores a zero pair, which a reader
+/// rejects rather than treating as an unbounded block.
+///
+/// # Errors
+///
+/// Returns [`PostingsError::ZeroBlockSize`] when the geometry is degenerate.
+pub fn encode_v2(
+    list: &PostingList,
+    postings_per_block: u16,
+    block_maxima: &[u8],
+    impacts: &[BlockImpact],
+) -> Result<EncodedPostings, PostingsError> {
+    encode_versioned(
+        list,
+        postings_per_block,
+        block_maxima,
+        impacts,
+        POSTINGS_VERSION,
+    )
+}
+
+/// The one encoder. Version selects only what the reserved bytes carry.
+fn encode_versioned(
+    list: &PostingList,
+    postings_per_block: u16,
+    block_maxima: &[u8],
+    impacts: &[BlockImpact],
+    version: u16,
 ) -> Result<EncodedPostings, PostingsError> {
     if postings_per_block == 0 {
         return Err(PostingsError::ZeroBlockSize);
@@ -540,6 +576,8 @@ pub fn encode(
             tf_bits,
             position_bits,
             block_max: block_maxima.get(index).copied().unwrap_or(0),
+            max_tf: impacts.get(index).map_or(0, |impact| impact.max_tf),
+            min_len: impacts.get(index).map_or(0, |impact| impact.min_len),
         };
 
         pack_bits(&deltas, docid_bits, &mut docid_stream);
@@ -556,7 +594,7 @@ pub fn encode(
             + position_stream.len(),
     );
     bytes.extend_from_slice(&POSTINGS_MAGIC);
-    bytes.extend_from_slice(&POSTINGS_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&version.to_le_bytes());
     bytes.extend_from_slice(&postings_per_block.to_le_bytes());
     bytes.extend_from_slice(
         &u32::try_from(postings.len())
@@ -581,6 +619,7 @@ pub fn encode(
 /// A validated view over an encoded posting list.
 #[derive(Clone, Debug)]
 pub struct PostingsReader<'bytes> {
+    version: u16,
     blocks: Vec<BlockMeta>,
     docids: &'bytes [u8],
     tfs: &'bytes [u8],
@@ -610,7 +649,7 @@ impl<'bytes> PostingsReader<'bytes> {
             return Err(PostingsError::BadMagic);
         }
         let version = read_u16(header, 4)?;
-        if version != POSTINGS_VERSION {
+        if version != POSTINGS_VERSION_V1 && version != POSTINGS_VERSION {
             return Err(PostingsError::UnsupportedVersion { found: version });
         }
         let postings_per_block = read_u16(header, 6)?;
@@ -737,6 +776,7 @@ impl<'bytes> PostingsReader<'bytes> {
                 })?;
 
         Ok(Self {
+            version,
             blocks,
             docids,
             tfs,
@@ -750,6 +790,16 @@ impl<'bytes> PostingsReader<'bytes> {
     #[must_use]
     pub fn blocks(&self) -> &[BlockMeta] {
         &self.blocks
+    }
+
+    /// Returns the format version the stream declared.
+    ///
+    /// A caller that needs impact pairs checks this rather than inferring
+    /// their presence from a zero pair, so a v1 stream is refused loudly
+    /// instead of silently bounding nothing.
+    #[must_use]
+    pub const fn version(&self) -> u16 {
+        self.version
     }
 
     /// Returns the postings-per-block geometry recorded in the header.
@@ -877,41 +927,96 @@ impl<'bytes> PostingsReader<'bytes> {
     }
 }
 
-/// Computes the per-block quantized maxima for one term's postings.
+/// One block's impact pair: the two extremes that bound every posting in it.
 ///
-/// The ceiling for a block is the largest BM25 contribution any posting in
-/// it can produce: the term's idf times the tf-saturation factor, evaluated
-/// at the block's largest term frequency and shortest document.
+/// # Why a pair and not a stored score
+///
+/// A stored score is a number computed under one set of statistics. BM25's
+/// `score / ceiling` is `tf / (tf + k1 * (1 - b + b * len / avgdl))`, so
+/// `idf` cancels but `avgdl` and `(k1, b)` do not: a bound sealed when
+/// documents were short falls below a true score once `avgdl` rises, and a
+/// bound sealed under `beir()` falls below one read under `anserini()`.
+/// Measured shortfalls were 15.21% and 19.56%.
+///
+/// A pair carries no statistics at all. `term_score` is monotone increasing
+/// in `tf` and monotone decreasing in `len`, so evaluating it at the block's
+/// largest `tf` and shortest document dominates every posting in the block
+/// under ANY statistics and ANY `(k1, b)`. The two extremes need not come
+/// from the same document; pairing them is looser than the true maximum and
+/// is therefore still an upper bound.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BlockImpact {
+    /// Largest term frequency in the block.
+    pub max_tf: u32,
+    /// Smallest document length in the block, saturating DOWN.
+    pub min_len: u16,
+}
+
+impl BlockImpact {
+    /// Reads the pair out of a persisted metadata row.
+    #[must_use]
+    pub const fn from_meta(meta: &BlockMeta) -> Self {
+        Self {
+            max_tf: meta.max_tf,
+            min_len: meta.min_len,
+        }
+    }
+
+    /// Returns true when the pair bounds nothing.
+    ///
+    /// A real block has at least one posting, whose term frequency is at
+    /// least one, so a zero `max_tf` can only mean the pair was never
+    /// written — a version 1 stream, or a v2 stream missing an entry.
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        self.max_tf == 0
+    }
+
+    /// Evaluates the bound under the caller's live scoring constants.
+    ///
+    /// This is the whole remedy: the bound is computed HERE, at query time,
+    /// from statistics that are current and parameters the caller chose.
+    #[must_use]
+    pub fn bound(&self, scorer: &super::bm25::TermScorer) -> f64 {
+        scorer.score(Tf(self.max_tf), DocLen(u32::from(self.min_len)))
+    }
+}
+
+/// Computes the per-block impact pairs for one term's postings.
+///
+/// `lengths` is the dense per-row length array; a row beyond it contributes
+/// the shortest possible length, which keeps the bound above rather than
+/// below the truth.
 #[must_use]
-pub fn block_maxima(
+pub fn block_impacts(
     list: &PostingList,
     postings_per_block: u16,
-    lengths: &BTreeMap<u32, u32>,
-    stats: &CorpusStats,
-    params: Bm25Params,
-    scale: f64,
-) -> Vec<u8> {
+    lengths: &[u32],
+) -> Vec<BlockImpact> {
     if postings_per_block == 0 {
         return Vec::new();
     }
-    let df = Df(list.document_frequency());
     list.postings()
         .chunks(usize::from(postings_per_block))
         .map(|chunk| {
-            let mut best = 0.0_f64;
+            let mut max_tf = 0_u32;
+            let mut min_len = u32::MAX;
             for posting in chunk {
-                let length = lengths.get(&posting.docid).copied().unwrap_or(1);
-                let score =
-                    super::bm25::term_score(Tf(posting.tf), df, DocLen(length), stats, params);
-                if score > best {
-                    best = score;
-                }
+                max_tf = max_tf.max(posting.tf);
+                let length = usize::try_from(posting.docid)
+                    .ok()
+                    .and_then(|slot| lengths.get(slot).copied())
+                    .unwrap_or(1);
+                min_len = min_len.min(length);
             }
-            // The absolute ceiling is a safe fallback if the block is empty.
-            if best <= 0.0 {
-                best = term_score_ceiling(df, stats, params);
+            BlockImpact {
+                max_tf,
+                // Saturating DOWN: a shorter document scores higher, so a
+                // stored length at or below the truth keeps the bound above
+                // it. `try_from` fails exactly when the value exceeds the
+                // slot, and `u16::MAX` is then the largest storable length.
+                min_len: u16::try_from(min_len).unwrap_or(u16::MAX),
             }
-            quantize_block_max(best, scale)
         })
         .collect()
 }
@@ -1072,30 +1177,57 @@ mod tests {
     }
 
     #[test]
-    fn quantization_of_block_maxima_always_rounds_up() {
-        let scale = 10.0;
-        for numerator in 0..=1000_u32 {
-            let score = f64::from(numerator) / 100.0;
-            if score > scale {
-                continue;
+    fn the_impact_pair_survives_the_persisted_round_trip() {
+        // The pair is what makes a bound sound under drift, so it has to
+        // come back out of the bytes exactly as it went in.
+        let list = list_from(&[(0, &[0, 1, 2]), (5, &[0]), (9, &[0, 3])]);
+        let lengths = vec![40_u32, 0, 0, 0, 0, 7, 0, 0, 0, 900];
+        let impacts = block_impacts(&list, 2, &lengths);
+        assert_eq!(impacts.len(), 2);
+        assert_eq!(
+            impacts[0],
+            BlockImpact {
+                max_tf: 3,
+                min_len: 7
             }
-            let quantized = quantize_block_max(score, scale);
-            let restored = dequantize_block_max(quantized, scale);
-            assert!(
-                restored >= score - 1e-12,
-                "bound {restored} fell below the score {score} it must cover"
-            );
+        );
+        assert_eq!(
+            impacts[1],
+            BlockImpact {
+                max_tf: 2,
+                min_len: 900
+            }
+        );
+
+        let encoded = encode_v2(&list, 2, &[], &impacts).expect("encodes");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+        assert_eq!(reader.version(), POSTINGS_VERSION);
+        let read: Vec<BlockImpact> = reader.blocks().iter().map(BlockImpact::from_meta).collect();
+        assert_eq!(read, impacts);
+        assert_eq!(reader.decode_all().expect("decodes"), list);
+    }
+
+    #[test]
+    fn a_version_one_stream_reads_back_with_no_impact_pair() {
+        // v1 is still readable, and its blocks report an ABSENT pair rather
+        // than a zero one that a caller might mistake for a real bound.
+        let list = list_from(&[(0, &[0]), (4, &[1])]);
+        let encoded = encode(&list, 64, &[]).expect("encodes");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+        assert_eq!(reader.version(), POSTINGS_VERSION_V1);
+        for meta in reader.blocks() {
+            assert!(BlockImpact::from_meta(meta).is_absent());
         }
     }
 
     #[test]
-    fn quantization_edges_are_saturating_not_wrapping() {
-        assert_eq!(quantize_block_max(0.0, 10.0), 0);
-        assert_eq!(quantize_block_max(-1.0, 10.0), 0);
-        assert_eq!(quantize_block_max(10.0, 10.0), u8::MAX);
-        assert_eq!(quantize_block_max(1e18, 10.0), u8::MAX);
-        assert_eq!(quantize_block_max(f64::NAN, 10.0), 0);
-        assert_eq!(quantize_block_max(1.0, 0.0), u8::MAX);
+    fn an_empty_impact_slice_stores_an_absent_pair() {
+        let list = list_from(&[(0, &[0])]);
+        let encoded = encode_v2(&list, 64, &[], &[]).expect("encodes");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("opens");
+        assert_eq!(reader.version(), POSTINGS_VERSION);
+        assert!(BlockImpact::from_meta(&reader.blocks()[0]).is_absent());
+        assert!(block_impacts(&list, 0, &[]).is_empty());
     }
 
     #[test]

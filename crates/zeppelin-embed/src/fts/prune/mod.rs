@@ -35,7 +35,7 @@ use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
 
-pub use bounds::{BlockBound, build_block_bounds, term_upper_bound};
+pub use bounds::{BlockBound, build_block_bounds, impact_of, term_upper_bound};
 
 /// Postings per pruning block.
 ///
@@ -330,14 +330,8 @@ pub fn search_pruned(
             if merged.entries.is_empty() {
                 continue;
             }
-            let blocks = build_block_bounds(
-                &merged.entries,
-                &lengths,
-                PRUNE_BLOCK_SIZE,
-                df,
-                &stats,
-                params,
-            );
+            let scorer = TermScorer::new(df, &stats, params);
+            let blocks = build_block_bounds(&merged.entries, &lengths, PRUNE_BLOCK_SIZE, &scorer);
             let upper_bound = term_upper_bound(&blocks);
             counters.blocks_decoded = counters
                 .blocks_decoded
@@ -347,7 +341,7 @@ pub fn search_pruned(
                 blocks,
                 block_size: PRUNE_BLOCK_SIZE,
                 df,
-                scorer: TermScorer::new(df, &stats, params),
+                scorer,
                 upper_bound,
                 position: 0,
             });
@@ -557,13 +551,14 @@ mod tests {
         let lengths: Vec<u32> = (0..count * stride.max(1)).map(|row| 1 + row % 23).collect();
         let stats = crate::fts::bm25::CorpusStats::new(1_000, 40_000).expect("stats");
         let params = Bm25Params::default();
-        let blocks = build_block_bounds(&entries, &lengths, block_size, Df(50), &stats, params);
+        let scorer = TermScorer::new(Df(50), &stats, params);
+        let blocks = build_block_bounds(&entries, &lengths, block_size, &scorer);
         TermCursor {
             entries,
             blocks,
             block_size,
             df: Df(50),
-            scorer: TermScorer::new(Df(50), &stats, params),
+            scorer,
             upper_bound: 1.0,
             position: 0,
         }
@@ -626,20 +621,14 @@ mod tests {
         let entries: Vec<(u32, u32)> = (0..200_u32).map(|row| (row, 1)).collect();
         let lengths = vec![10_u32; 200];
         let stats = crate::fts::bm25::CorpusStats::new(200, 2_000).expect("stats");
-        let blocks = build_block_bounds(
-            &entries,
-            &lengths,
-            PRUNE_BLOCK_SIZE,
-            Df(200),
-            &stats,
-            Bm25Params::default(),
-        );
+        let scorer = TermScorer::new(Df(200), &stats, Bm25Params::default());
+        let blocks = build_block_bounds(&entries, &lengths, PRUNE_BLOCK_SIZE, &scorer);
         let mut cursor = TermCursor {
             entries,
             blocks,
             block_size: PRUNE_BLOCK_SIZE,
             df: Df(200),
-            scorer: TermScorer::new(Df(200), &stats, Bm25Params::default()),
+            scorer,
             upper_bound: 1.0,
             position: 0,
         };
@@ -653,14 +642,14 @@ mod tests {
         let entries: Vec<(u32, u32)> = (0..10_u32).map(|row| (row, 1)).collect();
         let lengths = vec![10_u32; 10];
         let stats = crate::fts::bm25::CorpusStats::new(10, 100).expect("stats");
-        let blocks =
-            build_block_bounds(&entries, &lengths, 4, Df(10), &stats, Bm25Params::default());
+        let scorer = TermScorer::new(Df(10), &stats, Bm25Params::default());
+        let blocks = build_block_bounds(&entries, &lengths, 4, &scorer);
         let mut cursor = TermCursor {
             entries,
             blocks,
             block_size: 4,
             df: Df(10),
-            scorer: TermScorer::new(Df(10), &stats, Bm25Params::default()),
+            scorer,
             upper_bound: 1.0,
             position: 0,
         };
