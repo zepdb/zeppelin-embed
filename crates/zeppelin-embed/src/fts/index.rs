@@ -29,12 +29,12 @@
 //! oversized field is a typed rejection at the tokenizer boundary, not a
 //! silent cut.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
 use super::sealed::SealedSegment;
-use super::tokenizer::Analyzer;
+use super::tokenizer::{Analyzer, Token};
 
 /// A field identifier within a document schema.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -138,6 +138,18 @@ struct FieldLengths {
     lengths: Vec<u32>,
 }
 
+/// Hashes term keys with xxh3, the one permitted hash family.
+#[derive(Clone, Debug, Default)]
+struct Xxh3State;
+
+impl std::hash::BuildHasher for Xxh3State {
+    type Hasher = xxhash_rust::xxh3::Xxh3;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        xxhash_rust::xxh3::Xxh3::new()
+    }
+}
+
 /// One segment's postings and lengths, addressed by dense row id.
 ///
 /// # Why lengths are dense arrays and not a map
@@ -147,9 +159,21 @@ struct FieldLengths {
 /// seventeen levels at 171,000 documents — on what an array answers with one
 /// index. The scorer performs that lookup once per scored posting, so the
 /// descent was among the largest per-posting costs in the engine.
+///
+/// # Why the term table is a hash map and not a tree
+///
+/// Accumulation looks a term up once per (document, term, field): tens of
+/// millions of probes on a real corpus, against a table with millions of
+/// entries. A B-tree descent is ~20 pointer-chasing key compares per
+/// probe; an xxh3 probe is one hash and usually one compare. The sorted
+/// view the seal needs is materialized ONCE, in [`Self::postings`],
+/// instead of being maintained on every insert.
 #[derive(Clone, Debug, Default)]
 pub struct SegmentIndex {
-    postings: BTreeMap<TermKey, PostingList>,
+    /// Term key to slot in `lists`.
+    terms: HashMap<TermKey, usize, Xxh3State>,
+    /// Posting lists, in first-seen order; `terms` holds the slots.
+    lists: Vec<PostingList>,
     /// Per-field analyzed token counts, ascending by field id.
     lengths: Vec<FieldLengths>,
     row_count: u32,
@@ -175,17 +199,26 @@ impl SegmentIndex {
     }
 
     /// Returns the posting lists, ordered by term then field.
+    ///
+    /// The sorted view is built here, once per call, rather than being
+    /// maintained on every insert; seal is its one hot caller.
     pub fn postings(&self) -> impl Iterator<Item = (&TermKey, &PostingList)> {
-        self.postings.iter()
+        let mut entries: Vec<(&TermKey, usize)> =
+            self.terms.iter().map(|(key, slot)| (key, *slot)).collect();
+        entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        entries
+            .into_iter()
+            .filter_map(|(key, slot)| self.lists.get(slot).map(|list| (key, list)))
     }
 
     /// Returns one term's posting list within one field.
     #[must_use]
     pub fn posting_list(&self, term: &[u8], field: FieldId) -> Option<&PostingList> {
-        self.postings.get(&TermKey {
+        let slot = *self.terms.get(&TermKey {
             term: term.to_vec(),
             field,
-        })
+        })?;
+        self.lists.get(slot)
     }
 
     /// Returns the analyzed token count of one row's field.
@@ -297,40 +330,160 @@ impl SegmentIndex {
         let row = self.row_count;
         for (field, text) in document.fields() {
             let tokens = analyzer.analyze(text);
-            // Position count is the analyzed length: stacked variants share
-            // a position and must not inflate the document length, or avgdl
-            // stops matching the unit being scored.
-            let length = tokens
-                .iter()
-                .map(|token| token.position)
-                .max()
-                .map_or(0, |highest| highest.saturating_add(1));
-            self.set_field_length(row, field, length);
+            self.accumulate(row, field, &tokens)?;
+        }
+        self.finish_row();
+        Ok(row)
+    }
 
-            let mut per_term: BTreeMap<Vec<u8>, Vec<u32>> = BTreeMap::new();
-            for token in tokens {
-                per_term
-                    .entry(token.term.into_bytes())
-                    .or_default()
-                    .push(token.position);
+    /// Appends many documents, analyzing them in parallel.
+    ///
+    /// The result is identical to pushing the same documents one at a time
+    /// in slice order: analysis is independent per document and runs on
+    /// explicit scoped threads, while accumulation happens strictly in row
+    /// order on the calling thread — so nothing about the outcome depends
+    /// on scheduling, and the single-writer invariant is untouched.
+    ///
+    /// `threads` is the caller's policy; one or fewer runs sequentially.
+    /// Analysis is batched so the in-flight token working set stays
+    /// proportional to the batch, never to the corpus.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::push_document`]. On an error, documents before the
+    /// failing one remain indexed, exactly as a sequential loop would
+    /// leave them.
+    pub fn push_documents(
+        &mut self,
+        analyzer: &Analyzer,
+        documents: &[Document],
+        threads: usize,
+    ) -> Result<(), IndexError> {
+        let workers = threads.max(1).min(documents.len().max(1));
+        if workers <= 1 {
+            for document in documents {
+                self.push_document(analyzer, document)?;
             }
-            for (term, mut positions) in per_term {
-                positions.sort_unstable();
-                positions.dedup();
-                let tf = u32::try_from(positions.len()).unwrap_or(u32::MAX);
-                self.postings
-                    .entry(TermKey { term, field })
-                    .or_default()
-                    .push(Posting {
-                        docid: row,
-                        tf,
-                        positions,
-                    })?;
+            return Ok(());
+        }
+        let batch_size = workers.saturating_mul(32).max(1);
+        for batch in documents.chunks(batch_size) {
+            let mut analyzed: Vec<Vec<(FieldId, Vec<Token>)>> = Vec::new();
+            analyzed.resize_with(batch.len(), Vec::new);
+            let stride = batch.len().div_ceil(workers);
+            std::thread::scope(|scope| {
+                let mut rest = analyzed.as_mut_slice();
+                let mut offset = 0_usize;
+                while !rest.is_empty() {
+                    let take = stride.min(rest.len());
+                    let (mine, tail) = rest.split_at_mut(take);
+                    rest = tail;
+                    let end = offset.saturating_add(take);
+                    let docs = batch.get(offset..end).unwrap_or(&[]);
+                    offset = end;
+                    scope.spawn(move || {
+                        for (slot, document) in mine.iter_mut().zip(docs) {
+                            *slot = document
+                                .fields()
+                                .map(|(field, text)| (field, analyzer.analyze(text)))
+                                .collect();
+                        }
+                    });
+                }
+            });
+            for fields in &analyzed {
+                let row = self.row_count;
+                for (field, tokens) in fields {
+                    self.accumulate(row, *field, tokens)?;
+                }
+                self.finish_row();
             }
         }
+        Ok(())
+    }
+
+    /// Folds one field's analyzed tokens into the postings for one row.
+    fn accumulate(&mut self, row: u32, field: FieldId, tokens: &[Token]) -> Result<(), IndexError> {
+        // Position count is the analyzed length: stacked variants share
+        // a position and must not inflate the document length, or avgdl
+        // stops matching the unit being scored.
+        let length = tokens
+            .iter()
+            .map(|token| token.position)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1));
+        self.set_field_length(row, field, length);
+
+        // Sort-based grouping over borrowed terms replaces the per-document
+        // `BTreeMap<Vec<u8>, Vec<u32>>`: no map to build and tear down per
+        // document, no allocation per (document, term). `str` compares
+        // byte-wise, so groups arrive in exactly the order the map's keys
+        // did, and a group's positions arrive already sorted.
+        let mut scratch: Vec<(&str, u32)> = tokens
+            .iter()
+            .map(|token| (token.term.as_str(), token.position))
+            .collect();
+        scratch.sort_unstable();
+
+        // One reusable probe key per field: lookups borrow it, and only a
+        // term new to the segment pays an owned copy.
+        let mut probe = TermKey {
+            term: Vec::new(),
+            field,
+        };
+        let mut start = 0_usize;
+        while let Some((term, _)) = scratch.get(start).copied() {
+            let mut end = start.saturating_add(1);
+            while scratch.get(end).is_some_and(|(next, _)| *next == term) {
+                end = end.saturating_add(1);
+            }
+            let group = scratch.get(start..end).unwrap_or(&[]);
+            let mut positions: Vec<u32> = Vec::with_capacity(group.len());
+            for (_, position) in group {
+                if positions.last() != Some(position) {
+                    positions.push(*position);
+                }
+            }
+            let tf = u32::try_from(positions.len()).unwrap_or(u32::MAX);
+            probe.term.clear();
+            probe.term.extend_from_slice(term.as_bytes());
+            let posting = Posting {
+                docid: row,
+                tf,
+                positions,
+            };
+            match self.terms.get(&probe).copied() {
+                Some(slot) => {
+                    // The map only ever hands out slots minted below, so
+                    // the lookup cannot miss; the `if let` is the panic-free
+                    // spelling of that impossibility.
+                    if let Some(list) = self.lists.get_mut(slot) {
+                        list.push(posting)?;
+                    }
+                }
+                None => {
+                    let mut list = PostingList::new();
+                    list.push(posting)?;
+                    let slot = self.lists.len();
+                    self.lists.push(list);
+                    self.terms.insert(
+                        TermKey {
+                            term: probe.term.clone(),
+                            field,
+                        },
+                        slot,
+                    );
+                }
+            }
+            start = end;
+        }
+        Ok(())
+    }
+
+    /// Seals the row: every field array is padded to cover it.
+    fn finish_row(&mut self) {
         self.row_count = self.row_count.saturating_add(1);
         self.pad_lengths_to(usize::try_from(self.row_count).unwrap_or(usize::MAX));
-        Ok(row)
     }
 }
 
@@ -433,6 +586,63 @@ impl LexicalIndex {
     clippy::unwrap_used
 )]
 mod tests {
+
+    #[test]
+    fn parallel_analysis_is_identical_to_the_sequential_loop() {
+        // push_documents claims scheduling independence; this holds it to
+        // the sequential oracle exactly -- every posting, every position,
+        // every length array -- across thread counts and a document count
+        // chosen to leave a ragged final batch.
+        let analyzer = analyzer();
+        let documents: Vec<Document> = (0..97)
+            .map(|index| {
+                let mut document = Document::new();
+                document.set(
+                    FieldId(0),
+                    &format!("alpha beta{} gamma-{index} 401k", index % 7),
+                );
+                document.set(FieldId(1), &format!("delta epsilon{} the quick", index % 5));
+                document
+            })
+            .collect();
+        let mut sequential = SegmentIndex::new();
+        for document in &documents {
+            sequential
+                .push_document(&analyzer, document)
+                .expect("indexable");
+        }
+        for threads in [1_usize, 3, 8] {
+            let mut parallel = SegmentIndex::new();
+            parallel
+                .push_documents(&analyzer, &documents, threads)
+                .expect("indexable");
+            assert_eq!(parallel.row_count(), sequential.row_count());
+            let ours: Vec<_> = parallel.postings().collect();
+            let oracle: Vec<_> = sequential.postings().collect();
+            assert_eq!(
+                ours.len(),
+                oracle.len(),
+                "term count diverged at {threads} threads"
+            );
+            for ((key, list), (oracle_key, oracle_list)) in ours.iter().zip(&oracle) {
+                assert_eq!(key, oracle_key);
+                assert_eq!(
+                    list.postings(),
+                    oracle_list.postings(),
+                    "postings diverged for {:?} at {threads} threads",
+                    String::from_utf8_lossy(&key.term)
+                );
+            }
+            for field in [FieldId(0), FieldId(1)] {
+                assert_eq!(
+                    parallel.field_lengths(field),
+                    sequential.field_lengths(field),
+                    "lengths diverged at {threads} threads"
+                );
+            }
+        }
+    }
+
     use super::*;
     use crate::fts::tokenizer::{Profile, TokenizerConfig};
 

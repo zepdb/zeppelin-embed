@@ -60,15 +60,22 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
     // already proves the score is independent of where segments were sealed.
     let mut segment = SegmentIndex::new();
     let mut row_to_doc: Vec<String> = Vec::with_capacity(corpus.documents.len());
+    let mut documents: Vec<Document> = Vec::with_capacity(corpus.documents.len());
     for document in &corpus.documents {
         let mut fields = Document::new();
         fields.set(TITLE, &document.title);
         fields.set(BODY, &document.text);
-        segment
-            .push_document(&analyzer, &fields)
-            .expect("BEIR documents are indexable");
+        documents.push(fields);
         row_to_doc.push(document.id.clone());
     }
+    // Parallel analysis mirrors tantivy's min(cpus, 8) writer threads;
+    // the output is proven identical to the sequential loop.
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(8));
+    segment
+        .push_documents(&analyzer, &documents, threads)
+        .expect("BEIR documents are indexable");
+    let accumulate_ms = index_started.elapsed().as_millis();
+    eprintln!("STAGE corpus {corpus_name} accumulate_ms {accumulate_ms}");
     let mut index = LexicalIndex::new();
     index
         .push_segment(segment)

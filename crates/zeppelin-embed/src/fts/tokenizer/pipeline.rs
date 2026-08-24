@@ -260,10 +260,15 @@ fn emit_surface(config: &TokenizerConfig, text: &str) -> (Vec<Emission>, u32) {
     (emissions, position)
 }
 
-/// Returns the surface terms indexed by position.
-fn surface_by_position(emissions: &[Emission], positions: u32) -> Vec<Vec<usize>> {
+/// Returns the FIRST surface term at each position.
+///
+/// Both stacking stages only ever read a position's first surface
+/// emission, so the table holds one index per position rather than a
+/// heap-allocated bucket per position — the buckets were one `Vec` per
+/// token of every analyzed document.
+fn surface_by_position(emissions: &[Emission], positions: u32) -> Vec<Option<usize>> {
     let count = usize::try_from(positions).unwrap_or(0);
-    let mut table = vec![Vec::new(); count];
+    let mut table = vec![None; count];
     for (index, emission) in emissions.iter().enumerate() {
         if emission.rank != Rank::Surface {
             continue;
@@ -271,8 +276,10 @@ fn surface_by_position(emissions: &[Emission], positions: u32) -> Vec<Vec<usize>
         let Ok(slot) = usize::try_from(emission.position) else {
             continue;
         };
-        if let Some(bucket) = table.get_mut(slot) {
-            bucket.push(index);
+        if let Some(entry) = table.get_mut(slot)
+            && entry.is_none()
+        {
+            *entry = Some(index);
         }
     }
     table
@@ -296,11 +303,12 @@ fn stack_vocabulary(config: &TokenizerConfig, emissions: &mut Vec<Emission>, pos
             let mut span_end = 0_u32;
             let mut complete = true;
             for offset in 0..length {
-                let Some(bucket) = table.get(start + offset) else {
-                    complete = false;
-                    break;
-                };
-                let Some(first) = bucket.first().and_then(|index| emissions.get(*index)) else {
+                let Some(first) = table
+                    .get(start + offset)
+                    .copied()
+                    .flatten()
+                    .and_then(|index| emissions.get(index))
+                else {
                     complete = false;
                     break;
                 };
@@ -343,8 +351,8 @@ fn stack_numbers(config: &TokenizerConfig, emissions: &mut Vec<Emission>, positi
     let mut stacked: Vec<Emission> = Vec::new();
 
     // Digit terms gain their spelled variant.
-    for bucket in &table {
-        let Some(emission) = bucket.first().and_then(|index| emissions.get(*index)) else {
+    for entry in &table {
+        let Some(emission) = entry.and_then(|index| emissions.get(index)) else {
             continue;
         };
         if emission.compound {
@@ -378,8 +386,9 @@ fn stack_numbers(config: &TokenizerConfig, emissions: &mut Vec<Emission>, positi
         while end < table.len() {
             let Some(emission) = table
                 .get(end)
-                .and_then(|bucket| bucket.first())
-                .and_then(|index| emissions.get(*index))
+                .copied()
+                .flatten()
+                .and_then(|index| emissions.get(index))
             else {
                 break;
             };
