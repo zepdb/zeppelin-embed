@@ -9,7 +9,8 @@ use crate::manifest::Manifest;
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata,
+    write_segment_with_documents, write_segment_with_documents_and_metadata,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId};
 use crate::vfs::{StdVfs, Vfs};
@@ -91,25 +92,42 @@ impl Store {
             .ok_or(StoreError::ActiveRowOverflow)?;
         let dims = u32::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
         let id = seal_id(generation, absorbed_through);
-        let mut meta = match write_segment_with_documents(
-            vfs,
-            &self.directory,
-            SegmentBuild {
-                id,
-                scheme: 4,
-                dims,
-                codes: current.segment.codes(),
-                factors: SegmentFactors::Bit4(current.segment.factors()),
-                rescore: current.segment.vectors(),
-                columns: &columns,
-                alive: &alive,
-            },
-            SegmentDocumentVersions {
-                doc_ids: current.segment.doc_ids(),
-                revisions: current.segment.revisions(),
-            },
-            self.durability_policy,
-        ) {
+        let build = SegmentBuild {
+            id,
+            scheme: 4,
+            dims,
+            codes: current.segment.codes(),
+            factors: SegmentFactors::Bit4(current.segment.factors()),
+            rescore: current.segment.vectors(),
+            columns: &columns,
+            alive: &alive,
+        };
+        let documents = SegmentDocumentVersions {
+            doc_ids: current.segment.doc_ids(),
+            revisions: current.segment.revisions(),
+        };
+        let written = if current.segment.metadata_bytes().is_empty() {
+            write_segment_with_documents(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                self.durability_policy,
+            )
+        } else {
+            write_segment_with_documents_and_metadata(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                SegmentStoredMetadata {
+                    end_offsets: current.segment.metadata_end_offsets(),
+                    bytes: current.segment.metadata_bytes(),
+                },
+                self.durability_policy,
+            )
+        };
+        let mut meta = match written {
             Ok(meta) => meta,
             Err(error) => {
                 cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;

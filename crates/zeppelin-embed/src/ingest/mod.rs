@@ -1,6 +1,7 @@
 //! Ingest and mutation coordination.
 
 mod active;
+mod purge;
 mod retention;
 mod revise;
 mod seal;
@@ -13,6 +14,7 @@ use crate::scan::ScanStats;
 use crate::segment::SegmentId;
 use crate::wal::{LogSeq, WalWriteError};
 
+pub use purge::{PurgeError, PurgeReport, PurgeToken};
 pub use retention::{DropPartitionReport, RetentionPolicy, RetentionPolicyError};
 
 pub(crate) use active::{ActiveSegment, ActiveState, StoreWal};
@@ -88,6 +90,7 @@ pub struct IngestDocument {
     version: DocumentVersion,
     vector: Vec<f32>,
     timestamp: i64,
+    metadata: Vec<u8>,
 }
 
 impl IngestDocument {
@@ -98,6 +101,7 @@ impl IngestDocument {
             version,
             vector,
             timestamp: 0,
+            metadata: Vec::new(),
         }
     }
 
@@ -105,6 +109,13 @@ impl IngestDocument {
     #[must_use]
     pub const fn with_timestamp(mut self, timestamp: i64) -> Self {
         self.timestamp = timestamp;
+        self
+    }
+
+    /// Assigns opaque stored metadata that must remain physically purgeable.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Vec<u8>) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -124,6 +135,12 @@ impl IngestDocument {
     #[must_use]
     pub const fn timestamp(&self) -> i64 {
         self.timestamp
+    }
+
+    /// Returns the opaque stored metadata bytes.
+    #[must_use]
+    pub fn metadata(&self) -> &[u8] {
+        &self.metadata
     }
 }
 
@@ -520,13 +537,21 @@ impl Store {
 }
 
 fn encode_persisted_upsert(document: &IngestDocument) -> Result<(u16, Vec<u8>), IngestError> {
-    if document.timestamp() == 0 {
+    if document.timestamp() == 0 && document.metadata().is_empty() {
         wal_payload::encode_upsert(document)
             .map(|payload| (wal_payload::UPSERT_V1, payload))
             .map_err(IngestError::Payload)
-    } else {
+    } else if document.metadata().is_empty() {
         wal_payload::encode_upsert_with_timestamp(document)
             .map(|payload| (wal_payload::UPSERT_WITH_TIMESTAMP_V1, payload))
+            .map_err(IngestError::Payload)
+    } else if document.timestamp() == 0 {
+        wal_payload::encode_upsert_with_metadata(document)
+            .map(|payload| (wal_payload::UPSERT_WITH_METADATA_V1, payload))
+            .map_err(IngestError::Payload)
+    } else {
+        wal_payload::encode_upsert_with_timestamp_and_metadata(document)
+            .map(|payload| (wal_payload::UPSERT_WITH_TIMESTAMP_AND_METADATA_V1, payload))
             .map_err(IngestError::Payload)
     }
 }

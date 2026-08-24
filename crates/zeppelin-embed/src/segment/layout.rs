@@ -48,6 +48,8 @@ pub enum RegionKind {
     ChecksumTable = 11,
     /// Dense `(doc_id:u128, revision:u64)` records for sealed store rows.
     DocumentVersions = 12,
+    /// Dense length-delimited opaque stored metadata rows.
+    StoredMetadata = 13,
     /// First id reserved for additive vector-space-N region triples.
     VectorSpaceN = 4096,
 }
@@ -75,6 +77,7 @@ impl RegionKind {
             10 => Some(Self::PdxClusteredBlocks),
             11 => Some(Self::ChecksumTable),
             12 => Some(Self::DocumentVersions),
+            13 => Some(Self::StoredMetadata),
             4096 => Some(Self::VectorSpaceN),
             _ => None,
         }
@@ -90,6 +93,7 @@ impl RegionKind {
             Self::Postings => Some(FormatFamily::Postings),
             Self::GraphNodeBlocks => Some(FormatFamily::GraphNodeBlocks),
             Self::DocumentVersions => Some(FormatFamily::DocumentVersions),
+            Self::StoredMetadata => Some(FormatFamily::StoredMetadata),
             Self::ChecksumTable => Some(FormatFamily::ChecksumTable),
             Self::GraphColocatedCodes
             | Self::SignPlane

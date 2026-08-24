@@ -59,6 +59,15 @@ pub struct SegmentDocumentVersions<'a> {
     pub revisions: &'a [Revision],
 }
 
+/// Dense opaque metadata bytes aligned to one segment's local row ids.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentStoredMetadata<'a> {
+    /// Cumulative exclusive end offset for every row.
+    pub end_offsets: &'a [u64],
+    /// Concatenated row payloads addressed by `end_offsets`.
+    pub bytes: &'a [u8],
+}
+
 struct RegionBytes {
     kind: RegionKind,
     family: FormatFamily,
@@ -67,7 +76,7 @@ struct RegionBytes {
 
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
-    encode_segment_inner(build, None, None)
+    encode_segment_inner(build, None, None, None)
 }
 
 /// Encodes a complete segment with one fixed-stride graph node-block region.
@@ -90,7 +99,7 @@ pub fn encode_segment_with_graph(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), None)
+    encode_segment_inner(build, Some(graph_bytes), None, None)
 }
 
 /// Encodes a graph segment while preserving dense application document identities.
@@ -114,13 +123,14 @@ pub fn encode_segment_with_graph_and_documents(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), Some(documents))
+    encode_segment_inner(build, Some(graph_bytes), Some(documents), None)
 }
 
 fn encode_segment_inner(
     build: SegmentBuild<'_>,
     graph_bytes: Option<Vec<u8>>,
     document_versions: Option<SegmentDocumentVersions<'_>>,
+    stored_metadata: Option<SegmentStoredMetadata<'_>>,
 ) -> Result<Vec<u8>, SegmentError> {
     let row_count = build.columns.row_count();
     if build.alive.row_count() != row_count {
@@ -238,7 +248,60 @@ fn encode_segment_inner(
             bytes: encode_document_versions(documents, rows)?,
         });
     }
+    if let Some(metadata) = stored_metadata {
+        regions.push(RegionBytes {
+            kind: RegionKind::StoredMetadata,
+            family: FormatFamily::StoredMetadata,
+            bytes: encode_stored_metadata(metadata, rows)?,
+        });
+    }
     encode_regions(build, &regions)
+}
+
+fn encode_stored_metadata(
+    metadata: SegmentStoredMetadata<'_>,
+    rows: usize,
+) -> Result<Vec<u8>, SegmentError> {
+    if metadata.end_offsets.len() != rows {
+        return Err(SegmentError::Geometry(format!(
+            "stored-metadata offsets {}, expected {rows}",
+            metadata.end_offsets.len()
+        )));
+    }
+    let mut previous = 0_u64;
+    for end in metadata.end_offsets {
+        if *end < previous {
+            return Err(SegmentError::Geometry(
+                "stored-metadata offsets are not monotonic".to_owned(),
+            ));
+        }
+        previous = *end;
+    }
+    let byte_len = u64::try_from(metadata.bytes.len())
+        .map_err(|_| SegmentError::Geometry("stored-metadata bytes exceed u64".to_owned()))?;
+    if previous != byte_len {
+        return Err(SegmentError::Geometry(format!(
+            "stored-metadata final offset {previous}, bytes {byte_len}"
+        )));
+    }
+    let offset_count = rows.checked_add(1).ok_or_else(|| {
+        SegmentError::Geometry("stored-metadata offset count overflow".to_owned())
+    })?;
+    let capacity = 8_usize
+        .checked_add(offset_count.saturating_mul(8))
+        .and_then(|value| value.checked_add(metadata.bytes.len()))
+        .ok_or_else(|| SegmentError::Geometry("stored-metadata length overflow".to_owned()))?;
+    let row_count = u32::try_from(rows)
+        .map_err(|_| SegmentError::Geometry("stored-metadata rows exceed u32".to_owned()))?;
+    let mut encoded = Vec::with_capacity(capacity);
+    encoded.extend_from_slice(&row_count.to_le_bytes());
+    encoded.extend_from_slice(&0_u32.to_le_bytes());
+    encoded.extend_from_slice(&0_u64.to_le_bytes());
+    for end in metadata.end_offsets {
+        encoded.extend_from_slice(&end.to_le_bytes());
+    }
+    encoded.extend_from_slice(metadata.bytes);
+    Ok(encoded)
 }
 
 fn encode_document_versions(
@@ -475,7 +538,20 @@ pub fn write_segment_with_documents(
     documents: SegmentDocumentVersions<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents))?;
+    let bytes = encode_segment_inner(build, None, Some(documents), None)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes and publishes document identities plus opaque stored metadata.
+pub fn write_segment_with_documents_and_metadata(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    metadata: SegmentStoredMetadata<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata))?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 

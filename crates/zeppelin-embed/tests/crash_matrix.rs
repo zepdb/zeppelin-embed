@@ -8,8 +8,12 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use zeppelin_embed::format::frame::FormatCheck;
+use tempfile::tempdir;
+use zeppelin_embed::format::FormatFamily;
+use zeppelin_embed::format::frame::{FormatCheck, encode_artifact};
+use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+use zeppelin_embed::lifecycle::{OpenOptions, Store};
 use zeppelin_embed::manifest::decode_manifest;
 use zeppelin_embed::manifest::io::{
     DurableLog, MANIFEST_FILE, MANIFEST_TEMP_FILE, commit_manifest, load_manifest, open_manifest,
@@ -21,9 +25,12 @@ use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, encode_segment, write_segment,
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId, SegmentMeta};
-use zeppelin_embed::vfs::Vfs;
 #[cfg(not(feature = "test-support"))]
-use zeppelin_embed::vfs::{SyncKind, VfsFile};
+use zeppelin_embed::vfs::VfsFile;
+use zeppelin_embed::vfs::{SyncKind, Vfs};
+use zeppelin_embed::wal::header::encode_header as encode_wal_header;
+use zeppelin_embed::wal::record::{WalRecord, encode_record};
+use zeppelin_embed::wal::{LogSeq, WalReader};
 #[cfg(not(feature = "test-support"))]
 #[path = "../src/vfs/crash.rs"]
 mod crash_support;
@@ -45,6 +52,7 @@ enum Scenario {
     ManifestPublish,
     SegmentPublish,
     SegmentThenManifest,
+    PhysicalPurge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +60,7 @@ enum ExpectedOutcome {
     PreviousOrNewManifest,
     PreviousManifestAndAbsentOrValidSegment,
     NoManifestMayReferenceAMissingSegment,
+    PurgeCompletesOrRestarts,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +89,12 @@ const CASES: &[CrashCase] = &[
         scenario: Scenario::SegmentThenManifest,
         expected: ExpectedOutcome::NoManifestMayReferenceAMissingSegment,
         expected_operations: 8,
+    },
+    CrashCase {
+        name: "physical_purge_manifest_unlink_wal_intent",
+        scenario: Scenario::PhysicalPurge,
+        expected: ExpectedOutcome::PurgeCompletesOrRestarts,
+        expected_operations: 16,
     },
 ];
 
@@ -278,7 +293,10 @@ fn assert_temps_are_never_committed_names(case: CrashCase, state: &CrashState) {
             .expect("UTF-8 fixture path");
         if name.starts_with('.') {
             assert!(
-                name == MANIFEST_TEMP_FILE || name.ends_with(".zseg.tmp"),
+                name == MANIFEST_TEMP_FILE
+                    || name.ends_with(".zseg.tmp")
+                    || name == ".wal.ze.purge.tmp"
+                    || name == ".purge.ze.tmp",
                 "{} {:?}: unexpected temp name {name}",
                 case.name,
                 state.kind()
@@ -562,6 +580,245 @@ fn write_segment_crash_matrix() {
 #[test]
 fn segment_then_manifest_crash_matrix() {
     run_combined_case(CASES[2]);
+}
+
+#[test]
+fn a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly() {
+    let case = CASES[3];
+    assert_eq!(case.scenario, Scenario::PhysicalPurge);
+    assert_eq!(case.expected, ExpectedOutcome::PurgeCompletesOrRestarts);
+    let old_id = SegmentId::new(11, [0x11; 10]);
+    let new_id = SegmentId::new(12, [0x12; 10]);
+    let sentinel = 0x3f12_34ab_u32.to_le_bytes();
+    let (old_bytes, old_meta) = one_row_segment_bytes(old_id, f32::from_bits(0x3f12_34ab));
+    let (new_bytes, new_meta) = segment_bytes(new_id);
+    let old_manifest = Manifest {
+        generation: 1,
+        log_seq: 1,
+        segments: vec![old_meta.clone()],
+        epochs: Vec::new(),
+        schema: schema(),
+    };
+    let new_manifest = Manifest {
+        generation: 2,
+        log_seq: 1,
+        segments: vec![new_meta.clone()],
+        epochs: Vec::new(),
+        schema: schema(),
+    };
+    let old_wal = purge_wal_with_sentinel(&sentinel);
+    let scrubbed_wal = encode_wal_header(LogSeq::new(2)).expect("scrubbed WAL header");
+    let store = MemoryVfs::new();
+    store
+        .insert(directory().join(old_id.file_name()), old_bytes)
+        .expect("old purge segment");
+    store
+        .insert(
+            directory().join(MANIFEST_FILE),
+            encode_manifest(&old_manifest).expect("old purge manifest"),
+        )
+        .expect("old purge manifest");
+    store
+        .insert(directory().join("wal.ze"), old_wal)
+        .expect("old purge WAL");
+    store
+        .insert(
+            directory().join("purge.ze"),
+            purge_intent_bytes(0x1020_3040_5060_7080),
+        )
+        .expect("committed purge intent");
+    let recorder = CrashVfs::new(store).expect("purge recorder");
+
+    publish_encoded_segment(&recorder, new_id, &new_bytes);
+    commit_manifest(&recorder, directory(), &new_manifest, ordered_policy())
+        .expect("purge manifest commit");
+    recorder
+        .delete(&directory().join(old_id.file_name()))
+        .expect("purge old segment unlink");
+    recorder
+        .sync(directory(), SyncKind::Barrier)
+        .expect("purge unlink directory sync");
+    let wal_temp = directory().join(".wal.ze.purge.tmp");
+    recorder
+        .write(&wal_temp, &scrubbed_wal)
+        .expect("purge WAL temp");
+    recorder
+        .sync(&wal_temp, SyncKind::Barrier)
+        .expect("purge WAL temp sync");
+    recorder
+        .rename(&wal_temp, &directory().join("wal.ze"))
+        .expect("purge WAL commit");
+    recorder
+        .sync(directory(), SyncKind::Barrier)
+        .expect("purge WAL directory sync");
+    recorder
+        .delete(&directory().join("purge.ze"))
+        .expect("purge intent removal");
+    recorder
+        .sync(directory(), SyncKind::Barrier)
+        .expect("purge resolution directory sync");
+
+    let states = recorder.crash_states().expect("purge crash states");
+    assert_full_uncapped_coverage(case, &recorder, &states);
+    for state in states.iter() {
+        recover_purge_state(state, &new_bytes, &new_manifest, old_id, &scrubbed_wal);
+        let opened = open_manifest(state.vfs(), directory(), &Log, &HashSet::new()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "{} {:?}: recovered purge is not openable: {}",
+                    case.name,
+                    state.kind(),
+                    typed_manifest_error(&error)
+                )
+            },
+        );
+        assert_eq!(opened.manifest, new_manifest);
+        let wal = WalReader::open(state.vfs(), &directory().join("wal.ze"))
+            .expect("recovered purge WAL opens");
+        assert_eq!(wal.durable_end(), 1);
+        assert!(
+            state
+                .vfs()
+                .list(directory())
+                .expect("list recovered purge")
+                .into_iter()
+                .all(|path| state.vfs().read(&path).map_or(true, |bytes| !bytes
+                    .windows(sentinel.len())
+                    .any(|value| value == sentinel))),
+            "{} {:?}: sentinel survived recovered purge",
+            case.name,
+            state.kind()
+        );
+    }
+
+    let real_directory = tempdir().expect("real recovery directory");
+    let real_store = Store::open(real_directory.path(), OpenOptions::default())
+        .expect("open real recovery store");
+    let real_id = DocId::new(0xfeed);
+    real_store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(real_id, Revision::new(1)),
+            vec![f32::from_bits(0x3f12_34ab), 0.0, 0.0],
+        )]))
+        .expect("ingest real recovery sentinel");
+    real_store.seal().expect("seal real recovery sentinel");
+    let _pending = real_store
+        .purge(&[real_id])
+        .expect("schedule real recovery purge");
+    drop(real_store);
+
+    let reopened = Store::open(real_directory.path(), OpenOptions::default())
+        .expect("reopen and complete real pending purge");
+    for entry in std::fs::read_dir(real_directory.path()).expect("list real recovered store") {
+        let path = entry.expect("real recovered entry").path();
+        if path.is_file() {
+            let bytes = std::fs::read(&path).expect("read real recovered artifact");
+            assert!(
+                !bytes.windows(sentinel.len()).any(|value| value == sentinel),
+                "real Store::open recovery left sentinel in {}",
+                path.display()
+            );
+        }
+    }
+    drop(reopened);
+}
+
+fn one_row_segment_bytes(id: SegmentId, value: f32) -> (Vec<u8>, SegmentMeta) {
+    let mut columns = ColumnStoreBuilder::new(schema());
+    columns.push_row(7, &[]).expect("one purge row");
+    let columns = columns.finish().expect("purge columns");
+    let alive = AliveSet::new(1);
+    let vector = [value, 0.0, 0.0];
+    let mut codes = [0_u8; 2];
+    let factor = zeppelin_embed::quant::quantize_bit4(&vector, &mut codes)
+        .expect("purge vector quantization");
+    let bytes = encode_segment(SegmentBuild {
+        id,
+        scheme: 4,
+        dims: 3,
+        codes: &codes,
+        factors: SegmentFactors::Bit4(&[factor]),
+        rescore: &vector,
+        columns: &columns,
+        alive: &alive,
+    })
+    .expect("one-row purge segment");
+    let meta = validate_segment_bytes(&bytes).expect("one-row purge segment validates");
+    (bytes, meta)
+}
+
+fn purge_wal_with_sentinel(sentinel: &[u8; 4]) -> Vec<u8> {
+    let mut bytes = encode_wal_header(LogSeq::new(1)).expect("old WAL header");
+    bytes.extend_from_slice(
+        &encode_record(WalRecord {
+            seq: LogSeq::new(1),
+            op: 99,
+            payload: sentinel,
+        })
+        .expect("old sentinel WAL record"),
+    );
+    bytes
+}
+
+fn purge_intent_bytes(token_id: u64) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&token_id.to_le_bytes());
+    payload.extend_from_slice(&1_u32.to_le_bytes());
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.extend_from_slice(&0xfeed_u128.to_le_bytes());
+    encode_artifact(FormatFamily::PurgeIntent, 0, &payload)
+}
+
+fn publish_encoded_segment(vfs: &dyn Vfs, id: SegmentId, bytes: &[u8]) {
+    let temporary = directory().join(format!(".{}.tmp", id.file_name()));
+    let committed = directory().join(id.file_name());
+    vfs.write(&temporary, bytes).expect("purge segment temp");
+    vfs.sync(&temporary, SyncKind::Barrier)
+        .expect("purge segment temp sync");
+    vfs.rename(&temporary, &committed)
+        .expect("purge segment commit");
+    vfs.sync(directory(), SyncKind::Barrier)
+        .expect("purge segment directory sync");
+}
+
+fn recover_purge_state(
+    state: &CrashState,
+    new_segment_bytes: &[u8],
+    new_manifest: &Manifest,
+    old_id: SegmentId,
+    scrubbed_wal: &[u8],
+) {
+    let vfs = state.vfs();
+    let manifest_path = directory().join(MANIFEST_FILE);
+    let loaded = load_manifest(vfs, &manifest_path, u64::MAX).expect("crash manifest prefix");
+    if loaded != *new_manifest {
+        let new_id = new_manifest.segments[0].id;
+        publish_encoded_segment(vfs, new_id, new_segment_bytes);
+        commit_manifest(vfs, directory(), new_manifest, ordered_policy())
+            .expect("restart purge manifest");
+    }
+    delete_if_exists(vfs, &directory().join(old_id.file_name()));
+    let wal_temp = directory().join(".wal.ze.purge.tmp");
+    vfs.write(&wal_temp, scrubbed_wal)
+        .expect("restart purge WAL temp");
+    vfs.sync(&wal_temp, SyncKind::Barrier)
+        .expect("restart purge WAL sync");
+    vfs.rename(&wal_temp, &directory().join("wal.ze"))
+        .expect("restart purge WAL commit");
+    vfs.sync(directory(), SyncKind::Barrier)
+        .expect("restart purge WAL directory sync");
+    delete_if_exists(vfs, &directory().join("purge.ze"));
+    delete_if_exists(vfs, &directory().join(MANIFEST_TEMP_FILE));
+    vfs.sync(directory(), SyncKind::Barrier)
+        .expect("restart purge resolution sync");
+}
+
+fn delete_if_exists(vfs: &dyn Vfs, path: &Path) {
+    match vfs.open(path) {
+        Ok(_) => vfs.delete(path).expect("delete recovery artifact"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("open recovery artifact {}: {error}", path.display()),
+    }
 }
 
 #[test]

@@ -358,6 +358,11 @@ pub enum StoreError {
     GenerationOverflow,
     /// Exact reclaimed-byte reporting overflowed its u64 contract.
     PartitionBytesOverflow,
+    /// A durable physical-purge intent could not be resumed during open.
+    PurgeRecovery {
+        /// Typed purge failure rendered without discarding its actionable values.
+        detail: String,
+    },
     /// A new operation raced with close after admissions stopped.
     Closing,
     /// The handle has completed teardown.
@@ -486,6 +491,9 @@ impl std::fmt::Display for StoreError {
             Self::PartitionBytesOverflow => {
                 formatter.write_str("partition reclaimed-byte count overflow")
             }
+            Self::PurgeRecovery { detail } => {
+                write!(formatter, "physical purge recovery failed: {detail}")
+            }
             Self::Closing => formatter.write_str("store is closing"),
             Self::Closed => formatter.write_str("store is closed"),
             Self::ReadCancelled => formatter.write_str("store close cancelled the admitted read"),
@@ -554,6 +562,7 @@ impl std::error::Error for StoreError {
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
             | Self::PartitionBytesOverflow
+            | Self::PurgeRecovery { .. }
             | Self::Closing
             | Self::Closed
             | Self::ReadCancelled
@@ -688,6 +697,11 @@ impl Store {
             teardown_probe,
         };
         store.publish_snapshot(snapshot)?;
+        store
+            .recover_pending_physical_purge()
+            .map_err(|error| StoreError::PurgeRecovery {
+                detail: error.to_string(),
+            })?;
         Ok(store)
     }
 

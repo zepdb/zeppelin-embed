@@ -3,9 +3,12 @@
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::ingest::wal_payload::{
     DELETE_V1, METADATA_EDIT_V1, MetadataEdit, MetadataValue, MutationPayload, PayloadError,
-    UPSERT_V1, UPSERT_WITH_TIMESTAMP_V1, decode_delete, decode_metadata_edit, decode_mutation,
-    decode_upsert, decode_upsert_with_timestamp, encode_delete, encode_metadata_edit,
-    encode_upsert, encode_upsert_with_timestamp,
+    UPSERT_V1, UPSERT_WITH_METADATA_V1, UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
+    UPSERT_WITH_TIMESTAMP_V1, decode_delete, decode_metadata_edit, decode_mutation, decode_upsert,
+    decode_upsert_with_metadata, decode_upsert_with_timestamp,
+    decode_upsert_with_timestamp_and_metadata, encode_delete, encode_metadata_edit, encode_upsert,
+    encode_upsert_with_metadata, encode_upsert_with_timestamp,
+    encode_upsert_with_timestamp_and_metadata,
 };
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
 use zeppelin_embed::meta::ColumnId;
@@ -69,6 +72,48 @@ fn wal_timestamped_upsert_payload_v1_is_byte_exact() {
 }
 
 #[test]
+fn wal_stored_metadata_upsert_payloads_v1_are_byte_exact() {
+    let plain = IngestDocument::new(
+        DocumentVersion::new(
+            DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            Revision::new(0x1122_3344_5566_7788),
+        ),
+        vec![1.5, -2.25],
+    )
+    .with_metadata(b"meta".to_vec());
+    let payload = encode_upsert_with_metadata(&plain).expect("encode metadata upsert");
+    assert_eq!(decode_upsert_with_metadata(&payload), Ok(plain.clone()));
+    assert_record_golden(
+        UPSERT_WITH_METADATA_V1,
+        &payload,
+        include_str!("fixtures/format/wal_upsert_metadata_record_v1.hex"),
+        MutationPayload::Upsert(plain),
+    );
+
+    let timestamped = IngestDocument::new(
+        DocumentVersion::new(
+            DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            Revision::new(0x1122_3344_5566_7788),
+        ),
+        vec![1.5, -2.25],
+    )
+    .with_timestamp(-1234)
+    .with_metadata(b"meta".to_vec());
+    let payload = encode_upsert_with_timestamp_and_metadata(&timestamped)
+        .expect("encode timestamped metadata upsert");
+    assert_eq!(
+        decode_upsert_with_timestamp_and_metadata(&payload),
+        Ok(timestamped.clone())
+    );
+    assert_record_golden(
+        UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
+        &payload,
+        include_str!("fixtures/format/wal_upsert_timestamp_metadata_record_v1.hex"),
+        MutationPayload::Upsert(timestamped),
+    );
+}
+
+#[test]
 fn wal_delete_payload_v1_is_byte_exact() {
     let doc_ids = vec![
         DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
@@ -122,8 +167,10 @@ fn mutation_operation_ids_are_append_only() {
             DELETE_V1,
             METADATA_EDIT_V1,
             UPSERT_WITH_TIMESTAMP_V1,
+            UPSERT_WITH_METADATA_V1,
+            UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
         ),
-        (1, 2, 3, 4)
+        (1, 2, 3, 4, 5, 6)
     );
 }
 

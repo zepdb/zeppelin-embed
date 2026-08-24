@@ -369,3 +369,29 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Retention is a pure window-to-range decision plus an explicit
   `apply_retention`/`drop_partition` call. No engine timer, daemon, scheduler,
   rewrite, WAL scrub, or physical-purge token belongs to Part C.
+
+## Task 10 Part D physical-purge invariants
+
+- `purge(ids)` durably records one pending intent and returns its token before
+  rewriting artifacts. `await_physical_purge(token)` resolves only after every
+  affected sealed segment has been replaced in the manifest, each old segment
+  path has been unlinked, the WAL has been atomically replaced, and the intent
+  has been removed. Open detects a surviving intent and completes or cleanly
+  restarts the same idempotent protocol.
+- Before writing the intent or any replacement, purge checks every affected
+  sealed segment and rejects with `InsufficientTempSpace` unless filesystem
+  free bytes are strictly greater than 120% of that segment's file size. A
+  rejection is mutation-free.
+- Segment replacement compacts survivors into dense row ids and rewrites codes,
+  quantization factors, f32 rescore rows, alive state, document versions,
+  columns, and stored metadata in that same survivor order. Graph node blocks
+  are deliberately omitted because their neighbor ids name the old dense row
+  space; `maintain()` is responsible for rebuilding a graph later.
+- WAL retirement is not physical erasure. Purge serializes only the surviving
+  active state into a new WAL image, syncs the temporary file as required,
+  atomically renames it over `wal.ze`, syncs the directory as required, and
+  retires the old writer only after replacement. Therefore no purged payload
+  record remains reachable by any path when the token resolves.
+- Manifest replacement commits before old-segment unlink, one segment at a
+  time. Orphan replacement files and old segments are swept against the current
+  manifest during recovery; the durable intent is the sole completion marker.

@@ -150,6 +150,47 @@ pub struct SegmentReader {
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
 }
 
+/// Validated mmap-backed opaque metadata rows.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredMetadataRows<'a> {
+    offsets: &'a [u8],
+    bytes: &'a [u8],
+    row_count: usize,
+}
+
+impl<'a> StoredMetadataRows<'a> {
+    /// Returns the number of dense metadata rows.
+    #[must_use]
+    pub const fn row_count(self) -> usize {
+        self.row_count
+    }
+
+    /// Returns one row's original opaque bytes.
+    #[must_use]
+    pub fn row(self, row: usize) -> Option<&'a [u8]> {
+        if row >= self.row_count {
+            return None;
+        }
+        let start_index = row.checked_mul(8)?;
+        let end_index = row.checked_add(1)?.checked_mul(8)?;
+        let start = self
+            .offsets
+            .get(start_index..start_index.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())?;
+        let end = self
+            .offsets
+            .get(end_index..end_index.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())?;
+        self.bytes.get(start..end)
+    }
+}
+
 impl SegmentReader {
     /// Memory-maps a segment and validates only its bounded header/directory.
     pub fn open(path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
@@ -471,6 +512,87 @@ impl SegmentReader {
             DocId::new(doc_id),
             Revision::new(revision),
         )))
+    }
+
+    /// Returns validated opaque metadata rows, or `None` for older segments.
+    pub fn stored_metadata(&self) -> Result<Option<StoredMetadataRows<'_>>, SegmentError> {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == RegionKind::StoredMetadata.id())
+        else {
+            return Ok(None);
+        };
+        let region = self.region(RegionKind::StoredMetadata)?;
+        let declared_rows = region
+            .get(..4)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata header is truncated".to_owned())
+            })?;
+        let reserved = region
+            .get(4..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata reserved field is truncated".to_owned())
+            })?;
+        if declared_rows != self.meta.row_count || reserved != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata rows/reserved {declared_rows}/{reserved}, expected {}/0",
+                self.meta.row_count
+            )));
+        }
+        let row_count = declared_rows as usize;
+        let offset_bytes = row_count
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(8))
+            .ok_or_else(|| SegmentError::Geometry("stored-metadata offsets overflow".to_owned()))?;
+        let offsets_end = 8_usize.checked_add(offset_bytes).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata offset end overflow".to_owned())
+        })?;
+        let offsets = region.get(8..offsets_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata offsets are truncated".to_owned())
+        })?;
+        let bytes = region.get(offsets_end..).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata payload is truncated".to_owned())
+        })?;
+        let view = StoredMetadataRows {
+            offsets,
+            bytes,
+            row_count,
+        };
+        let first = view
+            .offsets
+            .get(..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u64::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata first offset is missing".to_owned())
+            })?;
+        if first != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata first offset is {first}, expected zero"
+            )));
+        }
+        let mut previous = 0_usize;
+        for row in 0..row_count {
+            let value = view.row(row).ok_or_else(|| {
+                SegmentError::Geometry(format!("stored-metadata row {row} is invalid"))
+            })?;
+            previous = previous.checked_add(value.len()).ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata length overflow".to_owned())
+            })?;
+        }
+        if previous != bytes.len() {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata final offset {previous}, bytes {}",
+                bytes.len()
+            )));
+        }
+        let _ = entry;
+        Ok(Some(view))
     }
 
     /// Returns the validated, mmap-backed fixed-stride graph node-block region.

@@ -10,8 +10,9 @@ use zeppelin_embed::format::frame::{
 };
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::format::{FormatFamily, FormatRegistry, RegistryError};
-use zeppelin_embed::ingest::{DocId, DocumentVersion, Revision};
+use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+use zeppelin_embed::lifecycle::{OpenOptions, Store};
 use zeppelin_embed::manifest::{EpochMeta, Manifest, decode_manifest, encode_manifest};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType, ColumnValue,
@@ -21,8 +22,8 @@ use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, encode_segment,
-    write_segment_with_documents,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata, encode_segment,
+    write_segment_with_documents, write_segment_with_documents_and_metadata,
 };
 use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use zeppelin_embed::vfs::StdVfs;
@@ -277,9 +278,11 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         fixture(include_str!("fixtures/format/postings_reserved_v1.hex")),
         Vec::<u8>::new()
     );
-    assert_eq!(FormatRegistry::families().len(), 13);
+    assert_eq!(FormatRegistry::families().len(), 15);
     assert_eq!(FormatFamily::Wal.id(), 11);
     assert_eq!(FormatFamily::DocumentVersions.id(), 13);
+    assert_eq!(FormatFamily::StoredMetadata.id(), 14);
+    assert_eq!(FormatFamily::PurgeIntent.id(), 15);
     assert_eq!(
         FormatRegistry::require(FormatFamily::Wal.id(), 1)
             .expect("WAL family")
@@ -360,6 +363,71 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
             .document_version(0)
             .expect("decode document-version row"),
         Some(version)
+    );
+
+    let metadata_id = SegmentId::new(10, [0x14; 10]);
+    write_segment_with_documents_and_metadata(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: metadata_id,
+            scheme: 4,
+            dims: 2,
+            codes: &[0x88],
+            factors: SegmentFactors::Bit4(&[zeppelin_embed::quant::Bit4Factors::from_persisted(
+                1.0, 1.0, 1.0,
+            )]),
+            rescore: &[0.0, 0.0],
+            columns: &columns,
+            alive: &AliveSet::new(1),
+        },
+        SegmentDocumentVersions {
+            doc_ids: &[version.doc_id()],
+            revisions: &[version.revision()],
+        },
+        SegmentStoredMetadata {
+            end_offsets: &[4],
+            bytes: b"meta",
+        },
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("stored-metadata policy"),
+    )
+    .expect("write stored-metadata segment");
+    let metadata_reader =
+        SegmentReader::open(&directory.path().join(metadata_id.file_name()), metadata_id)
+            .expect("open stored-metadata segment");
+    assert_eq!(
+        metadata_reader
+            .region(RegionKind::StoredMetadata)
+            .expect("stored-metadata region"),
+        fixture(include_str!("fixtures/format/stored_metadata_one_v1.hex"))
+    );
+    assert_eq!(
+        metadata_reader
+            .stored_metadata()
+            .expect("decode stored metadata")
+            .and_then(|rows| rows.row(0)),
+        Some(&b"meta"[..])
+    );
+}
+
+#[test]
+fn purge_intent_v1_is_byte_exact() {
+    let directory = tempfile::tempdir().expect("purge-intent tempdir");
+    let doc_id = DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(doc_id, Revision::new(7)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest purge-intent row");
+    store.seal().expect("seal purge-intent row");
+    let token = store.purge(&[doc_id]).expect("write purge intent");
+    assert!(!token.is_no_op());
+    assert_eq!(
+        std::fs::read(directory.path().join("purge.ze")).expect("read purge intent"),
+        fixture(include_str!("fixtures/format/purge_intent_v1.hex"))
     );
 }
 
