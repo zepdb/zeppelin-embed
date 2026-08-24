@@ -83,6 +83,14 @@ struct ListSpan {
     tfs_start: u32,
     block_count: u32,
     doc_freq: u32,
+    /// Largest term frequency across every block of the list.
+    ///
+    /// Computed once at seal from the same metadata rows the blocks carry,
+    /// so `overall_impact` answers in O(1) instead of walking every row's
+    /// 32 bytes on each query.
+    overall_max_tf: u32,
+    /// Smallest document length across every block of the list.
+    overall_min_len: u16,
     /// Documents holding this term in ANY field of the segment.
     union_doc_freq: u32,
     /// Fields of this segment in which the term occurs at all.
@@ -169,6 +177,13 @@ impl SealedSegment {
                 .map(|meta| stream_end(meta.docids_offset, meta.count, meta.docid_bits))
                 .max()
                 .unwrap_or(0);
+            let mut overall_max_tf = 0_u32;
+            let mut overall_min_len = u16::MAX;
+            for meta in reader.blocks() {
+                let impact = BlockImpact::from_meta(meta);
+                overall_max_tf = overall_max_tf.max(impact.max_tf);
+                overall_min_len = overall_min_len.min(impact.min_len);
+            }
 
             let term_start = u32::try_from(sealed.terms.len()).unwrap_or(u32::MAX);
             sealed.terms.extend_from_slice(&key.term);
@@ -181,6 +196,8 @@ impl SealedSegment {
                 tfs_start: streams.saturating_add(docid_bytes),
                 block_count,
                 doc_freq: reader.document_frequency(),
+                overall_max_tf,
+                overall_min_len,
                 // Filled in once every field of this term is known.
                 union_doc_freq: 0,
                 field_count: 0,
@@ -394,6 +411,11 @@ impl SealedSegment {
             block: NO_BLOCK,
             slot: 0,
             count: 0,
+            impact: BlockImpact::default(),
+            overall: BlockImpact {
+                max_tf: span.overall_max_tf,
+                min_len: span.overall_min_len,
+            },
             decoded_docids: vec![0; per_block],
             decoded_tfs: vec![0; per_block],
             blocks_decoded: 0,
@@ -461,6 +483,11 @@ pub struct ListCursor<'segment> {
     block: usize,
     slot: usize,
     count: usize,
+    /// The loaded block's impact pair, cached when the block is decoded so
+    /// a bound read costs no metadata parse.
+    impact: BlockImpact,
+    /// The whole list's impact pair, computed at seal and copied here.
+    overall: BlockImpact,
     decoded_docids: Vec<u32>,
     decoded_tfs: Vec<u32>,
     blocks_decoded: u64,
@@ -533,6 +560,7 @@ impl ListCursor<'_> {
         }
         self.block = index;
         self.count = count;
+        self.impact = BlockImpact::from_meta(&meta);
         self.blocks_decoded = self.blocks_decoded.saturating_add(1);
         true
     }
@@ -563,18 +591,23 @@ impl ListCursor<'_> {
         self.decoded_docids.get(self.slot).copied()
     }
 
+    /// Returns the unscaled term frequency at the cursor.
+    #[must_use]
+    pub fn current_tf(&self) -> Option<u32> {
+        if self.block == NO_BLOCK {
+            return None;
+        }
+        self.decoded_tfs.get(self.slot).copied()
+    }
+
     /// Returns the weight-scaled term frequency contribution at the cursor.
     ///
     /// Scaled in `u64` and left unrounded; the merge divides by 1,000 once,
     /// after summing, exactly as the in-memory merge did.
     #[must_use]
     pub fn current_weighted_tf(&self) -> Option<u64> {
-        if self.block == NO_BLOCK {
-            return None;
-        }
-        self.decoded_tfs
-            .get(self.slot)
-            .map(|tf| u64::from(*tf).saturating_mul(self.weight))
+        self.current_tf()
+            .map(|tf| u64::from(tf).saturating_mul(self.weight))
     }
 
     /// Advances one posting, loading the next block when the current ends.
@@ -628,10 +661,24 @@ impl ListCursor<'_> {
             }
             self.slot = 0;
         }
-        while let Some(current) = self.current() {
-            if current >= row {
+        loop {
+            if self.block == NO_BLOCK {
                 return;
             }
+            // The landing position inside the decoded block is a binary
+            // search, not a walk: the block is sorted and already paid for.
+            let found = self
+                .decoded_docids
+                .get(self.slot..self.count)
+                .map_or(0, |within| within.partition_point(|&docid| docid < row));
+            let landed = self.slot.saturating_add(found);
+            if landed < self.count {
+                self.slot = landed;
+                return;
+            }
+            // Every remaining docid sits below `row`: step off the block's
+            // end, which rolls into the next block or exhausts the run.
+            self.slot = self.count.saturating_sub(1);
             self.advance();
         }
     }
@@ -643,12 +690,17 @@ impl ListCursor<'_> {
     }
 
     /// Returns the impact pair of the block the cursor sits in.
+    ///
+    /// Cached when the block was loaded; no metadata row is re-parsed.
     #[must_use]
-    pub fn current_impact(&self) -> BlockImpact {
+    pub const fn current_impact(&self) -> BlockImpact {
         if self.block == NO_BLOCK {
-            return BlockImpact::default();
+            return BlockImpact {
+                max_tf: 0,
+                min_len: 0,
+            };
         }
-        self.impact_at(self.block)
+        self.impact
     }
 
     /// Returns the last document id of the block the cursor sits in.
@@ -700,16 +752,11 @@ impl ListCursor<'_> {
     }
 
     /// Returns the impact pair dominating every block of the list.
+    ///
+    /// Computed once at seal; reading it costs nothing per query.
     #[must_use]
-    pub fn overall_impact(&self) -> BlockImpact {
-        let mut max_tf = 0_u32;
-        let mut min_len = u16::MAX;
-        for index in 0..self.block_count {
-            let impact = self.impact_at(index);
-            max_tf = max_tf.max(impact.max_tf);
-            min_len = min_len.min(impact.min_len);
-        }
-        BlockImpact { max_tf, min_len }
+    pub const fn overall_impact(&self) -> BlockImpact {
+        self.overall
     }
 }
 
@@ -722,6 +769,10 @@ impl ListCursor<'_> {
 pub struct TermStream<'segment> {
     runs: Vec<ListCursor<'segment>>,
     weights: Vec<u64>,
+    /// True when the stream is one run at unit weight — the shape most
+    /// terms take, since a term absent from a field contributes no run.
+    /// The merge machinery is then the identity, and `refresh` skips it.
+    unit_single: bool,
     current: Option<(u32, u32)>,
 }
 
@@ -751,9 +802,11 @@ impl<'segment> TermStream<'segment> {
         if runs.is_empty() {
             return None;
         }
+        let unit_single = runs.len() == 1 && scales.first().copied() == Some(1_000);
         let mut stream = Self {
             runs,
             weights: scales,
+            unit_single,
             current: None,
         };
         stream.reset();
@@ -771,6 +824,28 @@ impl<'segment> TermStream<'segment> {
     /// Recomputes the merged head, skipping rows whose weighted tf rounds
     /// to zero — exactly what the in-memory merge filtered out.
     fn refresh(&mut self) {
+        if self.unit_single {
+            // One run at unit weight: the merge is the identity, so the
+            // head is the cursor's own row and tf, with no min-scan, no
+            // scaling and no division. The tf-zero filter is kept for
+            // exact equivalence with the generic path.
+            let Some(run) = self.runs.first_mut() else {
+                self.current = None;
+                return;
+            };
+            loop {
+                let Some(row) = run.current() else {
+                    self.current = None;
+                    return;
+                };
+                let tf = run.current_tf().unwrap_or(0);
+                if tf > 0 {
+                    self.current = Some((row, tf));
+                    return;
+                }
+                run.advance();
+            }
+        }
         loop {
             let Some(row) = self.runs.iter().filter_map(ListCursor::current).min() else {
                 self.current = None;
