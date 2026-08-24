@@ -112,6 +112,15 @@ impl FieldWeights {
             .map_or(0, |(_, weight)| *weight)
     }
 
+    /// Returns true when every named field carries unit weight.
+    ///
+    /// Unit weight is 1,000 thousandths, the identity: a field weighted
+    /// this way contributes its length and its term frequencies unchanged.
+    #[must_use]
+    pub fn is_unit(&self) -> bool {
+        !self.weights.is_empty() && self.weights.iter().all(|(_, weight)| *weight == 1_000)
+    }
+
     /// Returns true when every weight is equal.
     #[must_use]
     pub fn is_flat(&self) -> bool {
@@ -198,6 +207,20 @@ pub fn weighted_lengths<'segment>(
         && lengths.len() == row_count
     {
         return Cow::Borrowed(lengths);
+    }
+    // The flat MULTI-field case, which is what every BEIR run uses: unit
+    // weight over a set of fields covering the segment. The weighted length
+    // is then just the document's total length, which does not depend on
+    // the query at all and is precomputed once at seal.
+    //
+    // Without this the scorer rebuilt a row-count-long array on EVERY
+    // query -- 171,332 entries on TREC-COVID, each costing a linear scan of
+    // the field table per field.
+    if weights.is_unit()
+        && segment.fields().all(|field| weights.weight(field) == 1_000)
+        && segment.total_lengths().len() == row_count
+    {
+        return Cow::Borrowed(segment.total_lengths());
     }
     Cow::Owned(
         (0..row_count)
@@ -396,6 +419,42 @@ mod tests {
                 Some(row_length(segment, row, &weights))
             );
         }
+        // The flat MULTI-field case must borrow too: it is what every BEIR
+        // run uses, and rebuilding it per query cost a row-count-long pass
+        // on every one of them.
+        let mut two = SegmentIndex::new();
+        let analyzer = analyzer();
+        for (title, body) in [("alpha one", "body two three"), ("beta", "more body text")] {
+            let mut document = Document::new();
+            document.set(FieldId(0), title);
+            document.set(FieldId(1), body);
+            two.push_document(&analyzer, &document).expect("indexable");
+        }
+        let two = crate::fts::sealed::SealedSegment::seal(&two).expect("seals");
+        let flat = FieldWeights::flat(&[FieldId(0), FieldId(1)]);
+        let borrowed = weighted_lengths(&two, &flat);
+        assert!(
+            matches!(borrowed, std::borrow::Cow::Borrowed(_)),
+            "the flat multi-field case must borrow, not rebuild per query"
+        );
+        for row in 0..two.row_count() {
+            assert_eq!(
+                borrowed.get(row as usize).copied(),
+                Some(row_length(&two, row, &flat)),
+                "the borrowed total must equal the weighted length it replaces"
+            );
+        }
+        // A field the segment has but the query does not name must NOT be
+        // folded into the borrowed total.
+        let partial = FieldWeights::flat(&[FieldId(1)]);
+        let only_body = weighted_lengths(&two, &partial);
+        for row in 0..two.row_count() {
+            assert_eq!(
+                only_body.get(row as usize).copied(),
+                Some(row_length(&two, row, &partial))
+            );
+        }
+
         // A weight other than unity, or a second field, must materialize.
         let scaled = FieldWeights::new(&[(DEFAULT_FIELD, 500)]);
         assert!(matches!(

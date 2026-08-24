@@ -99,6 +99,12 @@ pub struct SealedSegment {
     /// Every encoded posting list, back to back.
     blob: Vec<u8>,
     lengths: Vec<FieldLengths>,
+    /// Each row's length summed over every field, precomputed at seal.
+    ///
+    /// The unit-weight multi-field scorer -- the shape every BEIR run uses
+    /// -- asks for exactly this, and it does not depend on the query. Built
+    /// once here rather than once per query.
+    total_lengths: Vec<u32>,
     row_count: u32,
     postings_per_block: u16,
 }
@@ -119,12 +125,23 @@ impl SealedSegment {
             spans: Vec::new(),
             blob: Vec::new(),
             lengths: Vec::new(),
+            total_lengths: Vec::new(),
             row_count: segment.row_count(),
             postings_per_block: per_block,
         };
         for field in segment.fields() {
             let lengths = segment.field_lengths(field).unwrap_or(&[]).to_vec();
             sealed.lengths.push(FieldLengths { field, lengths });
+        }
+
+        let rows = usize::try_from(sealed.row_count).unwrap_or(0);
+        sealed.total_lengths = vec![0_u32; rows];
+        for entry in &sealed.lengths {
+            for (slot, length) in entry.lengths.iter().enumerate() {
+                if let Some(total) = sealed.total_lengths.get_mut(slot) {
+                    *total = total.saturating_add(*length);
+                }
+            }
         }
 
         for (key, list) in segment.postings() {
@@ -246,6 +263,19 @@ impl SealedSegment {
             .iter()
             .find(|entry| entry.field == field)
             .map(|entry| entry.lengths.as_slice())
+    }
+
+    /// Returns every row's length summed over every field.
+    ///
+    /// Precomputed at seal; see the field's own documentation.
+    #[must_use]
+    pub fn total_lengths(&self) -> &[u32] {
+        &self.total_lengths
+    }
+
+    /// Returns the fields this segment recorded lengths for, ascending.
+    pub fn fields(&self) -> impl Iterator<Item = FieldId> + '_ {
+        self.lengths.iter().map(|entry| entry.field)
     }
 
     /// Returns the analyzed token count of one row's field.
