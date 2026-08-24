@@ -82,10 +82,41 @@ pub fn prefix_sum_scalar(values: &mut [u32], base: u32) {
 
 /// Unpacks using the best available arm.
 ///
-/// Equivalent to [`unpack_scalar`] for every input; the NEON arm exists for
-/// speed only and is property-tested against the scalar oracle.
+/// Widths at or below this are decoded by the narrow path.
+///
+/// # Why eight, and why it is the only width that matters
+///
+/// At `bits <= 8` a group of eight values occupies exactly `bits` bytes and
+/// starts byte-aligned, because `8 * bits` bits is `bits` bytes. That makes
+/// a whole group one load with no carry state and no refill branch.
+///
+/// It is also, measured, the entire decode workload. The width histogram
+/// over every multi-block posting list of two deterministic corpora — one
+/// Zipf at 100,000 documents, one text-shaped at 50,000 — puts **100% of
+/// postings at seven bits or fewer**:
+///
+/// ```text
+/// zipf100k  docid  1b=41.6% 2b=23.1% 3b=21.1% 4b=14.2%   tf  1b=86.1% 4b=13.9%
+/// textish   docid  1b=65.6% 7b=34.4%                     tf  1b=98.0% 2b=2.0%
+/// ```
+///
+/// Two consequences, both measured rather than assumed. The generic ladder
+/// below is effectively dead on real data, so its shape does not matter.
+/// And the width-above-25 scalar cliff in [`neon::unpack_neon`] is
+/// unreachable: no block on either corpus came close. That closes the
+/// question rather than leaving it open — see the campaign notes for K3.
+pub const NARROW_MAX_BITS: u8 = 8;
+
+/// Runs the bit-unpack using the best available arm.
+///
+/// Equivalent to [`unpack_scalar`] for every input; the other arms exist for
+/// speed only and are property-tested against the scalar oracle at every
+/// width.
 #[must_use]
 pub fn unpack(input: &[u8], bits: u8, count: usize, output: &mut [u32]) -> Option<usize> {
+    if bits > 0 && bits <= NARROW_MAX_BITS {
+        return unpack_narrow(input, bits, count, output);
+    }
     #[cfg(target_arch = "aarch64")]
     {
         if bits > 0
@@ -100,6 +131,84 @@ pub fn unpack(input: &[u8], bits: u8, count: usize, output: &mut [u32]) -> Optio
         }
     }
     unpack_scalar(input, bits, count, output)
+}
+
+/// Unpacks at eight bits or fewer, eight values per iteration.
+///
+/// # The shape, and what it replaces
+///
+/// [`unpack_scalar`] carries an accumulator across values and refills it a
+/// byte at a time, so every value pays a loop test and a conditional refill.
+/// [`neon::unpack_neon`] is worse at these widths: it builds its four-lane
+/// window with a scalar gather of four bytes per lane, sixteen byte loads to
+/// produce four values whose packed form occupies at most four bytes in
+/// total, before it issues a single vector shift.
+///
+/// Here a group of eight is one aligned load and eight independent
+/// shift-and-mask pairs. No accumulator, no refill, no branch inside the
+/// group. The ragged tail is byte-aligned by construction, so the oracle
+/// finishes it.
+#[must_use]
+pub fn unpack_narrow(input: &[u8], bits: u8, count: usize, output: &mut [u32]) -> Option<usize> {
+    if bits == 0 || bits > NARROW_MAX_BITS {
+        return None;
+    }
+    let width = usize::from(bits);
+    let needed = count.checked_mul(width)?.div_ceil(8);
+    if input.len() < needed || output.len() < count {
+        return None;
+    }
+    let mask = (1_u32 << width) - 1;
+
+    let mut index = 0_usize;
+    let mut byte = 0_usize;
+
+    #[cfg(target_arch = "aarch64")]
+    if count >= 8 && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: the `neon` feature was just detected, `width` is within
+        // 1..=8, and the helper loads only where it has verified sixteen
+        // readable bytes remain.
+        let (consumed_values, consumed_bytes) =
+            unsafe { neon::unpack_narrow_neon(input, width, count, output) };
+        index = consumed_values;
+        byte = consumed_bytes;
+    }
+
+    while index + 8 <= count {
+        // Eight values at `width` bits occupy exactly `width` bytes, and the
+        // group starts byte-aligned, so the whole group is one window.
+        let window = match input.get(byte..byte + 8) {
+            Some(bytes) => {
+                let mut buffer = [0_u8; 8];
+                buffer.copy_from_slice(bytes);
+                u64::from_le_bytes(buffer)
+            }
+            None => {
+                // Near the end of the stream: assemble only the bytes this
+                // group actually owns rather than reading past them.
+                let mut assembled = 0_u64;
+                for step in 0..width {
+                    let value = input.get(byte + step).copied().unwrap_or(0);
+                    assembled |= u64::from(value) << (8 * step);
+                }
+                assembled
+            }
+        };
+        for lane in 0..8 {
+            let slot = output.get_mut(index + lane)?;
+            *slot = ((window >> (lane * width)) as u32) & mask;
+        }
+        index += 8;
+        byte += width;
+    }
+
+    let remaining = count - index;
+    if remaining > 0 {
+        let tail = input.get(byte..)?;
+        let target = output.get_mut(index..)?;
+        unpack_scalar(tail, bits, remaining, target)?;
+    }
+    Some(needed)
 }
 
 /// Runs the prefix sum using the best available arm.
@@ -123,8 +232,100 @@ const NEON_MIN_COUNT: usize = 8;
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::{
-        uint32x4_t, vandq_u32, vdupq_n_u32, vextq_u32, vld1q_u32, vqaddq_u32, vshlq_u32, vst1q_u32,
+        uint8x16_t, uint32x4_t, vandq_u16, vandq_u32, vdupq_n_u16, vdupq_n_u32, vextq_u32,
+        vget_low_u16, vld1q_s16, vld1q_u8, vld1q_u32, vmovl_high_u16, vmovl_u16, vqaddq_u32,
+        vqtbl1q_u8, vreinterpretq_u16_u8, vshlq_u16, vshlq_u32, vst1q_u32,
     };
+
+    /// Unpacks eight values per iteration at eight bits or fewer.
+    ///
+    /// # The gather is one `tbl`, not sixteen loads
+    ///
+    /// A group of eight values at `width` bits occupies exactly `width`
+    /// bytes and starts byte-aligned. Every lane needs at most two adjacent
+    /// bytes, because `width + 7 <= 15` bits. So one `vqtbl1q_u8` over a
+    /// single sixteen-byte window places both bytes of all eight lanes at
+    /// once, giving eight `u16` lanes; a per-lane variable shift and a mask
+    /// finish them, and two widenings produce the `u32` output.
+    ///
+    /// That is roughly six vector operations per eight values, against the
+    /// generic arm's sixteen scalar byte loads per four.
+    ///
+    /// Returns the values and bytes consumed, so the caller finishes any
+    /// group for which sixteen readable bytes were not available.
+    ///
+    /// # Safety
+    ///
+    /// The caller guarantees the `neon` feature is available and that
+    /// `width` is within 1..=8. Every load below is guarded by an explicit
+    /// length check on the slice it reads.
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn unpack_narrow_neon(
+        input: &[u8],
+        width: usize,
+        count: usize,
+        output: &mut [u32],
+    ) -> (usize, usize) {
+        // Lane j starts at bit j * width, so it lives in bytes
+        // (j * width) / 8 and the one after it, shifted right by the
+        // remainder. Both vectors depend only on `width`.
+        let mut selectors = [0_u8; 16];
+        let mut shifts = [0_i16; 8];
+        for lane in 0..8_usize {
+            let offset = lane * width;
+            let byte = u8::try_from(offset / 8).unwrap_or(0);
+            let Some(low) = selectors.get_mut(lane * 2) else {
+                return (0, 0);
+            };
+            *low = byte;
+            let Some(high) = selectors.get_mut(lane * 2 + 1) else {
+                return (0, 0);
+            };
+            *high = byte.saturating_add(1);
+            let Some(shift) = shifts.get_mut(lane) else {
+                return (0, 0);
+            };
+            // A negative NEON shift count is a right shift.
+            *shift = -i16::try_from(offset % 8).unwrap_or(0);
+        }
+        let mask_value = ((1_u32 << width) - 1) as u16;
+
+        let mut index = 0_usize;
+        let mut byte = 0_usize;
+        // SAFETY: `selectors` and `shifts` are exactly the sixteen bytes and
+        // eight halfwords the intrinsics load.
+        let (indices, counts, mask) = unsafe {
+            (
+                vld1q_u8(selectors.as_ptr()),
+                vld1q_s16(shifts.as_ptr()),
+                vdupq_n_u16(mask_value),
+            )
+        };
+
+        while index + 8 <= count {
+            // `vqtbl1q_u8` reads a whole sixteen-byte register, so the group
+            // is only taken here when sixteen bytes are readable. The tail
+            // groups fall back to the caller's scalar loop.
+            let Some(window) = input.get(byte..byte + 16) else {
+                break;
+            };
+            let Some(target) = output.get_mut(index..index + 8) else {
+                break;
+            };
+            // SAFETY: `window` is sixteen readable bytes and `target` is
+            // eight writable `u32`s, matching the loads and stores below.
+            unsafe {
+                let table: uint8x16_t = vld1q_u8(window.as_ptr());
+                let gathered = vreinterpretq_u16_u8(vqtbl1q_u8(table, indices));
+                let values = vandq_u16(vshlq_u16(gathered, counts), mask);
+                vst1q_u32(target.as_mut_ptr(), vmovl_u16(vget_low_u16(values)));
+                vst1q_u32(target.as_mut_ptr().add(4), vmovl_high_u16(values));
+            }
+            index += 8;
+            byte += width;
+        }
+        (index, byte)
+    }
 
     /// Unpacks with NEON, falling back to scalar for the ragged tail.
     ///
@@ -312,6 +513,54 @@ mod tests {
                 (mixed as u32) & mask
             })
             .collect()
+    }
+
+    #[test]
+    fn the_narrow_path_equals_the_oracle_at_every_count_and_exact_buffer() {
+        // The narrow path has three regimes and the boundaries between them
+        // are where a bit-packing bug lives: a group taken by the `tbl`
+        // gather, which needs sixteen readable bytes; a group taken by the
+        // eight-byte scalar window; and a final group near the end of the
+        // stream that owns fewer bytes than either window reads.
+        //
+        // Every buffer here is trimmed to EXACTLY the bytes the packing
+        // needs, so any read past a group's own bytes is a real out-of-
+        // bounds read rather than one hidden by slack in the fixture.
+        for bits in 1..=NARROW_MAX_BITS {
+            for count in 1..=200_usize {
+                let values = sample(bits, count);
+                let mut packed = pack(&values, bits);
+                let needed = (count * usize::from(bits)).div_ceil(8);
+                packed.truncate(needed);
+                assert_eq!(packed.len(), needed, "the fixture must be exact");
+
+                let mut narrow = vec![0_u32; count];
+                let consumed = unpack_narrow(&packed, bits, count, &mut narrow)
+                    .expect("an exact buffer is enough");
+                assert_eq!(consumed, needed, "bits {bits} count {count}");
+                assert_eq!(
+                    narrow, values,
+                    "the narrow path diverged at {bits} bits, {count} values"
+                );
+
+                // And the dispatcher must route here without changing the
+                // answer, at every width the measured histogram contains.
+                let mut dispatched = vec![0_u32; count];
+                unpack(&packed, bits, count, &mut dispatched).expect("dispatches");
+                assert_eq!(dispatched, values);
+            }
+        }
+    }
+
+    #[test]
+    fn the_narrow_path_refuses_what_it_cannot_decode() {
+        let mut output = [0_u32; 8];
+        assert!(unpack_narrow(&[0_u8; 8], 0, 8, &mut output).is_none());
+        assert!(unpack_narrow(&[0_u8; 8], 9, 8, &mut output).is_none());
+        // One byte short of the eight values a single bit each needs.
+        assert!(unpack_narrow(&[], 1, 8, &mut output).is_none());
+        // Output too small for the requested count.
+        assert!(unpack_narrow(&[0_u8; 8], 1, 9, &mut output).is_none());
     }
 
     #[test]

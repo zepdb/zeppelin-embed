@@ -1037,6 +1037,87 @@ mod tests {
     }
 
     #[test]
+    fn every_decoded_width_falls_in_the_narrow_kernel_path() {
+        // R5 of the roofline protocol, as a standing gate rather than a
+        // number in a comment. The decode kernels have three arms and only
+        // one of them is worth tuning, so which widths actually occur is a
+        // load-bearing fact. It is a counter, so it is safe to measure on a
+        // contended machine and it carries a zero flake budget.
+        //
+        // It also closes K3, the width-above-25 scalar cliff, by
+        // measurement: nothing comes near it. That is a result, not a gap.
+        for (label, texts) in [
+            (
+                "zipf100k",
+                (0..100_000)
+                    .map(|index| {
+                        let mut words: Vec<String> = Vec::new();
+                        for term in 0..12_usize {
+                            if index % (term + 1) == 0 {
+                                words.push(format!("t{term}"));
+                            }
+                        }
+                        if words.is_empty() {
+                            words.push(String::from("filler"));
+                        }
+                        words.join(" ")
+                    })
+                    .collect::<Vec<String>>(),
+            ),
+            (
+                "textish",
+                (0..50_000)
+                    .map(|index| format!("alpha t{} u{} filler{index}", index % 97, index % 1_009))
+                    .collect::<Vec<String>>(),
+            ),
+        ] {
+            let sealed = SealedSegment::seal(&segment_of(&texts)).expect("seals");
+            let mut histogram = [0_u64; 33];
+            let mut postings = 0_u64;
+            let mut widest = 0_u8;
+            for index in 0..sealed.spans.len() {
+                let cursor = sealed.cursor_at(index, 1_000).expect("span");
+                // Only the lists a query traverses; a singleton list is one
+                // block nobody walks.
+                if cursor.block_count <= 1 {
+                    continue;
+                }
+                for block in 0..cursor.block_count {
+                    let meta = cursor.meta_at(block).expect("meta");
+                    postings = postings.saturating_add(u64::from(meta.count));
+                    for bits in [meta.docid_bits, meta.tf_bits] {
+                        widest = widest.max(bits);
+                        if let Some(slot) = histogram.get_mut(usize::from(bits)) {
+                            *slot = slot.saturating_add(u64::from(meta.count));
+                        }
+                    }
+                }
+            }
+            let mut shape: Vec<String> = Vec::new();
+            for (bits, count) in histogram.iter().enumerate() {
+                if *count > 0 {
+                    shape.push(format!(
+                        "{bits}b={:.1}%",
+                        *count as f64 * 50.0 / postings as f64
+                    ));
+                }
+            }
+            println!(
+                "WIDTHS {label} postings={postings} widest={widest} {}",
+                shape.join(" ")
+            );
+            assert!(postings > 0, "{label} produced no traversable list");
+            assert!(
+                widest <= crate::kernels::postings::NARROW_MAX_BITS,
+                "{label} decodes at {widest} bits, outside the narrow kernel \
+                 path the histogram was used to justify. Re-measure the \
+                 histogram and re-decide which arm to tune; do not widen \
+                 this bound."
+            );
+        }
+    }
+
+    #[test]
     fn a_list_whose_lengths_are_absent_still_seals() {
         // `block_impacts` falls back to the shortest possible length, so a
         // field with no recorded lengths yields a sound rather than absent
