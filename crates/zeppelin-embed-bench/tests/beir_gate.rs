@@ -70,7 +70,9 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
         row_to_doc.push(document.id.clone());
     }
     let mut index = LexicalIndex::new();
-    index.push_segment(segment);
+    index
+        .push_segment(segment)
+        .expect("a BEIR segment seals; a failure here is a broken writer");
     let index_ms = index_started.elapsed().as_millis();
 
     let weights = if flat {

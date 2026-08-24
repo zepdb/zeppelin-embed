@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 
 use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
+use super::sealed::SealedSegment;
 use super::tokenizer::Analyzer;
 
 /// A field identifier within a document schema.
@@ -199,6 +200,11 @@ impl SegmentIndex {
             .unwrap_or(0)
     }
 
+    /// Returns the fields this segment recorded lengths for, ascending.
+    pub fn fields(&self) -> impl Iterator<Item = FieldId> + '_ {
+        self.lengths.iter().map(|entry| entry.field)
+    }
+
     /// Returns one field's dense length array, if the field was ever set.
     ///
     /// The slice is exactly [`Self::row_count`] long, so a caller scoring a
@@ -329,9 +335,16 @@ impl SegmentIndex {
 }
 
 /// The store-wide lexical index across every segment.
+///
+/// # Segments here are SEALED
+///
+/// [`push_segment`](Self::push_segment) encodes the active segment into the
+/// persisted posting layout and keeps only that. There is therefore exactly
+/// one scoring path in the engine — over bytes — rather than an in-memory
+/// one that ships and a persisted one that is only ever tested.
 #[derive(Clone, Debug, Default)]
 pub struct LexicalIndex {
-    segments: Vec<SegmentIndex>,
+    segments: Vec<SealedSegment>,
 }
 
 impl LexicalIndex {
@@ -341,14 +354,27 @@ impl LexicalIndex {
         Self::default()
     }
 
-    /// Appends one sealed segment.
-    pub fn push_segment(&mut self, segment: SegmentIndex) {
+    /// Seals one active segment and appends it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::Postings`] when the encoder rejects the
+    /// segment's geometry or refuses to read back what it just wrote. Both
+    /// are broken-writer conditions, and they surface here rather than
+    /// becoming a decode fault inside a later query.
+    pub fn push_segment(&mut self, segment: SegmentIndex) -> Result<(), IndexError> {
+        self.segments.push(SealedSegment::seal(&segment)?);
+        Ok(())
+    }
+
+    /// Appends an already-sealed segment.
+    pub fn push_sealed(&mut self, segment: SealedSegment) {
         self.segments.push(segment);
     }
 
     /// Returns the segments in seal order.
     #[must_use]
-    pub fn segments(&self) -> &[SegmentIndex] {
+    pub fn segments(&self) -> &[SealedSegment] {
         &self.segments
     }
 
@@ -364,7 +390,7 @@ impl LexicalIndex {
     /// Returns the store-wide analyzed token count.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.segments.iter().map(SegmentIndex::total_tokens).sum()
+        self.segments.iter().map(SealedSegment::total_tokens).sum()
     }
 
     /// Returns the store-wide corpus statistics.
@@ -387,56 +413,15 @@ impl LexicalIndex {
     ///
     /// Summed across every segment and every requested field. A document
     /// containing the term in two fields counts once, which is what makes
-    /// this a *document* frequency rather than a posting count.
-    ///
-    /// # Why the union is a linear merge
-    ///
-    /// Every field's posting list is ascending by row, so counting the
-    /// distinct rows across fields is a k-way merge with no auxiliary
-    /// structure at all. The previous ordered set spent a descent and a
-    /// node allocation per *posting*, once per query term, on exactly the
-    /// two-field shape every BEIR run uses.
+    /// this a *document* frequency rather than a posting count. Each
+    /// segment answers from its sealed dictionary, where the cross-field
+    /// union was resolved at seal time, so this costs no decode.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
-        let mut total = 0_u32;
-        let mut cursors: Vec<(&[Posting], usize)> = Vec::with_capacity(fields.len());
-        for segment in &self.segments {
-            cursors.clear();
-            for field in fields {
-                let Some(list) = segment.posting_list(term, *field) else {
-                    continue;
-                };
-                if !list.postings().is_empty() {
-                    cursors.push((list.postings(), 0));
-                }
-            }
-            // One field's postings already carry each row exactly once.
-            let counted = if let [(postings, _)] = cursors.as_slice() {
-                postings.len()
-            } else {
-                let mut distinct = 0_usize;
-                loop {
-                    let next = cursors
-                        .iter()
-                        .filter_map(|(postings, cursor)| {
-                            postings.get(*cursor).map(|posting| posting.docid)
-                        })
-                        .min();
-                    let Some(row) = next else {
-                        break;
-                    };
-                    distinct = distinct.saturating_add(1);
-                    for (postings, cursor) in &mut cursors {
-                        if postings.get(*cursor).map(|posting| posting.docid) == Some(row) {
-                            *cursor = cursor.saturating_add(1);
-                        }
-                    }
-                }
-                distinct
-            };
-            total = total.saturating_add(u32::try_from(counted).unwrap_or(u32::MAX));
-        }
-        total
+        self.segments
+            .iter()
+            .map(|segment| segment.document_frequency(term, fields))
+            .fold(0_u32, u32::saturating_add)
     }
 }
 
@@ -486,8 +471,12 @@ mod tests {
     fn document_frequency_is_summed_across_segments_not_per_segment() {
         let analyzer = code_analyzer();
         let mut index = LexicalIndex::new();
-        index.push_segment(segment_of(&analyzer, &["engine", "engine"]));
-        index.push_segment(segment_of(&analyzer, &["engine", "other"]));
+        index
+            .push_segment(segment_of(&analyzer, &["engine", "engine"]))
+            .expect("seals");
+        index
+            .push_segment(segment_of(&analyzer, &["engine", "other"]))
+            .expect("seals");
         assert_eq!(index.document_count(), 4);
         // Three of the four documents contain "engine", across two segments.
         assert_eq!(index.document_frequency(b"engine", &[DEFAULT_FIELD]), 3);
@@ -504,7 +493,7 @@ mod tests {
             .push_document(&analyzer, &document)
             .expect("indexable");
         let mut index = LexicalIndex::new();
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
         assert_eq!(
             index.document_frequency(b"engine", &[FieldId(0), FieldId(1)]),
             1
@@ -515,8 +504,12 @@ mod tests {
     fn corpus_stats_span_every_segment() {
         let analyzer = code_analyzer();
         let mut index = LexicalIndex::new();
-        index.push_segment(segment_of(&analyzer, &["a b c"]));
-        index.push_segment(segment_of(&analyzer, &["d e f g h"]));
+        index
+            .push_segment(segment_of(&analyzer, &["a b c"]))
+            .expect("seals");
+        index
+            .push_segment(segment_of(&analyzer, &["d e f g h"]))
+            .expect("seals");
         let stats = index.corpus_stats().expect("two documents");
         assert_eq!(stats.document_count(), 2);
         assert_eq!(stats.total_tokens(), 8);
@@ -578,7 +571,7 @@ mod tests {
         let segment = segment_of(&analyzer, &["alpha"]);
         assert!(segment.posting_list(b"omega", DEFAULT_FIELD).is_none());
         let mut index = LexicalIndex::new();
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
         assert_eq!(index.document_frequency(b"omega", &[DEFAULT_FIELD]), 0);
     }
 

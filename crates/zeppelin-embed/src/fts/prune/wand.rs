@@ -45,14 +45,14 @@ fn length_of(lengths: &[u32], row: u32) -> u32 {
 /// those inputs, so there is no way for this loop to score against different
 /// statistics than the bounds were built from.
 pub fn run(
-    cursors: &mut [TermCursor],
+    cursors: &mut [TermCursor<'_>],
     lengths: &[u32],
     segment: u32,
     heap: &mut TopK,
     counters: &mut SearchCounters,
 ) {
     for cursor in cursors.iter_mut() {
-        cursor.position = 0;
+        cursor.reset();
     }
 
     // Hoisted to the query frame. This buffer used to be allocated and freed
@@ -123,7 +123,7 @@ pub fn run(
                 counters.blocks_skipped = counters.blocks_skipped.saturating_add(1);
                 for cursor in cursors.iter_mut() {
                     if cursor.current() == Some(pivot_row) {
-                        cursor.position += 1;
+                        cursor.advance();
                     }
                 }
                 continue;
@@ -140,7 +140,7 @@ pub fn run(
                         .scorer
                         .score(Tf(tf), DocLen(length_of(lengths, pivot_row)));
                 }
-                cursor.position += 1;
+                cursor.advance();
             }
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             heap.offer(
@@ -157,8 +157,9 @@ pub fn run(
                     continue;
                 };
                 if cursor.current().is_some_and(|row| row < pivot_row) {
-                    let skipped = cursor.seek(pivot_row);
-                    counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
+                    // Blocks jumped are tallied on the stream itself and
+                    // collected once the segment finishes.
+                    cursor.seek(pivot_row);
                 }
             }
         }

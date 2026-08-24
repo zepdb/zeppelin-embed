@@ -1,12 +1,20 @@
 # Zipf 2,000 documents, terms t0..t5, k=10, block-max MAXSCORE
 #
-# Re-baselined when block bounds became impact pairs; see the WAND contract
-# for the reason. Here the second effect wins: the pair is looser than the
-# quantized maximum, so 19 more documents are evaluated. That is the price
-# of a bound that stays above every true score when avgdl or (k1, b) drift,
-# and it is the safe direction of error -- a loose bound costs time, a
-# stale one costs a result.
+# Re-baselined when the query path began reading the sealed posting
+# format. Two counters changed MEANING, not merely value:
+#
+#   blocks_decoded used to count bound blocks BUILT over a materialized
+#   copy of the merged postings. It now counts blocks actually unpacked
+#   out of the persisted bytes.
+#
+#   blocks_skipped used to charge the cursor's OWN partially-consumed
+#   block as skipped, so a seek that merely stepped into the next block
+#   reported one skip while decoding both. A block is now counted only
+#   when the binary search over skip keys passes it WITHOUT decoding it.
+#   On this Zipf fixture every seek lands in the neighbouring block, so
+#   the honest count is zero; `a_sealed_seek_skips_whole_blocks_without_
+#   decoding_them` gates the mechanism itself.
 docs_evaluated = 72
 blocks_decoded = 80
-blocks_skipped = 46
+blocks_skipped = 0
 postings_decoded = 2253

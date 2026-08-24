@@ -33,6 +33,7 @@ pub mod wand;
 
 use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
+use crate::fts::sealed::TermStream;
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
 
 pub use bounds::{BlockBound, build_block_bounds, impact_of, term_upper_bound};
@@ -76,14 +77,14 @@ pub const fn select_strategy(term_count: usize, k: usize) -> Strategy {
 }
 
 /// One query term prepared for pruning within one segment.
+///
+/// The cursor is a view over the sealed streams, not a copy of them. It
+/// holds no entry array: `advance` and `seek` walk block metadata and
+/// decode only the blocks the traversal actually lands in.
 #[derive(Clone, Debug)]
-pub struct TermCursor {
-    /// `(row, weighted term frequency)`, ascending by row.
-    pub entries: Vec<(u32, u32)>,
-    /// Per-block upper bounds.
-    pub blocks: Vec<BlockBound>,
-    /// Entries per block: the fixed geometry that makes addressing O(1).
-    pub block_size: usize,
+pub struct TermCursor<'segment> {
+    /// The merged sealed postings for this term across the weighted fields.
+    pub stream: TermStream<'segment>,
     /// Store-wide document frequency.
     pub df: Df,
     /// This term's hoisted scoring constants.
@@ -93,93 +94,52 @@ pub struct TermCursor {
     pub scorer: TermScorer,
     /// Largest contribution this term can make to any document.
     pub upper_bound: f64,
-    /// Cursor position into `entries`.
-    pub position: usize,
 }
 
-impl TermCursor {
+impl TermCursor<'_> {
     /// Returns the row at the cursor, or `None` when exhausted.
     #[must_use]
     pub fn current(&self) -> Option<u32> {
-        self.entries.get(self.position).map(|(row, _)| *row)
+        self.stream.current().map(|(row, _)| row)
     }
 
-    /// Returns the term frequency at the cursor.
+    /// Returns the merged term frequency at the cursor.
     #[must_use]
     pub fn current_tf(&self) -> Option<u32> {
-        self.entries.get(self.position).map(|(_, tf)| *tf)
+        self.stream.current().map(|(_, tf)| tf)
     }
 
-    /// Advances the cursor to the first row at or after `row`.
-    ///
-    /// Uses the block skip keys to jump whole blocks, then walks within one.
-    /// Returns the number of blocks skipped without inspecting their
-    /// entries, for the counter contract.
-    ///
-    /// # Why this is a search and not a walk
-    ///
-    /// Skip keys ascend, because entries ascend by row, so the first block
-    /// that can hold `row` is a binary search. Walking made `seek` cost
-    /// `O(blocks)`, and `seek` runs per candidate: on a term with 1,500
-    /// blocks that quadratic factor is a plausible reason the pruned path
-    /// was slower than the scan it exists to avoid. The reported skip count
-    /// is unchanged, because skips are decisions and decisions are pinned by
-    /// the counter contracts.
-    pub fn seek(&mut self, row: u32) -> u64 {
-        let mut skipped = 0_u64;
-        if let Some(block) = self.block_containing(self.position)
-            && block.last_row < row
-            && self.block_size > 0
-        {
-            let first = self.position / self.block_size;
-            let ahead = self.blocks.get(first..).unwrap_or(&[]);
-            let hops = ahead.partition_point(|block| block.last_row < row);
-            skipped = u64::try_from(hops).unwrap_or(u64::MAX);
-            self.position = match self.blocks.get(first.saturating_add(hops)) {
-                Some(block) => block.start,
-                // Every remaining block is behind the target row.
-                None => self.entries.len(),
-            };
-        }
-        while let Some(current) = self.current() {
-            if current >= row {
-                break;
-            }
-            self.position += 1;
-        }
-        skipped
+    /// Advances one merged posting.
+    pub fn advance(&mut self) {
+        self.stream.advance();
     }
 
-    /// Returns the block containing `position`, if any.
+    /// Rewinds to the first merged posting.
+    pub fn reset(&mut self) {
+        self.stream.reset();
+    }
+
+    /// Advances to the first row at or after `row`.
     ///
-    /// Blocks are fixed geometry and contiguous from zero, so the containing
-    /// block is an index rather than a scan. The containment check is kept
-    /// as the guard: a cursor whose blocks do not match its `block_size`
-    /// reports "between blocks", which callers already treat as the loose,
-    /// safe direction rather than as a bound they may prune against.
-    #[must_use]
-    pub fn block_containing(&self, position: usize) -> Option<&BlockBound> {
-        if self.block_size == 0 {
-            return None;
-        }
-        let block = self.blocks.get(position / self.block_size)?;
-        (position >= block.start && position < block.end).then_some(block)
+    /// Skip keys ascend, so the first block that can hold `row` is a binary
+    /// search over metadata rows; the blocks between are never decoded.
+    pub fn seek(&mut self, row: u32) {
+        self.stream.seek(row);
     }
 
     /// Returns the bound of the block the cursor currently sits in.
     ///
-    /// Falls back to the term's overall bound when the cursor is between
-    /// blocks, which is the safe direction: a looser bound prunes less.
+    /// Read from the stored impact pairs and evaluated against this query's
+    /// live statistics; see [`crate::fts::sealed`].
     #[must_use]
     pub fn current_block_max(&self) -> f64 {
-        self.block_containing(self.position)
-            .map_or(self.upper_bound, |block| block.max_score)
+        self.stream.block_bound(&self.scorer)
     }
 
     /// Returns true when the cursor has passed the last entry.
     #[must_use]
     pub fn exhausted(&self) -> bool {
-        self.position >= self.entries.len()
+        self.stream.exhausted()
     }
 }
 
@@ -320,60 +280,76 @@ pub fn search_pruned(
         // O(row_count) rebuild on every query.
         let lengths = crate::fts::search::weighted_lengths(segment, &query.fields);
 
-        let mut cursors: Vec<TermCursor> = Vec::with_capacity(query.terms.len());
+        let mut cursors: Vec<TermCursor<'_>> = Vec::with_capacity(query.terms.len());
         for (slot, term) in query.terms.iter().enumerate() {
             let df = Df(frequencies.get(slot).copied().unwrap_or(0));
             if df.0 == 0 {
                 continue;
             }
-            let merged = crate::fts::search::merge_term(segment, term, &query.fields);
-            if merged.entries.is_empty() {
+            let Some(stream) = TermStream::open(segment, term, &query.fields) else {
+                continue;
+            };
+            if stream.exhausted() {
                 continue;
             }
             let scorer = TermScorer::new(df, &stats, params);
-            let blocks = build_block_bounds(&merged.entries, &lengths, PRUNE_BLOCK_SIZE, &scorer);
-            let upper_bound = term_upper_bound(&blocks);
-            counters.blocks_decoded = counters
-                .blocks_decoded
-                .saturating_add(u64::try_from(blocks.len()).unwrap_or(0));
+            // Read, never rebuilt. The term's bound comes from the stored
+            // impact pairs, which costs O(blocks) metadata reads; the
+            // previous form scored every posting in order to bound it, and
+            // that is why pruning was slower than the scan it exists to
+            // avoid.
+            let upper_bound = stream.upper_bound(&scorer);
             cursors.push(TermCursor {
-                entries: merged.entries,
-                blocks,
-                block_size: PRUNE_BLOCK_SIZE,
+                stream,
                 df,
                 scorer,
                 upper_bound,
-                position: 0,
             });
         }
         if cursors.is_empty() {
             continue;
         }
 
-        // Short lists skip the pruning machinery entirely.
-        let total: usize = cursors.iter().map(|cursor| cursor.entries.len()).sum();
+        // Short lists skip the pruning machinery entirely. The count comes
+        // from block metadata, so asking costs no decode.
+        let total: usize = cursors
+            .iter()
+            .map(|cursor| cursor.stream.posting_count())
+            .sum();
         if total <= SHORT_LIST_POSTINGS {
-            counters.blocks_decoded = 0;
-            maxscore::score_all(&cursors, &lengths, segment_index, &mut heap, &mut counters);
-            continue;
+            maxscore::score_all(
+                &mut cursors,
+                &lengths,
+                segment_index,
+                &mut heap,
+                &mut counters,
+            );
+        } else {
+            match strategy {
+                Strategy::BlockMaxWand => wand::run(
+                    &mut cursors,
+                    &lengths,
+                    segment_index,
+                    &mut heap,
+                    &mut counters,
+                ),
+                Strategy::BlockMaxMaxscore => maxscore::run(
+                    &mut cursors,
+                    &lengths,
+                    segment_index,
+                    &mut heap,
+                    &mut counters,
+                ),
+                Strategy::Exhaustive => {}
+            }
         }
-
-        match strategy {
-            Strategy::BlockMaxWand => wand::run(
-                &mut cursors,
-                &lengths,
-                segment_index,
-                &mut heap,
-                &mut counters,
-            ),
-            Strategy::BlockMaxMaxscore => maxscore::run(
-                &mut cursors,
-                &lengths,
-                segment_index,
-                &mut heap,
-                &mut counters,
-            ),
-            Strategy::Exhaustive => {}
+        for cursor in &cursors {
+            counters.blocks_decoded = counters
+                .blocks_decoded
+                .saturating_add(cursor.stream.blocks_decoded());
+            counters.blocks_skipped = counters
+                .blocks_skipped
+                .saturating_add(cursor.stream.blocks_skipped());
         }
     }
 
@@ -409,7 +385,7 @@ mod tests {
                 .expect("indexable");
         }
         let mut index = LexicalIndex::new();
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
         index
     }
 
@@ -424,7 +400,12 @@ mod tests {
     }
 
     #[test]
-    fn short_list_query_decodes_zero_blocks() {
+    fn short_list_query_takes_no_pruning_decision() {
+        // The fast path reads its one block -- a posting cannot be scored
+        // without being decoded -- but it makes no skipping decision and it
+        // scores every match. `blocks_decoded` counts real decodes now that
+        // the query path reads the sealed format, so "zero" would be a claim
+        // about a path that no longer exists.
         let texts: Vec<String> = (0..8).map(|index| format!("alpha doc{index}")).collect();
         let index = index_of(&texts);
         let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
@@ -432,9 +413,14 @@ mod tests {
             let result =
                 search_pruned(&index, &query, 10, Bm25Params::default(), strategy).expect("scores");
             assert_eq!(
-                result.counters.blocks_decoded, 0,
-                "the short-list fast path must not decode a block"
+                result.counters.blocks_decoded, 1,
+                "eight postings live in exactly one block"
             );
+            assert_eq!(
+                result.counters.blocks_skipped, 0,
+                "the short-list fast path must take no skipping decision"
+            );
+            assert_eq!(result.counters.docs_evaluated, 8);
             assert_eq!(result.hits.len(), 8);
         }
     }
@@ -510,106 +496,87 @@ mod tests {
         }
     }
 
-    /// The linear implementations P1.3 replaced, kept as test oracles.
-    ///
-    /// Their whole job is to be obviously correct, so any divergence in the
-    /// constant-time versions shows up as a differing answer rather than as
-    /// a differing latency nobody measured.
-    fn linear_block_containing(cursor: &TermCursor, position: usize) -> Option<&BlockBound> {
-        cursor
-            .blocks
-            .iter()
-            .find(|block| position >= block.start && position < block.end)
+    /// Builds a single-term index whose rows advance by `stride`.
+    fn strided_index(count: u32, stride: u32) -> LexicalIndex {
+        let analyzer = analyzer();
+        let mut segment = SegmentIndex::new();
+        let mut row = 0_u32;
+        for ordinal in 0..count {
+            // Rows between the term's occurrences carry a different term, so
+            // the posting list has real gaps rather than a dense run.
+            while row < ordinal.saturating_mul(stride) {
+                segment
+                    .push_document(&analyzer, &Document::with_text("filler"))
+                    .expect("indexable");
+                row = row.saturating_add(1);
+            }
+            segment
+                .push_document(&analyzer, &Document::with_text("alpha"))
+                .expect("indexable");
+            row = row.saturating_add(1);
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(segment).expect("seals");
+        index
     }
 
-    fn linear_seek(cursor: &mut TermCursor, row: u32) -> u64 {
-        let mut skipped = 0_u64;
-        while let Some(block) = linear_block_containing(cursor, cursor.position).copied() {
-            if block.last_row >= row {
-                break;
-            }
-            if block.end > cursor.position {
-                skipped = skipped.saturating_add(1);
-            }
-            cursor.position = block.end;
-            if cursor.position >= cursor.entries.len() {
-                return skipped;
-            }
+    /// The rows a term occupies, as a linear oracle for `seek`.
+    fn rows_of(index: &LexicalIndex) -> Vec<u32> {
+        let segment = index.segments().first().expect("one segment");
+        let mut stream = crate::fts::sealed::TermStream::open(
+            segment,
+            b"alpha",
+            &crate::fts::search::FieldWeights::flat(&[DEFAULT_FIELD]),
+        )
+        .expect("stream");
+        let mut rows = Vec::new();
+        while let Some((row, _)) = stream.current() {
+            rows.push(row);
+            stream.advance();
         }
-        while let Some(current) = cursor.current() {
-            if current >= row {
-                break;
-            }
-            cursor.position += 1;
-        }
-        skipped
+        rows
     }
 
-    /// Builds a cursor over `count` entries with the given block geometry.
-    fn geometry_cursor(count: u32, block_size: usize, stride: u32) -> TermCursor {
-        let entries: Vec<(u32, u32)> = (0..count).map(|row| (row * stride, 1 + row % 7)).collect();
-        let lengths: Vec<u32> = (0..count * stride.max(1)).map(|row| 1 + row % 23).collect();
-        let stats = crate::fts::bm25::CorpusStats::new(1_000, 40_000).expect("stats");
-        let params = Bm25Params::default();
-        let scorer = TermScorer::new(Df(50), &stats, params);
-        let blocks = build_block_bounds(&entries, &lengths, block_size, &scorer);
-        TermCursor {
-            entries,
-            blocks,
-            block_size,
-            df: Df(50),
-            scorer,
-            upper_bound: 1.0,
-            position: 0,
-        }
+    /// Opens a stream over the one term of a `strided_index`.
+    fn stream_of(index: &LexicalIndex) -> crate::fts::sealed::TermStream<'_> {
+        crate::fts::sealed::TermStream::open(
+            index.segments().first().expect("one segment"),
+            b"alpha",
+            &crate::fts::search::FieldWeights::flat(&[DEFAULT_FIELD]),
+        )
+        .expect("stream")
     }
 
     #[test]
-    fn constant_time_block_addressing_agrees_with_a_linear_scan() {
-        // Every geometry, including a ragged final block and a block size
-        // that does not divide the entry count, at every position including
-        // one past the end.
+    fn a_sealed_seek_lands_exactly_where_a_linear_walk_would() {
+        // Seeks are decisions, and decisions are pinned by the counter
+        // contracts, so a binary search over skip keys must land on the same
+        // row a walk would -- from every starting position, to every target.
         for count in [1_u32, 7, 64, 65, 200] {
-            for block_size in [1_usize, 3, 8, 64, 512] {
-                let cursor = geometry_cursor(count, block_size, 1);
-                for position in 0..=cursor.entries.len() {
-                    assert_eq!(
-                        cursor.block_containing(position),
-                        linear_block_containing(&cursor, position),
-                        "addressing diverged at position {position}                          (count={count}, block_size={block_size})"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_binary_search_seek_reports_the_same_skips_as_the_linear_walk() {
-        // Skips are decisions, and decisions are pinned by the counter
-        // contracts, so the search must report exactly what the walk did --
-        // from every starting position, to every target row.
-        for count in [1_u32, 7, 64, 65, 200] {
-            for block_size in [1_usize, 3, 8, 64] {
-                for stride in [1_u32, 3] {
-                    let reference = geometry_cursor(count, block_size, stride);
-                    let last = count.saturating_mul(stride).saturating_add(2);
-                    for start in [0_usize, 1, 5, 63, 64, 199] {
-                        if start >= reference.entries.len() {
-                            continue;
+            for stride in [1_u32, 3] {
+                let index = strided_index(count, stride);
+                let rows = rows_of(&index);
+                assert_eq!(rows.len(), usize::try_from(count).expect("small"));
+                let last = count.saturating_mul(stride).saturating_add(2);
+                for start in [0_usize, 1, 5, 63, 64, 199] {
+                    if start >= rows.len() {
+                        continue;
+                    }
+                    for target in 0..=last {
+                        let mut cursor = stream_of(&index);
+                        for _ in 0..start {
+                            cursor.advance();
                         }
-                        for target in (0..=last).step_by(1) {
-                            let mut fast = reference.clone();
-                            fast.position = start;
-                            let mut slow = reference.clone();
-                            slow.position = start;
-                            let fast_skips = fast.seek(target);
-                            let slow_skips = linear_seek(&mut slow, target);
-                            assert_eq!(
-                                (fast_skips, fast.position),
-                                (slow_skips, slow.position),
-                                "seek diverged (count={count}, block_size={block_size},                                  stride={stride}, start={start}, target={target})"
-                            );
-                        }
+                        cursor.seek(target);
+                        // The oracle: the first row at or after `target`,
+                        // never earlier than where the cursor already sat.
+                        let expected = rows.iter().skip(start).copied().find(|row| *row >= target);
+                        assert_eq!(
+                            cursor.current().map(|(row, _)| row),
+                            expected,
+                            "seek diverged (count={count}, stride={stride}, \
+                             start={start}, target={target})"
+                        );
                     }
                 }
             }
@@ -617,49 +584,72 @@ mod tests {
     }
 
     #[test]
-    fn a_cursor_seek_skips_whole_blocks_and_reports_them() {
-        let entries: Vec<(u32, u32)> = (0..200_u32).map(|row| (row, 1)).collect();
-        let lengths = vec![10_u32; 200];
-        let stats = crate::fts::bm25::CorpusStats::new(200, 2_000).expect("stats");
-        let scorer = TermScorer::new(Df(200), &stats, Bm25Params::default());
-        let blocks = build_block_bounds(&entries, &lengths, PRUNE_BLOCK_SIZE, &scorer);
-        let mut cursor = TermCursor {
-            entries,
-            blocks,
-            block_size: PRUNE_BLOCK_SIZE,
-            df: Df(200),
-            scorer,
-            upper_bound: 1.0,
-            position: 0,
-        };
-        let skipped = cursor.seek(150);
-        assert_eq!(cursor.current(), Some(150));
-        assert!(skipped >= 2, "seeking past two blocks must report them");
+    fn a_sealed_seek_skips_whole_blocks_without_decoding_them() {
+        let index = strided_index(200, 1);
+        let mut stream = stream_of(&index);
+        let decoded = stream.blocks_decoded();
+        stream.seek(150);
+        assert_eq!(stream.current().map(|(row, _)| row), Some(150));
+        assert!(
+            stream.blocks_skipped() >= 1,
+            "seeking past a whole block must report it"
+        );
+        assert_eq!(
+            stream.blocks_decoded(),
+            decoded + 1,
+            "a seek decodes exactly the block it lands in"
+        );
     }
 
     #[test]
-    fn seeking_beyond_the_last_entry_exhausts_the_cursor() {
-        let entries: Vec<(u32, u32)> = (0..10_u32).map(|row| (row, 1)).collect();
-        let lengths = vec![10_u32; 10];
-        let stats = crate::fts::bm25::CorpusStats::new(10, 100).expect("stats");
+    fn seeking_beyond_the_last_row_exhausts_the_cursor() {
+        let index = strided_index(10, 1);
+        let stats = index.corpus_stats().expect("stats");
         let scorer = TermScorer::new(Df(10), &stats, Bm25Params::default());
-        let blocks = build_block_bounds(&entries, &lengths, 4, &scorer);
         let mut cursor = TermCursor {
-            entries,
-            blocks,
-            block_size: 4,
+            stream: stream_of(&index),
             df: Df(10),
             scorer,
             upper_bound: 1.0,
-            position: 0,
         };
         cursor.seek(9_999);
         assert!(cursor.exhausted());
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.current_tf(), None);
-        // An exhausted cursor sits outside every block and falls back to the
-        // term bound, which is the loose, safe direction.
-        assert!((cursor.current_block_max() - 1.0).abs() < 1e-12);
+        // Every run is spent, so no block contributes and the bound
+        // collapses to zero rather than to a stale number.
+        assert!(cursor.current_block_max().abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_sealed_block_bound_matches_the_in_memory_oracle() {
+        // `build_block_bounds` is the reference implementation of the same
+        // impact-pair formula. Reading a bound out of bytes and building one
+        // in memory must give the same number, or the equivalence property
+        // passes against a fixture and fails against a real segment.
+        let index = strided_index(200, 1);
+        let stats = index.corpus_stats().expect("stats");
+        let scorer = TermScorer::new(Df(200), &stats, Bm25Params::default());
+        let rows = rows_of(&index);
+        let entries: Vec<(u32, u32)> = rows.iter().map(|row| (*row, 1_u32)).collect();
+        let segment = index.segments().first().expect("one segment");
+        let lengths = segment.field_lengths(DEFAULT_FIELD).expect("lengths");
+        let oracle = build_block_bounds(&entries, lengths, PRUNE_BLOCK_SIZE, &scorer);
+
+        let mut stream = stream_of(&index);
+        for block in &oracle {
+            assert!(
+                (stream.block_bound(&scorer) - block.max_score).abs() < 1e-15,
+                "sealed and in-memory bounds diverged at block {:?}",
+                block.start
+            );
+            for _ in block.start..block.end {
+                stream.advance();
+            }
+        }
+        let overall = term_upper_bound(&oracle);
+        let fresh = stream_of(&index);
+        assert!((fresh.upper_bound(&scorer) - overall).abs() < 1e-15);
     }
 
     #[test]

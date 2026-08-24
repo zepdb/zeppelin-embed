@@ -25,6 +25,7 @@ use std::borrow::Cow;
 
 use super::bm25::{Bm25Params, Df, DocLen, TermScorer, Tf};
 use super::index::{FieldId, IndexError, LexicalIndex};
+use super::sealed::{SealedSegment, TermStream};
 
 /// A store-wide document identity.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -168,125 +169,9 @@ pub struct SearchResult {
     pub counters: SearchCounters,
 }
 
-/// One term's postings within one segment, merged across weighted fields.
-///
-/// This is the single materialization both the exhaustive scorer and task
-/// 14's pruning consume. Sharing it is what makes the equivalence property
-/// a statement about *which documents are scored* rather than about two
-/// independent scoring implementations agreeing by luck.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct MergedPostings {
-    /// `(row, weighted term frequency)`, ascending by row.
-    pub entries: Vec<(u32, u32)>,
-}
-
-/// One contributing field's postings, its weight, and the merge cursor.
-struct FieldRun<'segment> {
-    postings: &'segment [super::postings::Posting],
-    weight: u64,
-    cursor: usize,
-}
-
-impl FieldRun<'_> {
-    /// Returns the row at the cursor, or `None` when the run is spent.
-    fn current(&self) -> Option<u32> {
-        self.postings.get(self.cursor).map(|posting| posting.docid)
-    }
-}
-
-/// Collects the fields that contribute postings for `term`, ascending.
-///
-/// Each field's list is looked up exactly once. The lookup owns the term
-/// bytes, so calling it twice per field — once to test presence and once to
-/// read — paid for that twice.
-fn contributing_runs<'segment>(
-    segment: &'segment super::index::SegmentIndex,
-    term: &[u8],
-    weights: &FieldWeights,
-) -> Vec<FieldRun<'segment>> {
-    let mut runs: Vec<FieldRun<'segment>> = Vec::with_capacity(weights.iter().count());
-    for (field, weight) in weights.iter() {
-        let weight = u64::from(weight);
-        if weight == 0 {
-            continue;
-        }
-        let Some(list) = segment.posting_list(term, field) else {
-            continue;
-        };
-        if list.postings().is_empty() {
-            continue;
-        }
-        runs.push(FieldRun {
-            postings: list.postings(),
-            weight,
-            cursor: 0,
-        });
-    }
-    runs
-}
-
-/// Merges one term's per-field postings into weighted term frequencies.
-///
-/// # Why this is a linear merge and not an ordered map
-///
-/// Every field's posting list is already ascending by row, so their union
-/// is a k-way merge: one pass, one allocation, `O(fields)` comparisons per
-/// output row. The previous ordered map spent a `BTreeMap` descent and a
-/// node allocation per *posting*, which on the two-field BEIR shape is the
-/// dominant cost of the whole query — a term present in both the title and
-/// the body took that path, and that is most query terms.
-///
-/// Contributions are summed in ascending field order, which is the order
-/// the map's outer loop used, so the `u64` totals are bit-identical.
-#[must_use]
-pub fn merge_term(
-    segment: &super::index::SegmentIndex,
-    term: &[u8],
-    weights: &FieldWeights,
-) -> MergedPostings {
-    let mut runs = contributing_runs(segment, term, weights);
-
-    if let [run] = runs.as_slice() {
-        // Already ascending by row, so the single-field case is a copy.
-        return MergedPostings {
-            entries: run
-                .postings
-                .iter()
-                .filter_map(|posting| {
-                    let total = u64::from(posting.tf).saturating_mul(run.weight);
-                    let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
-                    (tf > 0).then_some((posting.docid, tf))
-                })
-                .collect(),
-        };
-    }
-
-    // The union is at most the sum of the run lengths, so one reservation
-    // covers the whole merge.
-    let capacity: usize = runs.iter().map(|run| run.postings.len()).sum();
-    let mut entries: Vec<(u32, u32)> = Vec::with_capacity(capacity);
-    while let Some(row) = runs.iter().filter_map(FieldRun::current).min() {
-        let mut total = 0_u64;
-        for run in &mut runs {
-            if run.current() != Some(row) {
-                continue;
-            }
-            if let Some(posting) = run.postings.get(run.cursor) {
-                total = total.saturating_add(u64::from(posting.tf).saturating_mul(run.weight));
-            }
-            run.cursor = run.cursor.saturating_add(1);
-        }
-        let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
-        if tf > 0 {
-            entries.push((row, tf));
-        }
-    }
-    MergedPostings { entries }
-}
-
 /// The weighted analyzed length of one row.
 #[must_use]
-pub fn row_length(segment: &super::index::SegmentIndex, row: u32, weights: &FieldWeights) -> u32 {
+pub fn row_length(segment: &SealedSegment, row: u32, weights: &FieldWeights) -> u32 {
     weighted_length(segment, row, weights)
 }
 
@@ -294,17 +179,16 @@ pub fn row_length(segment: &super::index::SegmentIndex, row: u32, weights: &Fiel
 ///
 /// # Why this borrows
 ///
-/// The flat single-field scorer — the shape every BEIR number was produced
-/// with — asks for `length * 1000 / 1000`, which is the field's own dense
-/// array unchanged. Returning it borrowed makes the per-query length
-/// preparation free rather than `O(row_count)`, and the identity is exact
-/// for every `u32` length, not approximate.
+/// The flat single-field scorer asks for `length * 1000 / 1000`, which is
+/// the field's own dense array unchanged. Returning it borrowed makes the
+/// per-query length preparation free rather than `O(row_count)`, and the
+/// identity is exact for every `u32` length, not approximate.
 ///
 /// Any other weighting materializes the array once per segment per query,
 /// which is still one allocation instead of one lookup per scored posting.
 #[must_use]
 pub fn weighted_lengths<'segment>(
-    segment: &'segment super::index::SegmentIndex,
+    segment: &'segment SealedSegment,
     weights: &FieldWeights,
 ) -> Cow<'segment, [u32]> {
     let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
@@ -367,30 +251,35 @@ pub fn search(
             if df == 0 {
                 continue;
             }
-            let merged = merge_term(segment, term, &query.fields);
+            let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
+                continue;
+            };
             // `idf` costs a `ln()` and `avgdl` costs a division; both are
             // constant across this term's postings, so they are computed
             // once here rather than once per posting.
             let scorer = TermScorer::new(Df(df), &stats, params);
-            counters.blocks_decoded = counters.blocks_decoded.saturating_add(1);
-            for (row, tf) in merged.entries {
+            // Blocks arrive from the sealed stream, decoded on demand into
+            // reused scratch buffers. Nothing is materialized.
+            while let Some((row, tf)) = stream.current() {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 let length = usize::try_from(row)
                     .ok()
                     .and_then(|slot| lengths.get(slot).copied())
                     .unwrap_or(0);
                 let score = scorer.score(Tf(tf), DocLen(length));
-                let Ok(slot) = usize::try_from(row) else {
-                    continue;
-                };
-                let Some(entry) = row_scores.get_mut(slot) else {
-                    continue;
-                };
-                if *entry == 0.0 {
-                    touched.push(row);
+                if let Ok(slot) = usize::try_from(row)
+                    && let Some(entry) = row_scores.get_mut(slot)
+                {
+                    if *entry == 0.0 {
+                        touched.push(row);
+                    }
+                    *entry += score;
                 }
-                *entry += score;
+                stream.advance();
             }
+            counters.blocks_decoded = counters
+                .blocks_decoded
+                .saturating_add(stream.blocks_decoded());
         }
 
         touched.sort_unstable();
@@ -431,7 +320,7 @@ pub fn search(
 }
 
 /// The weighted analyzed length of one row.
-fn weighted_length(segment: &super::index::SegmentIndex, row: u32, weights: &FieldWeights) -> u32 {
+fn weighted_length(segment: &SealedSegment, row: u32, weights: &FieldWeights) -> u32 {
     let mut total = 0_u64;
     for (field, weight) in weights.iter() {
         total =
@@ -465,7 +354,7 @@ mod tests {
                 .expect("indexable");
         }
         let mut index = LexicalIndex::new();
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
         index
     }
 
@@ -568,8 +457,8 @@ mod tests {
             .expect("indexable");
 
         let mut index = LexicalIndex::new();
-        index.push_segment(first);
-        index.push_segment(second);
+        index.push_segment(first).expect("seals");
+        index.push_segment(second).expect("seals");
 
         let query = TermQuery::flat(vec![b"engine".to_vec()], &[DEFAULT_FIELD]);
         let result = search(&index, &query, 10, Bm25Params::default()).expect("scores");
@@ -638,7 +527,7 @@ mod tests {
             .push_document(&analyzer, &second)
             .expect("indexable");
         let mut index = LexicalIndex::new();
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
 
         let flat = TermQuery {
             terms: vec![b"engine".to_vec()],

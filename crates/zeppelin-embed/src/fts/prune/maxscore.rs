@@ -40,7 +40,7 @@ fn length_of(lengths: &[u32], row: u32) -> u32 {
 /// Used when the posting lists are too short for pruning to pay for itself;
 /// it produces exactly the same documents and scores.
 pub fn score_all(
-    cursors: &[TermCursor],
+    cursors: &mut [TermCursor<'_>],
     lengths: &[u32],
     segment: u32,
     heap: &mut TopK,
@@ -52,20 +52,20 @@ pub fn score_all(
     // class already found and fixed three times elsewhere in this engine,
     // and being harmless is not the same as being right.
     let mut totals: Vec<(u32, f64)> = Vec::new();
-    for cursor in cursors {
-        for (row, tf) in &cursor.entries {
+    for cursor in cursors.iter_mut() {
+        cursor.reset();
+        while let Some((row, tf)) = cursor.stream.current() {
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-            let score = cursor
-                .scorer
-                .score(Tf(*tf), DocLen(length_of(lengths, *row)));
-            match totals.binary_search_by_key(row, |(candidate, _)| *candidate) {
+            let score = cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)));
+            match totals.binary_search_by_key(&row, |(candidate, _)| *candidate) {
                 Ok(slot) => {
                     if let Some((_, total)) = totals.get_mut(slot) {
                         *total += score;
                     }
                 }
-                Err(slot) => totals.insert(slot, (*row, score)),
+                Err(slot) => totals.insert(slot, (row, score)),
             }
+            cursor.advance();
         }
     }
     for (row, score) in totals {
@@ -80,7 +80,7 @@ pub fn score_all(
 /// carries its own [`crate::fts::bm25::TermScorer`], built once from exactly
 /// those inputs.
 pub fn run(
-    cursors: &mut [TermCursor],
+    cursors: &mut [TermCursor<'_>],
     lengths: &[u32],
     segment: u32,
     heap: &mut TopK,
@@ -95,7 +95,7 @@ pub fn run(
     });
 
     for cursor in cursors.iter_mut() {
-        cursor.position = 0;
+        cursor.reset();
     }
 
     // Both are loop-invariant in shape, and the bound total is invariant in
@@ -166,8 +166,9 @@ pub fn run(
             let Some(cursor) = cursors.get_mut(*slot) else {
                 continue;
             };
-            let skipped = cursor.seek(row);
-            counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
+            // Blocks jumped are tallied on the stream itself and collected
+            // once the segment finishes.
+            cursor.seek(row);
             let contribution = if cursor.current() == Some(row) {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 cursor.current_tf().map_or(0.0, |tf| {
@@ -199,7 +200,7 @@ pub fn run(
         // Advance past the candidate everywhere it appears.
         for cursor in cursors.iter_mut() {
             if cursor.current() == Some(row) {
-                cursor.position += 1;
+                cursor.advance();
             }
         }
         if cursors.iter().all(TermCursor::exhausted) {

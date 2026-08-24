@@ -22,6 +22,9 @@ pub mod dict;
 /// The lexical index across segments.
 pub mod index;
 
+/// The sealed segment: the persisted posting format on the query path.
+pub mod sealed;
+
 /// The exhaustive-OR scorer and task 14 oracle.
 pub mod search;
 

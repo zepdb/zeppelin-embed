@@ -386,7 +386,13 @@ impl BlockMeta {
         output.extend_from_slice(&self.min_len.to_le_bytes());
     }
 
-    fn read(input: &[u8]) -> Result<Self, PostingsError> {
+    /// Reads one metadata row from the front of `input`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostingsError::Truncated`] when fewer than
+    /// [`BLOCK_META_LEN`] bytes are available.
+    pub fn read(input: &[u8]) -> Result<Self, PostingsError> {
         let row = input
             .get(..BLOCK_META_LEN)
             .ok_or(PostingsError::Truncated {
@@ -458,7 +464,7 @@ impl EncodedPostings {
 }
 
 /// Header length: magic, version, block size, posting and block counts.
-const HEADER_LEN: usize = 16;
+pub const HEADER_LEN: usize = 16;
 
 /// Encodes one posting list in the original version 1 layout.
 ///

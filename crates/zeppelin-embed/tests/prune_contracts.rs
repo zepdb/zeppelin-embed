@@ -118,7 +118,7 @@ fn index_of(texts: &[String]) -> LexicalIndex {
             .expect("indexable");
     }
     let mut index = LexicalIndex::new();
-    index.push_segment(segment);
+    index.push_segment(segment).expect("seals");
     index
 }
 
@@ -146,7 +146,7 @@ fn zipf_corpus(documents: usize, terms: usize) -> Vec<String> {
 }
 
 #[test]
-fn short_list_query_decodes_zero_blocks() {
+fn short_list_query_takes_no_pruning_decision() {
     let texts: Vec<String> = (0..20).map(|index| format!("alpha body{index}")).collect();
     let index = index_of(&texts);
     let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
@@ -344,4 +344,46 @@ fn capture_contracts() {
              max_k_for_wand = 10\n",
         ),
     );
+}
+
+/// The corpus size at which pruning's advantage is supposed to appear.
+///
+/// The 2,000-document contracts above pin behaviour; these pin it in the
+/// regime the technique exists for. `docs/14-pruning.md` recorded that the
+/// small-corpus numbers say nothing about a real collection, and this is
+/// that gap closed.
+const LARGE_CORPUS: usize = 100_000;
+
+#[test]
+fn two_term_wand_at_one_hundred_thousand_documents() {
+    let texts = zipf_corpus(LARGE_CORPUS, 12);
+    let index = index_of(&texts);
+    let query = TermQuery::flat(vec![b"t0".to_vec(), b"t5".to_vec()], &[DEFAULT_FIELD]);
+    let params = Bm25Params::default();
+
+    let exhaustive = search(&index, &query, 10, params).expect("scores");
+    let pruned = search_pruned(&index, &query, 10, params, Strategy::BlockMaxWand).expect("scores");
+    assert_eq!(pruned.hits, exhaustive.hits, "pruning changed the answer");
+    check("zipf_100k_two_term_k10_wand", pruned.counters);
+    assert!(pruned.counters.docs_evaluated < exhaustive.counters.docs_evaluated / 4);
+    assert!(pruned.counters.postings_decoded < exhaustive.counters.postings_decoded / 2);
+}
+
+#[test]
+fn six_term_maxscore_at_one_hundred_thousand_documents() {
+    let texts = zipf_corpus(LARGE_CORPUS, 12);
+    let index = index_of(&texts);
+    let terms: Vec<Vec<u8>> = (0..6)
+        .map(|index| format!("t{index}").into_bytes())
+        .collect();
+    let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
+    let params = Bm25Params::default();
+
+    let exhaustive = search(&index, &query, 10, params).expect("scores");
+    let pruned =
+        search_pruned(&index, &query, 10, params, Strategy::BlockMaxMaxscore).expect("scores");
+    assert_eq!(pruned.hits, exhaustive.hits, "pruning changed the answer");
+    check("zipf_100k_six_term_k10_maxscore", pruned.counters);
+    // Two orders of magnitude fewer documents scored than the scan.
+    assert!(pruned.counters.docs_evaluated * 100 < exhaustive.counters.docs_evaluated);
 }

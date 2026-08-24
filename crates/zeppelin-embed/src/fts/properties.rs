@@ -173,7 +173,7 @@ fn build_index(analyzer: &Analyzer, texts: &[String], boundaries: &[usize]) -> L
                 .expect("indexable");
         }
         cursor += size;
-        index.push_segment(segment);
+        index.push_segment(segment).expect("seals");
     }
     index
 }

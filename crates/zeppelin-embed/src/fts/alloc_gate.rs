@@ -57,7 +57,11 @@ fn corpus(matches: usize) -> LexicalIndex {
             .expect("indexable fixture");
     }
     let mut index = LexicalIndex::new();
-    index.push_segment(segment);
+    #[expect(
+        clippy::expect_used,
+        reason = "sealing a fixture segment cannot fail; a failure is a broken writer"
+    )]
+    index.push_segment(segment).expect("seals");
     index
 }
 
@@ -141,7 +145,11 @@ fn multifield_corpus(matches: usize) -> LexicalIndex {
             .expect("indexable fixture");
     }
     let mut index = LexicalIndex::new();
-    index.push_segment(segment);
+    #[expect(
+        clippy::expect_used,
+        reason = "sealing a fixture segment cannot fail; a failure is a broken writer"
+    )]
+    index.push_segment(segment).expect("seals");
     index
 }
 

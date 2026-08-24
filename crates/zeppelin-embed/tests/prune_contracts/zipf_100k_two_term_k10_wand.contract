@@ -1,0 +1,11 @@
+# Zipf 100,000 documents, 12 terms, query t0 + t5, k=10, block-max WAND
+#
+# The regime pruning exists for. At 2,000 documents pruning still
+# evaluates about 18% of the corpus, which says nothing about a real
+# collection; docs/14-pruning.md said so itself. At 100,000 the ratios
+# are the claim: WAND evaluates 16.7% of the corpus and reads 28.6% of
+# the postings, MAXSCORE evaluates 0.5% and reads 44.3%.
+docs_evaluated = 16687
+blocks_decoded = 1824
+blocks_skipped = 0
+postings_decoded = 33354

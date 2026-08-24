@@ -1,5 +1,13 @@
 # 20 documents, one term: below one block, so no pruning machinery runs
+#
+# Re-baselined when the query path began reading the sealed posting
+# format. `blocks_decoded` used to count bounds BUILT, and the fast path
+# built none; it now counts blocks actually decoded, and twenty postings
+# cannot be scored without decoding the one block holding them. The
+# property this file guards is unchanged and is carried by the other three
+# lines: no block is skipped, every match is evaluated, every posting is
+# read exactly once.
 docs_evaluated = 20
-blocks_decoded = 0
+blocks_decoded = 1
 blocks_skipped = 0
 postings_decoded = 20
