@@ -125,6 +125,15 @@ fn split_parts(text: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
     parts
 }
 
+/// Returns true when the term is exactly one alphabetic character.
+fn is_single_letter(term: &str) -> bool {
+    let mut chars = term.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(only), None) if only.is_alphabetic()
+    )
+}
+
 fn contains_digit(term: &str) -> bool {
     term.chars().any(char::is_numeric)
 }
@@ -241,6 +250,17 @@ fn emit_surface(config: &TokenizerConfig, text: &str) -> (Vec<Emission>, u32) {
             };
             let term = fold_term(config, part_surface);
             if term.is_empty() {
+                continue;
+            }
+            // A one-LETTER part of a decomposed word is stop-level noise
+            // in linguistic text; the whole word and the catenation still
+            // carry its identity. A one-DIGIT part is kept: `type-2` and
+            // `SARS-CoV-2` are discriminated by exactly that digit. The
+            // dropped part's position stays spent, exactly as a removed
+            // stopword's does.
+            if config.drop_single_char_parts
+                && is_single_letter(&term)
+            {
                 continue;
             }
             let offset = u32::try_from(index).unwrap_or(u32::MAX);
@@ -520,6 +540,49 @@ mod tests {
             .filter(|token| token.position == position)
             .map(|token| token.term.clone())
             .collect()
+    }
+
+    #[test]
+    fn single_character_parts_are_dropped_from_linguistic_profiles() {
+        // `401k` must keep its identity (original, catenation, and the
+        // `401` part) while the one-character `k` part disappears; the
+        // apostrophe splits of `don't` and `investor's` lose only their
+        // `t` and `s`. Dropped parts leave their positions spent, so the
+        // analyzed length is unchanged.
+        let tokens = analyze_with(
+            Profile::TextDefault.config(),
+            "401k don't investor's fund",
+        );
+        let all = terms(&tokens);
+        assert!(all.iter().any(|term| term == "401k"), "original survives");
+        assert!(all.iter().any(|term| term == "401"), "long part survives");
+        assert!(all.iter().any(|term| term == "investor"), "long part survives");
+        assert!(all.iter().any(|term| term == "don"), "long part survives");
+        for junk in ["k", "t", "s"] {
+            assert!(
+                !all.iter().any(|term| term == junk),
+                "single-character part {junk:?} must be dropped, got {all:?}"
+            );
+        }
+        // The positions the dropped parts occupied stay spent: `fund`
+        // starts a fresh word after `investor's` two part positions.
+        let fund_position = tokens
+            .iter()
+            .find(|token| token.term == "fund")
+            .map(|token| token.position);
+        assert_eq!(fund_position, Some(6), "dropped parts keep their positions");
+
+        // A single DIGIT part survives: `type-2` is discriminated by it.
+        let typed = terms(&analyze_with(Profile::TextDefault.config(), "type-2 diabetes"));
+        assert!(
+            typed.iter().any(|term| term == "2"),
+            "single digit parts are kept, got {typed:?}"
+        );
+
+        // The identifier profile keeps one-character parts: `x` in `x_max`
+        // is a real search target in code.
+        let code = terms(&analyze_with(Profile::Code.config(), "x_max"));
+        assert!(code.iter().any(|term| term == "x"), "code keeps short parts");
     }
 
     #[test]

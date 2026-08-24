@@ -44,6 +44,10 @@ impl Profile {
             Self::Code => (StopwordList::None, Stemmer::None, false),
             Self::Voice => (StopwordList::LuceneEnglish, Stemmer::EnglishPorter2, true),
         };
+        // Linguistic profiles drop one-character decomposition parts --
+        // stop-level noise in prose. The code profile keeps them: the `x`
+        // of `x_max` is a real search target in an identifier.
+        let drop_single_char_parts = !matches!(self, Self::Code);
         TokenizerConfig {
             profile: self,
             segmenter: Segmenter::IdentifierPreserving,
@@ -53,6 +57,7 @@ impl Profile {
             decompose_words: true,
             emit_catenation: true,
             number_words,
+            drop_single_char_parts,
             vocabulary: Vocabulary::new(),
         }
     }

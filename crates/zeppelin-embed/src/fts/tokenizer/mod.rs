@@ -215,6 +215,19 @@ pub struct TokenizerConfig {
     pub emit_catenation: bool,
     /// Emit digit and word variants for spelled numbers.
     pub number_words: bool,
+    /// Drop single-LETTER decomposition parts.
+    ///
+    /// The `k` of `401k`, the `t` of `don't`, the `s` of `investor's`:
+    /// one-letter parts of a decomposed word are stop-level noise in
+    /// linguistic text — they carry no identity the whole word and the
+    /// catenation do not already carry, and they pollute document length
+    /// and document frequency. One-DIGIT parts are kept: `type-2` and
+    /// `SARS-CoV-2` are discriminated by exactly that digit. Dropping a
+    /// part leaves its position spent, exactly as a removed stopword
+    /// does, so phrase adjacency and the analyzed length are unchanged.
+    /// Identifier-heavy profiles keep every part: the `x` of `x_max` is
+    /// a real search target in code.
+    pub drop_single_char_parts: bool,
     /// User vocabulary and synonyms.
     pub vocabulary: Vocabulary,
 }
@@ -293,6 +306,7 @@ impl TokenizerEpoch {
         input.push(u8::from(config.decompose_words));
         input.push(u8::from(config.emit_catenation));
         input.push(u8::from(config.number_words));
+        input.push(u8::from(config.drop_single_char_parts));
         push_u16(&mut input, config.profile.id());
         push_u32(
             &mut input,
