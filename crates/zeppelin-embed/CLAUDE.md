@@ -181,6 +181,20 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   matched recall despite saving 2.643% hops. Constants and the load-tainted
   10-process evidence live in `docs/19-m5-defaults.md`.
 
+## Task 19-M6 filtered-graph invariants
+
+- A filtered traversal navigates through matching and non-matching graph rows,
+  but inserts only rows in the planner's effective `alive AND filter` bitmap
+  into the retained pool. That complete retained pool still uses M5's sole
+  `quant::rescore::rescore_top_k` path.
+- The fail-closed `4 * ef * max_degree` visited cap remains a typed
+  `VisitedCapExceeded` error. A separate filter-only visited budget is a normal
+  selectivity disposition and must answer exactly from the allow-list with a
+  `VisitedBudget`/`GraphExactFallback` plan report.
+- `FilteredGraph`, `GraphExactFallback`, the requested/effective ef pair, and
+  any explicit-ef widening are reported from the branch that actually ran.
+  Low-cardinality graph filters go directly to exact allow-list execution.
+
 ## Task 19-M7 multi-segment graph-search invariants
 
 - One query-local exact-distance bound is tightened after each serial segment.

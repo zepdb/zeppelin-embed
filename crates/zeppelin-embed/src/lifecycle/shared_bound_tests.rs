@@ -16,7 +16,11 @@ use crate::ingest::{GlobalRowId, SearchOutcome, SearchRequest};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use crate::manifest::Manifest;
 use crate::manifest::io::commit_manifest;
-use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
+use crate::meta::{
+    AliveSet, ColumnStoreBuilder, Predicate, PredicateValue, RangeBound, RangePredicate, Schema,
+    TIMESTAMP_COLUMN,
+};
+use crate::planner::SegmentBranch;
 use crate::quant::{Bit4Factors, quantize_bit4};
 use crate::scan::ScanOptions;
 use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment_with_graph};
@@ -424,6 +428,82 @@ fn shared_bound_still_returns_full_k_when_rows_are_tombstoned() {
         "tombstone over-fetch never reached a shared-bound prune"
     );
     store.close().expect("close tombstone fixture");
+}
+
+#[test]
+fn a_pruned_segment_never_hides_a_winning_matching_row() {
+    const FILTER_ROWS: usize = 96;
+    const WINNER_ROW: usize = 64;
+    let mut random = crate::test_support::seeded_rng(
+        "lifecycle::shared_bound_tests::a_pruned_segment_never_hides_a_winning_matching_row",
+    );
+    let first = directional_vectors(5.0, FILTER_ROWS, &mut random);
+    let mut winner_segment = directional_vectors(500.0, FILTER_ROWS, &mut random);
+    let winning_vector = query(1.0);
+    winner_segment[WINNER_ROW * DIMS..(WINNER_ROW + 1) * DIMS].copy_from_slice(&winning_vector);
+    let far = directional_vectors(5_000.0, FILTER_ROWS, &mut random);
+    let fixture = publish_graph_store(vec![
+        SegmentSpec {
+            vectors: first,
+            tombstones: Vec::new(),
+            shape: GraphShape::Complete,
+        },
+        SegmentSpec {
+            vectors: winner_segment,
+            tombstones: Vec::new(),
+            shape: GraphShape::Complete,
+        },
+        SegmentSpec {
+            vectors: far,
+            tombstones: Vec::new(),
+            shape: GraphShape::Complete,
+        },
+    ]);
+    let store = Store::open(fixture.directory.path(), OpenOptions::default())
+        .expect("open filtered bound fixture");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: None,
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(
+            WINNER_ROW as i64,
+        ))),
+    });
+
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&winning_vector),
+            &predicate,
+            K,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("filtered shared-bound query");
+
+    let winner_id = SegmentId::new(0x0001_9100_0001, [1; 10]);
+    assert_eq!(
+        outcome.candidates[0].row_id().source(),
+        crate::ingest::RowSource::Sealed(winner_id)
+    );
+    assert_eq!(
+        outcome.candidates[0].row_id().local_row(),
+        WINNER_ROW as u32
+    );
+    assert!(
+        outcome
+            .plans
+            .iter()
+            .find(|plan| plan.source == crate::ingest::RowSource::Sealed(winner_id))
+            .is_some_and(|plan| plan.branch != SegmentBranch::Pruned),
+        "the segment containing the only exact winner was pruned"
+    );
+    assert!(
+        outcome
+            .plans
+            .iter()
+            .any(|plan| plan.branch == SegmentBranch::Pruned),
+        "the planted far segment never exercised the filtered shared bound"
+    );
+    store.close().expect("close filtered bound fixture");
 }
 
 #[test]

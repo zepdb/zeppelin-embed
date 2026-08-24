@@ -15,9 +15,9 @@ use zeppelin_embed::lifecycle::{
 use zeppelin_embed::meta::{
     Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
 };
-use zeppelin_embed::planner::SegmentTier;
+use zeppelin_embed::planner::{SegmentBranch, SegmentTier};
 use zeppelin_embed::scan::ScanOptions;
-use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
+use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::Vfs;
 use zeppelin_embed::vfs::crash::RecordingVfs;
 
@@ -108,6 +108,7 @@ pub struct RunOutcome {
     pub faults_fired: usize,
     pub graph_searches: usize,
     pub filtered_searches: usize,
+    pub filtered_graph_searches: usize,
     pub violations: Vec<Violation>,
     pub program_bytes: Vec<u8>,
     pub faults_bytes: Vec<u8>,
@@ -317,10 +318,15 @@ impl Engine for RealEngine {
 
     fn maintain(&mut self, bytes: u64) -> Result<MutationAck, String> {
         let before = self.generation()?;
-        let report = self.store()?.maintain(MaintenanceBudget {
-            wall_time: Duration::from_secs(120),
-            bytes,
-        });
+        let report = self.store()?.maintain_with_test_thresholds(
+            MaintenanceBudget {
+                wall_time: Duration::from_secs(120),
+                bytes,
+            },
+            TierThresholds {
+                graph_min_rows: program::GRAPH_ROWS,
+            },
+        );
         if let MaintenanceStatus::Failed(error) = &report.status {
             return Err(error.to_string());
         }
@@ -413,6 +419,11 @@ impl Engine for RealEngine {
             .plans
             .iter()
             .any(|plan| plan.tier == SegmentTier::SealedGraph);
+        let filtered_graph_segments = outcome
+            .plans
+            .iter()
+            .filter(|plan| plan.branch == SegmentBranch::FilteredGraph)
+            .count();
         let hits = outcome
             .candidates
             .iter()
@@ -432,7 +443,7 @@ impl Engine for RealEngine {
             hits,
             generation: outcome.generation,
             graph_available,
-            graph_segments: 0,
+            graph_segments: filtered_graph_segments,
             graph_rescored: 0,
             graph_pruned: 0,
         })
@@ -733,6 +744,7 @@ pub fn run_program(
     let mut content_fault_fired = false;
     let mut graph_searches = 0_usize;
     let mut filtered_searches = 0_usize;
+    let mut filtered_graph_searches = 0_usize;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         let operation_result = match op {
@@ -839,6 +851,9 @@ pub fn run_program(
                     .filtered_search(&query, requested, *maximum_timestamp)
                     .map(|observed| {
                         filtered_searches = filtered_searches.saturating_add(1);
+                        if observed.graph_segments > 0 {
+                            filtered_graph_searches = filtered_graph_searches.saturating_add(1);
+                        }
                         violations.extend(check_filtered_search(
                             seed,
                             profile,
@@ -982,6 +997,7 @@ pub fn run_program(
         faults_fired,
         graph_searches,
         filtered_searches,
+        filtered_graph_searches,
         violations,
         program_bytes,
         faults_bytes,

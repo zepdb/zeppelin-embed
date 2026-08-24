@@ -1,6 +1,6 @@
 //! Pure per-segment tier decisions.
 
-use super::SegmentTier;
+use super::{SegmentTier, TierThresholds};
 
 /// Policy inputs derived from one segment and its currently published artifacts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +37,13 @@ pub enum TierPlan {
 #[must_use]
 pub const fn decide(segment: SegmentStats, _store: StoreStats) -> TierPlan {
     let thresholds = super::thresholds::for_bucket(segment.dimensions, segment.scheme);
+    decide_with_thresholds(segment, thresholds)
+}
+
+pub(crate) const fn decide_with_thresholds(
+    segment: SegmentStats,
+    thresholds: TierThresholds,
+) -> TierPlan {
     match segment.tier {
         SegmentTier::ActiveScan => TierPlan::Stay(SegmentTier::ActiveScan),
         SegmentTier::SealedGraph => TierPlan::Stay(SegmentTier::SealedGraph),

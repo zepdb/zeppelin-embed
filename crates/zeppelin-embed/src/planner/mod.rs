@@ -25,7 +25,9 @@ pub enum SegmentBranch {
     ExactAllowList,
     /// Sweep the segment and mask every row through the exact allow-list.
     MaskedScan,
-    /// A graph artifact exists, but task 19-M6 is absent, so exact masked scan runs.
+    /// Graph traversal navigates every row and retains only effective-mask rows.
+    FilteredGraph,
+    /// Filtered traversal abandoned to an exact allow-list answer.
     GraphExactFallback,
 }
 
@@ -56,8 +58,12 @@ pub enum FilterMode {
 pub enum PlanFallback {
     /// No fallback was required.
     None,
-    /// Task 19-M6 is not present, so a graph segment is scanned exactly.
-    GraphToExactMaskedScan,
+    /// Filtered traversal crossed its independent selectivity budget.
+    VisitedBudget,
+    /// A caller-supplied `ef` was raised to compensate for selectivity.
+    EfWidened,
+    /// Corrective ef widening exhausted before retaining the requested rows.
+    CandidateShortfall,
 }
 
 /// Closed recursive plan IR. New execution families require a new enum variant.
@@ -79,7 +85,7 @@ pub enum PlanNode {
     Graph {
         /// Store-global segment address.
         source: RowSource,
-        /// Exact fallback used until filtered traversal lands.
+        /// Exact child used when traversal reports a fallback disposition.
         fallback: Option<Box<PlanNode>>,
     },
     /// Exact bitmap intersection wrapped around another typed node.
@@ -113,6 +119,10 @@ pub struct SegmentPlan {
     pub approximate: bool,
     /// Named fallback, if any.
     pub fallback: PlanFallback,
+    /// Caller-supplied graph width, or `None` for adaptive or scan work.
+    pub ef_requested: Option<usize>,
+    /// Actual filter-aware graph width, or `None` when no traversal ran.
+    pub ef_effective: Option<usize>,
     /// Recursive typed node for this segment.
     pub node: PlanNode,
 }
@@ -124,21 +134,6 @@ impl SegmentPlan {
         branch: SegmentBranch,
         cardinality: u64,
     ) -> Self {
-        let (input, fallback) = if branch == SegmentBranch::GraphExactFallback {
-            let scan = PlanNode::Scan {
-                source,
-                branch: SegmentBranch::MaskedScan,
-            };
-            (
-                PlanNode::Graph {
-                    source,
-                    fallback: Some(Box::new(scan)),
-                },
-                PlanFallback::GraphToExactMaskedScan,
-            )
-        } else {
-            (PlanNode::Scan { source, branch }, PlanFallback::None)
-        };
         Self {
             source,
             tier,
@@ -146,8 +141,54 @@ impl SegmentPlan {
             filter_mode: FilterMode::Pre,
             filter_cardinality: cardinality,
             approximate: false,
+            fallback: PlanFallback::None,
+            ef_requested: None,
+            ef_effective: None,
+            node: PlanNode::Scan { source, branch },
+        }
+    }
+
+    pub(crate) fn filtered_graph(
+        source: RowSource,
+        cardinality: u64,
+        ef_requested: Option<usize>,
+        ef_effective: usize,
+        branch: SegmentBranch,
+        fallback: PlanFallback,
+    ) -> Self {
+        let (node, filter_mode, approximate) = match branch {
+            SegmentBranch::FilteredGraph => (
+                PlanNode::Graph {
+                    source,
+                    fallback: None,
+                },
+                FilterMode::InTraversal,
+                true,
+            ),
+            SegmentBranch::GraphExactFallback => (
+                PlanNode::Graph {
+                    source,
+                    fallback: Some(Box::new(PlanNode::Scan {
+                        source,
+                        branch: SegmentBranch::ExactAllowList,
+                    })),
+                },
+                FilterMode::Pre,
+                false,
+            ),
+            _ => (PlanNode::Scan { source, branch }, FilterMode::Pre, false),
+        };
+        Self {
+            source,
+            tier: SegmentTier::SealedGraph,
+            branch,
+            filter_mode,
+            filter_cardinality: cardinality,
+            approximate,
             fallback,
-            node: input,
+            ef_requested,
+            ef_effective: Some(ef_effective),
+            node,
         }
     }
 
