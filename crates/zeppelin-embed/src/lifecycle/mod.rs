@@ -160,15 +160,15 @@ impl GraphSearchOptions {
         self
     }
 
-    const fn profile(self) -> crate::graph::search::GraphSearchProfile {
+    pub(crate) const fn profile(self) -> crate::graph::search::GraphSearchProfile {
         self.profile
     }
 
-    const fn ef(self) -> Option<usize> {
+    pub(crate) const fn ef(self) -> Option<usize> {
         self.ef
     }
 
-    const fn seed(self) -> u64 {
+    pub(crate) const fn seed(self) -> u64 {
         self.seed
     }
 }

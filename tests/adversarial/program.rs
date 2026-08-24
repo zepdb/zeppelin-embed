@@ -3,7 +3,9 @@ use rand::Rng;
 use super::test_support;
 
 pub const DIMENSIONS: usize = 4;
-pub const GRAPH_ROWS: u32 = 10_000;
+/// PLACEHOLDER -- NOT YET MEASURED. Test-only graph reachability extent; the
+/// shipped tier threshold remains unchanged and is never inferred from this.
+pub const GRAPH_ROWS: u32 = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchKind {
@@ -167,13 +169,26 @@ impl Program {
         let mut rng = test_support::seeded_rng("adversarial::program", seed);
         let mut ops = vec![Op::Open];
         let initial_count = if seed == 0 { GRAPH_ROWS } else { 24 };
-        ops.extend([
-            Op::Ingest {
-                first_id: 1,
-                count: initial_count,
+        let initial_allowed_count = if seed == 0 {
+            initial_count.saturating_sub(8)
+        } else {
+            initial_count
+        };
+        ops.push(Op::Ingest {
+            first_id: 1,
+            count: initial_allowed_count,
+            revision: 1,
+            timestamp: 10,
+        });
+        if seed == 0 {
+            ops.push(Op::Ingest {
+                first_id: initial_allowed_count.saturating_add(1),
+                count: 8,
                 revision: 1,
-                timestamp: 10,
-            },
+                timestamp: 12,
+            });
+        }
+        ops.extend([
             Op::FilteredSearch {
                 query: 0,
                 k: 8,
@@ -207,6 +222,11 @@ impl Program {
                 kind: SearchKind::Scan,
             },
             Op::Maintain { bytes: u64::MAX },
+            Op::FilteredSearch {
+                query: 1,
+                k: 8,
+                maximum_timestamp: 10,
+            },
             Op::Search {
                 query: 1,
                 k: 8,

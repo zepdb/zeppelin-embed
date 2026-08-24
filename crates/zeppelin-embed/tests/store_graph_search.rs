@@ -175,7 +175,7 @@ fn publish_segment_without_graph() -> (TempDir, SegmentId) {
 }
 
 #[test]
-fn filtered_graph_segments_report_the_exact_m6_fallback() {
+fn a_segment_that_earned_a_graph_still_answers_column_filters() {
     let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
     let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open graph");
     let predicate = Predicate::Range(RangePredicate {
@@ -191,7 +191,7 @@ fn filtered_graph_segments_report_the_exact_m6_fallback() {
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("filtered graph fallback");
+        .expect("filtered graph query");
     assert_eq!(
         outcome
             .candidates
@@ -202,22 +202,138 @@ fn filtered_graph_segments_report_the_exact_m6_fallback() {
     );
     assert_eq!(outcome.plans.len(), 1);
     assert_eq!(outcome.plans[0].tier, SegmentTier::SealedGraph);
-    assert_eq!(outcome.plans[0].branch, SegmentBranch::GraphExactFallback);
-    assert_eq!(
-        outcome.plans[0].fallback,
-        PlanFallback::GraphToExactMaskedScan
-    );
+    assert_eq!(outcome.plans[0].branch, SegmentBranch::ExactAllowList);
+    assert_eq!(outcome.plans[0].fallback, PlanFallback::None);
     assert!(!outcome.plans[0].approximate);
     store.close().expect("close graph store");
 }
 
+#[test]
+fn the_zero_point_one_percent_cell_takes_the_exact_fallback_and_the_plan_says_so() {
+    let (directory, _) = publish_long_chain_graph(1_000);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open graph");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(999))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(999))),
+    });
+
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&query(999.0)),
+            &predicate,
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("one-in-one-thousand filtered graph query");
+
+    assert_eq!(outcome.candidates[0].row_id().local_row(), 999);
+    assert_eq!(outcome.plans[0].tier, SegmentTier::SealedGraph);
+    assert_eq!(outcome.plans[0].filter_cardinality, 1);
+    assert_eq!(outcome.plans[0].branch, SegmentBranch::ExactAllowList);
+    assert_eq!(outcome.plans[0].fallback, PlanFallback::None);
+    store.close().expect("close graph store");
+}
+
+#[test]
+fn a_traversal_that_crosses_the_filtered_budget_falls_back_and_still_returns_the_true_top_k() {
+    let (directory, _) = publish_long_chain_graph(1_000);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open graph");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(935))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(999))),
+    });
+
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&query(999.0)),
+            &predicate,
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("stranded filtered graph query");
+
+    assert_eq!(outcome.candidates[0].row_id().local_row(), 999);
+    assert_eq!(outcome.plans[0].branch, SegmentBranch::GraphExactFallback);
+    assert_eq!(outcome.plans[0].fallback, PlanFallback::VisitedBudget);
+    assert!(!outcome.plans[0].approximate);
+    store.close().expect("close graph store");
+}
+
+#[test]
+fn a_widened_explicit_ef_under_a_filter_is_reported_in_the_plan() {
+    let (directory, _) = publish_long_chain_graph(1_000);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open graph");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(0))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(99))),
+    });
+
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&query(0.0)),
+            &predicate,
+            1,
+            graph_options(1),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit filtered graph query");
+
+    assert_eq!(outcome.plans[0].branch, SegmentBranch::FilteredGraph);
+    assert_eq!(outcome.plans[0].ef_requested, Some(1));
+    assert!(outcome.plans[0].ef_effective.is_some_and(|ef| ef > 1));
+    assert_eq!(outcome.plans[0].fallback, PlanFallback::EfWidened);
+    store.close().expect("close graph store");
+}
+
+#[test]
+fn a_filtered_graph_query_with_tombstones_uses_one_effective_mask() {
+    let mut alive = AliveSet::new(1_000);
+    alive.tombstone(999).expect("plant nearest-row tombstone");
+    let (directory, _) = publish_long_chain_graph_with_alive(1_000, alive);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open graph");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(900))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(999))),
+    });
+
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&query(999.0)),
+            &predicate,
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("filtered graph query with a tombstone");
+
+    assert_eq!(outcome.candidates[0].row_id().local_row(), 998);
+    assert_eq!(outcome.plans[0].filter_cardinality, 99);
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|candidate| candidate.row_id().local_row() != 999)
+    );
+    store.close().expect("close graph store");
+}
+
 fn publish_long_chain_graph(rows: usize) -> (TempDir, SegmentId) {
+    publish_long_chain_graph_with_alive(rows, AliveSet::new(rows as u32))
+}
+
+fn publish_long_chain_graph_with_alive(rows: usize, alive: AliveSet) -> (TempDir, SegmentId) {
     let directory = tempdir().expect("cancellation graph directory");
     let id = SegmentId::new(0x0001_9000_0003, [0x33; 10]);
     let vectors = fixture_vectors(rows);
     let (codes, factors) = quantize_rows(&vectors, rows);
     let columns = columns(rows);
-    let alive = AliveSet::new(rows as u32);
+    alive.debug_assert_consistent();
     let neighbors = (0..rows)
         .map(|row| {
             u32::try_from(row + 1)

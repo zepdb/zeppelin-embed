@@ -3,10 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::graph::search::{FilteredGraphSearchOutcome, GraphSearchCounters, GraphSearchRequest};
 use crate::ingest::{RowSource, SearchCandidate, SearchRequest};
 use crate::lifecycle::{
-    PublishedSnapshot, QueryCancellation, QueryControl, QueryError, SearchOptions, SearchTier,
-    SnapshotLease, Store, StoreError, StoreState,
+    GraphSearchOptions, PublishedSnapshot, QueryCancellation, QueryControl, QueryError,
+    SearchOptions, SearchTier, SnapshotLease, Store, StoreError, StoreState,
 };
 use crate::meta::{ColumnStore, ColumnStoreBuilder, EvalError, Predicate, evaluate};
 use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -17,9 +18,14 @@ use crate::scan::{
 use crate::segment::layout::RegionKind;
 
 use super::{
-    PlanError, PlanNode, SegmentBranch, SegmentPlan, SegmentTier, choose_scan_branch,
-    segment_may_match, validate_predicate,
+    ALLOW_LIST_ROWS_THRESHOLD, PlanError, PlanFallback, PlanNode, SegmentBranch, SegmentPlan,
+    SegmentTier, choose_scan_branch, segment_may_match, validate_predicate,
 };
+
+/// PLACEHOLDER -- NOT YET MEASURED. This filter-only budget multiplier is
+/// calibrated by the control-armed M6 selectivity sweep; it never changes the
+/// independent fail-closed `4 * ef * max_degree` traversal invariant.
+const FILTERED_VISITED_BUDGET_MULTIPLIER: usize = 2;
 
 /// Exact filtered candidates plus truthful per-segment planning reports.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,6 +197,7 @@ fn execute_store(
     let result = execute_pinned(
         &snapshot,
         &active,
+        &store.accounting,
         generation,
         request,
         predicate,
@@ -206,6 +213,7 @@ fn execute_store(
 fn execute_pinned(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
+    accounting: &Arc<crate::lifecycle::stats::Accounting>,
     generation: u64,
     request: SearchRequest<'_>,
     predicate: &Predicate,
@@ -274,9 +282,20 @@ fn execute_pinned(
         )?;
         stats.add(local_stats)?;
         plans.push(plan);
+        retain_global_top_k(&mut candidates, k);
     }
 
-    for segment in snapshot.segments() {
+    let mut ordered_segments = snapshot.segments().iter().collect::<Vec<_>>();
+    if auto_uses_graph || matches!(options.tier(), SearchTier::Graph(_)) {
+        ordered_segments.sort_unstable_by(|left, right| {
+            right
+                .meta()
+                .row_count
+                .cmp(&left.meta().row_count)
+                .then_with(|| left.meta().id.cmp(&right.meta().id))
+        });
+    }
+    for segment in ordered_segments {
         let source = RowSource::Sealed(segment.meta().id);
         let graph_selected =
             has_graph(segment) && matches!(options.tier(), SearchTier::Auto | SearchTier::Graph(_));
@@ -301,14 +320,76 @@ fn execute_pinned(
             .map_err(StoreError::Segment)
             .map_err(QueryError::Store)?;
         let allow_list = evaluate(predicate, &columns, &alive).map_err(map_eval_error)?;
-        let branch = if graph_selected {
-            SegmentBranch::GraphExactFallback
-        } else {
-            choose_scan_branch(allow_list.cardinality())
+        let row_count = segment.meta().row_count as usize;
+        let graph_options = match options.tier() {
+            SearchTier::Graph(graph_options) if graph_selected => Some(graph_options),
+            SearchTier::Auto if graph_selected => Some(GraphSearchOptions::default()),
+            SearchTier::Auto | SearchTier::Scan | SearchTier::Graph(_) => None,
         };
+        if let Some(graph_options) = graph_options {
+            validate_filtered_explicit_ef(graph_options, k.min(row_count), row_count)?;
+            if allow_list.cardinality() > ALLOW_LIST_ROWS_THRESHOLD {
+                let norm_range = segment
+                    .graph_search_cache
+                    .prepare_shared(segment, cancellation)
+                    .map_err(map_graph_cache_error)?
+                    .norm_range;
+                if let Some(competitive_distance) = global_competitive_distance(&candidates, k)
+                    && norm_range.squared_l2_upper_bound(request.vector()) <= f64::from(f32::MAX)
+                    && (norm_range.squared_l2_lower_bound(request.vector()) as f32)
+                        > competitive_distance
+                {
+                    cancellation.check_graph().map_err(map_scan_error)?;
+                    plans.push(
+                        SegmentPlan::exact(
+                            source,
+                            SegmentTier::SealedGraph,
+                            SegmentBranch::Pruned,
+                            allow_list.cardinality(),
+                        )
+                        .with_predicate(predicate),
+                    );
+                    continue;
+                }
+                let execution = execute_filtered_graph(
+                    segment,
+                    request.vector(),
+                    &allow_list,
+                    k,
+                    graph_options,
+                    cancellation,
+                    accounting,
+                )?;
+                let plan = SegmentPlan::filtered_graph(
+                    source,
+                    allow_list.cardinality(),
+                    execution.ef_requested,
+                    execution.ef_effective,
+                    execution.branch,
+                    execution.fallback,
+                )
+                .with_predicate(predicate);
+                verify_execution_branch(plan.branch, execution.branch)?;
+                append_candidates(
+                    execution.candidates,
+                    source,
+                    |row| {
+                        segment
+                            .document_version(row)
+                            .map_err(StoreError::Segment)
+                            .map_err(QueryError::Store)
+                    },
+                    &mut candidates,
+                )?;
+                stats.add(execution.stats)?;
+                plans.push(plan);
+                retain_global_top_k(&mut candidates, k);
+                continue;
+            }
+        }
+        let branch = choose_scan_branch(allow_list.cardinality());
         let plan = SegmentPlan::exact(source, tier, branch, allow_list.cardinality())
             .with_predicate(predicate);
-        let row_count = segment.meta().row_count as usize;
         let (local, local_stats, executed) = if auto_uses_graph || graph_selected {
             let vectors = segment
                 .rescore_f32()
@@ -418,6 +499,7 @@ fn execute_pinned(
         )?;
         stats.add(local_stats)?;
         plans.push(plan);
+        retain_global_top_k(&mut candidates, k);
     }
 
     candidates.sort_unstable_by(|left, right| {
@@ -434,6 +516,260 @@ fn execute_pinned(
         generation,
         plans,
     })
+}
+
+struct FilteredGraphExecution {
+    candidates: Vec<LocalCandidate>,
+    stats: ScanStats,
+    branch: SegmentBranch,
+    fallback: PlanFallback,
+    ef_requested: Option<usize>,
+    ef_effective: usize,
+}
+
+fn validate_filtered_explicit_ef(
+    options: GraphSearchOptions,
+    segment_k: usize,
+    rows: usize,
+) -> Result<(), FilteredSearchError> {
+    let Some(ef) = options.ef() else {
+        return Ok(());
+    };
+    if ef < segment_k {
+        return Err(
+            QueryError::Graph(crate::graph::search::GraphSearchError::AdaptiveEf(
+                crate::graph::search::AdaptiveEfError::ExplicitBelowK { k: segment_k, ef },
+            ))
+            .into(),
+        );
+    }
+    if ef > rows {
+        return Err(
+            QueryError::Graph(crate::graph::search::GraphSearchError::AdaptiveEf(
+                crate::graph::search::AdaptiveEfError::ExplicitExceedsRows { ef, rows },
+            ))
+            .into(),
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_filtered_graph(
+    segment: &crate::segment::reader::SegmentReader,
+    query: &[f32],
+    allow_list: &crate::meta::DocBitmap,
+    k: usize,
+    options: GraphSearchOptions,
+    cancellation: &QueryCancellation<'_>,
+    accounting: &Arc<crate::lifecycle::stats::Accounting>,
+) -> Result<FilteredGraphExecution, FilteredSearchError> {
+    cancellation.check_graph().map_err(map_scan_error)?;
+    let prepared = segment
+        .graph_search_cache
+        .prepare_shared(segment, cancellation)
+        .map_err(map_graph_cache_error)?;
+    let graph = prepared.graph;
+    let rescore = segment
+        .rescore_f32()
+        .map_err(StoreError::Segment)
+        .map_err(QueryError::Store)?;
+    let node_count = graph.node_count() as usize;
+    let allow_count = usize::try_from(allow_list.cardinality())
+        .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    let target_k = k.min(node_count).min(allow_count);
+    if target_k == 0 {
+        return Err(
+            QueryError::Graph(crate::graph::search::GraphSearchError::Geometry(
+                "filtered graph traversal was selected with an empty effective mask".to_owned(),
+            ))
+            .into(),
+        );
+    }
+    let base_request =
+        GraphSearchRequest::new(query, target_k, options.seed()).with_profile(options.profile());
+    let base_request = options
+        .ef()
+        .map_or(base_request, |ef| base_request.with_ef(ef));
+    let base_ef = base_request
+        .effective_ef(node_count)
+        .map_err(crate::graph::search::GraphSearchError::AdaptiveEf)
+        .map_err(QueryError::Graph)?;
+    let selectivity_scaled = base_ef
+        .checked_mul(node_count)
+        .map(|value| value.div_ceil(allow_count))
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    let ef_effective = selectivity_scaled.min(allow_count).max(target_k);
+    let max_degree = usize::from(graph.layout().max_degree());
+    let filtered_visited_budget = ef_effective
+        .checked_mul(max_degree)
+        .and_then(|value| value.checked_mul(FILTERED_VISITED_BUDGET_MULTIPLIER))
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?
+        .min(node_count);
+    let scratch_capacity = ef_effective.max(filtered_visited_budget);
+    let maximum_corrective_ef = allow_count.min(scratch_capacity);
+    let mut scratch = segment
+        .graph_search_cache
+        .checkout(graph, scratch_capacity, accounting)
+        .map_err(map_graph_cache_error)?;
+    let entries = scratch.entries();
+    let mut searcher = crate::graph::search::GraphSearcher::with_entry_row_ids(
+        graph,
+        rescore,
+        entries,
+        scratch.scratch_mut().map_err(map_graph_error)?,
+    )
+    .map_err(map_graph_error)?;
+    let ef_requested = options.ef();
+    let mut current_ef = ef_effective;
+    let mut traversal_stats = MutableStats::default();
+    loop {
+        let request = GraphSearchRequest::new(query, target_k, options.seed())
+            .with_profile(options.profile())
+            .with_ef(current_ef);
+        let outcome = searcher
+            .search_filtered(
+                request,
+                allow_list,
+                filtered_visited_budget,
+                Some(cancellation),
+            )
+            .map_err(map_graph_error)?;
+        match outcome {
+            FilteredGraphSearchOutcome::Traversed(result) => {
+                traversal_stats.add(graph_scan_stats(result.counters())?)?;
+                if result.candidates().len() >= target_k {
+                    let candidates = result
+                        .candidates()
+                        .iter()
+                        .map(|candidate| LocalCandidate {
+                            row: candidate.row_id() as usize,
+                            score: -(candidate.distance() as f32),
+                        })
+                        .collect();
+                    return Ok(FilteredGraphExecution {
+                        candidates,
+                        stats: traversal_stats.finish(),
+                        branch: SegmentBranch::FilteredGraph,
+                        fallback: if ef_requested.is_some_and(|requested| current_ef > requested) {
+                            PlanFallback::EfWidened
+                        } else {
+                            PlanFallback::None
+                        },
+                        ef_requested,
+                        ef_effective: current_ef,
+                    });
+                }
+                if current_ef < maximum_corrective_ef {
+                    current_ef = current_ef
+                        .saturating_mul(2)
+                        .max(current_ef.saturating_add(1))
+                        .min(maximum_corrective_ef);
+                    continue;
+                }
+                return exact_filtered_graph_fallback(
+                    rescore,
+                    node_count,
+                    query,
+                    allow_list,
+                    k,
+                    cancellation,
+                    traversal_stats,
+                    PlanFallback::CandidateShortfall,
+                    ef_requested,
+                    current_ef,
+                );
+            }
+            FilteredGraphSearchOutcome::VisitedBudgetExceeded { counters, .. } => {
+                traversal_stats.add(graph_scan_stats(counters)?)?;
+                return exact_filtered_graph_fallback(
+                    rescore,
+                    node_count,
+                    query,
+                    allow_list,
+                    k,
+                    cancellation,
+                    traversal_stats,
+                    PlanFallback::VisitedBudget,
+                    ef_requested,
+                    current_ef,
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_filtered_graph_fallback(
+    rescore: &[f32],
+    node_count: usize,
+    query: &[f32],
+    allow_list: &crate::meta::DocBitmap,
+    k: usize,
+    cancellation: &QueryCancellation<'_>,
+    mut traversal_stats: MutableStats,
+    fallback: PlanFallback,
+    ef_requested: Option<usize>,
+    ef_effective: usize,
+) -> Result<FilteredGraphExecution, FilteredSearchError> {
+    let (candidates, exact_stats, _) = execute_squared_l2_rows(
+        rescore,
+        node_count,
+        query,
+        allow_list,
+        SegmentBranch::ExactAllowList,
+        k,
+        cancellation,
+    )?;
+    traversal_stats.add(exact_stats)?;
+    Ok(FilteredGraphExecution {
+        candidates,
+        stats: traversal_stats.finish(),
+        branch: SegmentBranch::GraphExactFallback,
+        fallback,
+        ef_requested,
+        ef_effective,
+    })
+}
+
+fn graph_scan_stats(counters: GraphSearchCounters) -> Result<ScanStats, FilteredSearchError> {
+    let did_work = counters.candidates_scored() != 0 || counters.candidates_rescored() != 0;
+    Ok(ScanStats {
+        dims_touched: counters.dims_touched(),
+        bytes_read: counters.bytes_read(),
+        threads_used: usize::from(did_work),
+        worker_thread_ids: did_work
+            .then(|| std::thread::current().id())
+            .into_iter()
+            .collect(),
+    })
+}
+
+fn map_graph_cache_error(
+    error: crate::lifecycle::graph_cache::GraphCacheError,
+) -> FilteredSearchError {
+    match error {
+        crate::lifecycle::graph_cache::GraphCacheError::Store(error) => {
+            QueryError::Store(error).into()
+        }
+        crate::lifecycle::graph_cache::GraphCacheError::Search(error) => map_graph_error(error),
+    }
+}
+
+fn map_graph_error(error: crate::graph::search::GraphSearchError) -> FilteredSearchError {
+    let query = match error {
+        crate::graph::search::GraphSearchError::Cancelled { partial } => {
+            QueryError::Cancelled { partial }
+        }
+        crate::graph::search::GraphSearchError::Timeout { partial } => {
+            QueryError::Timeout { partial }
+        }
+        crate::graph::search::GraphSearchError::ReadCancelled { partial } => {
+            QueryError::ReadCancelled { partial }
+        }
+        error => QueryError::Graph(error),
+    };
+    query.into()
 }
 
 fn active_timestamp_columns(timestamps: &[i64]) -> Result<ColumnStore, FilteredSearchError> {
@@ -462,6 +798,11 @@ fn execute_scan_request(
     cancellation: &QueryCancellation<'_>,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, SegmentBranch), FilteredSearchError> {
     let outcome = match branch {
+        SegmentBranch::FilteredGraph => {
+            return Err(FilteredSearchError::InvalidPlanNode(
+                "filtered graph branch reached exact scan request",
+            ));
+        }
         SegmentBranch::Pruned => crate::scan::ScanOutcome {
             candidates: Vec::new(),
             stats: ScanStats {
@@ -617,6 +958,11 @@ fn execute_squared_l2_rows(
     let mut candidates = Vec::new();
     let mut scored_rows = 0_u64;
     match branch {
+        SegmentBranch::FilteredGraph => {
+            return Err(FilteredSearchError::InvalidPlanNode(
+                "filtered graph branch reached exact squared-L2 rows",
+            ));
+        }
         SegmentBranch::Pruned => {}
         SegmentBranch::ExactAllowList => {
             for row in allow_list.iter() {
@@ -747,6 +1093,26 @@ fn append_candidates(
         ));
     }
     Ok(())
+}
+
+fn retain_global_top_k(candidates: &mut Vec<SearchCandidate>, k: usize) {
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score()
+            .total_cmp(&left.score())
+            .then_with(|| left.row_id().cmp(&right.row_id()))
+    });
+    candidates.truncate(k);
+}
+
+fn global_competitive_distance(candidates: &[SearchCandidate], k: usize) -> Option<f32> {
+    if k == 0 || candidates.len() < k {
+        return None;
+    }
+    candidates
+        .get(k - 1)
+        .map(|candidate| (-candidate.score()).max(0.0))
+        .filter(|distance| distance.is_finite())
 }
 
 fn has_graph(segment: &crate::segment::reader::SegmentReader) -> bool {
