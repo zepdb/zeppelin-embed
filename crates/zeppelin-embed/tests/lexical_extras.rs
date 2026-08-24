@@ -10,8 +10,8 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngSeed};
 
 use zeppelin_embed::fts::dict::{TermDictionary, TermInfo};
-use zeppelin_embed::fts::index::{Document, SegmentIndex, DEFAULT_FIELD};
-use zeppelin_embed::fts::phrase::{search_segment, streams_match, PhraseQuery};
+use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
+use zeppelin_embed::fts::phrase::{PhraseQuery, search_segment, streams_match};
 use zeppelin_embed::fts::snippet::{best_window, match_offsets};
 use zeppelin_embed::fts::tokenizer::{Analyzer, Profile, TokenizerConfig};
 use zeppelin_embed::fts::{fuzzy, prefix};
@@ -26,8 +26,18 @@ fn text_analyzer() -> Analyzer {
 
 /// Words the corpus and query generators draw from.
 const WORDS: [&str; 12] = [
-    "alpha", "beta", "gamma", "delta", "alpha", "beta", "receive", "receipt", "engine",
-    "engineer", "put_if_match", "Caf\u{00E9}",
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "alpha",
+    "beta",
+    "receive",
+    "receipt",
+    "engine",
+    "engineer",
+    "put_if_match",
+    "Caf\u{00E9}",
 ];
 
 /// Fragments including the classes that break naive offset arithmetic.
@@ -85,7 +95,14 @@ fn levenshtein(left: &[u8], right: &[u8]) -> u32 {
 ///
 /// Enumerates every alignment rather than running the dynamic program.
 fn naive_phrase_match(streams: &[Vec<u32>], slop: u32) -> bool {
-    fn walk(streams: &[Vec<u32>], index: usize, anchor: u32, last: u32, cost: u32, slop: u32) -> bool {
+    fn walk(
+        streams: &[Vec<u32>],
+        index: usize,
+        anchor: u32,
+        last: u32,
+        cost: u32,
+        slop: u32,
+    ) -> bool {
         let Some(stream) = streams.get(index) else {
             return cost <= slop;
         };

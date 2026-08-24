@@ -292,11 +292,7 @@ mod tests {
             let mut next = vec![i as u32 + 1];
             for (j, b) in right.iter().enumerate() {
                 let cost = u32::from(a != b);
-                next.push(
-                    (row[j + 1] + 1)
-                        .min(next[j] + 1)
-                        .min(row[j] + cost),
-                );
+                next.push((row[j + 1] + 1).min(next[j] + 1).min(row[j] + cost));
             }
             row = next;
         }
@@ -304,8 +300,22 @@ mod tests {
     }
 
     const VOCABULARY: [&str; 16] = [
-        "receive", "recieve", "receipt", "recipe", "receiver", "rest", "resting", "restore",
-        "retrieve", "retriever", "return", "returns", "read", "ready", "real", "realise",
+        "receive",
+        "recieve",
+        "receipt",
+        "recipe",
+        "receiver",
+        "rest",
+        "resting",
+        "restore",
+        "retrieve",
+        "retriever",
+        "return",
+        "returns",
+        "read",
+        "ready",
+        "real",
+        "realise",
     ];
 
     #[test]

@@ -251,10 +251,7 @@ mod tests {
         let error = vocabulary
             .declare("beta", &[&["shared", "form"][..]])
             .expect_err("a second claim must be refused");
-        assert!(matches!(
-            error,
-            VocabError::ConflictingSurfaceForm { .. }
-        ));
+        assert!(matches!(error, VocabError::ConflictingSurfaceForm { .. }));
     }
 
     #[test]

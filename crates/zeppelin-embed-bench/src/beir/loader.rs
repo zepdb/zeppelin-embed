@@ -76,11 +76,9 @@ impl std::fmt::Display for BeirError {
             Self::Io { path, source } => {
                 write!(formatter, "cannot read {}: {source}", path.display())
             }
-            Self::Malformed { path, line, reason } => write!(
-                formatter,
-                "{}:{line}: {reason}",
-                path.display()
-            ),
+            Self::Malformed { path, line, reason } => {
+                write!(formatter, "{}:{line}: {reason}", path.display())
+            }
         }
     }
 }

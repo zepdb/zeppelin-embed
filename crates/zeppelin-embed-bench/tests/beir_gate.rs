@@ -27,9 +27,9 @@ use std::time::Instant;
 use zeppelin_embed::fts::bm25::Bm25Params;
 use zeppelin_embed::fts::index::{Document, FieldId, LexicalIndex, SegmentIndex};
 use zeppelin_embed::fts::prune::{search_pruned, select_strategy};
-use zeppelin_embed::fts::search::{search, TermQuery};
+use zeppelin_embed::fts::search::{TermQuery, search};
 use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
-use zeppelin_embed_bench::beir::eval::{flat_targets, mean_ndcg_at_k, GateRow, Run, RunEntry};
+use zeppelin_embed_bench::beir::eval::{GateRow, Run, RunEntry, flat_targets, mean_ndcg_at_k};
 use zeppelin_embed_bench::beir::loader::load_corpus;
 
 /// Absolute tolerance, per the task 13 spec: within 2 points.
@@ -148,7 +148,10 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
 
 fn report(rows: &[GateRow], label: &str) {
     eprintln!("\n{label} nDCG@10, tolerance {TOLERANCE:.3} absolute");
-    eprintln!("{:<12} {:>8} {:>10} {:>8}", "corpus", "target", "measured", "delta");
+    eprintln!(
+        "{:<12} {:>8} {:>10} {:>8}",
+        "corpus", "target", "measured", "delta"
+    );
     for row in rows {
         match row.measured {
             Some(value) => eprintln!(

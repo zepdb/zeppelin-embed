@@ -30,9 +30,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use zeppelin_embed::fts::bm25::Bm25Params;
-use zeppelin_embed::fts::index::{Document, LexicalIndex, SegmentIndex, DEFAULT_FIELD};
-use zeppelin_embed::fts::prune::{search_pruned, select_strategy, Strategy};
-use zeppelin_embed::fts::search::{search, SearchCounters, TermQuery};
+use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+use zeppelin_embed::fts::prune::{Strategy, search_pruned, select_strategy};
+use zeppelin_embed::fts::search::{SearchCounters, TermQuery, search};
 use zeppelin_embed::fts::tokenizer::{Analyzer, Profile};
 
 fn contract_dir() -> PathBuf {
@@ -169,8 +169,7 @@ fn two_term_zipf_query_at_k10_evaluates_at_most_the_contracted_fraction() {
     let params = Bm25Params::default();
 
     let exhaustive = search(&index, &query, 10, params).expect("scores");
-    let pruned = search_pruned(&index, &query, 10, params, Strategy::BlockMaxWand)
-        .expect("scores");
+    let pruned = search_pruned(&index, &query, 10, params, Strategy::BlockMaxWand).expect("scores");
 
     // Results must be identical; the contract is only about cost.
     assert_eq!(pruned.hits, exhaustive.hits, "pruning changed the answer");
@@ -189,13 +188,15 @@ fn two_term_zipf_query_at_k10_evaluates_at_most_the_contracted_fraction() {
 fn maxscore_on_a_long_query_also_evaluates_fewer_documents() {
     let texts = zipf_corpus(2_000, 8);
     let index = index_of(&texts);
-    let terms: Vec<Vec<u8>> = (0..6).map(|index| format!("t{index}").into_bytes()).collect();
+    let terms: Vec<Vec<u8>> = (0..6)
+        .map(|index| format!("t{index}").into_bytes())
+        .collect();
     let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
     let params = Bm25Params::default();
 
     let exhaustive = search(&index, &query, 10, params).expect("scores");
-    let pruned = search_pruned(&index, &query, 10, params, Strategy::BlockMaxMaxscore)
-        .expect("scores");
+    let pruned =
+        search_pruned(&index, &query, 10, params, Strategy::BlockMaxMaxscore).expect("scores");
     assert_eq!(pruned.hits, exhaustive.hits, "pruning changed the answer");
     check("zipf_six_term_k10_maxscore", pruned.counters);
     assert!(
@@ -308,10 +309,15 @@ fn capture_contracts() {
     .expect("scores");
     write(
         "zipf_two_term_k10_wand",
-        render("Zipf 2,000 documents, terms t0 and t5, k=10, block-max WAND", result.counters),
+        render(
+            "Zipf 2,000 documents, terms t0 and t5, k=10, block-max WAND",
+            result.counters,
+        ),
     );
 
-    let terms: Vec<Vec<u8>> = (0..6).map(|index| format!("t{index}").into_bytes()).collect();
+    let terms: Vec<Vec<u8>> = (0..6)
+        .map(|index| format!("t{index}").into_bytes())
+        .collect();
     let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
     let result = search_pruned(
         &index,

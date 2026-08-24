@@ -39,10 +39,7 @@ pub struct PrefixMatch {
 /// # Errors
 ///
 /// Returns [`DictError::EmptyTerm`] for an empty prefix.
-pub fn search(
-    dictionary: &TermDictionary,
-    prefix: &[u8],
-) -> Result<Vec<PrefixMatch>, DictError> {
+pub fn search(dictionary: &TermDictionary, prefix: &[u8]) -> Result<Vec<PrefixMatch>, DictError> {
     let range = dictionary.prefix_range(prefix)?;
     Ok(range
         .filter_map(|term_index| {
@@ -97,14 +94,24 @@ mod tests {
     }
 
     const VOCABULARY: [&str; 10] = [
-        "engine", "engineer", "engineering", "engines", "england", "lexical", "search",
-        "searching", "seat", "zebra",
+        "engine",
+        "engineer",
+        "engineering",
+        "engines",
+        "england",
+        "lexical",
+        "search",
+        "searching",
+        "seat",
+        "zebra",
     ];
 
     #[test]
     fn prefix_results_equal_brute_force_over_the_dictionary() {
         let dictionary = dictionary(&VOCABULARY);
-        for prefix in ["e", "en", "eng", "engine", "s", "sea", "search", "z", "q", "engines"] {
+        for prefix in [
+            "e", "en", "eng", "engine", "s", "sea", "search", "z", "q", "engines",
+        ] {
             let mut expected: Vec<String> = VOCABULARY
                 .iter()
                 .filter(|term| term.starts_with(prefix))

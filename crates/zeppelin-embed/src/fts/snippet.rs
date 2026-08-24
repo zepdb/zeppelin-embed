@@ -107,7 +107,11 @@ pub fn match_offsets(analyzer: &Analyzer, text: &str, terms: &[Vec<u8>]) -> Vec<
     let mut ranges: Vec<Highlight> = analyzer
         .analyze(text)
         .into_iter()
-        .filter(|token| terms.iter().any(|term| term.as_slice() == token.term.as_bytes()))
+        .filter(|token| {
+            terms
+                .iter()
+                .any(|term| term.as_slice() == token.term.as_bytes())
+        })
         .map(|token| {
             let TokenOffset { start, end } = token.offset;
             Highlight { start, end }
@@ -167,8 +171,10 @@ pub fn best_window(
             })
             .collect();
         let distinct = {
-            let mut spans: Vec<(u32, u32)> =
-                covered.iter().map(|range| (range.start, range.end)).collect();
+            let mut spans: Vec<(u32, u32)> = covered
+                .iter()
+                .map(|range| (range.start, range.end))
+                .collect();
             spans.sort_unstable();
             spans.dedup();
             spans.len()
@@ -234,10 +240,7 @@ mod tests {
         let highlights = match_offsets(&analyzer(), text, &terms(&["brown"]));
         assert_eq!(highlights.len(), 1);
         let range = highlights[0];
-        assert_eq!(
-            &text[range.start as usize..range.end as usize],
-            "brown"
-        );
+        assert_eq!(&text[range.start as usize..range.end as usize], "brown");
     }
 
     #[test]
@@ -268,8 +271,7 @@ mod tests {
         let analyzer = code_analyzer();
         let first = best_window(&analyzer, text, &terms(&["alpha"]), 20, true).expect("stored");
         for _ in 0..8 {
-            let again =
-                best_window(&analyzer, text, &terms(&["alpha"]), 20, true).expect("stored");
+            let again = best_window(&analyzer, text, &terms(&["alpha"]), 20, true).expect("stored");
             assert_eq!(first, again, "the snippet moved between runs");
         }
     }
@@ -308,8 +310,7 @@ mod tests {
     #[test]
     fn a_field_with_no_match_yields_no_snippet_rather_than_the_whole_field() {
         assert_eq!(
-            best_window(&analyzer(), "alpha beta", &terms(&["omega"]), 20, true)
-                .expect("stored"),
+            best_window(&analyzer(), "alpha beta", &terms(&["omega"]), 20, true).expect("stored"),
             None
         );
     }

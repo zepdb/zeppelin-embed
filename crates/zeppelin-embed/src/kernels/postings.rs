@@ -123,8 +123,7 @@ const NEON_MIN_COUNT: usize = 8;
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::{
-        uint32x4_t, vandq_u32, vdupq_n_u32, vextq_u32, vld1q_u32, vqaddq_u32, vshlq_u32,
-        vst1q_u32,
+        uint32x4_t, vandq_u32, vdupq_n_u32, vextq_u32, vld1q_u32, vqaddq_u32, vshlq_u32, vst1q_u32,
     };
 
     /// Unpacks with NEON, falling back to scalar for the ragged tail.
@@ -325,7 +324,11 @@ mod tests {
                 let mut dispatched = vec![0_u32; count];
                 let expected = unpack_scalar(&packed, bits, count, &mut oracle);
                 let actual = unpack(&packed, bits, count, &mut dispatched);
-                assert_eq!(expected.is_some(), actual.is_some(), "bits {bits} count {count}");
+                assert_eq!(
+                    expected.is_some(),
+                    actual.is_some(),
+                    "bits {bits} count {count}"
+                );
                 assert_eq!(oracle, values, "the oracle itself is wrong at {bits} bits");
                 assert_eq!(
                     dispatched, oracle,

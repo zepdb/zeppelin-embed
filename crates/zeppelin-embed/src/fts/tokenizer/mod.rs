@@ -34,7 +34,7 @@ pub mod vocab;
 
 pub use profiles::Profile;
 pub use stopwords::StopwordList;
-pub use vocab::{VocabError, Vocabulary, MAX_SURFACE_TERMS};
+pub use vocab::{MAX_SURFACE_TERMS, VocabError, Vocabulary};
 
 /// Bit flags carried by every token.
 ///
@@ -433,7 +433,9 @@ mod tests {
         let text = "Café put_if_match";
         let analyzer = analyzer();
         assert_eq!(
-            analyzer.analyze_bytes(text.as_bytes()).expect("valid UTF-8"),
+            analyzer
+                .analyze_bytes(text.as_bytes())
+                .expect("valid UTF-8"),
             analyzer.analyze(text)
         );
     }
@@ -484,7 +486,10 @@ mod tests {
         vocabulary.remove("put_if_match");
         let without_entry = TokenizerConfig::text_default().with_vocabulary(vocabulary);
         assert_ne!(populated, without_entry.epoch());
-        assert_eq!(without_entry.epoch(), TokenizerConfig::text_default().epoch());
+        assert_eq!(
+            without_entry.epoch(),
+            TokenizerConfig::text_default().epoch()
+        );
     }
 
     #[test]
@@ -553,8 +558,8 @@ mod tests {
     fn identifier_and_number_tokens_carry_the_no_fuzzy_flag() {
         let tokens = analyzer().analyze("ticket i-485 filed 2026 by anup");
         for token in &tokens {
-            let expected = token.term.contains('-')
-                || token.term.chars().any(|value| value.is_ascii_digit());
+            let expected =
+                token.term.contains('-') || token.term.chars().any(|value| value.is_ascii_digit());
             if expected {
                 assert!(
                     token.flags.contains(TokenFlags::NO_FUZZY),
@@ -570,11 +575,13 @@ mod tests {
     fn plain_words_are_not_flagged_no_fuzzy() {
         let tokens = analyzer().analyze("engine");
         assert_eq!(terms(&tokens), vec!["engin"]);
-        assert!(!tokens
-            .first()
-            .expect("one token")
-            .flags
-            .contains(TokenFlags::NO_FUZZY));
+        assert!(
+            !tokens
+                .first()
+                .expect("one token")
+                .flags
+                .contains(TokenFlags::NO_FUZZY)
+        );
     }
 
     #[test]

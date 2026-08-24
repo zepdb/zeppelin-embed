@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use zeppelin_embed_bench::beir::eval::{
-    dcg_at_k, flat_targets, mean_ndcg_at_k, multifield_targets, ndcg_at_k_for_query, GateRow,
-    Qrels, Run, RunEntry,
+    GateRow, Qrels, Run, RunEntry, dcg_at_k, flat_targets, mean_ndcg_at_k, multifield_targets,
+    ndcg_at_k_for_query,
 };
 use zeppelin_embed_bench::beir::loader::parse_qrels;
 
@@ -192,7 +192,10 @@ fn an_unmeasured_corpus_never_passes_the_gate() {
         target: 0.679,
         measured: None,
     };
-    assert!(!row.passes(0.02), "an absent number must not count as a pass");
+    assert!(
+        !row.passes(0.02),
+        "an absent number must not count as a pass"
+    );
 
     let hit = GateRow {
         measured: Some(0.670),

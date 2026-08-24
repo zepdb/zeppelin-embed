@@ -204,8 +204,15 @@ mod tests {
     #[test]
     fn folding_is_idempotent() {
         for sample in [
-            "Café", "straße", "\u{FB01}nd", "HELLO", "\u{FF21}\u{FF22}", "don\u{2019}t",
-            "\u{4E2D}\u{6587}", "cafe\u{0301}", "\u{2168}",
+            "Café",
+            "straße",
+            "\u{FB01}nd",
+            "HELLO",
+            "\u{FF21}\u{FF22}",
+            "don\u{2019}t",
+            "\u{4E2D}\u{6587}",
+            "cafe\u{0301}",
+            "\u{2168}",
         ] {
             let once = fold(sample);
             assert_eq!(fold(&once), once, "fold is not stable on {sample:?}");
@@ -215,17 +222,22 @@ mod tests {
     #[test]
     fn the_generated_table_is_sorted_and_addressable() {
         assert!(
-            FOLD_KEYS.windows(2).all(|pair| match (pair.first(), pair.get(1)) {
-                (Some(left), Some(right)) => left < right,
-                _ => true,
-            }),
+            FOLD_KEYS
+                .windows(2)
+                .all(|pair| match (pair.first(), pair.get(1)) {
+                    (Some(left), Some(right)) => left < right,
+                    _ => true,
+                }),
             "FOLD_KEYS must be strictly ascending for binary search"
         );
         assert_eq!(FOLD_OFFSETS.len(), FOLD_KEYS.len() + 1);
         for index in 0..FOLD_KEYS.len() {
             let key = *FOLD_KEYS.get(index).expect("in range");
             let value = char::from_u32(key).expect("table keys are scalar values");
-            assert!(table_fold(value).is_some(), "entry {key:#X} is unaddressable");
+            assert!(
+                table_fold(value).is_some(),
+                "entry {key:#X} is unaddressable"
+            );
         }
     }
 

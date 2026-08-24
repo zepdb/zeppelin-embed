@@ -104,7 +104,9 @@ pub fn encode(term: &str) -> String {
                     // CH is K in Greek-derived and Italian-derived forms;
                     // the common English sound is X. CHR is the reliable
                     // K case (Christ, chrome, chronic).
-                    if starts_with_at(&word, index, "CHR") || index == 0 && starts_with_at(&word, index, "CHA") {
+                    if starts_with_at(&word, index, "CHR")
+                        || index == 0 && starts_with_at(&word, index, "CHA")
+                    {
                         code.push('K');
                     } else {
                         code.push('X');
@@ -423,7 +425,18 @@ mod tests {
 
     #[test]
     fn encoding_never_panics_on_odd_input() {
-        for term in ["", "'", "AE", "GN", "X", "XX", "SCH", "TH", "\u{1F680}", "a".repeat(500).as_str()] {
+        for term in [
+            "",
+            "'",
+            "AE",
+            "GN",
+            "X",
+            "XX",
+            "SCH",
+            "TH",
+            "\u{1F680}",
+            "a".repeat(500).as_str(),
+        ] {
             let _ = encode(term);
         }
     }

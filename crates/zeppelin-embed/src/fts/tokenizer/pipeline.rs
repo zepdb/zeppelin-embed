@@ -308,9 +308,7 @@ fn stack_vocabulary(config: &TokenizerConfig, emissions: &mut Vec<Emission>, pos
                 span_start = span_start.min(first.start);
                 span_end = span_end.max(first.end);
             }
-            if complete
-                && let Some(canonical) = config.vocabulary.canonical_for(&run)
-            {
+            if complete && let Some(canonical) = config.vocabulary.canonical_for(&run) {
                 let position = u32::try_from(start).unwrap_or(u32::MAX);
                 {
                     stacked.push(Emission {
@@ -500,9 +498,7 @@ mod tests {
     use crate::fts::tokenizer::{Analyzer, Profile};
 
     fn analyze_with(config: TokenizerConfig, text: &str) -> Vec<Token> {
-        Analyzer::new(config)
-            .expect("valid config")
-            .analyze(text)
+        Analyzer::new(config).expect("valid config").analyze(text)
     }
 
     fn terms(tokens: &[Token]) -> Vec<String> {
@@ -520,7 +516,10 @@ mod tests {
     #[test]
     fn an_identifier_keeps_its_whole_form_its_catenation_and_its_parts() {
         let tokens = analyze_with(Profile::Code.config(), "put_if_match");
-        assert_eq!(terms_at(&tokens, 0), vec!["put", "put_if_match", "putifmatch"]);
+        assert_eq!(
+            terms_at(&tokens, 0),
+            vec!["put", "put_if_match", "putifmatch"]
+        );
         assert_eq!(terms_at(&tokens, 1), vec!["if"]);
         assert_eq!(terms_at(&tokens, 2), vec!["match"]);
     }

@@ -155,8 +155,7 @@ impl TermDictionary {
                 .unwrap_or(0)
                 .min(255);
             let suffix = term.get(shared..).unwrap_or(&[]);
-            self.encoded
-                .push(u8::try_from(shared).unwrap_or(u8::MAX));
+            self.encoded.push(u8::try_from(shared).unwrap_or(u8::MAX));
             push_varint(&mut self.encoded, suffix.len());
             self.encoded.extend_from_slice(suffix);
         }
@@ -387,11 +386,7 @@ mod tests {
         let mut terms: Vec<String> = Vec::new();
         for first in b'a'..=b'f' {
             for second in b'a'..=b'z' {
-                terms.push(format!(
-                    "{}{}",
-                    char::from(first),
-                    char::from(second)
-                ));
+                terms.push(format!("{}{}", char::from(first), char::from(second)));
             }
         }
         terms.sort();
@@ -436,10 +431,7 @@ mod tests {
             "front coding did not compress: {} bytes",
             dictionary.encoded_bytes().len()
         );
-        assert_eq!(
-            dictionary.decode_terms().expect("decodes").len(),
-            4
-        );
+        assert_eq!(dictionary.decode_terms().expect("decodes").len(), 4);
     }
 
     #[test]
@@ -466,10 +458,7 @@ mod tests {
     #[test]
     fn an_empty_prefix_is_a_typed_error_not_a_full_scan() {
         let dictionary = build(&["alpha", "beta"]);
-        assert_eq!(
-            dictionary.prefix_range(b""),
-            Err(DictError::EmptyTerm)
-        );
+        assert_eq!(dictionary.prefix_range(b""), Err(DictError::EmptyTerm));
     }
 
     #[test]
@@ -486,7 +475,9 @@ mod tests {
     #[test]
     fn out_of_order_and_duplicate_terms_are_refused() {
         let mut dictionary = TermDictionary::default();
-        dictionary.push(b"beta", TermInfo::default()).expect("first");
+        dictionary
+            .push(b"beta", TermInfo::default())
+            .expect("first");
         assert_eq!(
             dictionary.push(b"alpha", TermInfo::default()),
             Err(DictError::NotSorted {
@@ -508,10 +499,7 @@ mod tests {
         assert_eq!(dictionary.get(b"anything"), None);
         assert_eq!(dictionary.seek_exact(b"anything"), None);
         assert_eq!(dictionary.seek_ceiling(b"anything"), None);
-        assert_eq!(
-            dictionary.prefix_range(b"a").expect("prefix"),
-            0..0
-        );
+        assert_eq!(dictionary.prefix_range(b"a").expect("prefix"), 0..0);
     }
 
     #[test]

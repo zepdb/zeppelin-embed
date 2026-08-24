@@ -15,10 +15,10 @@
 use std::collections::BTreeMap;
 
 use zeppelin_embed::format::golden::decode_hex;
-use zeppelin_embed::fts::dict::{TermDictionary, TermInfo, TERMS_PER_BLOCK};
-use zeppelin_embed::fts::norms::{encode_length, Norms};
+use zeppelin_embed::fts::dict::{TERMS_PER_BLOCK, TermDictionary, TermInfo};
+use zeppelin_embed::fts::norms::{Norms, encode_length};
 use zeppelin_embed::fts::postings::{
-    encode, Posting, PostingList, PostingsReader, BLOCK_META_LEN, DEFAULT_POSTINGS_PER_BLOCK,
+    BLOCK_META_LEN, DEFAULT_POSTINGS_PER_BLOCK, Posting, PostingList, PostingsReader, encode,
 };
 
 fn fixture(text: &str) -> Vec<u8> {
@@ -106,7 +106,11 @@ fn sealed_postings_golden_bytes_are_frozen() {
     assert_eq!(reader.decode_all().expect("decodes"), golden_list());
 
     // The block maxima ride along untouched, for task 14 to read.
-    let maxima: Vec<u8> = reader.blocks().iter().map(|block| block.block_max).collect();
+    let maxima: Vec<u8> = reader
+        .blocks()
+        .iter()
+        .map(|block| block.block_max)
+        .collect();
     assert_eq!(maxima, vec![17, 200, 255]);
 }
 
@@ -118,7 +122,9 @@ fn sealed_dictionary_golden_bytes_are_frozen() {
         include_str!("fixtures/format/fts_dictionary_v1.hex"),
         "the front-coded dictionary layout changed"
     );
-    let decoded = dictionary.decode_terms().expect("golden dictionary decodes");
+    let decoded = dictionary
+        .decode_terms()
+        .expect("golden dictionary decodes");
     let expected: Vec<Vec<u8>> = [
         "engine",
         "engineer",

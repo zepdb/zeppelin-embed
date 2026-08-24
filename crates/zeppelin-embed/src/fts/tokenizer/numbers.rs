@@ -187,7 +187,9 @@ pub(crate) fn parse_digits(term: &str) -> Option<u64> {
     if term.len() > 12 {
         return None;
     }
-    term.parse::<u64>().ok().filter(|value| *value <= MAX_NUMBER)
+    term.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= MAX_NUMBER)
 }
 
 #[cfg(test)]

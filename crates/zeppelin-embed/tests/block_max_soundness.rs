@@ -46,11 +46,9 @@
 use std::collections::BTreeMap;
 
 use zeppelin_embed::fts::bm25::{
-    term_score, term_score_ceiling, Bm25Params, CorpusStats, Df, DocLen, Tf,
+    Bm25Params, CorpusStats, Df, DocLen, Tf, term_score, term_score_ceiling,
 };
-use zeppelin_embed::fts::postings::{
-    block_maxima, dequantize_block_max, Posting, PostingList,
-};
+use zeppelin_embed::fts::postings::{Posting, PostingList, block_maxima, dequantize_block_max};
 
 /// Builds a one-block posting list with the given `(docid, tf)` pairs.
 fn list_of(entries: &[(u32, u32)]) -> PostingList {
@@ -71,12 +69,7 @@ fn lengths_of(pairs: &[(u32, u32)]) -> BTreeMap<u32, u32> {
 }
 
 /// The bound a reader reconstructs from the stored byte, under `live` stats.
-fn stored_bound(
-    sealed_byte: u8,
-    df: Df,
-    live: &CorpusStats,
-    params: Bm25Params,
-) -> f64 {
+fn stored_bound(sealed_byte: u8, df: Df, live: &CorpusStats, params: Bm25Params) -> f64 {
     dequantize_block_max(sealed_byte, term_score_ceiling(df, live, params))
 }
 
@@ -157,9 +150,7 @@ fn a_sealed_bound_is_violated_when_the_caller_changes_k1_and_b() {
          bound {bound}, true score {truth}"
     );
     let shortfall = (truth - bound) / truth * 100.0;
-    println!(
-        "beir -> anserini: bound {bound:.6}, truth {truth:.6}, short by {shortfall:.2}%"
-    );
+    println!("beir -> anserini: bound {bound:.6}, truth {truth:.6}, short by {shortfall:.2}%");
 }
 
 #[test]
@@ -179,7 +170,12 @@ fn the_impact_pair_bound_survives_both_kinds_of_drift() {
     let df = Df(4);
 
     // Every combination of drifted statistics and caller parameters.
-    for (docs, tokens) in [(100_u64, 1_000_u64), (1_000, 100_000), (10, 50), (5_000, 5_000)] {
+    for (docs, tokens) in [
+        (100_u64, 1_000_u64),
+        (1_000, 100_000),
+        (10, 50),
+        (5_000, 5_000),
+    ] {
         let live = CorpusStats::new(docs, tokens).expect("valid stats");
         for params in [Bm25Params::beir(), Bm25Params::anserini()] {
             let bound = term_score(Tf(max_tf), df, DocLen(min_len), &live, params);

@@ -134,7 +134,10 @@ fn a_huge_term_frequency_saturates_below_the_idf_ceiling() {
     let params = Bm25Params::default();
     let ceiling = idf(Df(2), 4) * (params.k1 + 1.0);
     let score = term_score(Tf(u32::MAX), Df(2), DocLen(5), &stats, params);
-    assert!(score < ceiling, "score {score} reached the ceiling {ceiling}");
+    assert!(
+        score < ceiling,
+        "score {score} reached the ceiling {ceiling}"
+    );
     assert!(
         score > ceiling * 0.999,
         "score {score} did not approach the ceiling {ceiling}"
@@ -166,7 +169,10 @@ fn degenerate_parameters_and_stats_are_typed_errors() {
     assert!(Bm25Params::new(1.2, -0.1).is_err(), "b below zero");
     assert!(Bm25Params::new(1.2, 1.1).is_err(), "b above one");
     assert!(Bm25Params::new(f64::NAN, 0.5).is_err(), "NaN k1");
-    assert!(CorpusStats::new(0, 0).is_err(), "an empty corpus has no avgdl");
+    assert!(
+        CorpusStats::new(0, 0).is_err(),
+        "an empty corpus has no avgdl"
+    );
     assert!(CorpusStats::new(4, 0).is_err(), "zero tokens has no avgdl");
 }
 

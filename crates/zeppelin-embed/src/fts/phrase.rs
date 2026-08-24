@@ -69,7 +69,11 @@ impl std::error::Error for PhraseError {}
 pub fn minimum_displacement(streams: &[Vec<u32>]) -> Option<u32> {
     let first = streams.first()?;
     if streams.len() == 1 {
-        return first.is_empty().then_some(0).or(Some(0)).filter(|_| !first.is_empty());
+        return first
+            .is_empty()
+            .then_some(0)
+            .or(Some(0))
+            .filter(|_| !first.is_empty());
     }
     if streams.iter().any(Vec::is_empty) {
         return None;
@@ -174,7 +178,7 @@ pub fn search_segment(
 )]
 mod tests {
     use super::*;
-    use crate::fts::index::{Document, DEFAULT_FIELD};
+    use crate::fts::index::{DEFAULT_FIELD, Document};
     use crate::fts::tokenizer::{Analyzer, Profile, TokenizerConfig, Vocabulary};
 
     fn segment_of(analyzer: &Analyzer, texts: &[&str]) -> SegmentIndex {
@@ -205,10 +209,10 @@ mod tests {
         let segment = segment_of(
             &analyzer,
             &[
-                "quick brown fox",   // row 0: adjacent, in order
-                "quick red brown",   // row 1: one word between quick and brown
-                "brown quick",       // row 2: reversed
-                "quick",             // row 3: missing the second term
+                "quick brown fox", // row 0: adjacent, in order
+                "quick red brown", // row 1: one word between quick and brown
+                "brown quick",     // row 2: reversed
+                "quick",           // row 3: missing the second term
             ],
         );
 

@@ -25,8 +25,8 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngSeed};
 
 use super::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, term_score};
-use super::index::{Document, LexicalIndex, SegmentIndex, DEFAULT_FIELD};
-use super::search::{search, GlobalDocId, ScoredDoc, TermQuery};
+use super::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+use super::search::{GlobalDocId, ScoredDoc, TermQuery, search};
 use super::tokenizer::{Analyzer, TokenizerConfig};
 
 /// Scores agreeing to this tolerance are equal; the spec asks for 1e-5.
@@ -183,10 +183,7 @@ fn seal_boundaries(total: usize, cuts: Vec<usize>) -> Vec<usize> {
     if total == 0 {
         return vec![0];
     }
-    let mut points: Vec<usize> = cuts
-        .into_iter()
-        .map(|cut| cut % total.max(1))
-        .collect();
+    let mut points: Vec<usize> = cuts.into_iter().map(|cut| cut % total.max(1)).collect();
     points.sort_unstable();
     points.dedup();
     let mut sizes = Vec::new();
@@ -200,17 +197,27 @@ fn seal_boundaries(total: usize, cuts: Vec<usize>) -> Vec<usize> {
     if total > previous {
         sizes.push(total - previous);
     }
-    if sizes.is_empty() {
-        vec![total]
-    } else {
-        sizes
-    }
+    if sizes.is_empty() { vec![total] } else { sizes }
 }
 
 /// Vocabulary the generator draws documents and queries from.
 const VOCABULARY: [&str; 16] = [
-    "engine", "engines", "tuning", "lexical", "search", "index", "postings", "score", "the", "of",
-    "put_if_match", "i-485", "Caf\u{00E9}", "twenty five", "C++", "\u{4E2D}\u{6587}",
+    "engine",
+    "engines",
+    "tuning",
+    "lexical",
+    "search",
+    "index",
+    "postings",
+    "score",
+    "the",
+    "of",
+    "put_if_match",
+    "i-485",
+    "Caf\u{00E9}",
+    "twenty five",
+    "C++",
+    "\u{4E2D}\u{6587}",
 ];
 
 fn document_text() -> impl Strategy<Value = String> {

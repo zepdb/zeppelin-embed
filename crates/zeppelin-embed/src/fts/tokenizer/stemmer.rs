@@ -38,11 +38,7 @@ fn ends_with_double(word: &[char]) -> bool {
     let (Some(last), Some(previous)) = (word.get(length - 1), word.get(length - 2)) else {
         return false;
     };
-    last == previous
-        && matches!(
-            last,
-            'b' | 'd' | 'f' | 'g' | 'm' | 'n' | 'p' | 'r' | 't'
-        )
+    last == previous && matches!(last, 'b' | 'd' | 'f' | 'g' | 'm' | 'n' | 'p' | 'r' | 't')
 }
 
 /// Valid `li` endings from the published step 2 rule.
@@ -120,9 +116,11 @@ fn ends_in_short_syllable(word: &[char]) -> bool {
     if length < 3 {
         return false;
     }
-    let (Some(third_last), Some(second_last), Some(last)) =
-        (word.get(length - 3), word.get(length - 2), word.get(length - 1))
-    else {
+    let (Some(third_last), Some(second_last), Some(last)) = (
+        word.get(length - 3),
+        word.get(length - 2),
+        word.get(length - 1),
+    ) else {
         return false;
     };
     !is_vowel(*third_last)
@@ -156,7 +154,9 @@ fn exceptional_form(word: &str) -> Option<&'static str> {
         "early" => "earli",
         "only" => "onli",
         "singly" => "singl",
-        "sky" | "news" | "howe" | "atlas" | "cosmos" | "bias" | "andes" => return Some(word_static(word)),
+        "sky" | "news" | "howe" | "atlas" | "cosmos" | "bias" | "andes" => {
+            return Some(word_static(word));
+        }
         _ => return None,
     };
     Some(stem)
@@ -381,7 +381,10 @@ fn step_2(word: &mut Vec<char>, r1: usize) {
             return;
         }
         if suffix == "li" {
-            let valid = word.get(keep.wrapping_sub(1)).copied().is_some_and(is_li_ending);
+            let valid = word
+                .get(keep.wrapping_sub(1))
+                .copied()
+                .is_some_and(is_li_ending);
             if valid {
                 word.truncate(keep);
             }

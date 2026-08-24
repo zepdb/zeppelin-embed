@@ -203,7 +203,10 @@ mod tests {
 
     #[test]
     fn trailing_symbol_languages_survive() {
-        assert_eq!(words("C++ and C# and F#"), vec!["C++", "and", "C#", "and", "F#"]);
+        assert_eq!(
+            words("C++ and C# and F#"),
+            vec!["C++", "and", "C#", "and", "F#"]
+        );
     }
 
     #[test]
@@ -215,7 +218,10 @@ mod tests {
 
     #[test]
     fn emails_stay_whole() {
-        assert_eq!(words("mail anup@example.com now"), vec!["mail", "anup@example.com", "now"]);
+        assert_eq!(
+            words("mail anup@example.com now"),
+            vec!["mail", "anup@example.com", "now"]
+        );
     }
 
     #[test]

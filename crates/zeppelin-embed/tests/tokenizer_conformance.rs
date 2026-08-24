@@ -48,8 +48,7 @@ fn check_fixture(name: &str) {
         .unwrap_or_else(|error| panic!("missing golden {}: {error}", golden_path.display()));
     let actual = render(&default_analyzer().analyze(&input));
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "token stream for fixture {name} drifted from its committed golden\n\
          --- actual ---\n{actual}--- expected ---\n{expected}"
     );

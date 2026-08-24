@@ -360,10 +360,12 @@ impl BlockMeta {
     }
 
     fn read(input: &[u8]) -> Result<Self, PostingsError> {
-        let row = input.get(..BLOCK_META_LEN).ok_or(PostingsError::Truncated {
-            needed: BLOCK_META_LEN,
-            available: input.len(),
-        })?;
+        let row = input
+            .get(..BLOCK_META_LEN)
+            .ok_or(PostingsError::Truncated {
+                needed: BLOCK_META_LEN,
+                available: input.len(),
+            })?;
         Ok(Self {
             last_docid: read_u32(row, 0)?,
             docids_offset: read_u32(row, 4)?,
@@ -556,8 +558,16 @@ pub fn encode(
     bytes.extend_from_slice(&POSTINGS_MAGIC);
     bytes.extend_from_slice(&POSTINGS_VERSION.to_le_bytes());
     bytes.extend_from_slice(&postings_per_block.to_le_bytes());
-    bytes.extend_from_slice(&u32::try_from(postings.len()).unwrap_or(u32::MAX).to_le_bytes());
-    bytes.extend_from_slice(&u32::try_from(metadata.len()).unwrap_or(u32::MAX).to_le_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(postings.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u32::try_from(metadata.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
     for meta in &metadata {
         meta.write(&mut bytes);
     }
@@ -611,12 +621,13 @@ impl<'bytes> PostingsReader<'bytes> {
         let block_count = read_u32(header, 12)?;
 
         let block_count_usize = usize::try_from(block_count).unwrap_or(usize::MAX);
-        let metadata_len = block_count_usize
-            .checked_mul(BLOCK_META_LEN)
-            .ok_or(PostingsError::Truncated {
-                needed: usize::MAX,
-                available: bytes.len(),
-            })?;
+        let metadata_len =
+            block_count_usize
+                .checked_mul(BLOCK_META_LEN)
+                .ok_or(PostingsError::Truncated {
+                    needed: usize::MAX,
+                    available: bytes.len(),
+                })?;
         let metadata_end =
             HEADER_LEN
                 .checked_add(metadata_len)
@@ -639,12 +650,12 @@ impl<'bytes> PostingsReader<'bytes> {
         let mut position_bytes = 0_usize;
         for index in 0..block_count_usize {
             let start = index.saturating_mul(BLOCK_META_LEN);
-            let row = metadata_bytes
-                .get(start..start + BLOCK_META_LEN)
-                .ok_or(PostingsError::Truncated {
+            let row = metadata_bytes.get(start..start + BLOCK_META_LEN).ok_or(
+                PostingsError::Truncated {
                     needed: start + BLOCK_META_LEN,
                     available: metadata_bytes.len(),
-                })?;
+                },
+            )?;
             let meta = BlockMeta::read(row)?;
             for bits in [meta.docid_bits, meta.tf_bits, meta.position_bits] {
                 if bits > 32 {
@@ -717,12 +728,13 @@ impl<'bytes> PostingsReader<'bytes> {
                 needed: position_start,
                 available: streams.len(),
             })?;
-        let positions = streams
-            .get(position_start..position_end)
-            .ok_or(PostingsError::Truncated {
-                needed: position_end,
-                available: streams.len(),
-            })?;
+        let positions =
+            streams
+                .get(position_start..position_end)
+                .ok_or(PostingsError::Truncated {
+                    needed: position_end,
+                    available: streams.len(),
+                })?;
 
         Ok(Self {
             blocks,
@@ -889,13 +901,8 @@ pub fn block_maxima(
             let mut best = 0.0_f64;
             for posting in chunk {
                 let length = lengths.get(&posting.docid).copied().unwrap_or(1);
-                let score = super::bm25::term_score(
-                    Tf(posting.tf),
-                    df,
-                    DocLen(length),
-                    stats,
-                    params,
-                );
+                let score =
+                    super::bm25::term_score(Tf(posting.tf), df, DocLen(length), stats, params);
                 if score > best {
                     best = score;
                 }

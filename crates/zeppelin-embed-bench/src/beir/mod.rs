@@ -14,7 +14,7 @@ pub mod eval;
 pub mod loader;
 
 pub use eval::{
-    dcg_at_k, flat_targets, mean_ndcg_at_k, multifield_targets, ndcg_at_k_for_query, GateRow,
-    Qrels, Run, RunEntry,
+    GateRow, Qrels, Run, RunEntry, dcg_at_k, flat_targets, mean_ndcg_at_k, multifield_targets,
+    ndcg_at_k_for_query,
 };
-pub use loader::{load_corpus, BeirCorpus, BeirError, BeirQuery};
+pub use loader::{BeirCorpus, BeirError, BeirQuery, load_corpus};
