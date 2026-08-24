@@ -2,10 +2,18 @@
 #
 # The regime pruning exists for. At 2,000 documents pruning still
 # evaluates about 18% of the corpus, which says nothing about a real
-# collection; docs/14-pruning.md said so itself. At 100,000 the ratios
-# are the claim: WAND evaluates 16.7% of the corpus and reads 28.6% of
-# the postings, MAXSCORE evaluates 0.5% and reads 44.3%.
+# collection; docs/14-pruning.md said so itself.
+#
+# Re-baselined when MAXSCORE's probe order was fixed. Cursors are now
+# probed DESCENDING by upper bound with a metadata-only block bound
+# tested before every seek, so a candidate that provably cannot reach
+# the threshold no longer forces the cheap cursors' seeks and decodes.
+# postings_decoded fell 44% (108,452 to 60,803) and blocks_decoded 29%
+# (3,831 to 2,719); blocks_skipped rose from zero because the abandoned
+# candidates' seeks used to decode the blocks they now jump. Documents
+# evaluated is unchanged: the same candidates survive the same bounds,
+# and the equivalence property held throughout.
 docs_evaluated = 501
-blocks_decoded = 3831
-blocks_skipped = 0
-postings_decoded = 108452
+blocks_decoded = 2719
+blocks_skipped = 1108
+postings_decoded = 60803

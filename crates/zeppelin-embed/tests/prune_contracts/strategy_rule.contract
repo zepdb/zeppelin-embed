@@ -1,16 +1,22 @@
-# The measured selection rule: MAXSCORE at two terms or fewer, WAND at
-# three or more, at any k.
+# The measured selection rule: MAXSCORE at three terms or fewer, WAND at
+# four or more, at any k.
 #
-# Recalibrated from postings_decoded and docs_evaluated over a
+# First recalibrated from postings_decoded and docs_evaluated over a
 # deterministic Zipf corpus at 2,000 and 100,000 documents, term counts
-# two through six, k of 10 and 100. It replaces "WAND when terms <= 4 and
-# k <= 10", which came from GOV2 on x86 at 25 million documents: the shape
-# of that evidence transfers, the thresholds did not. k dropped out of the
-# rule because it did not discriminate in 19 of the 20 cells.
+# two through six, k of 10 and 100 — replacing "WAND when terms <= 4 and
+# k <= 10", which came from GOV2 on x86 at 25 million documents. That
+# calibration put the boundary at three terms.
+#
+# Re-derived when MAXSCORE's probe order was fixed (descending by bound,
+# metadata-only block bound before every seek): MAXSCORE became uniformly
+# cheaper and took the three-term cell at both corpus sizes and both k,
+# moving the boundary to four. The 2,000-document corpus at k=100 now
+# prefers MAXSCORE everywhere, but both strategies cost about 2,000 units
+# there; the rule follows the large-corpus cells, where every one agrees.
 #
 # Both strategies return identical results, so this is a cost decision
 # with no quality risk. strategy_rule_matches_the_counters_it_was_
 # calibrated_from re-derives it on every run.
 #
 # Owed: confirmation on BEIR. This corpus is synthetic.
-min_terms_for_wand = 3
+min_terms_for_wand = 4

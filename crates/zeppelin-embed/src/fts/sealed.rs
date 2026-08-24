@@ -663,6 +663,42 @@ impl ListCursor<'_> {
         self.last_docid(self.block)
     }
 
+    /// Returns the impact pair of the block that could contain `row`.
+    ///
+    /// `None` when this run provably cannot contribute to `row`: the
+    /// cursor has already advanced past it, or every remaining block ends
+    /// below it. Only skip keys and one metadata row are read; nothing is
+    /// decoded. This is what lets a traversal bound a candidate it has not
+    /// paid to visit.
+    #[must_use]
+    pub fn impact_for(&self, row: u32) -> Option<BlockImpact> {
+        if self.block == NO_BLOCK {
+            return None;
+        }
+        if self.current().is_some_and(|current| current > row) {
+            // Postings ascend and cursors only move forward, so a cursor
+            // past `row` contributes exactly nothing to it.
+            return None;
+        }
+        if self.last_docid(self.block).is_some_and(|last| last >= row) {
+            return Some(self.current_impact());
+        }
+        let mut low = self.block.saturating_add(1);
+        let mut high = self.block_count;
+        while low < high {
+            let middle = low.saturating_add(high.saturating_sub(low) / 2);
+            if self.last_docid(middle).is_some_and(|last| last < row) {
+                low = middle.saturating_add(1);
+            } else {
+                high = middle;
+            }
+        }
+        if low >= self.block_count {
+            return None;
+        }
+        Some(self.impact_at(low))
+    }
+
     /// Returns the impact pair dominating every block of the list.
     #[must_use]
     pub fn overall_impact(&self) -> BlockImpact {
@@ -836,7 +872,22 @@ impl<'segment> TermStream<'segment> {
     /// under any weight table.
     #[must_use]
     pub fn block_bound(&self, scorer: &TermScorer) -> f64 {
-        self.bound_from(scorer, ListCursor::current_impact)
+        self.bound_from(scorer, |run| {
+            (!run.exhausted()).then(|| run.current_impact())
+        })
+    }
+
+    /// The bound over the blocks that could contain `row`, without decode.
+    ///
+    /// Each run contributes the impact pair of the block its skip keys say
+    /// could hold `row`; a run that has already passed `row`, or whose
+    /// remaining blocks all end below it, contributes nothing — which is
+    /// exact rather than conservative, because postings ascend. Costs one
+    /// binary search over skip keys per run and no decode, so a candidate
+    /// can be refused before any cursor is paid to move.
+    #[must_use]
+    pub fn bound_for(&self, row: u32, scorer: &TermScorer) -> f64 {
+        self.bound_from(scorer, |run| run.impact_for(row))
     }
 
     /// The largest row for which [`Self::block_bound`] still dominates.
@@ -864,22 +915,26 @@ impl<'segment> TermStream<'segment> {
     /// The bound over every block of every run: the term's upper bound.
     #[must_use]
     pub fn upper_bound(&self, scorer: &TermScorer) -> f64 {
-        self.bound_from(scorer, ListCursor::overall_impact)
+        self.bound_from(scorer, |run| {
+            (!run.exhausted()).then(|| run.overall_impact())
+        })
     }
 
     /// Combines per-run impact pairs into one merged bound.
+    ///
+    /// A run whose picker returns `None` contributes nothing: it is spent,
+    /// or it provably cannot reach the rows under consideration.
     fn bound_from(
         &self,
         scorer: &TermScorer,
-        pick: fn(&ListCursor<'segment>) -> BlockImpact,
+        pick: impl Fn(&ListCursor<'segment>) -> Option<BlockImpact>,
     ) -> f64 {
         let mut max_tf = 0_u64;
         let mut min_len = u64::MAX;
         for (run, weight) in self.runs.iter().zip(self.weights.iter()) {
-            if run.exhausted() {
+            let Some(impact) = pick(run) else {
                 continue;
-            }
-            let impact = pick(run);
+            };
             // Round the weighted maximum UP and the weighted minimum DOWN:
             // both directions push the bound above the truth, never below.
             max_tf = max_tf.saturating_add(

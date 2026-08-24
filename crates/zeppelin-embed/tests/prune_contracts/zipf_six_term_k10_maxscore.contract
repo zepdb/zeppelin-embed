@@ -1,20 +1,20 @@
 # Zipf 2,000 documents, terms t0..t5, k=10, block-max MAXSCORE
 #
-# Re-baselined when the query path began reading the sealed posting
-# format. Two counters changed MEANING, not merely value:
+# Re-baselined twice, for two different reasons:
 #
-#   blocks_decoded used to count bound blocks BUILT over a materialized
-#   copy of the merged postings. It now counts blocks actually unpacked
-#   out of the persisted bytes.
+# When the query path began reading the sealed posting format, two
+# counters changed MEANING: blocks_decoded stopped counting bound blocks
+# BUILT and began counting blocks actually unpacked out of the persisted
+# bytes, and blocks_skipped stopped charging the cursor's own partially
+# consumed block.
 #
-#   blocks_skipped used to charge the cursor's OWN partially-consumed
-#   block as skipped, so a seek that merely stepped into the next block
-#   reported one skip while decoding both. A block is now counted only
-#   when the binary search over skip keys passes it WITHOUT decoding it.
-#   On this Zipf fixture every seek lands in the neighbouring block, so
-#   the honest count is zero; `a_sealed_seek_skips_whole_blocks_without_
-#   decoding_them` gates the mechanism itself.
-docs_evaluated = 72
-blocks_decoded = 80
-blocks_skipped = 0
-postings_decoded = 2253
+# When MAXSCORE's probe order was fixed: cursors are now probed
+# DESCENDING by upper bound with a metadata-only block bound tested
+# before every seek, so a candidate that provably cannot reach the
+# threshold no longer forces the cheap cursors' seeks and decodes.
+# postings_decoded fell 41% (2,253 to 1,321) and ten fewer candidates
+# survive to a heap offer; the equivalence property held throughout.
+docs_evaluated = 62
+blocks_decoded = 74
+blocks_skipped = 5
+postings_decoded = 1321

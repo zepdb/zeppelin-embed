@@ -18,8 +18,10 @@
 //!
 //! A document reached only through non-essential terms cannot beat the
 //! threshold, because the sum of their bounds is at most the threshold by
-//! construction. Every other document is enumerated and fully scored, with
-//! the non-essential terms added back in. Nothing is dropped on an estimate.
+//! construction. Every other document is enumerated, and either fully
+//! scored — with the non-essential terms added back in — or abandoned on a
+//! sum of exact contributions and upper bounds that proves it cannot reach
+//! the threshold. Nothing is dropped on an estimate: every drop is a proof.
 
 use crate::fts::bm25::DocLen;
 use crate::fts::bm25::Tf;
@@ -162,10 +164,29 @@ pub fn run(
         let mut running = 0.0_f64;
         let mut remaining_bound = total_bound;
         let mut abandoned = false;
-        for slot in &order {
+        // Probe DESCENDING by upper bound. The expensive terms are the
+        // essential suffix, whose cursors already sit at or past the
+        // candidate, so their exact contributions arrive before any cheap
+        // cursor is asked to move — and the bound test below can then
+        // cancel those moves outright. Probing ascending pays the long
+        // lists' seeks before the test that would have spared them can
+        // possibly fire; that inversion was most of MAXSCORE's posting
+        // traffic.
+        for slot in order.iter().rev() {
             let Some(cursor) = cursors.get_mut(*slot) else {
                 continue;
             };
+            if heap.is_full() && cursor.current() != Some(row) {
+                // Before paying this cursor's seek: bound what it could
+                // still add from the impact pair of the block that would
+                // hold the row, read from metadata without decoding. Zero
+                // when the cursor has passed the row, which is exact.
+                let ceiling = cursor.stream.bound_for(row, &cursor.scorer);
+                if running + ceiling + (remaining_bound - cursor.upper_bound) < threshold {
+                    abandoned = true;
+                    break;
+                }
+            }
             // Blocks jumped are tallied on the stream itself and collected
             // once the segment finishes.
             cursor.seek(row);
