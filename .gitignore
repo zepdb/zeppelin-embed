@@ -6,3 +6,4 @@ target/
 .claude/
 presentation/
 .DS_Store
+*.profraw

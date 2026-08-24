@@ -8,18 +8,23 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use tempfile::tempdir;
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, PurgeError, Revision, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, PurgeError, Revision,
+    SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
-use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
+use zeppelin_embed::meta::{
+    AliveSet, Column, ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType,
+    ColumnValue, Schema,
+};
 use zeppelin_embed::quant::Bit4Factors;
 use zeppelin_embed::scan::ScanOptions;
-use zeppelin_embed::segment::layout::RegionKind;
+use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_graph_and_documents,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
+    write_segment_with_graph_and_documents,
 };
 use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
@@ -40,6 +45,16 @@ fn purged_sentinels_are_absent_from_every_file_under_the_store() {
         ]))
         .expect("ingest sentinel document");
     store.seal().expect("seal sentinel document");
+
+    let snapshot = store.snapshot().expect("metadata snapshot");
+    let metadata = snapshot.segments()[0]
+        .stored_metadata()
+        .expect("metadata region")
+        .expect("metadata rows");
+    assert_eq!(metadata.row_count(), 1);
+    assert_eq!(metadata.row(0), Some(METADATA_SENTINEL));
+    assert_eq!(metadata.row(1), None);
+    drop(snapshot);
 
     let before = sentinel_hits(directory.path()).expect("scan pre-purge artifacts");
     assert!(
@@ -269,6 +284,224 @@ fn purge_of_an_unknown_id_is_a_no_op_and_reports_it() {
     );
 }
 
+#[test]
+fn active_only_purge_compacts_rows_preserves_tombstones_and_reopens() {
+    let directory = tempdir().expect("active purge store directory");
+    let first = DocumentVersion::new(DocId::new(801), Revision::new(1));
+    let removed = DocumentVersion::new(DocId::new(802), Revision::new(1));
+    let deleted = DocumentVersion::new(DocId::new(803), Revision::new(1));
+    let last = DocumentVersion::new(DocId::new(804), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open active store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(first, vec![4.0, 0.0])
+                .with_timestamp(11)
+                .with_metadata(b"first".to_vec()),
+            IngestDocument::new(removed, vec![0.0, 4.0])
+                .with_timestamp(22)
+                .with_metadata(b"remove-me".to_vec()),
+            IngestDocument::new(deleted, vec![-4.0, 0.0])
+                .with_timestamp(33)
+                .with_metadata(b"deleted-survivor".to_vec()),
+            IngestDocument::new(last, vec![0.0, -4.0])
+                .with_timestamp(44)
+                .with_metadata(b"last".to_vec()),
+        ]))
+        .expect("ingest active purge rows");
+    store
+        .delete(DeleteBatch::new(vec![deleted.doc_id()]))
+        .expect("tombstone survivor before purge");
+
+    let token = store
+        .purge(&[removed.doc_id()])
+        .expect("schedule active-only purge");
+    let report = store
+        .await_physical_purge(token)
+        .expect("complete active-only purge");
+    assert_eq!(report.segments_rewritten(), 0);
+    assert!(report.wal_rewritten());
+
+    assert_eq!(search_one(&store, &[4.0, 0.0]).document(), Some(first));
+    assert_eq!(search_one(&store, &[0.0, -4.0]).document(), Some(last));
+    let all = store
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            8,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search compacted active rows");
+    let visible = all
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    assert_eq!(visible.len(), 2);
+    assert!(visible.contains(&first));
+    assert!(visible.contains(&last));
+    assert!(!visible.contains(&removed));
+    assert!(!visible.contains(&deleted));
+
+    store.close().expect("close active purge store");
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+    assert_eq!(search_one(&reopened, &[4.0, 0.0]).document(), Some(first));
+    assert_eq!(search_one(&reopened, &[0.0, -4.0]).document(), Some(last));
+}
+
+#[test]
+fn int8_physical_purge_preserves_surviving_codes_and_tombstones() {
+    let directory = tempdir().expect("Int8 purge directory");
+    let (first, removed, deleted) = publish_int8_document_segment(directory.path());
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open Int8 store");
+
+    let token = store
+        .purge(&[removed.doc_id()])
+        .expect("schedule Int8 purge");
+    let report = store
+        .await_physical_purge(token)
+        .expect("complete Int8 purge");
+    assert_eq!(report.segments_rewritten(), 1);
+
+    let snapshot = store.snapshot().expect("Int8 purge snapshot");
+    let segment = snapshot.segments().first().expect("rewritten Int8 segment");
+    assert_eq!(segment.meta().scheme, 2);
+    assert_eq!(segment.meta().row_count, 2);
+    assert_eq!(
+        segment.document_version(0).expect("first version"),
+        Some(first)
+    );
+    assert_eq!(
+        segment.document_version(1).expect("last version"),
+        Some(deleted)
+    );
+    assert!(segment.alive().expect("rewritten alive set").is_alive(0));
+    assert!(!segment.alive().expect("rewritten alive set").is_alive(1));
+    drop(snapshot);
+
+    let result = search_one(&store, &[1.0, 0.0]);
+    assert_eq!(result.document(), Some(first));
+    let all = store
+        .search(
+            SearchRequest::new(&[-1.0, 0.0]),
+            4,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search rewritten Int8 segment");
+    assert!(
+        all.candidates
+            .iter()
+            .all(|candidate| candidate.document() != Some(removed))
+    );
+    assert!(
+        all.candidates
+            .iter()
+            .all(|candidate| candidate.document() != Some(deleted))
+    );
+}
+
+#[test]
+fn physical_purge_preserves_every_typed_metadata_column_and_null() {
+    let directory = tempdir().expect("typed-column purge directory");
+    let (first, removed, last) = publish_all_column_document_segment(directory.path());
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open typed store");
+
+    let token = store
+        .purge(&[removed.doc_id()])
+        .expect("schedule typed-column purge");
+    store
+        .await_physical_purge(token)
+        .expect("rewrite typed-column segment");
+
+    let snapshot = store.snapshot().expect("typed-column snapshot");
+    let segment = snapshot.segments().first().expect("rewritten segment");
+    assert_eq!(segment.meta().row_count, 2);
+    assert_eq!(
+        segment.document_version(0).expect("first version"),
+        Some(first)
+    );
+    assert_eq!(
+        segment.document_version(1).expect("last version"),
+        Some(last)
+    );
+    let columns = segment.columns().expect("rewritten columns");
+    assert_eq!(columns.timestamps(), &[10, 30]);
+    match columns.column(ColumnId::new(1)) {
+        Some(Column::U64(values)) => assert_eq!((values.get(0), values.get(1)), (Some(11), None)),
+        actual => panic!("unexpected u64 column: {actual:?}"),
+    }
+    match columns.column(ColumnId::new(2)) {
+        Some(Column::I64(values)) => assert_eq!((values.get(0), values.get(1)), (Some(-12), None)),
+        actual => panic!("unexpected i64 column: {actual:?}"),
+    }
+    match columns.column(ColumnId::new(3)) {
+        Some(Column::F64(values)) => {
+            assert_eq!(values.get(0).map(f64::to_bits), Some((-0.0_f64).to_bits()));
+            assert_eq!(values.get(1), None);
+        }
+        actual => panic!("unexpected f64 column: {actual:?}"),
+    }
+    match columns.column(ColumnId::new(4)) {
+        Some(Column::Bool(values)) => {
+            assert_eq!((values.get(0), values.get(1)), (Some(true), None))
+        }
+        actual => panic!("unexpected bool column: {actual:?}"),
+    }
+    match columns.column(ColumnId::new(5)) {
+        Some(Column::DictionaryString(values)) => {
+            assert_eq!((values.get(0), values.get(1)), (Some("alpha"), None));
+        }
+        actual => panic!("unexpected dictionary column: {actual:?}"),
+    }
+    match columns.column(ColumnId::new(6)) {
+        Some(Column::RawString(values)) => {
+            assert_eq!((values.get(0), values.get(1)), (Some("raw-alpha"), None));
+        }
+        actual => panic!("unexpected raw column: {actual:?}"),
+    }
+}
+
+#[test]
+fn pending_physical_purge_is_completed_during_reopen() {
+    let directory = tempdir().expect("purge recovery directory");
+    let removed = DocumentVersion::new(DocId::new(951), Revision::new(1));
+    let retained = DocumentVersion::new(DocId::new(952), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(removed, vec![1.0, 0.0]),
+            IngestDocument::new(retained, vec![0.0, 1.0]),
+        ]))
+        .expect("ingest recovery rows");
+    store.seal().expect("seal recovery rows");
+    let token = store
+        .purge(&[removed.doc_id()])
+        .expect("persist purge intent");
+    assert!(!token.is_no_op());
+    store.close().expect("close with pending intent");
+
+    let reopened = Store::open(directory.path(), OpenOptions::default())
+        .expect("open completes pending physical purge");
+    let snapshot = reopened.snapshot().expect("recovered snapshot");
+    assert_eq!(snapshot.segments().len(), 1);
+    assert_eq!(snapshot.segments()[0].meta().row_count, 1);
+    assert_eq!(
+        snapshot.segments()[0]
+            .document_version(0)
+            .expect("retained version"),
+        Some(retained)
+    );
+    drop(snapshot);
+    assert_eq!(
+        search_one(&reopened, &[0.0, 1.0]).document(),
+        Some(retained)
+    );
+    assert!(
+        !directory.path().join("purge.ze").exists(),
+        "recovery left the committed intent behind"
+    );
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SentinelKind {
     Metadata,
@@ -470,6 +703,193 @@ fn publish_graph_segment(directory: &Path, removed: DocId) {
         policy,
     )
     .expect("commit graph manifest");
+}
+
+fn publish_int8_document_segment(
+    directory: &Path,
+) -> (DocumentVersion, DocumentVersion, DocumentVersion) {
+    let id = SegmentId::new(901, [0x42; 10]);
+    let versions = [
+        DocumentVersion::new(DocId::new(901), Revision::new(1)),
+        DocumentVersion::new(DocId::new(902), Revision::new(1)),
+        DocumentVersion::new(DocId::new(903), Revision::new(1)),
+    ];
+    let dims = 2_u32;
+    let codes = [127_u8, 0, 0, 127, 129, 0];
+    let factors = [Int8Factors {
+        scale: 1.0 / 127.0,
+        offset: 0.0,
+    }; 3];
+    let rescore = [1.0_f32, 0.0, 0.0, 1.0, -1.0, 0.0];
+    let mut columns = ColumnStoreBuilder::new(Schema::new(Vec::new()).expect("Int8 schema"));
+    for timestamp in [10_i64, 20, 30] {
+        columns.push_row(timestamp, &[]).expect("Int8 column row");
+    }
+    let columns = columns.finish().expect("Int8 columns");
+    let mut alive = AliveSet::new(3);
+    alive.tombstone(2).expect("tombstone Int8 survivor");
+    let doc_ids = versions.map(DocumentVersion::doc_id);
+    let revisions = versions.map(DocumentVersion::revision);
+    let policy =
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::Ordered).expect("Int8 policy");
+    let meta = write_segment_with_documents(
+        &StdVfs,
+        directory,
+        SegmentBuild {
+            id,
+            scheme: 2,
+            dims,
+            codes: &codes,
+            factors: SegmentFactors::Int8(&factors),
+            rescore: &rescore,
+            columns: &columns,
+            alive: &alive,
+        },
+        SegmentDocumentVersions {
+            doc_ids: &doc_ids,
+            revisions: &revisions,
+        },
+        policy,
+    )
+    .expect("write Int8 document segment");
+    commit_manifest(
+        &StdVfs,
+        directory,
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: vec![meta],
+            epochs: Vec::new(),
+            schema: columns.schema().clone(),
+        },
+        policy,
+    )
+    .expect("commit Int8 manifest");
+    (versions[0], versions[1], versions[2])
+}
+
+fn publish_all_column_document_segment(
+    directory: &Path,
+) -> (DocumentVersion, DocumentVersion, DocumentVersion) {
+    let versions = [
+        DocumentVersion::new(DocId::new(911), Revision::new(1)),
+        DocumentVersion::new(DocId::new(912), Revision::new(1)),
+        DocumentVersion::new(DocId::new(913), Revision::new(1)),
+    ];
+    let schema = Schema::new(vec![
+        ColumnDefinition::new(ColumnId::new(1), "u", ColumnType::U64, true),
+        ColumnDefinition::new(ColumnId::new(2), "i", ColumnType::I64, true),
+        ColumnDefinition::new(ColumnId::new(3), "f", ColumnType::F64, true),
+        ColumnDefinition::new(ColumnId::new(4), "b", ColumnType::Bool, true),
+        ColumnDefinition::new(ColumnId::new(5), "d", ColumnType::DictionaryString, true),
+        ColumnDefinition::new(ColumnId::new(6), "r", ColumnType::RawString, true),
+    ])
+    .expect("typed purge schema");
+    let mut builder = ColumnStoreBuilder::new(schema);
+    builder
+        .push_row(
+            10,
+            &[
+                ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::U64(11),
+                },
+                ColumnInput {
+                    column: ColumnId::new(2),
+                    value: ColumnValue::I64(-12),
+                },
+                ColumnInput {
+                    column: ColumnId::new(3),
+                    value: ColumnValue::F64(-0.0),
+                },
+                ColumnInput {
+                    column: ColumnId::new(4),
+                    value: ColumnValue::Bool(true),
+                },
+                ColumnInput {
+                    column: ColumnId::new(5),
+                    value: ColumnValue::String("alpha"),
+                },
+                ColumnInput {
+                    column: ColumnId::new(6),
+                    value: ColumnValue::String("raw-alpha"),
+                },
+            ],
+        )
+        .expect("first typed row");
+    builder
+        .push_row(
+            20,
+            &[
+                ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::U64(21),
+                },
+                ColumnInput {
+                    column: ColumnId::new(2),
+                    value: ColumnValue::I64(-22),
+                },
+                ColumnInput {
+                    column: ColumnId::new(3),
+                    value: ColumnValue::F64(2.5),
+                },
+                ColumnInput {
+                    column: ColumnId::new(4),
+                    value: ColumnValue::Bool(false),
+                },
+                ColumnInput {
+                    column: ColumnId::new(5),
+                    value: ColumnValue::String("remove"),
+                },
+                ColumnInput {
+                    column: ColumnId::new(6),
+                    value: ColumnValue::String("raw-remove"),
+                },
+            ],
+        )
+        .expect("removed typed row");
+    builder.push_row(30, &[]).expect("nullable retained row");
+    let columns = builder.finish().expect("typed purge columns");
+    let alive = AliveSet::new(3);
+    let factors = [Bit4Factors::from_persisted(1.0, 1.0, 0.0); 3];
+    let doc_ids = versions.map(DocumentVersion::doc_id);
+    let revisions = versions.map(DocumentVersion::revision);
+    let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::Ordered)
+        .expect("typed purge policy");
+    let meta = write_segment_with_documents(
+        &StdVfs,
+        directory,
+        SegmentBuild {
+            id: SegmentId::new(902, [0x43; 10]),
+            scheme: 4,
+            dims: 2,
+            codes: &[0x80, 0x08, 0x77],
+            factors: SegmentFactors::Bit4(&factors),
+            rescore: &[1.0, 0.0, 0.0, 1.0, -1.0, 0.0],
+            columns: &columns,
+            alive: &alive,
+        },
+        SegmentDocumentVersions {
+            doc_ids: &doc_ids,
+            revisions: &revisions,
+        },
+        policy,
+    )
+    .expect("write typed purge segment");
+    commit_manifest(
+        &StdVfs,
+        directory,
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: vec![meta],
+            epochs: Vec::new(),
+            schema: columns.schema().clone(),
+        },
+        policy,
+    )
+    .expect("commit typed purge manifest");
+    (versions[0], versions[1], versions[2])
 }
 
 #[derive(Clone, Default)]

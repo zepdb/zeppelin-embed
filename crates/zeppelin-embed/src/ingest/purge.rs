@@ -1154,3 +1154,138 @@ fn available_disk_bytes(_path: &Path) -> std::io::Result<u64> {
         "physical purge free-space probing requires statvfs",
     ))
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{
+        PURGE_INTENT_FILE, PurgeError, PurgeIntent, PurgeReport, PurgeToken, enforce_temp_space,
+        purge_token_id, read_intent, read_u32, read_u64, remove_intent, write_intent,
+    };
+    use crate::format::FormatFamily;
+    use crate::format::frame::{decode_artifact, encode_artifact};
+    use crate::ingest::{DocId, wal_payload};
+    use crate::lifecycle::StoreError;
+    use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+    use crate::vfs::StdVfs;
+
+    #[test]
+    fn purge_tokens_reports_and_errors_preserve_their_contract_values() {
+        let unknown = DocId::new(19);
+        let token = PurgeToken {
+            id: 41,
+            generation: 42,
+            unknown_ids: vec![unknown],
+            no_op: false,
+        };
+        assert_eq!(token.id(), 41);
+        assert_eq!(token.generation(), 42);
+        assert_eq!(token.unknown_ids(), &[unknown]);
+        assert!(!token.is_no_op());
+
+        let report = PurgeReport {
+            generation: 43,
+            segments_rewritten: 2,
+            wal_rewritten: true,
+            unknown_ids: vec![unknown],
+        };
+        assert_eq!(report.generation(), 43);
+        assert_eq!(report.segments_rewritten(), 2);
+        assert!(report.wal_rewritten());
+        assert_eq!(report.unknown_ids(), &[unknown]);
+        assert!(!report.is_no_op());
+
+        let format = decode_artifact("purge", FormatFamily::PurgeIntent, &[])
+            .expect_err("empty intent is invalid");
+        let errors = [
+            PurgeError::Store(StoreError::ReadOnly),
+            PurgeError::InsufficientTempSpace {
+                segment_bytes: 100,
+                available_bytes: 120,
+                required_bytes: 120,
+            },
+            PurgeError::PurgeInProgress,
+            PurgeError::UnknownToken { token_id: 44 },
+            PurgeError::IntentFormat(format),
+            PurgeError::IntentDecode("bad payload".to_owned()),
+            PurgeError::WalPayload(wal_payload::PayloadError::Truncated),
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let sourced = std::error::Error::source(&error).is_some();
+            assert_eq!(
+                sourced,
+                matches!(
+                    error,
+                    PurgeError::Store(_) | PurgeError::IntentFormat(_) | PurgeError::WalPayload(_)
+                )
+            );
+        }
+        let converted = PurgeError::from(StoreError::Closed);
+        assert!(matches!(converted, PurgeError::Store(StoreError::Closed)));
+
+        let ids = [DocId::new(3), DocId::new(5)];
+        assert_eq!(purge_token_id(7, &ids), purge_token_id(7, &ids));
+        assert_ne!(purge_token_id(7, &ids), purge_token_id(8, &ids));
+        assert!(enforce_temp_space(100, 121).is_ok());
+        assert!(matches!(
+            enforce_temp_space(100, 120),
+            Err(PurgeError::InsufficientTempSpace {
+                required_bytes: 120,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn purge_intent_round_trip_rejects_reserved_and_length_corruption() {
+        let directory = tempfile::tempdir().expect("purge intent test directory");
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived durability");
+        let intent = PurgeIntent {
+            token_id: 0x0102_0304_0506_0708,
+            ids: vec![DocId::new(11), DocId::new(12)],
+        };
+        write_intent(&StdVfs, directory.path(), &intent, policy).expect("write valid intent");
+        let decoded = read_intent(&StdVfs, directory.path()).expect("read valid intent");
+        assert_eq!(decoded.token_id, intent.token_id);
+        assert_eq!(decoded.ids, intent.ids);
+
+        let path = directory.path().join(PURGE_INTENT_FILE);
+        let bytes = std::fs::read(&path).expect("read framed intent");
+        let payload = decode_artifact("purge", FormatFamily::PurgeIntent, &bytes)
+            .expect("decode framed intent")
+            .payload
+            .to_vec();
+
+        let mut reserved = payload.clone();
+        let field = reserved.get_mut(12).expect("reserved byte exists");
+        *field = 1;
+        std::fs::write(
+            &path,
+            encode_artifact(FormatFamily::PurgeIntent, 0, &reserved),
+        )
+        .expect("write reserved corruption");
+        assert!(matches!(
+            read_intent(&StdVfs, directory.path()),
+            Err(PurgeError::IntentDecode(detail)) if detail.contains("reserved")
+        ));
+
+        let truncated = payload.get(..payload.len() - 1).expect("truncate payload");
+        std::fs::write(
+            &path,
+            encode_artifact(FormatFamily::PurgeIntent, 0, truncated),
+        )
+        .expect("write length corruption");
+        assert!(matches!(
+            read_intent(&StdVfs, directory.path()),
+            Err(PurgeError::IntentDecode(detail)) if detail.contains("expected")
+        ));
+        assert!(read_u32(&[], 0).is_err());
+        assert!(read_u64(&[], 0).is_err());
+
+        std::fs::write(&path, bytes).expect("restore valid intent");
+        remove_intent(&StdVfs, directory.path(), policy).expect("remove valid intent");
+        assert!(!path.exists());
+    }
+}

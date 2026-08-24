@@ -299,64 +299,43 @@ fn registry_error(artifact: &str, error: RegistryError) -> FormatError {
 }
 
 pub(crate) fn read_u16(artifact: &str, bytes: &[u8], offset: usize) -> Result<u16, FormatError> {
-    let raw: [u8; 2] = bytes
-        .get(offset..offset.saturating_add(2))
+    let raw = bytes
+        .get(offset..)
+        .and_then(|tail| tail.first_chunk::<2>())
         .ok_or_else(|| {
             FormatError::new(
                 artifact,
                 FormatCheck::Length,
                 format!("missing u16 at {offset}"),
             )
-        })?
-        .try_into()
-        .map_err(|_| {
-            FormatError::new(
-                artifact,
-                FormatCheck::Length,
-                format!("invalid u16 at {offset}"),
-            )
         })?;
-    Ok(u16::from_le_bytes(raw))
+    Ok(u16::from_le_bytes(*raw))
 }
 
 pub(crate) fn read_u32(artifact: &str, bytes: &[u8], offset: usize) -> Result<u32, FormatError> {
-    let raw: [u8; 4] = bytes
-        .get(offset..offset.saturating_add(4))
+    let raw = bytes
+        .get(offset..)
+        .and_then(|tail| tail.first_chunk::<4>())
         .ok_or_else(|| {
             FormatError::new(
                 artifact,
                 FormatCheck::Length,
                 format!("missing u32 at {offset}"),
             )
-        })?
-        .try_into()
-        .map_err(|_| {
-            FormatError::new(
-                artifact,
-                FormatCheck::Length,
-                format!("invalid u32 at {offset}"),
-            )
         })?;
-    Ok(u32::from_le_bytes(raw))
+    Ok(u32::from_le_bytes(*raw))
 }
 
 pub(crate) fn read_u64(artifact: &str, bytes: &[u8], offset: usize) -> Result<u64, FormatError> {
-    let raw: [u8; 8] = bytes
-        .get(offset..offset.saturating_add(8))
+    let raw = bytes
+        .get(offset..)
+        .and_then(|tail| tail.first_chunk::<8>())
         .ok_or_else(|| {
             FormatError::new(
                 artifact,
                 FormatCheck::Length,
                 format!("missing u64 at {offset}"),
             )
-        })?
-        .try_into()
-        .map_err(|_| {
-            FormatError::new(
-                artifact,
-                FormatCheck::Length,
-                format!("invalid u64 at {offset}"),
-            )
         })?;
-    Ok(u64::from_le_bytes(raw))
+    Ok(u64::from_le_bytes(*raw))
 }

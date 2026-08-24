@@ -2004,6 +2004,7 @@ mod tests {
 
         let errors = [
             GraphBuildError::CheckpointCorrupt("bad header".to_owned()),
+            GraphBuildError::BudgetExhausted { rows_completed: 16 },
             GraphBuildError::Cancelled { partial: false },
             GraphBuildError::Timeout { partial: false },
             GraphBuildError::ReadCancelled { partial: false },
@@ -2385,6 +2386,68 @@ mod tests {
                 .expect("uninterrupted artifact");
         assert_eq!(resumed.encoded_region(), uninterrupted.encoded_region());
         assert!(!checkpoint.exists(), "completed build removes checkpoint");
+    }
+
+    #[test]
+    fn checkpointed_build_reports_exact_work_for_each_declared_pass() {
+        let directory = tempfile::tempdir().expect("work-count fixture directory");
+        let rows = 24_usize;
+        let reader = fixture_reader(directory.path(), rows);
+        let params = GraphParams::new(6, 10, 1.0, 1.2, 16, 6).expect("work-count params");
+        let store_directory = tempfile::tempdir().expect("work-count store directory");
+        let store = Store::open(store_directory.path(), OpenOptions::default()).expect("store");
+        let lease = store.snapshot().expect("work-count lease");
+        let control = QueryControl::Cancel(CancelToken::new());
+
+        for (passes, expected_rows, suffix) in [
+            (GraphBuildPasses::One, rows as u64, "one"),
+            (GraphBuildPasses::Two, (rows * 2) as u64, "two"),
+        ] {
+            let checkpoint = directory
+                .path()
+                .join(format!("work-count-{suffix}.checkpoint"));
+            let artifact = build_graph_checkpointed(
+                &store,
+                &reader,
+                CheckpointedGraphBuild::new(params, 0x19_0003_c0a7, passes, &checkpoint, &control),
+                &lease,
+            )
+            .expect("checkpointed build completes");
+
+            assert_eq!(artifact.work_rows_completed(), expected_rows);
+            assert_eq!(
+                decode_node_blocks(artifact.encoded_region())
+                    .expect("work-count graph decodes")
+                    .node_count(),
+                rows as u32
+            );
+            assert!(
+                !checkpoint.exists(),
+                "completed build removes {suffix} checkpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_build_handles_the_minimum_shape_and_rejects_an_empty_segment() {
+        let directory = tempfile::tempdir().expect("minimum-shape directory");
+        let empty = fixture_reader(directory.path(), 0);
+        assert!(matches!(
+            SegmentVectors::new(&empty),
+            Err(GraphBuildError::Geometry(detail)) if detail.contains("at least one row")
+        ));
+
+        let one_row_directory = tempfile::tempdir().expect("one-row directory");
+        let one_row = fixture_reader(one_row_directory.path(), 1);
+        let params = GraphParams::new(1, 1, 1.0, 1.0, 1, 1).expect("one-row params");
+        let artifact = build_graph(&one_row, params, 0x19_0003_0000_0001, GraphBuildPasses::One)
+            .expect("one-row build succeeds");
+        let graph = decode_node_blocks(artifact.encoded_region()).expect("one-row graph decodes");
+        let node = graph.block(0).expect("row zero exists");
+        assert_eq!(graph.node_count(), 1);
+        assert_eq!(node.degree(), 0);
+        assert_eq!(node.flags() & 1, 1);
+        assert_eq!(artifact.entry_points(), &[0]);
     }
 
     #[test]

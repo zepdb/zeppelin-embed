@@ -8,16 +8,21 @@
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use tempfile::tempdir;
+use zeppelin_embed::graph::GraphParams;
+use zeppelin_embed::graph::build::{
+    CheckpointedGraphBuild, GraphBuildError, GraphBuildPasses, build_graph_checkpointed,
+};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::meta::{
-    AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnType,
-    ColumnValue, Schema,
+    AliveSet, Column, ColumnDefinition, ColumnId, ColumnInput, ColumnStore, ColumnStoreBuilder,
+    ColumnType, ColumnValue, Schema,
 };
 use zeppelin_embed::quant::{Bit4Factors, est_dot_bit4_batch, prepare_bit4_query, quantize_bit4};
-use zeppelin_embed::segment::SegmentId;
-use zeppelin_embed::segment::layout::{RegionKind, VECTOR_HEADER_LEN};
+use zeppelin_embed::segment::layout::{Int8Factors, RegionKind, VECTOR_HEADER_LEN};
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
+use zeppelin_embed::segment::{SegmentError, SegmentId};
 use zeppelin_embed::vfs::StdVfs;
 
 fn ordered_policy() -> DurabilityPolicy {
@@ -202,9 +207,207 @@ fn segment_large_regions_are_validated_lazily_per_64k_chunk() {
     bytes[entry.offset as usize + 65_536] ^= 1;
     std::fs::write(&path, bytes).expect("write damage");
     let damaged = SegmentReader::open(&path, id).expect("header still valid");
+    let whole_region = damaged
+        .region(RegionKind::VectorCodes)
+        .expect_err("whole-region checksum must catch the damaged byte");
+    assert!(whole_region.to_string().contains("BlockChecksum"));
     assert!(damaged.region_chunk(RegionKind::VectorCodes, 0).is_ok());
     let error = damaged
         .region_chunk(RegionKind::VectorCodes, 1)
         .expect_err("damaged chunk must fail independently");
     assert!(error.to_string().contains("chunk-1"), "{error}");
+}
+
+#[test]
+fn every_persisted_column_type_roundtrips_values_nulls_and_ieee_bits() {
+    let schema = Schema::new(vec![
+        ColumnDefinition::new(ColumnId::new(1), "u", ColumnType::U64, true),
+        ColumnDefinition::new(ColumnId::new(2), "i", ColumnType::I64, true),
+        ColumnDefinition::new(ColumnId::new(3), "f", ColumnType::F64, true),
+        ColumnDefinition::new(ColumnId::new(4), "b", ColumnType::Bool, true),
+        ColumnDefinition::new(ColumnId::new(5), "d", ColumnType::DictionaryString, true),
+        ColumnDefinition::new(ColumnId::new(6), "r", ColumnType::RawString, true),
+    ])
+    .expect("complete schema");
+    let mut builder = ColumnStoreBuilder::new(schema);
+    builder
+        .push_row(
+            -9,
+            &[
+                ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::U64(u64::MAX - 1),
+                },
+                ColumnInput {
+                    column: ColumnId::new(2),
+                    value: ColumnValue::I64(i64::MIN + 1),
+                },
+                ColumnInput {
+                    column: ColumnId::new(3),
+                    value: ColumnValue::F64(f64::from_bits(0x8000_0000_0000_0000)),
+                },
+                ColumnInput {
+                    column: ColumnId::new(4),
+                    value: ColumnValue::Bool(true),
+                },
+                ColumnInput {
+                    column: ColumnId::new(5),
+                    value: ColumnValue::String("dictionary-value"),
+                },
+                ColumnInput {
+                    column: ColumnId::new(6),
+                    value: ColumnValue::String("raw-value"),
+                },
+            ],
+        )
+        .expect("populated row");
+    builder.push_row(12, &[]).expect("nullable row");
+    let columns = builder.finish().expect("column store");
+    let alive = AliveSet::new(2);
+    let factors = [Bit4Factors::from_persisted(1.0, 1.0, 0.0); 2];
+    let id = SegmentId::new(17, [0x44; 10]);
+    let directory = tempdir().expect("segment directory");
+    write_segment(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id,
+            scheme: 4,
+            dims: 1,
+            codes: &[0x80, 0x70],
+            factors: SegmentFactors::Bit4(&factors),
+            rescore: &[1.0, -1.0],
+            columns: &columns,
+            alive: &alive,
+        },
+        ordered_policy(),
+    )
+    .expect("write all-column segment");
+
+    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id).expect("open");
+    let decoded = reader.columns().expect("decode every column type");
+    assert_eq!(decoded, columns);
+    assert_eq!(decoded.timestamps(), &[-9, 12]);
+    for column_id in 1..=6 {
+        let column = decoded
+            .column(ColumnId::new(column_id))
+            .expect("declared column");
+        assert!(column.present().contains(0));
+        assert!(!column.present().contains(1));
+    }
+    match decoded.column(ColumnId::new(3)) {
+        Some(Column::F64(values)) => {
+            assert_eq!(values.get(0).map(f64::to_bits), Some(0x8000_0000_0000_0000));
+            assert_eq!(values.get(1), None);
+        }
+        actual => panic!("unexpected f64 column: {actual:?}"),
+    }
+    match decoded.column(ColumnId::new(5)) {
+        Some(Column::DictionaryString(values)) => {
+            assert_eq!(values.get(0), Some("dictionary-value"));
+            assert_eq!(values.get(1), None);
+        }
+        actual => panic!("unexpected dictionary column: {actual:?}"),
+    }
+    match decoded.column(ColumnId::new(6)) {
+        Some(Column::RawString(values)) => {
+            assert_eq!(values.get(0), Some("raw-value"));
+            assert_eq!(values.get(1), None);
+        }
+        actual => panic!("unexpected raw column: {actual:?}"),
+    }
+
+    for (id, expected) in [
+        (6, RegionKind::Postings),
+        (8, RegionKind::GraphColocatedCodes),
+        (9, RegionKind::SignPlane),
+        (10, RegionKind::PdxClusteredBlocks),
+        (4_096, RegionKind::VectorSpaceN),
+    ] {
+        assert_eq!(RegionKind::from_id(id), Some(expected));
+    }
+}
+
+#[test]
+fn scheme_specific_readers_and_graph_build_reject_cross_scheme_use() {
+    let columns = columns(1, 0);
+    let alive = AliveSet::new(1);
+    let bit4_id = SegmentId::new(18, [0x55; 10]);
+    let int8_id = SegmentId::new(19, [0x66; 10]);
+    let directory = tempdir().expect("scheme directory");
+    write_segment(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: bit4_id,
+            scheme: 4,
+            dims: 1,
+            codes: &[0x80],
+            factors: SegmentFactors::Bit4(&[Bit4Factors::from_persisted(1.0, 1.0, 0.0)]),
+            rescore: &[1.0],
+            columns: &columns,
+            alive: &alive,
+        },
+        ordered_policy(),
+    )
+    .expect("write Bit4 segment");
+    write_segment(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: int8_id,
+            scheme: 2,
+            dims: 1,
+            codes: &[127],
+            factors: SegmentFactors::Int8(&[Int8Factors {
+                scale: 1.0 / 127.0,
+                offset: 0.0,
+            }]),
+            rescore: &[1.0],
+            columns: &columns,
+            alive: &alive,
+        },
+        ordered_policy(),
+    )
+    .expect("write Int8 segment");
+
+    let bit4 = SegmentReader::open(&directory.path().join(bit4_id.file_name()), bit4_id)
+        .expect("open Bit4");
+    assert!(matches!(bit4.int8_codes(), Err(SegmentError::Geometry(_))));
+    assert!(matches!(
+        bit4.int8_factors(),
+        Err(SegmentError::Geometry(_))
+    ));
+
+    let int8 = SegmentReader::open(&directory.path().join(int8_id.file_name()), int8_id)
+        .expect("open Int8");
+    assert_eq!(int8.int8_codes().expect("Int8 codes"), &[127]);
+    assert!(matches!(int8.bit4_codes(), Err(SegmentError::Geometry(_))));
+    assert!(matches!(
+        int8.bit4_factors(),
+        Err(SegmentError::Geometry(_))
+    ));
+
+    let store_directory = tempdir().expect("store directory");
+    let store = Store::open(store_directory.path(), OpenOptions::default()).expect("store");
+    let lease = store.snapshot().expect("snapshot lease");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let checkpoint = directory.path().join("wrong-scheme.checkpoint");
+    let error = match build_graph_checkpointed(
+        &store,
+        &int8,
+        CheckpointedGraphBuild::new(
+            GraphParams::sift_1m(),
+            7,
+            GraphBuildPasses::One,
+            &checkpoint,
+            &control,
+        ),
+        &lease,
+    ) {
+        Ok(_) => panic!("graph build accepted Int8 input"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, GraphBuildError::Geometry(ref detail) if detail.contains("scheme 4")));
+    assert!(!checkpoint.exists());
 }

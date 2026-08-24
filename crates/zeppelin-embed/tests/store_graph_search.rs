@@ -30,6 +30,8 @@ use zeppelin_embed::vfs::StdVfs;
 
 const DIMS: usize = 128;
 const ROWS: usize = 12;
+const BEST_FIRST_ROWS: usize = 145;
+const BEST_FIRST_EF: usize = 140;
 
 struct GraphFixture {
     directory: TempDir,
@@ -220,6 +222,70 @@ fn publish_long_chain_graph(rows: usize) -> (TempDir, SegmentId) {
     (directory, id)
 }
 
+fn publish_best_first_auto_graph() -> GraphFixture {
+    let directory = tempdir().expect("best-first graph directory");
+    let id = SegmentId::new(0x0001_9000_0004, [0x34; 10]);
+    let values = std::iter::once(1_000.0_f32)
+        .chain([900.0, 800.0, 1.0])
+        .chain((0..BEST_FIRST_EF).map(|offset| 700.0 - offset as f32))
+        .chain(std::iter::once(0.0))
+        .collect::<Vec<_>>();
+    assert_eq!(values.len(), BEST_FIRST_ROWS);
+    let vectors = values
+        .iter()
+        .flat_map(|value| {
+            let mut row = vec![0.0_f32; DIMS];
+            row[0] = *value;
+            row
+        })
+        .collect::<Vec<_>>();
+    let (codes, factors) = quantize_rows(&vectors, BEST_FIRST_ROWS);
+    let columns = columns(BEST_FIRST_ROWS);
+    let alive = AliveSet::new(BEST_FIRST_ROWS as u32);
+    let mut neighbors = vec![Vec::new(); BEST_FIRST_ROWS];
+    neighbors[0] = (4_u32..BEST_FIRST_ROWS as u32 - 1).collect();
+    neighbors[3] = vec![(BEST_FIRST_ROWS - 1) as u32];
+    let nodes = codes
+        .chunks_exact(DIMS.div_ceil(2))
+        .zip(&factors)
+        .zip(&neighbors)
+        .enumerate()
+        .map(|(row, ((codes, factors), neighbors))| GraphNodeBlockInput {
+            codes,
+            factors: *factors,
+            flags: u8::from(row < 4),
+            neighbors,
+        })
+        .collect::<Vec<_>>();
+    let meta = write_segment_with_graph(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id,
+            scheme: 4,
+            dims: DIMS as u32,
+            codes: &codes,
+            factors: SegmentFactors::Bit4(&factors),
+            rescore: &vectors,
+            columns: &columns,
+            alive: &alive,
+        },
+        GraphNodeBlockBuild {
+            layout: GraphNodeLayout::new(DIMS as u32, DIMS as u32, BEST_FIRST_EF as u8)
+                .expect("best-first graph layout"),
+            nodes: &nodes,
+        },
+        policy(),
+    )
+    .expect("sealed best-first graph");
+    commit(&directory, &columns, meta, 1);
+    GraphFixture {
+        directory,
+        id,
+        vectors,
+    }
+}
+
 fn commit(
     directory: &TempDir,
     columns: &zeppelin_embed::meta::ColumnStore,
@@ -321,6 +387,35 @@ fn store_search_reaches_the_graph_tier_end_to_end() {
     assert_eq!(actual, expected);
     assert_eq!(outcome.graph_stats.segments_traversed, 1);
     assert_eq!(outcome.graph_stats.candidates_rescored, ROWS);
+    store.close().expect("close store");
+}
+
+#[test]
+fn automatic_store_search_uses_best_first_frontier_before_the_ef_cutoff() {
+    let fixture = publish_best_first_auto_graph();
+    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
+    let query = vec![0.0_f32; DIMS];
+
+    let outcome = store
+        .search(
+            SearchRequest::new(&query),
+            1,
+            SearchOptions::new(ScanOptions { thread_budget: 1 }),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("automatic graph search");
+
+    assert_eq!(outcome.candidates.len(), 1);
+    assert_eq!(
+        outcome.candidates[0].row_id().source(),
+        RowSource::Sealed(fixture.id)
+    );
+    assert_eq!(
+        outcome.candidates[0].row_id().local_row(),
+        (BEST_FIRST_ROWS - 1) as u32
+    );
+    assert_eq!(outcome.graph_stats.segments_traversed, 1);
+    assert_eq!(outcome.graph_stats.candidates_rescored, BEST_FIRST_EF);
     store.close().expect("close store");
 }
 

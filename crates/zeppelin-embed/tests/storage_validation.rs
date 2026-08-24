@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 use xxhash_rust::xxh3::xxh3_64;
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
+use zeppelin_embed::meta::{
+    AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnType,
+    ColumnValue, Schema,
+};
 use zeppelin_embed::quant::Bit4Factors;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::reader::SegmentReader;
@@ -360,6 +363,117 @@ fn alive_and_column_decoders_reject_semantically_invalid_checked_bytes() {
             .columns()
             .is_err()
     );
+}
+
+#[test]
+fn column_decoder_rejects_value_bearing_semantic_corruption() {
+    let schema = Schema::new(vec![
+        ColumnDefinition::new(ColumnId::new(1), "b", ColumnType::Bool, false),
+        ColumnDefinition::new(ColumnId::new(2), "d", ColumnType::DictionaryString, false),
+    ])
+    .expect("semantic schema");
+    let mut builder = ColumnStoreBuilder::new(schema);
+    builder
+        .push_row(
+            7,
+            &[
+                ColumnInput {
+                    column: ColumnId::new(1),
+                    value: ColumnValue::Bool(true),
+                },
+                ColumnInput {
+                    column: ColumnId::new(2),
+                    value: ColumnValue::String("value"),
+                },
+            ],
+        )
+        .expect("semantic row");
+    let columns = builder.finish().expect("semantic columns");
+    let alive = AliveSet::new(1);
+    let factors = [Bit4Factors::from_persisted(1.0, 1.0, 0.0)];
+    let id = SegmentId::new(23, [0x71; 10]);
+    let valid = encode_segment(SegmentBuild {
+        id,
+        scheme: 4,
+        dims: 1,
+        codes: &[0x80],
+        factors: SegmentFactors::Bit4(&factors),
+        rescore: &[1.0],
+        columns: &columns,
+        alive: &alive,
+    })
+    .expect("semantic segment");
+    let columns_directory = 64;
+    let columns_offset = u64::from_le_bytes(
+        valid[columns_directory + 8..columns_directory + 16]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let cases: Vec<(&str, Box<dyn Fn(&mut Vec<u8>)>)> = vec![
+        (
+            "unknown column type 99",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 12..columns_offset + 14]
+                    .copy_from_slice(&99_u16.to_le_bytes());
+            }),
+        ),
+        (
+            "invalid nullable flag 2",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 14..columns_offset + 16]
+                    .copy_from_slice(&2_u16.to_le_bytes());
+            }),
+        ),
+        (
+            "presence length 2, expected 1",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 48..columns_offset + 52]
+                    .copy_from_slice(&2_u32.to_le_bytes());
+            }),
+        ),
+        (
+            "invalid Boolean byte 2",
+            Box::new(move |bytes| bytes[columns_offset + 66] = 2),
+        ),
+        (
+            "dictionary reserved field is non-zero",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 87..columns_offset + 89]
+                    .copy_from_slice(&1_u16.to_le_bytes());
+            }),
+        ),
+        (
+            "invalid dictionary width 3",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 85..columns_offset + 87]
+                    .copy_from_slice(&3_u16.to_le_bytes());
+            }),
+        ),
+        (
+            "dictionary code 1 out of range",
+            Box::new(move |bytes| {
+                bytes[columns_offset + 89..columns_offset + 91]
+                    .copy_from_slice(&1_u16.to_le_bytes());
+            }),
+        ),
+        (
+            "non-zero presence tail padding",
+            Box::new(move |bytes| bytes[columns_offset + 65] |= 0x80),
+        ),
+    ];
+    let directory = tempdir().expect("semantic directory");
+    let path = directory.path().join("semantic-columns.zseg");
+    for (expected, mutate) in cases {
+        let mut bytes = valid.clone();
+        mutate(&mut bytes);
+        rewrite_region(&mut bytes, 0);
+        std::fs::write(&path, bytes).expect("write semantic corruption");
+        let error = SegmentReader::open(&path, id)
+            .expect("header remains valid")
+            .columns()
+            .expect_err("semantic corruption must be rejected");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }
 
 #[test]
