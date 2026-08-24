@@ -213,6 +213,57 @@ pub fn unpack_narrow(input: &[u8], bits: u8, count: usize, output: &mut [u32]) -
 
 /// Runs the prefix sum using the best available arm.
 pub fn prefix_sum(values: &mut [u32], base: u32) {
+    prefix_sum_wide(values, base);
+}
+
+/// Values per interleaved prefix-sum group: four vectors of four lanes.
+const WIDE_GROUP: usize = 16;
+
+/// Turns gaps into absolute ids, sixteen values per group.
+///
+/// # What was serial, and what is not any more
+///
+/// The four-lane kernel below runs a two-step ladder and then folds in the
+/// running carry, and the next group cannot start until that carry is
+/// extracted. Every one of its adds is on the critical path, so the kernel
+/// runs at the latency of the add chain rather than at its throughput.
+///
+/// Here four vectors are loaded at once and their two ladder steps are
+/// **eight adds with no dependency on each other or on the carry**, so they
+/// issue while the carry chain is still resolving. Only the four folds and
+/// their lane extracts remain serial, across sixteen values instead of
+/// four.
+///
+/// # Why reassociating is allowed
+///
+/// Unsigned saturating addition is associative — `min(min(a+b, M)+c, M)` is
+/// `min(a+b+c, M)` for non-negative `c` — so grouping the sum differently
+/// cannot change a single result. The kernel keeps `vqaddq_u32` for exactly
+/// the reason the four-lane one does: a wrapping add would let a corrupt
+/// block roll a document id back to zero and silently reorder results.
+/// `the_wide_prefix_sum_carries_across_every_group_boundary` proves the
+/// reassociation against the scalar oracle at saturating inputs.
+pub fn prefix_sum_wide(values: &mut [u32], base: u32) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if values.len() >= WIDE_GROUP && std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: the `neon` feature was just detected and the helper
+            // touches only whole sixteen-value groups it bounds-checks.
+            let (consumed, carry) = unsafe { neon::prefix_sum_wide_neon(values, base) };
+            if let Some(tail) = values.get_mut(consumed..) {
+                prefix_sum_narrow(tail, carry);
+            }
+            return;
+        }
+    }
+    prefix_sum_narrow(values, base);
+}
+
+/// Turns gaps into absolute ids, four values per group.
+///
+/// The residue of [`prefix_sum_wide`]: at most fifteen values, or a whole
+/// short block. Kept because a fifteen-value tail still beats scalar.
+fn prefix_sum_narrow(values: &mut [u32], base: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         if values.len() >= NEON_MIN_COUNT && std::arch::is_aarch64_feature_detected!("neon") {
@@ -233,8 +284,8 @@ const NEON_MIN_COUNT: usize = 8;
 mod neon {
     use std::arch::aarch64::{
         uint8x16_t, uint32x4_t, vandq_u16, vandq_u32, vdupq_n_u16, vdupq_n_u32, vextq_u32,
-        vget_low_u16, vld1q_s16, vld1q_u8, vld1q_u32, vmovl_high_u16, vmovl_u16, vqaddq_u32,
-        vqtbl1q_u8, vreinterpretq_u16_u8, vshlq_u16, vshlq_u32, vst1q_u32,
+        vget_low_u16, vgetq_lane_u32, vld1q_s16, vld1q_u8, vld1q_u32, vmovl_high_u16, vmovl_u16,
+        vqaddq_u32, vqtbl1q_u8, vreinterpretq_u16_u8, vshlq_u16, vshlq_u32, vst1q_u32,
     };
 
     /// Unpacks eight values per iteration at eight bits or fewer.
@@ -416,6 +467,64 @@ mod neon {
             }
         }
         Some(needed)
+    }
+
+    /// Prefix-sums whole sixteen-value groups, four vectors at a time.
+    ///
+    /// Returns the values consumed and the running carry, so the caller
+    /// finishes the residue with the four-lane kernel.
+    ///
+    /// # Safety
+    ///
+    /// The caller guarantees the `neon` feature is available. Every load
+    /// and store below is inside a window whose length was checked.
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn prefix_sum_wide_neon(values: &mut [u32], base: u32) -> (usize, u32) {
+        let mut carry = base;
+        let mut index = 0_usize;
+        let zero = vdupq_n_u32(0);
+        while index + super::WIDE_GROUP <= values.len() {
+            let Some(window) = values.get_mut(index..index + super::WIDE_GROUP) else {
+                break;
+            };
+            let pointer = window.as_mut_ptr();
+            // SAFETY: `window` is exactly sixteen `u32`, so the four loads
+            // and four stores at lane offsets 0, 4, 8 and 12 are in bounds.
+            unsafe {
+                let mut v0: uint32x4_t = vld1q_u32(pointer);
+                let mut v1: uint32x4_t = vld1q_u32(pointer.add(4));
+                let mut v2: uint32x4_t = vld1q_u32(pointer.add(8));
+                let mut v3: uint32x4_t = vld1q_u32(pointer.add(12));
+
+                // Eight INDEPENDENT adds: four intra-vector ladders that
+                // depend neither on each other nor on the carry.
+                v0 = vqaddq_u32(v0, vextq_u32(zero, v0, 3));
+                v1 = vqaddq_u32(v1, vextq_u32(zero, v1, 3));
+                v2 = vqaddq_u32(v2, vextq_u32(zero, v2, 3));
+                v3 = vqaddq_u32(v3, vextq_u32(zero, v3, 3));
+                v0 = vqaddq_u32(v0, vextq_u32(zero, v0, 2));
+                v1 = vqaddq_u32(v1, vextq_u32(zero, v1, 2));
+                v2 = vqaddq_u32(v2, vextq_u32(zero, v2, 2));
+                v3 = vqaddq_u32(v3, vextq_u32(zero, v3, 2));
+
+                // The only serial part: fold each vector's running total
+                // into the next. Four adds and four extracts per sixteen
+                // values, where the four-lane kernel pays three adds and an
+                // extract per four.
+                v0 = vqaddq_u32(v0, vdupq_n_u32(carry));
+                v1 = vqaddq_u32(v1, vdupq_n_u32(vgetq_lane_u32::<3>(v0)));
+                v2 = vqaddq_u32(v2, vdupq_n_u32(vgetq_lane_u32::<3>(v1)));
+                v3 = vqaddq_u32(v3, vdupq_n_u32(vgetq_lane_u32::<3>(v2)));
+                carry = vgetq_lane_u32::<3>(v3);
+
+                vst1q_u32(pointer, v0);
+                vst1q_u32(pointer.add(4), v1);
+                vst1q_u32(pointer.add(8), v2);
+                vst1q_u32(pointer.add(12), v3);
+            }
+            index += super::WIDE_GROUP;
+        }
+        (index, carry)
     }
 
     /// Prefix-sums with NEON using the interleaved shift-and-add ladder.
@@ -600,6 +709,38 @@ mod tests {
                     dispatched, oracle,
                     "prefix sum diverged at count {count}, base {base}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn the_wide_prefix_sum_carries_across_every_group_boundary() {
+        // K4 replaces a four-lane group whose carry is entirely serial with
+        // a sixteen-value group whose four intra-vector ladders are
+        // independent. The carry now crosses three INTERNAL vector
+        // boundaries as well as the group boundary, and a wrong `vext`
+        // distance or a carry read from the wrong lane shows up only at
+        // those seams. So sweep every length across several groups, and
+        // include a base and gaps that saturate mid-group: saturating
+        // addition is associative, which is the whole licence for
+        // reassociating the sum, and this is what proves the reassociation
+        // did not change the answer.
+        for count in 0..=80_usize {
+            for base in [0_u32, 1, 1_000, u32::MAX - 10, u32::MAX] {
+                for span in [1_u32, 17, 1_000_000_007] {
+                    let gaps: Vec<u32> = (0..count)
+                        .map(|index| (index as u32).wrapping_mul(span) % span.max(2) + 1)
+                        .collect();
+                    let mut oracle = gaps.clone();
+                    let mut wide = gaps;
+                    prefix_sum_scalar(&mut oracle, base);
+                    prefix_sum_wide(&mut wide, base);
+                    assert_eq!(
+                        wide, oracle,
+                        "the wide prefix sum diverged at count {count}, \
+                         base {base}, span {span}"
+                    );
+                }
             }
         }
     }
