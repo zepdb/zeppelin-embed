@@ -73,17 +73,28 @@ fn main() {
         for _ in 0..3 {
             search_pruned(&index, &query, 10, params, strategy).expect("scores");
         }
-        let iterations = 30_u32;
-        let started = Instant::now();
+        // Per-query samples, not a mean: a mean over a run hides exactly
+        // the tail that scheduling and allocation problems live in.
+        let iterations = 200_usize;
+        let mut samples: Vec<f64> = Vec::with_capacity(iterations);
         let mut blocks = 0_u64;
         for _ in 0..iterations {
+            let started = Instant::now();
             let result = search_pruned(&index, &query, 10, params, strategy).expect("scores");
+            samples.push(started.elapsed().as_nanos() as f64);
             blocks = result.counters.blocks_decoded;
+            std::hint::black_box(&result.hits);
         }
-        let per_query_ns = started.elapsed().as_nanos() as f64 / f64::from(iterations);
+        samples.sort_by(f64::total_cmp);
+        let percentile = |fraction: f64| -> f64 {
+            let rank = (fraction * (samples.len() - 1) as f64).round() as usize;
+            samples[rank.min(samples.len() - 1)]
+        };
+        let per_query_ns = percentile(0.50);
         println!(
-            "QUERY {label} p_mean_us={:.1} blocks_decoded={blocks}",
-            per_query_ns / 1000.0
+            "QUERY {label} p50_us={:.1} p99_us={:.1} blocks_decoded={blocks}",
+            per_query_ns / 1000.0,
+            percentile(0.99) / 1000.0
         );
 
         // Decode cost of exactly that many blocks, at the measured widths:
