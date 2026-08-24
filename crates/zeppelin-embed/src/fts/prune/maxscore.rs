@@ -55,7 +55,9 @@ pub fn score_all(
     for cursor in cursors {
         for (row, tf) in &cursor.entries {
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-            let score = cursor.scorer.score(Tf(*tf), DocLen(length_of(lengths, *row)));
+            let score = cursor
+                .scorer
+                .score(Tf(*tf), DocLen(length_of(lengths, *row)));
             match totals.binary_search_by_key(row, |(candidate, _)| *candidate) {
                 Ok(slot) => {
                     if let Some((_, total)) = totals.get_mut(slot) {
@@ -168,11 +170,9 @@ pub fn run(
             counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
             let contribution = if cursor.current() == Some(row) {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                cursor
-                    .current_tf()
-                    .map_or(0.0, |tf| {
-                        cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)))
-                    })
+                cursor.current_tf().map_or(0.0, |tf| {
+                    cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)))
+                })
             } else {
                 0.0
             };

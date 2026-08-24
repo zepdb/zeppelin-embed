@@ -364,10 +364,7 @@ impl LexicalIndex {
     /// Returns the store-wide analyzed token count.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.segments
-            .iter()
-            .map(SegmentIndex::total_tokens)
-            .sum()
+        self.segments.iter().map(SegmentIndex::total_tokens).sum()
     }
 
     /// Returns the store-wide corpus statistics.
@@ -380,7 +377,10 @@ impl LexicalIndex {
     /// Returns [`IndexError::Stats`] when the index holds no documents or
     /// no tokens, because `avgdl` is undefined then.
     pub fn corpus_stats(&self) -> Result<CorpusStats, IndexError> {
-        Ok(CorpusStats::new(self.document_count(), self.total_tokens())?)
+        Ok(CorpusStats::new(
+            self.document_count(),
+            self.total_tokens(),
+        )?)
     }
 
     /// Returns the store-wide document frequency of one term.

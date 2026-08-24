@@ -24,7 +24,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use super::bm25::{Bm25Params, Df, DocLen, Tf, TermScorer};
+use super::bm25::{Bm25Params, Df, DocLen, TermScorer, Tf};
 use super::index::{FieldId, IndexError, LexicalIndex};
 
 /// A store-wide document identity.
@@ -197,8 +197,7 @@ pub fn merge_term(
         .iter()
         .filter_map(|(field, weight)| {
             let weight = u64::from(weight);
-            (weight > 0 && segment.posting_list(term, field).is_some())
-                .then_some((field, weight))
+            (weight > 0 && segment.posting_list(term, field).is_some()).then_some((field, weight))
         })
         .collect();
 
@@ -244,11 +243,7 @@ pub fn merge_term(
 
 /// The weighted analyzed length of one row.
 #[must_use]
-pub fn row_length(
-    segment: &super::index::SegmentIndex,
-    row: u32,
-    weights: &FieldWeights,
-) -> u32 {
+pub fn row_length(segment: &super::index::SegmentIndex, row: u32, weights: &FieldWeights) -> u32 {
     weighted_length(segment, row, weights)
 }
 
@@ -279,9 +274,7 @@ pub fn weighted_lengths<'segment>(
     }
     Cow::Owned(
         (0..row_count)
-            .map(|row| {
-                weighted_length(segment, u32::try_from(row).unwrap_or(u32::MAX), weights)
-            })
+            .map(|row| weighted_length(segment, u32::try_from(row).unwrap_or(u32::MAX), weights))
             .collect(),
     )
 }
@@ -395,15 +388,11 @@ pub fn search(
 }
 
 /// The weighted analyzed length of one row.
-fn weighted_length(
-    segment: &super::index::SegmentIndex,
-    row: u32,
-    weights: &FieldWeights,
-) -> u32 {
+fn weighted_length(segment: &super::index::SegmentIndex, row: u32, weights: &FieldWeights) -> u32 {
     let mut total = 0_u64;
     for (field, weight) in weights.iter() {
-        total = total
-            .saturating_add(u64::from(segment.field_length(row, field)) * u64::from(weight));
+        total =
+            total.saturating_add(u64::from(segment.field_length(row, field)) * u64::from(weight));
     }
     u32::try_from(total / 1_000).unwrap_or(u32::MAX)
 }
@@ -417,7 +406,7 @@ fn weighted_length(
 )]
 mod tests {
     use super::*;
-    use crate::fts::index::{Document, SegmentIndex, DEFAULT_FIELD};
+    use crate::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
     use crate::fts::tokenizer::{Analyzer, Profile};
 
     fn analyzer() -> Analyzer {
@@ -585,10 +574,7 @@ mod tests {
     #[test]
     fn multiple_query_terms_sum_their_contributions() {
         let index = index_of(&["alpha", "alpha beta"]);
-        let query = TermQuery::flat(
-            vec![b"alpha".to_vec(), b"beta".to_vec()],
-            &[DEFAULT_FIELD],
-        );
+        let query = TermQuery::flat(vec![b"alpha".to_vec(), b"beta".to_vec()], &[DEFAULT_FIELD]);
         let result = search(&index, &query, 10, Bm25Params::default()).expect("scores");
         // The document matching both terms must outrank the one matching one.
         assert_eq!(result.hits[0].doc.row, 1);
@@ -605,7 +591,9 @@ mod tests {
         let mut second = Document::new();
         second.set(FieldId(0), "unrelated");
         second.set(FieldId(1), "engine");
-        segment.push_document(&analyzer, &second).expect("indexable");
+        segment
+            .push_document(&analyzer, &second)
+            .expect("indexable");
         let mut index = LexicalIndex::new();
         index.push_segment(segment);
 
@@ -625,8 +613,7 @@ mod tests {
             fields: FieldWeights::new(&[(FieldId(0), 4_000), (FieldId(1), 1_000)]),
         };
         assert!(!weighted.fields.is_flat());
-        let weighted_result =
-            search(&index, &weighted, 10, Bm25Params::default()).expect("scores");
+        let weighted_result = search(&index, &weighted, 10, Bm25Params::default()).expect("scores");
         assert_eq!(
             weighted_result.hits[0].doc.row, 0,
             "the heavier field must win"

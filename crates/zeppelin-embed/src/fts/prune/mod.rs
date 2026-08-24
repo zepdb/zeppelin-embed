@@ -35,7 +35,7 @@ use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
 
-pub use bounds::{build_block_bounds, term_upper_bound, BlockBound};
+pub use bounds::{BlockBound, build_block_bounds, term_upper_bound};
 
 /// Postings per pruning block.
 ///
@@ -209,10 +209,7 @@ impl TopK {
     /// One definition, used by both the insertion and the tests that check
     /// it against a full sort. Two spellings of a comparator is how a
     /// tie-break drifts.
-    fn rank(
-        left: &(GlobalDocId, f64),
-        right: &(GlobalDocId, f64),
-    ) -> std::cmp::Ordering {
+    fn rank(left: &(GlobalDocId, f64), right: &(GlobalDocId, f64)) -> std::cmp::Ordering {
         right
             .1
             .partial_cmp(&left.1)
@@ -363,13 +360,7 @@ pub fn search_pruned(
         let total: usize = cursors.iter().map(|cursor| cursor.entries.len()).sum();
         if total <= SHORT_LIST_POSTINGS {
             counters.blocks_decoded = 0;
-            maxscore::score_all(
-                &cursors,
-                &lengths,
-                segment_index,
-                &mut heap,
-                &mut counters,
-            );
+            maxscore::score_all(&cursors, &lengths, segment_index, &mut heap, &mut counters);
             continue;
         }
 
@@ -444,8 +435,8 @@ mod tests {
         let index = index_of(&texts);
         let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
         for strategy in [Strategy::BlockMaxWand, Strategy::BlockMaxMaxscore] {
-            let result = search_pruned(&index, &query, 10, Bm25Params::default(), strategy)
-                .expect("scores");
+            let result =
+                search_pruned(&index, &query, 10, Bm25Params::default(), strategy).expect("scores");
             assert_eq!(
                 result.counters.blocks_decoded, 0,
                 "the short-list fast path must not decode a block"
@@ -563,13 +554,10 @@ mod tests {
     /// Builds a cursor over `count` entries with the given block geometry.
     fn geometry_cursor(count: u32, block_size: usize, stride: u32) -> TermCursor {
         let entries: Vec<(u32, u32)> = (0..count).map(|row| (row * stride, 1 + row % 7)).collect();
-        let lengths: Vec<u32> = (0..count * stride.max(1))
-            .map(|row| 1 + row % 23)
-            .collect();
+        let lengths: Vec<u32> = (0..count * stride.max(1)).map(|row| 1 + row % 23).collect();
         let stats = crate::fts::bm25::CorpusStats::new(1_000, 40_000).expect("stats");
         let params = Bm25Params::default();
-        let blocks =
-            build_block_bounds(&entries, &lengths, block_size, Df(50), &stats, params);
+        let blocks = build_block_bounds(&entries, &lengths, block_size, Df(50), &stats, params);
         TermCursor {
             entries,
             blocks,
@@ -665,14 +653,8 @@ mod tests {
         let entries: Vec<(u32, u32)> = (0..10_u32).map(|row| (row, 1)).collect();
         let lengths = vec![10_u32; 10];
         let stats = crate::fts::bm25::CorpusStats::new(10, 100).expect("stats");
-        let blocks = build_block_bounds(
-            &entries,
-            &lengths,
-            4,
-            Df(10),
-            &stats,
-            Bm25Params::default(),
-        );
+        let blocks =
+            build_block_bounds(&entries, &lengths, 4, Df(10), &stats, Bm25Params::default());
         let mut cursor = TermCursor {
             entries,
             blocks,
@@ -696,11 +678,16 @@ mod tests {
         let texts: Vec<String> = (0..5).map(|index| format!("alpha beta{index}")).collect();
         let index = index_of(&texts);
         let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
-        let pruned =
-            search_pruned(&index, &query, 3, Bm25Params::default(), Strategy::Exhaustive)
-                .expect("scores");
-        let direct = crate::fts::search::search(&index, &query, 3, Bm25Params::default())
-            .expect("scores");
+        let pruned = search_pruned(
+            &index,
+            &query,
+            3,
+            Bm25Params::default(),
+            Strategy::Exhaustive,
+        )
+        .expect("scores");
+        let direct =
+            crate::fts::search::search(&index, &query, 3, Bm25Params::default()).expect("scores");
         assert_eq!(pruned.hits, direct.hits);
     }
 
@@ -713,9 +700,7 @@ mod tests {
             Strategy::BlockMaxMaxscore,
             Strategy::Exhaustive,
         ] {
-            assert!(
-                search_pruned(&index, &query, 5, Bm25Params::default(), strategy).is_err()
-            );
+            assert!(search_pruned(&index, &query, 5, Bm25Params::default(), strategy).is_err());
         }
     }
 }

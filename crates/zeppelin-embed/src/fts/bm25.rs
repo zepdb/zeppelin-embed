@@ -276,13 +276,7 @@ impl TermScorer {
 /// Hot loops should build a [`TermScorer`] once per term instead; this
 /// convenience form recomputes `idf` and `avgdl` on every call.
 #[must_use]
-pub fn term_score(
-    tf: Tf,
-    df: Df,
-    length: DocLen,
-    stats: &CorpusStats,
-    params: Bm25Params,
-) -> f64 {
+pub fn term_score(tf: Tf, df: Df, length: DocLen, stats: &CorpusStats, params: Bm25Params) -> f64 {
     TermScorer::new(df, stats, params).score(tf, length)
 }
 
@@ -417,8 +411,7 @@ mod tests {
                 if denominator <= 0.0 {
                     0.0
                 } else {
-                    idf(df, stats.document_count()) * (frequency * (params.k1 + 1.0))
-                        / denominator
+                    idf(df, stats.document_count()) * (frequency * (params.k1 + 1.0)) / denominator
                 }
             };
             assert_eq!(
@@ -455,8 +448,8 @@ mod tests {
             }
             let scorer = TermScorer::new(df, &stats, params);
             let frequency = f64::from(tf.0);
-            let normalization = 1.0 - params.b
-                + params.b * f64::from(length.0) / stats.average_document_length();
+            let normalization =
+                1.0 - params.b + params.b * f64::from(length.0) / stats.average_document_length();
             let denominator = frequency + params.k1 * normalization;
             if denominator <= 0.0 {
                 continue;

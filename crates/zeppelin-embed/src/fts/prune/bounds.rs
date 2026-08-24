@@ -17,7 +17,7 @@
 //!    Those two need not come from the same document; using the pair is
 //!    looser than the true maximum and therefore still an upper bound.
 
-use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, TermScorer};
+use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, TermScorer, Tf};
 use crate::fts::postings::{dequantize_block_max, quantize_block_max};
 
 /// One block's bound over a run of `(row, weighted tf)` entries.
@@ -126,20 +126,13 @@ mod tests {
 
         for df in [1_u32, 5, 200, 999] {
             for block_size in [1_usize, 2, 7, 64, 128] {
-                let bounds = build_block_bounds(
-                    &entries,
-                    &lengths,
-                    block_size,
-                    Df(df),
-                    &stats,
-                    params,
-                );
+                let bounds =
+                    build_block_bounds(&entries, &lengths, block_size, Df(df), &stats, params);
                 for block in &bounds {
                     for entry in entries.iter().take(block.end).skip(block.start) {
                         let (row, tf) = *entry;
                         let length = lengths[row as usize];
-                        let truth =
-                            term_score(Tf(tf), Df(df), DocLen(length), &stats, params);
+                        let truth = term_score(Tf(tf), Df(df), DocLen(length), &stats, params);
                         assert!(
                             block.max_score >= truth - 1e-12,
                             "bound {} is below a true score {truth} \
@@ -157,14 +150,8 @@ mod tests {
         let stats = stats();
         let lengths: Vec<u32> = (0..64_u32).map(|row| 1 + row).collect();
         let entries: Vec<(u32, u32)> = (0..64_u32).map(|row| (row, 1 + row % 5)).collect();
-        let bounds = build_block_bounds(
-            &entries,
-            &lengths,
-            8,
-            Df(10),
-            &stats,
-            Bm25Params::default(),
-        );
+        let bounds =
+            build_block_bounds(&entries, &lengths, 8, Df(10), &stats, Bm25Params::default());
         let overall = term_upper_bound(&bounds);
         for block in &bounds {
             assert!(block.max_score <= overall + 1e-12);
@@ -200,14 +187,8 @@ mod tests {
         let stats = stats();
         let lengths: Vec<u32> = vec![5; 40];
         let entries: Vec<(u32, u32)> = (0..10_u32).map(|row| (row * 3, 1)).collect();
-        let bounds = build_block_bounds(
-            &entries,
-            &lengths,
-            4,
-            Df(2),
-            &stats,
-            Bm25Params::default(),
-        );
+        let bounds =
+            build_block_bounds(&entries, &lengths, 4, Df(2), &stats, Bm25Params::default());
         assert_eq!(bounds.len(), 3);
         assert_eq!(bounds[0].last_row, 9);
         assert_eq!(bounds[1].last_row, 21);
@@ -217,12 +198,9 @@ mod tests {
     #[test]
     fn degenerate_inputs_produce_no_bounds_rather_than_panicking() {
         let stats = stats();
+        assert!(build_block_bounds(&[], &[], 8, Df(1), &stats, Bm25Params::default()).is_empty());
         assert!(
-            build_block_bounds(&[], &[], 8, Df(1), &stats, Bm25Params::default()).is_empty()
-        );
-        assert!(
-            build_block_bounds(&[(0, 1)], &[5], 0, Df(1), &stats, Bm25Params::default())
-                .is_empty()
+            build_block_bounds(&[(0, 1)], &[5], 0, Df(1), &stats, Bm25Params::default()).is_empty()
         );
         assert_eq!(term_upper_bound(&[]), 0.0);
     }

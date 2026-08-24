@@ -10,9 +10,9 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngSeed};
 
 use zeppelin_embed::fts::bm25::Bm25Params;
-use zeppelin_embed::fts::index::{Document, LexicalIndex, SegmentIndex, DEFAULT_FIELD};
-use zeppelin_embed::fts::prune::{search_pruned, select_strategy, Strategy as Prune};
-use zeppelin_embed::fts::search::{search, TermQuery};
+use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+use zeppelin_embed::fts::prune::{Strategy as Prune, search_pruned, select_strategy};
+use zeppelin_embed::fts::search::{TermQuery, search};
 use zeppelin_embed::fts::tokenizer::{Analyzer, Profile, TokenizerConfig};
 
 /// Scores must agree to the last representable bit, not merely closely:
@@ -111,6 +111,108 @@ fn analyze_query(analyzer: &Analyzer, words: &[String]) -> Vec<Vec<u8>> {
         }
     }
     terms
+}
+
+/// Plan FTS-optimizations P2.5 guard 2, landed ahead of the wiring it
+/// guards.
+///
+/// # Why this test exists before the code it protects
+///
+/// The persisted `u8 block_max` is `quantize(score / ceiling)`, and that
+/// fraction reduces to `tf / (tf + k1 * (1 - b + b * len / avgdl))`. `idf`
+/// cancels, so drift in `df` and `N` is harmless. `avgdl` and `(k1, b)` do
+/// not cancel: a bound sealed when documents were short is too low once
+/// longer documents arrive, and an index sealed under `beir()` and queried
+/// under `anserini()` carries stale bounds. A bound that is too low lets
+/// pruning skip a document that belonged in the top-k, which is a wrong
+/// answer rather than a slow one. `tests/block_max_soundness.rs` measures
+/// the shortfall at 15.21% and 19.56%.
+///
+/// Today this test CANNOT FAIL, because `search_pruned` rebuilds bounds
+/// from live statistics and never reads the stored byte. That is exactly
+/// why it is written now: the defect bites whichever change first reads
+/// that byte, and this is the shape that catches it. When the sealed format
+/// reaches the query path, this test starts being able to fail — and if it
+/// were written afterwards, it would be written by someone who had already
+/// convinced themselves the bounds were fine.
+///
+/// Segment A holds short documents; segment B holds documents an order of
+/// magnitude longer, so `avgdl` rises sharply between them. That is the
+/// direction that breaks the bound: a larger `avgdl` shrinks `len / avgdl`,
+/// shrinks the denominator, and grows the fraction.
+///
+/// # The fixture detail that gives this test teeth
+///
+/// A single-term BM25 score is monotone in document length, so the winners
+/// are the shortest documents. If every short document sits in the first
+/// segment, a scan in row order finds the whole top-k before any bound is
+/// ever consulted, and the test passes no matter how badly the bounds
+/// under-state — verified by injecting a stale-`avgdl` bound, which this
+/// test's first draft failed to catch. Segment B therefore carries
+/// occasional two-token documents that outrank everything in segment A and
+/// sit late in traversal order, so an over-aggressive skip loses a result
+/// the exhaustive scorer keeps.
+#[test]
+fn pruning_agrees_after_average_document_length_drifts_across_segments() {
+    let analyzer = analyzer();
+    let mut texts: Vec<String> = Vec::new();
+    // Segment A: short documents, every term present so the lists span
+    // several blocks and pruning actually engages.
+    for ordinal in 0..320_usize {
+        let padding = vec!["filler"; 4 + ordinal % 11].join(" ");
+        texts.push(format!("common engine rare{} {padding}", ordinal % 7));
+    }
+    let short = texts.len();
+    // Segment B: mostly documents an order of magnitude longer, which is
+    // what moves avgdl. Every 37th is a two-token document that outranks
+    // everything in segment A while sitting late in traversal order.
+    for ordinal in 0..320_usize {
+        if ordinal % 37 == 0 {
+            texts.push("common engine".to_owned());
+            continue;
+        }
+        let padding = vec!["filler"; 80 + ordinal % 40].join(" ");
+        texts.push(format!("common engine rare{} {padding}", ordinal % 7));
+    }
+    let index = build_index(&analyzer, &texts, &[short, texts.len() - short]);
+
+    let sealed = index.corpus_stats().expect("statistics");
+    assert!(
+        sealed.average_document_length() > 30.0,
+        "the fixture must actually move avgdl, got {}",
+        sealed.average_document_length()
+    );
+    // The top-ranked document must live in the later segment, or an
+    // over-aggressive skip costs nothing and this test proves nothing.
+    let probe = TermQuery::flat(vec![b"common".to_vec()], &[DEFAULT_FIELD]);
+    let best = search(&index, &probe, 1, Bm25Params::beir()).expect("scores");
+    assert_eq!(
+        best.hits.first().map(|hit| hit.doc.segment),
+        Some(1),
+        "the fixture must put the winner in the later segment"
+    );
+
+    for params in [Bm25Params::beir(), Bm25Params::anserini()] {
+        for terms in [
+            vec![b"common".to_vec()],
+            vec![b"common".to_vec(), b"engine".to_vec()],
+            vec![b"engine".to_vec(), b"rare3".to_vec(), b"common".to_vec()],
+        ] {
+            let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
+            for k in [1_usize, 10, 50] {
+                let expected = search(&index, &query, k, params).expect("scores");
+                for strategy in [Prune::BlockMaxWand, Prune::BlockMaxMaxscore] {
+                    let actual =
+                        search_pruned(&index, &query, k, params, strategy).expect("scores");
+                    assert_eq!(
+                        actual.hits, expected.hits,
+                        "{strategy:?} diverged from the exhaustive scorer under                          avgdl drift at k={k} with k1={} b={}",
+                        params.k1, params.b
+                    );
+                }
+            }
+        }
+    }
 }
 
 proptest! {

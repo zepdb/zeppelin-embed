@@ -64,8 +64,7 @@ pub fn run(
         // Order live cursors by current document.
         live.clear();
         live.extend(
-            (0..cursors.len())
-                .filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted())),
+            (0..cursors.len()).filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted())),
         );
         if live.is_empty() {
             break;
