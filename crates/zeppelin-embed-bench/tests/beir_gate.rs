@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use zeppelin_embed::fts::bm25::Bm25Params;
 use zeppelin_embed::fts::index::{Document, FieldId, LexicalIndex, SegmentIndex};
+use zeppelin_embed::fts::prune::{search_pruned, select_strategy};
 use zeppelin_embed::fts::search::{search, TermQuery};
 use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
 use zeppelin_embed_bench::beir::eval::{flat_targets, mean_ndcg_at_k, GateRow, Run, RunEntry};
@@ -102,7 +103,22 @@ fn measure(root: &std::path::Path, corpus_name: &str, flat: bool) -> Option<f64>
             terms,
             fields: weights.clone(),
         };
-        let Ok(result) = search(&index, &structured, 10, Bm25Params::default()) else {
+        // ZE_BEIR_PRUNE=1 routes the same queries through task 14's
+        // block-max pruning instead of the exhaustive oracle. The nDCG must
+        // come out identical — that is the equivalence contract — so any
+        // drift here is a bound bug the property tests missed.
+        let outcome = if std::env::var_os("ZE_BEIR_PRUNE").is_some() {
+            search_pruned(
+                &index,
+                &structured,
+                10,
+                Bm25Params::default(),
+                select_strategy(structured.terms.len(), 10),
+            )
+        } else {
+            search(&index, &structured, 10, Bm25Params::default())
+        };
+        let Ok(result) = outcome else {
             continue;
         };
         executed += 1;

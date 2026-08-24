@@ -1,0 +1,23 @@
+[package]
+name = "lexical-bakeoff"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# This crate is DELIBERATELY excluded from the engine workspace, exactly as
+# the fuzz workspace is. tantivy pulls rayon, serde_json, and zstd-sys, all
+# of which are on the engine's absolute blacklist. Keeping the comparison
+# harness in its own workspace means `cargo deny` and the engine
+# `Cargo.lock` never see them, while still letting us measure against the
+# competitor honestly.
+[workspace]
+members = ["."]
+
+[dependencies]
+tantivy = "=0.22.1"
+serde_json = "=1.0.151"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
