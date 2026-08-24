@@ -245,3 +245,62 @@ fix bought roughly 5% and the gap remains owed to P3:
 Standing, quality (unchanged from section 2): mean nDCG@10 **0.4612**
 against tantivy 0.4429 and FTS5 0.4436; three corpora won outright,
 FiQA still tantivy's (owed item 3).
+
+## 8. Addendum 2026-08-24b: the generalized round
+
+Five commits after section 7 (`4f11e4a`..`d8a05d3`): WAND's iteration
+order caches rows beside slots; term frequencies decode lazily — a
+landed block that is ruled out by bound never touches its tf bytes
+(`tf_blocks_decoded` pins the mechanism); indexing accumulates through
+an xxh3 term table with sort-based per-document grouping and analyzes
+documents on explicit scoped threads, proven identical to the
+sequential loop; and linguistic profiles drop single-LETTER
+decomposition parts (the `k` of `401k`, the `t` of `don't`), keeping
+single digits — an epoch bump with regenerated goldens.
+
+**Quality moved deliberately** for the first time, and the change paid
+its way (nDCG@10, section-7 baseline to now):
+
+| corpus | before | after | delta |
+| --- | ---: | ---: | ---: |
+| TREC-COVID | 0.6004 | **0.6022** | +0.0018 |
+| FiQA | 0.2290 | **0.2337** | +0.0047 |
+| NFCorpus | 0.3183 | 0.3175 | -0.0008 |
+| SciFact | 0.6972 | 0.6924 | -0.0048 |
+| **mean** | 0.4612 | **0.4615** | +0.0002 |
+
+The mean rises, FiQA — the weak corpus — gains most, and every corpus
+stays inside the Pyserini gate. The SciFact cost is hyphenated single
+letters (`t-cell`); special-casing it would be fitting four corpora,
+so it is recorded instead. Mean still leads tantivy (0.4429) and FTS5
+(0.4436).
+
+**Latency**, three repetitions, arms alternated, medians, ms/query,
+same caveats as section 7:
+
+| corpus | zeppelin | tantivy | verdict |
+| --- | ---: | ---: | :--- |
+| TREC-COVID | **4.400** | 5.000 | we win 1.14x |
+| FiQA | **1.190** | 1.616 | we win 1.36x |
+| NFCorpus | **0.022** | 0.195 | we win 9.0x |
+| SciFact | **0.207** | 0.730 | we win 3.5x |
+
+**Every corpus is now won on query latency**, including TREC-COVID,
+which section 7 recorded as a 1.18x loss. Against section 7's FTS5
+column the query margins are 30x-48x.
+
+Indexing, medians, whole corpus, ms. The writer now analyzes on
+min(cpus, 8) threads, matching tantivy's writer and disclosed as
+before; accumulation stays on one thread:
+
+| corpus | zeppelin | tantivy | ratio | was (section 7) |
+| --- | ---: | ---: | ---: | ---: |
+| TREC-COVID | 9,092 | **755** | 12.0x | 33.1x |
+| FiQA | 1,910 | **203** | 9.4x | 29.8x |
+| NFCorpus | 202 | **28** | 7.2x | 25.1x |
+| SciFact | 310 | **38** | 8.2x | 25.1x |
+
+FTS5's indexing (section 7: 4,711 / 1,025 / 81 / 122) is still ahead
+of ours by roughly 2x. The remaining owed work is the P3.1 arena for
+the analysis pipeline itself — the token `String`s — and sharded
+accumulation.
