@@ -8,6 +8,7 @@ thread_local! {
     static ATTRIBUTED_DEPTH: Cell<u32> = const { Cell::new(0) };
     static ATTRIBUTED_BYTES: Cell<u64> = const { Cell::new(0) };
     static UNATTRIBUTED_BYTES: Cell<u64> = const { Cell::new(0) };
+    static ALLOCATION_COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
 struct AuditingAllocator;
@@ -63,6 +64,7 @@ fn record_allocation(bytes: usize) {
             return;
         }
         let amount = u64::try_from(bytes).unwrap_or(u64::MAX);
+        ALLOCATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
         ATTRIBUTED_DEPTH.with(|attributed_depth| {
             let counter = if attributed_depth.get() == 0 {
                 &UNATTRIBUTED_BYTES
@@ -96,6 +98,11 @@ impl Drop for DepthGuard {
 pub(crate) struct AuditReport {
     pub(crate) attributed_bytes: u64,
     pub(crate) unattributed_bytes: u64,
+    /// Number of allocator calls, not their size.
+    ///
+    /// Bytes answer "is this accounted"; the count answers "does this loop
+    /// allocate per item", which is the query-path gate in plan P0.4.
+    pub(crate) allocations: u64,
 }
 
 #[cfg(test)]
@@ -103,16 +110,19 @@ pub(crate) fn audit_engine_path<T>(operation: impl FnOnce() -> T) -> (T, AuditRe
     ATTRIBUTED_DEPTH.with(|depth| depth.set(0));
     ATTRIBUTED_BYTES.with(|bytes| bytes.set(0));
     UNATTRIBUTED_BYTES.with(|bytes| bytes.set(0));
+    ALLOCATION_COUNT.with(|count| count.set(0));
     let engine = DepthGuard::enter(&ENGINE_DEPTH);
     let result = operation();
     drop(engine);
     let attributed_bytes = ATTRIBUTED_BYTES.with(Cell::get);
     let unattributed_bytes = UNATTRIBUTED_BYTES.with(Cell::get);
+    let allocations = ALLOCATION_COUNT.with(Cell::get);
     (
         result,
         AuditReport {
             attributed_bytes,
             unattributed_bytes,
+            allocations,
         },
     )
 }

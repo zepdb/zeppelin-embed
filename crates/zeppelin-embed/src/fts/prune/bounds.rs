@@ -17,7 +17,7 @@
 //!    Those two need not come from the same document; using the pair is
 //!    looser than the true maximum and therefore still an upper bound.
 
-use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, term_score, term_score_ceiling};
+use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, Tf, TermScorer};
 use crate::fts::postings::{dequantize_block_max, quantize_block_max};
 
 /// One block's bound over a run of `(row, weighted tf)` entries.
@@ -55,7 +55,8 @@ pub fn build_block_bounds(
     if block_size == 0 || entries.is_empty() {
         return Vec::new();
     }
-    let scale = term_score_ceiling(df, stats, params);
+    let scorer = TermScorer::new(df, stats, params);
+    let scale = scorer.ceiling();
     let mut bounds = Vec::with_capacity(entries.len().div_ceil(block_size));
     let mut start = 0_usize;
     while start < entries.len() {
@@ -71,7 +72,7 @@ pub fn build_block_bounds(
                 .ok()
                 .and_then(|slot| lengths.get(slot).copied())
                 .unwrap_or(1);
-            let score = term_score(Tf(tf), df, DocLen(length), stats, params);
+            let score = scorer.score(Tf(tf), DocLen(length));
             if score > best {
                 best = score;
             }
@@ -110,6 +111,7 @@ pub fn term_upper_bound(bounds: &[BlockBound]) -> f64 {
 )]
 mod tests {
     use super::*;
+    use crate::fts::bm25::term_score;
 
     fn stats() -> CorpusStats {
         CorpusStats::new(1_000, 40_000).expect("valid stats")

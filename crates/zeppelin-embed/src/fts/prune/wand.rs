@@ -25,7 +25,8 @@
 //! by `k` documents. A skipped document could not have entered the results.
 //! When the bounds are uncertain the code evaluates rather than skipping.
 
-use crate::fts::bm25::{Bm25Params, CorpusStats, DocLen, Tf, term_score};
+use crate::fts::bm25::DocLen;
+use crate::fts::bm25::Tf;
 use crate::fts::search::{GlobalDocId, SearchCounters};
 
 use super::{TermCursor, TopK};
@@ -38,12 +39,15 @@ fn length_of(lengths: &[u32], row: u32) -> u32 {
 }
 
 /// Runs block-max WAND over one segment's cursors.
+///
+/// Corpus statistics and BM25 parameters are not arguments: each cursor
+/// carries its own [`crate::fts::bm25::TermScorer`], built once from exactly
+/// those inputs, so there is no way for this loop to score against different
+/// statistics than the bounds were built from.
 pub fn run(
     cursors: &mut [TermCursor],
     lengths: &[u32],
     segment: u32,
-    stats: &CorpusStats,
-    params: Bm25Params,
     heap: &mut TopK,
     counters: &mut SearchCounters,
 ) {
@@ -124,13 +128,9 @@ pub fn run(
                 }
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 if let Some(tf) = cursor.current_tf() {
-                    total += term_score(
-                        Tf(tf),
-                        cursor.df,
-                        DocLen(length_of(lengths, pivot_row)),
-                        stats,
-                        params,
-                    );
+                    total += cursor
+                        .scorer
+                        .score(Tf(tf), DocLen(length_of(lengths, pivot_row)));
                 }
                 cursor.position += 1;
             }

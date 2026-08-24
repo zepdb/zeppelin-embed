@@ -21,7 +21,8 @@
 //! construction. Every other document is enumerated and fully scored, with
 //! the non-essential terms added back in. Nothing is dropped on an estimate.
 
-use crate::fts::bm25::{Bm25Params, CorpusStats, DocLen, Tf, term_score};
+use crate::fts::bm25::DocLen;
+use crate::fts::bm25::Tf;
 use crate::fts::search::{GlobalDocId, SearchCounters};
 
 use super::{TermCursor, TopK};
@@ -42,8 +43,6 @@ pub fn score_all(
     cursors: &[TermCursor],
     lengths: &[u32],
     segment: u32,
-    stats: &CorpusStats,
-    params: Bm25Params,
     heap: &mut TopK,
     counters: &mut SearchCounters,
 ) {
@@ -51,13 +50,7 @@ pub fn score_all(
     for cursor in cursors {
         for (row, tf) in &cursor.entries {
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-            let score = term_score(
-                Tf(*tf),
-                cursor.df,
-                DocLen(length_of(lengths, *row)),
-                stats,
-                params,
-            );
+            let score = cursor.scorer.score(Tf(*tf), DocLen(length_of(lengths, *row)));
             match totals.iter_mut().find(|(candidate, _)| candidate == row) {
                 Some((_, total)) => *total += score,
                 None => totals.push((*row, score)),
@@ -72,12 +65,14 @@ pub fn score_all(
 }
 
 /// Runs block-max MAXSCORE over one segment's cursors.
+///
+/// Corpus statistics and BM25 parameters are not arguments: each cursor
+/// carries its own [`crate::fts::bm25::TermScorer`], built once from exactly
+/// those inputs.
 pub fn run(
     cursors: &mut [TermCursor],
     lengths: &[u32],
     segment: u32,
-    stats: &CorpusStats,
-    params: Bm25Params,
     heap: &mut TopK,
     counters: &mut SearchCounters,
 ) {
@@ -158,15 +153,11 @@ pub fn run(
             counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
             let contribution = if cursor.current() == Some(row) {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                cursor.current_tf().map_or(0.0, |tf| {
-                    term_score(
-                        Tf(tf),
-                        cursor.df,
-                        DocLen(length_of(lengths, row)),
-                        stats,
-                        params,
-                    )
-                })
+                cursor
+                    .current_tf()
+                    .map_or(0.0, |tf| {
+                        cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)))
+                    })
             } else {
                 0.0
             };

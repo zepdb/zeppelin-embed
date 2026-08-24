@@ -31,7 +31,7 @@ pub mod bounds;
 pub mod maxscore;
 pub mod wand;
 
-use crate::fts::bm25::{Bm25Params, Df};
+use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
 
@@ -84,6 +84,11 @@ pub struct TermCursor {
     pub blocks: Vec<BlockBound>,
     /// Store-wide document frequency.
     pub df: Df,
+    /// This term's hoisted scoring constants.
+    ///
+    /// Built once per (term, segment) so the inner loops never recompute
+    /// `idf` or `avgdl`. See [`crate::fts::bm25::TermScorer`].
+    pub scorer: TermScorer,
     /// Largest contribution this term can make to any document.
     pub upper_bound: f64,
     /// Cursor position into `entries`.
@@ -288,6 +293,7 @@ pub fn search_pruned(
                 entries: merged.entries,
                 blocks,
                 df,
+                scorer: TermScorer::new(df, &stats, params),
                 upper_bound,
                 position: 0,
             });
@@ -304,8 +310,6 @@ pub fn search_pruned(
                 &cursors,
                 &lengths,
                 segment_index,
-                &stats,
-                params,
                 &mut heap,
                 &mut counters,
             );
@@ -317,8 +321,6 @@ pub fn search_pruned(
                 &mut cursors,
                 &lengths,
                 segment_index,
-                &stats,
-                params,
                 &mut heap,
                 &mut counters,
             ),
@@ -326,8 +328,6 @@ pub fn search_pruned(
                 &mut cursors,
                 &lengths,
                 segment_index,
-                &stats,
-                params,
                 &mut heap,
                 &mut counters,
             ),
@@ -436,6 +436,7 @@ mod tests {
             entries,
             blocks,
             df: Df(200),
+            scorer: TermScorer::new(Df(200), &stats, Bm25Params::default()),
             upper_bound: 1.0,
             position: 0,
         };
@@ -461,6 +462,7 @@ mod tests {
             entries,
             blocks,
             df: Df(10),
+            scorer: TermScorer::new(Df(10), &stats, Bm25Params::default()),
             upper_bound: 1.0,
             position: 0,
         };

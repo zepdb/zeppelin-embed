@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 
-use super::bm25::{Bm25Params, Df, DocLen, Tf, term_score};
+use super::bm25::{Bm25Params, Df, DocLen, Tf, TermScorer};
 use super::index::{FieldId, IndexError, LexicalIndex};
 
 /// A store-wide document identity.
@@ -271,11 +271,15 @@ pub fn search(
                 continue;
             }
             let merged = merge_term(segment, term, &query.fields);
+            // `idf` costs a `ln()` and `avgdl` costs a division; both are
+            // constant across this term's postings, so they are computed
+            // once here rather than once per posting.
+            let scorer = TermScorer::new(Df(df), &stats, params);
             counters.blocks_decoded = counters.blocks_decoded.saturating_add(1);
             for (row, tf) in merged.entries {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 let length = weighted_length(segment, row, &query.fields);
-                let score = term_score(Tf(tf), Df(df), DocLen(length), &stats, params);
+                let score = scorer.score(Tf(tf), DocLen(length));
                 let Ok(slot) = usize::try_from(row) else {
                     continue;
                 };
