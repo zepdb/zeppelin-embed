@@ -1,0 +1,4 @@
+# The v1 selection rule of record. Recalibrate from counter
+# evidence and record the change; do not tune it silently.
+max_terms_for_wand = 4
+max_k_for_wand = 10

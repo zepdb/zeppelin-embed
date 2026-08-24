@@ -1,0 +1,203 @@
+//! Block-max MAXSCORE.
+//!
+//! # The mechanism
+//!
+//! Sort the query terms by their upper bound, ascending. Walk that order
+//! accumulating bounds: the longest prefix whose bounds sum to at most the
+//! current top-k threshold can never, on its own, lift a document into the
+//! results. Those terms are **non-essential** — they are still scored, but
+//! they no longer drive iteration. Only the essential suffix supplies
+//! candidate documents.
+//!
+//! As the threshold rises the essential set shrinks, so a query that starts
+//! by touching everything ends by touching only its rarest term. That is
+//! why MAXSCORE degrades gracefully as terms are added, and why Lucene
+//! chose it (`research/02a:282`).
+//!
+//! # Where correctness lives
+//!
+//! A document reached only through non-essential terms cannot beat the
+//! threshold, because the sum of their bounds is at most the threshold by
+//! construction. Every other document is enumerated and fully scored, with
+//! the non-essential terms added back in. Nothing is dropped on an estimate.
+
+use crate::fts::bm25::{Bm25Params, CorpusStats, DocLen, Tf, term_score};
+use crate::fts::search::{GlobalDocId, SearchCounters};
+
+use super::{TermCursor, TopK};
+
+/// Returns the weighted length of one row, defaulting to one token.
+fn length_of(lengths: &[u32], row: u32) -> u32 {
+    usize::try_from(row)
+        .ok()
+        .and_then(|slot| lengths.get(slot).copied())
+        .unwrap_or(1)
+}
+
+/// Scores every candidate exhaustively. The short-list fast path.
+///
+/// Used when the posting lists are too short for pruning to pay for itself;
+/// it produces exactly the same documents and scores.
+pub fn score_all(
+    cursors: &[TermCursor],
+    lengths: &[u32],
+    segment: u32,
+    stats: &CorpusStats,
+    params: Bm25Params,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+) {
+    let mut totals: Vec<(u32, f64)> = Vec::new();
+    for cursor in cursors {
+        for (row, tf) in &cursor.entries {
+            counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+            let score = term_score(
+                Tf(*tf),
+                cursor.df,
+                DocLen(length_of(lengths, *row)),
+                stats,
+                params,
+            );
+            match totals.iter_mut().find(|(candidate, _)| candidate == row) {
+                Some((_, total)) => *total += score,
+                None => totals.push((*row, score)),
+            }
+        }
+    }
+    totals.sort_by_key(|(row, _)| *row);
+    for (row, score) in totals {
+        counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+        heap.offer(GlobalDocId { segment, row }, score);
+    }
+}
+
+/// Runs block-max MAXSCORE over one segment's cursors.
+pub fn run(
+    cursors: &mut [TermCursor],
+    lengths: &[u32],
+    segment: u32,
+    stats: &CorpusStats,
+    params: Bm25Params,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+) {
+    // Ascending by upper bound: cheapest terms become non-essential first.
+    let mut order: Vec<usize> = (0..cursors.len()).collect();
+    order.sort_by(|left, right| {
+        let a = cursors.get(*left).map_or(0.0, |c| c.upper_bound);
+        let b = cursors.get(*right).map_or(0.0, |c| c.upper_bound);
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for cursor in cursors.iter_mut() {
+        cursor.position = 0;
+    }
+
+    loop {
+        let threshold = heap.threshold();
+        // Non-essential terms are the longest CHEAP-END PREFIX whose bounds
+        // sum to at most the threshold: a document reachable only through
+        // them cannot beat a full top-k, so they need not drive iteration.
+        // Testing the prefix is the whole rule; testing the suffix instead
+        // declares terms non-essential that can still lift a document, and
+        // the equivalence property catches it as a missing result.
+        let mut essential_from = 0_usize;
+        let mut accumulated = 0.0_f64;
+        while essential_from < order.len() {
+            let bound = order
+                .get(essential_from)
+                .and_then(|slot| cursors.get(*slot))
+                .map_or(0.0, |cursor| cursor.upper_bound);
+            if heap.is_full() && accumulated + bound <= threshold {
+                accumulated += bound;
+                essential_from += 1;
+            } else {
+                break;
+            }
+        }
+        let essential = order.get(essential_from..).unwrap_or(&[]);
+        if essential.is_empty() {
+            break;
+        }
+
+        // The next candidate is the smallest current row among essentials.
+        let mut candidate: Option<u32> = None;
+        for slot in essential {
+            let Some(cursor) = cursors.get(*slot) else {
+                continue;
+            };
+            if let Some(row) = cursor.current() {
+                candidate = Some(candidate.map_or(row, |best: u32| best.min(row)));
+            }
+        }
+        let Some(row) = candidate else {
+            break;
+        };
+
+        // Score the candidate across every term, essential or not.
+        //
+        // Contributions are collected per TERM SLOT and summed in slot
+        // order at the end, never in the bound-sorted order this loop
+        // walks. Floating-point addition is not associative, so summing in
+        // a different order than the exhaustive scorer differs from it by
+        // an ULP — which is a changed result, and the equivalence property
+        // is right to reject it.
+        let mut contributions: Vec<f64> = vec![0.0; cursors.len()];
+        let mut running = 0.0_f64;
+        let mut remaining_bound: f64 = order
+            .iter()
+            .filter_map(|slot| cursors.get(*slot))
+            .map(|cursor| cursor.upper_bound)
+            .sum();
+        let mut abandoned = false;
+        for slot in &order {
+            let Some(cursor) = cursors.get_mut(*slot) else {
+                continue;
+            };
+            let skipped = cursor.seek(row);
+            counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
+            let contribution = if cursor.current() == Some(row) {
+                counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                cursor.current_tf().map_or(0.0, |tf| {
+                    term_score(
+                        Tf(tf),
+                        cursor.df,
+                        DocLen(length_of(lengths, row)),
+                        stats,
+                        params,
+                    )
+                })
+            } else {
+                0.0
+            };
+            if let Some(entry) = contributions.get_mut(*slot) {
+                *entry = contribution;
+            }
+            running += contribution;
+            remaining_bound -= cursor.upper_bound;
+            // Bail out only when even a perfect remainder cannot reach the
+            // threshold. `remaining_bound` is a sum of upper bounds, so this
+            // can never discard a document that would have qualified.
+            if running + remaining_bound < threshold && heap.is_full() {
+                abandoned = true;
+                break;
+            }
+        }
+
+        if !abandoned {
+            let total: f64 = contributions.iter().sum();
+            counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+            heap.offer(GlobalDocId { segment, row }, total);
+        }
+
+        // Advance past the candidate everywhere it appears.
+        for cursor in cursors.iter_mut() {
+            if cursor.current() == Some(row) {
+                cursor.position += 1;
+            }
+        }
+        if cursors.iter().all(TermCursor::exhausted) {
+            break;
+        }
+    }
+}

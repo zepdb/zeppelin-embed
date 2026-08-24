@@ -142,6 +142,64 @@ pub struct SearchResult {
     pub counters: SearchCounters,
 }
 
+/// One term's postings within one segment, merged across weighted fields.
+///
+/// This is the single materialization both the exhaustive scorer and task
+/// 14's pruning consume. Sharing it is what makes the equivalence property
+/// a statement about *which documents are scored* rather than about two
+/// independent scoring implementations agreeing by luck.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MergedPostings {
+    /// `(row, weighted term frequency)`, ascending by row.
+    pub entries: Vec<(u32, u32)>,
+}
+
+/// Merges one term's per-field postings into weighted term frequencies.
+#[must_use]
+pub fn merge_term(
+    segment: &super::index::SegmentIndex,
+    term: &[u8],
+    weights: &FieldWeights,
+) -> MergedPostings {
+    let mut weighted: Vec<(u32, u64)> = Vec::new();
+    for field in weights.fields() {
+        let weight = u64::from(weights.weight(field));
+        if weight == 0 {
+            continue;
+        }
+        let Some(list) = segment.posting_list(term, field) else {
+            continue;
+        };
+        for posting in list.postings() {
+            let contribution = u64::from(posting.tf).saturating_mul(weight);
+            match weighted.iter_mut().find(|(row, _)| *row == posting.docid) {
+                Some((_, total)) => *total = total.saturating_add(contribution),
+                None => weighted.push((posting.docid, contribution)),
+            }
+        }
+    }
+    weighted.sort_by_key(|(row, _)| *row);
+    MergedPostings {
+        entries: weighted
+            .into_iter()
+            .filter_map(|(row, total)| {
+                let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
+                (tf > 0).then_some((row, tf))
+            })
+            .collect(),
+    }
+}
+
+/// The weighted analyzed length of one row.
+#[must_use]
+pub fn row_length(
+    segment: &super::index::SegmentIndex,
+    row: u32,
+    weights: &FieldWeights,
+) -> u32 {
+    weighted_length(segment, row, weights)
+}
+
 /// Scores every matching document exhaustively and returns the top `k`.
 ///
 /// # Errors
@@ -178,34 +236,10 @@ pub fn search(
             if df == 0 {
                 continue;
             }
-            // Accumulate the weighted term frequency per row across fields.
-            let mut weighted: Vec<(u32, u64)> = Vec::new();
-            for field in &fields {
-                let weight = u64::from(query.fields.weight(*field));
-                if weight == 0 {
-                    continue;
-                }
-                let Some(list) = segment.posting_list(term, *field) else {
-                    continue;
-                };
-                counters.blocks_decoded = counters.blocks_decoded.saturating_add(1);
-                for posting in list.postings() {
-                    counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                    let contribution = u64::from(posting.tf).saturating_mul(weight);
-                    match weighted.iter_mut().find(|(row, _)| *row == posting.docid) {
-                        Some((_, total)) => *total = total.saturating_add(contribution),
-                        None => weighted.push((posting.docid, contribution)),
-                    }
-                }
-            }
-
-            for (row, weighted_tf) in weighted {
-                // Weights are thousandths; divide back out at the end so the
-                // flat case is exactly the unweighted case.
-                let tf = u32::try_from(weighted_tf / 1_000).unwrap_or(u32::MAX);
-                if tf == 0 {
-                    continue;
-                }
+            let merged = merge_term(segment, term, &query.fields);
+            counters.blocks_decoded = counters.blocks_decoded.saturating_add(1);
+            for (row, tf) in merged.entries {
+                counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 let length = weighted_length(segment, row, &query.fields);
                 let score = term_score(Tf(tf), Df(df), DocLen(length), &stats, params);
                 match row_scores.iter_mut().find(|(candidate, _)| *candidate == row) {

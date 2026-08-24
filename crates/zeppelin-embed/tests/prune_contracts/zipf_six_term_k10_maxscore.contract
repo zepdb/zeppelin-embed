@@ -1,0 +1,5 @@
+# Zipf 2,000 documents, terms t0..t5, k=10, block-max MAXSCORE
+docs_evaluated = 53
+blocks_decoded = 80
+blocks_skipped = 46
+postings_decoded = 2254

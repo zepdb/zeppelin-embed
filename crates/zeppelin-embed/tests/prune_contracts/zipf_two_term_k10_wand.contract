@@ -1,0 +1,5 @@
+# Zipf 2,000 documents, terms t0 and t5, k=10, block-max WAND
+docs_evaluated = 379
+blocks_decoded = 38
+blocks_skipped = 31
+postings_decoded = 713

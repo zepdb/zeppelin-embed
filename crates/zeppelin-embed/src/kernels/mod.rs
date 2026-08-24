@@ -13,6 +13,8 @@
 //! future Task 27 frontier harness without moving selection to build time.
 
 mod dispatch;
+/// Posting-block decode kernels: bit-unpack and delta prefix sum.
+pub mod postings;
 mod scalar;
 
 #[cfg(target_arch = "x86_64")]

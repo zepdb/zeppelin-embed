@@ -27,3 +27,6 @@ pub mod search;
 
 #[cfg(test)]
 mod properties;
+
+/// Dynamic pruning: block-max MAXSCORE and WAND.
+pub mod prune;

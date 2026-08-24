@@ -1,0 +1,158 @@
+//! Block-max WAND.
+//!
+//! # The mechanism
+//!
+//! Keep the cursors sorted by their current document. Walk them from the
+//! front accumulating upper bounds until the running sum first exceeds the
+//! top-k threshold: that cursor is the **pivot**, and its current document
+//! is the first one that could possibly qualify. Every document before it
+//! is provably unreachable and is skipped without being scored.
+//!
+//! The block-max refinement then asks a second, cheaper question: using the
+//! *block* bounds at the current positions rather than the whole-term
+//! bounds, can this pivot document still qualify? If not, jump past it
+//! without decoding anything. That is where the 3.8M-to-21.9K reduction
+//! comes from (`research/02a:281`).
+//!
+//! WAND is strongest at small `k` with few terms, which is why the
+//! selection rule prefers it there; its advantage shrinks from 3.4x at
+//! k=10 to 1.4x at k=1000 (`research/02a:282`).
+//!
+//! # Where correctness lives
+//!
+//! Both bounds are upper bounds, and the pivot rule only skips documents
+//! whose *total possible* score is at or below a threshold already achieved
+//! by `k` documents. A skipped document could not have entered the results.
+//! When the bounds are uncertain the code evaluates rather than skipping.
+
+use crate::fts::bm25::{Bm25Params, CorpusStats, DocLen, Tf, term_score};
+use crate::fts::search::{GlobalDocId, SearchCounters};
+
+use super::{TermCursor, TopK};
+
+fn length_of(lengths: &[u32], row: u32) -> u32 {
+    usize::try_from(row)
+        .ok()
+        .and_then(|slot| lengths.get(slot).copied())
+        .unwrap_or(1)
+}
+
+/// Runs block-max WAND over one segment's cursors.
+pub fn run(
+    cursors: &mut [TermCursor],
+    lengths: &[u32],
+    segment: u32,
+    stats: &CorpusStats,
+    params: Bm25Params,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+) {
+    for cursor in cursors.iter_mut() {
+        cursor.position = 0;
+    }
+
+    loop {
+        // Order live cursors by current document.
+        let mut live: Vec<usize> = (0..cursors.len())
+            .filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted()))
+            .collect();
+        if live.is_empty() {
+            break;
+        }
+        live.sort_by_key(|slot| cursors.get(*slot).and_then(TermCursor::current));
+
+        let threshold = heap.threshold();
+
+        // Find the pivot: the first cursor at which the accumulated
+        // whole-term bounds exceed the threshold.
+        let mut accumulated = 0.0_f64;
+        let mut pivot: Option<usize> = None;
+        for (position, slot) in live.iter().enumerate() {
+            let Some(cursor) = cursors.get(*slot) else {
+                continue;
+            };
+            accumulated += cursor.upper_bound;
+            if accumulated > threshold || !heap.is_full() {
+                pivot = Some(position);
+                break;
+            }
+        }
+        let Some(pivot_position) = pivot else {
+            // No document can reach the threshold: the query is finished.
+            break;
+        };
+        let Some(pivot_slot) = live.get(pivot_position).copied() else {
+            break;
+        };
+        let Some(pivot_row) = cursors.get(pivot_slot).and_then(TermCursor::current) else {
+            break;
+        };
+
+        let Some(first_slot) = live.first().copied() else {
+            break;
+        };
+        let first_row = cursors.get(first_slot).and_then(TermCursor::current);
+
+        if first_row == Some(pivot_row) {
+            // Every cursor up to the pivot is already on the pivot document.
+            // Refine with block maxima before paying to score it.
+            let mut block_bound = 0.0_f64;
+            for slot in &live {
+                let Some(cursor) = cursors.get(*slot) else {
+                    continue;
+                };
+                if cursor.current() == Some(pivot_row) {
+                    block_bound += cursor.current_block_max();
+                }
+            }
+
+            if heap.is_full() && block_bound <= threshold {
+                // Nothing in these blocks can qualify: step past the pivot.
+                counters.blocks_skipped = counters.blocks_skipped.saturating_add(1);
+                for cursor in cursors.iter_mut() {
+                    if cursor.current() == Some(pivot_row) {
+                        cursor.position += 1;
+                    }
+                }
+                continue;
+            }
+
+            let mut total = 0.0_f64;
+            for cursor in cursors.iter_mut() {
+                if cursor.current() != Some(pivot_row) {
+                    continue;
+                }
+                counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                if let Some(tf) = cursor.current_tf() {
+                    total += term_score(
+                        Tf(tf),
+                        cursor.df,
+                        DocLen(length_of(lengths, pivot_row)),
+                        stats,
+                        params,
+                    );
+                }
+                cursor.position += 1;
+            }
+            counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+            heap.offer(
+                GlobalDocId {
+                    segment,
+                    row: pivot_row,
+                },
+                total,
+            );
+        } else {
+            // Advance the cursors that trail the pivot straight to it.
+            for slot in live.iter().take(pivot_position.saturating_add(1)) {
+                let Some(cursor) = cursors.get_mut(*slot) else {
+                    continue;
+                };
+                if cursor.current().is_some_and(|row| row < pivot_row) {
+                    let skipped = cursor.seek(pivot_row);
+                    counters.blocks_skipped = counters.blocks_skipped.saturating_add(skipped);
+                }
+            }
+        }
+    }
+}

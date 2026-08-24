@@ -1,0 +1,5 @@
+# 20 documents, one term: below one block, so no pruning machinery runs
+docs_evaluated = 20
+blocks_decoded = 0
+blocks_skipped = 0
+postings_decoded = 20
