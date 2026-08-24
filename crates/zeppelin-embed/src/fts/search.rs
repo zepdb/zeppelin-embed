@@ -22,7 +22,6 @@
 //! insertion order, which is time order.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 
 use super::bm25::{Bm25Params, Df, DocLen, TermScorer, Tf};
 use super::index::{FieldId, IndexError, LexicalIndex};
@@ -181,37 +180,80 @@ pub struct MergedPostings {
     pub entries: Vec<(u32, u32)>,
 }
 
+/// One contributing field's postings, its weight, and the merge cursor.
+struct FieldRun<'segment> {
+    postings: &'segment [super::postings::Posting],
+    weight: u64,
+    cursor: usize,
+}
+
+impl FieldRun<'_> {
+    /// Returns the row at the cursor, or `None` when the run is spent.
+    fn current(&self) -> Option<u32> {
+        self.postings.get(self.cursor).map(|posting| posting.docid)
+    }
+}
+
+/// Collects the fields that contribute postings for `term`, ascending.
+///
+/// Each field's list is looked up exactly once. The lookup owns the term
+/// bytes, so calling it twice per field — once to test presence and once to
+/// read — paid for that twice.
+fn contributing_runs<'segment>(
+    segment: &'segment super::index::SegmentIndex,
+    term: &[u8],
+    weights: &FieldWeights,
+) -> Vec<FieldRun<'segment>> {
+    let mut runs: Vec<FieldRun<'segment>> = Vec::with_capacity(weights.iter().count());
+    for (field, weight) in weights.iter() {
+        let weight = u64::from(weight);
+        if weight == 0 {
+            continue;
+        }
+        let Some(list) = segment.posting_list(term, field) else {
+            continue;
+        };
+        if list.postings().is_empty() {
+            continue;
+        }
+        runs.push(FieldRun {
+            postings: list.postings(),
+            weight,
+            cursor: 0,
+        });
+    }
+    runs
+}
+
 /// Merges one term's per-field postings into weighted term frequencies.
+///
+/// # Why this is a linear merge and not an ordered map
+///
+/// Every field's posting list is already ascending by row, so their union
+/// is a k-way merge: one pass, one allocation, `O(fields)` comparisons per
+/// output row. The previous ordered map spent a `BTreeMap` descent and a
+/// node allocation per *posting*, which on the two-field BEIR shape is the
+/// dominant cost of the whole query — a term present in both the title and
+/// the body took that path, and that is most query terms.
+///
+/// Contributions are summed in ascending field order, which is the order
+/// the map's outer loop used, so the `u64` totals are bit-identical.
 #[must_use]
 pub fn merge_term(
     segment: &super::index::SegmentIndex,
     term: &[u8],
     weights: &FieldWeights,
 ) -> MergedPostings {
-    // Accumulating into a Vec and scanning it per posting is quadratic in
-    // the posting-list length. That is invisible on a 5,000-document
-    // fixture and fatal on a 171,000-document corpus, so the merge is
-    // ordered-map based, and the single-field case — by far the common one
-    // — skips the map entirely.
-    let contributing: Vec<(FieldId, u64)> = weights
-        .iter()
-        .filter_map(|(field, weight)| {
-            let weight = u64::from(weight);
-            (weight > 0 && segment.posting_list(term, field).is_some()).then_some((field, weight))
-        })
-        .collect();
+    let mut runs = contributing_runs(segment, term, weights);
 
-    if let [(field, weight)] = contributing.as_slice() {
-        let Some(list) = segment.posting_list(term, *field) else {
-            return MergedPostings::default();
-        };
-        // Postings are already ascending by row, so this is a linear copy.
+    if let [run] = runs.as_slice() {
+        // Already ascending by row, so the single-field case is a copy.
         return MergedPostings {
-            entries: list
-                .postings()
+            entries: run
+                .postings
                 .iter()
                 .filter_map(|posting| {
-                    let total = u64::from(posting.tf).saturating_mul(*weight);
+                    let total = u64::from(posting.tf).saturating_mul(run.weight);
                     let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
                     (tf > 0).then_some((posting.docid, tf))
                 })
@@ -219,26 +261,27 @@ pub fn merge_term(
         };
     }
 
-    let mut weighted: BTreeMap<u32, u64> = BTreeMap::new();
-    for (field, weight) in contributing {
-        let Some(list) = segment.posting_list(term, field) else {
-            continue;
-        };
-        for posting in list.postings() {
-            let contribution = u64::from(posting.tf).saturating_mul(weight);
-            let slot = weighted.entry(posting.docid).or_insert(0);
-            *slot = slot.saturating_add(contribution);
+    // The union is at most the sum of the run lengths, so one reservation
+    // covers the whole merge.
+    let capacity: usize = runs.iter().map(|run| run.postings.len()).sum();
+    let mut entries: Vec<(u32, u32)> = Vec::with_capacity(capacity);
+    while let Some(row) = runs.iter().filter_map(FieldRun::current).min() {
+        let mut total = 0_u64;
+        for run in &mut runs {
+            if run.current() != Some(row) {
+                continue;
+            }
+            if let Some(posting) = run.postings.get(run.cursor) {
+                total = total.saturating_add(u64::from(posting.tf).saturating_mul(run.weight));
+            }
+            run.cursor = run.cursor.saturating_add(1);
+        }
+        let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
+        if tf > 0 {
+            entries.push((row, tf));
         }
     }
-    MergedPostings {
-        entries: weighted
-            .into_iter()
-            .filter_map(|(row, total)| {
-                let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
-                (tf > 0).then_some((row, tf))
-            })
-            .collect(),
-    }
+    MergedPostings { entries }
 }
 
 /// The weighted analyzed length of one row.
