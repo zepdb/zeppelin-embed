@@ -1,5 +1,8 @@
 //! Benchmark, platform-truth, and optimization-frontier tooling.
 
+/// BEIR corpus loading and nDCG evaluation for the task 13 gate.
+pub mod beir;
+
 /// Optimization-frontier measurement and search harness.
 pub mod frontier;
 /// Recall-only flat-Vamana construction and measurement scaffold for M3.
