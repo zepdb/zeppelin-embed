@@ -3,6 +3,7 @@
 use crate::graph::block::{CheckedNodeId, GraphNodeBlocks, GraphNodeError};
 use crate::kernels::{Bit4Rows4, GatherShapeError, score_bit4_ptrs};
 use crate::lifecycle::QueryCancellation;
+use crate::meta::DocBitmap;
 use crate::quant::{
     Bit4Query, QuantError, RescoreError, RescoreMetric, RescorePool, prepare_bit4_query,
     rescore_top_k,
@@ -436,6 +437,42 @@ impl GraphSearchResult {
             .filter(|candidate| truth.contains(&candidate.row_id))
             .count()
     }
+}
+
+/// Completion of one filter-aware traversal before any store-level exact fallback.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FilteredGraphSearchOutcome {
+    /// Traversal retained only allowed rows and exact-rescored that complete pool.
+    Traversed(GraphSearchResult),
+    /// Expected selectivity pressure crossed its independent work budget.
+    VisitedBudgetExceeded {
+        /// Distinct graph nodes visited before traversal abandoned.
+        visited: usize,
+        /// Filter-only selectivity budget supplied by the planner.
+        budget: usize,
+        /// Work performed before the exact allow-list fallback takes over.
+        counters: GraphSearchCounters,
+    },
+}
+
+impl FilteredGraphSearchOutcome {
+    /// Returns deterministic work performed before either completion disposition.
+    #[must_use]
+    pub const fn counters(&self) -> GraphSearchCounters {
+        match self {
+            Self::Traversed(result) => result.counters,
+            Self::VisitedBudgetExceeded { counters, .. } => *counters,
+        }
+    }
+}
+
+enum SearchInnerOutcome {
+    Traversed(GraphSearchResult),
+    VisitedBudgetExceeded {
+        visited: usize,
+        budget: usize,
+        counters: GraphSearchCounters,
+    },
 }
 
 /// Typed graph traversal rejection.
@@ -932,14 +969,55 @@ impl<'a> GraphSearcher<'a> {
         request: GraphSearchRequest<'_>,
         cancellation: Option<&QueryCancellation<'_>>,
     ) -> Result<GraphSearchResult, GraphSearchError> {
-        self.search_inner(request, cancellation)
+        match self.search_inner(request, None, None, cancellation)? {
+            SearchInnerOutcome::Traversed(result) => Ok(result),
+            SearchInnerOutcome::VisitedBudgetExceeded { .. } => Err(GraphSearchError::Geometry(
+                "unfiltered traversal produced a filtered-budget disposition".to_owned(),
+            )),
+        }
+    }
+
+    /// Traverses every reachable node while retaining only rows in `allow_list`.
+    ///
+    /// `filtered_visited_budget` is a selectivity work budget. Crossing it is a
+    /// normal disposition for the store planner to answer through its exact
+    /// allow-list branch; it is deliberately distinct from the fail-closed
+    /// unfiltered visited-cap error.
+    pub fn search_filtered(
+        &mut self,
+        request: GraphSearchRequest<'_>,
+        allow_list: &DocBitmap,
+        filtered_visited_budget: usize,
+        cancellation: Option<&QueryCancellation<'_>>,
+    ) -> Result<FilteredGraphSearchOutcome, GraphSearchError> {
+        match self.search_inner(
+            request,
+            Some(allow_list),
+            Some(filtered_visited_budget),
+            cancellation,
+        )? {
+            SearchInnerOutcome::Traversed(result) => {
+                Ok(FilteredGraphSearchOutcome::Traversed(result))
+            }
+            SearchInnerOutcome::VisitedBudgetExceeded {
+                visited,
+                budget,
+                counters,
+            } => Ok(FilteredGraphSearchOutcome::VisitedBudgetExceeded {
+                visited,
+                budget,
+                counters,
+            }),
+        }
     }
 
     fn search_inner(
         &mut self,
         request: GraphSearchRequest<'_>,
+        allow_list: Option<&DocBitmap>,
+        filtered_visited_budget: Option<usize>,
         cancellation: Option<&QueryCancellation<'_>>,
-    ) -> Result<GraphSearchResult, GraphSearchError> {
+    ) -> Result<SearchInnerOutcome, GraphSearchError> {
         let ef = self.validate_request(request)?;
         check_cancellation(cancellation)?;
         let (qos_class, qos_relative_priority) = observed_qos();
@@ -1004,6 +1082,9 @@ impl<'a> GraphSearcher<'a> {
             if mark_visited(&mut self.scratch.visited, self.scratch.epoch, entry)? {
                 counters.visited += 1;
                 ensure_visited_cap(counters.visited, visited_cap)?;
+                if filtered_visited_budget.is_some_and(|budget| counters.visited > budget) {
+                    return self.filtered_budget_outcome(counters, filtered_visited_budget);
+                }
                 let Some(slot) = seed_group.get_mut(seed_count) else {
                     return Err(GraphSearchError::Geometry(
                         "entry seed count exceeds fixed seed group".to_owned(),
@@ -1019,6 +1100,7 @@ impl<'a> GraphSearcher<'a> {
             &seed_group,
             seed_count,
             ef,
+            allow_list,
             request.prefetch,
             &mut counters,
             &mut candidate_sequence,
@@ -1048,6 +1130,9 @@ impl<'a> GraphSearcher<'a> {
                 }
                 counters.visited += 1;
                 ensure_visited_cap(counters.visited, visited_cap)?;
+                if filtered_visited_budget.is_some_and(|budget| counters.visited > budget) {
+                    return self.filtered_budget_outcome(counters, filtered_visited_budget);
+                }
                 if request.prefetch.is_enabled() {
                     self.graph.prefetch_line0(neighbor);
                 }
@@ -1074,6 +1159,7 @@ impl<'a> GraphSearcher<'a> {
                     &group,
                     group_count,
                     ef,
+                    allow_list,
                     request.prefetch,
                     &mut counters,
                     &mut candidate_sequence,
@@ -1158,10 +1244,42 @@ impl<'a> GraphSearcher<'a> {
                 })
             })
             .collect::<Result<Vec<_>, GraphSearchError>>()?;
-        Ok(GraphSearchResult {
+        Ok(SearchInnerOutcome::Traversed(GraphSearchResult {
             candidates,
             counters,
             candidate_sequence,
+        }))
+    }
+
+    fn filtered_budget_outcome(
+        &self,
+        mut counters: GraphSearchCounters,
+        filtered_visited_budget: Option<usize>,
+    ) -> Result<SearchInnerOutcome, GraphSearchError> {
+        let budget = filtered_visited_budget.ok_or_else(|| {
+            GraphSearchError::Geometry(
+                "filtered budget disposition has no configured budget".to_owned(),
+            )
+        })?;
+        counters.dims_touched = u64::try_from(counters.candidates_scored)
+            .ok()
+            .and_then(|rows| rows.checked_mul(u64::from(self.graph.layout().dims())))
+            .ok_or_else(|| GraphSearchError::Geometry("dimension counter overflow".to_owned()))?;
+        let coarse_bytes_per_row = self
+            .graph
+            .layout()
+            .code_bytes()
+            .checked_add(12)
+            .ok_or_else(|| GraphSearchError::Geometry("coarse row bytes overflow".to_owned()))?;
+        counters.bytes_read = counters
+            .candidates_scored
+            .checked_mul(coarse_bytes_per_row)
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| GraphSearchError::Geometry("byte counter exceeds u64".to_owned()))?;
+        Ok(SearchInnerOutcome::VisitedBudgetExceeded {
+            visited: counters.visited,
+            budget,
+            counters,
         })
     }
 
@@ -1196,6 +1314,7 @@ impl<'a> GraphSearcher<'a> {
         row_ids: &[Option<CheckedNodeId>; 4],
         row_count: usize,
         ef: usize,
+        allow_list: Option<&DocBitmap>,
         prefetch: TraversalPrefetch,
         counters: &mut GraphSearchCounters,
         candidate_sequence: &mut Option<Vec<u32>>,
@@ -1209,17 +1328,34 @@ impl<'a> GraphSearcher<'a> {
             if let Some(sequence) = candidate_sequence.as_mut() {
                 sequence.push(candidate.row_id.raw());
             }
-            if max_heap_would_keep(&self.scratch.pool, candidate, ef) {
+            let allowed = allow_list.is_none_or(|mask| mask.contains(candidate.row_id.raw()));
+            let mut pushed = false;
+            if allowed && max_heap_would_keep(&self.scratch.pool, candidate, ef) {
                 max_heap_insert_bounded(&mut self.scratch.pool, candidate, ef)?;
                 min_heap_push(&mut self.scratch.frontier, candidate)?;
                 counters.pushes = counters.pushes.checked_add(1).ok_or_else(|| {
                     GraphSearchError::Geometry("push counter overflow".to_owned())
                 })?;
-                if prefetch.is_enabled()
-                    && let Some(head) = self.scratch.frontier.first()
-                {
-                    self.graph.prefetch_head_block(head.row_id);
-                }
+                pushed = true;
+            } else if !allowed
+                && (self.scratch.pool.len() < ef
+                    || self
+                        .scratch
+                        .pool
+                        .first()
+                        .is_some_and(|worst| candidate.distance <= worst.distance))
+            {
+                min_heap_push(&mut self.scratch.frontier, candidate)?;
+                counters.pushes = counters.pushes.checked_add(1).ok_or_else(|| {
+                    GraphSearchError::Geometry("push counter overflow".to_owned())
+                })?;
+                pushed = true;
+            }
+            if pushed
+                && prefetch.is_enabled()
+                && let Some(head) = self.scratch.frontier.first()
+            {
+                self.graph.prefetch_head_block(head.row_id);
             }
         }
         Ok(())
@@ -1550,9 +1686,9 @@ mod tests {
     use rand::RngCore;
 
     use super::{
-        AdaptiveEfError, GraphSearchError, GraphSearchProfile, GraphSearchRequest,
-        GraphSearchScratch, GraphSearcher, GraphSegmentNormRange, QueryCoreClass,
-        TraversalPrefetch, next_down_f64, next_up_f32, next_up_f64,
+        AdaptiveEfError, FilteredGraphSearchOutcome, GraphSearchError, GraphSearchProfile,
+        GraphSearchRequest, GraphSearchScratch, GraphSearcher, GraphSegmentNormRange,
+        QueryCoreClass, TraversalPrefetch, next_down_f64, next_up_f32, next_up_f64,
     };
     use crate::graph::block::{
         GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout, decode_node_blocks,
@@ -1560,6 +1696,7 @@ mod tests {
     };
     use crate::kernels::GatherShapeError;
     use crate::lifecycle::{CancelToken, OpenOptions, QueryCancellation, QueryControl, Store};
+    use crate::meta::DocBitmap;
     use crate::quant::{Bit4Factors, QuantError, RescoreError, quantize_bit4};
     use crate::scan::ScanError;
 
@@ -1814,6 +1951,145 @@ mod tests {
     }
 
     #[test]
+    fn an_unfiltered_traversal_is_byte_identical_with_the_mask_parameter_absent() {
+        let (encoded, rescore) = complete_graph_fixture(12);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(4.25);
+        let request = GraphSearchRequest::new(&query, 5, 0x19_06).with_ef(12);
+        let mut unfiltered_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("unfiltered scratch");
+        let mut full_mask_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("full-mask scratch");
+        let mut unfiltered = GraphSearcher::new(graph, &rescore, &mut unfiltered_scratch)
+            .expect("unfiltered searcher");
+        let mut full_mask = GraphSearcher::new(graph, &rescore, &mut full_mask_scratch)
+            .expect("full-mask searcher");
+
+        let expected = unfiltered.search(request, None).expect("unfiltered search");
+        let actual = full_mask
+            .search_filtered(
+                request,
+                &DocBitmap::full(graph.node_count()),
+                usize::MAX,
+                None,
+            )
+            .expect("full-mask search");
+        let FilteredGraphSearchOutcome::Traversed(actual) = actual else {
+            panic!("an unbounded full mask must traverse");
+        };
+
+        assert_eq!(actual.candidates(), expected.candidates());
+        assert_eq!(
+            actual.counters().deterministic_work(),
+            expected.counters().deterministic_work()
+        );
+        assert_eq!(actual.candidate_sequence(), expected.candidate_sequence());
+    }
+
+    #[test]
+    fn every_filtered_graph_result_satisfies_the_predicate_and_is_alive() {
+        let (encoded, rescore) = complete_graph_fixture(12);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(4.0);
+        let allowed = DocBitmap::from_ids([1, 2, 6, 9, 11]);
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("filtered scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("filtered searcher");
+
+        let outcome = searcher
+            .search_filtered(
+                GraphSearchRequest::new(&query, 5, 0x19_06).with_ef(12),
+                &allowed,
+                usize::MAX,
+                None,
+            )
+            .expect("filtered graph search");
+        let FilteredGraphSearchOutcome::Traversed(result) = outcome else {
+            panic!("an unbounded complete graph must traverse");
+        };
+
+        assert_eq!(
+            result
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.row_id())
+                .collect::<Vec<_>>(),
+            vec![2, 6, 1, 9, 11]
+        );
+        assert!(
+            result
+                .candidates()
+                .iter()
+                .all(|candidate| allowed.contains(candidate.row_id()))
+        );
+        assert!(
+            result
+                .candidates()
+                .iter()
+                .all(|candidate| candidate.row_id() != 4),
+            "the exact nearest row is planted outside the effective alive-and-filter mask"
+        );
+        assert_eq!(result.counters().candidates_rescored(), allowed.cardinality() as usize);
+
+        let mut seeded = crate::test_support::seeded_rng(
+            "graph::search::tests::every_filtered_graph_result_satisfies_the_predicate_and_is_alive",
+        );
+        let mut runner = TestRunner::new(Config {
+            cases: 1_024,
+            rng_seed: RngSeed::Fixed(seeded.next_u64()),
+            ..Config::default()
+        });
+        let property = runner.run(
+            &(
+                prop::collection::vec(any::<bool>(), 12),
+                prop::collection::vec(any::<bool>(), 12),
+            ),
+            |(predicate_matches, alive_rows)| {
+                let effective = DocBitmap::from_ids(
+                    predicate_matches
+                        .iter()
+                        .zip(&alive_rows)
+                        .enumerate()
+                        .filter_map(|(row, (matches, alive))| {
+                            (*matches && *alive).then_some(row as u32)
+                        }),
+                );
+                prop_assume!(!effective.is_empty());
+                let k = effective.cardinality() as usize;
+                let mut scratch =
+                    GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                        .expect("property scratch");
+                let mut searcher =
+                    GraphSearcher::new(graph, &rescore, &mut scratch).expect("property searcher");
+                let outcome = searcher
+                    .search_filtered(
+                        GraphSearchRequest::new(&query, k, 0x19_0602).with_ef(12),
+                        &effective,
+                        usize::MAX,
+                        None,
+                    )
+                    .expect("property filtered traversal");
+                let FilteredGraphSearchOutcome::Traversed(result) = outcome else {
+                    return Err(TestCaseError::fail("unbounded complete graph abandoned"));
+                };
+                prop_assert_eq!(result.candidates().len(), k);
+                let all_valid = result.candidates().iter().all(|candidate| {
+                    let row = candidate.row_id() as usize;
+                    effective.contains(candidate.row_id())
+                        && predicate_matches[row]
+                        && alive_rows[row]
+                });
+                prop_assert!(all_valid);
+                Ok(())
+            },
+        );
+        assert!(property.is_ok(), "property result: {property:?}");
+    }
+
+    #[test]
     fn traversal_expands_the_nearest_frontier_node_before_insertion_order() {
         let (encoded, rescore) = best_first_graph_fixture();
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
@@ -2017,6 +2293,45 @@ mod tests {
         assert_eq!(
             error,
             super::GraphSearchError::VisitedCapExceeded { visited: 5, cap: 4 }
+        );
+    }
+
+    #[test]
+    fn filtered_budget_and_fail_closed_visited_cap_fire_independently() {
+        let (encoded, rescore) = chain_graph_fixture(10);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(9.0);
+        let allowed = DocBitmap::full(graph.node_count());
+        let request = GraphSearchRequest::new(&query, 1, 0x19_0605).with_ef(1);
+
+        let mut budget_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("budget scratch");
+        let mut budget_searcher =
+            GraphSearcher::new(graph, &rescore, &mut budget_scratch).expect("budget searcher");
+        let budget_outcome = budget_searcher
+            .search_filtered(request, &allowed, 2, None)
+            .expect("selectivity budget is a normal filtered disposition");
+        assert!(matches!(
+            budget_outcome,
+            FilteredGraphSearchOutcome::VisitedBudgetExceeded {
+                visited: 3,
+                budget: 2,
+                ..
+            }
+        ));
+
+        let mut invariant_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("invariant scratch");
+        let mut invariant_searcher = GraphSearcher::new(graph, &rescore, &mut invariant_scratch)
+            .expect("invariant searcher");
+        let error = invariant_searcher
+            .search_filtered(request, &allowed, usize::MAX, None)
+            .expect_err("removing the selectivity budget must expose the invariant guard");
+        assert_eq!(
+            error,
+            GraphSearchError::VisitedCapExceeded { visited: 5, cap: 4 }
         );
     }
 

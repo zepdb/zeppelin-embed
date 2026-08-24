@@ -158,6 +158,30 @@ fn the_emitted_sweep_program_interleaves_an_epoch_mismatch_probe_with_real_write
 }
 
 #[test]
+fn an_emitted_program_executes_a_filtered_graph_query() {
+    let program = Program::generate(0);
+    assert!(
+        program
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::FilteredSearch { .. })),
+        "the emitted program must contain a filtered operation"
+    );
+    let artifacts = tempfile::tempdir().expect("filtered graph artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, artifacts.path())
+        .expect("filtered graph reachability program");
+    assert!(
+        outcome.violations.is_empty(),
+        "filtered graph reachability found violations: {:?}",
+        outcome.violations
+    );
+    assert!(
+        outcome.filtered_graph_searches > 0,
+        "the emitted program ran no in-traversal filtered graph branch"
+    );
+}
+
+#[test]
 fn smoke() {
     let root = artifact_root();
     let mut failures = Vec::new();
@@ -166,12 +190,13 @@ fn smoke() {
             let outcome = adversarial::runner::run_program(seed, profile, &root)
                 .unwrap_or_else(|error| panic!("seed={seed} profile={}: {error}", profile.key()));
             println!(
-                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} filtered_searches={} violations={}",
+                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} filtered_searches={} filtered_graph_searches={} violations={}",
                 profile.key(),
                 outcome.operations,
                 outcome.faults_fired,
                 outcome.graph_searches,
                 outcome.filtered_searches,
+                outcome.filtered_graph_searches,
                 outcome.violations.len()
             );
             for violation in outcome.violations {

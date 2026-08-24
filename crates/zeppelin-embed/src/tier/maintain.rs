@@ -18,7 +18,8 @@ use crate::segment::reader::SegmentReader;
 use crate::vfs::StdVfs;
 
 use super::SegmentTier;
-use super::policy::{SegmentStats, StoreStats, TierPlan, decide};
+use super::TierThresholds;
+use super::policy::{SegmentStats, StoreStats, TierPlan, decide, decide_with_thresholds};
 
 const MAINTENANCE_SEED: u64 = 0x20_00c0_ffee;
 const MAINTENANCE_CHECKPOINT_ROWS: u64 = 64;
@@ -101,7 +102,26 @@ impl Store {
     /// Runs due tier transitions within a host-supplied work budget.
     #[must_use]
     pub fn maintain(&self, budget: MaintenanceBudget) -> MaintenanceReport {
-        match maintain_one(self, budget) {
+        self.maintain_with_optional_thresholds(budget, None)
+    }
+
+    /// Runs maintenance with an explicit reachability threshold in test-support builds.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn maintain_with_test_thresholds(
+        &self,
+        budget: MaintenanceBudget,
+        thresholds: TierThresholds,
+    ) -> MaintenanceReport {
+        self.maintain_with_optional_thresholds(budget, Some(thresholds))
+    }
+
+    fn maintain_with_optional_thresholds(
+        &self,
+        budget: MaintenanceBudget,
+        thresholds: Option<TierThresholds>,
+    ) -> MaintenanceReport {
+        match maintain_one(self, budget, thresholds) {
             Ok(report) => report,
             Err(error) => MaintenanceReport {
                 graphs_built: 0,
@@ -116,6 +136,7 @@ impl Store {
 fn maintain_one(
     store: &Store,
     budget: MaintenanceBudget,
+    thresholds: Option<TierThresholds>,
 ) -> Result<MaintenanceReport, MaintenanceError> {
     if budget.wall_time.is_zero() || budget.bytes == 0 {
         return Ok(MaintenanceReport {
@@ -166,7 +187,7 @@ fn maintain_one(
     for segment in lease
         .segments()
         .iter()
-        .filter(|segment| transition_due(segment))
+        .filter(|segment| transition_due(segment, thresholds))
     {
         let remaining_bytes = budget.bytes.saturating_sub(report.bytes_consumed);
         let stride = graph_work_stride(segment)?;
@@ -246,22 +267,24 @@ fn maintain_one(
     Ok(report)
 }
 
-fn transition_due(segment: &SegmentReader) -> bool {
+fn transition_due(segment: &SegmentReader, thresholds: Option<TierThresholds>) -> bool {
     let actual = if has_graph(segment) {
         SegmentTier::SealedGraph
     } else {
         SegmentTier::SealedScan
     };
+    let stats = SegmentStats {
+        tier: actual,
+        row_count: segment.meta().row_count,
+        dimensions: segment.meta().dims,
+        scheme: segment.meta().scheme,
+    };
+    let plan = thresholds.map_or_else(
+        || decide(stats, StoreStats),
+        |thresholds| decide_with_thresholds(stats, thresholds),
+    );
     matches!(
-        decide(
-            SegmentStats {
-                tier: actual,
-                row_count: segment.meta().row_count,
-                dimensions: segment.meta().dims,
-                scheme: segment.meta().scheme,
-            },
-            StoreStats,
-        ),
+        plan,
         TierPlan::Transition {
             from: SegmentTier::SealedScan,
             to: SegmentTier::SealedGraph,
