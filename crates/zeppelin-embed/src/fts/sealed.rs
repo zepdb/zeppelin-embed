@@ -392,6 +392,9 @@ impl SealedSegment {
             slot: 0,
             count: 0,
             impact: BlockImpact::default(),
+            tfs_block: NO_BLOCK,
+            tf_offset: 0,
+            tf_bits: 0,
             overall: BlockImpact {
                 max_tf: span.overall_max_tf,
                 min_len: span.overall_min_len,
@@ -400,6 +403,7 @@ impl SealedSegment {
             decoded_tfs: vec![0; per_block],
             blocks_decoded: 0,
             blocks_skipped: 0,
+            tf_blocks_decoded: 0,
         })
     }
 
@@ -523,12 +527,24 @@ pub struct ListCursor<'segment> {
     /// The loaded block's impact pair, cached when the block is decoded so
     /// a bound read costs no metadata parse.
     impact: BlockImpact,
+    /// Which block the tf scratch buffer currently holds.
+    ///
+    /// Term frequencies are decoded LAZILY: positioning a cursor decodes
+    /// docids only, and the tf run of a block is unpacked the first time a
+    /// posting in it is actually scored. A traversal that lands in a block
+    /// and jumps on without scoring never touches the tf bytes.
+    tfs_block: usize,
+    /// The loaded block's tf stream offset, stashed at load.
+    tf_offset: u32,
+    /// The loaded block's tf bit width, stashed at load.
+    tf_bits: u8,
     /// The whole list's impact pair, computed at seal and copied here.
     overall: BlockImpact,
     decoded_docids: Vec<u32>,
     decoded_tfs: Vec<u32>,
     blocks_decoded: u64,
     blocks_skipped: u64,
+    tf_blocks_decoded: u64,
 }
 
 impl ListCursor<'_> {
@@ -585,16 +601,10 @@ impl ListCursor<'_> {
         }
         prefix_sum(target, base);
 
-        let tf_start = usize::try_from(meta.tfs_offset).unwrap_or(usize::MAX);
-        let Some(packed) = self.tfs.get(tf_start..) else {
-            return false;
-        };
-        let Some(target) = self.decoded_tfs.get_mut(..count) else {
-            return false;
-        };
-        if unpack(packed, meta.tf_bits, count, target).is_none() {
-            return false;
-        }
+        // The tf run is NOT decoded here; its geometry is stashed and the
+        // decode happens on the first `current_tf` against this block.
+        self.tf_offset = meta.tfs_offset;
+        self.tf_bits = meta.tf_bits;
         self.block = index;
         self.count = count;
         self.impact = BlockImpact::from_meta(&meta);
@@ -628,10 +638,33 @@ impl ListCursor<'_> {
         self.decoded_docids.get(self.slot).copied()
     }
 
+    /// Unpacks the loaded block's tf run, once per block, on demand.
+    fn ensure_tfs(&mut self) -> bool {
+        if self.tfs_block == self.block {
+            return true;
+        }
+        let start = usize::try_from(self.tf_offset).unwrap_or(usize::MAX);
+        let Some(packed) = self.tfs.get(start..) else {
+            return false;
+        };
+        let Some(target) = self.decoded_tfs.get_mut(..self.count) else {
+            return false;
+        };
+        if unpack(packed, self.tf_bits, self.count, target).is_none() {
+            return false;
+        }
+        self.tfs_block = self.block;
+        self.tf_blocks_decoded = self.tf_blocks_decoded.saturating_add(1);
+        true
+    }
+
     /// Returns the unscaled term frequency at the cursor.
+    ///
+    /// The first call against a block pays that block's tf decode; see
+    /// [`Self::ensure_tfs`].
     #[must_use]
-    pub fn current_tf(&self) -> Option<u32> {
-        if self.block == NO_BLOCK {
+    pub fn current_tf(&mut self) -> Option<u32> {
+        if self.block == NO_BLOCK || !self.ensure_tfs() {
             return None;
         }
         self.decoded_tfs.get(self.slot).copied()
@@ -642,7 +675,7 @@ impl ListCursor<'_> {
     /// Scaled in `u64` and left unrounded; the merge divides by 1,000 once,
     /// after summing, exactly as the in-memory merge did.
     #[must_use]
-    pub fn current_weighted_tf(&self) -> Option<u64> {
+    pub fn current_weighted_tf(&mut self) -> Option<u64> {
         self.current_tf()
             .map(|tf| u64::from(tf).saturating_mul(self.weight))
     }
@@ -810,7 +843,14 @@ pub struct TermStream<'segment> {
     /// terms take, since a term absent from a field contributes no run.
     /// The merge machinery is then the identity, and `refresh` skips it.
     unit_single: bool,
-    current: Option<(u32, u32)>,
+    /// True when every weight is at least unit, so any present row's
+    /// merged tf is at least one and the head can be declared valid
+    /// WITHOUT computing its tf. That is what makes the tf decode lazy
+    /// end to end: a traversal that skips the row never pays for it.
+    heads_always_valid: bool,
+    head: Option<u32>,
+    /// The merged tf of the head row, memoized on first demand.
+    head_tf: Option<u32>,
 }
 
 impl<'segment> TermStream<'segment> {
@@ -840,11 +880,14 @@ impl<'segment> TermStream<'segment> {
             return None;
         }
         let unit_single = runs.len() == 1 && scales.first().copied() == Some(1_000);
+        let heads_always_valid = scales.iter().all(|weight| *weight >= 1_000);
         let mut stream = Self {
             runs,
             weights: scales,
             unit_single,
-            current: None,
+            heads_always_valid,
+            head: None,
+            head_tf: None,
         };
         stream.reset();
         Some(stream)
@@ -860,43 +903,35 @@ impl<'segment> TermStream<'segment> {
 
     /// Recomputes the merged head, skipping rows whose weighted tf rounds
     /// to zero — exactly what the in-memory merge filtered out.
+    ///
+    /// When every weight is at least unit the zero-tf filter cannot fire,
+    /// so the head is declared from docids alone and its tf is left for
+    /// [`Self::current_tf`] to compute if the row is ever scored.
     fn refresh(&mut self) {
-        if self.unit_single {
-            // One run at unit weight: the merge is the identity, so the
-            // head is the cursor's own row and tf, with no min-scan, no
-            // scaling and no division. The tf-zero filter is kept for
-            // exact equivalence with the generic path.
-            let Some(run) = self.runs.first_mut() else {
-                self.current = None;
-                return;
+        self.head_tf = None;
+        if self.heads_always_valid {
+            self.head = if self.unit_single {
+                self.runs.first().and_then(ListCursor::current)
+            } else {
+                self.runs.iter().filter_map(ListCursor::current).min()
             };
-            loop {
-                let Some(row) = run.current() else {
-                    self.current = None;
-                    return;
-                };
-                let tf = run.current_tf().unwrap_or(0);
-                if tf > 0 {
-                    self.current = Some((row, tf));
-                    return;
-                }
-                run.advance();
-            }
+            return;
         }
         loop {
             let Some(row) = self.runs.iter().filter_map(ListCursor::current).min() else {
-                self.current = None;
+                self.head = None;
                 return;
             };
             let mut total = 0_u64;
-            for run in &self.runs {
+            for run in &mut self.runs {
                 if run.current() == Some(row) {
                     total = total.saturating_add(run.current_weighted_tf().unwrap_or(0));
                 }
             }
             let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
             if tf > 0 {
-                self.current = Some((row, tf));
+                self.head = Some(row);
+                self.head_tf = Some(tf);
                 return;
             }
             self.step(row);
@@ -912,15 +947,34 @@ impl<'segment> TermStream<'segment> {
         }
     }
 
-    /// Returns the merged `(row, weighted tf)` at the head.
+    /// Returns the merged row at the head.
     #[must_use]
-    pub const fn current(&self) -> Option<(u32, u32)> {
-        self.current
+    pub const fn current_row(&self) -> Option<u32> {
+        self.head
+    }
+
+    /// Returns the merged weighted tf at the head, computing it on first
+    /// demand. This is the only place a traversal pays a tf decode.
+    #[must_use]
+    pub fn current_tf(&mut self) -> Option<u32> {
+        let row = self.head?;
+        if let Some(tf) = self.head_tf {
+            return Some(tf);
+        }
+        let mut total = 0_u64;
+        for run in &mut self.runs {
+            if run.current() == Some(row) {
+                total = total.saturating_add(run.current_weighted_tf().unwrap_or(0));
+            }
+        }
+        let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
+        self.head_tf = Some(tf);
+        Some(tf)
     }
 
     /// Advances past the current row.
     pub fn advance(&mut self) {
-        let Some((row, _)) = self.current else {
+        let Some(row) = self.head else {
             return;
         };
         self.step(row);
@@ -937,8 +991,8 @@ impl<'segment> TermStream<'segment> {
 
     /// Returns true when every run is spent.
     #[must_use]
-    pub fn exhausted(&self) -> bool {
-        self.current.is_none()
+    pub const fn exhausted(&self) -> bool {
+        self.head.is_none()
     }
 
     /// Blocks this stream decoded.
@@ -956,6 +1010,18 @@ impl<'segment> TermStream<'segment> {
         self.runs
             .iter()
             .map(|run| run.blocks_skipped)
+            .fold(0_u64, u64::saturating_add)
+    }
+
+    /// Blocks whose tf run this stream actually unpacked.
+    ///
+    /// At most [`Self::blocks_decoded`]; strictly less whenever a landed
+    /// block was jumped past without any of its postings being scored.
+    #[must_use]
+    pub fn tf_blocks_decoded(&self) -> u64 {
+        self.runs
+            .iter()
+            .map(|run| run.tf_blocks_decoded)
             .fold(0_u64, u64::saturating_add)
     }
 
@@ -1126,6 +1192,41 @@ mod tests {
             }
             assert!(cursor.exhausted(), "the cursor must end with the list");
         }
+    }
+
+    #[test]
+    fn a_landed_block_pays_its_tf_decode_only_when_scored() {
+        // Positioning decodes docids; term frequencies stay packed until a
+        // posting is actually scored. A traversal that lands in a block
+        // and jumps on without scoring must never touch the tf bytes.
+        let texts: Vec<String> = (0..400).map(|index| format!("alpha d{index}")).collect();
+        let sealed = SealedSegment::seal(&segment_of(&texts)).expect("seals");
+        let mut stream = TermStream::open(
+            &sealed,
+            b"alpha",
+            &crate::fts::search::FieldWeights::flat(&[DEFAULT_FIELD]),
+        )
+        .expect("stream");
+        assert_eq!(
+            stream.tf_blocks_decoded(),
+            0,
+            "opening must not touch tf bytes"
+        );
+        stream.seek(200);
+        stream.seek(383);
+        assert!(stream.blocks_decoded() >= 3, "three landings were paid");
+        assert_eq!(
+            stream.tf_blocks_decoded(),
+            0,
+            "positioning must not touch tf bytes"
+        );
+        assert_eq!(stream.current_row(), Some(383));
+        assert_eq!(stream.current_tf(), Some(1));
+        assert_eq!(
+            stream.tf_blocks_decoded(),
+            1,
+            "scoring pays exactly the one block it reads"
+        );
     }
 
     #[test]

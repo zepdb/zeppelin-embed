@@ -56,8 +56,9 @@ pub fn score_all(
     let mut totals: Vec<(u32, f64)> = Vec::new();
     for cursor in cursors.iter_mut() {
         cursor.reset();
-        while let Some((row, tf)) = cursor.stream.current() {
+        while let Some(row) = cursor.stream.current_row() {
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+            let tf = cursor.stream.current_tf().unwrap_or(0);
             let score = cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)));
             match totals.binary_search_by_key(&row, |(candidate, _)| *candidate) {
                 Ok(slot) => {

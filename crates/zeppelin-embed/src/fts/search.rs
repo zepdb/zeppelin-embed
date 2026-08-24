@@ -283,8 +283,9 @@ pub fn search(
             let scorer = TermScorer::new(Df(df), &stats, params);
             // Blocks arrive from the sealed stream, decoded on demand into
             // reused scratch buffers. Nothing is materialized.
-            while let Some((row, tf)) = stream.current() {
+            while let Some(row) = stream.current_row() {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                let tf = stream.current_tf().unwrap_or(0);
                 let length = usize::try_from(row)
                     .ok()
                     .and_then(|slot| lengths.get(slot).copied())

@@ -141,13 +141,16 @@ impl TermCursor<'_> {
     /// Returns the row at the cursor, or `None` when exhausted.
     #[must_use]
     pub fn current(&self) -> Option<u32> {
-        self.stream.current().map(|(row, _)| row)
+        self.stream.current_row()
     }
 
     /// Returns the merged term frequency at the cursor.
+    ///
+    /// The first ask against a block pays that block's tf decode; rows
+    /// that are skipped rather than scored never pay it.
     #[must_use]
-    pub fn current_tf(&self) -> Option<u32> {
-        self.stream.current().map(|(_, tf)| tf)
+    pub fn current_tf(&mut self) -> Option<u32> {
+        self.stream.current_tf()
     }
 
     /// Advances one merged posting.
@@ -573,7 +576,7 @@ mod tests {
         )
         .expect("stream");
         let mut rows = Vec::new();
-        while let Some((row, _)) = stream.current() {
+        while let Some(row) = stream.current_row() {
             rows.push(row);
             stream.advance();
         }
@@ -615,7 +618,7 @@ mod tests {
                         // never earlier than where the cursor already sat.
                         let expected = rows.iter().skip(start).copied().find(|row| *row >= target);
                         assert_eq!(
-                            cursor.current().map(|(row, _)| row),
+                            cursor.current_row(),
                             expected,
                             "seek diverged (count={count}, stride={stride}, \
                              start={start}, target={target})"
@@ -632,7 +635,7 @@ mod tests {
         let mut stream = stream_of(&index);
         let decoded = stream.blocks_decoded();
         stream.seek(150);
-        assert_eq!(stream.current().map(|(row, _)| row), Some(150));
+        assert_eq!(stream.current_row(), Some(150));
         assert!(
             stream.blocks_skipped() >= 1,
             "seeking past a whole block must report it"
@@ -759,10 +762,11 @@ mod tests {
                 let bound = stream.bound_for(target, &scorer);
                 let mut probe = stream.clone();
                 probe.seek(target);
-                if let Some((row, tf)) = probe.current()
-                    && row == target
-                {
-                    let length = lengths.get(usize::try_from(row).expect("small")).copied();
+                if probe.current_row() == Some(target) {
+                    let tf = probe.current_tf().unwrap_or(0);
+                    let length = lengths
+                        .get(usize::try_from(target).expect("small"))
+                        .copied();
                     let exact = scorer.score(
                         crate::fts::bm25::Tf(tf),
                         crate::fts::bm25::DocLen(length.unwrap_or(1)),
