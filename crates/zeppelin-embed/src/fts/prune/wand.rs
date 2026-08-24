@@ -58,20 +58,30 @@ pub fn run(
     // Hoisted to the query frame. This buffer used to be allocated and freed
     // once per pivot iteration, which on a single-term query is once per
     // posting -- the dominant allocation on the pruned path.
-    let mut live: Vec<usize> = Vec::with_capacity(cursors.len());
+    //
+    // Each entry caches the cursor's current row beside its slot. Rows are
+    // read once per iteration instead of through the cursor table on every
+    // comparison, and no cursor moves between the fill and the last read,
+    // so the cache cannot go stale.
+    let mut live: Vec<(u32, usize)> = Vec::with_capacity(cursors.len());
 
     loop {
         // Order live cursors by current document.
         live.clear();
-        live.extend(
-            (0..cursors.len()).filter(|slot| cursors.get(*slot).is_some_and(|c| !c.exhausted())),
-        );
+        for (slot, cursor) in cursors.iter().enumerate() {
+            if let Some(row) = cursor.current() {
+                live.push((row, slot));
+            }
+        }
         if live.is_empty() {
             break;
         }
-        // Stable, so cursors sharing a current row keep slot order and the
-        // pivot choice stays reproducible.
-        live.sort_by_key(|slot| cursors.get(*slot).and_then(TermCursor::current));
+        // Tuples order by row then slot, and slots are unique, so this is
+        // exactly the stable row sort the previous form did -- cursors
+        // sharing a row keep slot order and the pivot choice stays
+        // reproducible -- without a closure through the cursor table per
+        // comparison.
+        live.sort_unstable();
 
         let threshold = heap.threshold();
 
@@ -79,7 +89,7 @@ pub fn run(
         // whole-term bounds exceed the threshold.
         let mut accumulated = 0.0_f64;
         let mut pivot: Option<usize> = None;
-        for (position, slot) in live.iter().enumerate() {
+        for (position, (_, slot)) in live.iter().enumerate() {
             let Some(cursor) = cursors.get(*slot) else {
                 continue;
             };
@@ -93,29 +103,25 @@ pub fn run(
             // No document can reach the threshold: the query is finished.
             break;
         };
-        let Some(pivot_slot) = live.get(pivot_position).copied() else {
+        let Some((pivot_row, _)) = live.get(pivot_position).copied() else {
             break;
         };
-        let Some(pivot_row) = cursors.get(pivot_slot).and_then(TermCursor::current) else {
+        let Some((first_row, _)) = live.first().copied() else {
             break;
         };
 
-        let Some(first_slot) = live.first().copied() else {
-            break;
-        };
-        let first_row = cursors.get(first_slot).and_then(TermCursor::current);
-
-        if first_row == Some(pivot_row) {
+        if first_row == pivot_row {
             // Every cursor up to the pivot is already on the pivot document.
             // Refine with block maxima before paying to score it.
             let mut block_bound = 0.0_f64;
-            for slot in &live {
+            for (row, slot) in &live {
+                if *row != pivot_row {
+                    continue;
+                }
                 let Some(cursor) = cursors.get(*slot) else {
                     continue;
                 };
-                if cursor.current() == Some(pivot_row) {
-                    block_bound += cursor.current_block_max();
-                }
+                block_bound += cursor.current_block_max();
             }
 
             if heap.is_full() && block_bound <= threshold {
@@ -141,24 +147,25 @@ pub fn run(
                 // a threshold already achieved by `k` documents. None of
                 // them could have entered the results.
                 let mut horizon: Option<u32> = None;
-                for slot in &live {
+                for (row, slot) in &live {
+                    if *row != pivot_row {
+                        continue;
+                    }
                     let Some(cursor) = cursors.get(*slot) else {
                         continue;
                     };
-                    if cursor.current() != Some(pivot_row) {
-                        continue;
-                    }
                     horizon = match (horizon, cursor.stream.block_horizon()) {
                         (Some(held), Some(found)) => Some(held.min(found)),
                         (None, found) => found,
                         (held, None) => held,
                     };
                 }
+                // Rows are sorted ascending, so the first one past the
+                // pivot is the minimum the previous form scanned for.
                 let next_row = live
                     .iter()
-                    .filter_map(|slot| cursors.get(*slot).and_then(TermCursor::current))
-                    .filter(|row| *row > pivot_row)
-                    .min();
+                    .map(|(row, _)| *row)
+                    .find(|row| *row > pivot_row);
                 let target = match (horizon, next_row) {
                     (Some(edge), Some(next)) => edge.saturating_add(1).min(next),
                     (Some(edge), None) => edge.saturating_add(1),
@@ -203,15 +210,16 @@ pub fn run(
             );
         } else {
             // Advance the cursors that trail the pivot straight to it.
-            for slot in live.iter().take(pivot_position.saturating_add(1)) {
+            for (row, slot) in live.iter().take(pivot_position.saturating_add(1)) {
+                if *row >= pivot_row {
+                    continue;
+                }
                 let Some(cursor) = cursors.get_mut(*slot) else {
                     continue;
                 };
-                if cursor.current().is_some_and(|row| row < pivot_row) {
-                    // Blocks jumped are tallied on the stream itself and
-                    // collected once the segment finishes.
-                    cursor.seek(pivot_row);
-                }
+                // Blocks jumped are tallied on the stream itself and
+                // collected once the segment finishes.
+                cursor.seek(pivot_row);
             }
         }
     }
