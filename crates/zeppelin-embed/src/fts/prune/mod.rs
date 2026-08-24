@@ -82,6 +82,8 @@ pub struct TermCursor {
     pub entries: Vec<(u32, u32)>,
     /// Per-block upper bounds.
     pub blocks: Vec<BlockBound>,
+    /// Entries per block: the fixed geometry that makes addressing O(1).
+    pub block_size: usize,
     /// Store-wide document frequency.
     pub df: Df,
     /// This term's hoisted scoring constants.
@@ -113,20 +115,31 @@ impl TermCursor {
     /// Uses the block skip keys to jump whole blocks, then walks within one.
     /// Returns the number of blocks skipped without inspecting their
     /// entries, for the counter contract.
+    ///
+    /// # Why this is a search and not a walk
+    ///
+    /// Skip keys ascend, because entries ascend by row, so the first block
+    /// that can hold `row` is a binary search. Walking made `seek` cost
+    /// `O(blocks)`, and `seek` runs per candidate: on a term with 1,500
+    /// blocks that quadratic factor is a plausible reason the pruned path
+    /// was slower than the scan it exists to avoid. The reported skip count
+    /// is unchanged, because skips are decisions and decisions are pinned by
+    /// the counter contracts.
     pub fn seek(&mut self, row: u32) -> u64 {
         let mut skipped = 0_u64;
-        // Jump over whole blocks whose last row is below the target.
-        while let Some(block) = self.block_containing(self.position) {
-            if block.last_row >= row {
-                break;
-            }
-            if block.end > self.position {
-                skipped = skipped.saturating_add(1);
-            }
-            self.position = block.end;
-            if self.position >= self.entries.len() {
-                return skipped;
-            }
+        if let Some(block) = self.block_containing(self.position)
+            && block.last_row < row
+            && self.block_size > 0
+        {
+            let first = self.position / self.block_size;
+            let ahead = self.blocks.get(first..).unwrap_or(&[]);
+            let hops = ahead.partition_point(|block| block.last_row < row);
+            skipped = u64::try_from(hops).unwrap_or(u64::MAX);
+            self.position = match self.blocks.get(first.saturating_add(hops)) {
+                Some(block) => block.start,
+                // Every remaining block is behind the target row.
+                None => self.entries.len(),
+            };
         }
         while let Some(current) = self.current() {
             if current >= row {
@@ -138,11 +151,19 @@ impl TermCursor {
     }
 
     /// Returns the block containing `position`, if any.
+    ///
+    /// Blocks are fixed geometry and contiguous from zero, so the containing
+    /// block is an index rather than a scan. The containment check is kept
+    /// as the guard: a cursor whose blocks do not match its `block_size`
+    /// reports "between blocks", which callers already treat as the loose,
+    /// safe direction rather than as a bound they may prune against.
     #[must_use]
     pub fn block_containing(&self, position: usize) -> Option<&BlockBound> {
-        self.blocks
-            .iter()
-            .find(|block| position >= block.start && position < block.end)
+        if self.block_size == 0 {
+            return None;
+        }
+        let block = self.blocks.get(position / self.block_size)?;
+        (position >= block.start && position < block.end).then_some(block)
     }
 
     /// Returns the bound of the block the cursor currently sits in.
@@ -286,6 +307,7 @@ pub fn search_pruned(
             cursors.push(TermCursor {
                 entries: merged.entries,
                 blocks,
+                block_size: PRUNE_BLOCK_SIZE,
                 df,
                 scorer: TermScorer::new(df, &stats, params),
                 upper_bound,
@@ -413,6 +435,114 @@ mod tests {
         assert!((heap.threshold() - 4.0).abs() < 1e-12);
     }
 
+    /// The linear implementations P1.3 replaced, kept as test oracles.
+    ///
+    /// Their whole job is to be obviously correct, so any divergence in the
+    /// constant-time versions shows up as a differing answer rather than as
+    /// a differing latency nobody measured.
+    fn linear_block_containing(cursor: &TermCursor, position: usize) -> Option<&BlockBound> {
+        cursor
+            .blocks
+            .iter()
+            .find(|block| position >= block.start && position < block.end)
+    }
+
+    fn linear_seek(cursor: &mut TermCursor, row: u32) -> u64 {
+        let mut skipped = 0_u64;
+        while let Some(block) = linear_block_containing(cursor, cursor.position).copied() {
+            if block.last_row >= row {
+                break;
+            }
+            if block.end > cursor.position {
+                skipped = skipped.saturating_add(1);
+            }
+            cursor.position = block.end;
+            if cursor.position >= cursor.entries.len() {
+                return skipped;
+            }
+        }
+        while let Some(current) = cursor.current() {
+            if current >= row {
+                break;
+            }
+            cursor.position += 1;
+        }
+        skipped
+    }
+
+    /// Builds a cursor over `count` entries with the given block geometry.
+    fn geometry_cursor(count: u32, block_size: usize, stride: u32) -> TermCursor {
+        let entries: Vec<(u32, u32)> = (0..count).map(|row| (row * stride, 1 + row % 7)).collect();
+        let lengths: Vec<u32> = (0..count * stride.max(1))
+            .map(|row| 1 + row % 23)
+            .collect();
+        let stats = crate::fts::bm25::CorpusStats::new(1_000, 40_000).expect("stats");
+        let params = Bm25Params::default();
+        let blocks =
+            build_block_bounds(&entries, &lengths, block_size, Df(50), &stats, params);
+        TermCursor {
+            entries,
+            blocks,
+            block_size,
+            df: Df(50),
+            scorer: TermScorer::new(Df(50), &stats, params),
+            upper_bound: 1.0,
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn constant_time_block_addressing_agrees_with_a_linear_scan() {
+        // Every geometry, including a ragged final block and a block size
+        // that does not divide the entry count, at every position including
+        // one past the end.
+        for count in [1_u32, 7, 64, 65, 200] {
+            for block_size in [1_usize, 3, 8, 64, 512] {
+                let cursor = geometry_cursor(count, block_size, 1);
+                for position in 0..=cursor.entries.len() {
+                    assert_eq!(
+                        cursor.block_containing(position),
+                        linear_block_containing(&cursor, position),
+                        "addressing diverged at position {position}                          (count={count}, block_size={block_size})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_binary_search_seek_reports_the_same_skips_as_the_linear_walk() {
+        // Skips are decisions, and decisions are pinned by the counter
+        // contracts, so the search must report exactly what the walk did --
+        // from every starting position, to every target row.
+        for count in [1_u32, 7, 64, 65, 200] {
+            for block_size in [1_usize, 3, 8, 64] {
+                for stride in [1_u32, 3] {
+                    let reference = geometry_cursor(count, block_size, stride);
+                    let last = count.saturating_mul(stride).saturating_add(2);
+                    for start in [0_usize, 1, 5, 63, 64, 199] {
+                        if start >= reference.entries.len() {
+                            continue;
+                        }
+                        for target in (0..=last).step_by(1) {
+                            let mut fast = reference.clone();
+                            fast.position = start;
+                            let mut slow = reference.clone();
+                            slow.position = start;
+                            let fast_skips = fast.seek(target);
+                            let slow_skips = linear_seek(&mut slow, target);
+                            assert_eq!(
+                                (fast_skips, fast.position),
+                                (slow_skips, slow.position),
+                                "seek diverged (count={count}, block_size={block_size},                                  stride={stride}, start={start}, target={target})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_cursor_seek_skips_whole_blocks_and_reports_them() {
         let entries: Vec<(u32, u32)> = (0..200_u32).map(|row| (row, 1)).collect();
@@ -429,6 +559,7 @@ mod tests {
         let mut cursor = TermCursor {
             entries,
             blocks,
+            block_size: PRUNE_BLOCK_SIZE,
             df: Df(200),
             scorer: TermScorer::new(Df(200), &stats, Bm25Params::default()),
             upper_bound: 1.0,
@@ -455,6 +586,7 @@ mod tests {
         let mut cursor = TermCursor {
             entries,
             blocks,
+            block_size: 4,
             df: Df(10),
             scorer: TermScorer::new(Df(10), &stats, Bm25Params::default()),
             upper_bound: 1.0,
