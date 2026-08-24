@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::lifecycle::{Store, StoreError, StoreState};
 use crate::scan::ScanStats;
 use crate::segment::SegmentId;
+use crate::vfs::StdVfs;
 use crate::wal::{LogSeq, WalWriteError};
 
 pub use purge::{PurgeError, PurgeReport, PurgeToken};
@@ -212,11 +213,11 @@ pub enum IngestError {
     Store(StoreError),
     /// The caller supplied no document mutation.
     EmptyBatch,
-    /// The attempted revision precedes the active document revision.
+    /// The attempted revision precedes the highest active or sealed revision.
     StaleRevision {
         /// Document whose history would have moved backward.
         doc_id: DocId,
-        /// Revision currently visible in the active segment.
+        /// Highest revision currently known across active and sealed state.
         current: Revision,
         /// Rejected older revision.
         attempted: Revision,
@@ -393,6 +394,41 @@ pub struct SearchOutcome {
     pub generation: u64,
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedRevision {
+    version: DocumentVersion,
+    seq: LogSeq,
+    active_row: Option<usize>,
+}
+
+fn resolve_revision(
+    active: &ActiveSegment,
+    sealed: &[purge::SealedDocumentMatch],
+    doc_id: DocId,
+    sealed_seq: LogSeq,
+) -> Option<ResolvedRevision> {
+    let active_existing = active.existing(doc_id);
+    let active_row = active_existing.map(|(row, _, _)| row);
+    let mut resolved = active_existing.map(|(_, version, seq)| ResolvedRevision {
+        version,
+        seq,
+        active_row,
+    });
+    for matched in sealed
+        .iter()
+        .filter(|matched| matched.version.doc_id() == doc_id)
+    {
+        if resolved.is_none_or(|current| matched.version.revision() > current.version.revision()) {
+            resolved = Some(ResolvedRevision {
+                version: matched.version,
+                seq: sealed_seq,
+                active_row,
+            });
+        }
+    }
+    resolved
+}
+
 impl Store {
     /// Commits one active-segment upsert and returns its WAL/generation coordinates.
     pub fn ingest(&self, batch: IngestBatch) -> Result<IngestAck, IngestError> {
@@ -422,33 +458,65 @@ impl Store {
                 component: "active segment",
             })?;
         let current = active.as_ref().ok_or(StoreError::Closed)?;
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        let requested_ids = batch
+            .documents
+            .iter()
+            .map(|document| document.version().doc_id())
+            .collect::<Vec<_>>();
+        let sealed = purge::sealed_document_matches(&snapshot, &requested_ids)?;
+        let sealed_seq = LogSeq::new(snapshot.absorbed_through());
         let mut working = None;
         let mut records = Vec::new();
         let mut replay_seq = None;
+        let mut sealed_tombstones = Vec::new();
         for document in &batch.documents {
             let segment = working.as_ref().unwrap_or(current.segment.as_ref());
-            let action = revise::classify(
-                segment.existing(document.version().doc_id()),
+            let existing =
+                resolve_revision(segment, &sealed, document.version().doc_id(), sealed_seq);
+            let action = revise::classify_revision(
+                existing.map(|resolved| (resolved.version, resolved.seq)),
                 document.version(),
-                segment.row_count(),
             );
             match action {
-                revise::RevisionAction::Replace { row } => {
-                    let next = segment.replace(row, document, &self.accounting)?;
+                revise::RevisionDecision::Replace => {
+                    let row = existing.and_then(|resolved| resolved.active_row);
+                    let (next, row) = if let Some(row) = row {
+                        (segment.replace(row, document, &self.accounting)?, row)
+                    } else {
+                        let row = segment.row_count();
+                        (segment.insert(document, &self.accounting)?, row)
+                    };
                     let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
                     records.push((row, op, payload));
+                    if sealed
+                        .iter()
+                        .any(|matched| matched.version.doc_id() == document.version().doc_id())
+                        && !sealed_tombstones.contains(&document.version().doc_id())
+                    {
+                        sealed_tombstones.push(document.version().doc_id());
+                    }
                 }
-                revise::RevisionAction::Insert { row } => {
+                revise::RevisionDecision::Insert => {
+                    let row = segment.row_count();
                     let next = segment.insert(document, &self.accounting)?;
                     let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
                     records.push((row, op, payload));
                 }
-                revise::RevisionAction::Replay { seq } => {
+                revise::RevisionDecision::Replay { seq } => {
                     replay_seq = Some(replay_seq.map_or(seq, |current: LogSeq| current.max(seq)));
                 }
-                revise::RevisionAction::Reject { current } => {
+                revise::RevisionDecision::Reject { current } => {
                     return Err(IngestError::StaleRevision {
                         doc_id: document.version().doc_id(),
                         current,
@@ -470,11 +538,31 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
+        let prepared = purge::prepare_sealed_tombstones(
+            &StdVfs,
+            &self.directory,
+            &snapshot,
+            &sealed,
+            &sealed_tombstones,
+            writer.durable_end(),
+            generation,
+            writer.durable_end().saturating_add(1),
+            self.durability_policy,
+            &self.accounting,
+        )?;
         let record_refs = records
             .iter()
             .map(|(_, op, payload)| (*op, payload.as_slice()))
             .collect::<Vec<_>>();
-        let sequences = writer.commit_many(&record_refs)?;
+        let sequences = match writer.commit_many(&record_refs) {
+            Ok(sequences) => sequences,
+            Err(error) => {
+                if let Some(prepared) = prepared {
+                    prepared.abort(&StdVfs, &self.directory, self.durability_policy)?;
+                }
+                return Err(error.into());
+            }
+        };
         for ((row, _, _), sequence) in records
             .iter()
             .zip(sequences.start.get()..sequences.end.get())
@@ -482,17 +570,44 @@ impl Store {
             next.set_sequence(*row, LogSeq::new(sequence))?;
         }
         let seq = LogSeq::new(sequences.end.get().saturating_sub(1));
-        *active = Some(ActiveState {
-            generation,
-            segment: Arc::new(next),
-        });
+        let committed = prepared
+            .map(|prepared| prepared.commit(&StdVfs, &self.directory, self.durability_policy))
+            .transpose()?;
+        let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
+            let mut published = self
+                .snapshot
+                .write()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let previous = published.replace(Arc::new(remapped));
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            drop(published);
+            drop(previous);
+            replaced_paths
+        } else {
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            Vec::new()
+        };
+        purge::unlink_replaced_segments(
+            &StdVfs,
+            &self.directory,
+            &replaced_paths,
+            self.durability_policy,
+        )?;
         drop(active);
         drop(wal);
         drop(state);
         Ok(IngestAck { seq, generation })
     }
 
-    /// Durably tombstones documents in the active segment before acknowledging.
+    /// Durably tombstones documents across active and sealed state before acknowledging.
     pub fn delete(&self, batch: DeleteBatch) -> Result<IngestAck, IngestError> {
         if batch.doc_ids.is_empty() {
             return Err(IngestError::EmptyBatch);
@@ -520,6 +635,16 @@ impl Store {
                 component: "active segment",
             })?;
         let current = active.as_ref().ok_or(StoreError::Closed)?;
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        let sealed = purge::sealed_document_matches(&snapshot, &batch.doc_ids)?;
         let generation = current
             .generation
             .checked_add(1)
@@ -527,15 +652,62 @@ impl Store {
         let (mut next, rows) = current
             .segment
             .tombstone(&batch.doc_ids, &self.accounting)?;
+        let prepared = purge::prepare_sealed_tombstones(
+            &StdVfs,
+            &self.directory,
+            &snapshot,
+            &sealed,
+            &batch.doc_ids,
+            writer.durable_end(),
+            generation,
+            writer.durable_end().saturating_add(1),
+            self.durability_policy,
+            &self.accounting,
+        )?;
         let payload = wal_payload::encode_delete(&batch.doc_ids).map_err(IngestError::Payload)?;
-        let seq = writer.commit(wal_payload::DELETE_V1, &payload)?;
+        let seq = match writer.commit(wal_payload::DELETE_V1, &payload) {
+            Ok(seq) => seq,
+            Err(error) => {
+                if let Some(prepared) = prepared {
+                    prepared.abort(&StdVfs, &self.directory, self.durability_policy)?;
+                }
+                return Err(error.into());
+            }
+        };
         for row in rows {
             next.set_sequence(row, seq)?;
         }
-        *active = Some(ActiveState {
-            generation,
-            segment: Arc::new(next),
-        });
+        let committed = prepared
+            .map(|prepared| prepared.commit(&StdVfs, &self.directory, self.durability_policy))
+            .transpose()?;
+        let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
+            let mut published = self
+                .snapshot
+                .write()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let previous = published.replace(Arc::new(remapped));
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            drop(published);
+            drop(previous);
+            replaced_paths
+        } else {
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            Vec::new()
+        };
+        purge::unlink_replaced_segments(
+            &StdVfs,
+            &self.directory,
+            &replaced_paths,
+            self.durability_policy,
+        )?;
         Ok(IngestAck { seq, generation })
     }
 }

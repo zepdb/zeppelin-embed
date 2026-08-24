@@ -4,29 +4,28 @@ use crate::wal::LogSeq;
 
 use super::{DocumentVersion, Revision};
 
-/// The only legal outcomes for one `(doc_id, revision)` comparison.
+/// Row-location-independent revision comparison used across active and sealed state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RevisionAction {
-    Insert { row: usize },
+pub(crate) enum RevisionDecision {
+    Insert,
     Replay { seq: LogSeq },
-    Replace { row: usize },
+    Replace,
     Reject { current: Revision },
 }
 
-pub(crate) fn classify(
-    existing: Option<(usize, DocumentVersion, LogSeq)>,
+pub(crate) fn classify_revision(
+    existing: Option<(DocumentVersion, LogSeq)>,
     attempted: DocumentVersion,
-    append_row: usize,
-) -> RevisionAction {
-    let Some((row, current, seq)) = existing else {
-        return RevisionAction::Insert { row: append_row };
+) -> RevisionDecision {
+    let Some((current, seq)) = existing else {
+        return RevisionDecision::Insert;
     };
     match attempted.revision().cmp(&current.revision()) {
-        std::cmp::Ordering::Less => RevisionAction::Reject {
+        std::cmp::Ordering::Less => RevisionDecision::Reject {
             current: current.revision(),
         },
-        std::cmp::Ordering::Equal => RevisionAction::Replay { seq },
-        std::cmp::Ordering::Greater => RevisionAction::Replace { row },
+        std::cmp::Ordering::Equal => RevisionDecision::Replay { seq },
+        std::cmp::Ordering::Greater => RevisionDecision::Replace,
     }
 }
 
@@ -46,34 +45,31 @@ mod tests {
     use crate::scan::ScanOptions;
     use crate::wal::LogSeq;
 
-    use super::{RevisionAction, classify};
+    use super::{RevisionDecision, classify_revision};
 
     #[test]
     fn revision_order_is_total_and_explicit() {
         let id = DocId::new(7);
         let current = DocumentVersion::new(id, Revision::new(4));
-        let existing = Some((2, current, LogSeq::new(11)));
+        let existing = Some((current, LogSeq::new(11)));
 
         assert_eq!(
-            classify(existing, DocumentVersion::new(id, Revision::new(3)), 9),
-            RevisionAction::Reject {
+            classify_revision(existing, DocumentVersion::new(id, Revision::new(3))),
+            RevisionDecision::Reject {
                 current: Revision::new(4)
             }
         );
         assert_eq!(
-            classify(existing, current, 9),
-            RevisionAction::Replay {
+            classify_revision(existing, current),
+            RevisionDecision::Replay {
                 seq: LogSeq::new(11)
             }
         );
         assert_eq!(
-            classify(existing, DocumentVersion::new(id, Revision::new(5)), 9),
-            RevisionAction::Replace { row: 2 }
+            classify_revision(existing, DocumentVersion::new(id, Revision::new(5))),
+            RevisionDecision::Replace
         );
-        assert_eq!(
-            classify(None, current, 9),
-            RevisionAction::Insert { row: 9 }
-        );
+        assert_eq!(classify_revision(None, current), RevisionDecision::Insert);
     }
 
     #[test]

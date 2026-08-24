@@ -9,6 +9,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::format::FormatFamily;
 use crate::format::frame::{FormatError, decode_artifact, encode_artifact};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
+use crate::lifecycle::stats::Accounting;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
 use crate::manifest::Manifest;
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
@@ -33,6 +34,168 @@ const PURGE_INTENT_TEMP_FILE: &str = ".purge.ze.tmp";
 const WAL_PURGE_TEMP_FILE: &str = ".wal.ze.purge.tmp";
 
 type WalImageRecords = (Vec<(u16, Vec<u8>)>, Vec<bool>);
+
+#[derive(Clone, Copy)]
+pub(crate) struct SealedDocumentMatch {
+    pub(crate) segment_index: usize,
+    pub(crate) row: usize,
+    pub(crate) version: super::DocumentVersion,
+}
+
+pub(crate) struct PreparedSealedTombstones {
+    manifest: Manifest,
+    snapshot: PublishedSnapshot,
+    replaced_paths: Vec<PathBuf>,
+    replacement_ids: Vec<SegmentId>,
+}
+
+impl PreparedSealedTombstones {
+    pub(crate) fn abort(
+        self,
+        vfs: &dyn Vfs,
+        directory: &Path,
+        policy: DurabilityPolicy,
+    ) -> Result<(), StoreError> {
+        cleanup_replacement_segments(vfs, directory, &self.replacement_ids, policy)
+    }
+
+    pub(crate) fn commit(
+        self,
+        vfs: &dyn Vfs,
+        directory: &Path,
+        policy: DurabilityPolicy,
+    ) -> Result<(PublishedSnapshot, Vec<PathBuf>), StoreError> {
+        commit_manifest(vfs, directory, &self.manifest, policy).map_err(StoreError::Manifest)?;
+        Ok((self.snapshot, self.replaced_paths))
+    }
+}
+
+pub(crate) fn sealed_document_matches(
+    snapshot: &PublishedSnapshot,
+    ids: &[DocId],
+) -> Result<Vec<SealedDocumentMatch>, StoreError> {
+    let requested = ids.iter().copied().collect::<HashSet<_>>();
+    let mut matches = Vec::new();
+    for (segment_index, segment) in snapshot.segments().iter().enumerate() {
+        for row in 0..segment.meta().row_count as usize {
+            if let Some(version) = segment.document_version(row).map_err(StoreError::Segment)?
+                && requested.contains(&version.doc_id())
+            {
+                matches.push(SealedDocumentMatch {
+                    segment_index,
+                    row,
+                    version,
+                });
+            }
+        }
+    }
+    Ok(matches)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_sealed_tombstones(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    snapshot: &PublishedSnapshot,
+    matches: &[SealedDocumentMatch],
+    ids: &[DocId],
+    durable_end: u64,
+    generation: u64,
+    nonce: u64,
+    policy: DurabilityPolicy,
+    accounting: &Arc<Accounting>,
+) -> Result<Option<PreparedSealedTombstones>, StoreError> {
+    if matches.is_empty() || ids.is_empty() {
+        return Ok(None);
+    }
+    let requested = ids.iter().copied().collect::<HashSet<_>>();
+    let mut rows_by_segment = vec![Vec::<usize>::new(); snapshot.segments().len()];
+    for matched in matches {
+        if requested.contains(&matched.version.doc_id()) {
+            let rows = rows_by_segment
+                .get_mut(matched.segment_index)
+                .ok_or(StoreError::ActiveRowOverflow)?;
+            if !rows.contains(&matched.row) {
+                rows.push(matched.row);
+            }
+        }
+    }
+    let manifest_path = directory.join(MANIFEST_FILE);
+    let mut manifest =
+        load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
+    let mut replaced_paths = Vec::new();
+    let mut replacement_ids = Vec::new();
+    let prepared = (|| {
+        for (segment_index, rows) in rows_by_segment.iter_mut().enumerate() {
+            if rows.is_empty() {
+                continue;
+            }
+            let reader = snapshot
+                .segments()
+                .get(segment_index)
+                .ok_or(StoreError::ActiveRowOverflow)?;
+            let alive = reader.alive().map_err(StoreError::Segment)?;
+            rows.retain(|row| {
+                u32::try_from(*row)
+                    .ok()
+                    .is_some_and(|row| alive.is_alive(row))
+            });
+            if rows.is_empty() {
+                continue;
+            }
+            let original = manifest
+                .segments
+                .iter()
+                .find(|segment| segment.id == reader.meta().id)
+                .cloned()
+                .ok_or_else(|| {
+                    StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                        "manifest lost sealed mutation segment {}",
+                        reader.meta().id
+                    )))
+                })?;
+            let replacement_id = replacement_segment_id(original.id, nonce, generation);
+            replacement_ids.push(replacement_id);
+            let all_rows = (0..reader.meta().row_count as usize).collect::<Vec<_>>();
+            let replacement = rewrite_segment(
+                vfs,
+                directory,
+                reader,
+                &all_rows,
+                rows,
+                replacement_id,
+                policy,
+            )?;
+            let target = manifest
+                .segments
+                .iter_mut()
+                .find(|segment| segment.id == original.id)
+                .ok_or_else(|| {
+                    StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                        "manifest lost sealed mutation segment {}",
+                        original.id
+                    )))
+                })?;
+            *target = replacement;
+            replaced_paths.push(directory.join(original.id.file_name()));
+        }
+        if replacement_ids.is_empty() {
+            return Ok(None);
+        }
+        manifest.generation = generation;
+        let remapped = PublishedSnapshot::from_manifest(directory, &manifest, accounting)?;
+        Ok(Some(PreparedSealedTombstones {
+            manifest,
+            snapshot: remapped,
+            replaced_paths,
+            replacement_ids: replacement_ids.clone(),
+        }))
+    })();
+    if prepared.is_err() {
+        cleanup_replacement_segments(vfs, directory, &replacement_ids, policy)?;
+    }
+    prepared
+}
 
 /// Caller handle for one scheduled physical-purge guarantee.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,46 +433,22 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
+        let sealed = sealed_document_matches(&snapshot, &requested)?;
         let mut known = Vec::new();
         let mut unknown = Vec::new();
         for id in requested {
             let in_active = active_state.segment.existing(id).is_some();
-            let mut in_sealed = false;
-            for segment in snapshot.segments() {
-                for row in 0..segment.meta().row_count as usize {
-                    if segment
-                        .document_version(row)
-                        .map_err(StoreError::Segment)?
-                        .is_some_and(|version| version.doc_id() == id)
-                    {
-                        in_sealed = true;
-                        break;
-                    }
-                }
-                if in_sealed {
-                    break;
-                }
-            }
+            let in_sealed = sealed.iter().any(|matched| matched.version.doc_id() == id);
             if in_active || in_sealed {
                 known.push(id);
             } else {
                 unknown.push(id);
             }
         }
-        for segment in snapshot.segments() {
-            let affected =
-                (0..segment.meta().row_count as usize).try_fold(false, |found, row| {
-                    if found {
-                        return Ok(true);
-                    }
-                    segment
-                        .document_version(row)
-                        .map(|version| {
-                            version.is_some_and(|version| known.contains(&version.doc_id()))
-                        })
-                        .map_err(StoreError::Segment)
-                })?;
-            if affected {
+        for (segment_index, segment) in snapshot.segments().iter().enumerate() {
+            if sealed.iter().any(|matched| {
+                matched.segment_index == segment_index && known.contains(&matched.version.doc_id())
+            }) {
                 enforce_temp_space(segment.meta().file_size, available_bytes)?;
             }
         }
@@ -443,6 +582,7 @@ impl Store {
                 &self.directory,
                 &reader,
                 &survivors,
+                &[],
                 replacement_id,
                 self.durability_policy,
             )?;
@@ -636,7 +776,7 @@ fn write_intent(
             path: committed,
             source,
         })?;
-    sync_directory(vfs, directory, policy)
+    sync_directory(vfs, directory, policy).map_err(PurgeError::from)
 }
 
 fn read_intent(vfs: &dyn Vfs, directory: &Path) -> Result<PurgeIntent, PurgeError> {
@@ -710,19 +850,66 @@ fn remove_intent(
     let path = directory.join(PURGE_INTENT_FILE);
     vfs.delete(&path)
         .map_err(|source| StoreError::Io { path, source })?;
-    sync_directory(vfs, directory, policy)
+    sync_directory(vfs, directory, policy).map_err(PurgeError::from)
 }
 
 fn sync_directory(
     vfs: &dyn Vfs,
     directory: &Path,
     policy: DurabilityPolicy,
-) -> Result<(), PurgeError> {
+) -> Result<(), StoreError> {
     if let SyncRequirement::Sync(kind) = policy.directory_sync() {
         vfs.sync(directory, kind).map_err(|source| StoreError::Io {
             path: directory.to_path_buf(),
             source,
         })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn unlink_replaced_segments(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    replaced_paths: &[PathBuf],
+    policy: DurabilityPolicy,
+) -> Result<(), StoreError> {
+    for path in replaced_paths {
+        vfs.delete(path).map_err(|source| StoreError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    }
+    if !replaced_paths.is_empty() {
+        sync_directory(vfs, directory, policy)?;
+    }
+    Ok(())
+}
+
+fn cleanup_replacement_segments(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    replacement_ids: &[SegmentId],
+    policy: DurabilityPolicy,
+) -> Result<(), StoreError> {
+    let mut deleted = false;
+    for id in replacement_ids {
+        for path in [
+            directory.join(id.file_name()),
+            directory.join(format!(".{}.tmp", id.file_name())),
+        ] {
+            match vfs.open(&path) {
+                Ok(_) => {
+                    vfs.delete(&path)
+                        .map_err(|source| StoreError::Io { path, source })?;
+                    deleted = true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(StoreError::Io { path, source }),
+            }
+        }
+    }
+    if deleted {
+        sync_directory(vfs, directory, policy)?;
     }
     Ok(())
 }
@@ -757,9 +944,10 @@ fn rewrite_segment(
     directory: &Path,
     reader: &SegmentReader,
     survivors: &[usize],
+    additional_tombstones: &[usize],
     replacement_id: SegmentId,
     policy: DurabilityPolicy,
-) -> Result<SegmentMeta, PurgeError> {
+) -> Result<SegmentMeta, StoreError> {
     let dims = reader.meta().dims as usize;
     let (codes, factors) = match reader.meta().scheme {
         4 => {
@@ -818,12 +1006,9 @@ fn rewrite_segment(
             (codes, OwnedFactors::Int8(factors))
         }
         scheme => {
-            return Err(
-                StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
-                    "purge cannot rewrite scheme {scheme}"
-                )))
-                .into(),
-            );
+            return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                format!("segment rewrite cannot encode scheme {scheme}"),
+            )));
         }
     };
     let source_rescore = reader.rescore_f32().map_err(StoreError::Segment)?;
@@ -845,8 +1030,8 @@ fn rewrite_segment(
     let row_count = u32::try_from(survivors.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
     let mut alive = AliveSet::new(row_count);
     for (new_row, old_row) in survivors.iter().enumerate() {
-        let old_row = u32::try_from(*old_row).map_err(|_| StoreError::ActiveRowOverflow)?;
-        if !source_alive.is_alive(old_row) {
+        let old_row_u32 = u32::try_from(*old_row).map_err(|_| StoreError::ActiveRowOverflow)?;
+        if !source_alive.is_alive(old_row_u32) || additional_tombstones.contains(old_row) {
             alive
                 .tombstone(u32::try_from(new_row).map_err(|_| StoreError::ActiveRowOverflow)?)
                 .map_err(|_| StoreError::ActiveRowOverflow)?;
@@ -916,7 +1101,7 @@ fn rewrite_segment(
     Ok(written)
 }
 
-fn rewrite_columns(source: &ColumnStore, survivors: &[usize]) -> Result<ColumnStore, PurgeError> {
+fn rewrite_columns(source: &ColumnStore, survivors: &[usize]) -> Result<ColumnStore, StoreError> {
     let mut builder = ColumnStoreBuilder::new(source.schema().clone());
     for row in survivors {
         let row_u32 = u32::try_from(*row).map_err(|_| StoreError::ActiveRowOverflow)?;
@@ -958,14 +1143,14 @@ fn rewrite_columns(source: &ColumnStore, survivors: &[usize]) -> Result<ColumnSt
         })?;
     }
     builder.finish().map_err(|source| {
-        StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string())).into()
+        StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
     })
 }
 
 fn clustering_range(
     columns: &ColumnStore,
     alive: &AliveSet,
-) -> Result<ClusteringKeyRange, PurgeError> {
+) -> Result<ClusteringKeyRange, StoreError> {
     let mut bounds: Option<(i64, i64)> = None;
     for row in alive.iter_alive() {
         let timestamp = columns

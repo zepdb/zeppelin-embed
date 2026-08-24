@@ -10,6 +10,7 @@ mod adversarial;
 use std::path::PathBuf;
 
 use adversarial::profiles::FaultProfile;
+use adversarial::program::{Op, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
 
 #[test]
@@ -71,6 +72,53 @@ fn same_seed_is_byte_identical_and_has_identical_outcome() {
     assert_eq!(left.faults_bytes, right.faults_bytes);
     assert_eq!(left.violations_bytes, right.violations_bytes);
     assert_eq!(left.violations, right.violations);
+}
+
+#[test]
+fn adversarial_program_can_delete_a_pre_seal_id() {
+    let program = Program::generate(11);
+    let (first_id, count) = program
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            Op::Ingest {
+                first_id, count, ..
+            } => Some((*first_id, *count)),
+            _ => None,
+        })
+        .expect("generated program starts with an ingest range");
+    let first_seal = program
+        .ops
+        .iter()
+        .position(|op| matches!(op, Op::Seal))
+        .expect("generated program seals its initial range");
+    let was_in_initial_range =
+        |doc_id: u32| doc_id >= first_id && doc_id < first_id.saturating_add(count);
+    let after_first_seal = &program.ops[first_seal.saturating_add(1)..];
+
+    assert!(
+        after_first_seal
+            .iter()
+            .any(|op| matches!(op, Op::Delete { doc_id } if was_in_initial_range(*doc_id)))
+    );
+    assert!(
+        after_first_seal
+            .iter()
+            .any(|op| matches!(op, Op::Revise { doc_id, .. } if was_in_initial_range(*doc_id)))
+    );
+    assert!(
+        after_first_seal
+            .iter()
+            .any(|op| matches!(op, Op::Upsert { doc_id, .. } if was_in_initial_range(*doc_id)))
+    );
+    assert!(
+        program
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Seal))
+            .count()
+            > 1
+    );
 }
 
 #[test]

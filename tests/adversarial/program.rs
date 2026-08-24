@@ -167,12 +167,44 @@ impl Program {
                 kind: SearchKind::Scan,
             },
             Op::Seal,
+            Op::Revise {
+                doc_id: 2,
+                revision: 2,
+                timestamp: 11,
+            },
+            Op::Upsert {
+                doc_id: 3,
+                revision: 2,
+                timestamp: 12,
+            },
+            Op::Delete { doc_id: 7 },
+            Op::Search {
+                query: 0,
+                k: 8,
+                kind: SearchKind::Scan,
+            },
+            Op::Search {
+                query: 3,
+                k: usize::MAX,
+                kind: SearchKind::Scan,
+            },
             Op::Maintain { bytes: u64::MAX },
             Op::Search {
                 query: 1,
                 k: 8,
                 kind: if seed == 0 {
                     SearchKind::Graph
+                } else {
+                    SearchKind::Scan
+                },
+            },
+            Op::Seal,
+            Op::Maintain { bytes: u64::MAX },
+            Op::Search {
+                query: 1,
+                k: 8,
+                kind: if seed == 0 {
+                    SearchKind::Auto
                 } else {
                     SearchKind::Scan
                 },

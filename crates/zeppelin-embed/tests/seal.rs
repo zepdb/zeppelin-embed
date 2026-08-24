@@ -5,7 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use tempfile::tempdir;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreError};
@@ -281,6 +282,190 @@ fn tombstoned_active_rows_do_not_become_live_sealed_rows() {
         .filter_map(|candidate| candidate.document())
         .collect::<Vec<_>>();
     assert_eq!(versions, vec![retained]);
+}
+
+#[test]
+fn delete_after_seal_removes_the_row_from_search() {
+    let directory = tempdir().expect("store directory");
+    let deleted = DocumentVersion::new(DocId::new(73), Revision::new(1));
+    let retained = DocumentVersion::new(DocId::new(74), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(deleted, vec![1.0, 0.0]),
+            IngestDocument::new(retained, vec![0.0, 1.0]),
+        ]))
+        .expect("ingest rows");
+    let sealed_generation = store.seal().expect("seal rows");
+    let original_id = store.snapshot().expect("original snapshot").segments()[0]
+        .meta()
+        .id;
+
+    let ack = store
+        .delete(DeleteBatch::new(vec![deleted.doc_id()]))
+        .expect("delete sealed row");
+
+    let snapshot = store.snapshot().expect("tombstoned snapshot");
+    let replacement = snapshot.segments().first().expect("replacement segment");
+    assert!(ack.generation() > sealed_generation);
+    assert_eq!(snapshot.generation(), ack.generation());
+    assert_ne!(replacement.meta().id, original_id);
+    assert!(!directory.path().join(original_id.file_name()).exists());
+    assert_eq!(
+        replacement
+            .alive()
+            .expect("replacement alive set")
+            .live_count(),
+        1
+    );
+    drop(snapshot);
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after sealed delete");
+    let versions = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    assert_eq!(versions, vec![retained]);
+
+    store.close().expect("close tombstoned store");
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+    let reopened_outcome = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search reopened tombstoned store");
+    assert_eq!(
+        reopened_outcome
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .collect::<Vec<_>>(),
+        vec![retained]
+    );
+}
+
+#[test]
+fn reingest_after_seal_replaces_rather_than_duplicating() {
+    let directory = tempdir().expect("store directory");
+    let doc_id = DocId::new(75);
+    let old = DocumentVersion::new(doc_id, Revision::new(1));
+    let replacement = DocumentVersion::new(doc_id, Revision::new(2));
+    let other = DocumentVersion::new(DocId::new(76), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(old, vec![1.0, 0.0]),
+            IngestDocument::new(other, vec![-1.0, 0.0]),
+        ]))
+        .expect("ingest rows");
+    let sealed_generation = store.seal().expect("seal rows");
+
+    let ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            replacement,
+            vec![0.0, 1.0],
+        )]))
+        .expect("replace sealed revision");
+
+    assert!(ack.generation() > sealed_generation);
+    assert_eq!(
+        store.snapshot().expect("replacement snapshot").generation(),
+        ack.generation()
+    );
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            3,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search replacement");
+    let versions = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        versions,
+        std::collections::BTreeSet::from([replacement, other])
+    );
+    assert!(!versions.contains(&old));
+
+    store.close().expect("close replacement store");
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+    let reopened_outcome = reopened
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            3,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search reopened replacement");
+    assert_eq!(
+        reopened_outcome
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([replacement, other])
+    );
+}
+
+#[test]
+fn stale_revision_after_seal_is_rejected() {
+    let directory = tempdir().expect("store directory");
+    let doc_id = DocId::new(77);
+    let current = DocumentVersion::new(doc_id, Revision::new(5));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            current,
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest current revision");
+    let sealed_generation = store.seal().expect("seal current revision");
+
+    let error = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(doc_id, Revision::new(4)),
+            vec![0.0, 1.0],
+        )]))
+        .expect_err("stale sealed revision must fail");
+
+    assert!(matches!(
+        error,
+        IngestError::StaleRevision {
+            doc_id: rejected,
+            current: current_revision,
+            attempted,
+        } if rejected == doc_id
+            && current_revision == Revision::new(5)
+            && attempted == Revision::new(4)
+    ));
+    assert_eq!(
+        store.snapshot().expect("unchanged snapshot").generation(),
+        sealed_generation
+    );
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search unchanged sealed revision");
+    assert_eq!(outcome.candidates.len(), 1);
+    assert_eq!(outcome.candidates[0].document(), Some(current));
 }
 
 #[test]
