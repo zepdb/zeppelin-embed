@@ -25,6 +25,8 @@ use super::{SegmentError, SegmentId, SegmentMeta};
 /// Borrowed factor records for a supported per-segment quantization scheme.
 #[derive(Clone, Copy, Debug)]
 pub enum SegmentFactors<'a> {
+    /// Full-precision rows carry no separate factor records.
+    F32,
     /// Permanent 12-byte Bit4 factor records.
     Bit4(&'a [Bit4Factors]),
     /// Permanent 8-byte affine Int8 factor records.
@@ -333,6 +335,18 @@ fn encode_factors(
     rows: usize,
 ) -> Result<(usize, u16, Vec<u8>), SegmentError> {
     match build.factors {
+        SegmentFactors::F32 => {
+            if build.scheme != 0 {
+                return Err(SegmentError::Geometry(format!(
+                    "F32 factors require scheme 0, got {}",
+                    build.scheme
+                )));
+            }
+            let row_stride = (build.dims as usize)
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or_else(|| SegmentError::Geometry("F32 row stride overflow".to_owned()))?;
+            Ok((row_stride, 0, Vec::new()))
+        }
         SegmentFactors::Bit4(factors) => {
             if build.scheme != 4 {
                 return Err(SegmentError::Geometry(format!(

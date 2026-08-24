@@ -360,6 +360,34 @@ impl SegmentReader {
         Ok(payload)
     }
 
+    /// Casts validated full-precision code rows directly from the mapping.
+    pub fn f32_codes(&self) -> Result<&[f32], SegmentError> {
+        if self.meta.scheme != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "F32 codes requested for scheme {}",
+                self.meta.scheme
+            )));
+        }
+        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
+        let expected = (self.meta.dims as usize)
+            .checked_mul(self.meta.row_count as usize)
+            .ok_or_else(|| SegmentError::Geometry("F32 code length overflow".to_owned()))?;
+        let expected_bytes = expected
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| SegmentError::Geometry("F32 code byte length overflow".to_owned()))?;
+        let expected_stride = (self.meta.dims as usize)
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| SegmentError::Geometry("F32 code stride overflow".to_owned()))?;
+        if header.row_stride_bytes as usize != expected_stride || payload.len() != expected_bytes {
+            return Err(SegmentError::Geometry(format!(
+                "F32 code stride/length {}/{}, expected {expected_stride}/{expected_bytes}",
+                header.row_stride_bytes,
+                payload.len()
+            )));
+        }
+        cast_slice::<f32>(payload, expected, "F32 codes")
+    }
+
     /// Casts signed-byte vector codes directly from the validated mmap region.
     pub fn int8_codes(&self) -> Result<&[i8], SegmentError> {
         if self.meta.scheme != 2 {

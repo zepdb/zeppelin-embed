@@ -21,7 +21,7 @@ pub enum PredicateValue {
 }
 
 impl PredicateValue {
-    fn value_type(&self) -> ColumnType {
+    pub(crate) fn value_type(&self) -> ColumnType {
         match self {
             Self::U64(_) => ColumnType::U64,
             Self::I64(_) => ColumnType::I64,

@@ -122,6 +122,11 @@ pub enum ScanQuery<'a> {
 pub enum ScanRows<'a> {
     /// Contiguous row-major full-precision rows.
     F32RowMajor(&'a F32Rows),
+    /// Borrowed contiguous row-major full-precision rows.
+    ///
+    /// Persisted F32 segments use this variant so a query does not copy the
+    /// mapped vector region merely to enter the scan executor.
+    F32BorrowedRowMajor(&'a [f32]),
     /// Contiguous row-major IEEE-f16 bit patterns.
     F16RowMajor(&'a [u16]),
     /// Contiguous row-major signed-byte codes and affine row factors.
@@ -332,6 +337,10 @@ fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, 
         (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
             scan_f32(query, rows, request.row_mask, k)
         }
+        (ScanQuery::F32(query), ScanRows::F32BorrowedRowMajor(rows)) => {
+            validate_f32_slice(query, rows)?;
+            scan_f32_rows(query, rows, request.row_mask, k, 0, None)
+        }
         (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
             scan_f16(query, rows, request.row_mask, k)
         }
@@ -370,7 +379,7 @@ impl ScanQuery<'_> {
 impl ScanRows<'_> {
     const fn scheme(self) -> QuantScheme {
         match self {
-            Self::F32RowMajor(_) => QuantScheme::F32,
+            Self::F32RowMajor(_) | Self::F32BorrowedRowMajor(_) => QuantScheme::F32,
             Self::F16RowMajor(_) => QuantScheme::F16,
             Self::Int8RowMajor { .. } => QuantScheme::Int8,
             Self::Bit4RowMajor { .. } => QuantScheme::Bit4,
@@ -409,6 +418,14 @@ pub(crate) fn scan_geometry(request: ScanRequest<'_>) -> Result<ScanGeometry, Sc
                 return Err(ScanError::ArithmeticOverflow);
             };
             validate_f32(query, rows)?;
+            geometry
+        }
+        ScanRows::F32BorrowedRowMajor(rows) => {
+            let geometry = row_major_geometry(rows.len(), query_dimension)?;
+            let ScanQuery::F32(query) = request.query else {
+                return Err(ScanError::ArithmeticOverflow);
+            };
+            validate_f32_slice(query, rows)?;
             geometry
         }
         ScanRows::F16RowMajor(rows) => row_major_geometry(rows.len(), query_dimension)?,
@@ -463,6 +480,10 @@ pub(crate) fn scan_partition(
     let candidates = match (request.query, request.rows) {
         (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
             let rows = scalar_row_range(rows.values(), query.len(), range.clone())?;
+            scan_f32_rows(query, rows, request.row_mask, k, first_row, cancellation)?
+        }
+        (ScanQuery::F32(query), ScanRows::F32BorrowedRowMajor(rows)) => {
+            let rows = scalar_row_range(rows, query.len(), range.clone())?;
             scan_f32_rows(query, rows, request.row_mask, k, first_row, cancellation)?
         }
         (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
@@ -545,6 +566,131 @@ pub(crate) fn scan_partition(
     })
 }
 
+/// Scores only rows enumerated by the request's allow-list.
+///
+/// This is the gather counterpart to [`scan_partition`]. It deliberately
+/// shares the same scheme validation and scoring kernels so planner branch
+/// selection can change work without changing score semantics.
+pub(crate) fn gather_top_k(
+    request: ScanRequest<'_>,
+    k: usize,
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<ScanOutcome, ScanError> {
+    check_cancellation(cancellation)?;
+    let geometry = scan_geometry(request)?;
+    let mut selected = BoundedTopK::new(k.min(geometry.row_count));
+    let mut scored_rows = 0_usize;
+    if let Some(allow_list) = request.row_mask {
+        for (ordinal, row) in allow_list.iter().enumerate() {
+            check_cancellation_at_row(cancellation, ordinal)?;
+            let row = usize::try_from(row).map_err(|_| ScanError::ArithmeticOverflow)?;
+            if row >= geometry.row_count {
+                continue;
+            }
+            selected.push(score_gather_row(request, row)?);
+            scored_rows = scored_rows
+                .checked_add(1)
+                .ok_or(ScanError::ArithmeticOverflow)?;
+        }
+    } else {
+        for row in 0..geometry.row_count {
+            check_cancellation_at_row(cancellation, row)?;
+            selected.push(score_gather_row(request, row)?);
+            scored_rows = scored_rows
+                .checked_add(1)
+                .ok_or(ScanError::ArithmeticOverflow)?;
+        }
+    }
+    let dimensions = u64::try_from(match request.query {
+        ScanQuery::F32(query) => query.len(),
+        ScanQuery::F16(query) => query.len(),
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len(),
+    })
+    .map_err(|_| ScanError::ArithmeticOverflow)?;
+    let dims_touched = u64::try_from(scored_rows)
+        .map_err(|_| ScanError::ArithmeticOverflow)?
+        .checked_mul(dimensions)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let bytes_per_row = match request.query {
+        ScanQuery::F32(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(ScanError::ArithmeticOverflow)?,
+        ScanQuery::F16(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or(ScanError::ArithmeticOverflow)?,
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len().div_ceil(2),
+    };
+    let bytes_read = u64::try_from(
+        scored_rows
+            .checked_mul(bytes_per_row)
+            .ok_or(ScanError::ArithmeticOverflow)?,
+    )
+    .map_err(|_| ScanError::ArithmeticOverflow)?;
+    let worker_thread_ids = (scored_rows != 0)
+        .then(|| std::thread::current().id())
+        .into_iter()
+        .collect::<Vec<_>>();
+    Ok(ScanOutcome {
+        candidates: selected.into_sorted(),
+        stats: ScanStats {
+            dims_touched,
+            bytes_read,
+            threads_used: worker_thread_ids.len(),
+            worker_thread_ids,
+        },
+    })
+}
+
+fn score_gather_row(request: ScanRequest<'_>, row: usize) -> Result<ScanCandidate, ScanError> {
+    let score = match (request.query, request.rows) {
+        (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
+            let values = scalar_row_range(rows.values(), query.len(), row..row + 1)?;
+            kernels::dot_f32(query, values)
+        }
+        (ScanQuery::F32(query), ScanRows::F32BorrowedRowMajor(rows)) => {
+            let values = scalar_row_range(rows, query.len(), row..row + 1)?;
+            kernels::dot_f32(query, values)
+        }
+        (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
+            let values = scalar_row_range(rows, query.len(), row..row + 1)?;
+            kernels::dot_f16(query, values)
+        }
+        (ScanQuery::Int8(query), ScanRows::Int8RowMajor { codes, factors }) => {
+            let values = scalar_row_range(codes, query.len(), row..row + 1)?;
+            let factor = factors.get(row).ok_or(ScanError::ArithmeticOverflow)?;
+            dot_int8_query(
+                query,
+                Int8Vec {
+                    codes: values,
+                    scale: factor.scale,
+                    offset: factor.offset,
+                },
+            )?
+        }
+        (ScanQuery::Bit4(query), ScanRows::Bit4RowMajor { codes, factors }) => {
+            let values = scalar_row_range(codes, query.len().div_ceil(2), row..row + 1)?;
+            let factor = factors.get(row).ok_or(ScanError::ArithmeticOverflow)?;
+            let mut score = [0.0_f32; 1];
+            est_dot_bit4_batch(query, values, std::slice::from_ref(factor), &mut score)?;
+            score[0]
+        }
+        (query, rows) => {
+            return Err(ScanError::SchemeMismatch {
+                query: query.scheme(),
+                rows: rows.scheme(),
+            });
+        }
+    };
+    if !score.is_finite() {
+        return Err(ScanError::NonFiniteScore { row_id: row });
+    }
+    Ok(ScanCandidate { row_id: row, score })
+}
+
 const CANCELLATION_CHECK_ROWS: usize = 64;
 
 fn check_cancellation(cancellation: Option<&QueryCancellation<'_>>) -> Result<(), ScanError> {
@@ -623,6 +769,20 @@ fn validate_f32(query: &[f32], rows: &F32Rows) -> Result<(), ScanError> {
         return Err(ScanError::NonFiniteInput { index });
     }
     if let Some(local_index) = rows.first_non_finite() {
+        let index = query
+            .len()
+            .checked_add(local_index)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        return Err(ScanError::NonFiniteInput { index });
+    }
+    Ok(())
+}
+
+fn validate_f32_slice(query: &[f32], rows: &[f32]) -> Result<(), ScanError> {
+    if let Some(index) = query.iter().position(|value| !value.is_finite()) {
+        return Err(ScanError::NonFiniteInput { index });
+    }
+    if let Some(local_index) = rows.iter().position(|value| !value.is_finite()) {
         let index = query
             .len()
             .checked_add(local_index)

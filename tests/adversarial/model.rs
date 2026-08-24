@@ -163,6 +163,68 @@ impl Model {
     }
 
     #[must_use]
+    pub fn expected_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        maximum_timestamp: i64,
+    ) -> Vec<ExpectedHit> {
+        let mut hits = self
+            .live
+            .iter()
+            .filter(|(_, doc)| doc.timestamp <= maximum_timestamp)
+            .map(|(&doc_id, doc)| ExpectedHit {
+                doc_id,
+                revision: doc.revision,
+                score: -squared_l2_f64(&doc.vector, query),
+            })
+            .collect::<Vec<_>>();
+        hits.sort_unstable_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
+    #[must_use]
+    pub fn expected_filtered_scan(
+        &self,
+        query: &[f32],
+        k: usize,
+        maximum_timestamp: i64,
+    ) -> Vec<ExpectedHit> {
+        let prepared = prepare_bit4_query(query, 0).expect("closed-vocabulary scan query");
+        let mut hits = self
+            .live
+            .iter()
+            .filter(|(_, doc)| doc.timestamp <= maximum_timestamp)
+            .map(|(&doc_id, doc)| {
+                let mut codes = vec![0_u8; doc.vector.len().div_ceil(2)];
+                let factors =
+                    quantize_bit4(&doc.vector, &mut codes).expect("closed-vocabulary document");
+                let score = est_dot_bit4(&prepared, &codes, factors)
+                    .expect("matching closed-vocabulary Bit4 row");
+                ExpectedHit {
+                    doc_id,
+                    revision: doc.revision,
+                    score,
+                }
+            })
+            .collect::<Vec<_>>();
+        hits.sort_unstable_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
+    #[must_use]
     pub fn live_ids(&self) -> BTreeSet<u32> {
         self.live.keys().copied().collect()
     }
@@ -179,6 +241,11 @@ impl Model {
     #[must_use]
     pub fn revision(&self, doc_id: u32) -> Option<u64> {
         self.live.get(&doc_id).map(|doc| doc.revision)
+    }
+
+    #[must_use]
+    pub fn timestamp(&self, doc_id: u32) -> Option<i64> {
+        self.live.get(&doc_id).map(|doc| doc.timestamp)
     }
 
     #[must_use]
@@ -200,4 +267,14 @@ fn squared_l2(left: &[f32], right: &[f32]) -> f32 {
             delta * delta
         })
         .sum()
+}
+
+fn squared_l2_f64(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| {
+            let delta = f64::from(*left) - f64::from(*right);
+            delta * delta
+        })
+        .sum::<f64>() as f32
 }

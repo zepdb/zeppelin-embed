@@ -1380,6 +1380,22 @@ fn search_pinned(
                 component: "sealed scan-tier query pool",
             }))?;
             match segment.meta().scheme {
+                0 => query_pool.execute(
+                    ScanRequest {
+                        query: ScanQuery::F32(request.vector()),
+                        rows: ScanRows::F32BorrowedRowMajor(
+                            segment
+                                .f32_codes()
+                                .map_err(StoreError::Segment)
+                                .map_err(QueryError::Store)?,
+                        ),
+                        row_mask: Some(alive.scan_mask()),
+                    },
+                    k,
+                    scan_options,
+                    control.clone(),
+                    SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                )?,
                 4 => query_pool.execute(
                     ScanRequest {
                         query: ScanQuery::Bit4(&bit4_query),

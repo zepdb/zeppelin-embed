@@ -12,6 +12,10 @@ use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
     CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
 };
+use zeppelin_embed::meta::{
+    Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
+};
+use zeppelin_embed::planner::SegmentTier;
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
 use zeppelin_embed::vfs::Vfs;
@@ -31,6 +35,7 @@ pub enum Invariant {
     I2,
     I3,
     I4,
+    I5,
     I6,
     I7,
     I8,
@@ -47,6 +52,7 @@ impl Invariant {
             Self::I2 => "I2 deleted-implies-gone",
             Self::I3 => "I3 exactness",
             Self::I4 => "I4 durability-prefix",
+            Self::I5 => "I5 filtered-results-honor-predicate",
             Self::I6 => "I6 accounting-conservation",
             Self::I7 => "I7 corruption-never-consumed",
             Self::I8 => "I8 lifecycle",
@@ -101,6 +107,7 @@ pub struct RunOutcome {
     pub operations: usize,
     pub faults_fired: usize,
     pub graph_searches: usize,
+    pub filtered_searches: usize,
     pub violations: Vec<Violation>,
     pub program_bytes: Vec<u8>,
     pub faults_bytes: Vec<u8>,
@@ -180,6 +187,12 @@ trait Engine {
         k: usize,
         kind: SearchKind,
         seed: u64,
+    ) -> Result<SearchObservation, String>;
+    fn filtered_search(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        maximum_timestamp: i64,
     ) -> Result<SearchObservation, String>;
     fn stats(&mut self) -> Result<StatsObservation, String>;
     fn close(&mut self) -> Result<(), String>;
@@ -371,6 +384,60 @@ impl Engine for RealEngine {
         })
     }
 
+    fn filtered_search(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        maximum_timestamp: i64,
+    ) -> Result<SearchObservation, String> {
+        let predicate = Predicate::Range(RangePredicate {
+            column: TIMESTAMP_COLUMN,
+            lower: None,
+            upper: Some(RangeBound::inclusive(PredicateValue::I64(
+                maximum_timestamp,
+            ))),
+        });
+        let outcome = self
+            .store()?
+            .search_filtered(
+                SearchRequest::new(query),
+                &predicate,
+                k,
+                SearchOptions::new(ScanOptions {
+                    thread_budget: THREAD_BUDGET,
+                }),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .map_err(|error| error.to_string())?;
+        let graph_available = outcome
+            .plans
+            .iter()
+            .any(|plan| plan.tier == SegmentTier::SealedGraph);
+        let hits = outcome
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let version = candidate
+                    .document()
+                    .ok_or_else(|| "filtered search returned a row without identity".to_owned())?;
+                Ok(Hit {
+                    doc_id: u32::try_from(version.doc_id().get())
+                        .map_err(|_| "filtered document id exceeds vocabulary".to_owned())?,
+                    revision: version.revision().get(),
+                    score: candidate.score(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(SearchObservation {
+            hits,
+            generation: outcome.generation,
+            graph_available,
+            graph_segments: 0,
+            graph_rescored: 0,
+            graph_pruned: 0,
+        })
+    }
+
     fn stats(&mut self) -> Result<StatsObservation, String> {
         let stats = self.store()?.stats().map_err(|error| error.to_string())?;
         Ok(StatsObservation {
@@ -545,6 +612,15 @@ impl<E: Engine> Engine for SelfTestEngine<E> {
         Ok(observed)
     }
 
+    fn filtered_search(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        maximum_timestamp: i64,
+    ) -> Result<SearchObservation, String> {
+        self.inner.filtered_search(query, k, maximum_timestamp)
+    }
+
     fn stats(&mut self) -> Result<StatsObservation, String> {
         self.inner.stats()
     }
@@ -656,6 +732,7 @@ pub fn run_program(
     let mut fault_targeted = false;
     let mut content_fault_fired = false;
     let mut graph_searches = 0_usize;
+    let mut filtered_searches = 0_usize;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         let operation_result = match op {
@@ -747,6 +824,30 @@ pub fn run_program(
                             *kind,
                             &observed,
                             content_fault_fired,
+                        ));
+                        None
+                    })
+            }
+            Op::FilteredSearch {
+                query,
+                k,
+                maximum_timestamp,
+            } => {
+                let query = program::query(*query);
+                let requested = if *k == usize::MAX { model.len() } else { *k };
+                engine
+                    .filtered_search(&query, requested, *maximum_timestamp)
+                    .map(|observed| {
+                        filtered_searches = filtered_searches.saturating_add(1);
+                        violations.extend(check_filtered_search(
+                            seed,
+                            profile,
+                            op_index,
+                            &model,
+                            &query,
+                            requested,
+                            *maximum_timestamp,
+                            &observed,
                         ));
                         None
                     })
@@ -880,11 +981,52 @@ pub fn run_program(
         operations: program.ops.len(),
         faults_fired,
         graph_searches,
+        filtered_searches,
         violations,
         program_bytes,
         faults_bytes,
         violations_bytes,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_filtered_search(
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    model: &Model,
+    query: &[f32],
+    k: usize,
+    maximum_timestamp: i64,
+    observed: &SearchObservation,
+) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    if let Some(hit) = observed.hits.iter().find(|hit| {
+        model
+            .timestamp(hit.doc_id)
+            .is_none_or(|timestamp| timestamp > maximum_timestamp)
+    }) {
+        violations.push(violation(
+            Invariant::I5,
+            seed,
+            profile,
+            op_index,
+            format!(
+                "filtered query max_ts={maximum_timestamp} returned doc {} at timestamp {:?}",
+                hit.doc_id,
+                model.timestamp(hit.doc_id)
+            ),
+        ));
+    }
+    let expected = if observed.graph_available {
+        model.expected_filtered(query, k, maximum_timestamp)
+    } else {
+        model.expected_filtered_scan(query, k, maximum_timestamp)
+    };
+    if let Some(detail) = exact_mismatch(&expected, &observed.hits) {
+        violations.push(violation(Invariant::I3, seed, profile, op_index, detail));
+    }
+    violations
 }
 
 fn full_scan(
@@ -1245,6 +1387,26 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
         graph_pruned: 0,
     };
     match invariant {
+        Invariant::I5 => {
+            let mut model = Model::default();
+            model.acknowledge(1, 1, 10);
+            let expected = model.expected_filtered(&query, 1, 10);
+            let hit = expected.first().copied().expect("one filtered hit");
+            let observed = observation(
+                vec![Hit {
+                    doc_id: hit.doc_id,
+                    revision: hit.revision,
+                    score: hit.score,
+                }],
+                false,
+                0,
+                0,
+            );
+            check_filtered_search(seed, FaultProfile::None, 1, &model, &query, 1, 9, &observed)
+                .into_iter()
+                .find(|violation| violation.invariant == Invariant::I5)
+                .expect("filtered-out row must trip I5")
+        }
         Invariant::I1 | Invariant::I3 | Invariant::I4 | Invariant::I7 | Invariant::I11 => {
             let mut model = Model::default();
             model.acknowledge(1, 2, 10);

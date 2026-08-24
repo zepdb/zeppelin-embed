@@ -19,7 +19,11 @@ use zeppelin_embed::lifecycle::{
 };
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
-use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
+use zeppelin_embed::meta::{
+    AliveSet, ColumnStoreBuilder, Predicate, PredicateValue, RangeBound, RangePredicate, Schema,
+    TIMESTAMP_COLUMN,
+};
+use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::writer::{
@@ -168,6 +172,43 @@ fn publish_segment_without_graph() -> (TempDir, SegmentId) {
     .expect("sealed segment without graph");
     commit(&directory, &columns, meta, 1);
     (directory, id)
+}
+
+#[test]
+fn filtered_graph_segments_report_the_exact_m6_fallback() {
+    let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
+    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open graph");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(0))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(5))),
+    });
+    let outcome = store
+        .search_filtered(
+            SearchRequest::new(&query(0.0)),
+            &predicate,
+            ROWS,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("filtered graph fallback");
+    assert_eq!(
+        outcome
+            .candidates
+            .iter()
+            .map(|candidate| candidate.row_id().local_row())
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4, 5]
+    );
+    assert_eq!(outcome.plans.len(), 1);
+    assert_eq!(outcome.plans[0].tier, SegmentTier::SealedGraph);
+    assert_eq!(outcome.plans[0].branch, SegmentBranch::GraphExactFallback);
+    assert_eq!(
+        outcome.plans[0].fallback,
+        PlanFallback::GraphToExactMaskedScan
+    );
+    assert!(!outcome.plans[0].approximate);
+    store.close().expect("close graph store");
 }
 
 fn publish_long_chain_graph(rows: usize) -> (TempDir, SegmentId) {

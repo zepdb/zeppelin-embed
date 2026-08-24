@@ -28,6 +28,7 @@
 use crate::fts::bm25::DocLen;
 use crate::fts::bm25::Tf;
 use crate::fts::search::{GlobalDocId, SearchCounters};
+use crate::meta::DocBitmap;
 
 use super::{TermCursor, TopK};
 
@@ -50,6 +51,7 @@ pub fn run(
     segment: u32,
     heap: &mut TopK,
     counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
 ) {
     for cursor in cursors.iter_mut() {
         cursor.reset();
@@ -201,13 +203,15 @@ pub fn run(
                 cursor.advance();
             }
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
-            heap.offer(
-                GlobalDocId {
-                    segment,
-                    row: pivot_row,
-                },
-                total,
-            );
+            if allow_list.is_none_or(|allowed| allowed.contains(pivot_row)) {
+                heap.offer(
+                    GlobalDocId {
+                        segment,
+                        row: pivot_row,
+                    },
+                    total,
+                );
+            }
         } else {
             // Advance the cursors that trail the pivot straight to it.
             for (row, slot) in live.iter().take(pivot_position.saturating_add(1)) {

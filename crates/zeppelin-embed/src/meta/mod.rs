@@ -142,6 +142,19 @@ pub struct Schema {
 }
 
 impl Schema {
+    /// Creates the mandatory timestamp-only schema used by public ingest today.
+    #[must_use]
+    pub fn timestamp_only() -> Self {
+        Self {
+            columns: vec![ColumnDefinition::new(
+                TIMESTAMP_COLUMN,
+                "ts",
+                ColumnType::I64,
+                false,
+            )],
+        }
+    }
+
     /// Validates user columns and prepends the reserved timestamp definition.
     pub fn new(user_columns: Vec<ColumnDefinition>) -> Result<Self, SchemaError> {
         for (position, definition) in user_columns.iter().enumerate() {
@@ -161,13 +174,8 @@ impl Schema {
             }
         }
 
-        let mut columns = Vec::with_capacity(user_columns.len().saturating_add(1));
-        columns.push(ColumnDefinition::new(
-            TIMESTAMP_COLUMN,
-            "ts",
-            ColumnType::I64,
-            false,
-        ));
+        let mut columns = Self::timestamp_only().columns;
+        columns.reserve(user_columns.len());
         columns.extend(user_columns);
         Ok(Self { columns })
     }

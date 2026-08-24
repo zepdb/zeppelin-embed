@@ -42,12 +42,20 @@ fn self_test_generation_lie_trips_i9() {
 }
 
 #[test]
+fn self_test_filtered_result_outside_predicate_trips_i5() {
+    let violation = adversarial::runner::planted_counterexample(Invariant::I5);
+    assert_eq!(violation.invariant, Invariant::I5);
+    println!("{}", violation.report());
+}
+
+#[test]
 fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
     for invariant in [
         Invariant::I1,
         Invariant::I2,
         Invariant::I3,
         Invariant::I4,
+        Invariant::I5,
         Invariant::I6,
         Invariant::I7,
         Invariant::I8,
@@ -102,6 +110,11 @@ fn adversarial_program_can_delete_a_pre_seal_id() {
             .any(|op| matches!(op, Op::Delete { doc_id } if was_in_initial_range(*doc_id)))
     );
     assert!(
+        program.ops[..first_seal]
+            .iter()
+            .any(|op| matches!(op, Op::FilteredSearch { .. }))
+    );
+    assert!(
         after_first_seal
             .iter()
             .any(|op| matches!(op, Op::Revise { doc_id, .. } if was_in_initial_range(*doc_id)))
@@ -130,11 +143,12 @@ fn smoke() {
             let outcome = adversarial::runner::run_program(seed, profile, &root)
                 .unwrap_or_else(|error| panic!("seed={seed} profile={}: {error}", profile.key()));
             println!(
-                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} violations={}",
+                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} filtered_searches={} violations={}",
                 profile.key(),
                 outcome.operations,
                 outcome.faults_fired,
                 outcome.graph_searches,
+                outcome.filtered_searches,
                 outcome.violations.len()
             );
             for violation in outcome.violations {

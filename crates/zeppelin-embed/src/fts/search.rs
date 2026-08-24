@@ -343,6 +343,91 @@ pub fn search(
     })
 }
 
+/// Scores only allow-listed rows by driving iteration from those row ids.
+///
+/// The caller validates one bitmap per lexical segment and bounds every row
+/// before entering this crate-internal exact branch.
+pub(crate) fn search_allow_list_driven(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    allow_lists: &[crate::meta::DocBitmap],
+) -> Result<SearchResult, IndexError> {
+    let stats = index.corpus_stats()?;
+    let fields = query.fields.fields();
+    let frequencies = query
+        .terms
+        .iter()
+        .map(|term| index.document_frequency(term, &fields))
+        .collect::<Vec<_>>();
+    let mut counters = SearchCounters::default();
+    let mut accumulator = Vec::<(GlobalDocId, f64)>::new();
+
+    for (ordinal, segment) in index.segments().iter().enumerate() {
+        let Some(allow_list) = allow_lists.get(ordinal) else {
+            continue;
+        };
+        let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
+        let lengths = weighted_lengths(segment, &query.fields);
+        for row in allow_list.iter() {
+            let length = usize::try_from(row)
+                .ok()
+                .and_then(|slot| lengths.get(slot).copied())
+                .unwrap_or(0);
+            let mut total = 0.0_f64;
+            let mut matched = false;
+            for (slot, term) in query.terms.iter().enumerate() {
+                let df = frequencies.get(slot).copied().unwrap_or(0);
+                if df == 0 {
+                    continue;
+                }
+                let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
+                    continue;
+                };
+                stream.seek(row);
+                if stream.current_row() == Some(row) {
+                    counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                    let tf = stream.current_tf().unwrap_or(0);
+                    total += TermScorer::new(Df(df), &stats, params).score(Tf(tf), DocLen(length));
+                    matched = true;
+                }
+                counters.blocks_decoded = counters
+                    .blocks_decoded
+                    .saturating_add(stream.blocks_decoded());
+                counters.blocks_skipped = counters
+                    .blocks_skipped
+                    .saturating_add(stream.blocks_skipped());
+            }
+            if matched {
+                counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+                accumulator.push((
+                    GlobalDocId {
+                        segment: segment_index,
+                        row,
+                    },
+                    total,
+                ));
+            }
+        }
+    }
+    accumulator.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.0.cmp(&right.0))
+    });
+    accumulator.truncate(k);
+    Ok(SearchResult {
+        hits: accumulator
+            .into_iter()
+            .map(|(doc, score)| ScoredDoc { doc, score })
+            .collect(),
+        counters,
+    })
+}
+
 /// The weighted analyzed length of one row.
 fn weighted_length(segment: &SealedSegment, row: u32, weights: &FieldWeights) -> u32 {
     let mut total = 0_u64;

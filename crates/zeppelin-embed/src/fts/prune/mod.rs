@@ -35,6 +35,7 @@ use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
 use crate::fts::sealed::TermStream;
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
+use crate::meta::DocBitmap;
 
 pub use bounds::{BlockBound, build_block_bounds, impact_of, term_upper_bound};
 
@@ -302,8 +303,35 @@ pub fn search_pruned(
     params: Bm25Params,
     strategy: Strategy,
 ) -> Result<SearchResult, IndexError> {
+    search_pruned_inner(index, query, k, params, strategy, None)
+}
+
+pub(crate) fn search_pruned_filtered(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    strategy: Strategy,
+    allow_lists: &[DocBitmap],
+) -> Result<SearchResult, IndexError> {
+    search_pruned_inner(index, query, k, params, strategy, Some(allow_lists))
+}
+
+fn search_pruned_inner(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    strategy: Strategy,
+    allow_lists: Option<&[DocBitmap]>,
+) -> Result<SearchResult, IndexError> {
     if strategy == Strategy::Exhaustive {
-        return crate::fts::search::search(index, query, k, params);
+        return allow_lists.map_or_else(
+            || crate::fts::search::search(index, query, k, params),
+            |allow_lists| {
+                crate::fts::search::search_allow_list_driven(index, query, k, params, allow_lists)
+            },
+        );
     }
     let stats = index.corpus_stats()?;
     let fields = query.fields.fields();
@@ -319,6 +347,7 @@ pub fn search_pruned(
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
         let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
+        let allow_list = allow_lists.and_then(|lists| lists.get(ordinal));
         // Borrowed outright in the flat single-field case; see
         // `crate::fts::search::weighted_lengths`. This used to be an
         // O(row_count) rebuild on every query.
@@ -367,6 +396,7 @@ pub fn search_pruned(
                 segment_index,
                 &mut heap,
                 &mut counters,
+                allow_list,
             );
         } else {
             match strategy {
@@ -376,6 +406,7 @@ pub fn search_pruned(
                     segment_index,
                     &mut heap,
                     &mut counters,
+                    allow_list,
                 ),
                 Strategy::BlockMaxMaxscore => maxscore::run(
                     &mut cursors,
@@ -383,6 +414,7 @@ pub fn search_pruned(
                     segment_index,
                     &mut heap,
                     &mut counters,
+                    allow_list,
                 ),
                 Strategy::Exhaustive => {}
             }

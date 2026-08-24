@@ -61,6 +61,11 @@ pub enum Op {
         k: usize,
         kind: SearchKind,
     },
+    FilteredSearch {
+        query: u8,
+        k: usize,
+        maximum_timestamp: i64,
+    },
     Stats,
     Close,
     Reopen,
@@ -85,6 +90,7 @@ impl Op {
             Self::Seal => "seal",
             Self::Maintain { .. } => "maintain",
             Self::Search { .. } => "search",
+            Self::FilteredSearch { .. } => "filtered_search",
             Self::Stats => "stats",
             Self::Close => "close",
             Self::Reopen => "reopen",
@@ -138,6 +144,13 @@ impl Op {
                 "{{\"op\":{index},\"kind\":\"search\",\"query\":{query},\"k\":{k},\"tier\":\"{}\"}}",
                 kind.key()
             ),
+            Self::FilteredSearch {
+                query,
+                k,
+                maximum_timestamp,
+            } => format!(
+                "{{\"op\":{index},\"kind\":\"filtered_search\",\"query\":{query},\"k\":{k},\"maximum_timestamp\":{maximum_timestamp}}}"
+            ),
         }
     }
 }
@@ -160,6 +173,11 @@ impl Program {
                 count: initial_count,
                 revision: 1,
                 timestamp: 10,
+            },
+            Op::FilteredSearch {
+                query: 0,
+                k: 8,
+                maximum_timestamp: 9,
             },
             Op::Search {
                 query: 0,
@@ -254,7 +272,7 @@ impl Program {
         let mut next_id = initial_count + 6;
         let mut revisions = std::collections::BTreeMap::<u32, u64>::new();
         for _ in 0..12 {
-            match rng.random_range(0_u8..6) {
+            match rng.random_range(0_u8..7) {
                 0 | 1 => {
                     let id = next_id;
                     next_id = next_id.saturating_add(1);
@@ -281,6 +299,11 @@ impl Program {
                     kind: SearchKind::Scan,
                 }),
                 4 => ops.push(Op::Stats),
+                5 => ops.push(Op::FilteredSearch {
+                    query: rng.random_range(0_u8..4),
+                    k: 8,
+                    maximum_timestamp: rng.random_range(9_i64..80),
+                }),
                 _ => ops.push(Op::Maintain {
                     bytes: 64_u64 * 256,
                 }),
@@ -291,6 +314,11 @@ impl Program {
                 query: 3,
                 k: usize::MAX,
                 kind: SearchKind::Scan,
+            },
+            Op::FilteredSearch {
+                query: 2,
+                k: 8,
+                maximum_timestamp: 60,
             },
             Op::Close,
         ]);

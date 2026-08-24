@@ -26,6 +26,7 @@
 use crate::fts::bm25::DocLen;
 use crate::fts::bm25::Tf;
 use crate::fts::search::{GlobalDocId, SearchCounters};
+use crate::meta::DocBitmap;
 
 use super::{TermCursor, TopK};
 
@@ -47,6 +48,7 @@ pub fn score_all(
     segment: u32,
     heap: &mut TopK,
     counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
 ) {
     // Kept sorted by row so accumulation is a binary search rather than a
     // linear scan. The list is bounded at SHORT_LIST_POSTINGS today, which
@@ -73,7 +75,9 @@ pub fn score_all(
     }
     for (row, score) in totals {
         counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
-        heap.offer(GlobalDocId { segment, row }, score);
+        if allow_list.is_none_or(|allowed| allowed.contains(row)) {
+            heap.offer(GlobalDocId { segment, row }, score);
+        }
     }
 }
 
@@ -88,6 +92,7 @@ pub fn run(
     segment: u32,
     heap: &mut TopK,
     counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
 ) {
     // Ascending by upper bound: cheapest terms become non-essential first.
     let mut order: Vec<usize> = (0..cursors.len()).collect();
@@ -216,7 +221,9 @@ pub fn run(
         if !abandoned {
             let total: f64 = contributions.iter().sum();
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
-            heap.offer(GlobalDocId { segment, row }, total);
+            if allow_list.is_none_or(|allowed| allowed.contains(row)) {
+                heap.offer(GlobalDocId { segment, row }, total);
+            }
         }
 
         // Advance past the candidate everywhere it appears.
