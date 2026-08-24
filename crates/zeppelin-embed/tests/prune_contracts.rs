@@ -207,15 +207,76 @@ fn maxscore_on_a_long_query_also_evaluates_fewer_documents() {
 
 #[test]
 fn strategy_selection_follows_the_recorded_rule() {
-    // The rule of record: WAND when terms <= 4 and k <= 10, else MAXSCORE.
-    assert_eq!(select_strategy(1, 1), Strategy::BlockMaxWand);
-    assert_eq!(select_strategy(4, 10), Strategy::BlockMaxWand);
-    assert_eq!(select_strategy(5, 10), Strategy::BlockMaxMaxscore);
-    assert_eq!(select_strategy(4, 11), Strategy::BlockMaxMaxscore);
+    // The measured rule: MAXSCORE at two terms or fewer, WAND above, at
+    // any k. See `select_strategy` for the counters it came from.
+    assert_eq!(select_strategy(1, 1), Strategy::BlockMaxMaxscore);
+    assert_eq!(select_strategy(2, 10), Strategy::BlockMaxMaxscore);
+    assert_eq!(select_strategy(3, 10), Strategy::BlockMaxWand);
+    assert_eq!(select_strategy(6, 1_000), Strategy::BlockMaxWand);
 
     let contract = load_contract("strategy_rule");
-    assert_eq!(contract.get("max_terms_for_wand").copied(), Some(4));
-    assert_eq!(contract.get("max_k_for_wand").copied(), Some(10));
+    assert_eq!(contract.get("min_terms_for_wand").copied(), Some(3));
+}
+
+/// Re-derives the strategy rule from the counters it was calibrated on.
+///
+/// The rule is a claim about which strategy costs less. A comment recording
+/// that claim decays; this recomputes it. If the engine ever changes so
+/// that the other strategy wins a cell, this goes red and the rule gets
+/// re-derived rather than quietly staying wrong — which is exactly how the
+/// inherited GOV2 thresholds survived as long as they did.
+///
+/// Cost proxy is `postings_decoded + docs_evaluated`: one is a scored term
+/// contribution, the other a heap offer, and both are per-candidate work.
+/// The counters are exact, so this gate carries a zero flake budget and
+/// needs no wall clock.
+#[test]
+fn strategy_rule_matches_the_counters_it_was_calibrated_from() {
+    let params = Bm25Params::default();
+    let mut disagreements = 0_usize;
+    let mut checked = 0_usize;
+    for documents in [2_000_usize, 100_000] {
+        let index = index_of(&zipf_corpus(documents, 12));
+        for terms in 2..=6_usize {
+            let query = TermQuery::flat(
+                (0..terms)
+                    .map(|slot| format!("t{}", slot * 2).into_bytes())
+                    .collect(),
+                &[DEFAULT_FIELD],
+            );
+            for k in [10_usize, 100] {
+                let cost = |strategy| {
+                    let result =
+                        search_pruned(&index, &query, k, params, strategy).expect("scores");
+                    result.counters.postings_decoded + result.counters.docs_evaluated
+                };
+                let wand = cost(Strategy::BlockMaxWand);
+                let maxscore = cost(Strategy::BlockMaxMaxscore);
+                let cheaper = if wand <= maxscore {
+                    Strategy::BlockMaxWand
+                } else {
+                    Strategy::BlockMaxMaxscore
+                };
+                checked += 1;
+                if select_strategy(terms, k) != cheaper {
+                    disagreements += 1;
+                    eprintln!(
+                        "rule disagrees at documents={documents} terms={terms} k={k}: \
+                         wand {wand}, maxscore {maxscore}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 20, "the calibration grid changed shape");
+    // One cell dissents: three terms at k=100 on the 2,000-document corpus,
+    // where MAXSCORE is 14% cheaper and both costs are under 2,000 units.
+    // A rule that special-cased it would be fitting noise.
+    assert!(
+        disagreements <= 1,
+        "the strategy rule disagrees with the counters in {disagreements} of \
+         {checked} cells; re-derive the rule, do not widen this bound"
+    );
 }
 
 #[test]
@@ -338,10 +399,9 @@ fn capture_contracts() {
     write(
         "strategy_rule",
         String::from(
-            "# The v1 selection rule of record. Recalibrate from counter\n\
+            "# The measured selection rule. Recalibrate from counter\n\
              # evidence and record the change; do not tune it silently.\n\
-             max_terms_for_wand = 4\n\
-             max_k_for_wand = 10\n",
+             min_terms_for_wand = 3\n",
         ),
     );
 }

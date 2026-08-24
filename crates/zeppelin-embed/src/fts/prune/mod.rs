@@ -63,13 +63,58 @@ pub enum Strategy {
     BlockMaxMaxscore,
 }
 
-/// Returns the strategy the recorded v1 rule selects.
+/// Postings above which the rule prefers WAND. Two terms or fewer go to
+/// MAXSCORE; see [`select_strategy`] for the measurement.
+pub const MIN_TERMS_FOR_WAND: usize = 3;
+
+/// Returns the strategy the measured rule selects.
 ///
-/// WAND when `terms <= 4 && k <= 10`, else MAXSCORE. Recalibrate from
-/// counter evidence and record the change; do not tune it silently.
+/// **MAXSCORE at two terms or fewer, WAND at three or more, at any `k`.**
+///
+/// # Provenance: measured here, not inherited
+///
+/// The previous rule — WAND when `terms <= 4 && k <= 10` — came from GOV2
+/// on x86 at 25 million documents (`research/02a:282`). The *shape* of that
+/// evidence transfers; the thresholds were always a starting point, and
+/// they are wrong for this engine at these corpus sizes.
+///
+/// Recalibrated from `postings_decoded` and `docs_evaluated` over a
+/// deterministic Zipf corpus at 2,000 and 100,000 documents, every term
+/// count from two to six, at `k` of 10 and 100. The counters are exact, so
+/// this measurement is contamination-immune and reproducible:
+/// `strategy_rule_matches_the_counters_it_was_calibrated_from` re-derives
+/// it on every run rather than trusting a number in a comment.
+///
+/// What the counters say:
+///
+/// - **`k` barely matters.** The same strategy wins at 10 and at 100 in
+///   every cell but one, so `k` leaves the rule entirely.
+/// - **At two terms MAXSCORE wins outright**, on both counters: 40,306
+///   postings against WAND's 66,680 at 100,000 documents. WAND's pivot has
+///   almost nothing to choose between with two cursors.
+/// - **At three terms and above WAND wins decisively on postings**, which
+///   is the inner loop: 4,248 against 20,906 at four terms, 7,335 against
+///   42,001 at six. MAXSCORE evaluates fewer *documents* there, but it
+///   seeks every cursor to every candidate, and postings outnumber
+///   documents by three to six times.
+///
+/// The old rule sent four of the five term counts to the wrong strategy at
+/// `k` of 100, and five and six terms to the wrong one at `k` of 10.
+///
+/// **Both strategies return identical results** — `prune_equivalence`
+/// gates that — so this is a cost decision with no quality risk.
+///
+/// **Owed:** confirmation on BEIR. This corpus is synthetic, with uniform
+/// term frequencies and lengths. Replacing a constant measured on someone
+/// else's hardware and collection with one measured on ours is a strict
+/// improvement, but it is not the same as measuring the real thing.
 #[must_use]
 pub const fn select_strategy(term_count: usize, k: usize) -> Strategy {
-    if term_count <= 4 && k <= 10 {
+    // `k` is accepted and deliberately unused: the counters say it does not
+    // discriminate, and dropping the parameter would be a breaking API
+    // change made for a cosmetic reason.
+    let _ = k;
+    if term_count >= MIN_TERMS_FOR_WAND {
         Strategy::BlockMaxWand
     } else {
         Strategy::BlockMaxMaxscore
@@ -390,13 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn strategy_selection_follows_the_recorded_rule() {
-        assert_eq!(select_strategy(1, 10), Strategy::BlockMaxWand);
-        assert_eq!(select_strategy(4, 10), Strategy::BlockMaxWand);
-        assert_eq!(select_strategy(5, 10), Strategy::BlockMaxMaxscore);
-        assert_eq!(select_strategy(4, 11), Strategy::BlockMaxMaxscore);
-        assert_eq!(select_strategy(1, 1_000), Strategy::BlockMaxMaxscore);
-        assert_eq!(select_strategy(0, 0), Strategy::BlockMaxWand);
+    fn strategy_selection_follows_the_measured_rule() {
+        assert_eq!(select_strategy(1, 10), Strategy::BlockMaxMaxscore);
+        assert_eq!(select_strategy(2, 10), Strategy::BlockMaxMaxscore);
+        assert_eq!(select_strategy(3, 10), Strategy::BlockMaxWand);
+        assert_eq!(select_strategy(6, 10), Strategy::BlockMaxWand);
+        // `k` no longer discriminates, at either end of the range.
+        assert_eq!(select_strategy(2, 1_000), Strategy::BlockMaxMaxscore);
+        assert_eq!(select_strategy(3, 1_000), Strategy::BlockMaxWand);
+        assert_eq!(select_strategy(0, 0), Strategy::BlockMaxMaxscore);
     }
 
     #[test]

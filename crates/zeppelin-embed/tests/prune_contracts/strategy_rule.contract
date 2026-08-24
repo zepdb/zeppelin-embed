@@ -1,4 +1,16 @@
-# The v1 selection rule of record. Recalibrate from counter
-# evidence and record the change; do not tune it silently.
-max_terms_for_wand = 4
-max_k_for_wand = 10
+# The measured selection rule: MAXSCORE at two terms or fewer, WAND at
+# three or more, at any k.
+#
+# Recalibrated from postings_decoded and docs_evaluated over a
+# deterministic Zipf corpus at 2,000 and 100,000 documents, term counts
+# two through six, k of 10 and 100. It replaces "WAND when terms <= 4 and
+# k <= 10", which came from GOV2 on x86 at 25 million documents: the shape
+# of that evidence transfers, the thresholds did not. k dropped out of the
+# rule because it did not discriminate in 19 of the 20 cells.
+#
+# Both strategies return identical results, so this is a cost decision
+# with no quality risk. strategy_rule_matches_the_counters_it_was_
+# calibrated_from re-derives it on every run.
+#
+# Owed: confirmation on BEIR. This corpus is synthetic.
+min_terms_for_wand = 3
