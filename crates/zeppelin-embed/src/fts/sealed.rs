@@ -54,8 +54,8 @@
 use super::bm25::TermScorer;
 use super::index::{FieldId, SegmentIndex};
 use super::postings::{
-    BLOCK_META_LEN, BlockImpact, BlockMeta, DEFAULT_POSTINGS_PER_BLOCK, HEADER_LEN, PostingsError,
-    PostingsReader, block_impacts, encode_v2,
+    BLOCK_META_LEN, BlockImpact, BlockMeta, DEFAULT_POSTINGS_PER_BLOCK, HEADER_LEN, PostingList,
+    PostingsError, PostingsReader, block_impacts, encode_v2,
 };
 use super::search::FieldWeights;
 use crate::kernels::postings::{prefix_sum, unpack};
@@ -152,10 +152,25 @@ impl SealedSegment {
             }
         }
 
+        // Union document frequencies are computed HERE, over the in-memory
+        // sorted lists the encoder is reading anyway. The previous form
+        // sealed first and then re-decoded every block of every
+        // multi-field term to count the union — a full decode pass over
+        // bytes written milliseconds earlier.
+        let mut group_term: Option<&[u8]> = None;
+        let mut group_start = 0_usize;
+        let mut group_lists: Vec<&PostingList> = Vec::new();
         for (key, list) in segment.postings() {
             if list.is_empty() {
                 continue;
             }
+            if group_term != Some(key.term.as_slice()) {
+                finish_union_group(&mut sealed.spans, group_start, &group_lists);
+                group_term = Some(key.term.as_slice());
+                group_start = sealed.spans.len();
+                group_lists.clear();
+            }
+            group_lists.push(list);
             let field_lengths = sealed
                 .lengths
                 .iter()
@@ -204,43 +219,8 @@ impl SealedSegment {
             });
             sealed.blob.extend_from_slice(bytes);
         }
-        sealed.fill_union_frequencies();
+        finish_union_group(&mut sealed.spans, group_start, &group_lists);
         Ok(sealed)
-    }
-
-    /// Records, on every span of a term, how many documents hold it at all.
-    ///
-    /// Spans are ascending by term then field, so a term's spans are
-    /// contiguous and the union is one linear merge over already-sorted
-    /// lists. Doing it once at seal keeps `document_frequency` off the
-    /// per-query decode path entirely.
-    fn fill_union_frequencies(&mut self) {
-        let mut start = 0_usize;
-        while start < self.spans.len() {
-            let mut end = start.saturating_add(1);
-            while end < self.spans.len() && self.term_of(end) == self.term_of(start) {
-                end = end.saturating_add(1);
-            }
-            let union = if end.saturating_sub(start) == 1 {
-                self.spans.get(start).map_or(0, |span| span.doc_freq)
-            } else {
-                let mut cursors: Vec<ListCursor<'_>> = Vec::new();
-                for index in start..end {
-                    if let Some(cursor) = self.cursor_at(index, 1_000) {
-                        cursors.push(cursor);
-                    }
-                }
-                union_count(&mut cursors)
-            };
-            let count = u32::try_from(end.saturating_sub(start)).unwrap_or(u32::MAX);
-            for index in start..end {
-                if let Some(span) = self.spans.get_mut(index) {
-                    span.union_doc_freq = union;
-                    span.field_count = count;
-                }
-            }
-            start = end;
-        }
     }
 
     /// Returns the term bytes of one span.
@@ -445,6 +425,63 @@ const NO_BLOCK: usize = usize::MAX;
 fn stream_end(offset: u32, count: u16, bits: u8) -> u32 {
     let packed = u32::from(count).saturating_mul(u32::from(bits)).div_ceil(8);
     offset.saturating_add(packed)
+}
+
+/// Stamps one term's spans with its union document frequency.
+///
+/// `start..spans.len()` are the spans the seal loop just pushed for one
+/// term, in field order; `lists` are the same posting lists, still in
+/// memory. A single-field term's union is its own document frequency; a
+/// multi-field term's is one linear merge over already-sorted lists.
+fn finish_union_group(spans: &mut [ListSpan], start: usize, lists: &[&PostingList]) {
+    let end = spans.len();
+    if end <= start {
+        return;
+    }
+    let count = u32::try_from(end.saturating_sub(start)).unwrap_or(u32::MAX);
+    let union = if count == 1 {
+        spans.get(start).map_or(0, |span| span.doc_freq)
+    } else {
+        union_postings(lists)
+    };
+    if let Some(range) = spans.get_mut(start..end) {
+        for span in range {
+            span.union_doc_freq = union;
+            span.field_count = count;
+        }
+    }
+}
+
+/// Counts the distinct docids across in-memory sorted posting lists.
+fn union_postings(lists: &[&PostingList]) -> u32 {
+    let mut positions = vec![0_usize; lists.len()];
+    let mut distinct = 0_u32;
+    loop {
+        let mut lowest: Option<u32> = None;
+        for (slot, list) in lists.iter().enumerate() {
+            let position = positions.get(slot).copied().unwrap_or(usize::MAX);
+            if let Some(posting) = list.postings().get(position) {
+                lowest = Some(lowest.map_or(posting.docid, |low| low.min(posting.docid)));
+            }
+        }
+        let Some(low) = lowest else {
+            break;
+        };
+        distinct = distinct.saturating_add(1);
+        for (slot, list) in lists.iter().enumerate() {
+            let Some(position) = positions.get_mut(slot) else {
+                continue;
+            };
+            if list
+                .postings()
+                .get(*position)
+                .is_some_and(|posting| posting.docid == low)
+            {
+                *position = position.saturating_add(1);
+            }
+        }
+    }
+    distinct
 }
 
 /// Counts the distinct rows across a set of cursors by linear merge.
