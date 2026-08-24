@@ -29,6 +29,12 @@ pub enum SysError {
     PerformanceCoreCount(io::Error),
     /// Darwin returned a zero or malformed performance-core count.
     InvalidPerformanceCoreCount,
+    /// `pthread_set_qos_class_self_np` rejected the requested class.
+    RequestQos(io::Error),
+    /// `pthread_get_qos_class_np` could not report the calling thread.
+    ObserveQos(io::Error),
+    /// The caller asked for a class Darwin provides no way to request.
+    UnrequestableQos,
 }
 
 impl fmt::Display for SysError {
@@ -54,6 +60,13 @@ impl fmt::Display for SysError {
             Self::InvalidPerformanceCoreCount => {
                 formatter.write_str("Darwin returned an invalid physical performance-core count")
             }
+            Self::RequestQos(error) => write!(formatter, "could not request a QoS class: {error}"),
+            Self::ObserveQos(error) => {
+                write!(formatter, "could not read the thread QoS class: {error}")
+            }
+            Self::UnrequestableQos => {
+                formatter.write_str("Darwin provides no way to request this QoS class")
+            }
         }
     }
 }
@@ -65,8 +78,13 @@ impl std::error::Error for SysError {
             | Self::FullFsync(error)
             | Self::PageSize(error)
             | Self::Mincore(error)
-            | Self::PerformanceCoreCount(error) => Some(error),
-            Self::TaskVmInfo(_) | Self::RangeOverflow | Self::InvalidPerformanceCoreCount => None,
+            | Self::PerformanceCoreCount(error)
+            | Self::RequestQos(error)
+            | Self::ObserveQos(error) => Some(error),
+            Self::TaskVmInfo(_)
+            | Self::RangeOverflow
+            | Self::InvalidPerformanceCoreCount
+            | Self::UnrequestableQos => None,
         }
     }
 }
@@ -205,6 +223,104 @@ pub fn physical_performance_core_count() -> Result<usize, SysError> {
     usize::try_from(count).map_err(|_| SysError::InvalidPerformanceCoreCount)
 }
 
+/// A Darwin scheduling quality-of-service class.
+///
+/// # Why this is the only placement lever
+///
+/// Apple silicon exposes no thread-affinity API. The QoS class is the sole
+/// supported way to influence whether work lands on a performance or an
+/// efficiency core, so it is the whole of the P-core versus E-core
+/// question. Interactive query work wants [`Self::UserInteractive`];
+/// background index and seal work wants [`Self::Utility`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QosClass {
+    /// Latency-critical work. Prefers performance cores.
+    UserInteractive,
+    /// Work the user is actively waiting on.
+    UserInitiated,
+    /// The unannotated default.
+    Default,
+    /// Longer work with a progress indicator. Prefers efficiency cores.
+    Utility,
+    /// Work the user is unaware of. Strongly prefers efficiency cores.
+    Background,
+    /// The thread carries no explicit class.
+    ///
+    /// Darwin can REPORT this but provides no way to request it, so
+    /// [`request_qos`] refuses it rather than leaving the caller's thread
+    /// wherever it happened to be.
+    Unspecified,
+}
+
+impl QosClass {
+    /// Returns the libc class this variant requests, if it can be requested.
+    const fn requestable(self) -> Option<libc::qos_class_t> {
+        match self {
+            Self::UserInteractive => Some(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE),
+            Self::UserInitiated => Some(libc::qos_class_t::QOS_CLASS_USER_INITIATED),
+            Self::Default => Some(libc::qos_class_t::QOS_CLASS_DEFAULT),
+            Self::Utility => Some(libc::qos_class_t::QOS_CLASS_UTILITY),
+            Self::Background => Some(libc::qos_class_t::QOS_CLASS_BACKGROUND),
+            Self::Unspecified => None,
+        }
+    }
+}
+
+/// Requests `class` for the CALLING thread, at relative priority zero.
+///
+/// The class holds for the rest of that thread's life and is not inherited
+/// by threads it later spawns from a pool it did not create. Call it on the
+/// worker itself, not on whoever started the worker.
+///
+/// This is a mechanism, not a policy. Nothing in the engine calls it: which
+/// threads should ask for which class is a product-wide behavioural
+/// decision, because a store that promotes its query threads competes
+/// differently with its host application. See `07-P5-scheduling.md`, O5.
+///
+/// # Errors
+///
+/// Returns [`SysError::UnrequestableQos`] for [`QosClass::Unspecified`], and
+/// [`SysError::RequestQos`] when Darwin rejects the request.
+pub fn request_qos(class: QosClass) -> Result<(), SysError> {
+    let Some(requested) = class.requestable() else {
+        return Err(SysError::UnrequestableQos);
+    };
+    // SAFETY: the call touches no caller memory and retargets only the
+    // calling thread. `pthread_*` returns an errno directly, not -1.
+    let status = unsafe { libc::pthread_set_qos_class_self_np(requested, 0) };
+    if status != 0 {
+        return Err(SysError::RequestQos(io::Error::from_raw_os_error(status)));
+    }
+    Ok(())
+}
+
+/// Returns the calling thread's QoS class and its relative priority.
+///
+/// # Errors
+///
+/// Returns [`SysError::ObserveQos`] when Darwin cannot report the thread.
+pub fn observed_qos() -> Result<(QosClass, i32), SysError> {
+    let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+    let mut priority = 0_i32;
+    // SAFETY: `pthread_self` names the current live thread and both output
+    // pointers address initialized, writable, correctly typed locals.
+    let status = unsafe {
+        libc::pthread_get_qos_class_np(libc::pthread_self(), &raw mut class, &raw mut priority)
+    };
+    if status != 0 {
+        return Err(SysError::ObserveQos(io::Error::from_raw_os_error(status)));
+    }
+    let class = match class {
+        libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE => QosClass::UserInteractive,
+        libc::qos_class_t::QOS_CLASS_USER_INITIATED => QosClass::UserInitiated,
+        libc::qos_class_t::QOS_CLASS_DEFAULT => QosClass::Default,
+        libc::qos_class_t::QOS_CLASS_UTILITY => QosClass::Utility,
+        libc::qos_class_t::QOS_CLASS_BACKGROUND => QosClass::Background,
+        libc::qos_class_t::QOS_CLASS_UNSPECIFIED => QosClass::Unspecified,
+    };
+    Ok((class, priority))
+}
+
 /// Counts resident virtual-memory pages intersecting a byte slice.
 ///
 /// The supplied slice may begin or end between page boundaries. The wrapper rounds the queried
@@ -263,11 +379,56 @@ pub fn mincore_resident(range: &[u8]) -> Result<usize, SysError> {
 )]
 mod tests {
     use super::{
-        SysError, barrier_fsync, full_fsync, mincore_resident, phys_footprint,
-        physical_performance_core_count,
+        QosClass, SysError, barrier_fsync, full_fsync, mincore_resident, observed_qos,
+        phys_footprint, physical_performance_core_count, request_qos,
     };
     use std::os::fd::AsRawFd;
     use std::slice;
+
+    #[test]
+    fn a_requested_qos_class_is_what_the_thread_then_reports() {
+        // P5.1. Apple silicon has no thread-affinity API, so the QoS class
+        // is the ONLY supported way to influence P-core against E-core
+        // placement. This proves the request is actually taken, which is
+        // the premise the whole scheduling question rests on; until now
+        // the engine only ever OBSERVED a class it never asked for.
+        //
+        // Each probe runs on its own spawned thread. The class is
+        // per-thread and holds for that thread's life, so requesting one
+        // on the test runner's thread would silently retarget every later
+        // test in this binary.
+        for class in [
+            QosClass::UserInteractive,
+            QosClass::UserInitiated,
+            QosClass::Default,
+            QosClass::Utility,
+            QosClass::Background,
+        ] {
+            let probe = std::thread::spawn(move || {
+                request_qos(class)?;
+                observed_qos()
+            });
+            let (observed, priority) = probe
+                .join()
+                .expect("the probe thread must not panic")
+                .expect("Darwin accepts every class this enum can request");
+            assert_eq!(
+                observed, class,
+                "requested {class:?} but the thread reports {observed:?}"
+            );
+            assert_eq!(priority, 0, "a request at relative priority 0 must stay 0");
+        }
+    }
+
+    #[test]
+    fn an_unspecified_qos_class_is_refused_rather_than_silently_ignored() {
+        // Darwin has no way to ASK for "unspecified"; the getter can
+        // return it, so the enum must carry it. Requesting it is a caller
+        // bug and must fail loudly instead of leaving the thread wherever
+        // it happened to be.
+        let error = request_qos(QosClass::Unspecified).expect_err("must be refused");
+        assert!(matches!(error, SysError::UnrequestableQos));
+    }
 
     #[test]
     fn barrier_fsync_succeeds_on_regular_file() -> Result<(), Box<dyn std::error::Error>> {
