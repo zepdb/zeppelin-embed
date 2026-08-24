@@ -28,6 +28,9 @@ pub mod search;
 #[cfg(test)]
 mod properties;
 
+#[cfg(all(test, feature = "allocation-audit"))]
+mod alloc_gate;
+
 /// Dynamic pruning: block-max MAXSCORE and WAND.
 pub mod prune;
 

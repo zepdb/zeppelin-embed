@@ -126,12 +126,31 @@ impl Document {
     }
 }
 
+/// One field's analyzed token counts, dense by row.
+///
+/// `lengths` is exactly `row_count` long at all times: a field absent from
+/// a document still occupies its row, carrying zero. That invariant is what
+/// lets the scorer borrow the array wholesale instead of rebuilding it.
+#[derive(Clone, Debug)]
+struct FieldLengths {
+    field: FieldId,
+    lengths: Vec<u32>,
+}
+
 /// One segment's postings and lengths, addressed by dense row id.
+///
+/// # Why lengths are dense arrays and not a map
+///
+/// Rows are dense and ascending by the task 07 invariant, so a
+/// `BTreeMap<(row, field), u32>` spends a pointer-chasing descent — about
+/// seventeen levels at 171,000 documents — on what an array answers with one
+/// index. The scorer performs that lookup once per scored posting, so the
+/// descent was among the largest per-posting costs in the engine.
 #[derive(Clone, Debug, Default)]
 pub struct SegmentIndex {
     postings: BTreeMap<TermKey, PostingList>,
-    /// Per-row, per-field analyzed token counts.
-    lengths: BTreeMap<(u32, FieldId), u32>,
+    /// Per-field analyzed token counts, ascending by field id.
+    lengths: Vec<FieldLengths>,
     row_count: u32,
 }
 
@@ -171,22 +190,90 @@ impl SegmentIndex {
     /// Returns the analyzed token count of one row's field.
     #[must_use]
     pub fn field_length(&self, row: u32, field: FieldId) -> u32 {
-        self.lengths.get(&(row, field)).copied().unwrap_or(0)
+        self.field_lengths(field)
+            .and_then(|lengths| {
+                usize::try_from(row)
+                    .ok()
+                    .and_then(|slot| lengths.get(slot).copied())
+            })
+            .unwrap_or(0)
+    }
+
+    /// Returns one field's dense length array, if the field was ever set.
+    ///
+    /// The slice is exactly [`Self::row_count`] long, so a caller scoring a
+    /// single unweighted field can borrow it rather than rebuild it. A
+    /// linear scan over the field table is right here: a schema has a
+    /// handful of fields, and a map would trade an index for a descent.
+    #[must_use]
+    pub fn field_lengths(&self, field: FieldId) -> Option<&[u32]> {
+        self.lengths
+            .iter()
+            .find(|entry| entry.field == field)
+            .map(|entry| entry.lengths.as_slice())
     }
 
     /// Returns the analyzed token count of one row across every field.
     #[must_use]
     pub fn document_length(&self, row: u32) -> u32 {
+        let Ok(slot) = usize::try_from(row) else {
+            return 0;
+        };
         self.lengths
-            .range((row, FieldId(0))..=(row, FieldId(u16::MAX)))
-            .map(|(_, length)| *length)
-            .sum()
+            .iter()
+            .filter_map(|entry| entry.lengths.get(slot).copied())
+            .fold(0_u32, u32::saturating_add)
     }
 
     /// Returns the segment's total analyzed token count.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.lengths.values().map(|length| u64::from(*length)).sum()
+        self.lengths
+            .iter()
+            .flat_map(|entry| entry.lengths.iter())
+            .map(|length| u64::from(*length))
+            .sum()
+    }
+
+    /// Records one row's analyzed length for one field.
+    ///
+    /// Pads the field's array with zeros for any earlier row that did not
+    /// carry the field, which is what keeps every array dense.
+    fn set_field_length(&mut self, row: u32, field: FieldId, length: u32) {
+        let Ok(slot) = usize::try_from(row) else {
+            return;
+        };
+        let position = match self.lengths.iter().position(|entry| entry.field == field) {
+            Some(position) => position,
+            None => {
+                // Fields stay ascending so the table has a stable order.
+                let position = self
+                    .lengths
+                    .iter()
+                    .position(|entry| entry.field > field)
+                    .unwrap_or(self.lengths.len());
+                self.lengths.insert(
+                    position,
+                    FieldLengths {
+                        field,
+                        lengths: Vec::new(),
+                    },
+                );
+                position
+            }
+        };
+        let Some(entry) = self.lengths.get_mut(position) else {
+            return;
+        };
+        entry.lengths.resize(slot, 0);
+        entry.lengths.push(length);
+    }
+
+    /// Extends every field array to cover `rows` rows.
+    fn pad_lengths_to(&mut self, rows: usize) {
+        for entry in &mut self.lengths {
+            entry.lengths.resize(rows, 0);
+        }
     }
 
     /// Appends one analyzed document as the next dense row.
@@ -212,7 +299,7 @@ impl SegmentIndex {
                 .map(|token| token.position)
                 .max()
                 .map_or(0, |highest| highest.saturating_add(1));
-            self.lengths.insert((row, field), length);
+            self.set_field_length(row, field, length);
 
             let mut per_term: BTreeMap<Vec<u8>, Vec<u32>> = BTreeMap::new();
             for token in tokens {
@@ -236,6 +323,7 @@ impl SegmentIndex {
             }
         }
         self.row_count = self.row_count.saturating_add(1);
+        self.pad_lengths_to(usize::try_from(self.row_count).unwrap_or(usize::MAX));
         Ok(row)
     }
 }

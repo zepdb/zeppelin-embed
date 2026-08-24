@@ -256,16 +256,10 @@ pub fn search_pruned(
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
         let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
-        let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
-        let lengths: Vec<u32> = (0..row_count)
-            .map(|row| {
-                crate::fts::search::row_length(
-                    segment,
-                    u32::try_from(row).unwrap_or(u32::MAX),
-                    &query.fields,
-                )
-            })
-            .collect();
+        // Borrowed outright in the flat single-field case; see
+        // `crate::fts::search::weighted_lengths`. This used to be an
+        // O(row_count) rebuild on every query.
+        let lengths = crate::fts::search::weighted_lengths(segment, &query.fields);
 
         let mut cursors: Vec<TermCursor> = Vec::with_capacity(query.terms.len());
         for (slot, term) in query.terms.iter().enumerate() {

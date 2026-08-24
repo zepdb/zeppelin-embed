@@ -21,6 +21,7 @@
 //! identity has to carry both. Ordering is by segment then row, which is
 //! insertion order, which is time order.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use super::bm25::{Bm25Params, Df, DocLen, Tf, TermScorer};
@@ -45,6 +46,14 @@ pub struct ScoredDoc {
 }
 
 /// Per-field weight applied to term frequencies and lengths.
+///
+/// # One entry per field, ascending
+///
+/// The table is normalized at construction: sorted by field id, with a
+/// repeated field collapsed to its first weight. Without that invariant a
+/// caller who names a field twice makes the scorer count that field's length
+/// twice, which is a silently wrong score rather than a rejected query, and
+/// it makes iterating the table differ from looking each field up by id.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FieldWeights {
     weights: Vec<(FieldId, u32)>,
@@ -56,9 +65,7 @@ impl FieldWeights {
     /// This is what reproduces the flat BEIR column.
     #[must_use]
     pub fn flat(fields: &[FieldId]) -> Self {
-        Self {
-            weights: fields.iter().map(|field| (*field, 1_000)).collect(),
-        }
+        Self::normalized(fields.iter().map(|field| (*field, 1_000)).collect())
     }
 
     /// Explicit per-field weights, in thousandths.
@@ -67,15 +74,33 @@ impl FieldWeights {
     /// comparable and a configuration digest over it is stable.
     #[must_use]
     pub fn new(weights: &[(FieldId, u32)]) -> Self {
-        let mut weights = weights.to_vec();
+        Self::normalized(weights.to_vec())
+    }
+
+    /// Sorts by field and collapses a repeated field to its first weight.
+    fn normalized(mut weights: Vec<(FieldId, u32)>) -> Self {
+        // A stable sort keeps "first weight wins" meaning first as the
+        // caller wrote it, which is what `weight` has always returned.
         weights.sort_by_key(|(field, _)| *field);
+        weights.dedup_by_key(|(field, _)| *field);
         Self { weights }
     }
 
     /// Returns the fields carrying weight.
+    ///
+    /// This allocates. Hot paths iterate [`Self::iter`] instead.
     #[must_use]
     pub fn fields(&self) -> Vec<FieldId> {
         self.weights.iter().map(|(field, _)| *field).collect()
+    }
+
+    /// Returns the `(field, weight)` pairs, ascending by field.
+    ///
+    /// The allocation-free counterpart of [`Self::fields`]. Because the
+    /// table holds one entry per field, `iter` and [`Self::weight`] cannot
+    /// disagree.
+    pub fn iter(&self) -> impl Iterator<Item = (FieldId, u32)> + '_ {
+        self.weights.iter().copied()
     }
 
     /// Returns one field's weight in thousandths.
@@ -169,10 +194,9 @@ pub fn merge_term(
     // ordered-map based, and the single-field case — by far the common one
     // — skips the map entirely.
     let contributing: Vec<(FieldId, u64)> = weights
-        .fields()
-        .into_iter()
-        .filter_map(|field| {
-            let weight = u64::from(weights.weight(field));
+        .iter()
+        .filter_map(|(field, weight)| {
+            let weight = u64::from(weight);
             (weight > 0 && segment.posting_list(term, field).is_some())
                 .then_some((field, weight))
         })
@@ -228,6 +252,40 @@ pub fn row_length(
     weighted_length(segment, row, weights)
 }
 
+/// The weighted analyzed length of every row in one segment.
+///
+/// # Why this borrows
+///
+/// The flat single-field scorer — the shape every BEIR number was produced
+/// with — asks for `length * 1000 / 1000`, which is the field's own dense
+/// array unchanged. Returning it borrowed makes the per-query length
+/// preparation free rather than `O(row_count)`, and the identity is exact
+/// for every `u32` length, not approximate.
+///
+/// Any other weighting materializes the array once per segment per query,
+/// which is still one allocation instead of one lookup per scored posting.
+#[must_use]
+pub fn weighted_lengths<'segment>(
+    segment: &'segment super::index::SegmentIndex,
+    weights: &FieldWeights,
+) -> Cow<'segment, [u32]> {
+    let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
+    let mut entries = weights.iter();
+    if let (Some((field, 1_000)), None) = (entries.next(), entries.next())
+        && let Some(lengths) = segment.field_lengths(field)
+        && lengths.len() == row_count
+    {
+        return Cow::Borrowed(lengths);
+    }
+    Cow::Owned(
+        (0..row_count)
+            .map(|row| {
+                weighted_length(segment, u32::try_from(row).unwrap_or(u32::MAX), weights)
+            })
+            .collect(),
+    )
+}
+
 /// Scores every matching document exhaustively and returns the top `k`.
 ///
 /// # Errors
@@ -261,6 +319,9 @@ pub fn search(
         let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
         let mut row_scores: Vec<f64> = vec![0.0; row_count];
         let mut touched: Vec<u32> = Vec::new();
+        // Prepared once per segment, borrowed outright in the flat
+        // single-field case, instead of once per scored posting.
+        let lengths = weighted_lengths(segment, &query.fields);
 
         for (position, term) in query.terms.iter().enumerate() {
             let df = frequencies
@@ -278,7 +339,10 @@ pub fn search(
             counters.blocks_decoded = counters.blocks_decoded.saturating_add(1);
             for (row, tf) in merged.entries {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                let length = weighted_length(segment, row, &query.fields);
+                let length = usize::try_from(row)
+                    .ok()
+                    .and_then(|slot| lengths.get(slot).copied())
+                    .unwrap_or(0);
                 let score = scorer.score(Tf(tf), DocLen(length));
                 let Ok(slot) = usize::try_from(row) else {
                     continue;
@@ -337,9 +401,9 @@ fn weighted_length(
     weights: &FieldWeights,
 ) -> u32 {
     let mut total = 0_u64;
-    for field in weights.fields() {
-        let weight = u64::from(weights.weight(field));
-        total = total.saturating_add(u64::from(segment.field_length(row, field)) * weight);
+    for (field, weight) in weights.iter() {
+        total = total
+            .saturating_add(u64::from(segment.field_length(row, field)) * u64::from(weight));
     }
     u32::try_from(total / 1_000).unwrap_or(u32::MAX)
 }
@@ -371,6 +435,53 @@ mod tests {
         let mut index = LexicalIndex::new();
         index.push_segment(segment);
         index
+    }
+
+    #[test]
+    fn a_repeated_field_is_collapsed_rather_than_counted_twice() {
+        // Weight tables are normalized at construction, so iterating the
+        // table and looking each field up by id cannot disagree. Before
+        // normalization a repeated field added its length to the document
+        // twice, which lowered every score for that document.
+        let weights = FieldWeights::flat(&[FieldId(1), FieldId(1), FieldId(0)]);
+        assert_eq!(weights.fields(), vec![FieldId(0), FieldId(1)]);
+        let table: Vec<(FieldId, u32)> = weights.iter().collect();
+        assert_eq!(table, vec![(FieldId(0), 1_000), (FieldId(1), 1_000)]);
+        for (field, weight) in weights.iter() {
+            assert_eq!(weight, weights.weight(field));
+        }
+        let explicit = FieldWeights::new(&[(FieldId(2), 7), (FieldId(2), 9)]);
+        assert_eq!(explicit.iter().count(), 1);
+        assert_eq!(explicit.weight(FieldId(2)), 7);
+    }
+
+    #[test]
+    fn the_flat_single_field_length_array_is_borrowed_not_rebuilt() {
+        // The flat scorer asks for `length * 1000 / 1000`, which is the
+        // field's own dense array. Borrowing it is what makes the per-query
+        // length preparation free; the identity must be exact, not close.
+        let index = index_of(&["a b c", "d", "e f"]);
+        let segment = index.segments().first().expect("one segment");
+        let weights = FieldWeights::flat(&[DEFAULT_FIELD]);
+        let lengths = weighted_lengths(segment, &weights);
+        assert!(
+            matches!(lengths, std::borrow::Cow::Borrowed(_)),
+            "the flat single-field case must borrow"
+        );
+        assert_eq!(lengths.as_ref(), &[3, 1, 2]);
+        for row in 0..segment.row_count() {
+            assert_eq!(
+                lengths.get(row as usize).copied(),
+                Some(row_length(segment, row, &weights))
+            );
+        }
+        // A weight other than unity, or a second field, must materialize.
+        let scaled = FieldWeights::new(&[(DEFAULT_FIELD, 500)]);
+        assert!(matches!(
+            weighted_lengths(segment, &scaled),
+            std::borrow::Cow::Owned(_)
+        ));
+        assert_eq!(weighted_lengths(segment, &scaled).as_ref(), &[1, 0, 1]);
     }
 
     #[test]
