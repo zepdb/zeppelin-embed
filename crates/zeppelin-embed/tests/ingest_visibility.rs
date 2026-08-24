@@ -616,16 +616,22 @@ fn every_active_segment_byte_is_accounted() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
     store
-        .ingest(IngestBatch::new(vec![IngestDocument::new(
-            DocumentVersion::new(DocId::new(9), Revision::new(1)),
-            vec![1.0_f32, -1.0],
-        )]))
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(9), Revision::new(1)),
+                vec![1.0_f32, -1.0],
+            )
+            .with_metadata(vec![0xa1, 0xb2, 0xc3]),
+        ]))
         .expect("ingest accounted row");
 
     let stats = store.stats().expect("exact active stats");
     let expected = std::mem::size_of::<DocId>()
         + std::mem::size_of::<Revision>()
         + std::mem::size_of::<zeppelin_embed::wal::LogSeq>()
+        + std::mem::size_of::<i64>()
+        + std::mem::size_of::<u64>()
+        + 3
         + (2 * std::mem::size_of::<f32>())
         + 1
         + std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>();

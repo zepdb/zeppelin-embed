@@ -33,6 +33,10 @@ pub enum FormatFamily {
     GraphNodeBlocks = 12,
     /// Dense sealed-row document identifiers and revisions.
     DocumentVersions = 13,
+    /// Dense length-delimited opaque stored metadata rows.
+    StoredMetadata = 14,
+    /// Durable request proving an unfinished physical purge must resume.
+    PurgeIntent = 15,
 }
 
 impl FormatFamily {
@@ -109,7 +113,7 @@ impl std::error::Error for RegistryError {}
 /// Static registry for every persisted family and quantization identifier.
 pub struct FormatRegistry;
 
-const FAMILIES: [FamilySpec; 13] = [
+const FAMILIES: [FamilySpec; 15] = [
     FamilySpec {
         family: FormatFamily::Frame,
         current_version: 1,
@@ -184,6 +188,18 @@ const FAMILIES: [FamilySpec; 13] = [
     },
     FamilySpec {
         family: FormatFamily::DocumentVersions,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::StoredMetadata,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::PurgeIntent,
         current_version: 1,
         minimum_accepted_version: 1,
         maximum_accepted_version: 1,

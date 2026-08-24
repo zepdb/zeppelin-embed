@@ -8,10 +8,11 @@ use crate::lifecycle::{CancelToken, Store, StoreError, StoreState};
 use crate::manifest::Manifest;
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
-use crate::segment::SegmentId;
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata,
+    write_segment_with_documents, write_segment_with_documents_and_metadata,
 };
+use crate::segment::{ClusteringKeyRange, SegmentId};
 use crate::vfs::{StdVfs, Vfs};
 use crate::wal::LogSeq;
 
@@ -82,39 +83,58 @@ impl Store {
             .ok_or(StoreError::GenerationOverflow)?;
         let manifest =
             load_current_manifest(vfs, &self.directory, absorbed_through, current.generation)?;
-        let columns = active_columns(&manifest.schema, current.segment.row_count(), cancel)?;
+        let columns = active_columns(&manifest.schema, current.segment.timestamps(), cancel)?;
         let alive = current.segment.alive()?;
+        let clustering_key_range = clustering_key_range(current.segment.timestamps(), &alive)?;
         let dims = current
             .segment
             .dims()
             .ok_or(StoreError::ActiveRowOverflow)?;
         let dims = u32::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
         let id = seal_id(generation, absorbed_through);
-        let meta = match write_segment_with_documents(
-            vfs,
-            &self.directory,
-            SegmentBuild {
-                id,
-                scheme: 4,
-                dims,
-                codes: current.segment.codes(),
-                factors: SegmentFactors::Bit4(current.segment.factors()),
-                rescore: current.segment.vectors(),
-                columns: &columns,
-                alive: &alive,
-            },
-            SegmentDocumentVersions {
-                doc_ids: current.segment.doc_ids(),
-                revisions: current.segment.revisions(),
-            },
-            self.durability_policy,
-        ) {
+        let build = SegmentBuild {
+            id,
+            scheme: 4,
+            dims,
+            codes: current.segment.codes(),
+            factors: SegmentFactors::Bit4(current.segment.factors()),
+            rescore: current.segment.vectors(),
+            columns: &columns,
+            alive: &alive,
+        };
+        let documents = SegmentDocumentVersions {
+            doc_ids: current.segment.doc_ids(),
+            revisions: current.segment.revisions(),
+        };
+        let written = if current.segment.metadata_bytes().is_empty() {
+            write_segment_with_documents(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                self.durability_policy,
+            )
+        } else {
+            write_segment_with_documents_and_metadata(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                SegmentStoredMetadata {
+                    end_offsets: current.segment.metadata_end_offsets(),
+                    bytes: current.segment.metadata_bytes(),
+                },
+                self.durability_policy,
+            )
+        };
+        let mut meta = match written {
             Ok(meta) => meta,
             Err(error) => {
                 cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
                 return Err(StoreError::Segment(error));
             }
         };
+        meta.clustering_key_range = clustering_key_range;
         if let Err(error) = check_cancelled(cancel) {
             cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
             return Err(error);
@@ -179,20 +199,44 @@ fn load_current_manifest(
 
 fn active_columns(
     schema: &Schema,
-    rows: usize,
+    timestamps: &[i64],
     cancel: Option<&CancelToken>,
 ) -> Result<ColumnStore, StoreError> {
     let mut builder = ColumnStoreBuilder::new(schema.clone());
-    for row in 0..rows {
+    for (row, timestamp) in timestamps.iter().copied().enumerate() {
         if row.is_multiple_of(64) {
             check_cancelled(cancel)?;
         }
-        builder.push_row(0, &[]).map_err(|error| {
+        builder.push_row(timestamp, &[]).map_err(|error| {
             StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))
         })?;
     }
     builder.finish().map_err(|error| {
         StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))
+    })
+}
+
+fn clustering_key_range(
+    timestamps: &[i64],
+    alive: &crate::meta::AliveSet,
+) -> Result<ClusteringKeyRange, StoreError> {
+    let mut bounds: Option<(i64, i64)> = None;
+    for row in alive.iter_alive() {
+        let index = usize::try_from(row).map_err(|_| StoreError::ActiveRowOverflow)?;
+        let timestamp = timestamps
+            .get(index)
+            .copied()
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        bounds = Some(match bounds {
+            None => (timestamp, timestamp),
+            Some((minimum, maximum)) => (minimum.min(timestamp), maximum.max(timestamp)),
+        });
+    }
+    Ok(match bounds {
+        Some((min_ts, max_ts)) => ClusteringKeyRange::Bounded { min_ts, max_ts },
+        // An all-tombstoned segment has the empty key set. It is represented
+        // explicitly rather than overloading a numeric sentinel or Unstamped.
+        None => ClusteringKeyRange::Empty,
     })
 }
 

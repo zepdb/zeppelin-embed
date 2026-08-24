@@ -983,3 +983,58 @@ fn round_up_cache_line(value: usize) -> Result<usize, GraphNodeError> {
         .map(|rounded| rounded / CACHE_LINE_BYTES * CACHE_LINE_BYTES)
         .ok_or(GraphNodeError::ArithmeticOverflow)
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{
+        GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeError, GraphNodeLayout,
+        decode_node_blocks, encode_node_blocks,
+    };
+    use crate::quant::Bit4Factors;
+
+    #[test]
+    fn cached_descriptor_rejects_a_different_mapping_length() {
+        let layout = GraphNodeLayout::new(128, 128, 0).expect("cache fixture layout");
+        let codes = [0_u8; 64];
+        let node = GraphNodeBlockInput {
+            codes: &codes,
+            factors: Bit4Factors::from_persisted(1.0, 0.0, 0.0),
+            flags: 1,
+            neighbors: &[],
+        };
+        let encoded = encode_node_blocks(GraphNodeBlockBuild {
+            layout,
+            nodes: &[node],
+        })
+        .expect("cache fixture encodes");
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("cache fixture decodes");
+        let descriptor = graph.validated_descriptor();
+
+        let shortened = encoded
+            .as_bytes()
+            .get(..encoded.as_bytes().len().saturating_sub(1))
+            .expect("fixture has a trailer byte to remove");
+        assert!(matches!(
+            descriptor.bind(shortened),
+            Err(GraphNodeError::InvalidHeader(detail))
+                if detail.contains("cached graph region length")
+        ));
+        let rebound = descriptor
+            .bind(encoded.as_bytes())
+            .expect("identical mapping length binds");
+        assert_eq!(rebound.block(0).expect("node zero").flags(), 1);
+
+        let outside = encoded
+            .block_offset(1)
+            .expect_err("one-node graph rejects row one");
+        assert_eq!(
+            outside.to_string(),
+            "graph node id 1 is outside dense row count 1"
+        );
+        assert_eq!(
+            GraphNodeError::ArithmeticOverflow.to_string(),
+            "graph node block arithmetic overflowed"
+        );
+    }
+}

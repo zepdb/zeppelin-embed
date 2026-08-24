@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
@@ -910,7 +910,14 @@ impl Vfs for NoCacheVfs {
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        StdVfs.read(path)
+        let mut file = std::fs::File::open(path)?;
+        disable_file_cache(&file)?;
+        let length = usize::try_from(file.metadata()?.len()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "file length exceeds usize")
+        })?;
+        let mut bytes = Vec::with_capacity(length);
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
 
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {

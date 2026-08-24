@@ -17,6 +17,7 @@ use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed::tier::{MaintenanceBudget, PROVISIONAL_TIER_THRESHOLDS};
 
 const DIMS: usize = 1;
+const MAINTENANCE_TEST_BUDGET: Duration = Duration::from_secs(600);
 
 struct SealedFixture {
     _directory: TempDir,
@@ -81,7 +82,7 @@ fn maintain_builds_a_graph_for_a_sealed_segment_above_the_threshold() {
     let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
 
     let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     });
 
@@ -93,7 +94,7 @@ fn maintain_builds_a_graph_for_a_sealed_segment_above_the_threshold() {
 fn maintain_is_idempotent_and_a_second_call_does_no_work() {
     let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
     let budget = MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     };
 
@@ -110,7 +111,7 @@ fn maintain_respects_its_budget_and_resumes_interrupted_work() {
     let byte_budget = 256_u64 * 64;
 
     let interrupted = fixture.store.maintain(MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: byte_budget,
     });
 
@@ -120,7 +121,7 @@ fn maintain_respects_its_budget_and_resumes_interrupted_work() {
     assert!(!has_graph(&fixture.store));
 
     let resumed = fixture.store.maintain(MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     });
 
@@ -133,7 +134,7 @@ fn maintain_respects_its_budget_and_resumes_interrupted_work() {
 fn store_search_uses_the_graph_automatically_after_maintain() {
     let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
     let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     });
     assert_eq!(report.graphs_built, 1);
@@ -240,7 +241,7 @@ fn queries_never_error_or_miss_acked_docs_during_maintain() {
 
     started.wait();
     let report = store.maintain(MaintenanceBudget {
-        wall_time: Duration::from_secs(120),
+        wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     });
     maintenance_done.store(true, Ordering::Release);

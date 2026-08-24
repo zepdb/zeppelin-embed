@@ -11,7 +11,6 @@ use crate::manifest::io::commit_manifest;
 use crate::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
-use crate::segment::SegmentError;
 use crate::segment::SegmentId;
 use crate::segment::layout::{Int8Factors, RegionEntry};
 use crate::segment::reader::SegmentReader;
@@ -337,6 +336,14 @@ impl PublishedSnapshot {
             WalReader::open(&StdVfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
         let manifest = load_manifest(&StdVfs, &manifest_path, wal.durable_end())
             .map_err(StoreError::Manifest)?;
+        Self::from_manifest(directory, &manifest, accounting)
+    }
+
+    pub(crate) fn from_manifest(
+        directory: &Path,
+        manifest: &Manifest,
+        accounting: &Arc<Accounting>,
+    ) -> Result<Self, StoreError> {
         let mut segments = Accounted::try_with_capacity(
             accounting,
             manifest.segments.len(),
@@ -344,7 +351,7 @@ impl PublishedSnapshot {
         )?;
         for expected in &manifest.segments {
             let path = directory.join(expected.id.file_name());
-            let reader = SegmentReader::open_accounted(&path, expected.id, |region_count| {
+            let reader = SegmentReader::open_accounted(&path, expected, |region_count| {
                 let bytes = region_count
                     .checked_mul(std::mem::size_of::<RegionEntry>())
                     .and_then(|bytes| u64::try_from(bytes).ok())
@@ -355,12 +362,6 @@ impl PublishedSnapshot {
                     })?;
                 segments.reserve_additional_bytes(bytes)
             })?;
-            if reader.meta() != expected {
-                return Err(StoreError::Segment(SegmentError::Geometry(format!(
-                    "manifest metadata {expected:?}, mapped header metadata {:?}",
-                    reader.meta()
-                ))));
-            }
             segments.push(reader)?;
         }
         let mapped_bytes = segments.iter().try_fold(0_u64, |total, segment| {

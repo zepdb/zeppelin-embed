@@ -18,7 +18,9 @@ use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, encode_segment, write_segment,
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId};
-use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
+#[cfg(not(feature = "test-support"))]
+use zeppelin_embed::vfs::VfsFile;
+use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs};
 
 #[cfg(not(feature = "test-support"))]
 #[path = "../src/vfs/crash.rs"]
@@ -279,6 +281,17 @@ fn expected_counts(bytes_written: u64, barrier: u64, full: u64) -> CounterSnapsh
         handle_barrier_sync_calls: 0,
         handle_full_sync_calls: 0,
     }
+}
+
+fn expected_verified_segment_counts(
+    bytes_written: u64,
+    barrier: u64,
+    full: u64,
+) -> CounterSnapshot {
+    let mut counts = expected_counts(bytes_written, barrier, full);
+    counts.read_calls = 1;
+    counts.read_bytes = bytes_written;
+    counts
 }
 
 fn operation_summaries(operations: &[CrashOperation]) -> Vec<String> {
@@ -630,16 +643,20 @@ fn write_segment_uses_exact_sync_sequence_per_tier() {
     let alive = AliveSet::new(0);
     let id = SegmentId::new(2, [2; 10]);
     for (tier, expected_kind, expected_counts) in [
-        (CommitTier::None, None, expected_counts(98_400, 0, 0)),
+        (
+            CommitTier::None,
+            None,
+            expected_verified_segment_counts(98_400, 0, 0),
+        ),
         (
             CommitTier::Ordered,
             Some(SyncKind::Barrier),
-            expected_counts(98_400, 2, 0),
+            expected_verified_segment_counts(98_400, 2, 0),
         ),
         (
             CommitTier::Durable,
             Some(SyncKind::Full),
-            expected_counts(98_400, 0, 2),
+            expected_verified_segment_counts(98_400, 0, 2),
         ),
     ] {
         let recorder = CrashVfs::new(MemoryVfs::new()).expect("segment recorder");

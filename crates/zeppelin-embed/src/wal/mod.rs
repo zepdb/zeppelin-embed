@@ -917,6 +917,29 @@ impl WalWriter {
     }
 }
 
+pub(crate) fn encode_wal_image(
+    first_seq: LogSeq,
+    records: &[(u16, Vec<u8>)],
+) -> Result<Vec<u8>, WalWriteError> {
+    let mut encoded = header::encode_header(first_seq).map_err(WalWriteError::Header)?;
+    let mut sequence = first_seq.get();
+    for (op, payload) in records {
+        record::append_record_into(
+            record::WalRecord {
+                seq: LogSeq::new(sequence),
+                op: *op,
+                payload,
+            },
+            &mut encoded,
+        )
+        .map_err(WalWriteError::Record)?;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(WalWriteError::SequenceExhausted)?;
+    }
+    Ok(encoded)
+}
+
 fn default_max_group_bytes(policy: DurabilityPolicy) -> usize {
     match policy.data_file_sync() {
         SyncRequirement::Sync(SyncKind::Full) => DEFAULT_MAX_GROUP_BYTES_DURABLE,
@@ -1278,7 +1301,10 @@ impl WalReader {
                 Ok(VisibleRecord::recovered(seq, op, encoded, 0..length))
             })
             .collect::<Result<Vec<_>, WalReadError>>()?;
-        let durable_end = records.last().map_or(0, |record| record.seq.get());
+        let durable_end = records.last().map_or_else(
+            || header.first_seq.get().saturating_sub(1),
+            |record| record.seq.get(),
+        );
         let next_seq = records.last().map_or(header.first_seq.get(), |record| {
             record.seq.get().saturating_add(1)
         });
@@ -1305,7 +1331,7 @@ impl WalReader {
     pub(crate) fn into_clean(self) -> Result<CleanWalReader, WalRecoveryError> {
         match self.terminator {
             Some(ReplayTerminator::CleanEnd) => {
-                let durable_end = self.records.last().map(|record| record.seq);
+                let durable_end = Some(LogSeq::new(self.durable_end));
                 Ok(CleanWalReader {
                     records: self.records,
                     next_seq: self.next_seq,

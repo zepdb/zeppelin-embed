@@ -36,3 +36,28 @@
   12. Each dense row is exactly `doc_id:u128` little-endian followed by
   `revision:u64` little-endian (24 bytes); task-07 segments without the region
   remain readable and report no document identity.
+- Manifest v1 segment records remain byte-identical. When every segment is
+  `Unstamped`, writers append no bytes. Otherwise the schema payload is followed
+  by `TSR1`, `segment_count:u32`, then one 24-byte record per segment:
+  `tag:u8`, seven reserved-zero bytes, `min_ts:i64`, `max_ts:i64`. Tag 0 is
+  `Unstamped` and tag 1 is `Empty`; both require zero bounds. Tag 2 is an
+  inclusive bounded range and requires `min_ts <= max_ts`. The optional
+  extension precedes the manifest block checksum and whole-file checksum.
+- WAL mutation operation id 4 is timestamped-upsert v1. It retains operation
+  id 1's header/document/vector encoding and inserts `ts:i64` little-endian
+  between `revision:u64` and `dims:u32`. Operation id 1 and all existing WAL,
+  segment, graph, and manifest-without-range goldens remain byte-identical.
+- Stored metadata is family id 14 in optional segment region kind id 13. Its v1
+  payload is `row_count:u32`, reserved-zero `u32`, an explicit zero start
+  offset followed by one little-endian `end_offset:u64` per dense row, then the
+  concatenated row bytes. The last end offset must equal the payload extent.
+- Purge intent is family id 15. Its v1 framed payload is `token_id:u64`,
+  `id_count:u32`, reserved-zero `u32`, then exactly `id_count` little-endian
+  `doc_id:u128` values. `purge_intent_v1.hex` freezes the complete artifact.
+- WAL operation ids 5 and 6 add stored metadata without changing ids 1 or 4.
+  Both insert `metadata_len:u32` immediately before `dims:u32`, then encode
+  metadata bytes before vector f32 bytes; id 6 also carries id 4's timestamp.
+  The two `wal_upsert_*_metadata_record_v1.hex` fixtures freeze these records.
+- `stored_metadata_one_v1.hex` freezes the new region payload. Every pre-10-D
+  format fixture remains byte-identical; new content uses only additive family,
+  region-kind, and WAL-operation ids.

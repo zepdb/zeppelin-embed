@@ -454,31 +454,48 @@ fn prepare_input_segment(
     paths: &Sift1mPaths,
     cache_directory: &Path,
 ) -> Result<SegmentReader, Box<dyn std::error::Error>> {
+    prepare_input_segment_for_shape(paths, cache_directory, ROWS, DIMS)
+}
+
+fn prepare_input_segment_for_shape(
+    paths: &Sift1mPaths,
+    cache_directory: &Path,
+    rows: usize,
+    dimensions: usize,
+) -> Result<SegmentReader, Box<dyn std::error::Error>> {
     let id = input_id();
     let segment_path = cache_directory.join(id.file_name());
     if let Ok(reader) = SegmentReader::open(&segment_path, id)
-        && reader.meta().row_count == ROWS as u32
-        && reader.meta().dims == DIMS as u32
+        && reader.meta().row_count as usize == rows
+        && reader.meta().dims as usize == dimensions
         && reader.meta().scheme == 4
     {
         return Ok(reader);
     }
-    let rescore = read_f32_raw(&paths.base, ROWS * DIMS)?;
-    let row_bytes = DIMS.div_ceil(2);
-    let mut codes = vec![0_u8; ROWS * row_bytes];
-    let mut factors = Vec::with_capacity(ROWS);
+    let value_count = rows
+        .checked_mul(dimensions)
+        .ok_or_else(|| io::Error::other("SIFT input geometry overflow"))?;
+    let rescore = read_f32_raw(&paths.base, value_count)?;
+    let row_bytes = dimensions.div_ceil(2);
+    let code_count = rows
+        .checked_mul(row_bytes)
+        .ok_or_else(|| io::Error::other("SIFT code geometry overflow"))?;
+    let mut codes = vec![0_u8; code_count];
+    let mut factors = Vec::with_capacity(rows);
     for (row, destination) in rescore
-        .chunks_exact(DIMS)
+        .chunks_exact(dimensions)
         .zip(codes.chunks_exact_mut(row_bytes))
     {
         factors.push(quantize_bit4(row, destination)?);
     }
     let mut columns = ColumnStoreBuilder::new(Schema::new(Vec::new())?);
-    for row in 0..ROWS {
-        columns.push_row(row as i64, &[])?;
+    for row in 0..rows {
+        columns.push_row(i64::try_from(row)?, &[])?;
     }
     let columns = columns.finish()?;
-    let alive = AliveSet::new(ROWS as u32);
+    let row_count = u32::try_from(rows)?;
+    let dims = u32::try_from(dimensions)?;
+    let alive = AliveSet::new(row_count);
     let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?;
     write_segment(
         &StdVfs,
@@ -486,7 +503,7 @@ fn prepare_input_segment(
         SegmentBuild {
             id,
             scheme: 4,
-            dims: DIMS as u32,
+            dims,
             codes: &codes,
             factors: SegmentFactors::Bit4(&factors),
             rescore: &rescore,
@@ -764,27 +781,71 @@ pub fn measure_sift1m_recall(
     ef_values: &[usize],
     seed: u64,
 ) -> Result<Vec<RecallPoint>, Box<dyn std::error::Error>> {
-    if ef_values.iter().any(|ef| *ef < TOP_K || *ef > 240) {
-        return Err("every ef must be in 100..=240".into());
+    measure_recall(
+        reader,
+        &paths.queries,
+        &paths.ground_truth,
+        RecallShape {
+            dimensions: DIMS,
+            query_count: QUERIES,
+            top_k: TOP_K,
+            max_ef: 240,
+        },
+        ef_values,
+        seed,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct RecallShape {
+    dimensions: usize,
+    query_count: usize,
+    top_k: usize,
+    max_ef: usize,
+}
+
+fn measure_recall(
+    reader: &SegmentReader,
+    query_path: &Path,
+    truth_path: &Path,
+    shape: RecallShape,
+    ef_values: &[usize],
+    seed: u64,
+) -> Result<Vec<RecallPoint>, Box<dyn std::error::Error>> {
+    if ef_values
+        .iter()
+        .any(|ef| *ef < shape.top_k || *ef > shape.max_ef)
+    {
+        return Err(format!("every ef must be in {}..={}", shape.top_k, shape.max_ef).into());
     }
-    let queries = read_f32_raw(&paths.queries, QUERIES * DIMS)?;
-    let truth = read_i32_raw(&paths.ground_truth, QUERIES * TOP_K)?;
+    let query_values = shape
+        .query_count
+        .checked_mul(shape.dimensions)
+        .ok_or_else(|| io::Error::other("recall query geometry overflow"))?;
+    let truth_values = shape
+        .query_count
+        .checked_mul(shape.top_k)
+        .ok_or_else(|| io::Error::other("recall truth geometry overflow"))?;
+    let queries = read_f32_raw(query_path, query_values)?;
+    let truth = read_i32_raw(truth_path, truth_values)?;
     let graph = reader.graph_node_blocks()?;
     let base = reader.rescore_f32()?;
     let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())?;
     let mut searcher = GraphSearcher::new(graph, base, &mut scratch)?;
     let mut totals = vec![0_u64; ef_values.len()];
-    for (query_index, query) in queries.chunks_exact(DIMS).enumerate() {
+    for (query_index, query) in queries.chunks_exact(shape.dimensions).enumerate() {
         let truth_start = query_index
-            .checked_mul(TOP_K)
+            .checked_mul(shape.top_k)
             .ok_or("ground-truth offset overflow")?;
-        let truth_end = truth_start.checked_add(TOP_K).ok_or("truth end overflow")?;
+        let truth_end = truth_start
+            .checked_add(shape.top_k)
+            .ok_or("truth end overflow")?;
         let expected = truth
             .get(truth_start..truth_end)
             .ok_or("truth row missing")?;
         for (total, ef) in totals.iter_mut().zip(ef_values) {
             let result = searcher.search(
-                GraphSearchRequest::new(query, TOP_K, seed ^ query_index as u64).with_ef(*ef),
+                GraphSearchRequest::new(query, shape.top_k, seed ^ query_index as u64).with_ef(*ef),
                 None,
             )?;
             *total += result
@@ -794,7 +855,7 @@ pub fn measure_sift1m_recall(
                 .count() as u64;
         }
     }
-    let denominator = (QUERIES * TOP_K) as f64;
+    let denominator = truth_values as f64;
     Ok(ef_values
         .iter()
         .zip(totals)
@@ -854,8 +915,16 @@ fn read_raw_words<T>(
 
 #[cfg(test)]
 mod cross_dataset_tests {
-    use super::{CrossGraphDataset, GraphDistanceMetric, normalize_cosine_rows};
-    use std::path::Path;
+    use super::{
+        CrossGraphDataset, GraphDistanceMetric, RecallShape, Sift1mPaths,
+        build_cross_dataset_graph, build_sift1m_graph, cross_graph_marker_path, graph_marker,
+        measure_recall, measure_sift1m_recall, normalize_cosine_rows, open_cross_dataset_graph,
+        prepare_cross_input_segment, prepare_input_segment_for_shape, read_cross_dataset_queries,
+        read_cross_dataset_truth,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use zeppelin_embed::graph::build::GraphBuildPasses;
 
     #[test]
     fn cross_graph_dataset_contracts_are_exact() {
@@ -866,6 +935,7 @@ mod cross_dataset_tests {
         assert_eq!(glove.dimensions(), 100);
         assert_eq!(glove.query_count(), 10_000);
         assert_eq!(glove.metric(), GraphDistanceMetric::Cosine);
+        assert_eq!(glove.metric().label(), "cosine");
         assert_eq!(
             glove.base_path(),
             Path::new("/data/glove-100-angular-base.f32bin")
@@ -882,6 +952,7 @@ mod cross_dataset_tests {
         assert_eq!(mnist.rows(), 60_000);
         assert_eq!(mnist.dimensions(), 784);
         assert_eq!(mnist.metric(), GraphDistanceMetric::SquaredL2);
+        assert_eq!(mnist.metric().label(), "l2");
         assert!(CrossGraphDataset::named("sift-128-euclidean", data).is_err());
     }
 
@@ -891,5 +962,226 @@ mod cross_dataset_tests {
         let zero_rows = normalize_cosine_rows(&mut rows, 2).expect("valid row geometry");
         assert_eq!(zero_rows, vec![1]);
         assert_eq!(rows, vec![0.6, 0.8, 0.0, 0.0, -1.0, 0.0]);
+    }
+
+    #[test]
+    fn small_cross_graph_build_cache_and_loaders_preserve_dataset_identity() {
+        const ROWS: usize = 9;
+        const DIMS: usize = 8;
+        const QUERIES: usize = 2;
+        const SEED: u64 = 0x19_0004_b0c0_0001;
+
+        let directory = tempfile::tempdir().expect("small cross-graph directory");
+        let dataset = CrossGraphDataset {
+            name: "coverage-cosine",
+            rows: ROWS,
+            dimensions: DIMS,
+            query_count: QUERIES,
+            metric: GraphDistanceMetric::Cosine,
+            base: directory.path().join("base.f32bin"),
+            queries: directory.path().join("queries.f32bin"),
+            ground_truth: directory.path().join("truth.i32bin"),
+        };
+        let mut base = Vec::with_capacity(ROWS * DIMS);
+        for row in 0..ROWS {
+            let mut values = vec![0.0_f32; DIMS];
+            if row != 4 {
+                *values
+                    .get_mut(row % DIMS)
+                    .expect("fixture coordinate exists") = (row + 1) as f32;
+            }
+            base.extend(values);
+        }
+        write_f32_words(&dataset.base, &base);
+        write_f32_words(
+            &dataset.queries,
+            &[
+                3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 12.0, 0.0, 0.0,
+            ],
+        );
+        let truth = (0..QUERIES * super::TOP_K)
+            .map(|value| (value % ROWS) as i32)
+            .collect::<Vec<_>>();
+        write_i32_words(&dataset.ground_truth, &truth);
+
+        let cache = directory.path().join("cache");
+        let built = build_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::One, SEED)
+            .expect("small cross graph builds");
+        assert_eq!(built.reader().meta().row_count, ROWS as u32);
+        assert_eq!(built.reader().meta().dims, DIMS as u32);
+        assert_eq!(built.metadata().zero_norm_rows(), &[4]);
+        assert!(!built.metadata().cache_hit());
+        assert!(built.metadata().build_wall_seconds().is_finite());
+        assert!(built.metadata().build_wall_seconds() >= 0.0);
+        assert!(built.metadata().peak_rss_bytes() > 0);
+        drop(built);
+
+        let cached = build_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::One, SEED)
+            .expect("matching graph cache opens");
+        assert!(cached.metadata().cache_hit());
+        assert_eq!(cached.metadata().zero_norm_rows(), &[4]);
+
+        let (cached_input, cached_zero_rows) =
+            prepare_cross_input_segment(&dataset, &cache).expect("matching input cache opens");
+        assert_eq!(cached_input.meta().row_count, ROWS as u32);
+        assert_eq!(cached_zero_rows, [4]);
+        drop(cached_input);
+
+        let queries = read_cross_dataset_queries(&dataset).expect("small queries load");
+        assert_eq!(queries.len(), QUERIES * DIMS);
+        assert_eq!(queries.get(..2), Some([0.6, 0.8].as_slice()));
+        let second_x = *queries.get(DIMS + 4).expect("second query x");
+        let second_y = *queries.get(DIMS + 5).expect("second query y");
+        let second_norm = second_x * second_x + second_y * second_y;
+        assert!((second_norm - 1.0).abs() <= 2.0 * f32::EPSILON);
+        assert!((second_y / second_x - 12.0 / 5.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            read_cross_dataset_truth(&dataset).expect("small truth loads"),
+            truth
+        );
+
+        let compact_truth = directory.path().join("compact-truth.i32bin");
+        write_i32_words(&compact_truth, &[1, 0, 5, 4]);
+        let recall = measure_recall(
+            cached.reader(),
+            &dataset.queries,
+            &compact_truth,
+            RecallShape {
+                dimensions: DIMS,
+                query_count: QUERIES,
+                top_k: 2,
+                max_ef: 4,
+            },
+            &[2, 4],
+            SEED,
+        )
+        .expect("small recall sweep");
+        assert_eq!(
+            recall.iter().map(|point| point.ef).collect::<Vec<_>>(),
+            [2, 4]
+        );
+        assert!(
+            recall
+                .iter()
+                .all(|point| (0.0..=1.0).contains(&point.recall_at_100))
+        );
+        let narrow = recall.first().expect("narrow recall point").recall_at_100;
+        let wide = recall.get(1).expect("wide recall point").recall_at_100;
+        assert!(wide >= narrow);
+        assert!(
+            measure_recall(
+                cached.reader(),
+                &dataset.queries,
+                &compact_truth,
+                RecallShape {
+                    dimensions: DIMS,
+                    query_count: QUERIES,
+                    top_k: 2,
+                    max_ef: 4,
+                },
+                &[1],
+                SEED,
+            )
+            .is_err()
+        );
+
+        let frozen_paths = Sift1mPaths::in_directory(directory.path());
+        assert_eq!(
+            frozen_paths.base,
+            directory.path().join("sift-128-euclidean-base.f32bin")
+        );
+        assert_eq!(
+            frozen_paths.queries,
+            directory.path().join("sift-128-euclidean-query.f32bin")
+        );
+        assert_eq!(
+            frozen_paths.ground_truth,
+            directory.path().join("sift-128-euclidean-gt.i32bin")
+        );
+        fs::write(
+            cache.join("sift1m-graph-build.meta"),
+            graph_marker(GraphBuildPasses::One, SEED),
+        )
+        .expect("write exact frozen cache marker");
+        let frozen_cached = build_sift1m_graph(&frozen_paths, &cache, GraphBuildPasses::One, SEED)
+            .expect("frozen wrapper accepts an exact cache identity");
+        assert_eq!(frozen_cached.meta().row_count, ROWS as u32);
+        assert!(measure_sift1m_recall(&frozen_cached, &frozen_paths, &[99], SEED).is_err());
+        assert!(measure_sift1m_recall(&frozen_cached, &frozen_paths, &[241], SEED).is_err());
+        assert!(graph_marker(GraphBuildPasses::Two, SEED).contains("pass=two"));
+        drop(frozen_cached);
+        drop(cached);
+
+        let sift_cache = directory.path().join("sift-input-cache");
+        fs::create_dir(&sift_cache).expect("create SIFT input cache");
+        let sift_paths = Sift1mPaths {
+            base: dataset.base.clone(),
+            queries: dataset.queries.clone(),
+            ground_truth: compact_truth,
+        };
+        let prepared = prepare_input_segment_for_shape(&sift_paths, &sift_cache, ROWS, DIMS)
+            .expect("small SIFT-shaped input builds");
+        assert_eq!(prepared.meta().row_count, ROWS as u32);
+        assert_eq!(prepared.meta().dims, DIMS as u32);
+        drop(prepared);
+        let reused = prepare_input_segment_for_shape(&sift_paths, &sift_cache, ROWS, DIMS)
+            .expect("small SIFT-shaped input cache reopens");
+        assert_eq!(reused.meta().row_count, ROWS as u32);
+        drop(reused);
+
+        let marker_path = cross_graph_marker_path(&dataset, &cache);
+        let valid_marker = fs::read_to_string(&marker_path).expect("read valid marker");
+        fs::write(&marker_path, format!("{valid_marker}trailing\n"))
+            .expect("write trailing marker");
+        assert!(open_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::One, SEED).is_err());
+        fs::write(
+            &marker_path,
+            "wrong identity\nbuild_wall_s=1 peak_rss_bytes=1 zero_rows=none\n",
+        )
+        .expect("write wrong identity marker");
+        assert!(open_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::One, SEED).is_err());
+        fs::write(&marker_path, valid_marker).expect("restore valid marker");
+        assert!(open_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::Two, SEED).is_err());
+    }
+
+    #[test]
+    fn cross_graph_loaders_reject_bad_geometry_and_nonfinite_cosine_rows() {
+        let directory = tempfile::tempdir().expect("bad cross-loader directory");
+        let dataset = CrossGraphDataset {
+            name: "bad-loader",
+            rows: 2,
+            dimensions: 2,
+            query_count: 1,
+            metric: GraphDistanceMetric::SquaredL2,
+            base: PathBuf::from("unused-base"),
+            queries: directory.path().join("short-query.f32bin"),
+            ground_truth: directory.path().join("short-truth.i32bin"),
+        };
+        write_f32_words(&dataset.queries, &[1.0]);
+        write_i32_words(&dataset.ground_truth, &[1]);
+        assert!(read_cross_dataset_queries(&dataset).is_err());
+        assert!(read_cross_dataset_truth(&dataset).is_err());
+
+        let mut invalid_geometry = vec![1.0_f32, 2.0, 3.0];
+        assert!(normalize_cosine_rows(&mut invalid_geometry, 2).is_err());
+        assert!(normalize_cosine_rows(&mut invalid_geometry, 0).is_err());
+        let mut nonfinite = vec![f32::INFINITY, 0.0];
+        assert!(normalize_cosine_rows(&mut nonfinite, 2).is_err());
+    }
+
+    fn write_f32_words(path: &Path, values: &[f32]) {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        fs::write(path, bytes).expect("write f32 words");
+    }
+
+    fn write_i32_words(path: &Path, values: &[i32]) {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        fs::write(path, bytes).expect("write i32 words");
     }
 }

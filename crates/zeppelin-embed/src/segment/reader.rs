@@ -4,6 +4,8 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -27,7 +29,43 @@ use super::{SegmentError, SegmentId, SegmentMeta};
 
 const MAX_SEGMENT_HEADER_BYTES: usize = 1024 * 1024;
 
+thread_local! {
+    static DATA_READ_AUDIT: std::cell::RefCell<Option<Arc<AtomicU64>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(crate) struct DataReadAuditGuard {
+    previous: Option<Arc<AtomicU64>>,
+}
+
+impl Drop for DataReadAuditGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        DATA_READ_AUDIT.with(|slot| {
+            slot.replace(previous);
+        });
+    }
+}
+
+pub(crate) fn install_data_read_audit(counter: Option<Arc<AtomicU64>>) -> DataReadAuditGuard {
+    let previous = DATA_READ_AUDIT.with(|slot| slot.replace(counter));
+    DataReadAuditGuard { previous }
+}
+
+fn account_data_read(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    DATA_READ_AUDIT.with(|slot| {
+        if let Some(counter) = slot.borrow().as_ref() {
+            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(bytes))
+            });
+        }
+    });
+}
+
 struct MappedFile {
+    _file: File,
     pointer: NonNull<u8>,
     length: usize,
 }
@@ -68,7 +106,11 @@ impl MappedFile {
         let pointer = NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
             SegmentError::Geometry("mmap returned a null non-failure pointer".to_owned())
         })?;
-        Ok(Self { pointer, length })
+        Ok(Self {
+            _file: file,
+            pointer,
+            length,
+        })
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -108,6 +150,47 @@ pub struct SegmentReader {
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
 }
 
+/// Validated mmap-backed opaque metadata rows.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredMetadataRows<'a> {
+    offsets: &'a [u8],
+    bytes: &'a [u8],
+    row_count: usize,
+}
+
+impl<'a> StoredMetadataRows<'a> {
+    /// Returns the number of dense metadata rows.
+    #[must_use]
+    pub const fn row_count(self) -> usize {
+        self.row_count
+    }
+
+    /// Returns one row's original opaque bytes.
+    #[must_use]
+    pub fn row(self, row: usize) -> Option<&'a [u8]> {
+        if row >= self.row_count {
+            return None;
+        }
+        let start_index = row.checked_mul(8)?;
+        let end_index = row.checked_add(1)?.checked_mul(8)?;
+        let start = self
+            .offsets
+            .get(start_index..start_index.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())?;
+        let end = self
+            .offsets
+            .get(end_index..end_index.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())?;
+        self.bytes.get(start..end)
+    }
+}
+
 impl SegmentReader {
     /// Memory-maps a segment and validates only its bounded header/directory.
     pub fn open(path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
@@ -130,7 +213,7 @@ impl SegmentReader {
 
     pub(crate) fn open_accounted(
         path: &Path,
-        expected_id: SegmentId,
+        expected: &SegmentMeta,
         before_directory_allocation: impl FnOnce(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
         let mapping = MappedFile::open(path).map_err(crate::lifecycle::StoreError::Segment)?;
@@ -143,12 +226,20 @@ impl SegmentReader {
             &artifact,
             mapping.as_bytes(),
             mapping.length as u64,
-            expected_id,
+            expected.id,
         )
         .map_err(crate::lifecycle::StoreError::Segment)?;
+        if !parsed.meta.same_segment_file(expected) {
+            return Err(crate::lifecycle::StoreError::Segment(
+                SegmentError::Geometry(format!(
+                    "manifest metadata {expected:?}, mapped header metadata {:?}",
+                    parsed.meta
+                )),
+            ));
+        }
         Ok(Self {
             mapping,
-            meta: parsed.meta,
+            meta: expected.clone(),
             header_length: parsed.header_length,
             entries: parsed.entries,
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
@@ -423,6 +514,87 @@ impl SegmentReader {
         )))
     }
 
+    /// Returns validated opaque metadata rows, or `None` for older segments.
+    pub fn stored_metadata(&self) -> Result<Option<StoredMetadataRows<'_>>, SegmentError> {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == RegionKind::StoredMetadata.id())
+        else {
+            return Ok(None);
+        };
+        let region = self.region(RegionKind::StoredMetadata)?;
+        let declared_rows = region
+            .get(..4)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata header is truncated".to_owned())
+            })?;
+        let reserved = region
+            .get(4..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata reserved field is truncated".to_owned())
+            })?;
+        if declared_rows != self.meta.row_count || reserved != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata rows/reserved {declared_rows}/{reserved}, expected {}/0",
+                self.meta.row_count
+            )));
+        }
+        let row_count = declared_rows as usize;
+        let offset_bytes = row_count
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(8))
+            .ok_or_else(|| SegmentError::Geometry("stored-metadata offsets overflow".to_owned()))?;
+        let offsets_end = 8_usize.checked_add(offset_bytes).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata offset end overflow".to_owned())
+        })?;
+        let offsets = region.get(8..offsets_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata offsets are truncated".to_owned())
+        })?;
+        let bytes = region.get(offsets_end..).ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata payload is truncated".to_owned())
+        })?;
+        let view = StoredMetadataRows {
+            offsets,
+            bytes,
+            row_count,
+        };
+        let first = view
+            .offsets
+            .get(..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u64::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata first offset is missing".to_owned())
+            })?;
+        if first != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata first offset is {first}, expected zero"
+            )));
+        }
+        let mut previous = 0_usize;
+        for row in 0..row_count {
+            let value = view.row(row).ok_or_else(|| {
+                SegmentError::Geometry(format!("stored-metadata row {row} is invalid"))
+            })?;
+            previous = previous.checked_add(value.len()).ok_or_else(|| {
+                SegmentError::Geometry("stored-metadata length overflow".to_owned())
+            })?;
+        }
+        if previous != bytes.len() {
+            return Err(SegmentError::Geometry(format!(
+                "stored-metadata final offset {previous}, bytes {}",
+                bytes.len()
+            )));
+        }
+        let _ = entry;
+        Ok(Some(view))
+    }
+
     /// Returns the validated, mmap-backed fixed-stride graph node-block region.
     pub fn graph_node_blocks(&self) -> Result<GraphNodeBlocks<'_>, SegmentError> {
         let blocks = decode_node_blocks(self.region(RegionKind::GraphNodeBlocks)?)?;
@@ -534,12 +706,14 @@ impl SegmentReader {
         let end = start
             .checked_add(length)
             .ok_or_else(|| SegmentError::Geometry("region end overflow".to_owned()))?;
-        self.mapping.as_bytes().get(start..end).ok_or_else(|| {
+        let bytes = self.mapping.as_bytes().get(start..end).ok_or_else(|| {
             SegmentError::Geometry(format!(
                 "region {} range {start}..{end} exceeds file {}",
                 entry.kind, self.mapping.length
             ))
-        })
+        })?;
+        account_data_read(bytes.len());
+        Ok(bytes)
     }
 
     fn chunk_checksum(&self, kind: RegionKind, chunk_index: u32) -> Result<u64, SegmentError> {
@@ -601,7 +775,7 @@ pub fn validate_header_with_vfs(
         header_bytes.extend_from_slice(&tail);
     }
     let parsed = parse_segment_header(&artifact, &header_bytes, actual_length, expected.id)?;
-    if &parsed.meta != expected {
+    if !parsed.meta.same_segment_file(expected) {
         return Err(SegmentError::Geometry(format!(
             "manifest metadata {expected:?}, header metadata {:?}",
             parsed.meta
@@ -848,6 +1022,7 @@ fn parse_segment_header(
             scheme,
             dims,
             file_size: actual_file_length,
+            clustering_key_range: super::ClusteringKeyRange::Unstamped,
         },
         header_length,
         entries,

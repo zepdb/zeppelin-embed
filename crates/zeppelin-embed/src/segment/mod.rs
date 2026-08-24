@@ -76,6 +76,34 @@ pub struct SegmentMeta {
     pub dims: u32,
     /// Exact immutable file length.
     pub file_size: u64,
+    /// Manifest-stamped range of live values in the canonical `ts` column.
+    pub clustering_key_range: ClusteringKeyRange,
+}
+
+impl SegmentMeta {
+    pub(crate) fn same_segment_file(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.row_count == other.row_count
+            && self.scheme == other.scheme
+            && self.dims == other.dims
+            && self.file_size == other.file_size
+    }
+}
+
+/// Manifest-stamped range of live canonical `ts` clustering keys.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClusteringKeyRange {
+    /// The segment predates clustering-key assignment and cannot be range-pruned.
+    Unstamped,
+    /// The segment contains no live rows, so its clustering-key set is empty.
+    Empty,
+    /// Inclusive minimum and maximum live timestamp values.
+    Bounded {
+        /// Smallest live `ts` value.
+        min_ts: i64,
+        /// Largest live `ts` value.
+        max_ts: i64,
+    },
 }
 
 /// Typed segment encode/open/read failure.

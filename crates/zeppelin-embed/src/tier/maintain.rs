@@ -130,6 +130,7 @@ fn maintain_one(
             component: "tier maintenance",
         })
     })?;
+    let lease = store.snapshot().map_err(MaintenanceError::Store)?;
     {
         let writer = store.writer_lock.lock().map_err(|_| {
             MaintenanceError::Store(StoreError::Synchronization {
@@ -140,7 +141,6 @@ fn maintain_one(
             return Err(MaintenanceError::Store(StoreError::ReadOnly));
         }
     }
-    let lease = store.snapshot().map_err(MaintenanceError::Store)?;
     let build_time = budget.wall_time.mul_f64(0.9);
     if build_time.is_zero() {
         return Ok(MaintenanceReport {
@@ -311,7 +311,7 @@ fn graph_segment_id(source: SegmentId, generation: u64) -> SegmentId {
 fn publish_transition(
     store: &Store,
     source_id: SegmentId,
-    replacement: crate::segment::SegmentMeta,
+    mut replacement: crate::segment::SegmentMeta,
 ) -> Result<bool, MaintenanceError> {
     let state = store
         .state
@@ -354,6 +354,7 @@ fn publish_transition(
     else {
         return Ok(false);
     };
+    replacement.clustering_key_range = slot.clustering_key_range;
     *slot = replacement;
     let mut active = store.active.lock().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {
@@ -392,4 +393,91 @@ fn publish_transition(
     drop(writer);
     drop(state);
     Ok(true)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{
+        MaintenanceBudget, MaintenanceError, MaintenanceStatus, checkpoint_path, graph_segment_id,
+    };
+    use crate::graph::{GraphParams, build::GraphBuildError};
+    use crate::lifecycle::{DeadlineError, OpenOptions, Store, StoreError};
+    use crate::segment::SegmentId;
+    use std::time::Duration;
+
+    #[test]
+    fn maintenance_budget_lifecycle_and_identity_fail_closed() {
+        let directory = tempfile::tempdir().expect("maintenance test directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open writer");
+
+        for budget in [
+            MaintenanceBudget {
+                wall_time: Duration::ZERO,
+                bytes: u64::MAX,
+            },
+            MaintenanceBudget {
+                wall_time: Duration::from_secs(1),
+                bytes: 0,
+            },
+        ] {
+            let report = store.maintain(budget);
+            assert_eq!(report.graphs_built, 0);
+            assert_eq!(report.bytes_consumed, 0);
+            assert_eq!(report.checkpoints_resumed, 0);
+            assert!(matches!(report.status, MaintenanceStatus::BudgetExhausted));
+        }
+
+        let source = SegmentId::new(19, [7; 10]);
+        let first = graph_segment_id(source, 41);
+        assert_eq!(first, graph_segment_id(source, 41));
+        assert_ne!(first, graph_segment_id(source, 42));
+        assert_eq!(
+            checkpoint_path(directory.path(), source),
+            directory
+                .path()
+                .join(format!(".tier-{source}.graph.checkpoint"))
+        );
+
+        store.close().expect("close writer");
+        let closed = store.maintain(MaintenanceBudget {
+            wall_time: Duration::from_secs(1),
+            bytes: 1,
+        });
+        assert!(matches!(
+            closed.status,
+            MaintenanceStatus::Failed(MaintenanceError::Store(StoreError::Closed))
+        ));
+
+        let read_only =
+            Store::open(directory.path(), OpenOptions::read_only()).expect("open read-only store");
+        let refused = read_only.maintain(MaintenanceBudget {
+            wall_time: Duration::from_secs(1),
+            bytes: 1,
+        });
+        assert!(matches!(
+            refused.status,
+            MaintenanceStatus::Failed(MaintenanceError::Store(StoreError::ReadOnly))
+        ));
+    }
+
+    #[test]
+    fn maintenance_errors_preserve_typed_sources_and_messages() {
+        let parameter =
+            GraphParams::new(0, 1, 1.0, 1.0, 1, 1).expect_err("zero target degree is invalid");
+        let errors = [
+            MaintenanceError::Store(StoreError::Closed),
+            MaintenanceError::Parameters(parameter),
+            MaintenanceError::Graph(GraphBuildError::Cancelled { partial: false }),
+            MaintenanceError::Deadline(DeadlineError::OutOfRange),
+            MaintenanceError::ArithmeticOverflow,
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            assert_eq!(
+                std::error::Error::source(&error).is_some(),
+                !matches!(error, MaintenanceError::ArithmeticOverflow)
+            );
+        }
+    }
 }

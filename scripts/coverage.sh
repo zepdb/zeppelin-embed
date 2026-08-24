@@ -10,14 +10,19 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
 fi
 
 cd "$PROJECT_ROOT"
-cargo llvm-cov \
+
+# Line coverage is the contract. LLVM's function count includes closures,
+# generic instantiations, and duplicate test/library symbols, so it is not a
+# source-function coverage percentage.
+ZE_COVERAGE_SMALL_FIXTURE=1 cargo llvm-cov \
     --workspace \
     --fail-under-lines 90 \
-    --ignore-filename-regex '(^|/)(crates/zeppelin-embed-bench|fuzz|target)/' \
+    --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)' \
     "$@"
 
-cargo llvm-cov \
+ZE_COVERAGE_SMALL_FIXTURE=1 cargo llvm-cov \
     -p zeppelin-embed-bench \
+    --lib \
     --test frontier \
     --fail-under-lines 90 \
     --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \

@@ -566,6 +566,148 @@ struct ScoredNode {
     distance: f64,
 }
 
+/// Query-independent exact-row norm enclosure for one immutable graph segment.
+///
+/// The graph stores the original row norm as `scale * normalized_norm`, where
+/// only the normalized factor is rounded to f32. One full normalized-factor
+/// ULP on either side therefore encloses the norm used to build the segment.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GraphSegmentNormRange {
+    minimum: f64,
+    maximum: f64,
+}
+
+impl GraphSegmentNormRange {
+    pub(crate) fn from_graph(
+        graph: GraphNodeBlocks<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
+    ) -> Result<Self, GraphSearchError> {
+        let mut minimum = f64::INFINITY;
+        let mut maximum = 0.0_f64;
+        for raw_row_id in 0..graph.node_count() {
+            if raw_row_id.is_multiple_of(256) {
+                check_cancellation(cancellation)?;
+            }
+            let row_id = graph.checked_node_id(raw_row_id)?;
+            let (_, factors) = graph.score_row_checked(row_id)?;
+            let [scale, normalized_norm, _] = factors.persisted_fields();
+            if scale < 0.0 || normalized_norm < 0.0 {
+                return Ok(Self::unbounded());
+            }
+            let center = f64::from(scale) * f64::from(normalized_norm);
+            let normalized_ulp = f64::from(next_up_f32(normalized_norm) - normalized_norm);
+            let uncertainty = f64::from(scale) * normalized_ulp;
+            minimum = minimum.min((center - uncertainty).max(0.0));
+            maximum = maximum.max(center + uncertainty);
+        }
+        check_cancellation(cancellation)?;
+        if !minimum.is_finite() || !maximum.is_finite() {
+            return Ok(Self::unbounded());
+        }
+        Ok(Self { minimum, maximum })
+    }
+
+    const fn unbounded() -> Self {
+        Self {
+            minimum: 0.0,
+            maximum: f64::INFINITY,
+        }
+    }
+
+    /// Returns a conservative lower bound in the exact-rescore f64 arithmetic.
+    ///
+    /// The query norm interval covers positive f64 accumulation error for the
+    /// crate-wide maximum dimension. The final factor covers the same bounded
+    /// accumulation error in `squared_l2_f64`; both endpoints are rounded
+    /// outward. A returned value is therefore never above a distance that the
+    /// existing independent exact-rescore path can compute for this segment.
+    pub(crate) fn squared_l2_lower_bound(self, query: &[f32]) -> f64 {
+        if !self.maximum.is_finite() || query.is_empty() {
+            return 0.0;
+        }
+        let squared_norm = query
+            .iter()
+            .map(|value| {
+                let value = f64::from(*value);
+                value * value
+            })
+            .sum::<f64>();
+        let relative_error = accumulation_relative_error(query.len());
+        let query_minimum = next_down_f64((squared_norm / (1.0 + relative_error)).max(0.0).sqrt());
+        let query_maximum = next_up_f64((squared_norm / (1.0 - relative_error)).max(0.0).sqrt());
+        let gap = if query_maximum < self.minimum {
+            self.minimum - query_maximum
+        } else if query_minimum > self.maximum {
+            query_minimum - self.maximum
+        } else {
+            0.0
+        };
+        next_down_f64(gap * gap * (1.0 - relative_error))
+    }
+
+    /// Returns an upper bound used only to preserve today's finite-f32 result
+    /// validation when deciding whether a whole segment may be skipped.
+    pub(crate) fn squared_l2_upper_bound(self, query: &[f32]) -> f64 {
+        if !self.maximum.is_finite() || query.is_empty() {
+            return f64::INFINITY;
+        }
+        let squared_norm = query
+            .iter()
+            .map(|value| {
+                let value = f64::from(*value);
+                value * value
+            })
+            .sum::<f64>();
+        let relative_error = accumulation_relative_error(query.len());
+        let query_maximum = next_up_f64((squared_norm / (1.0 - relative_error)).max(0.0).sqrt());
+        next_up_f64(
+            (query_maximum + self.maximum)
+                * (query_maximum + self.maximum)
+                * (1.0 + relative_error),
+        )
+    }
+}
+
+fn accumulation_relative_error(terms: usize) -> f64 {
+    let scaled = terms as f64 * f64::EPSILON;
+    (scaled / (1.0 - scaled)) * 2.0
+}
+
+fn next_up_f32(value: f32) -> f32 {
+    if value == f32::INFINITY {
+        return value;
+    }
+    if value == -0.0 {
+        return f32::from_bits(1);
+    }
+    if value >= 0.0 {
+        f32::from_bits(value.to_bits().saturating_add(1))
+    } else {
+        f32::from_bits(value.to_bits().saturating_sub(1))
+    }
+}
+
+fn next_up_f64(value: f64) -> f64 {
+    if value == f64::INFINITY {
+        return value;
+    }
+    if value == -0.0 {
+        return f64::from_bits(1);
+    }
+    if value >= 0.0 {
+        f64::from_bits(value.to_bits().saturating_add(1))
+    } else {
+        f64::from_bits(value.to_bits().saturating_sub(1))
+    }
+}
+
+fn next_down_f64(value: f64) -> f64 {
+    if value <= 0.0 {
+        return 0.0;
+    }
+    f64::from_bits(value.to_bits().saturating_sub(1))
+}
+
 /// Owned, lifetime-free reusable state for single-core graph queries.
 #[derive(Debug)]
 pub struct GraphSearchScratch {
@@ -1408,15 +1550,18 @@ mod tests {
     use rand::RngCore;
 
     use super::{
-        AdaptiveEfError, GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher,
-        TraversalPrefetch,
+        AdaptiveEfError, GraphSearchError, GraphSearchProfile, GraphSearchRequest,
+        GraphSearchScratch, GraphSearcher, GraphSegmentNormRange, QueryCoreClass,
+        TraversalPrefetch, next_down_f64, next_up_f32, next_up_f64,
     };
     use crate::graph::block::{
         GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout, decode_node_blocks,
         encode_node_blocks,
     };
+    use crate::kernels::GatherShapeError;
     use crate::lifecycle::{CancelToken, OpenOptions, QueryCancellation, QueryControl, Store};
-    use crate::quant::{Bit4Factors, quantize_bit4};
+    use crate::quant::{Bit4Factors, QuantError, RescoreError, quantize_bit4};
+    use crate::scan::ScanError;
 
     const DIMS: usize = 128;
 
@@ -1444,6 +1589,172 @@ mod tests {
         assert_eq!(
             request.effective_ef(usize::MAX),
             Err(AdaptiveEfError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn request_and_search_geometry_rejections_preserve_the_invalid_values() {
+        let query = vector(0.0);
+        assert_eq!(
+            GraphSearchRequest::new(&query, 0, 7).effective_ef(9),
+            Err(AdaptiveEfError::ZeroK)
+        );
+        assert_eq!(
+            GraphSearchRequest::new(&query, 10, 7).effective_ef(9),
+            Err(AdaptiveEfError::KExceedsRows { k: 10, rows: 9 })
+        );
+        assert_eq!(
+            GraphSearchRequest::new(&query, 4, 7)
+                .with_ef(3)
+                .effective_ef(9),
+            Err(AdaptiveEfError::ExplicitBelowK { k: 4, ef: 3 })
+        );
+        assert_eq!(
+            GraphSearchRequest::new(&query, 4, 7)
+                .with_ef(10)
+                .effective_ef(9),
+            Err(AdaptiveEfError::ExplicitExceedsRows { ef: 10, rows: 9 })
+        );
+
+        let (encoded, rescore) = best_first_graph_fixture();
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let mut wrong_scratch =
+            GraphSearchScratch::new(graph.node_count() + 1, graph.layout().max_degree())
+                .expect("mismatched scratch allocates");
+        assert!(matches!(
+            GraphSearcher::new(graph, &rescore, &mut wrong_scratch),
+            Err(GraphSearchError::Geometry(detail))
+                if detail.contains("scratch geometry")
+        ));
+
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        assert!(matches!(
+            GraphSearcher::new(graph, &rescore[..rescore.len() - 1], &mut scratch),
+            Err(GraphSearchError::Geometry(detail))
+                if detail.contains("rescore has") && detail.contains("expected")
+        ));
+        assert!(matches!(
+            GraphSearcher::with_entry_row_ids(graph, &rescore, [0, 1, 2, 4], &mut scratch),
+            Err(GraphSearchError::Geometry(detail))
+                if detail.contains("cached entry row 4")
+        ));
+
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("valid searcher");
+        assert!(matches!(
+            searcher.search(
+                GraphSearchRequest::new(&query[..DIMS - 1], 1, 7).with_ef(4),
+                None,
+            ),
+            Err(GraphSearchError::Geometry(detail))
+                if detail.contains("127 dimensions") && detail.contains("expected 128")
+        ));
+        let mut non_finite = query.clone();
+        non_finite[17] = f32::NAN;
+        assert_eq!(
+            searcher.search(GraphSearchRequest::new(&non_finite, 1, 7).with_ef(4), None,),
+            Err(GraphSearchError::Quant(QuantError::NonFinite { index: 17 }))
+        );
+        let recovered = searcher
+            .search(GraphSearchRequest::new(&query, 1, 7).with_ef(4), None)
+            .expect("a rejected request leaves reusable scratch valid");
+        assert_eq!(recovered.candidates()[0].row_id(), 8);
+
+        let one_entry = factor_graph_fixture(Bit4Factors::from_persisted(1.0, 1.0, 0.0), 1);
+        let one_entry = decode_node_blocks(one_entry.as_bytes()).expect("one-entry graph is valid");
+        assert!(matches!(
+            GraphSearcher::discover_entry_row_ids(one_entry),
+            Err(GraphSearchError::Geometry(detail)) if detail.contains("contains 1 persisted entry")
+        ));
+    }
+
+    #[test]
+    fn segment_norm_bounds_round_outward_or_fail_open() {
+        let bounded = factor_graph_fixture(Bit4Factors::from_persisted(2.0, 10.0, 0.0), 0);
+        let bounded = decode_node_blocks(bounded.as_bytes()).expect("bounded graph is valid");
+        let bounded = GraphSegmentNormRange::from_graph(bounded, None).expect("norm scan succeeds");
+        let zero_query = vec![0.0_f32; DIMS];
+        assert!(bounded.squared_l2_lower_bound(&zero_query) <= 400.0);
+        assert!(bounded.squared_l2_upper_bound(&zero_query) >= 400.0);
+        assert!(bounded.squared_l2_lower_bound(&zero_query) > 0.0);
+        assert_eq!(bounded.squared_l2_lower_bound(&[]), 0.0);
+        assert_eq!(bounded.squared_l2_upper_bound(&[]), f64::INFINITY);
+
+        for factors in [
+            Bit4Factors::from_persisted(-1.0, 1.0, 0.0),
+            Bit4Factors::from_persisted(f32::MAX, f32::MAX, 0.0),
+        ] {
+            let encoded = factor_graph_fixture(factors, 0);
+            let graph = decode_node_blocks(encoded.as_bytes()).expect("finite factors decode");
+            let range = GraphSegmentNormRange::from_graph(graph, None).expect("norm scan succeeds");
+            assert_eq!(range.squared_l2_lower_bound(&zero_query), 0.0);
+            assert_eq!(range.squared_l2_upper_bound(&zero_query), f64::INFINITY);
+        }
+    }
+
+    #[test]
+    fn norm_bound_successors_are_exact_ieee_neighbours() {
+        assert_eq!(next_up_f32(f32::INFINITY), f32::INFINITY);
+        assert_eq!(next_up_f32(-0.0).to_bits(), 1);
+        assert_eq!(next_up_f32(-1.0).to_bits(), (-1.0_f32).to_bits() - 1);
+        assert_eq!(next_up_f64(f64::INFINITY), f64::INFINITY);
+        assert_eq!(next_up_f64(-0.0).to_bits(), 1);
+        assert_eq!(next_up_f64(-1.0).to_bits(), (-1.0_f64).to_bits() - 1);
+        assert_eq!(next_down_f64(0.0), 0.0);
+        assert_eq!(next_down_f64(1.0).to_bits(), 1.0_f64.to_bits() - 1);
+    }
+
+    #[test]
+    fn graph_search_errors_keep_typed_sources_and_actionable_messages() {
+        let sourced = [
+            GraphSearchError::from(crate::graph::block::GraphNodeError::InvalidHeader(
+                "bad graph header".to_owned(),
+            )),
+            GraphSearchError::from(QuantError::EmptyVector),
+            GraphSearchError::from(GatherShapeError::RowBytes {
+                expected: 64,
+                actual: 63,
+            }),
+            GraphSearchError::from(AdaptiveEfError::ExplicitBelowK { k: 4, ef: 3 }),
+            GraphSearchError::from(AdaptiveEfError::ZeroK),
+            GraphSearchError::from(AdaptiveEfError::KExceedsRows { k: 10, rows: 9 }),
+            GraphSearchError::from(AdaptiveEfError::ExplicitExceedsRows { ef: 10, rows: 9 }),
+            GraphSearchError::from(AdaptiveEfError::ArithmeticOverflow),
+            GraphSearchError::from(RescoreError::InsufficientCandidates {
+                k: 4,
+                candidates: 3,
+            }),
+            GraphSearchError::Scan(ScanError::ZeroDimension),
+        ];
+        for error in sourced {
+            assert!(!error.to_string().is_empty());
+            assert!(std::error::Error::source(&error).is_some());
+        }
+
+        let unsourced = [
+            GraphSearchError::Geometry("bad request shape".to_owned()),
+            GraphSearchError::VisitedCapExceeded {
+                visited: 17,
+                cap: 16,
+            },
+            GraphSearchError::Cancelled { partial: false },
+            GraphSearchError::Timeout { partial: false },
+            GraphSearchError::ReadCancelled { partial: false },
+        ];
+        let messages = unsourced
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert!(messages[0].contains("bad request shape"));
+        assert!(messages[1].contains("17") && messages[1].contains("16"));
+        assert!(messages[2].contains("cancelled") && messages[2].contains("partial=false"));
+        assert!(messages[3].contains("deadline") && messages[3].contains("partial=false"));
+        assert!(messages[4].contains("store close") && messages[4].contains("partial=false"));
+        assert!(
+            unsourced
+                .iter()
+                .all(|error| std::error::Error::source(error).is_none())
         );
     }
 
@@ -1500,6 +1811,42 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(result.counters().effective_ef(), 12);
         assert_eq!(result.counters().candidates_rescored(), 12);
+    }
+
+    #[test]
+    fn traversal_expands_the_nearest_frontier_node_before_insertion_order() {
+        let (encoded, rescore) = best_first_graph_fixture();
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(0.0);
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
+
+        let result = searcher
+            .search(
+                GraphSearchRequest::new(&query, 1, 0x19_04_bf)
+                    .with_ef(4)
+                    .with_observed_core_class(QueryCoreClass::Performance)
+                    .with_candidate_trace(),
+                None,
+            )
+            .expect("best-first traversal reaches the hidden nearest row");
+
+        assert_eq!(
+            result
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.row_id())
+                .collect::<Vec<_>>(),
+            vec![8]
+        );
+        assert_eq!(result.candidate_sequence(), Some(&[0, 1, 2, 3, 8][..]));
+        assert_eq!(result.counters().hops(), 4);
+        assert_eq!(result.counters().pushes(), 5);
+        assert_eq!(result.counters().core_class(), QueryCoreClass::Performance);
+        assert_eq!(result.counters().candidates_rescored(), 4);
+        assert!(result.counters().candidates_scored() < 9);
     }
 
     #[test]
@@ -1831,6 +2178,66 @@ mod tests {
         })
         .expect("fixture graph encodes");
         (encoded, rescore)
+    }
+
+    fn best_first_graph_fixture() -> (crate::graph::block::EncodedNodeBlocks, Vec<f32>) {
+        let values = [10.0_f32, 9.0, 8.0, 1.0, 7.0, 6.0, 5.0, 4.0, 0.0];
+        let layout =
+            GraphNodeLayout::new(DIMS as u32, DIMS as u32, 4).expect("best-first layout is valid");
+        let rescore = values.into_iter().flat_map(vector).collect::<Vec<_>>();
+        let mut codes = vec![0_u8; values.len() * DIMS.div_ceil(2)];
+        let factors = rescore
+            .chunks_exact(DIMS)
+            .zip(codes.chunks_exact_mut(DIMS.div_ceil(2)))
+            .map(|(row, destination)| {
+                quantize_bit4(row, destination).expect("best-first row is finite")
+            })
+            .collect::<Vec<_>>();
+        let neighbors = [
+            vec![4, 5, 6, 7],
+            Vec::new(),
+            Vec::new(),
+            vec![8],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ];
+        let nodes = (0..values.len())
+            .map(|row| GraphNodeBlockInput {
+                codes: &codes[row * DIMS.div_ceil(2)..(row + 1) * DIMS.div_ceil(2)],
+                factors: factors[row],
+                flags: u8::from(row < 4),
+                neighbors: &neighbors[row],
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_node_blocks(GraphNodeBlockBuild {
+            layout,
+            nodes: &nodes,
+        })
+        .expect("best-first graph encodes");
+        (encoded, rescore)
+    }
+
+    fn factor_graph_fixture(
+        factors: Bit4Factors,
+        flags: u8,
+    ) -> crate::graph::block::EncodedNodeBlocks {
+        let layout = GraphNodeLayout::new(DIMS as u32, DIMS as u32, 0)
+            .expect("factor graph layout is valid");
+        let codes = vec![0_u8; DIMS.div_ceil(2)];
+        let node = GraphNodeBlockInput {
+            codes: &codes,
+            factors,
+            flags,
+            neighbors: &[],
+        };
+        encode_node_blocks(GraphNodeBlockBuild {
+            layout,
+            nodes: &[node],
+        })
+        .expect("factor graph encodes")
     }
 
     fn long_chain_graph_fixture(rows: usize) -> (crate::graph::block::EncodedNodeBlocks, Vec<f32>) {

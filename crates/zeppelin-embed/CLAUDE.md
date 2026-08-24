@@ -181,6 +181,22 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   matched recall despite saving 2.643% hops. Constants and the load-tainted
   10-process evidence live in `docs/19-m5-defaults.md`.
 
+## Task 19-M7 multi-segment graph-search invariants
+
+- One query-local exact-distance bound is tightened after each serial segment.
+  Sealed segments are ordered by descending row count, then ascending segment
+  id, so the most likely source of an early global top-k runs first using only
+  manifest metadata.
+- A segment may be skipped only when its persisted original-row norm enclosure
+  proves every exact squared-L2 result strictly worse than the current global
+  k-th distance. Equality is never pruned, tombstones remain conservative, and
+  the independent per-segment path remains available only to unit tests as the
+  byte-exact differential oracle.
+- The shared bound is stack-owned by `search_pinned`; reusable graph cache state
+  contains only query-independent validation, entry seeds, norm ranges, and
+  exactly accounted scratch. Concurrent or later queries never inherit a
+  competitive distance.
+
 ## Task 08 Part A WAL invariants
 
 - Every synchronization names `SyncKind`; Darwin maps barrier/full to
@@ -344,7 +360,54 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Active sealing appends one task-07 immutable segment to the complete manifest
   segment set, folds the active alive/tombstone state, empties active storage,
   and advances from the authoritative active generation. It never builds a
-  graph or assigns a clustering key.
+  graph. Task 10-C now stamps the canonical `ts` clustering-key range at this
+  existing seal boundary without adding another payload pass.
 - Task-10 sealed rows carry optional region kind 12 / family 13 with exact
   24-byte little-endian `(doc_id:u128, revision:u64)` records. Existing task-07
   segments omit it and continue to return no application document identity.
+
+## Task 10 Part C partition-retention invariants
+
+- `ts:i64` is the canonical clustering key. Active rows account its storage,
+  timestamped WAL upserts use append-only operation id 4, and seal computes the
+  inclusive live-row `[min_ts, max_ts]` while the rows are already in memory.
+  An all-tombstoned segment stamps `ClusteringKeyRange::Empty`; `Unstamped` is
+  reserved for older/general segment writers and is never guessed from payload.
+- `drop_partition(start..end)` is half-open and drops only an `Empty` segment
+  or a bounded segment with `min_ts >= start && max_ts < end`. Overlapping
+  boundary straddlers remain reachable and are returned in the typed report.
+  Selection reads only the manifest; reading a segment to recover `ts` is a
+  performance-contract violation.
+- The manifest commit omitting dropped segments precedes snapshot publication
+  and every unlink. Store admission is held across commit/publication so later
+  queries cannot pin the old generation; earlier queries retain the open file
+  and mmap, whose inode survives POSIX unlink until their snapshot is released.
+- Retention is a pure window-to-range decision plus an explicit
+  `apply_retention`/`drop_partition` call. No engine timer, daemon, scheduler,
+  rewrite, WAL scrub, or physical-purge token belongs to Part C.
+
+## Task 10 Part D physical-purge invariants
+
+- `purge(ids)` durably records one pending intent and returns its token before
+  rewriting artifacts. `await_physical_purge(token)` resolves only after every
+  affected sealed segment has been replaced in the manifest, each old segment
+  path has been unlinked, the WAL has been atomically replaced, and the intent
+  has been removed. Open detects a surviving intent and completes or cleanly
+  restarts the same idempotent protocol.
+- Before writing the intent or any replacement, purge checks every affected
+  sealed segment and rejects with `InsufficientTempSpace` unless filesystem
+  free bytes are strictly greater than 120% of that segment's file size. A
+  rejection is mutation-free.
+- Segment replacement compacts survivors into dense row ids and rewrites codes,
+  quantization factors, f32 rescore rows, alive state, document versions,
+  columns, and stored metadata in that same survivor order. Graph node blocks
+  are deliberately omitted because their neighbor ids name the old dense row
+  space; `maintain()` is responsible for rebuilding a graph later.
+- WAL retirement is not physical erasure. Purge serializes only the surviving
+  active state into a new WAL image, syncs the temporary file as required,
+  atomically renames it over `wal.ze`, syncs the directory as required, and
+  retires the old writer only after replacement. Therefore no purged payload
+  record remains reachable by any path when the token resolves.
+- Manifest replacement commits before old-segment unlink, one segment at a
+  time. Orphan replacement files and old segments are swept against the current
+  manifest during recovery; the durable intent is the sole completion marker.

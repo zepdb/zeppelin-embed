@@ -15,7 +15,7 @@ use zeppelin_embed::manifest::{
     EpochMeta, Manifest, ManifestError, decode_manifest, encode_manifest,
 };
 use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
-use zeppelin_embed::segment::{SegmentId, SegmentMeta};
+use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 
 fn rewrite_file_checksum(bytes: &mut [u8]) {
     let trailer = bytes.len() - FILE_TRAILER_LEN;
@@ -163,6 +163,7 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
             scheme: 4,
             dims: 65,
             file_size: 99,
+            clustering_key_range: zeppelin_embed::segment::ClusteringKeyRange::Unstamped,
         }],
         epochs: vec![EpochMeta {
             id: 1,
@@ -231,6 +232,80 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
         bad_schema.extend_from_slice(&1_u32.to_le_bytes());
         bad_schema.push(b'x');
         assert!(decode_manifest("schema", &payload_artifact(&bad_schema)).is_err());
+    }
+}
+
+#[test]
+fn manifest_clustering_extension_rejects_each_semantic_corruption() {
+    let manifest = Manifest {
+        generation: 1,
+        log_seq: 0,
+        segments: vec![SegmentMeta {
+            id: SegmentId::new(1, [0x33; 10]),
+            row_count: 1,
+            scheme: 4,
+            dims: 2,
+            file_size: 64,
+            clustering_key_range: ClusteringKeyRange::Bounded {
+                min_ts: 10,
+                max_ts: 20,
+            },
+        }],
+        epochs: Vec::new(),
+        schema: Schema::new(Vec::new()).expect("schema"),
+    };
+    let framed = encode_manifest(&manifest).expect("bounded manifest");
+    let payload = decode_artifact("manifest", FormatFamily::Manifest, &framed)
+        .expect("manifest frame")
+        .payload
+        .to_vec();
+    let extension = 68_usize;
+    assert_eq!(&payload[extension..extension + 4], b"TSR1");
+
+    type Corruption = (&'static str, Box<dyn Fn(&mut Vec<u8>)>);
+    let cases: Vec<Corruption> = vec![
+        (
+            "unknown manifest extension",
+            Box::new(move |bytes| bytes[extension] ^= 1),
+        ),
+        (
+            "clustering range count 2",
+            Box::new(move |bytes| {
+                bytes[extension + 4..extension + 8].copy_from_slice(&2_u32.to_le_bytes());
+            }),
+        ),
+        (
+            "reserved bytes are non-zero",
+            Box::new(move |bytes| bytes[extension + 9] = 1),
+        ),
+        (
+            "tag 0 requires zero bounds",
+            Box::new(move |bytes| bytes[extension + 8] = 0),
+        ),
+        (
+            "range 20..=10 is inverted",
+            Box::new(move |bytes| {
+                bytes[extension + 16..extension + 24].copy_from_slice(&20_i64.to_le_bytes());
+                bytes[extension + 24..extension + 32].copy_from_slice(&10_i64.to_le_bytes());
+            }),
+        ),
+        (
+            "unknown clustering range tag 3",
+            Box::new(move |bytes| bytes[extension + 8] = 3),
+        ),
+        (
+            "clustering range extension has 23 bytes, expected 24",
+            Box::new(|bytes| {
+                let _ = bytes.pop();
+            }),
+        ),
+    ];
+    for (expected, mutate) in cases {
+        let mut damaged = payload.clone();
+        mutate(&mut damaged);
+        let error = decode_manifest("semantic-extension", &payload_artifact(&damaged))
+            .expect_err("semantic extension corruption must fail");
+        assert!(error.to_string().contains(expected), "{error}");
     }
 }
 
