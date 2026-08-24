@@ -48,6 +48,14 @@ Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
 C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling
 and is deliberately excluded from the production workspace graph.
 
+Release builds ship `opt-level = 3`, not `opt-level = "z"`. This is owner
+decision O6, taken 2026-08-24 on measured evidence: size-optimized builds
+cost the lexical query path 1.65x on TREC-COVID and 1.33x on FiQA against
+tantivy, which is the difference between winning three of four BEIR corpora
+and winning two. Level 3 costs +150 KB of linked sections (1,873 to 2,023 KB)
+against a 5,120 KB budget. The rule is best-and-fastest, not smallest; trade
+speed for size only when the static-library gate is under real pressure.
+
 The 5 MB static-library gate measures post-strip linkable sections with the
 platform `size` tool and separately reports physical archive KB from `du`.
 Embedded fat-LTO LLVM bitcode and archive metadata are not runtime footprint;

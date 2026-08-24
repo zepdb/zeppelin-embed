@@ -4,10 +4,10 @@ Quality measured 2026-08-23 and re-confirmed unchanged 2026-08-24. Latency
 re-measured 2026-08-24, single-tenant, with build profiles matched between
 engines; section 3 supersedes the contaminated table it replaces.
 
-Machine: Apple M3 Max (Mac15,9), 12P+4E, 128 GB, macOS. Engine build for
-quality: `--release` (`opt-level="z"`, fat LTO, 1 CGU); for latency, both
-`--profile bench` (`opt-level=3`) and the shipped `--release`, because the
-difference is a live owner decision (O6).
+Machine: Apple M3 Max (Mac15,9), 12P+4E, 128 GB, macOS. Engine builds at
+`opt-level = 3`, fat LTO, 1 CGU. **Owner decision O6 was taken on
+2026-08-24: we ship speed, not size.** The `opt-level = "z"` column below is
+kept as the evidence that produced that decision, not as a live option.
 
 ## 1. The gate: GREEN on all four corpora
 
@@ -78,27 +78,34 @@ process exceeded 15%. Load average during the runs is largely self-inflicted
 `codegen-units = 1`. Both search single-threaded: tantivy's default
 `Searcher::search` uses the single-thread executor. The engine is run at
 `--profile bench` because the shipped `[profile.release]` is still
-`opt-level = "z"`; both are reported below, because the difference is a
-live owner decision (**O6**).
+`opt-level = "z"`; both were reported, and the difference is what settled
+**O6**. The shipped profile is now level 3, so the left-hand column is the
+one that ships.
 
 Mean ms per query, block-max pruned path, median of five:
 
-| corpus | zeppelin @ o3 | tantivy | verdict | zeppelin @ shipped `z` |
+| corpus | zeppelin (shipped) | tantivy | verdict | at the old `z` |
 | --- | ---: | ---: | :--- | ---: |
-| TREC-COVID | 5.580 | **5.020** | tantivy 1.11x | 8.780 |
-| FiQA | 1.489 | 1.540 | tie (within spread) | 2.336 |
-| NFCorpus | **0.034** | 0.170 | **we win 5.00x** | 0.056 |
-| SciFact | **0.250** | 0.663 | **we win 2.65x** | 0.383 |
+| TREC-COVID | 4.960 | 4.880 | tie, 1.02x, inside spread | 8.040 |
+| FiQA | **1.343** | 1.568 | **we win 1.17x** | 2.090 |
+| NFCorpus | **0.025** | 0.170 | **we win 6.87x** | 0.040 |
+| SciFact | **0.230** | 0.657 | **we win 2.86x** | 0.373 |
 
 Read honestly:
 
-- **We win two corpora outright, tie one, and lose one.** The TREC-COVID gap
-  is **1.11x**, down from 18x. FiQA at 1.03x sits inside the 6-8% spread and
-  is a tie, not a win.
-- **O6 is now load-bearing.** At the shipped `opt-level = "z"` we lose
-  TREC-COVID by 1.75x and FiQA by 1.52x and win only two corpora. Level 3
-  costs a measured +128 KB against a 5,120 KB budget currently using
-  1,873 KB. The speed claim above is not shippable until O6 is taken.
+- **We win three corpora outright and tie the fourth.** TREC-COVID at 1.02x
+  sits well inside the spreads — ours 4.920-5.240, tantivy's 4.760-5.280,
+  which overlap almost entirely — so it is a tie, not a win. It was 18x
+  behind at the start of this work.
+- **The control says the conditions were sound.** A long coverage job was
+  running on another checkout during this run. Because the arms alternate,
+  tantivy doubles as a control: its numbers landed within 2.8% of the
+  quiesced run (4.880 against 5.020, 1.568 against 1.540, 0.170 against
+  0.170, 0.657 against 0.663).
+- **O6 is settled: we ship `opt-level = 3`.** At `"z"` we lost TREC-COVID by
+  1.75x and FiQA by 1.52x and won only two corpora. Level 3 costs +150 KB of
+  linked sections, 1,873 to 2,023 KB, against a 5,120 KB budget. The rule for
+  this repository is best-and-fastest, not smallest.
 - **Indexing is unchanged and still far behind**, 29x to 36x. tantivy's
   writer is multi-threaded and our seal is single-threaded, which is part of
   that gap and is disclosed rather than corrected; P3 was never attempted.
@@ -163,17 +170,17 @@ engine `Cargo.lock` never see them.
 
 ## 6. Owed
 
-1. **O6: the workspace `opt-level`.** Section 3 shows the speed result is
-   not shippable at `opt-level = "z"`. This is the one decision standing
-   between the measured numbers and the shipped ones.
-2. **TREC-COVID, the last 1.11x.** Block skipping is the mechanism tantivy
-   wins on and `blocks_skipped` is still zero on synthetic corpora. WAND's
-   block-max refinement advances one posting where canonical BMW jumps to
-   the shallowest block end; that is the next lever and it is guarded by
-   `prop_pruned_topk_equals_exhaustive`.
-3. **Indexing: 29x-36x behind, and untouched.** P3 was never attempted.
+1. **TREC-COVID, the last tie.** Block skipping is the mechanism tantivy
+   wins on, and `blocks_skipped` is still zero. The canonical BMW jump is in,
+   but a one-block jump still DECODES the block it lands in, so nothing is
+   passed undecoded. True skipping needs the cursor to sit at a block
+   boundary without decoding. Its ceiling is the measured 6-8% decode share,
+   so measure before building.
+2. **Indexing: 29x-36x behind, and untouched.** P3 was never attempted.
    Part of the gap is tantivy's multi-threaded writer against our
    single-threaded seal, disclosed in section 3 rather than corrected.
+3. **FiQA is our weakest corpus relative to the field**, the only one where
+   tantivy outranks us (0.2380 against 0.2290). Nothing has been tried.
 4. **FTS5 was not re-run** on 2026-08-24. Its column in section 3 is
    dropped rather than carried over from the contaminated table; the
    earlier finding that we beat it on both axes is unchallenged but is now

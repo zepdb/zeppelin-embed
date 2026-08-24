@@ -27,7 +27,17 @@ tempfile = "=3.25.0"
 serde_json = "=1.0.151"
 
 [profile.release]
-opt-level = "z"
+# Owner decision O6, taken 2026-08-24: we ship speed, not size.
+#
+# `opt-level = "z"` cost the lexical query path 1.65x on TREC-COVID and
+# 1.33x on FiQA against tantivy -- the difference between winning three of
+# four BEIR corpora and winning two. Level 3 costs a measured +128 KB of
+# linked sections against a 5,120 KB budget with roughly 3,200 KB spare.
+#
+# The standing rule for this repository is best-and-fastest, not smallest.
+# Revisit only if the static-library gate in scripts/size-budget.sh comes
+# under real pressure.
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
