@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FTS Campaign Presentations</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            padding: 60px 40px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+            color: #ffffff;
+            font-weight: 600;
+        }
+        .subtitle {
+            font-size: 1.3rem;
+            color: #a0a0a0;
+            margin-bottom: 60px;
+            font-weight: 300;
+        }
+        .panels {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-top: 40px;
+        }
+        .panel-card {
+            background-color: #252525;
+            border: 1px solid #404040;
+            border-radius: 8px;
+            padding: 30px;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-card:hover {
+            background-color: #2d2d2d;
+            border-color: #505050;
+            transform: translateY(-2px);
+        }
+        .panel-number {
+            font-size: 0.9rem;
+            color: #707070;
+            margin-bottom: 10px;
+            font-family: -apple-system, "Courier New", monospace;
+            font-weight: 600;
+        }
+        .panel-title {
+            font-size: 1.4rem;
+            color: #ffffff;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        .panel-description {
+            font-size: 0.95rem;
+            color: #a0a0a0;
+            flex-grow: 1;
+        }
+        .intro {
+            background-color: #252525;
+            border: 1px solid #404040;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 50px;
+        }
+        .intro p {
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FTS Campaign Presentations</h1>
+        <p class="subtitle">zeppelin-embed Full-Text Search Optimization</p>
+
+        <div class="intro">
+            <p>Two optimization campaigns on Apple M3 Max. BM25 quality now leads the field. Query latency wins all four BEIR corpora. Indexing gap cut from 35x to 7-12x.</p>
+        </div>
+
+        <div class="panels">
+            <a href="01-headline.html" class="panel-card">
+                <div class="panel-number">Panel 1</div>
+                <div class="panel-title">State of FTS</div>
+                <div class="panel-description">Quality leads. Query latency wins all corpora. Indexing 2.7x faster.</div>
+            </a>
+
+            <a href="02-quality.html" class="panel-card">
+                <div class="panel-number">Panel 2</div>
+                <div class="panel-title">Quality: nDCG@10</div>
+                <div class="panel-description">Mean 0.4615 vs tantivy 0.4429, SQLite FTS5 0.4436, Pyserini 0.4580.</div>
+            </a>
+
+            <a href="03-query-latency.html" class="panel-card">
+                <div class="panel-number">Panel 3</div>
+                <div class="panel-title">Query Latency</div>
+                <div class="panel-description">30-48x faster than FTS5. TREC-COVID now 1.14x faster than tantivy.</div>
+            </a>
+
+            <a href="04-indexing.html" class="panel-card">
+                <div class="panel-number">Panel 4</div>
+                <div class="panel-title">Indexing Performance</div>
+                <div class="panel-description">2.7x improvement in one session. Still 7-12x behind tantivy.</div>
+            </a>
+
+            <a href="05-query-engineering.html" class="panel-card">
+                <div class="panel-number">Panel 5</div>
+                <div class="panel-title">Query Path Optimization</div>
+                <div class="panel-description">Block-max WAND, lazy term frequencies, cached bounds, bit-identical results.</div>
+            </a>
+
+            <a href="06-indexing-engineering.html" class="panel-card">
+                <div class="panel-number">Panel 6</div>
+                <div class="panel-title">Indexing Optimization</div>
+                <div class="panel-description">Hash map term table. String-based grouping. Scoped thread batching.</div>
+            </a>
+
+            <a href="07-accuracy.html" class="panel-card">
+                <div class="panel-number">Panel 7</div>
+                <div class="panel-title">Linguistic Analysis</div>
+                <div class="panel-description">Single-letter decomposition dropped. Mean nDCG@10 improved to 0.4615.</div>
+            </a>
+
+            <a href="08-discipline.html" class="panel-card">
+                <div class="panel-number">Panel 8</div>
+                <div class="panel-title">Measurement Discipline</div>
+                <div class="panel-description">Deterministic counters. Bit-identical pruning. Alternated arms. Golden tokens.</div>
+            </a>
+        </div>
+    </div>
+</body>
+</html>

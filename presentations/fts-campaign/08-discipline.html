@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Why the Numbers Can Be Trusted</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .slide {
+            max-width: 1400px;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 80px 100px;
+        }
+        h1 { font-size: 4rem; font-weight: 700; color: #ffffff; margin-bottom: 60px; }
+        .point {
+            font-size: 1.25rem;
+            margin-bottom: 28px;
+            color: #c0c0c0;
+            line-height: 1.6;
+            padding-left: 40px;
+            position: relative;
+        }
+        .point:before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0.4em;
+            width: 8px;
+            height: 8px;
+            background-color: #4ec9b0;
+            border-radius: 50%;
+        }
+        .highlight { color: #60d894; font-weight: 600; font-family: -apple-system, "Courier New", monospace; }
+    </style>
+</head>
+<body>
+    <div class="slide">
+        <h1>Why the Numbers Can Be Trusted</h1>
+        <div class="point">Every pruning optimization is gated by <span class="highlight">deterministic counters</span> pinned in committed contract files, re-baselined only in the same commit as the change, with the reason recorded</div>
+        <div class="point">Pruned results are <span class="highlight">bit-identical</span> to an exhaustive oracle on 171k real documents</div>
+        <div class="point">Parallel indexing is held to the sequential loop <span class="highlight">exactly</span> by a dedicated test</div>
+        <div class="point">Analysis changes are <span class="highlight">epoch-stamped</span> with regenerated golden token streams</div>
+        <div class="point">Latency tables always alternate arms within each repetition and carry machine-state caveats</div>
+    </div>
+</body>
+</html>

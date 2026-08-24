@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accuracy: One Principled Analysis Change</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .slide {
+            max-width: 1400px;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 80px 100px;
+        }
+        h1 { font-size: 3.4rem; font-weight: 700; color: #ffffff; margin-bottom: 40px; }
+        .point {
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+            color: #c0c0c0;
+            line-height: 1.6;
+            padding-left: 40px;
+            position: relative;
+        }
+        .point:before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0.4em;
+            width: 8px;
+            height: 8px;
+            background-color: #4ec9b0;
+            border-radius: 50%;
+        }
+        .highlight { color: #60d894; font-weight: 600; font-family: -apple-system, "Courier New", monospace; }
+        .table-container { overflow-x: auto; margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; font-size: 1.15rem; }
+        th {
+            background-color: #252525; color: #ffffff; padding: 12px 16px;
+            text-align: left; font-weight: 600; border-bottom: 2px solid #404040;
+        }
+        td { padding: 12px 16px; border-bottom: 1px solid #303030; color: #c0c0c0; }
+        tr:hover { background-color: #1f1f1f; }
+        .win { font-weight: 600; color: #60d894; }
+        .corpus-col { font-weight: 500; color: #e0e0e0; }
+    </style>
+</head>
+<body>
+    <div class="slide">
+        <h1>Accuracy: One Principled Analysis Change</h1>
+        <div class="point">Linguistic profiles drop single-LETTER decomposition parts: the <span class="highlight">k</span> of 401k, the <span class="highlight">t</span> of don't, the <span class="highlight">s</span> of investor's</div>
+        <div class="point">Single DIGITS are kept — <span class="highlight">type-2</span> and <span class="highlight">SARS-CoV-2</span> are discriminated by exactly that digit; the code profile keeps every part (<span class="highlight">x</span> of x_max)</div>
+        <div class="point">The mean rose and every corpus stayed inside the quality gate; the SciFact cost (hyphenated single letters like t-cell) was recorded rather than special-cased, which would have been overfitting four corpora</div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr><th>corpus</th><th>nDCG@10 before</th><th>after</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td class="corpus-col">TREC-COVID</td><td>0.6004</td><td class="win">0.6022</td></tr>
+                    <tr><td class="corpus-col">FiQA</td><td>0.2290</td><td class="win">0.2337</td></tr>
+                    <tr><td class="corpus-col">NFCorpus</td><td>0.3183</td><td>0.3175</td></tr>
+                    <tr><td class="corpus-col">SciFact</td><td>0.6972</td><td>0.6924</td></tr>
+                    <tr><td class="corpus-col">mean</td><td>0.4612</td><td class="win">0.4615</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

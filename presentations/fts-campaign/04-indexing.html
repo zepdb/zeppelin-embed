@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Indexing Performance</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .slide {
+            max-width: 1400px;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 60px 80px;
+        }
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 50px;
+        }
+        .table-note {
+            font-size: 1rem;
+            color: #a0a0a0;
+            margin-bottom: 30px;
+            font-style: italic;
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 1.1rem;
+            margin-bottom: 30px;
+        }
+        th {
+            background-color: #252525;
+            color: #ffffff;
+            padding: 14px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #404040;
+        }
+        td {
+            padding: 14px;
+            border-bottom: 1px solid #303030;
+            color: #c0c0c0;
+        }
+        tr:hover {
+            background-color: #1f1f1f;
+        }
+        .win {
+            font-weight: 600;
+            color: #60d894;
+        }
+        .corpus-col {
+            font-weight: 500;
+            color: #e0e0e0;
+        }
+        .ratio {
+            font-family: -apple-system, "Courier New", monospace;
+            color: #4ec9b0;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide">
+        <h1>Indexing: Whole Corpus, ms</h1>
+        <div class="table-note">Lower is better. Complete indexing time for each corpus.</div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Corpus</th>
+                        <th>zeppelin-embed</th>
+                        <th>tantivy</th>
+                        <th>FTS5</th>
+                        <th>Gap to tantivy now</th>
+                        <th>Gap at start</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td class="corpus-col">TREC-COVID</td>
+                        <td>9,092</td>
+                        <td class="win">755</td>
+                        <td>4,711</td>
+                        <td class="ratio">12.0x</td>
+                        <td class="ratio">35.5x</td>
+                    </tr>
+                    <tr>
+                        <td class="corpus-col">FiQA</td>
+                        <td>1,910</td>
+                        <td class="win">203</td>
+                        <td>1,025</td>
+                        <td class="ratio">9.4x</td>
+                        <td class="ratio">32.3x</td>
+                    </tr>
+                    <tr>
+                        <td class="corpus-col">NFCorpus</td>
+                        <td>202</td>
+                        <td class="win">28</td>
+                        <td>81</td>
+                        <td class="ratio">7.2x</td>
+                        <td class="ratio">29.2x</td>
+                    </tr>
+                    <tr>
+                        <td class="corpus-col">SciFact</td>
+                        <td>310</td>
+                        <td class="win">38</td>
+                        <td>122</td>
+                        <td class="ratio">8.2x</td>
+                        <td class="ratio">29.3x</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="table-note">2.7x faster in one session. tantivy leads; FTS5 ~2x ahead; remaining work is arena for token pipeline.</div>
+    </div>
+</body>
+</html>

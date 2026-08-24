@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Path Optimization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .slide {
+            max-width: 1400px;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 80px 100px;
+        }
+        h1 {
+            font-size: 4rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 60px;
+        }
+        .point {
+            font-size: 1.25rem;
+            margin-bottom: 28px;
+            color: #c0c0c0;
+            line-height: 1.6;
+            padding-left: 40px;
+            position: relative;
+        }
+        .point:before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0.4em;
+            width: 8px;
+            height: 8px;
+            background-color: #4ec9b0;
+            border-radius: 50%;
+        }
+        .highlight {
+            color: #60d894;
+            font-weight: 600;
+            font-family: -apple-system, "Courier New", monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide">
+        <h1>How the Query Path Got Fast</h1>
+        <div class="point">Scores computed from persisted bit-packed format, never from in-memory trees</div>
+        <div class="point">Block-max WAND and MAXSCORE pruning that provably return bit-identical top-k to exhaustive scan</div>
+        <div class="point">MAXSCORE probes cursors descending by score bound; abandons candidates from metadata alone before any seek</div>
+        <div class="point">Posting reads fell <span class="highlight">44 percent</span> on 100k-doc fixture</div>
+        <div class="point">Term frequencies decode lazily; blocks ruled out by bound never touch tf bytes</div>
+        <div class="point">Block bounds cached at decode; whole-list bounds precomputed at seal</div>
+    </div>
+</body>
+</html>
