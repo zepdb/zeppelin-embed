@@ -259,7 +259,7 @@ impl Store {
                 generation,
                 log_seq: 0,
                 segments: vec![meta],
-                epochs: Vec::new(),
+                epochs: self.epoch_registry(&[]),
                 schema: segment.columns.schema().clone(),
             },
             self.durability_policy,
@@ -294,6 +294,7 @@ impl Store {
 pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
+    epochs: Vec<crate::manifest::EpochMeta>,
     segments: Accounted<Vec<SegmentReader>>,
     cancelled: AtomicBool,
     reader_changed: Condvar,
@@ -308,6 +309,7 @@ impl PublishedSnapshot {
         Self {
             generation,
             absorbed_through: 0,
+            epochs: Vec::new(),
             segments: Accounted::unaccounted_empty(),
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -381,6 +383,7 @@ impl PublishedSnapshot {
         Ok(Self {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
+            epochs: manifest.epochs.clone(),
             segments,
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -404,6 +407,10 @@ impl PublishedSnapshot {
 
     pub(crate) const fn absorbed_through(&self) -> u64 {
         self.absorbed_through
+    }
+
+    pub(crate) fn epochs(&self) -> &[crate::manifest::EpochMeta] {
+        &self.epochs
     }
 
     /// Returns the complete immutable segment-reader set for this generation.

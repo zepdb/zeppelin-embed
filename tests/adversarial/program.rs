@@ -32,6 +32,11 @@ pub enum Op {
         revision: u64,
         timestamp: i64,
     },
+    EpochMismatchProbe {
+        doc_id: u32,
+        revision: u64,
+        timestamp: i64,
+    },
     Upsert {
         doc_id: u32,
         revision: u64,
@@ -82,6 +87,7 @@ impl Op {
         match self {
             Self::Open => "open",
             Self::Ingest { .. } => "ingest",
+            Self::EpochMismatchProbe { .. } => "epoch_mismatch_probe",
             Self::Upsert { .. } => "upsert",
             Self::Revise { .. } => "revise",
             Self::Delete { .. } => "delete",
@@ -118,6 +124,11 @@ impl Op {
                 timestamp,
             }
             | Self::Revise {
+                doc_id,
+                revision,
+                timestamp,
+            }
+            | Self::EpochMismatchProbe {
                 doc_id,
                 revision,
                 timestamp,
@@ -171,6 +182,11 @@ impl Program {
             Op::Ingest {
                 first_id: 1,
                 count: initial_count,
+                revision: 1,
+                timestamp: 10,
+            },
+            Op::EpochMismatchProbe {
+                doc_id: initial_count.saturating_add(100),
                 revision: 1,
                 timestamp: 10,
             },

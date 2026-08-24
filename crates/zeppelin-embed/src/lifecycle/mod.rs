@@ -45,7 +45,7 @@ pub enum StoreState {
 }
 
 /// Store-open configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenOptions {
     access_mode: AccessMode,
     durability_mode: DurabilityMode,
@@ -53,6 +53,7 @@ pub struct OpenOptions {
     reader_drain_timeout: Duration,
     max_resident_bytes: u64,
     max_temp_bytes: u64,
+    epoch: Option<crate::epoch::StoreEpoch>,
 }
 
 /// Filesystem authority requested for one store handle.
@@ -75,6 +76,7 @@ impl OpenOptions {
             reader_drain_timeout: DEFAULT_READER_DRAIN_TIMEOUT,
             max_resident_bytes: u64::MAX,
             max_temp_bytes: u64::MAX,
+            epoch: None,
         }
     }
 
@@ -88,6 +90,7 @@ impl OpenOptions {
             reader_drain_timeout: DEFAULT_READER_DRAIN_TIMEOUT,
             max_resident_bytes: u64::MAX,
             max_temp_bytes: u64::MAX,
+            epoch: None,
         }
     }
 
@@ -117,6 +120,13 @@ impl OpenOptions {
     #[must_use]
     pub const fn with_max_temp_bytes(mut self, bytes: u64) -> Self {
         self.max_temp_bytes = bytes;
+        self
+    }
+
+    /// Declares the embedding and tokenizer identity used by this handle.
+    #[must_use]
+    pub fn with_epoch(mut self, epoch: crate::epoch::StoreEpoch) -> Self {
+        self.epoch = Some(epoch);
         self
     }
 }
@@ -267,6 +277,12 @@ pub enum StoreError {
     Durability(DurabilityPolicyError),
     /// The committed manifest could not be loaded or validated.
     Manifest(crate::manifest::ManifestError),
+    /// The caller's declared interpretation differs from the persisted one.
+    EpochMismatch(crate::epoch::EpochMismatch),
+    /// Persisted bytes name an epoch but the caller did not declare one.
+    EpochUndeclared,
+    /// A pre-epoch manifest cannot be retroactively assigned an identity.
+    EpochUnstamped,
     /// A referenced immutable segment could not be mapped or validated.
     Segment(crate::segment::SegmentError),
     /// The caller selected graph traversal for a sealed segment without a graph.
@@ -427,6 +443,12 @@ impl std::fmt::Display for StoreError {
             Self::Lock(error) => error.fmt(formatter),
             Self::Durability(error) => error.fmt(formatter),
             Self::Manifest(error) => error.fmt(formatter),
+            Self::EpochMismatch(error) => error.fmt(formatter),
+            Self::EpochUndeclared => {
+                formatter.write_str("store epoch is persisted but the caller declared none")
+            }
+            Self::EpochUnstamped => formatter
+                .write_str("store manifest predates epoch identity and cannot adopt a declaration"),
             Self::Segment(error) => error.fmt(formatter),
             Self::GraphUnavailable { segment_id } => {
                 write!(formatter, "sealed segment {segment_id} has no graph region")
@@ -545,6 +567,7 @@ impl std::error::Error for StoreError {
             Self::Lock(error) => Some(error),
             Self::Durability(error) => Some(error),
             Self::Manifest(error) => Some(error),
+            Self::EpochMismatch(error) => Some(error),
             Self::Segment(error) => Some(error),
             Self::Wal(error) => Some(error),
             Self::WalRecovery(error) => Some(error),
@@ -558,6 +581,8 @@ impl std::error::Error for StoreError {
             Self::QueryPoolStart { source } => Some(source),
             Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
+            | Self::EpochUndeclared
+            | Self::EpochUnstamped
             | Self::GraphUnavailable { .. }
             | Self::WalRevisionOrder { .. }
             | Self::UnsupportedWalMutation { .. }
@@ -603,6 +628,7 @@ pub struct Store {
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
     pub(crate) active_queries: AtomicU64,
+    pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
@@ -647,7 +673,37 @@ impl Store {
             }
             AccessMode::ReadOnly => None,
         };
+        let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
+        let manifest_exists = manifest_path
+            .try_exists()
+            .map_err(|source| StoreError::Io {
+                path: manifest_path,
+                source,
+            })?;
         let snapshot = PublishedSnapshot::load(path, &accounting)?;
+        let persisted_epoch = snapshot
+            .epochs()
+            .first()
+            .map(crate::epoch::EpochIdentity::from_meta)
+            .transpose()
+            .map_err(|error| {
+                StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string()))
+            })?;
+        let declared_epoch = options
+            .epoch
+            .as_ref()
+            .map(crate::epoch::StoreEpoch::identity);
+        match (persisted_epoch, declared_epoch) {
+            (Some(expected), Some(declared)) if expected != declared => {
+                return Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
+                    expected,
+                    declared,
+                }));
+            }
+            (Some(_), None) => return Err(StoreError::EpochUndeclared),
+            (None, Some(_)) if manifest_exists => return Err(StoreError::EpochUnstamped),
+            (Some(_), Some(_)) | (None, Some(_)) | (None, None) => {}
+        }
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
         let (active, recovered_wal) = crate::ingest::ActiveState::recover(
@@ -702,6 +758,7 @@ impl Store {
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             active_queries: AtomicU64::new(0),
+            epoch: options.epoch,
             #[cfg(test)]
             teardown_probe,
         };
@@ -712,6 +769,24 @@ impl Store {
                 detail: error.to_string(),
             })?;
         Ok(store)
+    }
+
+    pub(crate) fn epoch_registry(
+        &self,
+        prior: &[crate::manifest::EpochMeta],
+    ) -> Vec<crate::manifest::EpochMeta> {
+        if prior.is_empty() {
+            self.epoch
+                .as_ref()
+                .map(|epoch| vec![crate::manifest::EpochMeta::from(epoch)])
+                .unwrap_or_default()
+        } else {
+            prior.to_vec()
+        }
+    }
+
+    pub(crate) fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
+        self.epoch.as_ref().map(crate::epoch::StoreEpoch::identity)
     }
 
     /// Returns the current explicit lifecycle state.
@@ -959,6 +1034,7 @@ impl Store {
             &active_segment,
             &self.accounting,
             generation,
+            self.epoch_identity(),
             request,
             k,
             options,
@@ -988,6 +1064,7 @@ fn search_pinned(
     active: &crate::ingest::ActiveSegment,
     accounting: &Arc<stats::Accounting>,
     generation: u64,
+    epoch: Option<crate::epoch::EpochIdentity>,
     request: crate::ingest::SearchRequest<'_>,
     k: usize,
     options: SearchOptions,
@@ -1488,6 +1565,7 @@ fn search_pinned(
         },
         graph_stats,
         generation,
+        epoch,
     })
 }
 

@@ -62,6 +62,7 @@ fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
         Invariant::I9,
         Invariant::I10,
         Invariant::I11,
+        Invariant::I12,
     ] {
         let violation = adversarial::runner::planted_counterexample(invariant);
         assert_eq!(violation.invariant, invariant);
@@ -132,6 +133,28 @@ fn adversarial_program_can_delete_a_pre_seal_id() {
             .count()
             > 1
     );
+}
+
+#[test]
+fn the_emitted_sweep_program_interleaves_an_epoch_mismatch_probe_with_real_writes() {
+    let root = tempfile::tempdir().expect("epoch probe artifact root");
+    let outcome = adversarial::runner::run_program(11, FaultProfile::None, root.path())
+        .expect("emit adversarial program");
+    let emitted = std::str::from_utf8(&outcome.program_bytes).expect("program artifact is UTF-8");
+    let lines = emitted.lines().collect::<Vec<_>>();
+    let probe = lines
+        .iter()
+        .position(|line| line.contains("\"kind\":\"epoch_mismatch_probe\""))
+        .expect("emitted program contains the epoch probe");
+
+    assert!(
+        lines[..probe]
+            .iter()
+            .any(|line| line.contains("\"kind\":\"ingest\""))
+    );
+    assert!(lines[probe.saturating_add(1)..].iter().any(|line| {
+        line.contains("\"kind\":\"upsert\"") || line.contains("\"kind\":\"revise\"")
+    }));
 }
 
 #[test]

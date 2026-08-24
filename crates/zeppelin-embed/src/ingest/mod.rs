@@ -149,6 +149,7 @@ impl IngestDocument {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IngestBatch {
     documents: Vec<IngestDocument>,
+    epoch: Option<crate::epoch::EpochIdentity>,
 }
 
 /// One atomic caller batch of stable document ids to tombstone.
@@ -175,7 +176,17 @@ impl IngestBatch {
     /// Takes ownership of the upserts in caller order.
     #[must_use]
     pub const fn new(documents: Vec<IngestDocument>) -> Self {
-        Self { documents }
+        Self {
+            documents,
+            epoch: None,
+        }
+    }
+
+    /// Declares the interpretation identity that produced every vector.
+    #[must_use]
+    pub const fn with_epoch(mut self, epoch: crate::epoch::EpochIdentity) -> Self {
+        self.epoch = Some(epoch);
+        self
     }
 
     /// Returns the ordered document upserts.
@@ -213,6 +224,12 @@ pub enum IngestError {
     Store(StoreError),
     /// The caller supplied no document mutation.
     EmptyBatch,
+    /// The batch's declared interpretation differs from the store identity.
+    EpochMismatch(crate::epoch::EpochMismatch),
+    /// The store is stamped but the batch did not declare its identity.
+    EpochUndeclared,
+    /// The batch declared an identity for an unstamped store.
+    EpochUnstamped,
     /// The attempted revision precedes the highest active or sealed revision.
     StaleRevision {
         /// Document whose history would have moved backward.
@@ -233,6 +250,11 @@ impl std::fmt::Display for IngestError {
         match self {
             Self::Store(error) => error.fmt(formatter),
             Self::EmptyBatch => formatter.write_str("ingest batch is empty"),
+            Self::EpochMismatch(error) => error.fmt(formatter),
+            Self::EpochUndeclared => formatter.write_str("ingest epoch is required by this store"),
+            Self::EpochUnstamped => {
+                formatter.write_str("an unstamped store cannot accept an epoch declaration")
+            }
             Self::StaleRevision {
                 doc_id,
                 current,
@@ -254,9 +276,13 @@ impl std::error::Error for IngestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(error) => Some(error),
+            Self::EpochMismatch(error) => Some(error),
             Self::Vector(error) => Some(error),
             Self::Payload(error) => Some(error),
-            Self::EmptyBatch | Self::StaleRevision { .. } => None,
+            Self::EmptyBatch
+            | Self::EpochUndeclared
+            | Self::EpochUnstamped
+            | Self::StaleRevision { .. } => None,
         }
     }
 }
@@ -392,6 +418,8 @@ pub struct SearchOutcome {
     pub graph_stats: GraphSearchStats,
     /// Pinned active-state generation searched by this request.
     pub generation: u64,
+    /// Embedding and tokenizer identity that interpreted this query.
+    pub epoch: Option<crate::epoch::EpochIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -440,6 +468,17 @@ impl Store {
             StoreState::Open => {}
             StoreState::Closing => return Err(StoreError::Closing.into()),
             StoreState::Closed => return Err(StoreError::Closed.into()),
+        }
+        match (self.epoch_identity(), batch.epoch) {
+            (Some(expected), Some(declared)) if expected != declared => {
+                return Err(IngestError::EpochMismatch(crate::epoch::EpochMismatch {
+                    expected,
+                    declared,
+                }));
+            }
+            (Some(_), None) => return Err(IngestError::EpochUndeclared),
+            (None, Some(_)) => return Err(IngestError::EpochUnstamped),
+            (Some(_), Some(_)) | (None, None) => {}
         }
         if batch.documents.is_empty() {
             return Err(IngestError::EmptyBatch);
@@ -571,7 +610,7 @@ impl Store {
         }
         let seq = LogSeq::new(sequences.end.get().saturating_sub(1));
         let committed = prepared
-            .map(|prepared| prepared.commit(&StdVfs, &self.directory, self.durability_policy))
+            .map(|prepared| prepared.commit(self, &StdVfs, &self.directory, self.durability_policy))
             .transpose()?;
         let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
             let mut published = self
@@ -678,7 +717,7 @@ impl Store {
             next.set_sequence(row, seq)?;
         }
         let committed = prepared
-            .map(|prepared| prepared.commit(&StdVfs, &self.directory, self.durability_policy))
+            .map(|prepared| prepared.commit(self, &StdVfs, &self.directory, self.durability_policy))
             .transpose()?;
         let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
             let mut published = self
