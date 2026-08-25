@@ -657,6 +657,7 @@ pub struct Store {
     pub(crate) accounting: Arc<stats::Accounting>,
     pub(crate) active_queries: AtomicU64,
     pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
+    pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) schema: crate::meta::Schema,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
@@ -829,6 +830,7 @@ impl Store {
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             active_queries: AtomicU64::new(0),
+            epoch_alias: crate::epoch::EpochAliasCell::new(persisted_epoch.or(declared_epoch)),
             epoch: options.epoch,
             schema,
             #[cfg(test)]
@@ -866,7 +868,7 @@ impl Store {
     }
 
     pub(crate) fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
-        self.epoch.as_ref().map(crate::epoch::StoreEpoch::identity)
+        self.epoch_alias.load()
     }
 
     /// Returns the current explicit lifecycle state.

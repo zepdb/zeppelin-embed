@@ -32,6 +32,13 @@ pub struct ExpectedHit {
     pub score: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModelEpoch {
+    #[default]
+    A,
+    B,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
     live: BTreeMap<u32, ModelDoc>,
@@ -40,9 +47,53 @@ pub struct Model {
     dropped: BTreeSet<u32>,
     active: BTreeSet<u32>,
     segments: Vec<ModelSegment>,
+    published_epoch: ModelEpoch,
+    epoch_b_prepared: bool,
+    epoch_a_dropped: bool,
 }
 
 impl Model {
+    pub fn prepare_epoch_b(&mut self) {
+        self.epoch_b_prepared = true;
+    }
+
+    pub fn switch_epoch(&mut self, epoch: ModelEpoch) -> bool {
+        let available = match epoch {
+            ModelEpoch::A => !self.epoch_a_dropped,
+            ModelEpoch::B => self.epoch_b_prepared,
+        };
+        if available {
+            self.published_epoch = epoch;
+        }
+        available
+    }
+
+    pub fn drop_epoch_a(&mut self) -> bool {
+        if self.published_epoch == ModelEpoch::A || self.epoch_a_dropped {
+            return false;
+        }
+        self.epoch_a_dropped = true;
+        true
+    }
+
+    #[must_use]
+    pub const fn published_epoch(&self) -> ModelEpoch {
+        self.published_epoch
+    }
+
+    #[must_use]
+    pub const fn epoch_b_prepared(&self) -> bool {
+        self.epoch_b_prepared
+    }
+
+    #[must_use]
+    pub fn live_documents(&self) -> Vec<(u32, u64, i64)> {
+        self.live
+            .iter()
+            .map(|(doc_id, document)| (*doc_id, document.revision, document.timestamp))
+            .collect()
+    }
+
     pub fn acknowledge(&mut self, doc_id: u32, revision: u64, timestamp: i64) {
         self.deleted.remove(&doc_id);
         self.purged.remove(&doc_id);

@@ -563,7 +563,7 @@ impl crate::lifecycle::Store {
                 stage: "snapshot",
                 detail: crate::lifecycle::StoreError::Closed.to_string(),
             })?;
-        for segment in snapshot.segments() {
+        for segment in snapshot.all_segments() {
             let rows = segment.meta().row_count as usize;
             let dims = segment.meta().dims as usize;
             let vectors = segment.rescore_f32().map_err(|error| SelfCheckFailure {
@@ -707,7 +707,7 @@ impl crate::lifecycle::Store {
             .as_ref()
             .cloned()
             .ok_or(crate::lifecycle::StoreError::Closed)?;
-        for segment in snapshot.segments() {
+        for segment in snapshot.all_segments() {
             let alive = segment
                 .alive()
                 .map_err(crate::lifecycle::StoreError::Segment)?;

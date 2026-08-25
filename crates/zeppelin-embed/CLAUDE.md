@@ -487,6 +487,26 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   explicitly opened or rejected, give every new region its own frozen golden,
   and record the change here.
 
+## Task 21 D6/D9 epoch-transition invariants
+
+- `Embedder::embed` returns either one complete owned vector or a typed
+  `EmbedderError`; delegate failure and timeout are distinct variants, and no
+  partial output buffer crosses the seam.
+- Alias switch, rollback, and `drop_epoch` require an empty active segment and
+  `Manifest.log_seq == WalWriter::durable_end()`. They never infer ownership of
+  unabsorbed WAL records.
+- Alias switch compares the target epoch's complete live document/revision
+  multiset with the published epoch before commit; missing, unexpected, or
+  duplicate target rows are a typed `IncompleteEpoch` rejection.
+- A published snapshot keeps every epoch's segment mapping alive for exact
+  accounting, health checks, and physical purge, but its public query segment
+  set contains only the atomically published alias. The current response epoch
+  changes with that same manifest publication.
+- `drop_epoch` refuses the published alias, commits a manifest omitting the old
+  epoch's segments, publishes that snapshot, and only then unlinks their files.
+  Registry history remains, but an alias target without retained segments is a
+  typed `EpochUnavailable` error, so rollback after drop cannot succeed.
+
 ## Task 17 Part B text and typed-column ingest invariants
 
 - New document upserts use WAL operation id 7 only. Its payload begins with a

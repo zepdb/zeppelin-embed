@@ -56,6 +56,13 @@ fn self_test_diagnostics_lie_trips_i13() {
 }
 
 #[test]
+fn self_test_mixed_alias_segments_trip_i14() {
+    let violation = adversarial::runner::planted_counterexample(Invariant::I14);
+    assert_eq!(violation.invariant, Invariant::I14);
+    println!("{}", violation.report());
+}
+
+#[test]
 fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
     for invariant in [
         Invariant::I1,
@@ -71,6 +78,7 @@ fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
         Invariant::I11,
         Invariant::I12,
         Invariant::I13,
+        Invariant::I14,
     ] {
         let violation = adversarial::runner::planted_counterexample(invariant);
         assert_eq!(violation.invariant, invariant);
@@ -163,6 +171,39 @@ fn the_emitted_sweep_program_interleaves_an_epoch_mismatch_probe_with_real_write
     assert!(lines[probe.saturating_add(1)..].iter().any(|line| {
         line.contains("\"kind\":\"upsert\"") || line.contains("\"kind\":\"revise\"")
     }));
+}
+
+#[test]
+fn an_emitted_program_executes_alias_switch_rollback_drop_and_typed_rejection() {
+    let root = tempfile::tempdir().expect("epoch-transition artifact root");
+    let outcome = adversarial::runner::run_program(11, FaultProfile::None, root.path())
+        .expect("execute emitted epoch-transition program");
+    assert!(
+        outcome.violations.is_empty(),
+        "epoch-transition program found violations: {:?}",
+        outcome.violations
+    );
+    assert_eq!(outcome.epoch_preparations, 1);
+    assert_eq!(outcome.epoch_alias_switches, 2);
+    assert_eq!(outcome.epoch_rollbacks, 1);
+    assert_eq!(outcome.epoch_drops, 1);
+    assert_eq!(outcome.rejected_dropped_epoch_rollbacks, 1);
+
+    let emitted = std::str::from_utf8(&outcome.program_bytes).expect("program artifact is UTF-8");
+    for operation in [
+        "prepare_epoch_b",
+        "switch_alias_to_b",
+        "rollback_to_a",
+        "drop_epoch_a",
+        "rollback_dropped_a_probe",
+    ] {
+        assert!(
+            emitted
+                .lines()
+                .any(|line| line.contains(&format!("\"kind\":\"{operation}\""))),
+            "executed artifact omitted {operation}"
+        );
+    }
 }
 
 #[test]
