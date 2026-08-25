@@ -35,6 +35,14 @@ cargo test -p zeppelin-embed-workspace-tests \
     -- --ignored --exact
 if [[ "$(uname -s)" == "Darwin" ]]; then
     cargo run -p zeppelin-embed-bench --bin platform-truth -- --smoke
+    # BL-023: all Task-03 hot kernels carry evidence-derived roofline floors,
+    # and equal-dimension float/i8 ratios automate the physical-byte sanity check.
+    cargo run --profile bench -p zeppelin-embed-bench --bin kernel-roofline-gate
+    # BL-101/BL-103: the traversal-relevant DRAM pair stays visible, and every
+    # result is a median across independent processes with its between-process spread.
+    cargo build --profile bench -p zeppelin-embed-bench \
+        --bin gather-kernel --bin graph-search --bin platform-truth --bin dram-process-audit
+    "${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/release/dram-process-audit" --processes 5
 fi
 cargo run -p zeppelin-embed-bench --bin wal-throughput -- --smoke
 "$SCRIPT_DIR/coverage.sh"

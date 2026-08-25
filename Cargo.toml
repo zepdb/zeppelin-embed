@@ -5,7 +5,7 @@ members = [
     "crates/zeppelin-embed-bench",
     "tests",
 ]
-exclude = ["fuzz", "tools/fuzz-dispatch"]
+exclude = ["fuzz", "tools/fuzz-dispatch", "tools/size-consumer"]
 resolver = "2"
 
 [workspace.package]

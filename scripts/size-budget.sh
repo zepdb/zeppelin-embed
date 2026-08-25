@@ -76,3 +76,36 @@ measure_artifact() {
 
 measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
 measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"
+
+CONSUMER_MANIFEST="$PROJECT_ROOT/tools/size-consumer/Cargo.toml"
+CONSUMER_TARGET="$MEASURE_DIR/consumer-target"
+cargo build --offline --locked --release --manifest-path "$CONSUMER_MANIFEST" --target-dir "$CONSUMER_TARGET"
+CONSUMER_BINARY="$CONSUMER_TARGET/release/zeppelin-embed-size-consumer"
+CONSUMER_STRIPPED="$MEASURE_DIR/zeppelin-embed-size-consumer-stripped"
+if [[ ! -f "$CONSUMER_BINARY" ]]; then
+    echo "error: expected minimal consumer binary not found at $CONSUMER_BINARY" >&2
+    exit 2
+fi
+cp "$CONSUMER_BINARY" "$CONSUMER_STRIPPED"
+case "$(uname -s)" in
+    Darwin)
+        strip -S -x "$CONSUMER_STRIPPED"
+        CONSUMER_SIZE_BYTES="$(size -m "$CONSUMER_STRIPPED" | awk '
+            /^[[:space:]]*Section / && $0 !~ /\(__LLVM,/ {
+                bytes = ($NF == "(zerofill)") ? $(NF - 1) : $NF
+                total += bytes
+            }
+            END { print total + 0 }
+        ')"
+        ;;
+    Linux)
+        strip --strip-unneeded "$CONSUMER_STRIPPED"
+        CONSUMER_SIZE_BYTES="$(size -A "$CONSUMER_STRIPPED" | awk '
+            $1 ~ /^\./ && $1 !~ /^\.llvm/ { total += $2 }
+            END { print total + 0 }
+        ')"
+        ;;
+esac
+CONSUMER_SIZE_KB="$(( (CONSUMER_SIZE_BYTES + 1023) / 1024 ))"
+CONSUMER_FILE_KB="$(du -k "$CONSUMER_STRIPPED" | awk '{print $1}')"
+echo "minimal zeppelin-embed consumer stripped linked size: $CONSUMER_SIZE_KB KB (file: $CONSUMER_FILE_KB KB; reported only; no budget introduced)"

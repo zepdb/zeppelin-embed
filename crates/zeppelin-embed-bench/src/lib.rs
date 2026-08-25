@@ -7,6 +7,8 @@ pub mod beir;
 pub mod frontier;
 /// Recall-only flat-Vamana construction and measurement scaffold for M3.
 pub mod graph_recall;
+/// Task-03 hot-kernel roofline and cross-kernel regression contracts.
+pub mod kernel_gate;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;
