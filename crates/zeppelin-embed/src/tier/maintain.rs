@@ -36,12 +36,30 @@ pub struct MaintenanceBudget {
 /// Why one maintenance call stopped.
 #[derive(Debug)]
 pub enum MaintenanceStatus {
-    /// Every transition considered by this call is complete or not due.
+    /// Every non-deferred transition considered by this call is complete or not due.
     Complete,
     /// Work remains for a later call because this call spent its budget.
     BudgetExhausted,
-    /// A typed failure prevented a transition from being published.
+    /// A typed failure prevented maintenance from continuing.
     Failed(MaintenanceError),
+}
+
+/// One segment promotion refused because its source regions would not survive the rewrite.
+#[derive(Debug, Eq, PartialEq)]
+pub struct MaintenanceDeferral {
+    /// Immutable source segment that was left unchanged.
+    pub segment_id: SegmentId,
+    /// Every source region the current graph rewrite cannot carry forward.
+    pub uncarried_regions: Vec<UncarriedRegionKind>,
+}
+
+/// A source region kind the current graph rewrite cannot carry forward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UncarriedRegionKind {
+    /// A known or reserved region kind.
+    Known(RegionKind),
+    /// A forward-compatible region kind unknown to this engine version.
+    Unknown(u16),
 }
 
 /// Typed maintenance failure retained in [`MaintenanceReport`].
@@ -94,6 +112,8 @@ pub struct MaintenanceReport {
     pub bytes_consumed: u64,
     /// Checkpointed graph builds resumed by this call.
     pub checkpoints_resumed: u64,
+    /// Due promotions refused because their source regions would not survive the rewrite.
+    pub promotion_deferrals: Vec<MaintenanceDeferral>,
     /// Final disposition of the call.
     pub status: MaintenanceStatus,
 }
@@ -127,6 +147,7 @@ impl Store {
                 graphs_built: 0,
                 bytes_consumed: 0,
                 checkpoints_resumed: 0,
+                promotion_deferrals: Vec::new(),
                 status: MaintenanceStatus::Failed(error),
             },
         };
@@ -135,6 +156,7 @@ impl Store {
                 graphs_built: report.graphs_built,
                 bytes_consumed: report.bytes_consumed,
                 checkpoints_resumed: report.checkpoints_resumed,
+                promotion_deferrals: report.promotion_deferrals,
                 status: MaintenanceStatus::Failed(MaintenanceError::Store(error)),
             };
         }
@@ -152,6 +174,7 @@ fn maintain_one(
             graphs_built: 0,
             bytes_consumed: 0,
             checkpoints_resumed: 0,
+            promotion_deferrals: Vec::new(),
             status: MaintenanceStatus::BudgetExhausted,
         });
     }
@@ -177,6 +200,7 @@ fn maintain_one(
             graphs_built: 0,
             bytes_consumed: 0,
             checkpoints_resumed: 0,
+            promotion_deferrals: Vec::new(),
             status: MaintenanceStatus::BudgetExhausted,
         });
     }
@@ -191,6 +215,7 @@ fn maintain_one(
         graphs_built: 0,
         bytes_consumed: 0,
         checkpoints_resumed: 0,
+        promotion_deferrals: Vec::new(),
         status: MaintenanceStatus::Complete,
     };
     for segment in lease
@@ -198,6 +223,10 @@ fn maintain_one(
         .iter()
         .filter(|segment| transition_due(segment, thresholds))
     {
+        if let Some(deferral) = promotion_deferral(segment) {
+            report.promotion_deferrals.push(deferral);
+            continue;
+        }
         let remaining_bytes = budget.bytes.saturating_sub(report.bytes_consumed);
         let stride = graph_work_stride(segment)?;
         let maximum_rows = remaining_bytes / stride;
@@ -274,6 +303,39 @@ fn maintain_one(
         }
     }
     Ok(report)
+}
+
+fn promotion_deferral(segment: &SegmentReader) -> Option<MaintenanceDeferral> {
+    let uncarried_regions = segment
+        .directory()
+        .iter()
+        .filter(|entry| !graph_rewrite_carries_source_region(entry.kind))
+        .map(|entry| {
+            RegionKind::from_id(entry.kind).map_or(
+                UncarriedRegionKind::Unknown(entry.kind),
+                UncarriedRegionKind::Known,
+            )
+        })
+        .collect::<Vec<_>>();
+    (!uncarried_regions.is_empty()).then_some(MaintenanceDeferral {
+        segment_id: segment.meta().id,
+        uncarried_regions,
+    })
+}
+
+fn graph_rewrite_carries_source_region(kind: u16) -> bool {
+    matches!(
+        RegionKind::from_id(kind),
+        Some(
+            RegionKind::Columns
+                | RegionKind::Alive
+                | RegionKind::VectorCodes
+                | RegionKind::VectorFactors
+                | RegionKind::VectorRescore
+                | RegionKind::ChecksumTable
+                | RegionKind::DocumentVersions
+        )
+    )
 }
 
 fn transition_due(segment: &SegmentReader, thresholds: Option<TierThresholds>) -> bool {

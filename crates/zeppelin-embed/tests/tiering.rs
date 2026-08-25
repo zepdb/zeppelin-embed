@@ -14,7 +14,8 @@ use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::RegionKind;
-use zeppelin_embed::tier::{MaintenanceBudget, PROVISIONAL_TIER_THRESHOLDS};
+use zeppelin_embed::tier::maintain::UncarriedRegionKind;
+use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, PROVISIONAL_TIER_THRESHOLDS};
 
 const DIMS: usize = 1;
 const MAINTENANCE_TEST_BUDGET: Duration = Duration::from_secs(600);
@@ -75,6 +76,93 @@ fn has_graph(store: &Store) -> bool {
             .iter()
             .any(|entry| entry.kind == RegionKind::GraphNodeBlocks.id())
     })
+}
+
+#[test]
+fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
+    const METADATA: &[u8] = b"tier-maintenance-metadata";
+
+    let directory = tempdir().expect("guarded tiering directory");
+    let store =
+        Store::open(directory.path(), OpenOptions::default()).expect("open guarded tiering store");
+    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let documents = (0..rows)
+        .map(|row| {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vec![row as f32],
+            );
+            if row == 0 {
+                document
+                    .with_text("guarded lexical row")
+                    .with_metadata(METADATA.to_vec())
+            } else {
+                document
+            }
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest guarded fixture");
+    store.seal().expect("seal guarded fixture");
+
+    let report = store.maintain(MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    });
+
+    let snapshot = store.snapshot().expect("guarded snapshot");
+    let segment = snapshot.segments().first().expect("guarded sealed segment");
+    let postings = segment.postings().expect("read postings region");
+    assert!(
+        postings.is_some(),
+        "maintenance promotion dropped the postings region"
+    );
+    let metadata = segment.stored_metadata().expect("read metadata region");
+    assert!(
+        metadata.is_some(),
+        "maintenance promotion dropped the stored-metadata region"
+    );
+    assert_eq!(
+        metadata.and_then(|rows| rows.row(0)),
+        Some(METADATA),
+        "stored metadata changed while promotion was deferred"
+    );
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(report.promotion_deferrals.len(), 1);
+    let deferral = report
+        .promotion_deferrals
+        .first()
+        .expect("typed promotion deferral");
+    assert_eq!(deferral.segment_id, segment.meta().id);
+    assert_eq!(deferral.uncarried_regions.len(), 2);
+    assert!(
+        deferral
+            .uncarried_regions
+            .contains(&UncarriedRegionKind::Known(RegionKind::Postings))
+    );
+    assert!(
+        deferral
+            .uncarried_regions
+            .contains(&UncarriedRegionKind::Known(RegionKind::StoredMetadata))
+    );
+    assert_eq!(report.graphs_built, 0);
+    assert!(!has_graph(&store));
+}
+
+#[test]
+fn maintain_still_promotes_plain_vector_only_segments() {
+    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+
+    let report = fixture.store.maintain(MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    });
+
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert!(report.promotion_deferrals.is_empty());
+    assert_eq!(report.graphs_built, 1);
+    assert!(has_graph(&fixture.store));
 }
 
 #[test]
