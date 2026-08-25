@@ -336,8 +336,7 @@ fn expected_verified_segment_counts(
     full: u64,
 ) -> CounterSnapshot {
     let mut counts = expected_counts(bytes_written, barrier, full);
-    counts.read_calls = 1;
-    counts.read_bytes = bytes_written;
+    counts.open_calls = 1;
     counts
 }
 
