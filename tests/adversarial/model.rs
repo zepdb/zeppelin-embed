@@ -134,6 +134,27 @@ impl Model {
     }
 
     #[must_use]
+    pub fn expected_exact(&self, query: &[f32], k: usize) -> Vec<ExpectedHit> {
+        let mut hits = self
+            .live
+            .iter()
+            .map(|(&doc_id, doc)| ExpectedHit {
+                doc_id,
+                revision: doc.revision,
+                score: -squared_l2_f64(&doc.vector, query),
+            })
+            .collect::<Vec<_>>();
+        hits.sort_unstable_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
+    #[must_use]
     pub fn expected_scan(&self, query: &[f32], k: usize) -> Vec<ExpectedHit> {
         let prepared = prepare_bit4_query(query, 0).expect("closed-vocabulary scan query");
         let mut hits = self
@@ -251,6 +272,22 @@ impl Model {
     #[must_use]
     pub fn len(&self) -> usize {
         self.live.len()
+    }
+
+    #[must_use]
+    pub fn lexical_documents(&self) -> Vec<(u32, u64)> {
+        self.live
+            .iter()
+            .map(|(doc_id, document)| (*doc_id, document.revision))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn sealed_document_count(&self) -> usize {
+        self.live
+            .values()
+            .filter(|document| matches!(document.location, Location::Sealed(_)))
+            .count()
     }
 
     #[must_use]

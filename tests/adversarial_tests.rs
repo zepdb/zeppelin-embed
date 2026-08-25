@@ -182,6 +182,39 @@ fn an_emitted_program_executes_a_filtered_graph_query() {
 }
 
 #[test]
+fn an_emitted_hybrid_operation_fuses_sealed_vectors_and_lexical_content() {
+    let program = Program::generate(0);
+    let hybrid = program
+        .ops
+        .iter()
+        .position(|op| matches!(op, Op::HybridSearch { .. }))
+        .expect("the emitted program must contain a hybrid operation");
+    assert!(
+        program.ops[..hybrid]
+            .iter()
+            .any(|op| matches!(op, Op::Seal)),
+        "hybrid reachability must cross a seal boundary"
+    );
+    let artifacts = tempfile::tempdir().expect("hybrid artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, artifacts.path())
+        .expect("hybrid reachability program");
+    assert!(
+        outcome.violations.is_empty(),
+        "hybrid reachability found violations: {:?}",
+        outcome.violations
+    );
+    assert!(outcome.hybrid_searches > 0, "no hybrid operation executed");
+    assert!(
+        outcome.hybrid_sealed_vector_documents > 0,
+        "hybrid operation reached no sealed vector documents"
+    );
+    assert!(
+        outcome.hybrid_lexical_documents > 0,
+        "hybrid operation reached no lexical content"
+    );
+}
+
+#[test]
 fn smoke() {
     let root = artifact_root();
     let mut failures = Vec::new();
@@ -190,13 +223,16 @@ fn smoke() {
             let outcome = adversarial::runner::run_program(seed, profile, &root)
                 .unwrap_or_else(|error| panic!("seed={seed} profile={}: {error}", profile.key()));
             println!(
-                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} filtered_searches={} filtered_graph_searches={} violations={}",
+                "ADV seed={seed} profile={} ops={} faults={} graph_searches={} filtered_searches={} filtered_graph_searches={} hybrid_searches={} hybrid_sealed_vector_documents={} hybrid_lexical_documents={} violations={}",
                 profile.key(),
                 outcome.operations,
                 outcome.faults_fired,
                 outcome.graph_searches,
                 outcome.filtered_searches,
                 outcome.filtered_graph_searches,
+                outcome.hybrid_searches,
+                outcome.hybrid_sealed_vector_documents,
+                outcome.hybrid_lexical_documents,
                 outcome.violations.len()
             );
             for violation in outcome.violations {

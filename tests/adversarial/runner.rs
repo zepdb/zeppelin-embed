@@ -7,7 +7,12 @@ use tempfile::TempDir;
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EpochIdentity, Normalization, StoreEpoch,
 };
+use zeppelin_embed::fts::bm25::Bm25Params;
+use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+use zeppelin_embed::fts::search::{TermQuery, search as lexical_search};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::fts::tokenizer::{Analyzer, Profile};
+use zeppelin_embed::fusion::{HybridQuery, LexicalCandidate, VectorCandidate, fuse};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
@@ -144,6 +149,9 @@ pub struct RunOutcome {
     pub graph_searches: usize,
     pub filtered_searches: usize,
     pub filtered_graph_searches: usize,
+    pub hybrid_searches: usize,
+    pub hybrid_sealed_vector_documents: usize,
+    pub hybrid_lexical_documents: usize,
     pub violations: Vec<Violation>,
     pub program_bytes: Vec<u8>,
     pub faults_bytes: Vec<u8>,
@@ -818,6 +826,9 @@ pub fn run_program(
     let mut graph_searches = 0_usize;
     let mut filtered_searches = 0_usize;
     let mut filtered_graph_searches = 0_usize;
+    let mut hybrid_searches = 0_usize;
+    let mut hybrid_sealed_vector_documents = 0_usize;
+    let mut hybrid_lexical_documents = 0_usize;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         let operation_result = match op {
@@ -951,6 +962,28 @@ pub fn run_program(
                         None
                     })
             }
+            Op::HybridSearch { query, k } => {
+                let requested = if *k == usize::MAX { model.len() } else { *k };
+                run_hybrid_search(&mut engine, &model, *query, requested, seed).map(|check| {
+                    if let Some(check) = check {
+                        hybrid_searches = hybrid_searches.saturating_add(1);
+                        hybrid_sealed_vector_documents = hybrid_sealed_vector_documents
+                            .saturating_add(check.sealed_vector_documents);
+                        hybrid_lexical_documents =
+                            hybrid_lexical_documents.saturating_add(check.lexical_documents);
+                        if let Some(detail) = check.mismatch {
+                            violations.push(violation(
+                                Invariant::I3,
+                                seed,
+                                profile,
+                                op_index,
+                                detail,
+                            ));
+                        }
+                    }
+                    None
+                })
+            }
             Op::Stats => engine.stats().map(|stats| {
                 if let Some(violation) = stats_violation(seed, profile, op_index, stats) {
                     violations.push(violation);
@@ -1062,6 +1095,7 @@ pub fn run_program(
                         Op::EpochMismatchProbe { .. } => Invariant::I12,
                         Op::Crash { .. } => Invariant::I4,
                         Op::Stats => Invariant::I6,
+                        Op::HybridSearch { .. } => Invariant::I3,
                         _ if content_fault_fired => Invariant::I7,
                         _ => Invariant::I1,
                     };
@@ -1088,11 +1122,121 @@ pub fn run_program(
         graph_searches,
         filtered_searches,
         filtered_graph_searches,
+        hybrid_searches,
+        hybrid_sealed_vector_documents,
+        hybrid_lexical_documents,
         violations,
         program_bytes,
         faults_bytes,
         violations_bytes,
     })
+}
+
+struct HybridCheck {
+    sealed_vector_documents: usize,
+    lexical_documents: usize,
+    mismatch: Option<String>,
+}
+
+fn run_hybrid_search(
+    engine: &mut dyn Engine,
+    model: &Model,
+    query_slot: u8,
+    k: usize,
+    seed: u64,
+) -> Result<Option<HybridCheck>, String> {
+    let sealed_vector_documents = model.sealed_document_count();
+    if sealed_vector_documents == 0 || model.is_empty() {
+        return Ok(None);
+    }
+    let query_vector = program::query(query_slot);
+    let observed = engine.search(&query_vector, model.len(), SearchKind::Auto, seed)?;
+    if !observed.graph_available {
+        return Ok(None);
+    }
+
+    let lexical_rows = model.lexical_documents();
+    let analyzer = Analyzer::new(Profile::Code.config()).map_err(|error| error.to_string())?;
+    let mut segment = SegmentIndex::new();
+    for (doc_id, revision) in &lexical_rows {
+        segment
+            .push_document(
+                &analyzer,
+                &Document::with_text(&program::lexical_text(*doc_id, *revision)),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let mut lexical_index = LexicalIndex::new();
+    lexical_index
+        .push_segment(segment)
+        .map_err(|error| error.to_string())?;
+    let lexical_result = lexical_search(
+        &lexical_index,
+        &TermQuery::flat(
+            vec![program::lexical_query(query_slot).to_vec()],
+            &[DEFAULT_FIELD],
+        ),
+        model.len(),
+        Bm25Params::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let lexical = lexical_result
+        .hits
+        .iter()
+        .map(|hit| LexicalCandidate::new(hit.doc, hit.score))
+        .collect::<Vec<_>>();
+    let lexical_join = |doc: &zeppelin_embed::fts::search::GlobalDocId| {
+        usize::try_from(doc.row)
+            .ok()
+            .and_then(|row| lexical_rows.get(row))
+            .map(|(doc_id, _)| *doc_id)
+    };
+
+    let actual_vector = observed
+        .hits
+        .iter()
+        .map(|hit| VectorCandidate::exact(hit.doc_id, -f64::from(hit.score)))
+        .collect::<Vec<_>>();
+    let expected_vector = model
+        .expected_exact(&query_vector, model.len())
+        .into_iter()
+        .map(|hit| VectorCandidate::exact(hit.doc_id, -f64::from(hit.score)))
+        .collect::<Vec<_>>();
+    let fusion_query = HybridQuery::new(k).with_epoch(declared_identity());
+    let actual = fuse(
+        &fusion_query,
+        &actual_vector,
+        &lexical,
+        |doc_id| Some(*doc_id),
+        lexical_join,
+    )
+    .map_err(|error| error.to_string())?;
+    let expected = fuse(
+        &fusion_query,
+        &expected_vector,
+        &lexical,
+        |doc_id| Some(*doc_id),
+        lexical_join,
+    )
+    .map_err(|error| error.to_string())?;
+    let mismatch = if actual != expected {
+        Some(format!(
+            "hybrid exact result mismatch: model={:?} engine={:?}",
+            expected.hits, actual.hits
+        ))
+    } else if actual.report.epoch != Some(declared_identity()) {
+        Some(format!(
+            "hybrid report epoch {:?} did not name the declared store epoch",
+            actual.report.epoch
+        ))
+    } else {
+        None
+    };
+    Ok(Some(HybridCheck {
+        sealed_vector_documents,
+        lexical_documents: lexical_rows.len(),
+        mismatch,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]

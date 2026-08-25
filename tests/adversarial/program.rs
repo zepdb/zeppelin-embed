@@ -73,6 +73,10 @@ pub enum Op {
         k: usize,
         maximum_timestamp: i64,
     },
+    HybridSearch {
+        query: u8,
+        k: usize,
+    },
     Stats,
     Close,
     Reopen,
@@ -99,6 +103,7 @@ impl Op {
             Self::Maintain { .. } => "maintain",
             Self::Search { .. } => "search",
             Self::FilteredSearch { .. } => "filtered_search",
+            Self::HybridSearch { .. } => "hybrid_search",
             Self::Stats => "stats",
             Self::Close => "close",
             Self::Reopen => "reopen",
@@ -164,6 +169,9 @@ impl Op {
             } => format!(
                 "{{\"op\":{index},\"kind\":\"filtered_search\",\"query\":{query},\"k\":{k},\"maximum_timestamp\":{maximum_timestamp}}}"
             ),
+            Self::HybridSearch { query, k } => {
+                format!("{{\"op\":{index},\"kind\":\"hybrid_search\",\"query\":{query},\"k\":{k}}}")
+            }
         }
     }
 }
@@ -254,6 +262,7 @@ impl Program {
             },
             Op::Seal,
             Op::Maintain { bytes: u64::MAX },
+            Op::HybridSearch { query: 1, k: 8 },
             Op::Search {
                 query: 1,
                 k: 8,
@@ -392,6 +401,30 @@ pub const fn query(slot: u8) -> [f32; DIMENSIONS] {
         2 => [128.0, 4.0, 2.0, 1.0],
         _ => [256.0, 6.0, 3.0, 1.5],
     }
+}
+
+#[must_use]
+pub const fn lexical_query(slot: u8) -> &'static [u8] {
+    match slot % 4 {
+        0 => b"alpha",
+        1 => b"bravo",
+        2 => b"charlie",
+        _ => b"delta",
+    }
+}
+
+#[must_use]
+pub fn lexical_text(doc_id: u32, revision: u64) -> String {
+    let term = match doc_id % 4 {
+        0 => "alpha",
+        1 => "bravo",
+        2 => "charlie",
+        _ => "delta",
+    };
+    let repeats = doc_id % 3 + 1;
+    let mut text = (0..repeats).map(|_| term).collect::<Vec<_>>().join(" ");
+    text.push_str(&format!(" common ze-{doc_id:08x}-r{revision}"));
+    text
 }
 
 #[must_use]
