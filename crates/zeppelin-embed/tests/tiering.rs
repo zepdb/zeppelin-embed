@@ -7,7 +7,11 @@ use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
 use xxhash_rust::xxh3::xxh3_64;
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
 use zeppelin_embed::format::frame::{FILE_HEADER_LEN, FILE_TRAILER_LEN};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{
     DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
@@ -18,9 +22,12 @@ use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, RegionKind, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::tier::maintain::UncarriedRegionKind;
-use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, PROVISIONAL_TIER_THRESHOLDS};
+use zeppelin_embed::tier::{
+    MaintenanceBudget, MaintenanceReport, MaintenanceStatus, TierThresholds,
+};
 
-const DIMS: usize = 1;
+const DIMS: usize = 128;
+const GRAPH_TEST_ROWS: usize = 128;
 const MAINTENANCE_TEST_BUDGET: Duration = Duration::from_secs(600);
 const UNKNOWN_REGION_KIND: u16 = 65_000;
 const DIRECTORY_START: usize = FILE_HEADER_LEN + SEGMENT_PREFIX_LEN;
@@ -43,11 +50,17 @@ fn columns(rows: usize) -> ColumnStore {
 
 fn sealed_fixture(rows: usize) -> SealedFixture {
     let directory = tempdir().expect("tiering store directory");
-    let store = Store::open(directory.path(), OpenOptions::default()).expect("open tiering store");
-    let vectors = (0..rows).map(|row| row as f32).collect::<Vec<_>>();
-    let mut codes = vec![0_u8; rows];
+    let store = open_sift_store(directory.path(), "open tiering store");
+    let vectors = (0..rows)
+        .flat_map(|row| fixture_vector(row as f32))
+        .collect::<Vec<_>>();
+    let row_bytes = DIMS.div_ceil(2);
+    let mut codes = vec![0_u8; rows * row_bytes];
     let mut factors = Vec::<Bit4Factors>::with_capacity(rows);
-    for (vector, encoded) in vectors.chunks_exact(DIMS).zip(codes.chunks_exact_mut(1)) {
+    for (vector, encoded) in vectors
+        .chunks_exact(DIMS)
+        .zip(codes.chunks_exact_mut(row_bytes))
+    {
         factors.push(quantize_bit4(vector, encoded).expect("finite fixture vector"));
     }
     let columns = columns(rows);
@@ -71,6 +84,55 @@ fn sealed_fixture(rows: usize) -> SealedFixture {
         _directory: directory,
         store,
     }
+}
+
+fn sift_epoch() -> StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "tiering-sift-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0x16],
+        dims: DIMS as u32,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
+fn open_sift_store(path: &std::path::Path, context: &str) -> Store {
+    Store::open(path, OpenOptions::default().with_epoch(sift_epoch()))
+        .unwrap_or_else(|error| panic!("{context}: {error}"))
+}
+
+fn fixture_vector(amplitude: f32) -> Vec<f32> {
+    (0..DIMS)
+        .map(|dimension| {
+            if dimension.is_multiple_of(2) {
+                amplitude
+            } else {
+                -amplitude
+            }
+        })
+        .collect()
+}
+
+fn maintain_test(store: &Store, budget: MaintenanceBudget) -> MaintenanceReport {
+    store.maintain_with_test_thresholds(
+        budget,
+        TierThresholds {
+            graph_min_rows: GRAPH_TEST_ROWS as u32,
+        },
+    )
 }
 
 fn has_graph(store: &Store) -> bool {
@@ -158,14 +220,13 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
     const METADATA: &[u8] = b"tier-maintenance-metadata";
 
     let directory = tempdir().expect("guarded tiering directory");
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).expect("open guarded tiering store");
-    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let store = open_sift_store(directory.path(), "open guarded tiering store");
+    let rows = GRAPH_TEST_ROWS;
     let documents = (0..rows)
         .map(|row| {
             let document = IngestDocument::new(
                 DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
-                vec![row as f32],
+                fixture_vector(row as f32),
             );
             if row == 0 {
                 document.with_metadata(METADATA.to_vec())
@@ -175,7 +236,7 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
         })
         .collect::<Vec<_>>();
     store
-        .ingest(IngestBatch::new(documents))
+        .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
         .expect("ingest guarded fixture");
     store.seal().expect("seal guarded fixture");
     let source_id = store
@@ -195,8 +256,7 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
         RegionKind::GraphColocatedCodes.id(),
     );
     fs::write(&source_path, source_bytes).expect("write guarded source bytes");
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .expect("reopen guarded tiering store");
+    let store = open_sift_store(directory.path(), "reopen guarded tiering store");
     store
         .snapshot()
         .expect("guarded source snapshot")
@@ -206,10 +266,13 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
         .validate_all()
         .expect("valid guarded source segment");
 
-    let report = store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     let snapshot = store.snapshot().expect("guarded snapshot");
     let segment = snapshot.segments().first().expect("guarded sealed segment");
@@ -234,14 +297,13 @@ fn graph_promotion_preserves_stored_metadata_and_postings() {
     const METADATA: &[u8] = b"promoted-tier-metadata";
 
     let directory = tempdir().expect("promotion preservation directory");
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .expect("open promotion preservation store");
-    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let store = open_sift_store(directory.path(), "open promotion preservation store");
+    let rows = GRAPH_TEST_ROWS;
     let documents = (0..rows)
         .map(|row| {
             let document = IngestDocument::new(
                 DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
-                vec![row as f32],
+                fixture_vector(row as f32),
             );
             if row == 0 {
                 document
@@ -253,7 +315,7 @@ fn graph_promotion_preserves_stored_metadata_and_postings() {
         })
         .collect::<Vec<_>>();
     store
-        .ingest(IngestBatch::new(documents))
+        .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
         .expect("ingest promotion preservation fixture");
     store.seal().expect("seal promotion preservation fixture");
 
@@ -270,10 +332,13 @@ fn graph_promotion_preserves_stored_metadata_and_postings() {
         .to_vec();
     drop(source);
 
-    let report = store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert_eq!(
@@ -315,14 +380,13 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
     const UNKNOWN_BYTES: &[u8] = b"unknown promotion payload";
 
     let directory = tempdir().expect("unknown promotion directory");
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .expect("open unknown promotion store");
-    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let store = open_sift_store(directory.path(), "open unknown promotion store");
+    let rows = GRAPH_TEST_ROWS;
     let documents = (0..rows)
         .map(|row| {
             let document = IngestDocument::new(
                 DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
-                vec![row as f32],
+                fixture_vector(row as f32),
             );
             if row == 0 {
                 document.with_metadata(UNKNOWN_BYTES.to_vec())
@@ -332,7 +396,7 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
         })
         .collect::<Vec<_>>();
     store
-        .ingest(IngestBatch::new(documents))
+        .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
         .expect("ingest unknown promotion fixture");
     store.seal().expect("seal unknown promotion fixture");
     let source_id = store
@@ -356,8 +420,7 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
     let version_before = region_version(&source_bytes, UNKNOWN_REGION_KIND);
     fs::write(&source_path, source_bytes).expect("write unknown-region fixture");
 
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .expect("reopen unknown promotion store");
+    let store = open_sift_store(directory.path(), "reopen unknown promotion store");
     store
         .snapshot()
         .expect("unknown source snapshot")
@@ -366,10 +429,13 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
         .expect("unknown source segment")
         .validate_all()
         .expect("valid unknown source segment");
-    let report = store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert_eq!(
@@ -398,12 +464,15 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
 
 #[test]
 fn maintain_still_promotes_plain_vector_only_segments() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
 
-    let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert!(report.promotion_deferrals.is_empty());
@@ -413,7 +482,7 @@ fn maintain_still_promotes_plain_vector_only_segments() {
 
 #[test]
 fn publish_transition_unlinks_the_replaced_segment() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
     let source = fixture
         .store
         .snapshot()
@@ -426,10 +495,13 @@ fn publish_transition_unlinks_the_replaced_segment() {
     let source_path = fixture._directory.path().join(source.file_name());
     assert!(source_path.exists(), "source segment fixture is missing");
 
-    let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert_eq!(report.graphs_built, 1);
@@ -442,12 +514,15 @@ fn publish_transition_unlinks_the_replaced_segment() {
 
 #[test]
 fn maintain_builds_a_graph_for_a_sealed_segment_above_the_threshold() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
 
-    let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert_eq!(report.graphs_built, 1);
     assert!(has_graph(&fixture.store));
@@ -455,14 +530,14 @@ fn maintain_builds_a_graph_for_a_sealed_segment_above_the_threshold() {
 
 #[test]
 fn maintain_is_idempotent_and_a_second_call_does_no_work() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
     let budget = MaintenanceBudget {
         wall_time: MAINTENANCE_TEST_BUDGET,
         bytes: u64::MAX,
     };
 
-    let first = fixture.store.maintain(budget);
-    let second = fixture.store.maintain(budget);
+    let first = maintain_test(&fixture.store, budget);
+    let second = maintain_test(&fixture.store, budget);
 
     assert_eq!(first.graphs_built, 1);
     assert_eq!(second.graphs_built, 0);
@@ -470,23 +545,29 @@ fn maintain_is_idempotent_and_a_second_call_does_no_work() {
 
 #[test]
 fn maintain_respects_its_budget_and_resumes_interrupted_work() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
     let byte_budget = 256_u64 * 64;
 
-    let interrupted = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: byte_budget,
-    });
+    let interrupted = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: byte_budget,
+        },
+    );
 
     assert_eq!(interrupted.graphs_built, 0);
     assert!(interrupted.bytes_consumed > 0);
     assert!(interrupted.bytes_consumed <= byte_budget + byte_budget / 10);
     assert!(!has_graph(&fixture.store));
 
-    let resumed = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let resumed = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
 
     assert_eq!(resumed.checkpoints_resumed, 1);
     assert_eq!(resumed.graphs_built, 1);
@@ -495,17 +576,20 @@ fn maintain_respects_its_budget_and_resumes_interrupted_work() {
 
 #[test]
 fn store_search_uses_the_graph_automatically_after_maintain() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
-    let report = fixture.store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
+    let report = maintain_test(
+        &fixture.store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
     assert_eq!(report.graphs_built, 1);
 
     let outcome = fixture
         .store
         .search(
-            SearchRequest::new(&[0.0]),
+            SearchRequest::new(&[0.0_f32; DIMS]),
             1,
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
@@ -518,12 +602,12 @@ fn store_search_uses_the_graph_automatically_after_maintain() {
 
 #[test]
 fn store_search_scans_a_segment_that_has_not_been_transitioned_yet() {
-    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let fixture = sealed_fixture(GRAPH_TEST_ROWS);
 
     let outcome = fixture
         .store
         .search(
-            SearchRequest::new(&[0.0]),
+            SearchRequest::new(&[0.0_f32; DIMS]),
             1,
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
@@ -537,21 +621,19 @@ fn store_search_scans_a_segment_that_has_not_been_transitioned_yet() {
 #[test]
 fn queries_never_error_or_miss_acked_docs_during_maintain() {
     let directory = tempdir().expect("concurrent tiering directory");
-    let store = Arc::new(
-        Store::open(directory.path(), OpenOptions::default()).expect("open concurrent store"),
-    );
-    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let store = Arc::new(open_sift_store(directory.path(), "open concurrent store"));
+    let rows = GRAPH_TEST_ROWS;
     let documents = (0..rows)
         .map(|row| {
             let amplitude = row as f32 + 1.0;
             IngestDocument::new(
                 DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
-                vec![amplitude, -amplitude],
+                fixture_vector(amplitude),
             )
         })
         .collect::<Vec<_>>();
     store
-        .ingest(IngestBatch::new(documents))
+        .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
         .expect("acknowledge concurrent fixture");
     store.seal().expect("seal concurrent fixture");
 
@@ -572,7 +654,7 @@ fn queries_never_error_or_miss_acked_docs_during_maintain() {
             seed ^= seed << 17;
             let offset = usize::try_from(seed % 128).map_err(|_| "seed row overflow".to_owned())?;
             let amplitude = rows as f32 + offset as f32;
-            let query = [amplitude, -amplitude];
+            let query = fixture_vector(amplitude);
             let outcome = query_store
                 .search(
                     SearchRequest::new(&query),
@@ -603,10 +685,13 @@ fn queries_never_error_or_miss_acked_docs_during_maintain() {
     });
 
     started.wait();
-    let report = store.maintain(MaintenanceBudget {
-        wall_time: MAINTENANCE_TEST_BUDGET,
-        bytes: u64::MAX,
-    });
+    let report = maintain_test(
+        &store,
+        MaintenanceBudget {
+            wall_time: MAINTENANCE_TEST_BUDGET,
+            bytes: u64::MAX,
+        },
+    );
     maintenance_done.store(true, Ordering::Release);
     let (queries, graph_queries) = query_thread
         .join()

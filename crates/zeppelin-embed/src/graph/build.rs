@@ -213,6 +213,8 @@ impl GraphBuildArtifact {
 /// Typed failure from construction before any graph artifact is published.
 #[derive(Debug)]
 pub enum GraphBuildError {
+    /// The pinned epoch has no measured graph-construction profile.
+    Profile(crate::graph::search::GraphProfileError),
     /// Reading, replacing, or removing the resumable checkpoint failed.
     CheckpointIo {
         /// Checkpoint or checkpoint-temporary path.
@@ -264,6 +266,7 @@ pub enum GraphBuildError {
 impl std::fmt::Display for GraphBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Profile(error) => write!(formatter, "graph build {error}"),
             Self::CheckpointIo { path, source } => {
                 write!(
                     formatter,
@@ -310,6 +313,7 @@ impl std::fmt::Display for GraphBuildError {
 impl std::error::Error for GraphBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Profile(error) => Some(error),
             Self::CheckpointIo { source, .. } => Some(source),
             Self::Segment(error) => Some(error),
             Self::Quant(error) => Some(error),

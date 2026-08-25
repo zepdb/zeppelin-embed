@@ -201,6 +201,16 @@ impl Default for GraphSearchOptions {
     }
 }
 
+pub(crate) fn auto_graph_search_options(
+    snapshot: &PublishedSnapshot,
+) -> Result<GraphSearchOptions, QueryError> {
+    snapshot
+        .graph_profile()
+        .map(|profile| GraphSearchOptions::new(profile.search_profile()))
+        .map_err(crate::graph::search::GraphSearchError::Profile)
+        .map_err(QueryError::Graph)
+}
+
 /// Per-query execution tier at the public store seam.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchTier {
@@ -1564,6 +1574,17 @@ fn search_pinned(
     let mut worker_thread_ids = Vec::new();
     let mut graph_stats = GraphSearchStats::default();
     let mut plans = Vec::new();
+    let auto_graph_options = if matches!(options.tier(), SearchTier::Auto)
+        && snapshot.segments().iter().any(|segment| {
+            segment
+                .directory()
+                .iter()
+                .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+        }) {
+        Some(auto_graph_search_options(snapshot)?)
+    } else {
+        None
+    };
 
     if matches!(options.tier(), SearchTier::Graph(_)) {
         for segment in snapshot.segments() {
@@ -1666,7 +1687,7 @@ fn search_pinned(
                     entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id()
                 }) =>
             {
-                Some(GraphSearchOptions::default())
+                auto_graph_options
             }
             SearchTier::Auto | SearchTier::Scan => None,
         };
@@ -1917,6 +1938,7 @@ fn search_pinned(
                 alive.live_count(),
                 graph_options.ef(),
                 effective_ef,
+                graph_options.profile(),
             ));
             if matches!(graph_bound_mode, GraphBoundMode::Shared) {
                 retain_global_top_k(&mut candidates, k);

@@ -3,6 +3,10 @@
 use std::sync::{Arc, Barrier};
 
 use tempfile::{TempDir, tempdir};
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
 use zeppelin_embed::graph::build::{
@@ -88,6 +92,10 @@ fn quantize_rows(vectors: &[f32], rows: usize) -> (Vec<u8>, Vec<Bit4Factors>) {
 }
 
 fn publish_graph_fixture(alive: AliveSet) -> GraphFixture {
+    publish_graph_fixture_with_epoch(alive, None)
+}
+
+fn publish_graph_fixture_with_epoch(alive: AliveSet, epoch: Option<&StoreEpoch>) -> GraphFixture {
     let directory = tempdir().expect("graph store directory");
     let input_id = SegmentId::new(0x0001_9000_0000, [0x30; 10]);
     let id = SegmentId::new(0x0001_9000_0001, [0x31; 10]);
@@ -95,7 +103,7 @@ fn publish_graph_fixture(alive: AliveSet) -> GraphFixture {
     let (codes, factors) = quantize_rows(&vectors, ROWS);
     let columns = columns(ROWS);
     alive.debug_assert_consistent();
-    let input_meta = write_segment(
+    let mut input_meta = write_segment(
         &StdVfs,
         directory.path(),
         SegmentBuild {
@@ -111,10 +119,13 @@ fn publish_graph_fixture(alive: AliveSet) -> GraphFixture {
         policy(),
     )
     .expect("sealed graph-build input");
-    commit(&directory, &columns, input_meta, 1);
+    input_meta.epoch_id = epoch.map(|declared| declared.identity().embedding);
+    commit_with_epoch(&directory, &columns, input_meta, 1, epoch);
 
-    let builder =
-        Store::open(directory.path(), OpenOptions::default()).expect("open graph builder");
+    let options = epoch.map_or_else(OpenOptions::default, |declared| {
+        OpenOptions::default().with_epoch(declared.clone())
+    });
+    let builder = Store::open(directory.path(), options).expect("open graph builder");
     let lease = builder.snapshot().expect("graph-build snapshot");
     let input = lease.segments().first().expect("graph-build input segment");
     let build_control = QueryControl::Cancel(CancelToken::new());
@@ -133,18 +144,107 @@ fn publish_graph_fixture(alive: AliveSet) -> GraphFixture {
         &lease,
     )
     .expect("build fixture graph");
-    let meta = artifact
+    let mut meta = artifact
         .write_segment_with_graph(&StdVfs, directory.path(), input, id, policy())
         .expect("sealed graph segment");
+    meta.epoch_id = epoch.map(|declared| declared.identity().embedding);
     drop(artifact);
     drop(lease);
     builder.close().expect("close graph builder");
-    commit(&directory, &columns, meta, 2);
+    commit_with_epoch(&directory, &columns, meta, 2, epoch);
     GraphFixture {
         directory,
         id,
         vectors,
     }
+}
+
+fn graph_epoch(normalization: Normalization) -> StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "graph-profile-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0x16],
+        dims: DIMS as u32,
+        normalization,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
+#[test]
+fn auto_profile_follows_epoch_normalization() {
+    let epoch = graph_epoch(Normalization::L2);
+    let fixture = publish_graph_fixture_with_epoch(AliveSet::new(ROWS as u32), Some(&epoch));
+    let store = Store::open(
+        fixture.directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+    )
+    .expect("open normalized graph store");
+
+    let error = store
+        .search(
+            SearchRequest::new(&query(0.0)),
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect_err("normalized epoch has no owner-approved graph profile");
+
+    assert!(matches!(
+        error,
+        QueryError::Graph(
+            zeppelin_embed::graph::search::GraphSearchError::Profile(
+            zeppelin_embed::graph::search::GraphProfileError::UnrecognizedEpochShape {
+                epoch: reported,
+                shape: zeppelin_embed::graph::search::GraphProfileShape {
+                    document_dims: 128,
+                    document_normalization: Normalization::L2,
+                    query_dims: 128,
+                    query_normalization: Normalization::L2,
+                    metric: zeppelin_embed::graph::search::GraphDistanceMetric::SquaredL2,
+                },
+            }
+            )
+        ) if reported == epoch.identity()
+    ));
+    store.close().expect("close normalized graph store");
+}
+
+#[test]
+fn genuine_sift_epoch_selects_sift_class() {
+    let epoch = graph_epoch(Normalization::None);
+    let fixture = publish_graph_fixture_with_epoch(AliveSet::new(ROWS as u32), Some(&epoch));
+    let store = Store::open(
+        fixture.directory.path(),
+        OpenOptions::default().with_epoch(epoch),
+    )
+    .expect("open SIFT-shaped graph store");
+
+    let outcome = store
+        .search(
+            SearchRequest::new(&query(0.0)),
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("SIFT-shaped Auto query");
+
+    assert_eq!(
+        outcome.diagnostics.plan[0].graph_profile,
+        Some(GraphSearchProfile::SiftClass)
+    );
+    store.close().expect("close SIFT-shaped graph store");
 }
 
 fn publish_segment_without_graph() -> (TempDir, SegmentId) {
@@ -188,7 +288,7 @@ fn a_segment_that_earned_a_graph_still_answers_column_filters() {
             SearchRequest::new(&query(0.0)),
             &predicate,
             ROWS,
-            SearchOptions::default(),
+            adaptive_sift_graph_options(),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("filtered graph query");
@@ -223,7 +323,7 @@ fn the_zero_point_one_percent_cell_takes_the_exact_fallback_and_the_plan_says_so
             SearchRequest::new(&query(999.0)),
             &predicate,
             1,
-            SearchOptions::default(),
+            adaptive_sift_graph_options(),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("one-in-one-thousand filtered graph query");
@@ -251,7 +351,7 @@ fn a_traversal_that_crosses_the_filtered_budget_falls_back_and_still_returns_the
             SearchRequest::new(&query(999.0)),
             &predicate,
             1,
-            SearchOptions::default(),
+            adaptive_sift_graph_options(),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("stranded filtered graph query");
@@ -316,7 +416,7 @@ fn a_filtered_graph_query_with_tombstones_uses_one_effective_mask() {
             SearchRequest::new(&query(999.0)),
             &predicate,
             1,
-            SearchOptions::default(),
+            adaptive_sift_graph_options(),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("filtered graph query with a tombstone");
@@ -388,8 +488,9 @@ fn publish_long_chain_graph_with_alive(rows: usize, alive: AliveSet) -> (TempDir
     (directory, id)
 }
 
-fn publish_best_first_auto_graph() -> GraphFixture {
+fn publish_best_first_auto_graph() -> (GraphFixture, StoreEpoch) {
     let directory = tempdir().expect("best-first graph directory");
+    let epoch = graph_epoch(Normalization::None);
     let id = SegmentId::new(0x0001_9000_0004, [0x34; 10]);
     let values = std::iter::once(1_000.0_f32)
         .chain([900.0, 800.0, 1.0])
@@ -423,7 +524,7 @@ fn publish_best_first_auto_graph() -> GraphFixture {
             neighbors,
         })
         .collect::<Vec<_>>();
-    let meta = write_segment_with_graph(
+    let mut meta = write_segment_with_graph(
         &StdVfs,
         directory.path(),
         SegmentBuild {
@@ -444,12 +545,16 @@ fn publish_best_first_auto_graph() -> GraphFixture {
         policy(),
     )
     .expect("sealed best-first graph");
-    commit(&directory, &columns, meta, 1);
-    GraphFixture {
-        directory,
-        id,
-        vectors,
-    }
+    meta.epoch_id = Some(epoch.identity().embedding);
+    commit_with_epoch(&directory, &columns, meta, 1, Some(&epoch));
+    (
+        GraphFixture {
+            directory,
+            id,
+            vectors,
+        },
+        epoch,
+    )
 }
 
 fn commit(
@@ -458,6 +563,16 @@ fn commit(
     meta: SegmentMeta,
     generation: u64,
 ) {
+    commit_with_epoch(directory, columns, meta, generation, None);
+}
+
+fn commit_with_epoch(
+    directory: &TempDir,
+    columns: &zeppelin_embed::meta::ColumnStore,
+    meta: SegmentMeta,
+    generation: u64,
+    epoch: Option<&StoreEpoch>,
+) {
     commit_manifest(
         &StdVfs,
         directory.path(),
@@ -465,8 +580,12 @@ fn commit(
             generation,
             log_seq: 0,
             segments: vec![meta],
-            epochs: Vec::new(),
-            epoch_alias: None,
+            epochs: epoch
+                .cloned()
+                .map(zeppelin_embed::manifest::EpochMeta::from)
+                .into_iter()
+                .collect(),
+            epoch_alias: epoch.map(StoreEpoch::identity),
             schema: columns.schema().clone(),
         },
         policy(),
@@ -479,6 +598,12 @@ fn graph_options(ef: usize) -> SearchOptions {
         GraphSearchOptions::new(GraphSearchProfile::SiftClass)
             .with_ef(ef)
             .with_seed(0x00c0_ffee),
+    ))
+}
+
+fn adaptive_sift_graph_options() -> SearchOptions {
+    SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Graph(
+        GraphSearchOptions::new(GraphSearchProfile::SiftClass).with_seed(0x00c0_ffee),
     ))
 }
 
@@ -587,8 +712,12 @@ fn graph_diagnostics_make_membership_and_score_provenance_independent() {
 
 #[test]
 fn automatic_store_search_uses_best_first_frontier_before_the_ef_cutoff() {
-    let fixture = publish_best_first_auto_graph();
-    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
+    let (fixture, epoch) = publish_best_first_auto_graph();
+    let store = Store::open(
+        fixture.directory.path(),
+        OpenOptions::default().with_epoch(epoch),
+    )
+    .expect("open store");
     let query = vec![0.0_f32; DIMS];
 
     let outcome = store

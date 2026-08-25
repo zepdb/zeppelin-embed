@@ -298,6 +298,8 @@ pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
     epoch_alias: Option<crate::epoch::EpochIdentity>,
+    graph_profile:
+        Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>,
     schema: crate::meta::Schema,
     segments: Accounted<Vec<SegmentReader>>,
     query_segment_count: usize,
@@ -315,6 +317,7 @@ impl PublishedSnapshot {
             generation,
             absorbed_through: 0,
             epoch_alias: None,
+            graph_profile: Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             schema: crate::meta::Schema::timestamp_only(),
             segments: Accounted::unaccounted_empty(),
             query_segment_count: 0,
@@ -402,10 +405,31 @@ impl PublishedSnapshot {
                 })
         })?;
         let mapping_reservation = accounting.track_mapping(mapped_bytes)?;
+        let graph_profile = manifest.epoch_alias.map_or(
+            Err(crate::graph::search::GraphProfileError::EpochUnstamped),
+            |alias| {
+                manifest
+                    .epochs
+                    .iter()
+                    .find(|epoch| epoch.id == alias.embedding && epoch.tokenizer == alias.tokenizer)
+                    .ok_or(
+                        crate::graph::search::GraphProfileError::EpochNotRegistered {
+                            epoch: alias,
+                        },
+                    )
+                    .and_then(|epoch| {
+                        crate::graph::search::select_epoch_graph_profile(
+                            epoch,
+                            crate::graph::search::GraphDistanceMetric::SquaredL2,
+                        )
+                    })
+            },
+        );
         Ok(Self {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
             epoch_alias: manifest.epoch_alias,
+            graph_profile,
             schema: manifest.schema.clone(),
             segments,
             query_segment_count,
@@ -435,6 +459,13 @@ impl PublishedSnapshot {
 
     pub(crate) const fn epoch_alias(&self) -> Option<crate::epoch::EpochIdentity> {
         self.epoch_alias
+    }
+
+    pub(crate) const fn graph_profile(
+        &self,
+    ) -> Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>
+    {
+        self.graph_profile
     }
 
     pub(crate) const fn schema(&self) -> &crate::meta::Schema {

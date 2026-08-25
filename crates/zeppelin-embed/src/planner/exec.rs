@@ -8,7 +8,7 @@ use crate::ingest::{RowSource, SearchCandidate, SearchRequest};
 use crate::lifecycle::{
     GraphSearchOptions, PublishedSnapshot, QueryCancellation, QueryControl, QueryError,
     SearchOptions, SearchTier, SnapshotLease, Store, StoreError, StoreState,
-    auto_uses_full_precision, exact_rescore_rows,
+    auto_graph_search_options, auto_uses_full_precision, exact_rescore_rows,
 };
 use crate::meta::{ColumnStore, ColumnStoreBuilder, EvalError, Predicate, evaluate};
 use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -232,6 +232,11 @@ fn execute_pinned(
         .map_err(QueryError::Scan)?;
     let auto_uses_graph =
         matches!(options.tier(), SearchTier::Auto) && snapshot.segments().iter().any(has_graph);
+    let auto_graph_options = if auto_uses_graph {
+        Some(auto_graph_search_options(snapshot)?)
+    } else {
+        None
+    };
     let full_precision = (matches!(options.tier(), SearchTier::Auto)
         && auto_uses_full_precision(snapshot, active))
         || matches!(options.tier(), SearchTier::Graph(_));
@@ -326,7 +331,7 @@ fn execute_pinned(
         let row_count = segment.meta().row_count as usize;
         let graph_options = match options.tier() {
             SearchTier::Graph(graph_options) if graph_selected => Some(graph_options),
-            SearchTier::Auto if graph_selected => Some(GraphSearchOptions::default()),
+            SearchTier::Auto if graph_selected => auto_graph_options,
             SearchTier::Auto | SearchTier::Scan | SearchTier::Graph(_) => None,
         };
         if let Some(graph_options) = graph_options {
@@ -372,6 +377,7 @@ fn execute_pinned(
                     execution.ef_effective,
                     execution.branch,
                     execution.fallback,
+                    graph_options.profile(),
                 )
                 .with_predicate(predicate);
                 verify_execution_branch(plan.branch, execution.branch)?;

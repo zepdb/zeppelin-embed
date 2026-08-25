@@ -38,6 +38,142 @@ pub enum GraphSearchProfile {
     Angular,
 }
 
+/// Exact distance semantics used to match an epoch to one graph profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphDistanceMetric {
+    /// Exact rescore and graph construction use squared Euclidean distance.
+    SquaredL2,
+}
+
+impl std::fmt::Display for GraphDistanceMetric {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SquaredL2 => formatter.write_str("squared-l2"),
+        }
+    }
+}
+
+/// Persisted epoch shape consulted by the graph-profile policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphProfileShape {
+    /// Persisted document-tower dimensions.
+    pub document_dims: u32,
+    /// Persisted document-tower normalization.
+    pub document_normalization: crate::epoch::Normalization,
+    /// Persisted query-tower dimensions.
+    pub query_dims: u32,
+    /// Persisted query-tower normalization.
+    pub query_normalization: crate::epoch::Normalization,
+    /// Exact metric implemented by the graph build and query paths.
+    pub metric: GraphDistanceMetric,
+}
+
+/// One measured end-to-end graph profile selected from persisted epoch shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EpochGraphProfile {
+    /// The measured 128-dimensional, unnormalized, squared-L2 SIFT class.
+    SiftClass,
+}
+
+impl EpochGraphProfile {
+    /// Returns the adaptive query profile belonging to this epoch profile.
+    #[must_use]
+    pub const fn search_profile(self) -> GraphSearchProfile {
+        match self {
+            Self::SiftClass => GraphSearchProfile::SiftClass,
+        }
+    }
+
+    /// Returns the construction parameters belonging to this epoch profile.
+    #[must_use]
+    pub const fn build_params(self) -> crate::graph::GraphParams {
+        match self {
+            Self::SiftClass => crate::graph::GraphParams::sift_1m(),
+        }
+    }
+}
+
+/// Typed failure to resolve one persisted epoch to a measured graph profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphProfileError {
+    /// The store predates the epoch registry needed to select a profile.
+    EpochUnstamped,
+    /// A validated alias did not have a matching registry entry in the pinned snapshot.
+    EpochNotRegistered {
+        /// Alias that could not be resolved.
+        epoch: crate::epoch::EpochIdentity,
+    },
+    /// The registry entry's complete shape has no measured profile.
+    UnrecognizedEpochShape {
+        /// Persisted embedding and tokenizer epoch being reported.
+        epoch: crate::epoch::EpochIdentity,
+        /// Complete policy key that had no table entry.
+        shape: GraphProfileShape,
+    },
+}
+
+impl std::fmt::Display for GraphProfileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EpochUnstamped => formatter.write_str(
+                "graph profile requires a persisted epoch registry, but the store is unstamped",
+            ),
+            Self::EpochNotRegistered { epoch } => write!(
+                formatter,
+                "graph profile epoch ({}, {}) is absent from the pinned registry",
+                epoch.embedding, epoch.tokenizer
+            ),
+            Self::UnrecognizedEpochShape { epoch, shape } => write!(
+                formatter,
+                "graph profile epoch ({}, {}) has unrecognized shape: document dims {}, document normalization {:?}, query dims {}, query normalization {:?}, metric {}",
+                epoch.embedding,
+                epoch.tokenizer,
+                shape.document_dims,
+                shape.document_normalization,
+                shape.query_dims,
+                shape.query_normalization,
+                shape.metric
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GraphProfileError {}
+
+/// Selects the single measured graph profile for one persisted epoch.
+///
+/// Normalized/angular data is intentionally not admitted here: whether it is
+/// a supported v1 metric surface remains an owner decision.
+pub fn select_epoch_graph_profile(
+    epoch: &crate::manifest::EpochMeta,
+    metric: GraphDistanceMetric,
+) -> Result<EpochGraphProfile, GraphProfileError> {
+    let identity = crate::epoch::EpochIdentity {
+        embedding: epoch.id,
+        tokenizer: epoch.tokenizer,
+    };
+    let shape = GraphProfileShape {
+        document_dims: epoch.embedding.document.dims,
+        document_normalization: epoch.embedding.document.normalization,
+        query_dims: epoch.embedding.query.dims,
+        query_normalization: epoch.embedding.query.normalization,
+        metric,
+    };
+    if shape.document_dims == 128
+        && shape.document_normalization == crate::epoch::Normalization::None
+        && shape.query_dims == 128
+        && shape.query_normalization == crate::epoch::Normalization::None
+        && shape.metric == GraphDistanceMetric::SquaredL2
+    {
+        Ok(EpochGraphProfile::SiftClass)
+    } else {
+        Err(GraphProfileError::UnrecognizedEpochShape {
+            epoch: identity,
+            shape,
+        })
+    }
+}
+
 /// Typed rejection while resolving an adaptive or explicit `ef`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdaptiveEfError {
@@ -480,6 +616,8 @@ enum SearchInnerOutcome {
 pub enum GraphSearchError {
     /// Request shape or graph/rescore geometry is invalid.
     Geometry(String),
+    /// The pinned epoch has no measured automatic graph profile.
+    Profile(GraphProfileError),
     /// A validated node became unavailable through the fixed-stride view.
     Graph(GraphNodeError),
     /// Query preparation or Bit4 scoring rejected the input.
@@ -522,6 +660,7 @@ impl std::fmt::Display for GraphSearchError {
             Self::Geometry(detail) => {
                 write!(formatter, "graph search geometry is invalid: {detail}")
             }
+            Self::Profile(error) => error.fmt(formatter),
             Self::Graph(error) => error.fmt(formatter),
             Self::Quant(error) => error.fmt(formatter),
             Self::Gather(error) => error.fmt(formatter),
@@ -552,6 +691,7 @@ impl std::fmt::Display for GraphSearchError {
 impl std::error::Error for GraphSearchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Profile(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::Quant(error) => Some(error),
             Self::Gather(error) => Some(error),

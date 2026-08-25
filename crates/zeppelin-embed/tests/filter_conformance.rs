@@ -4,11 +4,14 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
+use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
     DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
+};
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
@@ -586,16 +589,17 @@ fn policy() -> DurabilityPolicy {
 }
 
 fn assert_writer_cell(store: &Store, op: PredicateOp, target: usize) {
+    let options = SearchOptions::default();
     let outcome = store
         .search_filtered(
             SearchRequest::new(&QUERY),
             &op.predicate(FILTER_COLUMN),
             ROWS,
-            SearchOptions::default(),
+            options,
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("writer filtered search");
-    assert_exact_rows(store, &outcome.candidates, target);
+    assert_exact_rows(store, &outcome.candidates, target, options);
     assert_eq!(outcome.plans.len(), 1);
     assert_eq!(outcome.plans[0].tier, SegmentTier::SealedScan);
     assert_eq!(outcome.plans[0].filter_cardinality, target as u64);
@@ -610,16 +614,17 @@ fn assert_writer_cell(store: &Store, op: PredicateOp, target: usize) {
 }
 
 fn assert_writer_graph_cell(store: &Store, op: PredicateOp, target: usize) {
+    let options = explicit_sift_graph_options();
     let outcome = store
         .search_filtered(
             SearchRequest::new(&QUERY),
             &op.predicate(FILTER_COLUMN),
             ROWS,
-            SearchOptions::default(),
+            options,
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("writer filtered graph search");
-    assert_exact_rows(store, &outcome.candidates, target);
+    assert_exact_rows(store, &outcome.candidates, target, options);
     assert_eq!(outcome.plans.len(), 1);
     assert_eq!(outcome.plans[0].tier, SegmentTier::SealedGraph);
     assert_eq!(outcome.plans[0].filter_cardinality, target as u64);
@@ -651,16 +656,21 @@ fn ingest_public_rows(store: &Store, op: PredicateOp, target: usize) {
 }
 
 fn assert_public_cell(store: &Store, op: PredicateOp, target: usize, tier: SegmentTier) {
+    let options = if tier == SegmentTier::SealedGraph {
+        explicit_sift_graph_options()
+    } else {
+        SearchOptions::default()
+    };
     let outcome = store
         .search_filtered(
             SearchRequest::new(&QUERY),
             &op.predicate(FILTER_COLUMN),
             ROWS,
-            SearchOptions::default(),
+            options,
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("public-ingest filtered search");
-    assert_exact_rows(store, &outcome.candidates, target);
+    assert_exact_rows(store, &outcome.candidates, target, options);
     assert_eq!(outcome.plans.len(), 1);
     assert_eq!(outcome.plans[0].tier, tier);
     assert_eq!(outcome.plans[0].filter_cardinality, target as u64);
@@ -692,12 +702,13 @@ fn assert_exact_rows(
     store: &Store,
     candidates: &[zeppelin_embed::ingest::SearchCandidate],
     target: usize,
+    options: SearchOptions,
 ) {
     let expected = store
         .search(
             SearchRequest::new(&QUERY),
             ROWS,
-            SearchOptions::default(),
+            options,
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("brute-force unfiltered scan")
@@ -712,4 +723,10 @@ fn assert_exact_rows(
         assert_eq!(actual.document(), expected.document());
         assert_eq!(actual.score().to_bits(), expected.score().to_bits());
     }
+}
+
+fn explicit_sift_graph_options() -> SearchOptions {
+    SearchOptions::default().with_tier(SearchTier::Graph(GraphSearchOptions::new(
+        GraphSearchProfile::SiftClass,
+    )))
 }
