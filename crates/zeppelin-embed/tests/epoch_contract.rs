@@ -167,6 +167,45 @@ fn a_tokenizer_epoch_change_alone_is_a_typed_epoch_mismatch() {
 }
 
 #[test]
+fn reopening_a_store_declaring_a_different_tokenizer_epoch_alone_is_a_typed_error() {
+    let directory = tempdir().expect("store directory");
+    let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
+    let conflicting = StoreEpoch {
+        embedding: declared.embedding.clone(),
+        tokenizer: TokenizerConfig::code().epoch(),
+    };
+    assert_eq!(
+        declared.identity().embedding,
+        conflicting.identity().embedding,
+        "only the tokenizer half may differ"
+    );
+
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_epoch(declared.clone()),
+    )
+    .expect("open epoch store");
+    store
+        .ingest(batch(1).with_epoch(declared.identity()))
+        .expect("ingest declared epoch");
+    store.close().expect("close store");
+
+    let error = Store::open(directory.path(), OpenOptions::new().with_epoch(conflicting))
+        .err()
+        .expect("reopen under a conflicting tokenizer must fail");
+
+    let StoreError::EpochMismatch(EpochMismatch {
+        expected,
+        declared: actual,
+    }) = error
+    else {
+        panic!("wrong open error")
+    };
+    assert_eq!(expected.embedding, actual.embedding);
+    assert_ne!(expected.tokenizer, actual.tokenizer);
+}
+
+#[test]
 fn an_embedding_epoch_change_alone_is_a_typed_epoch_mismatch() {
     let directory = tempdir().expect("store directory");
     let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
