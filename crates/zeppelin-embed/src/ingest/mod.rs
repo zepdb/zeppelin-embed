@@ -589,6 +589,12 @@ impl From<crate::lifecycle::QueryError> for StoreLexicalError {
     }
 }
 
+impl From<StoreError> for StoreLexicalError {
+    fn from(error: StoreError) -> Self {
+        Self::Query(crate::lifecycle::QueryError::Store(error))
+    }
+}
+
 impl From<crate::planner::LexicalFilterError> for StoreLexicalError {
     fn from(error: crate::planner::LexicalFilterError) -> Self {
         Self::Lexical(error)
@@ -631,6 +637,62 @@ fn resolve_revision(
 }
 
 impl Store {
+    /// Returns exact live corpus statistics for store-backed lexical scoring.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store admission or segment error when the current lexical
+    /// corpus cannot be read, or an index error when the corpus is empty.
+    pub fn lexical_corpus_stats(&self) -> Result<crate::fts::bm25::CorpusStats, StoreLexicalError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(StoreError::Closing.into()),
+            StoreState::Closed => return Err(StoreError::Closed.into()),
+        }
+        let active_guard = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let active = active_guard.as_ref().ok_or(StoreError::Closed)?;
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        let mut index = crate::fts::index::LexicalIndex::new();
+        for segment in snapshot.segments() {
+            if let Some(postings) = segment.postings().map_err(StoreError::Segment)? {
+                let alive = segment.alive().map_err(StoreError::Segment)?;
+                index
+                    .push_sealed_with_live_rows(postings, alive.alive_bitmap())
+                    .map_err(crate::planner::LexicalFilterError::from)?;
+            }
+        }
+        if active.segment.has_text() {
+            let sealed = crate::fts::sealed::SealedSegment::seal(active.segment.lexical())
+                .map_err(crate::fts::index::IndexError::from)
+                .map_err(crate::planner::LexicalFilterError::from)?;
+            let alive = active.segment.alive()?;
+            index
+                .push_sealed_with_live_rows(sealed, alive.alive_bitmap())
+                .map_err(crate::planner::LexicalFilterError::from)?;
+        }
+        index
+            .corpus_stats()
+            .map_err(crate::planner::LexicalFilterError::from)
+            .map_err(StoreLexicalError::from)
+    }
+
     /// Commits one active-segment upsert and returns its WAL/generation coordinates.
     pub fn ingest(&self, batch: IngestBatch) -> Result<IngestAck, IngestError> {
         let state = self

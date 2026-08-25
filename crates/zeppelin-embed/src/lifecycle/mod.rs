@@ -1105,8 +1105,11 @@ impl Store {
                     .alive()
                     .map_err(StoreError::Segment)
                     .map_err(QueryError::Store)?;
-                allow_lists.push(alive.alive_bitmap().clone());
-                index.push_sealed(postings);
+                let live_rows = alive.alive_bitmap();
+                index
+                    .push_sealed_with_live_rows(postings, live_rows)
+                    .map_err(crate::planner::LexicalFilterError::from)?;
+                allow_lists.push(live_rows.clone());
                 sources.push(LexicalSource::Sealed(ordinal));
             }
         }
@@ -1114,14 +1117,12 @@ impl Store {
             let sealed = crate::fts::sealed::SealedSegment::seal(active.lexical())
                 .map_err(crate::fts::index::IndexError::from)
                 .map_err(crate::planner::LexicalFilterError::from)?;
-            allow_lists.push(
-                active
-                    .alive()
-                    .map_err(QueryError::Store)?
-                    .alive_bitmap()
-                    .clone(),
-            );
-            index.push_sealed(sealed);
+            let active_alive = active.alive().map_err(QueryError::Store)?;
+            let live_rows = active_alive.alive_bitmap();
+            index
+                .push_sealed_with_live_rows(sealed, live_rows)
+                .map_err(crate::planner::LexicalFilterError::from)?;
+            allow_lists.push(live_rows.clone());
             sources.push(LexicalSource::Active);
         }
         let lexical = crate::planner::search_lexical_filtered(
@@ -1456,8 +1457,14 @@ fn exact_lexical_leg(
                     leg: crate::fusion::FusionLeg::Lexical,
                     detail: error.to_string(),
                 })?;
-            allow_lists.push(alive.alive_bitmap().clone());
-            index.push_sealed(postings);
+            let live_rows = alive.alive_bitmap();
+            index
+                .push_sealed_with_live_rows(postings, live_rows)
+                .map_err(|error| crate::fusion::FusionError::Leg {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    detail: error.to_string(),
+                })?;
+            allow_lists.push(live_rows.clone());
             sources.push(Source::Sealed(ordinal));
         }
     }
@@ -1469,17 +1476,20 @@ fn exact_lexical_leg(
                     detail: error.to_string(),
                 }
             })?;
-        allow_lists.push(
-            active
-                .alive()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    detail: error.to_string(),
-                })?
-                .alive_bitmap()
-                .clone(),
-        );
-        index.push_sealed(sealed);
+        let active_alive = active
+            .alive()
+            .map_err(|error| crate::fusion::FusionError::Leg {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: error.to_string(),
+            })?;
+        let live_rows = active_alive.alive_bitmap();
+        index
+            .push_sealed_with_live_rows(sealed, live_rows)
+            .map_err(|error| crate::fusion::FusionError::Leg {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: error.to_string(),
+            })?;
+        allow_lists.push(live_rows.clone());
         sources.push(Source::Active);
     }
     if index.segments().is_empty() {

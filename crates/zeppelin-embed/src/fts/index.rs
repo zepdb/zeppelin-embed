@@ -36,6 +36,7 @@ use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
 use super::sealed::SealedSegment;
 use super::tokenizer::{Analyzer, Token};
+use crate::meta::DocBitmap;
 
 /// A field identifier within a document schema.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -65,6 +66,22 @@ pub enum IndexError {
         /// The offending row.
         row: u32,
     },
+    /// A live-row counter named a row outside its lexical segment.
+    LiveRowOutOfRange {
+        /// Lexical segment ordinal.
+        segment: usize,
+        /// Invalid row identifier.
+        row: u32,
+        /// Dense row count of the segment.
+        row_count: u32,
+    },
+    /// A sealed segment's dense length counter omitted a valid live row.
+    LiveLengthMissing {
+        /// Lexical segment ordinal.
+        segment: usize,
+        /// Live row without a length counter.
+        row: u32,
+    },
 }
 
 impl std::fmt::Display for IndexError {
@@ -75,6 +92,18 @@ impl std::fmt::Display for IndexError {
             Self::RowsNotAscending { row } => {
                 write!(formatter, "documents must arrive in row order; got {row}")
             }
+            Self::LiveRowOutOfRange {
+                segment,
+                row,
+                row_count,
+            } => write!(
+                formatter,
+                "live lexical row {row} is outside segment {segment} row count {row_count}"
+            ),
+            Self::LiveLengthMissing { segment, row } => write!(
+                formatter,
+                "live lexical row {row} has no length counter in segment {segment}"
+            ),
         }
     }
 }
@@ -535,6 +564,13 @@ impl SegmentIndex {
 #[derive(Clone, Debug, Default)]
 pub struct LexicalIndex {
     segments: Vec<SealedSegment>,
+    live_counters: Vec<LiveSegmentCounters>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct LiveSegmentCounters {
+    documents: u64,
+    tokens: u64,
 }
 
 impl LexicalIndex {
@@ -553,13 +589,41 @@ impl LexicalIndex {
     /// are broken-writer conditions, and they surface here rather than
     /// becoming a decode fault inside a later query.
     pub fn push_segment(&mut self, segment: SegmentIndex) -> Result<(), IndexError> {
-        self.segments.push(SealedSegment::seal(&segment)?);
+        self.push_sealed(SealedSegment::seal(&segment)?);
         Ok(())
     }
 
     /// Appends an already-sealed segment.
     pub fn push_sealed(&mut self, segment: SealedSegment) {
+        self.live_counters.push(LiveSegmentCounters {
+            documents: u64::from(segment.row_count()),
+            tokens: segment.total_tokens(),
+        });
         self.segments.push(segment);
+    }
+
+    /// Appends an already-sealed segment with exact live-row counters.
+    ///
+    /// The row set is the segment tombstone state's live bitmap, not a query
+    /// filter. Capturing it here keeps BM25 corpus statistics independent of
+    /// later metadata allow-lists while avoiding any posting-list rewrite.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::LiveRowOutOfRange`] when the tombstone state
+    /// names a row outside the sealed segment, or
+    /// [`IndexError::LiveLengthMissing`] when a sealed length counter violates
+    /// its dense-row invariant.
+    pub fn push_sealed_with_live_rows(
+        &mut self,
+        segment: SealedSegment,
+        live_rows: &DocBitmap,
+    ) -> Result<(), IndexError> {
+        let ordinal = self.segments.len();
+        let counters = live_segment_counters(ordinal, &segment, live_rows)?;
+        self.segments.push(segment);
+        self.live_counters.push(counters);
+        Ok(())
     }
 
     /// Returns the segments in seal order.
@@ -571,16 +635,19 @@ impl LexicalIndex {
     /// Returns the store-wide document count.
     #[must_use]
     pub fn document_count(&self) -> u64 {
-        self.segments
+        self.live_counters
             .iter()
-            .map(|segment| u64::from(segment.row_count()))
-            .sum()
+            .map(|counters| counters.documents)
+            .fold(0_u64, u64::saturating_add)
     }
 
     /// Returns the store-wide analyzed token count.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.segments.iter().map(SealedSegment::total_tokens).sum()
+        self.live_counters
+            .iter()
+            .map(|counters| counters.tokens)
+            .fold(0_u64, u64::saturating_add)
     }
 
     /// Returns the store-wide corpus statistics.
@@ -606,6 +673,11 @@ impl LexicalIndex {
     /// this a *document* frequency rather than a posting count. Each
     /// segment answers from its sealed dictionary, where the cross-field
     /// union was resolved at seal time, so this costs no decode.
+    ///
+    /// R05(iii) remains an open owner decision: this is deliberately the
+    /// all-postings `df`, not an exact live-document `df`. Live `N` and token
+    /// totals must not make this approximation look exact; exact live `df`
+    /// requires separate per-term tombstone maintenance.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
         self.segments
@@ -613,6 +685,38 @@ impl LexicalIndex {
             .map(|segment| segment.document_frequency(term, fields))
             .fold(0_u32, u32::saturating_add)
     }
+}
+
+fn live_segment_counters(
+    ordinal: usize,
+    segment: &SealedSegment,
+    live_rows: &DocBitmap,
+) -> Result<LiveSegmentCounters, IndexError> {
+    if let Some(row) = live_rows.iter().find(|row| *row >= segment.row_count()) {
+        return Err(IndexError::LiveRowOutOfRange {
+            segment: ordinal,
+            row,
+            row_count: segment.row_count(),
+        });
+    }
+    let tokens =
+        live_rows.iter().try_fold(0_u64, |total, row| {
+            let slot = usize::try_from(row).map_err(|_| IndexError::LiveLengthMissing {
+                segment: ordinal,
+                row,
+            })?;
+            let length = segment.total_lengths().get(slot).copied().ok_or(
+                IndexError::LiveLengthMissing {
+                    segment: ordinal,
+                    row,
+                },
+            )?;
+            Ok::<u64, IndexError>(total.saturating_add(u64::from(length)))
+        })?;
+    Ok(LiveSegmentCounters {
+        documents: live_rows.cardinality(),
+        tokens,
+    })
 }
 
 #[cfg(test)]
@@ -761,6 +865,30 @@ mod tests {
         assert_eq!(stats.document_count(), 2);
         assert_eq!(stats.total_tokens(), 8);
         assert!((stats.average_document_length() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn live_row_counters_exclude_tombstoned_lengths_without_changing_df() {
+        let analyzer = code_analyzer();
+        let sealed = SealedSegment::seal(&segment_of(
+            &analyzer,
+            &["engine padding padding", "engine"],
+        ))
+        .expect("seal lexical segment");
+        let live_rows = DocBitmap::from_ids([1]);
+        let mut index = LexicalIndex::new();
+        index
+            .push_sealed_with_live_rows(sealed, &live_rows)
+            .expect("valid live rows");
+
+        let stats = index.corpus_stats().expect("one live document");
+        assert_eq!(stats.document_count(), 1);
+        assert_eq!(stats.total_tokens(), 1);
+        assert_eq!(
+            index.document_frequency(b"engine", &[DEFAULT_FIELD]),
+            2,
+            "R05(iii) keeps the explicit all-postings df approximation"
+        );
     }
 
     #[test]
