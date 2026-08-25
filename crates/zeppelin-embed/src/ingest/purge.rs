@@ -77,9 +77,23 @@ pub(crate) fn sealed_document_matches(
     snapshot: &PublishedSnapshot,
     ids: &[DocId],
 ) -> Result<Vec<SealedDocumentMatch>, StoreError> {
+    sealed_document_matches_in(snapshot.segments(), ids)
+}
+
+fn all_sealed_document_matches(
+    snapshot: &PublishedSnapshot,
+    ids: &[DocId],
+) -> Result<Vec<SealedDocumentMatch>, StoreError> {
+    sealed_document_matches_in(snapshot.all_segments(), ids)
+}
+
+fn sealed_document_matches_in(
+    segments: &[SegmentReader],
+    ids: &[DocId],
+) -> Result<Vec<SealedDocumentMatch>, StoreError> {
     let requested = ids.iter().copied().collect::<HashSet<_>>();
     let mut matches = Vec::new();
-    for (segment_index, segment) in snapshot.segments().iter().enumerate() {
+    for (segment_index, segment) in segments.iter().enumerate() {
         for row in 0..segment.meta().row_count as usize {
             if let Some(version) = segment.document_version(row).map_err(StoreError::Segment)?
                 && requested.contains(&version.doc_id())
@@ -437,7 +451,7 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
-        let sealed = sealed_document_matches(&snapshot, &requested)?;
+        let sealed = all_sealed_document_matches(&snapshot, &requested)?;
         let mut known = Vec::new();
         let mut unknown = Vec::new();
         for id in requested {
@@ -449,7 +463,7 @@ impl Store {
                 unknown.push(id);
             }
         }
-        for (segment_index, segment) in snapshot.segments().iter().enumerate() {
+        for (segment_index, segment) in snapshot.all_segments().iter().enumerate() {
             if sealed.iter().any(|matched| {
                 matched.segment_index == segment_index && known.contains(&matched.version.doc_id())
             }) {

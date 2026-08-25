@@ -39,6 +39,11 @@ pub enum Op {
         revision: u64,
         timestamp: i64,
     },
+    PrepareEpochB,
+    SwitchAliasToB,
+    RollbackToA,
+    DropEpochA,
+    RollbackDroppedAProbe,
     Upsert {
         doc_id: u32,
         revision: u64,
@@ -94,6 +99,11 @@ impl Op {
             Self::Open => "open",
             Self::Ingest { .. } => "ingest",
             Self::EpochMismatchProbe { .. } => "epoch_mismatch_probe",
+            Self::PrepareEpochB => "prepare_epoch_b",
+            Self::SwitchAliasToB => "switch_alias_to_b",
+            Self::RollbackToA => "rollback_to_a",
+            Self::DropEpochA => "drop_epoch_a",
+            Self::RollbackDroppedAProbe => "rollback_dropped_a_probe",
             Self::Upsert { .. } => "upsert",
             Self::Revise { .. } => "revise",
             Self::Delete { .. } => "delete",
@@ -114,7 +124,16 @@ impl Op {
     #[must_use]
     pub fn json_line(&self, index: usize) -> String {
         match self {
-            Self::Open | Self::Seal | Self::Stats | Self::Close | Self::Reopen => {
+            Self::Open
+            | Self::PrepareEpochB
+            | Self::SwitchAliasToB
+            | Self::RollbackToA
+            | Self::DropEpochA
+            | Self::RollbackDroppedAProbe
+            | Self::Seal
+            | Self::Stats
+            | Self::Close
+            | Self::Reopen => {
                 format!("{{\"op\":{index},\"kind\":\"{}\"}}", self.kind())
             }
             Self::Ingest {
@@ -364,6 +383,28 @@ impl Program {
                 query: 2,
                 k: 8,
                 maximum_timestamp: 60,
+            },
+            Op::Seal,
+            Op::PrepareEpochB,
+            Op::SwitchAliasToB,
+            Op::Search {
+                query: 3,
+                k: usize::MAX,
+                kind: SearchKind::Scan,
+            },
+            Op::RollbackToA,
+            Op::Search {
+                query: 3,
+                k: usize::MAX,
+                kind: SearchKind::Scan,
+            },
+            Op::SwitchAliasToB,
+            Op::DropEpochA,
+            Op::RollbackDroppedAProbe,
+            Op::Search {
+                query: 3,
+                k: usize::MAX,
+                kind: SearchKind::Scan,
             },
             Op::Close,
         ]);

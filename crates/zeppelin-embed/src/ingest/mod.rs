@@ -501,7 +501,7 @@ pub struct GraphSearchStats {
 /// Global top-k results and aggregate deterministic query counters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchOutcome {
-    /// Candidates merged across the active and every sealed segment.
+    /// Candidates merged across the active segment and the published epoch's sealed segments.
     pub candidates: Vec<SearchCandidate>,
     /// Aggregate work from all per-segment query-pool executions.
     pub stats: ScanStats,

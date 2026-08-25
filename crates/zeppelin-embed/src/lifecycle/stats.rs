@@ -570,7 +570,7 @@ impl Store {
             source: std::io::Error::other("snapshot lease count exceeds u64"),
         })?;
         let mut mapped_resident_bytes = 0_u64;
-        for segment in snapshot.segments() {
+        for segment in snapshot.all_segments() {
             let resident =
                 segment
                     .mapped_resident_bytes()

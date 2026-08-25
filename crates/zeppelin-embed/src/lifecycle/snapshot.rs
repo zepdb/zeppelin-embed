@@ -300,6 +300,7 @@ pub struct PublishedSnapshot {
     epoch_alias: Option<crate::epoch::EpochIdentity>,
     schema: crate::meta::Schema,
     segments: Accounted<Vec<SegmentReader>>,
+    query_segment_count: usize,
     cancelled: AtomicBool,
     reader_changed: Condvar,
     reader_signal: Mutex<()>,
@@ -316,6 +317,7 @@ impl PublishedSnapshot {
             epoch_alias: None,
             schema: crate::meta::Schema::timestamp_only(),
             segments: Accounted::unaccounted_empty(),
+            query_segment_count: 0,
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
             reader_signal: Mutex::new(()),
@@ -356,7 +358,22 @@ impl PublishedSnapshot {
             manifest.segments.len(),
             AllocationComponent::Snapshot,
         )?;
-        for expected in &manifest.segments {
+        let query_segment_count = manifest
+            .segments
+            .iter()
+            .filter(|segment| segment_is_published(manifest.epoch_alias, segment))
+            .count();
+        let ordered_segments = manifest
+            .segments
+            .iter()
+            .filter(|segment| segment_is_published(manifest.epoch_alias, segment))
+            .chain(
+                manifest
+                    .segments
+                    .iter()
+                    .filter(|segment| !segment_is_published(manifest.epoch_alias, segment)),
+            );
+        for expected in ordered_segments {
             let path = directory.join(expected.id.file_name());
             let reader = SegmentReader::open_accounted(&path, expected, |region_count| {
                 let bytes = region_count
@@ -391,6 +408,7 @@ impl PublishedSnapshot {
             epoch_alias: manifest.epoch_alias,
             schema: manifest.schema.clone(),
             segments,
+            query_segment_count,
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
             reader_signal: Mutex::new(()),
@@ -423,9 +441,16 @@ impl PublishedSnapshot {
         &self.schema
     }
 
-    /// Returns the complete immutable segment-reader set for this generation.
+    /// Returns immutable segments belonging to the published epoch alias.
     #[must_use]
     pub fn segments(&self) -> &[SegmentReader] {
+        match self.segments.get(..self.query_segment_count) {
+            Some(segments) => segments,
+            None => &[],
+        }
+    }
+
+    pub(crate) fn all_segments(&self) -> &[SegmentReader] {
         &self.segments
     }
 
@@ -474,6 +499,13 @@ impl PublishedSnapshot {
         self.cancelled.store(true, Ordering::Release);
         self.reader_changed.notify_all();
     }
+}
+
+fn segment_is_published(
+    alias: Option<crate::epoch::EpochIdentity>,
+    segment: &crate::segment::SegmentMeta,
+) -> bool {
+    alias.is_none_or(|identity| segment.epoch_id == Some(identity.embedding))
 }
 
 /// One admitted read's strong ownership of its published snapshot.

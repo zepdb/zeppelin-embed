@@ -1,5 +1,9 @@
 //! Epoch identity and migration.
 
+mod transition;
+
+pub use transition::{DropEpochReport, EpochAliasReport, EpochTransitionError};
+
 use crate::fts::tokenizer::TokenizerEpoch;
 use crate::manifest::EpochMeta;
 
@@ -96,6 +100,120 @@ pub struct EmbeddingEpoch {
     pub alignment_digest: Vec<u8>,
 }
 
+/// Host-provided document embedding boundary used by epoch migration.
+///
+/// One call returns either one complete vector or one typed error. No partial
+/// output buffer crosses this seam, so a migration caller can stage the vector
+/// before making any manifest-visible change.
+pub trait Embedder {
+    /// Embeds one exact source revision.
+    fn embed(
+        &mut self,
+        doc_id: crate::ingest::DocId,
+        revision: crate::ingest::Revision,
+        source: &[u8],
+    ) -> Result<Vec<f32>, EmbedderError>;
+}
+
+/// A delegate rejected or otherwise failed one embedding request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbedderFailure {
+    detail: String,
+}
+
+impl EmbedderFailure {
+    /// Creates a failure with host-readable diagnostic detail.
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+
+    /// Returns the delegate-supplied failure detail.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl std::fmt::Display for EmbedderFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "embedding delegate failed: {}", self.detail)
+    }
+}
+
+impl std::error::Error for EmbedderFailure {}
+
+/// A delegate did not complete one embedding request before its deadline.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbedderTimeout {
+    detail: String,
+}
+
+impl EmbedderTimeout {
+    /// Creates a timeout with host-readable diagnostic detail.
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+
+    /// Returns the delegate-supplied timeout detail.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl std::fmt::Display for EmbedderTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "embedding delegate timed out: {}", self.detail)
+    }
+}
+
+impl std::error::Error for EmbedderTimeout {}
+
+/// Typed unsuccessful outcome from an [`Embedder`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EmbedderError {
+    /// The delegate completed with a failure instead of a vector.
+    Failure(EmbedderFailure),
+    /// The delegate did not complete before its deadline.
+    Timeout(EmbedderTimeout),
+}
+
+impl std::fmt::Display for EmbedderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failure(error) => error.fmt(formatter),
+            Self::Timeout(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for EmbedderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failure(error) => Some(error),
+            Self::Timeout(error) => Some(error),
+        }
+    }
+}
+
+impl From<EmbedderFailure> for EmbedderError {
+    fn from(error: EmbedderFailure) -> Self {
+        Self::Failure(error)
+    }
+}
+
+impl From<EmbedderTimeout> for EmbedderError {
+    fn from(error: EmbedderTimeout) -> Self {
+        Self::Timeout(error)
+    }
+}
+
 /// Digest-input framing magic. Changing it changes every embedding epoch.
 const EPOCH_MAGIC: &[u8; 8] = b"ZEEMBEP2";
 
@@ -170,6 +288,62 @@ pub struct EpochIdentity {
     pub embedding: EpochId,
     /// Tokenizer identity digest.
     pub tokenizer: TokenizerEpoch,
+}
+
+pub(crate) struct EpochAliasCell {
+    sequence: std::sync::atomic::AtomicU64,
+    embedding: std::sync::atomic::AtomicU64,
+    tokenizer: std::sync::atomic::AtomicU64,
+    present: std::sync::atomic::AtomicBool,
+}
+
+impl EpochAliasCell {
+    pub(crate) fn new(identity: Option<EpochIdentity>) -> Self {
+        let (present, embedding, tokenizer) = identity.map_or((false, 0, 0), |identity| {
+            (true, identity.embedding.value(), identity.tokenizer.value())
+        });
+        Self {
+            sequence: std::sync::atomic::AtomicU64::new(0),
+            embedding: std::sync::atomic::AtomicU64::new(embedding),
+            tokenizer: std::sync::atomic::AtomicU64::new(tokenizer),
+            present: std::sync::atomic::AtomicBool::new(present),
+        }
+    }
+
+    pub(crate) fn load(&self) -> Option<EpochIdentity> {
+        use std::sync::atomic::Ordering;
+
+        loop {
+            let before = self.sequence.load(Ordering::Acquire);
+            if !before.is_multiple_of(2) {
+                std::hint::spin_loop();
+                continue;
+            }
+            let present = self.present.load(Ordering::Relaxed);
+            let embedding = self.embedding.load(Ordering::Relaxed);
+            let tokenizer = self.tokenizer.load(Ordering::Relaxed);
+            let after = self.sequence.load(Ordering::Acquire);
+            if before == after {
+                return present.then_some(EpochIdentity {
+                    embedding: EpochId::from_value(embedding),
+                    tokenizer: TokenizerEpoch::from_value(tokenizer),
+                });
+            }
+        }
+    }
+
+    pub(crate) fn store(&self, identity: Option<EpochIdentity>) {
+        use std::sync::atomic::Ordering;
+
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        let (present, embedding, tokenizer) = identity.map_or((false, 0, 0), |identity| {
+            (true, identity.embedding.value(), identity.tokenizer.value())
+        });
+        self.embedding.store(embedding, Ordering::Relaxed);
+        self.tokenizer.store(tokenizer, Ordering::Relaxed);
+        self.present.store(present, Ordering::Relaxed);
+        self.sequence.fetch_add(1, Ordering::Release);
+    }
 }
 
 impl EpochIdentity {

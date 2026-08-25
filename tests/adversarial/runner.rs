@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 use zeppelin_embed::epoch::{
-    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochIdentity, Normalization,
-    StoreEpoch,
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochId, EpochIdentity,
+    EpochTransitionError, Normalization, StoreEpoch,
 };
 use zeppelin_embed::fts::bm25::Bm25Params;
 use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
@@ -19,22 +19,30 @@ use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
     SearchRequest,
 };
-use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
     CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
 };
+use zeppelin_embed::manifest::EpochMeta;
+use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
-    Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
+    AliveSet, ColumnStoreBuilder, Predicate, PredicateValue, RangeBound, RangePredicate,
+    TIMESTAMP_COLUMN,
 };
 use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
+use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::scan::ScanOptions;
+use zeppelin_embed::segment::SegmentId;
+use zeppelin_embed::segment::writer::{
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
+};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
-use zeppelin_embed::vfs::Vfs;
 use zeppelin_embed::vfs::crash::RecordingVfs;
+use zeppelin_embed::vfs::{StdVfs, Vfs};
 
 use super::artifacts::RunArtifacts;
 use super::fault_vfs::{self, FaultEvent};
-use super::model::{ExpectedHit, Model};
+use super::model::{ExpectedHit, Model, ModelEpoch};
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
 
@@ -75,6 +83,23 @@ fn conflicting_identity() -> EpochIdentity {
     epoch.identity()
 }
 
+fn epoch_b_store_epoch() -> StoreEpoch {
+    let mut epoch = declared_store_epoch();
+    epoch.embedding.document.model_version = "2".to_owned();
+    epoch.embedding.document.weights_digest = vec![0xbe, 0x21];
+    epoch.embedding.query.model_version = "2".to_owned();
+    epoch.embedding.query.weights_digest = vec![0xbe, 0x22];
+    epoch.embedding.alignment_digest = vec![0xbe, 0x23];
+    epoch
+}
+
+fn identity_for(epoch: ModelEpoch) -> EpochIdentity {
+    match epoch {
+        ModelEpoch::A => declared_identity(),
+        ModelEpoch::B => epoch_b_store_epoch().identity(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Invariant {
     I1,
@@ -90,6 +115,7 @@ pub enum Invariant {
     I11,
     I12,
     I13,
+    I14,
 }
 
 impl Invariant {
@@ -109,6 +135,7 @@ impl Invariant {
             Self::I11 => "I11 revision-ordering",
             Self::I12 => "I12 responses-name-the-store-epoch",
             Self::I13 => "I13 diagnostics-never-lie",
+            Self::I14 => "I14 alias-target-is-complete-and-single-epoch",
         }
     }
 }
@@ -162,6 +189,11 @@ pub struct RunOutcome {
     pub hybrid_searches: usize,
     pub hybrid_sealed_vector_documents: usize,
     pub hybrid_lexical_documents: usize,
+    pub epoch_preparations: usize,
+    pub epoch_alias_switches: usize,
+    pub epoch_rollbacks: usize,
+    pub epoch_drops: usize,
+    pub rejected_dropped_epoch_rollbacks: usize,
     pub violations: Vec<Violation>,
     pub program_bytes: Vec<u8>,
     pub faults_bytes: Vec<u8>,
@@ -236,6 +268,11 @@ trait Engine {
     fn open(&mut self) -> Result<(), String>;
     fn ingest(&mut self, documents: &[DocMutation]) -> Result<MutationAck, String>;
     fn epoch_mismatch_probe(&mut self, document: DocMutation) -> Result<(), String>;
+    fn prepare_epoch_b(&mut self, documents: &[DocMutation]) -> Result<MutationAck, String>;
+    fn switch_epoch(&mut self, epoch: ModelEpoch) -> Result<MutationAck, String>;
+    fn drop_epoch_a(&mut self) -> Result<MutationAck, String>;
+    fn rollback_dropped_a_probe(&mut self) -> Result<(), String>;
+    fn visible_epoch_ids(&mut self) -> Result<Vec<EpochId>, String>;
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String>;
     fn seal(&mut self, vfs: &dyn Vfs) -> Result<MutationAck, String>;
     fn drop_partition(
@@ -270,6 +307,7 @@ struct RealEngine {
     directory: PathBuf,
     store: Option<Store>,
     graphs_built: u64,
+    open_epoch: ModelEpoch,
 }
 
 impl RealEngine {
@@ -278,6 +316,7 @@ impl RealEngine {
             directory,
             store: None,
             graphs_built: 0,
+            open_epoch: ModelEpoch::A,
         }
     }
 
@@ -287,10 +326,13 @@ impl RealEngine {
             .ok_or_else(|| "store is not open".to_owned())
     }
 
-    fn options() -> OpenOptions {
+    fn options(epoch: ModelEpoch) -> OpenOptions {
         OpenOptions::new()
             .with_durability(DurabilityMode::Durable, CommitTier::Durable)
-            .with_epoch(declared_store_epoch())
+            .with_epoch(match epoch {
+                ModelEpoch::A => declared_store_epoch(),
+                ModelEpoch::B => epoch_b_store_epoch(),
+            })
     }
 }
 
@@ -299,8 +341,10 @@ impl Engine for RealEngine {
         if self.store.is_some() {
             return Err("store is already open".to_owned());
         }
-        self.store =
-            Some(Store::open(&self.directory, Self::options()).map_err(|error| error.to_string())?);
+        self.store = Some(
+            Store::open(&self.directory, Self::options(self.open_epoch))
+                .map_err(|error| error.to_string())?,
+        );
         Ok(())
     }
 
@@ -355,6 +399,143 @@ impl Engine for RealEngine {
             ));
         }
         Ok(())
+    }
+
+    fn prepare_epoch_b(&mut self, documents: &[DocMutation]) -> Result<MutationAck, String> {
+        if documents.is_empty() {
+            return Err("cannot prepare epoch B without live documents".to_owned());
+        }
+        if let Some(store) = self.store.take() {
+            store.close().map_err(|error| error.to_string())?;
+        }
+
+        let manifest_path = self.directory.join("manifest.ze");
+        let mut manifest =
+            load_manifest(&StdVfs, &manifest_path, u64::MAX).map_err(|error| error.to_string())?;
+        let rows = documents.len();
+        let mut vectors = Vec::with_capacity(rows.saturating_mul(program::DIMENSIONS));
+        let mut codes = vec![0_u8; rows.saturating_mul(program::DIMENSIONS.div_ceil(2))];
+        let mut factors = Vec::<Bit4Factors>::with_capacity(rows);
+        let mut columns = ColumnStoreBuilder::new(manifest.schema.clone());
+        let mut doc_ids = Vec::with_capacity(rows);
+        let mut revisions = Vec::with_capacity(rows);
+        for (row, document) in documents.iter().enumerate() {
+            let vector = program::vector(document.doc_id, document.revision);
+            factors.push(
+                quantize_bit4(
+                    &vector,
+                    &mut codes[row * program::DIMENSIONS.div_ceil(2)
+                        ..(row + 1) * program::DIMENSIONS.div_ceil(2)],
+                )
+                .map_err(|error| error.to_string())?,
+            );
+            vectors.extend_from_slice(&vector);
+            columns
+                .push_row(document.timestamp, &[])
+                .map_err(|error| error.to_string())?;
+            doc_ids.push(DocId::new(u128::from(document.doc_id)));
+            revisions.push(Revision::new(document.revision));
+        }
+        let columns = columns.finish().map_err(|error| error.to_string())?;
+        let alive = AliveSet::new(u32::try_from(rows).map_err(|_| "too many epoch rows")?);
+        let segment_id = SegmentId::new(
+            0x0021_e000_0000_u64.saturating_add(manifest.generation),
+            [0xbe; 10],
+        );
+        let policy = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable)
+            .map_err(|error| error.to_string())?;
+        let mut segment = write_segment_with_documents(
+            &StdVfs,
+            &self.directory,
+            SegmentBuild {
+                id: segment_id,
+                scheme: 4,
+                dims: program::DIMENSIONS as u32,
+                codes: &codes,
+                factors: SegmentFactors::Bit4(&factors),
+                rescore: &vectors,
+                columns: &columns,
+                alive: &alive,
+            },
+            SegmentDocumentVersions {
+                doc_ids: &doc_ids,
+                revisions: &revisions,
+            },
+            policy,
+        )
+        .map_err(|error| error.to_string())?;
+        let epoch_b = epoch_b_store_epoch();
+        segment.epoch_id = Some(epoch_b.identity().embedding);
+        manifest.segments.push(segment);
+        if !manifest
+            .epochs
+            .iter()
+            .any(|epoch| epoch.id == epoch_b.identity().embedding)
+        {
+            manifest.epochs.push(EpochMeta::from(&epoch_b));
+        }
+        manifest.generation = manifest
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| "manifest generation overflow while preparing epoch B".to_owned())?;
+        commit_manifest(&StdVfs, &self.directory, &manifest, policy)
+            .map_err(|error| error.to_string())?;
+        self.open_epoch = ModelEpoch::A;
+        self.open()?;
+        Ok(MutationAck {
+            generation: manifest.generation,
+            changed: true,
+        })
+    }
+
+    fn switch_epoch(&mut self, epoch: ModelEpoch) -> Result<MutationAck, String> {
+        let report = self
+            .store()?
+            .switch_epoch_alias(identity_for(epoch))
+            .map_err(|error| error.to_string())?;
+        self.open_epoch = epoch;
+        Ok(MutationAck {
+            generation: report.generation(),
+            changed: report.manifest_committed(),
+        })
+    }
+
+    fn drop_epoch_a(&mut self) -> Result<MutationAck, String> {
+        let report = self
+            .store()?
+            .drop_epoch(declared_identity().embedding)
+            .map_err(|error| error.to_string())?;
+        Ok(MutationAck {
+            generation: report.generation(),
+            changed: true,
+        })
+    }
+
+    fn rollback_dropped_a_probe(&mut self) -> Result<(), String> {
+        match self.store()?.switch_epoch_alias(declared_identity()) {
+            Err(EpochTransitionError::EpochUnavailable { target })
+                if target == declared_identity() =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(format!(
+                "rollback probe returned wrong typed error: {error}"
+            )),
+            Ok(_) => Err("rollback probe restored a dropped epoch".to_owned()),
+        }
+    }
+
+    fn visible_epoch_ids(&mut self) -> Result<Vec<EpochId>, String> {
+        self.store()?
+            .snapshot()
+            .map_err(|error| error.to_string())
+            .map(|snapshot| {
+                snapshot
+                    .segments()
+                    .iter()
+                    .filter_map(|segment| segment.meta().epoch_id)
+                    .collect()
+            })
     }
 
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String> {
@@ -703,6 +884,26 @@ impl<E: Engine> Engine for SelfTestEngine<E> {
         self.inner.epoch_mismatch_probe(document)
     }
 
+    fn prepare_epoch_b(&mut self, documents: &[DocMutation]) -> Result<MutationAck, String> {
+        self.inner.prepare_epoch_b(documents)
+    }
+
+    fn switch_epoch(&mut self, epoch: ModelEpoch) -> Result<MutationAck, String> {
+        self.inner.switch_epoch(epoch)
+    }
+
+    fn drop_epoch_a(&mut self) -> Result<MutationAck, String> {
+        self.inner.drop_epoch_a()
+    }
+
+    fn rollback_dropped_a_probe(&mut self) -> Result<(), String> {
+        self.inner.rollback_dropped_a_probe()
+    }
+
+    fn visible_epoch_ids(&mut self) -> Result<Vec<EpochId>, String> {
+        self.inner.visible_epoch_ids()
+    }
+
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String> {
         let ack = self.inner.delete(doc_id)?;
         self.last_generation = ack.generation;
@@ -888,6 +1089,11 @@ pub fn run_program(
     let mut hybrid_searches = 0_usize;
     let mut hybrid_sealed_vector_documents = 0_usize;
     let mut hybrid_lexical_documents = 0_usize;
+    let mut epoch_preparations = 0_usize;
+    let mut epoch_alias_switches = 0_usize;
+    let mut epoch_rollbacks = 0_usize;
+    let mut epoch_drops = 0_usize;
+    let mut rejected_dropped_epoch_rollbacks = 0_usize;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         let operation_result = match op {
@@ -923,6 +1129,78 @@ pub fn run_program(
                     timestamp: *timestamp,
                 })
                 .map(|()| None),
+            Op::PrepareEpochB => {
+                let documents = model
+                    .live_documents()
+                    .into_iter()
+                    .map(|(doc_id, revision, timestamp)| DocMutation {
+                        doc_id,
+                        revision,
+                        timestamp,
+                    })
+                    .collect::<Vec<_>>();
+                engine.prepare_epoch_b(&documents).and_then(|ack| {
+                    model.prepare_epoch_b();
+                    epoch_preparations = epoch_preparations.saturating_add(1);
+                    let visible = engine.visible_epoch_ids()?;
+                    if let Some(violation) =
+                        alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                    {
+                        violations.push(violation);
+                    }
+                    Ok(Some(ack))
+                })
+            }
+            Op::SwitchAliasToB => engine.switch_epoch(ModelEpoch::B).and_then(|ack| {
+                if !model.switch_epoch(ModelEpoch::B) {
+                    return Err("model has no prepared epoch B".to_owned());
+                }
+                epoch_alias_switches = epoch_alias_switches.saturating_add(1);
+                let visible = engine.visible_epoch_ids()?;
+                if let Some(violation) =
+                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                {
+                    violations.push(violation);
+                }
+                Ok(Some(ack))
+            }),
+            Op::RollbackToA => engine.switch_epoch(ModelEpoch::A).and_then(|ack| {
+                if !model.switch_epoch(ModelEpoch::A) {
+                    return Err("model epoch A was already dropped".to_owned());
+                }
+                epoch_rollbacks = epoch_rollbacks.saturating_add(1);
+                let visible = engine.visible_epoch_ids()?;
+                if let Some(violation) =
+                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                {
+                    violations.push(violation);
+                }
+                Ok(Some(ack))
+            }),
+            Op::DropEpochA => engine.drop_epoch_a().and_then(|ack| {
+                if !model.drop_epoch_a() {
+                    return Err("model refused to drop epoch A".to_owned());
+                }
+                epoch_drops = epoch_drops.saturating_add(1);
+                let visible = engine.visible_epoch_ids()?;
+                if let Some(violation) =
+                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                {
+                    violations.push(violation);
+                }
+                Ok(Some(ack))
+            }),
+            Op::RollbackDroppedAProbe => engine.rollback_dropped_a_probe().and_then(|()| {
+                rejected_dropped_epoch_rollbacks =
+                    rejected_dropped_epoch_rollbacks.saturating_add(1);
+                let visible = engine.visible_epoch_ids()?;
+                if let Some(violation) =
+                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                {
+                    violations.push(violation);
+                }
+                Ok(None)
+            }),
             Op::Upsert {
                 doc_id,
                 revision,
@@ -1085,9 +1363,13 @@ pub fn run_program(
                     model.acknowledge(*doc_id, *revision, *timestamp);
                     match full_scan(&mut engine, &model, seed) {
                         Ok(observed) => {
-                            if let Some(violation) =
-                                epoch_identity_violation(seed, profile, op_index, &observed)
-                            {
+                            if let Some(violation) = epoch_identity_violation(
+                                seed,
+                                profile,
+                                op_index,
+                                identity_for(model.published_epoch()),
+                                &observed,
+                            ) {
                                 violations.push(violation);
                             }
                             if let Some(violation) = durability_prefix_violation(
@@ -1152,6 +1434,11 @@ pub fn run_program(
                     let invariant = match op {
                         Op::Open | Op::Close | Op::Reopen => Invariant::I8,
                         Op::EpochMismatchProbe { .. } => Invariant::I12,
+                        Op::PrepareEpochB
+                        | Op::SwitchAliasToB
+                        | Op::RollbackToA
+                        | Op::DropEpochA
+                        | Op::RollbackDroppedAProbe => Invariant::I14,
                         Op::Crash { .. } => Invariant::I4,
                         Op::Stats => Invariant::I6,
                         Op::HybridSearch { .. } => Invariant::I3,
@@ -1184,6 +1471,11 @@ pub fn run_program(
         hybrid_searches,
         hybrid_sealed_vector_documents,
         hybrid_lexical_documents,
+        epoch_preparations,
+        epoch_alias_switches,
+        epoch_rollbacks,
+        epoch_drops,
+        rejected_dropped_epoch_rollbacks,
         violations,
         program_bytes,
         faults_bytes,
@@ -1399,7 +1691,13 @@ fn check_search(
     {
         violations.push(violation);
     }
-    if let Some(violation) = epoch_identity_violation(seed, profile, op_index, observed) {
+    if let Some(violation) = epoch_identity_violation(
+        seed,
+        profile,
+        op_index,
+        identity_for(model.published_epoch()),
+        observed,
+    ) {
         violations.push(violation);
     }
     let forbidden = model.forbidden_ids();
@@ -1466,6 +1764,15 @@ fn check_search(
     };
     if exact {
         if let Some(detail) = exact_mismatch(&expected, &observed.hits) {
+            if model.epoch_b_prepared() {
+                violations.push(violation(
+                    Invariant::I14,
+                    seed,
+                    profile,
+                    op_index,
+                    format!("published epoch results are incomplete or mixed: {detail}"),
+                ));
+            }
             violations.push(violation(
                 Invariant::I3,
                 seed,
@@ -1592,9 +1899,9 @@ fn epoch_identity_violation(
     seed: u64,
     profile: FaultProfile,
     op_index: usize,
+    expected: EpochIdentity,
     observed: &SearchObservation,
 ) -> Option<Violation> {
-    let expected = declared_identity();
     (observed.epoch != Some(expected)).then(|| {
         violation(
             Invariant::I12,
@@ -1604,6 +1911,29 @@ fn epoch_identity_violation(
             format!(
                 "search response epoch {:?} did not name declared store epoch {expected:?}",
                 observed.epoch
+            ),
+        )
+    })
+}
+
+fn alias_visibility_violation(
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    model: &Model,
+    visible: &[EpochId],
+) -> Option<Violation> {
+    let expected = identity_for(model.published_epoch()).embedding;
+    let empty_with_live_documents = !model.is_empty() && visible.is_empty();
+    let mixed = visible.iter().any(|epoch| *epoch != expected);
+    (empty_with_live_documents || mixed).then(|| {
+        violation(
+            Invariant::I14,
+            seed,
+            profile,
+            op_index,
+            format!(
+                "published alias expected only {expected:?}, visible segment epochs were {visible:?}"
             ),
         )
     })
@@ -1995,7 +2325,7 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
                 expected_exact_rescore: true,
                 expected_budget_exhausted: false,
             };
-            epoch_identity_violation(seed, FaultProfile::None, 1, &observed)
+            epoch_identity_violation(seed, FaultProfile::None, 1, declared_identity(), &observed)
                 .expect("missing response epoch must trip I12")
         }
         Invariant::I13 => {
@@ -2005,6 +2335,20 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
             };
             diagnostics_violation(seed, FaultProfile::None, 1, 0, 0, &observed)
                 .expect("lying returned count must trip I13")
+        }
+        Invariant::I14 => {
+            let mut model = Model::default();
+            model.acknowledge(1, 1, 10);
+            model.prepare_epoch_b();
+            assert!(model.switch_epoch(ModelEpoch::B));
+            alias_visibility_violation(
+                seed,
+                FaultProfile::None,
+                1,
+                &model,
+                &[declared_identity().embedding],
+            )
+            .expect("mixed published epoch segments must trip I14")
         }
     }
 }
@@ -2028,8 +2372,8 @@ pub fn crash_child_from_env() -> Result<(), String> {
         .map_err(|_| "crash child doc id exceeds u32".to_owned())?;
     let revision = parse("ZE_ADV_CRASH_CHILD_REV")?;
     let timestamp = parse("ZE_ADV_CRASH_CHILD_TS")? as i64;
-    let store =
-        Store::open(&directory, RealEngine::options()).map_err(|error| error.to_string())?;
+    let store = Store::open(&directory, RealEngine::options(ModelEpoch::A))
+        .map_err(|error| error.to_string())?;
     let document = IngestDocument::new(
         DocumentVersion::new(DocId::new(u128::from(doc_id)), Revision::new(revision)),
         program::vector(doc_id, revision).to_vec(),
