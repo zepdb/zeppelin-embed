@@ -18,9 +18,11 @@
 //!
 //! # The active segment is still a `SegmentIndex`
 //!
-//! [`SegmentIndex`] remains the builder: it accepts documents, it is small
+//! [`SegmentIndex`](crate::fts::index::SegmentIndex) remains the builder: it
+//! accepts documents, it is small
 //! by construction, and phrase and snippet queries still read its positions
-//! directly. [`SealedSegment::seal`] is the one-way transition, and
+//! directly. [`SealedSegment::seal`](crate::fts::sealed::SealedSegment::seal)
+//! is the one-way transition, and
 //! `LexicalIndex` holds only sealed segments, so there is exactly ONE
 //! scoring path rather than two that must be proven to agree.
 //!
@@ -35,8 +37,9 @@
 //!
 //! Each block stores `(max_tf, min_len)` over its own field's length array.
 //! A query that weights several fields needs a bound over the MERGED stream,
-//! and [`TermStream::block_bound`] builds one that is sound for any weight
-//! table:
+//! and
+//! [`TermStream::block_bound`](crate::fts::sealed::TermStream::block_bound)
+//! builds one that is sound for any weight table:
 //!
 //! ```text
 //! merged tf  T(r) = floor(sum_f tf_f(r) * w_f / 1000)
@@ -660,8 +663,7 @@ impl ListCursor<'_> {
 
     /// Returns the unscaled term frequency at the cursor.
     ///
-    /// The first call against a block pays that block's tf decode; see
-    /// [`Self::ensure_tfs`].
+    /// The first call against a block lazily decodes that block's tf stream.
     #[must_use]
     pub fn current_tf(&mut self) -> Option<u32> {
         if self.block == NO_BLOCK || !self.ensure_tfs() {

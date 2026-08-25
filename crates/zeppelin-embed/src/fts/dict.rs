@@ -19,7 +19,8 @@
 //! # Layout
 //!
 //! Terms are sorted bytewise ascending and grouped into blocks of
-//! [`TERMS_PER_BLOCK`]. Within a block the first term is stored in full and
+//! [`TERMS_PER_BLOCK`](crate::fts::dict::TERMS_PER_BLOCK). Within a block the
+//! first term is stored in full and
 //! every later term stores `(shared_prefix_len, suffix)` against its
 //! predecessor. A materialized block index holds each block's full head term
 //! and its byte offset, so a lookup binary-searches the heads — touching one

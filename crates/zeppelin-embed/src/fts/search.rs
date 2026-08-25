@@ -16,10 +16,10 @@
 //!
 //! # Global document ids
 //!
-//! A [`GlobalDocId`] pairs a segment ordinal with a segment-local row. Row
-//! ids are dense and segment-local by task 07 invariant, so a store-wide
-//! identity has to carry both. Ordering is by segment then row, which is
-//! insertion order, which is time order.
+//! A [`GlobalDocId`](crate::fts::search::GlobalDocId) pairs a segment ordinal
+//! with a segment-local row. Row ids are dense and segment-local by task 07
+//! invariant, so a store-wide identity has to carry both. Ordering is by
+//! segment then row, which is insertion order, which is time order.
 
 use std::borrow::Cow;
 

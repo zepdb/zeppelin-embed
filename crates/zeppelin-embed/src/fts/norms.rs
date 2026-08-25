@@ -14,7 +14,7 @@
 //!
 //! The accuracy cost is carried from the research, not measured here: Lucene
 //! has shipped byte norms for two decades and the task-13 spec records the
-//! trade as "free 4x, .0002 AP cost [measured]". That figure belongs to the
+//! measured trade as "free 4x, .0002 AP cost". That figure belongs to the
 //! source it came from; this module does not restate it as its own result.
 //!
 //! # The encoding

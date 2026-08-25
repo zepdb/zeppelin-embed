@@ -2,7 +2,9 @@
 //!
 //! # Geometry, and why the block size is a header field
 //!
-//! Blocks hold [`DEFAULT_POSTINGS_PER_BLOCK`] postings. The research
+//! Blocks hold
+//! [`DEFAULT_POSTINGS_PER_BLOCK`](crate::fts::postings::DEFAULT_POSTINGS_PER_BLOCK)
+//! postings. The research
 //! disagrees with itself usefully here: ~40 postings per block prunes best
 //! on GOV2 (3.6 ms against 4.2 ms at 128 — `research/02a:283`), but 128 is
 //! what makes SIMD decode clean in Lucene and tantivy. Both numbers are

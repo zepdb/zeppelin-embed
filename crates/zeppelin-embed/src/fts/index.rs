@@ -2,7 +2,8 @@
 //!
 //! # Global statistics are the whole point
 //!
-//! [`LexicalIndex`] owns every segment, and every statistic the scorer needs
+//! [`LexicalIndex`](crate::fts::index::LexicalIndex) owns every segment, and
+//! every statistic the scorer needs
 //! — `N`, `avgdl`, and per-term `df` — is derived across all of them. A
 //! segment cannot answer a scoring question by itself and is not asked to.
 //!

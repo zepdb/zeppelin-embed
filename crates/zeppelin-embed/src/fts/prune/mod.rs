@@ -9,11 +9,11 @@
 //! not the constants.
 //!
 //! What it must never cost is a single changed result. Every function here
-//! decides only *which documents get scored*. The scoring itself is
-//! [`crate::fts::search::merge_term`] and [`crate::fts::bm25::term_score`],
-//! shared verbatim with the exhaustive path, so `prop_pruned_topk_equals_
-//! exhaustive` is a statement about skipping decisions rather than about
-//! two scorers agreeing by luck.
+//! decides only *which documents get scored*. Both paths read merged postings
+//! through [`crate::fts::sealed::TermStream`] and score them with
+//! [`crate::fts::bm25::TermScorer::score`], so `prop_pruned_topk_equals_
+//! exhaustive` is a statement about skipping decisions rather than about two
+//! scorers agreeing by luck.
 //!
 //! **If a bound is uncertain, evaluate.** A slow answer is a bug report; a
 //! wrong answer is a lost user.

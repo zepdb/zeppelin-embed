@@ -102,9 +102,9 @@ pub fn prefix_sum_scalar(values: &mut [u32], base: u32) {
 ///
 /// Two consequences, both measured rather than assumed. The generic ladder
 /// below is effectively dead on real data, so its shape does not matter.
-/// And the width-above-25 scalar cliff in [`neon::unpack_neon`] is
-/// unreachable: no block on either corpus came close. That closes the
-/// question rather than leaving it open — see the campaign notes for K3.
+/// And the width-above-25 scalar cliff in the generic NEON unpacker is
+/// unreachable: no block on either corpus came close. That closes the question
+/// rather than leaving it open — see the campaign notes for K3.
 pub const NARROW_MAX_BITS: u8 = 8;
 
 /// Runs the bit-unpack using the best available arm.
@@ -139,10 +139,10 @@ pub fn unpack(input: &[u8], bits: u8, count: usize, output: &mut [u32]) -> Optio
 ///
 /// [`unpack_scalar`] carries an accumulator across values and refills it a
 /// byte at a time, so every value pays a loop test and a conditional refill.
-/// [`neon::unpack_neon`] is worse at these widths: it builds its four-lane
+/// The generic NEON unpacker is worse at these widths: it builds its four-lane
 /// window with a scalar gather of four bytes per lane, sixteen byte loads to
-/// produce four values whose packed form occupies at most four bytes in
-/// total, before it issues a single vector shift.
+/// produce four values whose packed form occupies at most four bytes in total,
+/// before it issues a single vector shift.
 ///
 /// Here a group of eight is one aligned load and eight independent
 /// shift-and-mask pairs. No accumulator, no refill, no branch inside the

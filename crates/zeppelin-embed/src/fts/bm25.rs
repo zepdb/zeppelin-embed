@@ -11,7 +11,8 @@
 //!
 //! # Global statistics, never segment-local
 //!
-//! [`CorpusStats`] carries `doc_count` and `total_tokens` for the WHOLE
+//! [`CorpusStats`](crate::fts::bm25::CorpusStats) carries `doc_count` and
+//! `total_tokens` for the WHOLE
 //! store, across every segment. Segment-local IDF is a documented
 //! real-world failure (Milvus Lite) and the prime suspect for that 30% gap.
 //! `prop_engine_bm25_equals_model` is what makes it unconstructible here:
@@ -28,7 +29,8 @@
 //! # Argument order is pinned by types
 //!
 //! `bm25_term_score(tf, df, len)` invites a silent transposition — three
-//! integers, any order compiles. [`Tf`], [`Df`], and [`DocLen`] are
+//! integers, any order compiles. [`Tf`](crate::fts::bm25::Tf),
+//! [`Df`](crate::fts::bm25::Df), and [`DocLen`](crate::fts::bm25::DocLen) are
 //! separate newtypes so a swap is a compile error. This trap is recorded in
 //! the prior engine's own notes; it is not hypothetical.
 
