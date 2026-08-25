@@ -879,6 +879,16 @@ pub struct GraphSearcher<'a> {
     rescore: &'a [f32],
     entries: [CheckedNodeId; 4],
     scratch: &'a mut GraphSearchScratch,
+    #[cfg(test)]
+    hop_cancellation: Option<TestHopCancellation>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestHopCancellation {
+    after_hops: usize,
+    token: crate::lifecycle::CancelToken,
+    observed_hops: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 impl<'a> GraphSearcher<'a> {
@@ -960,7 +970,35 @@ impl<'a> GraphSearcher<'a> {
             rescore,
             entries: [first?, second?, third?, fourth?],
             scratch,
+            #[cfg(test)]
+            hop_cancellation: None,
         })
+    }
+
+    #[cfg(test)]
+    fn cancel_after_hops(
+        &mut self,
+        after_hops: usize,
+        token: crate::lifecycle::CancelToken,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
+        let observed_hops = std::rc::Rc::new(std::cell::Cell::new(0));
+        self.hop_cancellation = Some(TestHopCancellation {
+            after_hops,
+            token,
+            observed_hops: std::rc::Rc::clone(&observed_hops),
+        });
+        observed_hops
+    }
+
+    #[cfg(test)]
+    fn observe_hop_for_cancellation(&self, hops: usize) {
+        let Some(source) = &self.hop_cancellation else {
+            return;
+        };
+        source.observed_hops.set(hops);
+        if hops == source.after_hops {
+            source.token.cancel();
+        }
     }
 
     /// Traverses, then exact-rescores the complete retained pool.
@@ -1120,6 +1158,8 @@ impl<'a> GraphSearcher<'a> {
                 break;
             }
             counters.hops += 1;
+            #[cfg(test)]
+            self.observe_hop_for_cancellation(counters.hops);
             let (degree, neighbors) = self.graph.adjacency_checked(candidate.row_id)?;
             let degree = usize::from(degree);
             self.scratch.hop_candidates.clear();
@@ -1679,7 +1719,7 @@ const fn observed_qos() -> (QueryQosClass, i32) {
     clippy::unwrap_used
 )]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngSeed, TestRunner};
@@ -2339,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_interrupts_a_traversal_promptly() {
+    fn cancellation_is_visible_across_threads_during_traversal() {
         let (encoded, rescore) = long_chain_graph_fixture(40_000);
         let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
         let query = vec![0.0_f32; DIMS];
@@ -2353,7 +2393,6 @@ mod tests {
         let token = CancelToken::new();
         let control = QueryControl::Cancel(token.clone());
         let cancellation = QueryCancellation::new(&control, &lease);
-        let started = Instant::now();
         let error = std::thread::scope(|scope| {
             let canceller = scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(2));
@@ -2367,13 +2406,63 @@ mod tests {
             result
         })
         .expect_err("in-flight traversal must stop");
-        let elapsed = started.elapsed();
 
         assert_eq!(error, super::GraphSearchError::Cancelled { partial: false });
-        assert!(
-            elapsed < Duration::from_millis(25),
-            "in-flight cancelled traversal took {elapsed:?}"
-        );
+    }
+
+    #[test]
+    fn pre_cancelled_token_is_rejected_at_search_entry() {
+        let (encoded, rescore) = long_chain_graph_fixture(16);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vec![0.0_f32; DIMS];
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
+        let directory = tempfile::tempdir().expect("temporary store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("store opens");
+        let lease = store.snapshot().expect("snapshot lease");
+        let token = CancelToken::new();
+        token.cancel();
+        let control = QueryControl::Cancel(token);
+        let cancellation = QueryCancellation::new(&control, &lease);
+
+        let error = searcher
+            .search(
+                GraphSearchRequest::new(&query, 1, 0x19_0406).with_ef(16),
+                Some(&cancellation),
+            )
+            .expect_err("pre-cancelled search must stop at entry");
+
+        assert_eq!(error, GraphSearchError::Cancelled { partial: false });
+    }
+
+    #[test]
+    fn counting_token_cancels_after_exact_number_of_hops() {
+        let (encoded, rescore) = long_chain_graph_fixture(40_000);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vec![0.0_f32; DIMS];
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fixture scratch");
+        let mut searcher =
+            GraphSearcher::new(graph, &rescore, &mut scratch).expect("fixture geometry is valid");
+        let directory = tempfile::tempdir().expect("temporary store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("store opens");
+        let lease = store.snapshot().expect("snapshot lease");
+        let token = CancelToken::new();
+        let observed_hops = searcher.cancel_after_hops(7, token.clone());
+        let control = QueryControl::Cancel(token);
+        let cancellation = QueryCancellation::new(&control, &lease);
+
+        let error = searcher
+            .search(
+                GraphSearchRequest::new(&query, 1, 0x19_0406).with_ef(200),
+                Some(&cancellation),
+            )
+            .expect_err("counting token must cancel during traversal");
+
+        assert_eq!(error, GraphSearchError::Cancelled { partial: false });
+        assert_eq!(observed_hops.get(), 7);
     }
 
     #[test]

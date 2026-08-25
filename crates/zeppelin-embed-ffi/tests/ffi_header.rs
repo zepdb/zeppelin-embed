@@ -85,26 +85,55 @@ fn run_nm(object: &Path) -> Option<Output> {
     }
 }
 
-#[test]
-fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
+fn workspace_root() -> PathBuf {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace = crate_dir
+    crate_dir
         .parent()
         .and_then(Path::parent)
-        .expect("workspace root");
-    let archive = workspace.join("target/release/libzeppelin_embed_ffi.a");
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn build_release_staticlib(workspace: &Path, target_dir: &Path) -> PathBuf {
     // Always rebuild. Reusing an existing archive measures whatever bytes a
-    // previous run happened to leave behind, so a newly exported symbol is
-    // invisible to this gate on any machine with a warm `target/release` --
-    // the drift gate then reports green about source it never read. The
-    // rebuild is incremental and is a no-op when nothing changed.
-    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+    // previous run happened to leave behind. The private target also prevents
+    // an instrumented coverage build from poisoning the workspace release
+    // archive inspected by a later plain test run.
+    let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
+    command
         .current_dir(workspace)
-        .args(["build", "-p", "zeppelin-embed-ffi", "--release"])
-        .status()
-        .expect("build FFI staticlib");
+        .env("CARGO_TARGET_DIR", target_dir)
+        .args(["build", "-p", "zeppelin-embed-ffi", "--release"]);
+    for key in [
+        "LLVM_PROFILE_FILE",
+        "RUSTC_WRAPPER",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_LLVM_COV",
+        "CARGO_LLVM_COV_SHOW_ENV",
+        "CARGO_LLVM_COV_TARGET_DIR",
+        "CARGO_LLVM_COV_BUILD_DIR",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_COVERAGE_TARGET",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_HOST",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_PRE_EXISTING",
+    ] {
+        command.env_remove(key);
+    }
+    let status = command.status().expect("build FFI staticlib");
     assert!(status.success(), "release staticlib build failed");
+    let archive = target_dir.join("release/libzeppelin_embed_ffi.a");
     assert!(archive.is_file(), "release staticlib missing after build");
+    archive
+}
+
+fn assert_header_gate() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = workspace_root();
+    let target_dir = workspace.join("target/ffi-header-gate");
+    let archive = build_release_staticlib(&workspace, &target_dir);
 
     let header = std::fs::read_to_string(crate_dir.join("include/zeppelin_embed.h"))
         .expect("committed header");
@@ -189,4 +218,82 @@ fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
             "{function} omitted the sole catch_unwind wrapper macro"
         );
     }
+}
+
+#[test]
+fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
+    assert_header_gate();
+}
+
+struct ArchiveRestore {
+    archives: Vec<(PathBuf, Vec<u8>)>,
+}
+
+impl Drop for ArchiveRestore {
+    fn drop(&mut self) {
+        for (path, original) in &self.archives {
+            std::fs::write(path, original).expect("restore release staticlib");
+        }
+    }
+}
+
+fn plant_instrumented_release_archive() -> ArchiveRestore {
+    let workspace = workspace_root();
+    let shared_target = workspace.join("target");
+    let archive = build_release_staticlib(&workspace, &shared_target);
+    let cached_archive = workspace.join("target/release/deps/libzeppelin_embed_ffi.a");
+    let archives = [&archive, &cached_archive]
+        .into_iter()
+        .map(|path| {
+            (
+                path.to_path_buf(),
+                std::fs::read(path).expect("release staticlib backup"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let scratch = tempfile::tempdir().expect("coverage-record object directory");
+    let source = scratch.path().join("coverage_record.rs");
+    std::fs::write(
+        &source,
+        "#[unsafe(no_mangle)]\npub static __covrec_BL156: u8 = 0;\n",
+    )
+    .expect("coverage-record source");
+    let member = scratch
+        .path()
+        .join("zeppelin_embed_ffi.zeppelin_embed_ffi.coverage.rcgu.o");
+    let status = Command::new("rustc")
+        .args(["--crate-type=lib", "--emit=obj", "-o"])
+        .arg(&member)
+        .arg(&source)
+        .status()
+        .expect("compile coverage-record object");
+    assert!(status.success(), "coverage-record object build failed");
+    for path in [&archive, &cached_archive] {
+        let status = Command::new("ar")
+            .args(["-r", path.to_str().expect("UTF-8 archive path")])
+            .arg(&member)
+            .status()
+            .expect("plant coverage-record archive member");
+        assert!(status.success(), "planting coverage-record member failed");
+    }
+    let members = Command::new("ar")
+        .args(["-t", archive.to_str().expect("UTF-8 archive path")])
+        .output()
+        .expect("list planted staticlib members");
+    assert!(
+        String::from_utf8(members.stdout)
+            .expect("UTF-8 planted archive member list")
+            .lines()
+            .any(|name| name == "zeppelin_embed_ffi.zeppelin_embed_ffi.coverage.rcgu.o"),
+        "coverage-record member was not added to the release staticlib"
+    );
+
+    ArchiveRestore { archives }
+}
+
+#[test]
+fn header_gate_passes_twice_in_a_row_after_an_instrumented_build() {
+    let _restore = plant_instrumented_release_archive();
+    assert_header_gate();
+    assert_header_gate();
 }

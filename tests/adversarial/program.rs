@@ -3,9 +3,27 @@ use rand::Rng;
 use super::test_support;
 
 pub const DIMENSIONS: usize = 4;
-/// PLACEHOLDER -- NOT YET MEASURED. Test-only graph reachability extent; the
-/// shipped tier threshold remains unchanged and is never inferred from this.
+/// The graph promotion threshold this harness hands to
+/// `maintain_with_test_thresholds`, and therefore the row count a graph
+/// program must ingest before `maintain()` will build one.
+///
+/// This is a HARNESS KNOB, not a measurement: it only has to be large enough
+/// that a graph is genuinely built and traversed, and small enough that the
+/// fault matrix stays cheap. The shipped tier threshold is
+/// `PROVISIONAL_TIER_THRESHOLDS.graph_min_rows` (10,000) and is never
+/// inferred from this value.
 pub const GRAPH_ROWS: u32 = 96;
+
+/// Whether this seed's program exercises the graph tier.
+///
+/// BL-102: this was `seed == 0`, so across the smoke sweep's 5 profiles x 12
+/// seeds the graph tier saw 5 of 60 runs, each contributing a single Graph
+/// search and a single Auto search. One seed in three quadruples that to 20
+/// of 60 while keeping most of the matrix on the cheap scan program.
+#[must_use]
+pub const fn exercises_graph(seed: u64) -> bool {
+    seed.is_multiple_of(3)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchKind {
@@ -206,8 +224,12 @@ impl Program {
     pub fn generate(seed: u64) -> Self {
         let mut rng = test_support::seeded_rng("adversarial::program", seed);
         let mut ops = vec![Op::Open];
-        let initial_count = if seed == 0 { GRAPH_ROWS } else { 24 };
-        let initial_allowed_count = if seed == 0 {
+        let initial_count = if exercises_graph(seed) {
+            GRAPH_ROWS
+        } else {
+            24
+        };
+        let initial_allowed_count = if exercises_graph(seed) {
             initial_count.saturating_sub(8)
         } else {
             initial_count
@@ -218,7 +240,7 @@ impl Program {
             revision: 1,
             timestamp: 10,
         });
-        if seed == 0 {
+        if exercises_graph(seed) {
             ops.push(Op::Ingest {
                 first_id: initial_allowed_count.saturating_add(1),
                 count: 8,
@@ -273,7 +295,7 @@ impl Program {
             Op::Search {
                 query: 1,
                 k: 8,
-                kind: if seed == 0 {
+                kind: if exercises_graph(seed) {
                     SearchKind::Graph
                 } else {
                     SearchKind::Scan
@@ -285,7 +307,7 @@ impl Program {
             Op::Search {
                 query: 1,
                 k: 8,
-                kind: if seed == 0 {
+                kind: if exercises_graph(seed) {
                     SearchKind::Auto
                 } else {
                     SearchKind::Scan
@@ -322,9 +344,9 @@ impl Program {
                 timestamp: 31,
             },
             Op::Search {
-                query: if seed == 0 { 1 } else { 2 },
+                query: if exercises_graph(seed) { 1 } else { 2 },
                 k: 8,
-                kind: if seed == 0 {
+                kind: if exercises_graph(seed) {
                     SearchKind::Auto
                 } else {
                     SearchKind::Scan

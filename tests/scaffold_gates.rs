@@ -152,8 +152,12 @@ fn size_budget_fails_on_inflated_binary() {
         !output.status.success(),
         "size gate accepted an artifact under a zero-KB budget:\n{text}"
     );
+    let rejected_for_configured_budget = text.lines().any(|line| {
+        line.starts_with("error: core stripped staticlib linked size ")
+            && line.ends_with(" KB exceeds budget 0 KB")
+    });
     assert!(
-        text.contains("0 KB") || text.contains("budget"),
-        "size failure did not identify the configured budget:\n{text}"
+        rejected_for_configured_budget,
+        "size failure did not emit the exact configured-budget rejection line:\n{text}"
     );
 }
