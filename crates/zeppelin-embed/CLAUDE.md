@@ -425,3 +425,35 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Manifest replacement commits before old-segment unlink, one segment at a
   time. Orphan replacement files and old segments are swept against the current
   manifest during recovery; the durable intent is the sole completion marker.
+
+## Task 21 Part A epoch-identity invariants
+
+- Open enforces the complete four-branch identity table before WAL recovery or
+  creation: a non-empty registry plus the same declared identity opens; a
+  non-empty registry plus a different declaration is `EpochMismatch`; a
+  non-empty registry without a declaration is `EpochUndeclared`; and an empty
+  registry preserves legacy behavior only when no identity is declared. A
+  read-write store created with a declared epoch commits the registry at
+  creation, before any WAL write is admitted, so an unsealed store cannot be
+  reopened under a different epoch; this creation-time stamp is necessary
+  because `close` does not seal. A read-only declaration without a manifest and
+  an existing empty-registry manifest both reject as `EpochUnstamped`. Every
+  rejected open leaves the manifest and WAL untouched.
+- `OpenOptions` is no longer `Copy` because it carries a declared `StoreEpoch`;
+  this is a deliberate breaking public API change.
+- A stamped store requires every embedding write to declare the matching
+  embedding/tokenizer identity. Once a migration starts, the old epoch becomes
+  read-only; that is the recorded product rule even though Part A does not
+  implement migration.
+- `EpochId` is an xxh3-64 digest over the canonical identity fields only. Store
+  generations, document counts, row counts, timestamps, and every other kind
+  of mutable state never enter the digest.
+- Epoch identity rides in the already-frozen `EpochMeta` registry: its id is the
+  full embedding digest, its model is the human-readable label, and its
+  tokenizer is lowercase hex. Part A changes no manifest byte layout and moves
+  no existing golden.
+- Epoch identity is now declared and enforced. The migration path -- alias,
+  per-segment epoch tags, and background re-embedding -- is not implemented and
+  remains blocked on an owner decision about the manifest layout. The last free
+  format change remains unspent. Pre-launch format-change authorization lapses
+  only when that change is spent and the migration path lands, not before.

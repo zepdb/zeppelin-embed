@@ -392,6 +392,7 @@ fn publish_transition(
         .max(active_state.generation)
         .checked_add(1)
         .ok_or(MaintenanceError::Store(StoreError::GenerationOverflow))?;
+    manifest.epochs = store.epoch_registry(&manifest.epochs);
     commit_manifest(
         &StdVfs,
         &store.directory,

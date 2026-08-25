@@ -141,6 +141,7 @@ impl Store {
         }
         let mut segments = manifest.segments;
         segments.push(meta);
+        let epochs = self.epoch_registry(&manifest.epochs);
         commit_manifest(
             vfs,
             &self.directory,
@@ -148,7 +149,7 @@ impl Store {
                 generation,
                 log_seq: absorbed_through,
                 segments,
-                epochs: manifest.epochs,
+                epochs,
                 schema: manifest.schema,
             },
             self.durability_policy,

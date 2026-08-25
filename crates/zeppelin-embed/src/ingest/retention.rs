@@ -186,6 +186,7 @@ impl Store {
             .ok_or(StoreError::GenerationOverflow)?;
         manifest.generation = generation;
         manifest.segments = selection.retained;
+        manifest.epochs = self.epoch_registry(&manifest.epochs);
         // Construct and validate the replacement snapshot before crossing the
         // manifest commit point. After commit, publication is an in-memory
         // pointer swap and cannot fail on segment I/O or accounting budget.

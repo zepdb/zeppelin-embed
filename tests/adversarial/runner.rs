@@ -4,9 +4,14 @@ use std::process::Command;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EpochIdentity, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
@@ -29,6 +34,34 @@ use super::program::{self, Op, Program, SearchKind};
 
 const THREAD_BUDGET: usize = 1;
 
+fn declared_store_epoch() -> StoreEpoch {
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            model_id: "adversarial-embedding".to_owned(),
+            model_version: "1".to_owned(),
+            weights_digest: vec![0xad, 0x12],
+            dims: program::DIMENSIONS as u32,
+            normalization: Normalization::L2,
+            prompt_prefix: "adversarial: ".to_owned(),
+            max_tokens: 64,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
+fn declared_identity() -> EpochIdentity {
+    declared_store_epoch().identity()
+}
+
+fn conflicting_identity() -> EpochIdentity {
+    let mut epoch = declared_store_epoch();
+    epoch.embedding.model_version = "2".to_owned();
+    epoch.identity()
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Invariant {
     I1,
@@ -42,6 +75,7 @@ pub enum Invariant {
     I9,
     I10,
     I11,
+    I12,
 }
 
 impl Invariant {
@@ -59,6 +93,7 @@ impl Invariant {
             Self::I9 => "I9 generation-monotonicity",
             Self::I10 => "I10 purge-proof",
             Self::I11 => "I11 revision-ordering",
+            Self::I12 => "I12 responses-name-the-store-epoch",
         }
     }
 }
@@ -134,6 +169,7 @@ struct Hit {
 struct SearchObservation {
     hits: Vec<Hit>,
     generation: u64,
+    epoch: Option<EpochIdentity>,
     graph_available: bool,
     graph_segments: usize,
     graph_rescored: usize,
@@ -172,6 +208,7 @@ struct DocMutation {
 trait Engine {
     fn open(&mut self) -> Result<(), String>;
     fn ingest(&mut self, documents: &[DocMutation]) -> Result<MutationAck, String>;
+    fn epoch_mismatch_probe(&mut self, document: DocMutation) -> Result<(), String>;
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String>;
     fn seal(&mut self, vfs: &dyn Vfs) -> Result<MutationAck, String>;
     fn drop_partition(
@@ -224,7 +261,9 @@ impl RealEngine {
     }
 
     fn options() -> OpenOptions {
-        OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable)
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_epoch(declared_store_epoch())
     }
 }
 
@@ -255,12 +294,40 @@ impl Engine for RealEngine {
             .collect::<Vec<_>>();
         let ack = self
             .store()?
-            .ingest(IngestBatch::new(batch))
+            .ingest(IngestBatch::new(batch).with_epoch(declared_identity()))
             .map_err(|error| error.to_string())?;
         Ok(MutationAck {
             generation: ack.generation(),
             changed: true,
         })
+    }
+
+    fn epoch_mismatch_probe(&mut self, document: DocMutation) -> Result<(), String> {
+        let before = self.generation()?;
+        let batch = IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(
+                    DocId::new(u128::from(document.doc_id)),
+                    Revision::new(document.revision),
+                ),
+                program::vector(document.doc_id, document.revision).to_vec(),
+            )
+            .with_timestamp(document.timestamp)
+            .with_metadata(program::sentinel(document.doc_id)),
+        ])
+        .with_epoch(conflicting_identity());
+        match self.store()?.ingest(batch) {
+            Err(IngestError::EpochMismatch(_)) => {}
+            Err(error) => return Err(format!("epoch probe returned wrong typed error: {error}")),
+            Ok(_) => return Err("epoch probe accepted a conflicting identity".to_owned()),
+        }
+        let after = self.generation()?;
+        if after != before {
+            return Err(format!(
+                "epoch probe changed generation from {before} to {after}"
+            ));
+        }
+        Ok(())
     }
 
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String> {
@@ -383,6 +450,7 @@ impl Engine for RealEngine {
         Ok(SearchObservation {
             hits,
             generation: outcome.generation,
+            epoch: outcome.epoch,
             graph_available: self.graphs_built != 0,
             graph_segments: outcome.graph_stats.segments_traversed,
             graph_rescored: outcome.graph_stats.candidates_rescored,
@@ -442,6 +510,7 @@ impl Engine for RealEngine {
         Ok(SearchObservation {
             hits,
             generation: outcome.generation,
+            epoch: None,
             graph_available,
             graph_segments: filtered_graph_segments,
             graph_rescored: 0,
@@ -561,6 +630,10 @@ impl<E: Engine> Engine for SelfTestEngine<E> {
             self.last_generation = ack.generation;
         }
         Ok(ack)
+    }
+
+    fn epoch_mismatch_probe(&mut self, document: DocMutation) -> Result<(), String> {
+        self.inner.epoch_mismatch_probe(document)
     }
 
     fn delete(&mut self, doc_id: u32) -> Result<MutationAck, String> {
@@ -769,6 +842,17 @@ pub fn run_program(
                     Some(ack)
                 })
             }
+            Op::EpochMismatchProbe {
+                doc_id,
+                revision,
+                timestamp,
+            } => engine
+                .epoch_mismatch_probe(DocMutation {
+                    doc_id: *doc_id,
+                    revision: *revision,
+                    timestamp: *timestamp,
+                })
+                .map(|()| None),
             Op::Upsert {
                 doc_id,
                 revision,
@@ -909,6 +993,11 @@ pub fn run_program(
                     model.acknowledge(*doc_id, *revision, *timestamp);
                     match full_scan(&mut engine, &model, seed) {
                         Ok(observed) => {
+                            if let Some(violation) =
+                                epoch_identity_violation(seed, profile, op_index, &observed)
+                            {
+                                violations.push(violation);
+                            }
                             if let Some(violation) = durability_prefix_violation(
                                 seed, profile, op_index, &model, &observed,
                             ) {
@@ -970,6 +1059,7 @@ pub fn run_program(
                 if !injected {
                     let invariant = match op {
                         Op::Open | Op::Close | Op::Reopen => Invariant::I8,
+                        Op::EpochMismatchProbe { .. } => Invariant::I12,
                         Op::Crash { .. } => Invariant::I4,
                         Op::Stats => Invariant::I6,
                         _ if content_fault_fired => Invariant::I7,
@@ -1094,6 +1184,9 @@ fn check_search(
     content_fault_fired: bool,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
+    if let Some(violation) = epoch_identity_violation(seed, profile, op_index, observed) {
+        violations.push(violation);
+    }
     let forbidden = model.forbidden_ids();
     if let Some(hit) = observed
         .hits
@@ -1219,6 +1312,27 @@ fn check_search(
         }
     }
     violations
+}
+
+fn epoch_identity_violation(
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    observed: &SearchObservation,
+) -> Option<Violation> {
+    let expected = declared_identity();
+    (observed.epoch != Some(expected)).then(|| {
+        violation(
+            Invariant::I12,
+            seed,
+            profile,
+            op_index,
+            format!(
+                "search response epoch {:?} did not name declared store epoch {expected:?}",
+                observed.epoch
+            ),
+        )
+    })
 }
 
 fn exact_mismatch(expected: &[ExpectedHit], observed: &[Hit]) -> Option<String> {
@@ -1397,6 +1511,7 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
     let observation = |hits, graph_available, graph_segments, graph_rescored| SearchObservation {
         hits,
         generation: 1,
+        epoch: Some(declared_identity()),
         graph_available,
         graph_segments,
         graph_rescored,
@@ -1574,6 +1689,19 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
             purge_proof_violation(seed, FaultProfile::None, 1, directory.path(), 1)
                 .expect("persisted purge sentinel must trip I10")
         }
+        Invariant::I12 => {
+            let observed = SearchObservation {
+                hits: Vec::new(),
+                generation: 1,
+                epoch: None,
+                graph_available: false,
+                graph_segments: 0,
+                graph_rescored: 0,
+                graph_pruned: 0,
+            };
+            epoch_identity_violation(seed, FaultProfile::None, 1, &observed)
+                .expect("missing response epoch must trip I12")
+        }
     }
 }
 
@@ -1605,7 +1733,7 @@ pub fn crash_child_from_env() -> Result<(), String> {
     .with_timestamp(timestamp)
     .with_metadata(program::sentinel(doc_id));
     let ack = store
-        .ingest(IngestBatch::new(vec![document]))
+        .ingest(IngestBatch::new(vec![document]).with_epoch(declared_identity()))
         .map_err(|error| error.to_string())?;
     std::fs::write(marker, ack.generation().to_string())
         .map_err(|error| format!("write crash acknowledgement: {error}"))?;

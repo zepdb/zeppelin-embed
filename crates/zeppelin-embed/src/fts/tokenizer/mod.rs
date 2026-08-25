@@ -275,6 +275,10 @@ pub struct TokenizerEpoch(u64);
 const EPOCH_MAGIC: &[u8; 8] = b"ZETOKEP1";
 
 impl TokenizerEpoch {
+    pub(crate) const fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+
     /// Computes the epoch of a configuration.
     ///
     /// # The canonical digest input

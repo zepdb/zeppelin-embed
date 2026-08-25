@@ -60,11 +60,13 @@ impl PreparedSealedTombstones {
     }
 
     pub(crate) fn commit(
-        self,
+        mut self,
+        store: &Store,
         vfs: &dyn Vfs,
         directory: &Path,
         policy: DurabilityPolicy,
     ) -> Result<(PublishedSnapshot, Vec<PathBuf>), StoreError> {
+        self.manifest.epochs = store.epoch_registry(&self.manifest.epochs);
         commit_manifest(vfs, directory, &self.manifest, policy).map_err(StoreError::Manifest)?;
         Ok((self.snapshot, self.replaced_paths))
     }
@@ -599,6 +601,7 @@ impl Store {
             })?;
             *target = replacement;
             manifest.generation = generation;
+            manifest.epochs = self.epoch_registry(&manifest.epochs);
             let remapped =
                 PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
             commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
@@ -644,6 +647,7 @@ impl Store {
         let (records, tombstoned) = active_wal_records(&next_active)?;
         if records.is_empty() && manifest.generation < active_state.generation {
             manifest.generation = active_state.generation;
+            manifest.epochs = self.epoch_registry(&manifest.epochs);
             let remapped =
                 PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
             commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
@@ -1270,6 +1274,11 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
 fn purge_ingest_error(error: super::IngestError) -> PurgeError {
     match error {
         super::IngestError::Store(error) => PurgeError::Store(error),
+        super::IngestError::EpochMismatch(error) => {
+            PurgeError::Store(StoreError::EpochMismatch(error))
+        }
+        super::IngestError::EpochUndeclared => PurgeError::Store(StoreError::EpochUndeclared),
+        super::IngestError::EpochUnstamped => PurgeError::Store(StoreError::EpochUnstamped),
         super::IngestError::Payload(error) => PurgeError::WalPayload(error),
         super::IngestError::EmptyBatch => {
             PurgeError::IntentDecode("active WAL rewrite produced an empty batch error".to_owned())
