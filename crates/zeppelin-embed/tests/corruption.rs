@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
+use std::ops::Range;
 use std::path::Path;
 
 use tempfile::tempdir;
@@ -706,6 +707,154 @@ impl ManifestMutation {
     }
 }
 
+#[derive(Debug)]
+enum ManifestMutationExpectation {
+    Field {
+        name: &'static str,
+        target: Range<usize>,
+        neighbours: Vec<(&'static str, Range<usize>)>,
+    },
+    Truncation {
+        expected_len: usize,
+    },
+}
+
+#[derive(Debug)]
+struct ManifestMutationGuard {
+    before: Vec<u8>,
+    expectation: ManifestMutationExpectation,
+}
+
+impl ManifestMutationGuard {
+    fn new(mutation: ManifestMutation, bytes: &[u8], manifest: &Manifest) -> Self {
+        let payload_start = FILE_HEADER_LEN + 8;
+        let expectation = match mutation {
+            ManifestMutation::BadMagic => ManifestMutationExpectation::Field {
+                name: "manifest magic prefix",
+                target: 0..4,
+                neighbours: vec![("manifest magic suffix", 4..8), ("format family", 8..10)],
+            },
+            ManifestMutation::Version(_) => ManifestMutationExpectation::Field {
+                name: "format version",
+                target: 10..12,
+                neighbours: vec![("format family", 8..10), ("format flags", 12..16)],
+            },
+            ManifestMutation::BlockChecksum => {
+                let payload_len = read_u64(bytes, FILE_HEADER_LEN) as usize;
+                let checksum = payload_start + payload_len;
+                ManifestMutationExpectation::Field {
+                    name: "manifest block checksum",
+                    target: checksum..checksum + 8,
+                    neighbours: vec![("payload tail", checksum - 4..checksum)],
+                }
+            }
+            ManifestMutation::FileChecksum => {
+                let checksum = bytes.len() - FILE_TRAILER_LEN;
+                ManifestMutationExpectation::Field {
+                    name: "manifest file checksum",
+                    target: checksum..bytes.len(),
+                    neighbours: vec![("block checksum", checksum - 8..checksum)],
+                }
+            }
+            ManifestMutation::LogSeqAhead => ManifestMutationExpectation::Field {
+                name: "manifest log sequence",
+                target: payload_start + 8..payload_start + 16,
+                neighbours: vec![
+                    ("manifest generation", payload_start..payload_start + 8),
+                    ("segment count", payload_start + 16..payload_start + 20),
+                ],
+            },
+            ManifestMutation::MissingSegmentReference => {
+                let segment = manifest.segments.first().expect("manifest segment");
+                let segment_start = bytes
+                    .windows(segment.id.as_bytes().len())
+                    .position(|window| window == segment.id.as_bytes())
+                    .expect("encoded segment id");
+                ManifestMutationExpectation::Field {
+                    name: "segment-id prefix",
+                    target: segment_start..segment_start + 4,
+                    neighbours: vec![
+                        ("epoch alias suffix", segment_start - 4..segment_start),
+                        ("segment-id successor", segment_start + 4..segment_start + 8),
+                    ],
+                }
+            }
+            ManifestMutation::TruncateZero => {
+                ManifestMutationExpectation::Truncation { expected_len: 0 }
+            }
+            ManifestMutation::TruncateMidHeader => ManifestMutationExpectation::Truncation {
+                expected_len: FILE_HEADER_LEN / 2,
+            },
+            ManifestMutation::TruncateMidBlockLength => ManifestMutationExpectation::Truncation {
+                expected_len: FILE_HEADER_LEN + 4,
+            },
+            ManifestMutation::TruncateMidPayload => {
+                let payload_len = read_u64(bytes, FILE_HEADER_LEN) as usize;
+                ManifestMutationExpectation::Truncation {
+                    expected_len: payload_start + payload_len / 2,
+                }
+            }
+            ManifestMutation::TruncateMidBlockChecksum => {
+                let payload_len = read_u64(bytes, FILE_HEADER_LEN) as usize;
+                ManifestMutationExpectation::Truncation {
+                    expected_len: payload_start + payload_len + 4,
+                }
+            }
+            ManifestMutation::TruncateMidTrailer => ManifestMutationExpectation::Truncation {
+                expected_len: bytes.len() - FILE_TRAILER_LEN / 2,
+            },
+        };
+        Self {
+            before: bytes.to_vec(),
+            expectation,
+        }
+    }
+
+    fn assert_applied(&self, case: &str, after: &[u8]) {
+        match &self.expectation {
+            ManifestMutationExpectation::Field {
+                name,
+                target,
+                neighbours,
+            } => {
+                assert_eq!(
+                    after.len(),
+                    self.before.len(),
+                    "{case} mutation guard: byte length moved while changing {name}"
+                );
+                assert_ne!(
+                    &self.before[target.clone()],
+                    &after[target.clone()],
+                    "{case} mutation guard: intended {name} field at {}..{} was unchanged",
+                    target.start,
+                    target.end
+                );
+                for (neighbour_name, neighbour) in neighbours {
+                    assert_eq!(
+                        &self.before[neighbour.clone()],
+                        &after[neighbour.clone()],
+                        "{case} mutation guard: neighbouring {neighbour_name} field at {}..{} moved",
+                        neighbour.start,
+                        neighbour.end
+                    );
+                }
+            }
+            ManifestMutationExpectation::Truncation { expected_len } => {
+                assert_eq!(
+                    after.len(),
+                    *expected_len,
+                    "{case} mutation guard: truncation ended at the wrong offset"
+                );
+                assert_eq!(
+                    after,
+                    &self.before[..*expected_len],
+                    "{case} mutation guard: bytes before the truncation offset moved"
+                );
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ManifestAction {
     Decode,
@@ -925,7 +1074,9 @@ fn manifest_corruption_matrix_returns_the_specific_typed_error() {
 
     for case in MANIFEST_CASES {
         let mut damaged = valid.clone();
+        let guard = ManifestMutationGuard::new(case.mutation, &valid, &manifest);
         case.mutation.apply(&mut damaged);
+        guard.assert_applied(case.name, &damaged);
         assert_manifest_result(
             *case,
             run_manifest_action(directory.path(), &damaged, case.action),
