@@ -22,6 +22,11 @@ single-tenant run pinned to performance cores, using `[profile.bench]`
 | Bit4, 12 threads | 3.26 ns/row | 6.79 ns/row | +108% |
 | f32, 1 thread | 45.91 ns/row | 54.34 ns/row | +18% |
 
+> **CROSS-REFERENCE (BL-084, added 2026-08-25).** `tasks/evidence/05-scan-wallclock.md`
+> Table C publishes the one-thread row of this experiment as 20.39 -> 36.48
+> (+79%). The twelve-thread row agrees exactly in both. **This ADR is the
+> record of decision; cite these numbers, not Table C's.**
+
 Abandonment did not win for any measured scheme, thread count, or fixture.
 On clustered data `blocks_skipped` was zero. `rows_abandoned` reached 179,000
 of 1,000,000, but saved no bytes: a PDX column read serves every row in its

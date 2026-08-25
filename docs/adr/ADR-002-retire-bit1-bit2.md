@@ -28,6 +28,16 @@ against the 80.689179 GB/s wide-load ceiling:
 | Bit4 | 396 | 10.810 | 36.634 | 45.40% |
 | Int8 | 776 | 13.219 | 58.703 | 72.75% |
 
+> **CROSS-REFERENCE (BL-084, added 2026-08-25).** The Bit4 row above is
+> contradicted by `tasks/evidence/04-table1-scheme-speed.md`, which publishes
+> Bit4 at 61.075 ns/row / 6.484 GB/s / 8.04% for the same date, machine,
+> denominator and matched-bytes working set. Bit1, Bit2 and Int8 agree exactly
+> between the two tables; only Bit4 diverges, by 5.65x. Neither number has been
+> retracted. **This ADR's verdict does not depend on the Bit4 cell** — Bit1 and
+> Bit2 are retired on recall and on their 0.32%/5.84% of ceiling, both of which
+> agree in both tables. Do not cite the Bit4 cell as a current speed. The
+> current hot-path index is `tasks/latency.md`; re-measuring Table 1 is BL-048.
+
 Recall@10 >= 0.95 at N=100,000 x 768, 32 queries, exact brute-force f64 ground
 truth, across five distributions. Cell = qualifies / best recall reached within
 a 16x oversample budget:
