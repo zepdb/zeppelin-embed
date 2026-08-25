@@ -387,6 +387,7 @@ fn publish_transition(
         return Ok(false);
     };
     replacement.clustering_key_range = slot.clustering_key_range;
+    replacement.epoch_id = slot.epoch_id;
     *slot = replacement;
     let mut active = store.active.lock().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {

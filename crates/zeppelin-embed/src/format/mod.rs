@@ -45,6 +45,26 @@ impl FormatFamily {
     pub const fn id(self) -> u16 {
         self as u16
     }
+
+    pub(crate) const fn current_version(self) -> u16 {
+        match self {
+            Self::Manifest => 2,
+            Self::Frame
+            | Self::Segment
+            | Self::VectorCodes
+            | Self::VectorFactors
+            | Self::VectorRescore
+            | Self::Columns
+            | Self::Alive
+            | Self::Postings
+            | Self::ChecksumTable
+            | Self::Wal
+            | Self::GraphNodeBlocks
+            | Self::DocumentVersions
+            | Self::StoredMetadata
+            | Self::PurgeIntent => 1,
+        }
+    }
 }
 
 /// One append-only version declaration.
@@ -170,9 +190,9 @@ const FAMILIES: [FamilySpec; 15] = [
     },
     FamilySpec {
         family: FormatFamily::Manifest,
-        current_version: 1,
-        minimum_accepted_version: 1,
-        maximum_accepted_version: 1,
+        current_version: 2,
+        minimum_accepted_version: 2,
+        maximum_accepted_version: 2,
     },
     FamilySpec {
         family: FormatFamily::Wal,

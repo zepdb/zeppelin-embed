@@ -174,6 +174,7 @@ fn commit(directory: &TempDir, segments: Vec<SegmentMeta>) {
             log_seq: 0,
             segments,
             epochs: Vec::new(),
+            epoch_alias: None,
             schema: Schema::new(Vec::new()).expect("fixture schema"),
         },
         policy(),

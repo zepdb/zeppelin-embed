@@ -174,6 +174,7 @@ impl Store {
             }
         };
         meta.clustering_key_range = clustering_key_range;
+        meta.epoch_id = manifest.epoch_alias.map(|identity| identity.embedding);
         if let Err(error) = check_cancelled(cancel) {
             cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
             return Err(error);
@@ -189,6 +190,7 @@ impl Store {
                 log_seq: absorbed_through,
                 segments,
                 epochs,
+                epoch_alias: manifest.epoch_alias,
                 schema: manifest.schema,
             },
             self.durability_policy,
@@ -230,6 +232,7 @@ fn load_current_manifest(
             log_seq: 0,
             segments: Vec::new(),
             epochs: Vec::new(),
+            epoch_alias: None,
             schema: schema.clone(),
         }),
         Err(source) => Err(StoreError::Io { path, source }),

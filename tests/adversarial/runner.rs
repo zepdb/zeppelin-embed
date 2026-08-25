@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 use zeppelin_embed::epoch::{
-    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EpochIdentity, Normalization, StoreEpoch,
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochIdentity, Normalization,
+    StoreEpoch,
 };
 use zeppelin_embed::fts::bm25::Bm25Params;
 use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
@@ -40,18 +41,25 @@ use super::program::{self, Op, Program, SearchKind};
 const THREAD_BUDGET: usize = 1;
 
 fn declared_store_epoch() -> StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "adversarial-embedding".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0xad, 0x12],
+        dims: program::DIMENSIONS as u32,
+        normalization: Normalization::L2,
+        prompt_prefix: "search_document: ".to_owned(),
+        max_tokens: 64,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let mut query = document.clone();
+    query.prompt_prefix = "search_query: ".to_owned();
     StoreEpoch {
         embedding: EmbeddingEpoch {
-            model_id: "adversarial-embedding".to_owned(),
-            model_version: "1".to_owned(),
-            weights_digest: vec![0xad, 0x12],
-            dims: program::DIMENSIONS as u32,
-            normalization: Normalization::L2,
-            prompt_prefix: "adversarial: ".to_owned(),
-            max_tokens: 64,
-            runtime: EmbeddingRuntime::CpuReference,
-            compute_units: ComputeUnits::Cpu,
-            os_build: None,
+            document,
+            query,
+            alignment_digest: Vec::new(),
         },
         tokenizer: TokenizerConfig::text_default().epoch(),
     }
@@ -63,7 +71,7 @@ fn declared_identity() -> EpochIdentity {
 
 fn conflicting_identity() -> EpochIdentity {
     let mut epoch = declared_store_epoch();
-    epoch.embedding.model_version = "2".to_owned();
+    epoch.embedding.query.model_version = "2".to_owned();
     epoch.identity()
 }
 

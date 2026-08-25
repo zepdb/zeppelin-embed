@@ -540,6 +540,7 @@ fn commit(directory: &TempDir, columns: &ColumnStore, segment: SegmentMeta) {
             log_seq: 0,
             segments: vec![segment],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema: columns.schema().clone(),
         },
         policy(),

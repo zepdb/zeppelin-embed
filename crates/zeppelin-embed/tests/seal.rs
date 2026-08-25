@@ -674,6 +674,7 @@ fn publish_existing_segment(directory: &std::path::Path, id: SegmentId) {
             log_seq: 0,
             segments: vec![meta],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema,
         },
         policy,

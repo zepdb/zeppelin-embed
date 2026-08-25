@@ -449,15 +449,31 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - `EpochId` is an xxh3-64 digest over the canonical identity fields only. Store
   generations, document counts, row counts, timestamps, and every other kind
   of mutable state never enter the digest.
-- Epoch identity rides in the already-frozen `EpochMeta` registry: its id is the
-  full embedding digest, its model is the human-readable label, and its
-  tokenizer is lowercase hex. Part A changes no manifest byte layout and moves
-  no existing golden.
-- Epoch identity is now declared and enforced. The migration path -- alias,
-  per-segment epoch tags, and background re-embedding -- is not implemented.
-  The owner decision it was blocked on has been taken: widen `EpochMeta` with
-  the alias and a per-segment epoch id, regenerating the manifest golden
-  deliberately.
+- Manifest family 10 v2 is the epoch-carriage layout; v1 is rejected at the
+  version boundary with `FormatCheck::Version`. Its prefix remains
+  `generation:u64`, `log_seq:u64`, the three u32 segment/epoch/schema counts,
+  and a reserved-zero u32. The published alias follows as `present:u8`, seven
+  reserved-zero bytes, `embedding_epoch:u64`, `tokenizer_epoch:u64`; absent
+  requires both ids to be zero. Each segment's existing 36-byte record is
+  followed by `present:u8`, seven reserved-zero bytes, `embedding_epoch:u64`.
+- Each v2 `EpochMeta` is `embedding_epoch:u64`, `tokenizer_epoch:u64`, the full
+  document tower, the full query tower, then a length-prefixed alignment
+  digest. Each tower is length-prefixed model id, model version, and weights
+  digest; `dims:u32`; `normalization:u16`; length-prefixed prompt/prefix;
+  `max_tokens:u32`; `runtime:u16`; `compute_units:u16`; then OS-build
+  `present:u8`, three reserved-zero bytes, and an optional length-prefixed OS
+  build. Both towers and the alignment digest enter `EpochId`; mutable store
+  state never does. Schema records and the trailing optional `TSR1` clustering
+  extension keep their prior encoding and order.
+- A non-empty registry requires an alias naming one complete embedding/tokenizer
+  identity and an embedding epoch tag on every segment. A segment tag may name
+  any registered embedding epoch so migration can later carry old and new
+  segment sets together. An empty registry requires no alias and only unstamped
+  segments. Unknown aliases, unknown segment ids, duplicate identities, and an
+  `EpochMeta.id` that disagrees with its full embedding description fail loudly.
+- D1 lands only manifest carriage. Migration execution, epoch transitions,
+  rollback, `drop_epoch`, and per-record WAL epoch tags remain unimplemented;
+  WAL op-7 bit 5 stays reserved-unused.
 - Persisted-format changes are AUTHORIZED, including minting a region kind, a
   format family, or a WAL op id. Do not stop and ask. This crate previously
   recorded a "last free format change" that "lapses" at the migration task;
@@ -467,8 +483,9 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   real data, or a published binary someone has installed -- never a task number.
   Authorization does not excuse the verification that has value: read the id
   file immediately before minting, keep existing goldens byte-identical unless
-  deliberately breaking one and say so when one moves, prove old artifacts still
-  open, give every new region its own frozen golden, and record the change here.
+  deliberately breaking one and say so when one moves, prove old artifacts are
+  explicitly opened or rejected, give every new region its own frozen golden,
+  and record the change here.
 
 ## Task 17 Part B text and typed-column ingest invariants
 

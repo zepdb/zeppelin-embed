@@ -267,7 +267,7 @@ impl TokenizerConfig {
 
 /// A tokenizer epoch: the identity of one analysis behaviour.
 ///
-/// Stored as lowercase hex in `EpochMeta.tokenizer`.
+/// Stored as a little-endian u64 in `EpochMeta.tokenizer`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TokenizerEpoch(u64);
 
@@ -332,7 +332,7 @@ impl TokenizerEpoch {
         self.0
     }
 
-    /// Returns the lowercase hex form stored in the manifest.
+    /// Returns the lowercase hex form used in diagnostics.
     #[must_use]
     pub fn to_hex(self) -> String {
         format!("{:016x}", self.0)

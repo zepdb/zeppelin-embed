@@ -727,14 +727,7 @@ impl Store {
                 .clone()
                 .unwrap_or_else(crate::meta::Schema::timestamp_only)
         };
-        let persisted_epoch = snapshot
-            .epochs()
-            .first()
-            .map(crate::epoch::EpochIdentity::from_meta)
-            .transpose()
-            .map_err(|error| {
-                StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string()))
-            })?;
+        let persisted_epoch = snapshot.epoch_alias();
         let declared_epoch = options
             .epoch
             .as_ref()
@@ -779,6 +772,10 @@ impl Store {
                         .map(crate::manifest::EpochMeta::from)
                         .into_iter()
                         .collect(),
+                    epoch_alias: options
+                        .epoch
+                        .as_ref()
+                        .map(crate::epoch::StoreEpoch::identity),
                     schema: schema.clone(),
                 },
                 durability_policy,
@@ -850,15 +847,22 @@ impl Store {
     ///
     /// A declared epoch is stamped once, during open, before any write is
     /// admitted, so every later commit only propagates what is already
-    /// committed. There is deliberately no "stamp it later" branch here: a
-    /// store that reaches this point with an empty registry has no declared
-    /// identity, and inventing one would be the silent adoption that
-    /// creation-time stamping exists to prevent.
+    /// committed. Replacement-snapshot paths may not have a prior manifest
+    /// value in hand, so a declared store reconstructs its already-committed
+    /// singleton entry; an unstamped store still returns an empty registry.
     pub(crate) fn epoch_registry(
         &self,
         prior: &[crate::manifest::EpochMeta],
     ) -> Vec<crate::manifest::EpochMeta> {
-        prior.to_vec()
+        if prior.is_empty() {
+            self.epoch
+                .as_ref()
+                .map(crate::manifest::EpochMeta::from)
+                .into_iter()
+                .collect()
+        } else {
+            prior.to_vec()
+        }
     }
 
     pub(crate) fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
@@ -2400,6 +2404,7 @@ mod tests {
                 log_seq: 1,
                 segments: Vec::new(),
                 epochs: Vec::new(),
+                epoch_alias: None,
                 schema: Schema::new(Vec::new()).expect("schema"),
             },
             policy,

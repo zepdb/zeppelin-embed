@@ -31,7 +31,7 @@ use tempfile::tempdir;
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::lock::{STORE_LOCK_FILE, StoreLock};
 use zeppelin_embed::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
-use zeppelin_embed::manifest::{EpochMeta, Manifest, ManifestError, encode_manifest};
+use zeppelin_embed::manifest::{Manifest, ManifestError, encode_manifest};
 use zeppelin_embed::meta::Schema;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
@@ -1259,11 +1259,8 @@ fn real_durable_log_refuses_a_snapshot_ahead_of_replay() {
         generation: 1,
         log_seq: 2,
         segments: Vec::new(),
-        epochs: vec![EpochMeta {
-            id: 1,
-            model: "model".to_owned(),
-            tokenizer: "tokenizer".to_owned(),
-        }],
+        epochs: Vec::new(),
+        epoch_alias: None,
         schema: Schema::new(Vec::new()).expect("schema"),
     };
     let path = Path::new("/wal-recovery").join(MANIFEST_FILE);

@@ -36,13 +36,22 @@
   12. Each dense row is exactly `doc_id:u128` little-endian followed by
   `revision:u64` little-endian (24 bytes); task-07 segments without the region
   remain readable and report no document identity.
-- Manifest v1 segment records remain byte-identical. When every segment is
-  `Unstamped`, writers append no bytes. Otherwise the schema payload is followed
-  by `TSR1`, `segment_count:u32`, then one 24-byte record per segment:
+- Manifest family 10 emits and accepts v2 only; the preserved v1 fixtures are
+  explicit rejected inputs. After the existing generation/log-sequence/counts
+  prefix and reserved-zero u32, the alias is a presence byte, seven zero bytes,
+  and embedding/tokenizer u64 ids. Each existing segment record is followed by
+  a presence byte, seven zero bytes, and an embedding u64 id. Each epoch record
+  is embedding id, tokenizer id, full document tower, full query tower, and a
+  length-prefixed alignment digest. A tower is length-prefixed model id,
+  version, and weights digest; dims u32; normalization u16; length-prefixed
+  prompt; max tokens u32; runtime u16; compute units u16; then an OS-build
+  presence byte, three zero bytes, and optional length-prefixed build string.
+- Manifest schema records retain their prior exact encoding. When every segment
+  range is `Unstamped`, writers append no range bytes. Otherwise the schema is
+  followed by `TSR1`, `segment_count:u32`, then one 24-byte record per segment:
   `tag:u8`, seven reserved-zero bytes, `min_ts:i64`, `max_ts:i64`. Tag 0 is
-  `Unstamped` and tag 1 is `Empty`; both require zero bounds. Tag 2 is an
-  inclusive bounded range and requires `min_ts <= max_ts`. The optional
-  extension precedes the manifest block checksum and whole-file checksum.
+  `Unstamped` and tag 1 is `Empty`; both require zero bounds. Tag 2 is inclusive
+  bounded and requires `min_ts <= max_ts`.
 - WAL mutation operation id 4 is timestamped-upsert v1. It retains operation
   id 1's header/document/vector encoding and inserts `ts:i64` little-endian
   between `revision:u64` and `dims:u32`. Operation id 1 and all existing WAL,

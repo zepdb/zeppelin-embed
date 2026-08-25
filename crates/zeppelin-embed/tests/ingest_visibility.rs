@@ -726,6 +726,7 @@ fn publish_row_zero_segments(directory: &Path, ids: [SegmentId; 2]) {
             log_seq: 0,
             segments,
             epochs: Vec::new(),
+            epoch_alias: None,
             schema,
         },
         policy,

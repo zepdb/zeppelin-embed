@@ -4,8 +4,8 @@ use std::path::Path;
 
 use tempfile::tempdir;
 use zeppelin_embed::epoch::{
-    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EpochIdentity, EpochMismatch, Normalization,
-    StoreEpoch,
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochIdentity, EpochMismatch,
+    Normalization, StoreEpoch,
 };
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{
@@ -25,7 +25,10 @@ fn an_ingest_with_a_matching_dimension_but_different_declared_epoch_is_a_typed_e
     let directory = tempdir().expect("store directory");
     let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
     let conflicting = store_epoch("model-b", "1", TokenizerConfig::text_default());
-    assert_eq!(declared.embedding.dims, conflicting.embedding.dims);
+    assert_eq!(
+        declared.embedding.document.dims,
+        conflicting.embedding.document.dims
+    );
     let store = Store::open(
         directory.path(),
         OpenOptions::new().with_epoch(declared.clone()),
@@ -330,41 +333,29 @@ fn a_read_only_open_declaring_an_epoch_against_an_unstamped_store_is_a_typed_err
 }
 
 #[test]
-fn two_epoch_ids_differing_only_in_the_high_thirty_two_bits_are_not_interchangeable() {
-    let directory = tempdir().expect("store directory");
+fn a_manifest_registry_id_must_match_the_complete_embedding_identity() {
     let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
-    let declared_id = declared.identity();
-    let persisted_id = declared_id.embedding.value() ^ (1_u64 << 40);
-    assert_eq!(persisted_id as u32, declared_id.embedding.value() as u32);
-    let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::Ordered)
-        .expect("derived policy");
-    commit_manifest(
-        &StdVfs,
-        directory.path(),
-        &Manifest {
-            generation: 0,
-            log_seq: 0,
-            segments: Vec::new(),
-            epochs: vec![EpochMeta {
-                id: persisted_id,
-                model: declared.embedding.model_label(),
-                tokenizer: declared.tokenizer.to_hex(),
-            }],
-            schema: Schema::new(Vec::new()).expect("empty schema"),
-        },
-        policy,
-    )
-    .expect("write high-bit manifest");
+    let mut meta = EpochMeta::from(&declared);
+    meta.embedding.query.model_version = "different-query-tower".to_owned();
 
-    let error = Store::open(directory.path(), OpenOptions::new().with_epoch(declared))
-        .err()
-        .expect("high-bit mismatch must fail");
+    let error = zeppelin_embed::manifest::encode_manifest(&Manifest {
+        generation: 0,
+        log_seq: 0,
+        segments: Vec::new(),
+        epochs: vec![meta],
+        epoch_alias: Some(declared.identity()),
+        schema: Schema::new(Vec::new()).expect("empty schema"),
+    })
+    .expect_err("registry id must authenticate the complete embedding epoch");
 
-    assert!(matches!(error, StoreError::EpochMismatch(_)));
+    assert!(matches!(
+        error,
+        zeppelin_embed::manifest::ManifestError::Decode(_)
+    ));
 }
 
 fn embedding_epoch(model_id: &str, model_version: &str) -> EmbeddingEpoch {
-    EmbeddingEpoch {
+    let document = EmbeddingTower {
         model_id: model_id.to_owned(),
         model_version: model_version.to_owned(),
         weights_digest: vec![0x01, 0x23, 0x45, 0x67],
@@ -375,6 +366,13 @@ fn embedding_epoch(model_id: &str, model_version: &str) -> EmbeddingEpoch {
         runtime: EmbeddingRuntime::CoreMl,
         compute_units: ComputeUnits::CpuAndNeuralEngine,
         os_build: Some("25A100".to_owned()),
+    };
+    let mut query = document.clone();
+    query.prompt_prefix = "search_query: ".to_owned();
+    EmbeddingEpoch {
+        document,
+        query,
+        alignment_digest: Vec::new(),
     }
 }
 
@@ -424,6 +422,7 @@ fn write_epoch_manifest(directory: &Path, epoch: &StoreEpoch) {
             log_seq: 0,
             segments: Vec::new(),
             epochs: vec![EpochMeta::from(epoch.clone())],
+            epoch_alias: Some(epoch.identity()),
             schema: Schema::new(Vec::new()).expect("empty schema"),
         },
         policy,

@@ -43,13 +43,13 @@ pub enum ComputeUnits {
     All = 4,
 }
 
-/// Complete immutable identity of one embedding interpretation.
+/// Complete immutable identity of one encoder tower.
 ///
 /// Every field changes the meaning of produced vectors. Mutable store state
 /// such as generations, row counts, timestamps, and document counts is
 /// deliberately absent.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmbeddingEpoch {
+pub struct EmbeddingTower {
     /// Host-selected model identifier.
     pub model_id: String,
     /// Host-selected model version.
@@ -72,16 +72,32 @@ pub struct EmbeddingEpoch {
     pub os_build: Option<String>,
 }
 
-impl EmbeddingEpoch {
-    /// Returns the human-readable model label persisted in `EpochMeta.model`.
+impl EmbeddingTower {
+    /// Returns a human-readable model label for diagnostics.
     #[must_use]
     pub fn model_label(&self) -> String {
         format!("{}@{}", self.model_id, self.model_version)
     }
 }
 
+/// Complete immutable identity of one embedding interpretation.
+///
+/// The document and query towers are explicit even when they are identical.
+/// This makes an aligned asymmetric pair one epoch instead of two unrelated
+/// model declarations. The alignment digest identifies the artifact or recipe
+/// that places both tower outputs in the same vector space.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbeddingEpoch {
+    /// Encoder used for persisted document vectors.
+    pub document: EmbeddingTower,
+    /// Encoder used for query vectors compared with those documents.
+    pub query: EmbeddingTower,
+    /// Opaque digest of the pairing/alignment artifact, empty for none.
+    pub alignment_digest: Vec<u8>,
+}
+
 /// Digest-input framing magic. Changing it changes every embedding epoch.
-const EPOCH_MAGIC: &[u8; 8] = b"ZEEMBEP1";
+const EPOCH_MAGIC: &[u8; 8] = b"ZEEMBEP2";
 
 impl EpochId {
     /// Computes the identity of an embedding interpretation.
@@ -89,14 +105,16 @@ impl EpochId {
     /// # The canonical digest input
     ///
     /// The input is hand-written and little-endian throughout. Its exact
-    /// persisted-meaning order is: the eight bytes `ZEEMBEP1`; a u32 byte
-    /// length and UTF-8 model id; a u32 byte length and UTF-8 model version;
-    /// a u32 byte length and opaque weights-digest bytes; u32 dimensions;
-    /// the u16 normalization id; a u32 byte length and UTF-8 prompt prefix;
-    /// u32 maximum tokens; the u16 runtime id; the u16 compute-units id; then
-    /// a one-byte OS-build presence tag (`0` or `1`) followed, when present,
-    /// by its u32 byte length and UTF-8 bytes. No mutable store state is ever
-    /// part of this input.
+    /// persisted-meaning order is: the eight bytes `ZEEMBEP2`; document-tower
+    /// fields; query-tower fields; then a u32 byte length and opaque
+    /// alignment-digest bytes. Each tower is a u32 byte length plus
+    /// UTF-8 model id; a u32 byte length plus UTF-8 model version; a u32 byte
+    /// length plus opaque weights-digest bytes; u32 dimensions; the u16
+    /// normalization id; a u32 byte length plus UTF-8 prompt prefix; u32
+    /// maximum tokens; the u16 runtime id; the u16 compute-units id; then a
+    /// one-byte OS-build presence tag (`0` or `1`) followed, when present, by
+    /// its u32 byte length and UTF-8 bytes. No mutable store state is ever part
+    /// of this input.
     #[must_use]
     pub fn of(epoch: &EmbeddingEpoch) -> Self {
         Self(xxhash_rust::xxh3::xxh3_64(&canonical_digest_input(epoch)))
@@ -106,6 +124,10 @@ impl EpochId {
     #[must_use]
     pub const fn value(self) -> u64 {
         self.0
+    }
+
+    pub(crate) const fn from_value(value: u64) -> Self {
+        Self(value)
     }
 
     /// Returns the lowercase hex form used for diagnostics.
@@ -151,14 +173,18 @@ pub struct EpochIdentity {
 }
 
 impl EpochIdentity {
-    /// Reconstructs an identity from the already-frozen manifest registry.
-    ///
-    /// Malformed tokenizer text is rejected rather than interpreted as zero.
+    /// Reconstructs an identity from one validated manifest registry entry.
     pub fn from_meta(meta: &EpochMeta) -> Result<Self, EpochMetaError> {
-        let tokenizer = parse_tokenizer(&meta.tokenizer)?;
+        let actual = EpochId::of(&meta.embedding);
+        if actual != meta.id {
+            return Err(EpochMetaError::EmbeddingDigestMismatch {
+                declared: meta.id,
+                actual,
+            });
+        }
         Ok(Self {
-            embedding: EpochId(meta.id),
-            tokenizer,
+            embedding: meta.id,
+            tokenizer: meta.tokenizer,
         })
     }
 }
@@ -166,9 +192,9 @@ impl EpochIdentity {
 impl From<&StoreEpoch> for EpochMeta {
     fn from(epoch: &StoreEpoch) -> Self {
         Self {
-            id: epoch.identity().embedding.value(),
-            model: epoch.embedding.model_label(),
-            tokenizer: epoch.tokenizer.to_hex(),
+            id: epoch.identity().embedding,
+            embedding: epoch.embedding.clone(),
+            tokenizer: epoch.tokenizer,
         }
     }
 }
@@ -182,19 +208,21 @@ impl From<StoreEpoch> for EpochMeta {
 /// Malformed persisted epoch metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EpochMetaError {
-    /// The tokenizer field was not exactly sixteen lowercase hexadecimal bytes.
-    MalformedTokenizer {
-        /// Rejected persisted field.
-        value: String,
+    /// The stored id did not identify the stored embedding description.
+    EmbeddingDigestMismatch {
+        /// Id carried by the registry entry.
+        declared: EpochId,
+        /// Id recomputed from the complete stored embedding epoch.
+        actual: EpochId,
     },
 }
 
 impl std::fmt::Display for EpochMetaError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MalformedTokenizer { value } => write!(
+            Self::EmbeddingDigestMismatch { declared, actual } => write!(
                 formatter,
-                "persisted tokenizer epoch {value:?} is not sixteen lowercase hexadecimal digits"
+                "persisted embedding epoch id {declared} does not match complete identity {actual}"
             ),
         }
     }
@@ -243,42 +271,31 @@ impl std::fmt::Display for EpochMismatch {
 impl std::error::Error for EpochMismatch {}
 
 fn canonical_digest_input(epoch: &EmbeddingEpoch) -> Vec<u8> {
-    let mut input = Vec::with_capacity(128);
+    let mut input = Vec::with_capacity(256);
     input.extend_from_slice(EPOCH_MAGIC);
-    push_bytes(&mut input, epoch.model_id.as_bytes());
-    push_bytes(&mut input, epoch.model_version.as_bytes());
-    push_bytes(&mut input, &epoch.weights_digest);
-    push_u32(&mut input, epoch.dims);
-    push_u16(&mut input, epoch.normalization as u16);
-    push_bytes(&mut input, epoch.prompt_prefix.as_bytes());
-    push_u32(&mut input, epoch.max_tokens);
-    push_u16(&mut input, epoch.runtime as u16);
-    push_u16(&mut input, epoch.compute_units as u16);
-    match &epoch.os_build {
-        Some(build) => {
-            input.push(1);
-            push_bytes(&mut input, build.as_bytes());
-        }
-        None => input.push(0),
-    }
+    push_tower(&mut input, &epoch.document);
+    push_tower(&mut input, &epoch.query);
+    push_bytes(&mut input, &epoch.alignment_digest);
     input
 }
 
-fn parse_tokenizer(value: &str) -> Result<TokenizerEpoch, EpochMetaError> {
-    if value.len() != 16
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(EpochMetaError::MalformedTokenizer {
-            value: value.to_owned(),
-        });
+fn push_tower(input: &mut Vec<u8>, tower: &EmbeddingTower) {
+    push_bytes(input, tower.model_id.as_bytes());
+    push_bytes(input, tower.model_version.as_bytes());
+    push_bytes(input, &tower.weights_digest);
+    push_u32(input, tower.dims);
+    push_u16(input, tower.normalization as u16);
+    push_bytes(input, tower.prompt_prefix.as_bytes());
+    push_u32(input, tower.max_tokens);
+    push_u16(input, tower.runtime as u16);
+    push_u16(input, tower.compute_units as u16);
+    match &tower.os_build {
+        Some(build) => {
+            input.push(1);
+            push_bytes(input, build.as_bytes());
+        }
+        None => input.push(0),
     }
-    u64::from_str_radix(value, 16)
-        .map(TokenizerEpoch::from_value)
-        .map_err(|_| EpochMetaError::MalformedTokenizer {
-            value: value.to_owned(),
-        })
 }
 
 fn push_bytes(buffer: &mut Vec<u8>, value: &[u8]) {
@@ -302,14 +319,14 @@ mod tests {
     use super::*;
     use crate::manifest::EpochMeta;
 
-    fn baseline() -> EmbeddingEpoch {
-        EmbeddingEpoch {
-            model_id: "text-embedding".to_owned(),
+    fn tower(model_id: &str, prompt_prefix: &str, weight: u8) -> EmbeddingTower {
+        EmbeddingTower {
+            model_id: model_id.to_owned(),
             model_version: "1.2.3".to_owned(),
-            weights_digest: vec![0x10, 0x20, 0x30, 0x40],
+            weights_digest: vec![0x10, 0x20, 0x30, weight],
             dims: 384,
             normalization: Normalization::L2,
-            prompt_prefix: "search_document: ".to_owned(),
+            prompt_prefix: prompt_prefix.to_owned(),
             max_tokens: 512,
             runtime: EmbeddingRuntime::CoreMl,
             compute_units: ComputeUnits::CpuAndNeuralEngine,
@@ -317,21 +334,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn changing_any_interpretation_critical_field_changes_the_epoch_id() {
-        let base = baseline();
+    fn baseline() -> EmbeddingEpoch {
+        EmbeddingEpoch {
+            document: tower("document-embedding", "search_document: ", 0x40),
+            query: tower("query-embedding", "search_query: ", 0x41),
+            alignment_digest: vec![0xaa, 0xbb, 0xcc],
+        }
+    }
+
+    fn tower_variants(base: &EmbeddingTower) -> Vec<EmbeddingTower> {
         let mut variants = Vec::new();
-
         let mut changed = base.clone();
-        changed.model_id = "text-embedding-next".to_owned();
+        changed.model_id = "changed-model".to_owned();
         variants.push(changed);
 
         let mut changed = base.clone();
-        changed.model_version = "1.2.4".to_owned();
+        changed.model_version = "9.9.9".to_owned();
         variants.push(changed);
 
         let mut changed = base.clone();
-        changed.weights_digest = vec![0x10, 0x20, 0x30, 0x41];
+        changed.weights_digest = vec![0xff];
         variants.push(changed);
 
         let mut changed = base.clone();
@@ -343,7 +365,7 @@ mod tests {
         variants.push(changed);
 
         let mut changed = base.clone();
-        changed.prompt_prefix = "query: ".to_owned();
+        changed.prompt_prefix = "changed: ".to_owned();
         variants.push(changed);
 
         let mut changed = base.clone();
@@ -360,6 +382,26 @@ mod tests {
 
         let mut changed = base.clone();
         changed.os_build = None;
+        variants.push(changed);
+        variants
+    }
+
+    #[test]
+    fn changing_any_interpretation_critical_field_changes_the_epoch_id() {
+        let base = baseline();
+        let mut variants = Vec::new();
+        for tower in tower_variants(&base.document) {
+            let mut changed = base.clone();
+            changed.document = tower;
+            variants.push(changed);
+        }
+        for tower in tower_variants(&base.query) {
+            let mut changed = base.clone();
+            changed.query = tower;
+            variants.push(changed);
+        }
+        let mut changed = base.clone();
+        changed.alignment_digest = vec![0xaa, 0xbb, 0xcd];
         variants.push(changed);
 
         let baseline_id = EpochId::of(&base);
@@ -405,20 +447,25 @@ mod tests {
     fn the_embedding_epoch_digest_input_is_byte_exact() {
         assert_eq!(
             render_hex(&canonical_digest_input(&baseline())),
-            include_str!("../tests/fixtures/format/embedding_epoch_digest_input_v1.hex")
+            include_str!("../tests/fixtures/format/embedding_epoch_digest_input_v2.hex")
         );
     }
 
     #[test]
-    fn a_malformed_persisted_tokenizer_field_is_a_typed_error_not_a_default() {
+    fn a_persisted_embedding_digest_mismatch_is_a_typed_error() {
+        let embedding = baseline();
+        let actual = EpochId::of(&embedding);
         let error = EpochIdentity::from_meta(&EpochMeta {
-            id: 7,
-            model: "model@version".to_owned(),
-            tokenizer: "NOT-LOWERCASE-HEX".to_owned(),
+            id: EpochId::from_value(actual.value() ^ 1),
+            embedding,
+            tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
         })
-        .expect_err("malformed tokenizer text must fail");
+        .expect_err("mismatched embedding digest must fail");
 
-        assert!(matches!(error, EpochMetaError::MalformedTokenizer { .. }));
+        assert!(matches!(
+            error,
+            EpochMetaError::EmbeddingDigestMismatch { .. }
+        ));
     }
 
     fn render_hex(bytes: &[u8]) -> String {

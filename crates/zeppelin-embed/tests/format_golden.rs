@@ -5,15 +5,21 @@
     clippy::unwrap_used
 )]
 
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
 use zeppelin_embed::format::frame::{
-    FILE_HEADER_LEN, FILE_TRAILER_LEN, decode_artifact, encode_artifact,
+    FILE_HEADER_LEN, FILE_TRAILER_LEN, FormatCheck, decode_artifact, encode_artifact,
 };
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::format::{FormatFamily, FormatRegistry, RegistryError};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{OpenOptions, Store};
-use zeppelin_embed::manifest::{EpochMeta, Manifest, decode_manifest, encode_manifest};
+use zeppelin_embed::manifest::{
+    EpochMeta, Manifest, ManifestError, decode_manifest, encode_manifest,
+};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType, ColumnValue,
     Schema,
@@ -30,6 +36,126 @@ use zeppelin_embed::vfs::StdVfs;
 
 fn fixture(text: &str) -> Vec<u8> {
     decode_hex(text).expect("fixture hex")
+}
+
+fn epoch_manifest() -> Manifest {
+    let document = EmbeddingTower {
+        model_id: "document-model".to_owned(),
+        model_version: "2.1".to_owned(),
+        weights_digest: vec![0x10, 0x20, 0x30],
+        dims: 4,
+        normalization: Normalization::L2,
+        prompt_prefix: "search_document: ".to_owned(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CoreMl,
+        compute_units: ComputeUnits::CpuAndNeuralEngine,
+        os_build: Some("25A100".to_owned()),
+    };
+    let query = EmbeddingTower {
+        model_id: "query-model".to_owned(),
+        model_version: "1.4".to_owned(),
+        weights_digest: vec![0xa0, 0xb0, 0xc0],
+        dims: 4,
+        normalization: Normalization::L2,
+        prompt_prefix: "search_query: ".to_owned(),
+        max_tokens: 128,
+        runtime: EmbeddingRuntime::Mlx,
+        compute_units: ComputeUnits::CpuAndGpu,
+        os_build: None,
+    };
+    let declared = StoreEpoch {
+        embedding: EmbeddingEpoch {
+            document,
+            query,
+            alignment_digest: vec![0xde, 0xad, 0xbe, 0xef],
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    };
+    let identity = declared.identity();
+    Manifest {
+        generation: 21,
+        log_seq: 13,
+        segments: vec![SegmentMeta {
+            id: SegmentId::new(9, [0x5a; 10]),
+            row_count: 3,
+            scheme: 4,
+            dims: 4,
+            file_size: 4096,
+            epoch_id: Some(identity.embedding),
+            clustering_key_range: ClusteringKeyRange::Unstamped,
+        }],
+        epochs: vec![EpochMeta::from(&declared)],
+        epoch_alias: Some(identity),
+        schema: Schema::new(vec![ColumnDefinition::new(
+            ColumnId::new(1),
+            "title",
+            ColumnType::RawString,
+            true,
+        )])
+        .expect("schema"),
+    }
+}
+
+#[test]
+fn a_manifest_with_epoch_registry_alias_and_segment_epoch_tags_is_byte_exact() {
+    let manifest = epoch_manifest();
+    let encoded = encode_manifest(&manifest).expect("epoch manifest");
+    assert_eq!(
+        encoded,
+        fixture(include_str!("fixtures/format/manifest_v2.hex"))
+    );
+    assert_eq!(
+        decode_manifest("manifest-epoch.golden", &encoded).expect("epoch manifest decode"),
+        manifest
+    );
+}
+
+#[test]
+fn family_10_v1_manifest_fixtures_are_explicitly_rejected() {
+    for (artifact, bytes) in [
+        (
+            "manifest-v1.golden",
+            fixture(include_str!("fixtures/format/manifest_v1.hex")),
+        ),
+        (
+            "manifest-clustering-ranges-v1.golden",
+            fixture(include_str!(
+                "fixtures/format/manifest_clustering_ranges_v1.hex"
+            )),
+        ),
+    ] {
+        let error = decode_manifest(artifact, &bytes).expect_err("family 10 v1 must be rejected");
+        let ManifestError::Format(error) = error else {
+            panic!("old manifest returned a non-format error: {error}");
+        };
+        assert_eq!(error.check(), FormatCheck::Version);
+        assert!(error.detail().contains("version 1"), "{error}");
+    }
+}
+
+#[test]
+fn a_published_alias_must_name_an_epoch_registry_entry() {
+    let mut manifest = epoch_manifest();
+    let mut other = manifest.epochs[0].embedding.clone();
+    other.query.weights_digest.push(0x99);
+    manifest.epoch_alias = Some(zeppelin_embed::epoch::EpochIdentity {
+        embedding: zeppelin_embed::epoch::EpochId::of(&other),
+        tokenizer: manifest.epochs[0].tokenizer,
+    });
+
+    let error = encode_manifest(&manifest).expect_err("unknown alias must fail");
+    assert!(matches!(error, ManifestError::UnknownEpochAlias { .. }));
+}
+
+#[test]
+fn every_segment_epoch_tag_must_name_an_epoch_registry_entry() {
+    let mut manifest = epoch_manifest();
+    let mut other = manifest.epochs[0].embedding.clone();
+    other.document.weights_digest.push(0x88);
+    manifest.segments[0].epoch_id = Some(zeppelin_embed::epoch::EpochId::of(&other));
+
+    let error = encode_manifest(&manifest).expect_err("unknown segment epoch must fail");
+    assert!(matches!(error, ManifestError::UnknownSegmentEpoch { .. }));
 }
 
 #[test]
@@ -149,21 +275,11 @@ fn golden_segment(dims: u32, rows: u32, int8: bool) -> (Vec<u8>, SegmentId) {
 #[test]
 fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let manifest = Manifest {
-        generation: 3,
-        log_seq: 2,
-        segments: Vec::new(),
-        epochs: vec![EpochMeta {
-            id: 1,
-            model: "m".to_owned(),
-            tokenizer: "t".to_owned(),
-        }],
-        schema: Schema::new(Vec::new()).expect("schema"),
-    };
+    let manifest = epoch_manifest();
     let manifest_bytes = encode_manifest(&manifest).expect("manifest");
     assert_eq!(
         manifest_bytes,
-        fixture(include_str!("fixtures/format/manifest_v1.hex"))
+        fixture(include_str!("fixtures/format/manifest_v2.hex"))
     );
     assert_eq!(
         decode_manifest("manifest.golden", &manifest_bytes).expect("manifest decode"),
@@ -460,6 +576,7 @@ fn manifest_clustering_range_extension_is_byte_exact() {
                 scheme: 4,
                 dims: 65,
                 file_size: 99,
+                epoch_id: None,
                 clustering_key_range: ClusteringKeyRange::Bounded {
                     min_ts: -7,
                     max_ts: 14,
@@ -471,6 +588,7 @@ fn manifest_clustering_range_extension_is_byte_exact() {
                 scheme: 4,
                 dims: 65,
                 file_size: 88,
+                epoch_id: None,
                 clustering_key_range: ClusteringKeyRange::Empty,
             },
             SegmentMeta {
@@ -479,10 +597,12 @@ fn manifest_clustering_range_extension_is_byte_exact() {
                 scheme: 4,
                 dims: 65,
                 file_size: 77,
+                epoch_id: None,
                 clustering_key_range: ClusteringKeyRange::Unstamped,
             },
         ],
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: Schema::new(Vec::new()).expect("schema"),
     };
 
@@ -490,7 +610,7 @@ fn manifest_clustering_range_extension_is_byte_exact() {
     assert_eq!(
         bytes,
         fixture(include_str!(
-            "fixtures/format/manifest_clustering_ranges_v1.hex"
+            "fixtures/format/manifest_clustering_ranges_v2.hex"
         ))
     );
     assert_eq!(

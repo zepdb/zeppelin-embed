@@ -2,10 +2,16 @@
 
 pub mod io;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochId, EpochIdentity,
+    Normalization,
+};
 use crate::format::FormatFamily;
 use crate::format::frame::{FormatError, decode_artifact, encode_artifact};
+use crate::fts::tokenizer::TokenizerEpoch;
 use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 
@@ -16,11 +22,11 @@ const CLUSTERING_RANGE_RECORD_LEN: usize = 24;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpochMeta {
     /// Stable epoch identifier.
-    pub id: u64,
-    /// Authoritative embedding-model identity.
-    pub model: String,
+    pub id: EpochId,
+    /// Complete authoritative embedding-model identity.
+    pub embedding: EmbeddingEpoch,
     /// Authoritative tokenizer identity.
-    pub tokenizer: String,
+    pub tokenizer: TokenizerEpoch,
 }
 
 /// The single atomic snapshot commit point.
@@ -34,6 +40,8 @@ pub struct Manifest {
     pub segments: Vec<SegmentMeta>,
     /// Complete interpretation epoch set.
     pub epochs: Vec<EpochMeta>,
+    /// Atomically published embedding/tokenizer identity used by queries and writes.
+    pub epoch_alias: Option<EpochIdentity>,
     /// Typed metadata schema interpreted by every listed segment.
     pub schema: Schema,
 }
@@ -61,6 +69,18 @@ pub enum ManifestError {
     },
     /// A referenced segment header failed validation.
     Segment(crate::segment::SegmentError),
+    /// The published alias did not name a registry entry.
+    UnknownEpochAlias {
+        /// Rejected alias.
+        alias: EpochIdentity,
+    },
+    /// A segment epoch tag did not name any registry entry.
+    UnknownSegmentEpoch {
+        /// Segment carrying the bad tag.
+        segment: SegmentId,
+        /// Rejected embedding epoch id.
+        epoch: EpochId,
+    },
 }
 
 impl ManifestError {
@@ -87,6 +107,15 @@ impl std::fmt::Display for ManifestError {
             Self::Segment(error) => {
                 write!(formatter, "manifest segment validation failed: {error}")
             }
+            Self::UnknownEpochAlias { alias } => write!(
+                formatter,
+                "manifest epoch alias ({}, {}) does not name a registry entry",
+                alias.embedding, alias.tokenizer
+            ),
+            Self::UnknownSegmentEpoch { segment, epoch } => write!(
+                formatter,
+                "manifest segment {segment} names unknown embedding epoch {epoch}"
+            ),
         }
     }
 }
@@ -97,7 +126,10 @@ impl std::error::Error for ManifestError {
             Self::Io { source, .. } => Some(source),
             Self::Format(error) => Some(error),
             Self::Segment(error) => Some(error),
-            Self::Decode(_) | Self::AheadOfLog { .. } => None,
+            Self::Decode(_)
+            | Self::AheadOfLog { .. }
+            | Self::UnknownEpochAlias { .. }
+            | Self::UnknownSegmentEpoch { .. } => None,
         }
     }
 }
@@ -116,6 +148,7 @@ impl From<crate::segment::SegmentError> for ManifestError {
 
 /// Encodes a complete manifest through a single checksummed frame.
 pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
+    validate_epoch_references(manifest)?;
     let mut payload = Vec::new();
     payload.extend_from_slice(&manifest.generation.to_le_bytes());
     payload.extend_from_slice(&manifest.log_seq.to_le_bytes());
@@ -127,6 +160,7 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
         &mut payload,
     )?;
     payload.extend_from_slice(&0_u32.to_le_bytes());
+    append_optional_identity(manifest.epoch_alias, &mut payload);
     for segment in &manifest.segments {
         payload.extend_from_slice(segment.id.as_bytes());
         payload.extend_from_slice(&segment.row_count.to_le_bytes());
@@ -134,11 +168,12 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
         payload.extend_from_slice(&0_u16.to_le_bytes());
         payload.extend_from_slice(&segment.dims.to_le_bytes());
         payload.extend_from_slice(&segment.file_size.to_le_bytes());
+        append_optional_epoch_id(segment.epoch_id, &mut payload);
     }
     for epoch in &manifest.epochs {
-        payload.extend_from_slice(&epoch.id.to_le_bytes());
-        append_string(&epoch.model, &mut payload)?;
-        append_string(&epoch.tokenizer, &mut payload)?;
+        payload.extend_from_slice(&epoch.id.value().to_le_bytes());
+        payload.extend_from_slice(&epoch.tokenizer.value().to_le_bytes());
+        append_embedding_epoch(&epoch.embedding, &mut payload)?;
     }
     for definition in manifest.schema.columns().iter().skip(1) {
         payload.extend_from_slice(&definition.id().get().to_le_bytes());
@@ -198,6 +233,7 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
             "manifest reserved field is non-zero".to_owned(),
         ));
     }
+    let epoch_alias = cursor.optional_identity()?;
     let mut segments = Vec::with_capacity(segment_count);
     for _ in 0..segment_count {
         let id_bytes: [u8; 16] = cursor
@@ -219,15 +255,16 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
             scheme,
             dims: cursor.u32()?,
             file_size: cursor.u64()?,
+            epoch_id: cursor.optional_epoch_id()?,
             clustering_key_range: crate::segment::ClusteringKeyRange::Unstamped,
         });
     }
     let mut epochs = Vec::with_capacity(epoch_count);
     for _ in 0..epoch_count {
         epochs.push(EpochMeta {
-            id: cursor.u64()?,
-            model: cursor.string()?,
-            tokenizer: cursor.string()?,
+            id: EpochId::from_value(cursor.u64()?),
+            tokenizer: TokenizerEpoch::from_value(cursor.u64()?),
+            embedding: cursor.embedding_epoch()?,
         });
     }
     let mut definitions = Vec::with_capacity(schema_count);
@@ -256,13 +293,119 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
     cursor.finish()?;
     let schema =
         Schema::new(definitions).map_err(|error| ManifestError::Decode(error.to_string()))?;
-    Ok(Manifest {
+    let manifest = Manifest {
         generation,
         log_seq,
         segments,
         epochs,
+        epoch_alias,
         schema,
-    })
+    };
+    validate_epoch_references(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_epoch_references(manifest: &Manifest) -> Result<(), ManifestError> {
+    let mut identities = BTreeSet::new();
+    for epoch in &manifest.epochs {
+        let identity = EpochIdentity::from_meta(epoch)
+            .map_err(|error| ManifestError::Decode(error.to_string()))?;
+        if !identities.insert(identity) {
+            return Err(ManifestError::Decode(format!(
+                "duplicate epoch registry identity ({}, {})",
+                identity.embedding, identity.tokenizer
+            )));
+        }
+    }
+
+    match manifest.epoch_alias {
+        Some(alias) if !identities.contains(&alias) => {
+            return Err(ManifestError::UnknownEpochAlias { alias });
+        }
+        None if !identities.is_empty() => {
+            return Err(ManifestError::Decode(
+                "non-empty epoch registry has no published alias".to_owned(),
+            ));
+        }
+        Some(_) | None => {}
+    }
+
+    for segment in &manifest.segments {
+        match segment.epoch_id {
+            Some(epoch)
+                if !identities
+                    .iter()
+                    .any(|identity| identity.embedding == epoch) =>
+            {
+                return Err(ManifestError::UnknownSegmentEpoch {
+                    segment: segment.id,
+                    epoch,
+                });
+            }
+            None if !identities.is_empty() => {
+                return Err(ManifestError::Decode(format!(
+                    "segment {} has no embedding epoch tag",
+                    segment.id
+                )));
+            }
+            Some(_) | None => {}
+        }
+    }
+    Ok(())
+}
+
+fn append_optional_identity(identity: Option<EpochIdentity>, output: &mut Vec<u8>) {
+    let (tag, embedding, tokenizer) = match identity {
+        Some(identity) => (1_u8, identity.embedding.value(), identity.tokenizer.value()),
+        None => (0, 0, 0),
+    };
+    output.push(tag);
+    output.extend_from_slice(&[0_u8; 7]);
+    output.extend_from_slice(&embedding.to_le_bytes());
+    output.extend_from_slice(&tokenizer.to_le_bytes());
+}
+
+fn append_optional_epoch_id(epoch: Option<EpochId>, output: &mut Vec<u8>) {
+    let (tag, value) = epoch.map_or((0_u8, 0_u64), |epoch| (1, epoch.value()));
+    output.push(tag);
+    output.extend_from_slice(&[0_u8; 7]);
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_embedding_epoch(
+    epoch: &EmbeddingEpoch,
+    output: &mut Vec<u8>,
+) -> Result<(), ManifestError> {
+    append_embedding_tower(&epoch.document, output)?;
+    append_embedding_tower(&epoch.query, output)?;
+    append_bytes(&epoch.alignment_digest, output)
+}
+
+fn append_embedding_tower(
+    tower: &EmbeddingTower,
+    output: &mut Vec<u8>,
+) -> Result<(), ManifestError> {
+    append_string(&tower.model_id, output)?;
+    append_string(&tower.model_version, output)?;
+    append_bytes(&tower.weights_digest, output)?;
+    output.extend_from_slice(&tower.dims.to_le_bytes());
+    output.extend_from_slice(&(tower.normalization as u16).to_le_bytes());
+    append_string(&tower.prompt_prefix, output)?;
+    output.extend_from_slice(&tower.max_tokens.to_le_bytes());
+    output.extend_from_slice(&(tower.runtime as u16).to_le_bytes());
+    output.extend_from_slice(&(tower.compute_units as u16).to_le_bytes());
+    match &tower.os_build {
+        Some(build) => {
+            output.push(1);
+            output.extend_from_slice(&[0_u8; 3]);
+            append_string(build, output)?;
+        }
+        None => {
+            output.push(0);
+            output.extend_from_slice(&[0_u8; 3]);
+        }
+    }
+    Ok(())
 }
 
 fn decode_clustering_ranges(
@@ -331,8 +474,12 @@ fn append_u32_len(length: usize, name: &str, output: &mut Vec<u8>) -> Result<(),
 }
 
 fn append_string(value: &str, output: &mut Vec<u8>) -> Result<(), ManifestError> {
-    append_u32_len(value.len(), "string", output)?;
-    output.extend_from_slice(value.as_bytes());
+    append_bytes(value.as_bytes(), output)
+}
+
+fn append_bytes(value: &[u8], output: &mut Vec<u8>) -> Result<(), ManifestError> {
+    append_u32_len(value.len(), "byte field", output)?;
+    output.extend_from_slice(value);
     Ok(())
 }
 
@@ -416,6 +563,124 @@ impl<'a> ManifestCursor<'a> {
         Ok(u64::from_le_bytes(raw))
     }
 
+    fn optional_identity(&mut self) -> Result<Option<EpochIdentity>, ManifestError> {
+        let tag = self.u8()?;
+        if self.take(7)?.iter().any(|byte| *byte != 0) {
+            return Err(ManifestError::Decode(
+                "epoch alias reserved bytes are non-zero".to_owned(),
+            ));
+        }
+        let embedding = self.u64()?;
+        let tokenizer = self.u64()?;
+        match (tag, embedding, tokenizer) {
+            (0, 0, 0) => Ok(None),
+            (1, embedding, tokenizer) => Ok(Some(EpochIdentity {
+                embedding: EpochId::from_value(embedding),
+                tokenizer: TokenizerEpoch::from_value(tokenizer),
+            })),
+            (0, _, _) => Err(ManifestError::Decode(
+                "absent epoch alias carries non-zero identity bytes".to_owned(),
+            )),
+            (unknown, _, _) => Err(ManifestError::Decode(format!(
+                "unknown epoch alias presence tag {unknown}"
+            ))),
+        }
+    }
+
+    fn optional_epoch_id(&mut self) -> Result<Option<EpochId>, ManifestError> {
+        let tag = self.u8()?;
+        if self.take(7)?.iter().any(|byte| *byte != 0) {
+            return Err(ManifestError::Decode(
+                "segment epoch reserved bytes are non-zero".to_owned(),
+            ));
+        }
+        let epoch = self.u64()?;
+        match (tag, epoch) {
+            (0, 0) => Ok(None),
+            (1, epoch) => Ok(Some(EpochId::from_value(epoch))),
+            (0, _) => Err(ManifestError::Decode(
+                "absent segment epoch tag carries a non-zero id".to_owned(),
+            )),
+            (unknown, _) => Err(ManifestError::Decode(format!(
+                "unknown segment epoch presence tag {unknown}"
+            ))),
+        }
+    }
+
+    fn embedding_epoch(&mut self) -> Result<EmbeddingEpoch, ManifestError> {
+        Ok(EmbeddingEpoch {
+            document: self.embedding_tower()?,
+            query: self.embedding_tower()?,
+            alignment_digest: self.bytes()?,
+        })
+    }
+
+    fn embedding_tower(&mut self) -> Result<EmbeddingTower, ManifestError> {
+        let model_id = self.string()?;
+        let model_version = self.string()?;
+        let weights_digest = self.bytes()?;
+        let dims = self.u32()?;
+        let normalization = match self.u16()? {
+            0 => Normalization::None,
+            1 => Normalization::L2,
+            unknown => {
+                return Err(ManifestError::Decode(format!(
+                    "unknown embedding normalization {unknown}"
+                )));
+            }
+        };
+        let prompt_prefix = self.string()?;
+        let max_tokens = self.u32()?;
+        let runtime = match self.u16()? {
+            1 => EmbeddingRuntime::CoreMl,
+            2 => EmbeddingRuntime::Mlx,
+            3 => EmbeddingRuntime::CpuReference,
+            unknown => {
+                return Err(ManifestError::Decode(format!(
+                    "unknown embedding runtime {unknown}"
+                )));
+            }
+        };
+        let compute_units = match self.u16()? {
+            1 => ComputeUnits::Cpu,
+            2 => ComputeUnits::CpuAndGpu,
+            3 => ComputeUnits::CpuAndNeuralEngine,
+            4 => ComputeUnits::All,
+            unknown => {
+                return Err(ManifestError::Decode(format!(
+                    "unknown embedding compute units {unknown}"
+                )));
+            }
+        };
+        let os_tag = self.u8()?;
+        if self.take(3)?.iter().any(|byte| *byte != 0) {
+            return Err(ManifestError::Decode(
+                "embedding OS-build reserved bytes are non-zero".to_owned(),
+            ));
+        }
+        let os_build = match os_tag {
+            0 => None,
+            1 => Some(self.string()?),
+            unknown => {
+                return Err(ManifestError::Decode(format!(
+                    "unknown embedding OS-build presence tag {unknown}"
+                )));
+            }
+        };
+        Ok(EmbeddingTower {
+            model_id,
+            model_version,
+            weights_digest,
+            dims,
+            normalization,
+            prompt_prefix,
+            max_tokens,
+            runtime,
+            compute_units,
+            os_build,
+        })
+    }
+
     fn i64(&mut self) -> Result<i64, ManifestError> {
         let raw: [u8; 8] = self
             .take(8)?
@@ -438,6 +703,11 @@ impl<'a> ManifestCursor<'a> {
         std::str::from_utf8(self.take(length)?)
             .map(str::to_owned)
             .map_err(|error| ManifestError::Decode(format!("invalid UTF-8: {error}")))
+    }
+
+    fn bytes(&mut self) -> Result<Vec<u8>, ManifestError> {
+        let length = self.usize_from_u32()?;
+        Ok(self.take(length)?.to_vec())
     }
 
     fn finish(&self) -> Result<(), ManifestError> {

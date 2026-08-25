@@ -175,6 +175,7 @@ fn published_fixture() -> TempDir {
             log_seq: 0,
             segments: vec![segment],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema,
         },
         policy,

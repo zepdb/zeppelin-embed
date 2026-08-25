@@ -686,7 +686,7 @@ impl ManifestMutation {
                 rewrite_framed_checksums(bytes);
             }
             Self::MissingSegmentReference => {
-                let segment_id = FILE_HEADER_LEN + 8 + 32;
+                let segment_id = FILE_HEADER_LEN + 8 + 32 + 24;
                 bytes[segment_id] ^= 1;
                 rewrite_framed_checksums(bytes);
             }
@@ -746,7 +746,7 @@ const MANIFEST_CASES: &[ManifestCase] = &[
     },
     ManifestCase {
         name: "manifest_wrong_version",
-        mutation: ManifestMutation::Version(2),
+        mutation: ManifestMutation::Version(1),
         action: ManifestAction::Decode,
         expected: ExpectedManifest::Format {
             check: FormatCheck::Version,
@@ -914,6 +914,7 @@ fn manifest_corruption_matrix_returns_the_specific_typed_error() {
         log_seq: 1,
         segments: vec![meta],
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: Schema::new(Vec::new()).expect("schema"),
     };
     let valid = encode_manifest(&manifest).expect("manifest");

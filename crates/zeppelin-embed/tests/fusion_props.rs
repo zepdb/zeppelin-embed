@@ -581,13 +581,27 @@ fn reports_distinguish_stability_exhaustion_and_budget_materialization() {
     let tokenizer = zeppelin_embed::fts::tokenizer::Profile::TextDefault
         .config()
         .epoch();
-    let epoch =
-        zeppelin_embed::epoch::EpochIdentity::from_meta(&zeppelin_embed::manifest::EpochMeta {
-            id: 7,
-            model: "fusion-fixture".to_owned(),
-            tokenizer: tokenizer.to_hex(),
-        })
-        .expect("valid epoch fixture");
+    let tower = zeppelin_embed::epoch::EmbeddingTower {
+        model_id: "fusion-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![7],
+        dims: 3,
+        normalization: zeppelin_embed::epoch::Normalization::L2,
+        prompt_prefix: String::new(),
+        max_tokens: 32,
+        runtime: zeppelin_embed::epoch::EmbeddingRuntime::CpuReference,
+        compute_units: zeppelin_embed::epoch::ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let embedding = zeppelin_embed::epoch::EmbeddingEpoch {
+        document: tower.clone(),
+        query: tower,
+        alignment_digest: Vec::new(),
+    };
+    let epoch = zeppelin_embed::epoch::EpochIdentity {
+        embedding: zeppelin_embed::epoch::EpochId::of(&embedding),
+        tokenizer,
+    };
     let budget = join(
         &HybridQuery::new(1)
             .with_alpha(0.5)

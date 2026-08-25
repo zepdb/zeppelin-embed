@@ -55,6 +55,7 @@ fn manifest() -> Manifest {
         log_seq: 2,
         segments: Vec::new(),
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: schema(),
     }
 }
@@ -65,6 +66,7 @@ fn old_manifest() -> Manifest {
         log_seq: 1,
         segments: Vec::new(),
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: schema(),
     }
 }
@@ -661,17 +663,18 @@ fn write_segment_each_step_ablation_has_specific_verdict() {
 
 #[test]
 fn commit_manifest_uses_exact_sync_sequence_per_tier() {
+    // The manifest v2 alias adds 24 bytes, moving the exact frame size from 88 to 112.
     for (tier, expected_kind, expected_counts) in [
-        (CommitTier::None, None, expected_counts(88, 0, 0)),
+        (CommitTier::None, None, expected_counts(112, 0, 0)),
         (
             CommitTier::Ordered,
             Some(SyncKind::Barrier),
-            expected_counts(88, 2, 0),
+            expected_counts(112, 2, 0),
         ),
         (
             CommitTier::Durable,
             Some(SyncKind::Full),
-            expected_counts(88, 0, 2),
+            expected_counts(112, 0, 2),
         ),
     ] {
         let recorder = CrashVfs::new(MemoryVfs::new()).expect("manifest recorder");

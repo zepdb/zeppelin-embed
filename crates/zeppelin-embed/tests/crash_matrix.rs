@@ -9,8 +9,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochIdentity, Normalization,
+    StoreEpoch,
+};
 use zeppelin_embed::format::FormatFamily;
 use zeppelin_embed::format::frame::{FormatCheck, encode_artifact};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{OpenOptions, Store};
@@ -119,19 +124,51 @@ fn schema() -> Schema {
     Schema::new(Vec::new()).expect("schema")
 }
 
-fn manifest(generation: u64, segments: Vec<SegmentMeta>) -> Manifest {
+fn manifest(generation: u64, mut segments: Vec<SegmentMeta>) -> Manifest {
     let marker = if generation == 1 { 'a' } else { 'b' };
+    let epochs = (0_u64..8)
+        .map(|index| {
+            let document = EmbeddingTower {
+                model_id: format!(
+                    "{}-{index}",
+                    std::iter::repeat_n(marker, 48).collect::<String>()
+                ),
+                model_version: generation.to_string(),
+                weights_digest: vec![marker as u8, index as u8],
+                dims: 3,
+                normalization: Normalization::L2,
+                prompt_prefix: "search_document: ".to_owned(),
+                max_tokens: 512,
+                runtime: EmbeddingRuntime::CpuReference,
+                compute_units: ComputeUnits::Cpu,
+                os_build: None,
+            };
+            let mut query = document.clone();
+            query.prompt_prefix = "search_query: ".to_owned();
+            EpochMeta::from(StoreEpoch {
+                embedding: EmbeddingEpoch {
+                    document,
+                    query,
+                    alignment_digest: Vec::new(),
+                },
+                tokenizer: TokenizerConfig::text_default().epoch(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let epoch_alias = epochs
+        .first()
+        .map(EpochIdentity::from_meta)
+        .transpose()
+        .expect("generated epoch metadata");
+    for segment in &mut segments {
+        segment.epoch_id = epoch_alias.map(|identity| identity.embedding);
+    }
     Manifest {
         generation,
         log_seq: generation,
         segments,
-        epochs: (0_u64..8)
-            .map(|id| EpochMeta {
-                id,
-                model: std::iter::repeat_n(marker, 48).collect(),
-                tokenizer: std::iter::repeat_n(marker.to_ascii_uppercase(), 48).collect(),
-            })
-            .collect(),
+        epochs,
+        epoch_alias,
         schema: schema(),
     }
 }
@@ -238,6 +275,15 @@ fn typed_manifest_error(error: &ManifestError) -> String {
             format!("AheadOfLog({snapshot}, {durable})")
         }
         ManifestError::Segment(error) => format!("Segment({error})"),
+        ManifestError::UnknownEpochAlias { alias } => {
+            format!(
+                "UnknownEpochAlias({}, {})",
+                alias.embedding, alias.tokenizer
+            )
+        }
+        ManifestError::UnknownSegmentEpoch { segment, epoch } => {
+            format!("UnknownSegmentEpoch({segment}, {epoch})")
+        }
     }
 }
 
@@ -597,6 +643,7 @@ fn a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly() {
         log_seq: 1,
         segments: vec![old_meta.clone()],
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: schema(),
     };
     let new_manifest = Manifest {
@@ -604,6 +651,7 @@ fn a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly() {
         log_seq: 1,
         segments: vec![new_meta.clone()],
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: schema(),
     };
     let old_wal = purge_wal_with_sentinel(&sentinel);

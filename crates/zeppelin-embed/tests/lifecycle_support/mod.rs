@@ -57,6 +57,7 @@ pub fn published_store(generation: u64) -> TempDir {
             log_seq: 0,
             segments: vec![segment],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema,
         },
         policy,

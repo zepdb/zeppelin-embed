@@ -712,6 +712,7 @@ fn publish_segment(
         scheme: build.scheme,
         dims: build.dims,
         file_size: bytes.len() as u64,
+        epoch_id: None,
         clustering_key_range: super::ClusteringKeyRange::Unstamped,
     })
 }

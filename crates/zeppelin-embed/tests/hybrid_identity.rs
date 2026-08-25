@@ -72,6 +72,7 @@ fn postings_segment_without_document_identity_is_a_typed_error() {
             log_seq: 0,
             segments: vec![meta],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema,
         },
         policy,

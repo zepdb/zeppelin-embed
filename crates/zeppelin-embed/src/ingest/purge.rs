@@ -160,7 +160,7 @@ pub(crate) fn prepare_sealed_tombstones(
             let replacement_id = replacement_segment_id(original.id, nonce, generation);
             replacement_ids.push(replacement_id);
             let all_rows = (0..reader.meta().row_count as usize).collect::<Vec<_>>();
-            let replacement = rewrite_segment(
+            let mut replacement = rewrite_segment(
                 vfs,
                 directory,
                 reader,
@@ -169,6 +169,7 @@ pub(crate) fn prepare_sealed_tombstones(
                 replacement_id,
                 policy,
             )?;
+            replacement.epoch_id = original.epoch_id;
             let target = manifest
                 .segments
                 .iter_mut()
@@ -553,6 +554,7 @@ impl Store {
                 log_seq: 0,
                 segments: Vec::new(),
                 epochs: Vec::new(),
+                epoch_alias: None,
                 schema: crate::meta::Schema::new(Vec::new()).map_err(|source| {
                     StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
                 })?,
@@ -580,7 +582,7 @@ impl Store {
                 .checked_add(1)
                 .ok_or(StoreError::GenerationOverflow)?;
             let replacement_id = replacement_segment_id(original.id, token.id, generation);
-            let replacement = rewrite_segment(
+            let mut replacement = rewrite_segment(
                 vfs,
                 &self.directory,
                 &reader,
@@ -589,6 +591,7 @@ impl Store {
                 replacement_id,
                 self.durability_policy,
             )?;
+            replacement.epoch_id = original.epoch_id;
             drop(reader);
             let position = manifest
                 .segments

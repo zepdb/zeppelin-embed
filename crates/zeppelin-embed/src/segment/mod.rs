@@ -76,6 +76,8 @@ pub struct SegmentMeta {
     pub dims: u32,
     /// Exact immutable file length.
     pub file_size: u64,
+    /// Manifest-owned embedding epoch tag, absent only for an unstamped store.
+    pub epoch_id: Option<crate::epoch::EpochId>,
     /// Manifest-stamped range of live values in the canonical `ts` column.
     pub clustering_key_range: ClusteringKeyRange,
 }

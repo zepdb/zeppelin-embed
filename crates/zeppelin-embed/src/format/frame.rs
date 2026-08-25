@@ -127,7 +127,7 @@ pub fn encode_artifact(family: FormatFamily, flags: u32, payload: &[u8]) -> Vec<
     encoded.extend_from_slice(&encode_header(FileHeader {
         magic: FILE_MAGIC,
         family: family.id(),
-        version: 1,
+        version: family.current_version(),
         flags,
         header_length: FILE_HEADER_LEN as u64,
         file_length: file_length as u64,

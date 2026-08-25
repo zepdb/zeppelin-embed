@@ -466,6 +466,7 @@ fn commit(
             log_seq: 0,
             segments: vec![meta],
             epochs: Vec::new(),
+            epoch_alias: None,
             schema: columns.schema().clone(),
         },
         policy(),

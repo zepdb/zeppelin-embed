@@ -245,13 +245,15 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        let meta = write_segment(
+        let mut meta = write_segment(
             vfs,
             &self.directory,
             segment.as_build(),
             self.durability_policy,
         )
         .map_err(StoreError::Segment)?;
+        let epoch_alias = self.epoch_identity();
+        meta.epoch_id = epoch_alias.map(|identity| identity.embedding);
         commit_manifest(
             vfs,
             &self.directory,
@@ -260,6 +262,7 @@ impl Store {
                 log_seq: 0,
                 segments: vec![meta],
                 epochs: self.epoch_registry(&[]),
+                epoch_alias,
                 schema: segment.columns.schema().clone(),
             },
             self.durability_policy,
@@ -294,7 +297,7 @@ impl Store {
 pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
-    epochs: Vec<crate::manifest::EpochMeta>,
+    epoch_alias: Option<crate::epoch::EpochIdentity>,
     schema: crate::meta::Schema,
     segments: Accounted<Vec<SegmentReader>>,
     cancelled: AtomicBool,
@@ -310,7 +313,7 @@ impl PublishedSnapshot {
         Self {
             generation,
             absorbed_through: 0,
-            epochs: Vec::new(),
+            epoch_alias: None,
             schema: crate::meta::Schema::timestamp_only(),
             segments: Accounted::unaccounted_empty(),
             cancelled: AtomicBool::new(false),
@@ -385,7 +388,7 @@ impl PublishedSnapshot {
         Ok(Self {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
-            epochs: manifest.epochs.clone(),
+            epoch_alias: manifest.epoch_alias,
             schema: manifest.schema.clone(),
             segments,
             cancelled: AtomicBool::new(false),
@@ -412,8 +415,8 @@ impl PublishedSnapshot {
         self.absorbed_through
     }
 
-    pub(crate) fn epochs(&self) -> &[crate::manifest::EpochMeta] {
-        &self.epochs
+    pub(crate) const fn epoch_alias(&self) -> Option<crate::epoch::EpochIdentity> {
+        self.epoch_alias
     }
 
     pub(crate) const fn schema(&self) -> &crate::meta::Schema {
@@ -638,6 +641,7 @@ mod tests {
                 log_seq: 0,
                 segments: vec![initial],
                 epochs: Vec::new(),
+                epoch_alias: None,
                 schema: schema.clone(),
             },
             derived,

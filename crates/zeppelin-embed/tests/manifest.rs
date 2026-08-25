@@ -16,7 +16,7 @@ use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, Durabili
 use zeppelin_embed::manifest::io::{
     DurableLog, MANIFEST_FILE, commit_manifest, load_manifest, open_manifest,
 };
-use zeppelin_embed::manifest::{EpochMeta, Manifest, ManifestError};
+use zeppelin_embed::manifest::{Manifest, ManifestError};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnStoreBuilder, ColumnType, Schema,
 };
@@ -115,11 +115,8 @@ fn manifest(generation: u64, log_seq: u64) -> Manifest {
         generation,
         log_seq,
         segments: Vec::new(),
-        epochs: vec![EpochMeta {
-            id: 9,
-            model: "model-sha256:01".to_owned(),
-            tokenizer: "tokenizer-sha256:02".to_owned(),
-        }],
+        epochs: Vec::new(),
+        epoch_alias: None,
         schema: schema(),
     }
 }

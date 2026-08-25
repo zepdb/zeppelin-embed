@@ -6,16 +6,45 @@
 )]
 
 use xxhash_rust::xxh3::xxh3_64;
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
 use zeppelin_embed::format::frame::{
     FILE_HEADER_LEN, FILE_TRAILER_LEN, FormatCheck, decode_artifact, decode_header, encode_artifact,
 };
 use zeppelin_embed::format::golden::{HexError, decode_hex};
 use zeppelin_embed::format::{FormatFamily, FormatRegistry, RegistryError};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::manifest::{
     EpochMeta, Manifest, ManifestError, decode_manifest, encode_manifest,
 };
 use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
 use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
+
+fn store_epoch(dims: u32) -> StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "format-model".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![1, 2, 3],
+        dims,
+        normalization: Normalization::L2,
+        prompt_prefix: "search_document: ".to_owned(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CoreMl,
+        compute_units: ComputeUnits::CpuAndNeuralEngine,
+        os_build: Some("25A100".to_owned()),
+    };
+    let mut query = document.clone();
+    query.prompt_prefix = "search_query: ".to_owned();
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            document,
+            query,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
 
 fn rewrite_file_checksum(bytes: &mut [u8]) {
     let trailer = bytes.len() - FILE_TRAILER_LEN;
@@ -140,6 +169,7 @@ fn minimal_payload() -> Vec<u8> {
     payload.extend_from_slice(&0_u32.to_le_bytes());
     payload.extend_from_slice(&0_u32.to_le_bytes());
     payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.extend_from_slice(&[0_u8; 24]);
     payload
 }
 
@@ -154,6 +184,8 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
         ColumnDefinition::new(ColumnId::new(6), "r", ColumnType::RawString, true),
     ])
     .expect("schema");
+    let epoch = store_epoch(65);
+    let identity = epoch.identity();
     let manifest = Manifest {
         generation: 8,
         log_seq: 7,
@@ -163,13 +195,11 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
             scheme: 4,
             dims: 65,
             file_size: 99,
+            epoch_id: Some(identity.embedding),
             clustering_key_range: zeppelin_embed::segment::ClusteringKeyRange::Unstamped,
         }],
-        epochs: vec![EpochMeta {
-            id: 1,
-            model: "model".to_owned(),
-            tokenizer: "tok".to_owned(),
-        }],
+        epochs: vec![EpochMeta::from(&epoch)],
+        epoch_alias: Some(identity),
         schema,
     };
     let encoded = encode_manifest(&manifest).expect("encode");
@@ -246,12 +276,14 @@ fn manifest_clustering_extension_rejects_each_semantic_corruption() {
             scheme: 4,
             dims: 2,
             file_size: 64,
+            epoch_id: None,
             clustering_key_range: ClusteringKeyRange::Bounded {
                 min_ts: 10,
                 max_ts: 20,
             },
         }],
         epochs: Vec::new(),
+        epoch_alias: None,
         schema: Schema::new(Vec::new()).expect("schema"),
     };
     let framed = encode_manifest(&manifest).expect("bounded manifest");
@@ -259,7 +291,7 @@ fn manifest_clustering_extension_rejects_each_semantic_corruption() {
         .expect("manifest frame")
         .payload
         .to_vec();
-    let extension = 68_usize;
+    let extension = 108_usize;
     assert_eq!(&payload[extension..extension + 4], b"TSR1");
 
     type Corruption = (&'static str, Box<dyn Fn(&mut Vec<u8>)>);

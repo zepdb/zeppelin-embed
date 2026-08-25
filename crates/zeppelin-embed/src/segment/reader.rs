@@ -1071,6 +1071,7 @@ fn parse_segment_header(
             scheme,
             dims,
             file_size: actual_file_length,
+            epoch_id: None,
             clustering_key_range: super::ClusteringKeyRange::Unstamped,
         },
         header_length,
