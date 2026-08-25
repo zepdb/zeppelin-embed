@@ -8,11 +8,16 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::RngCore;
 use tempfile::tempdir;
+use zeppelin_embed::fts::index::DEFAULT_FIELD;
+use zeppelin_embed::fts::search::TermQuery;
+use zeppelin_embed::fusion::HybridQuery;
 use zeppelin_embed::graph::search::QueryQosClass;
 use zeppelin_embed::ingest::{
     DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
+};
 use zeppelin_embed::meta::{
     Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
 };
@@ -106,11 +111,13 @@ fn populated_store() -> (tempfile::TempDir, Store) {
             IngestDocument::new(
                 DocumentVersion::new(DocId::new(1), Revision::new(1)),
                 vec![1.0, 0.0],
-            ),
+            )
+            .with_text("bronze zeppelin"),
             IngestDocument::new(
                 DocumentVersion::new(DocId::new(2), Revision::new(1)),
                 vec![0.0, 1.0],
-            ),
+            )
+            .with_text("silver airship"),
         ]))
         .expect("ingest corpus");
     (directory, store)
@@ -288,13 +295,19 @@ fn observed_qos_appears_in_every_diagnostics_value() {
 fn diagnostics_v1_shape_is_byte_identical() {
     let (_directory, store) = populated_store();
     let outcome = store
-        .search(
+        .search_hybrid(
             SearchRequest::new(&[1.0, 0.0]),
-            2,
-            SearchOptions::default(),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(2),
+            SearchOptions::default().with_tier(SearchTier::Graph(GraphSearchOptions::default())),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("query store");
+        .expect("query hybrid store");
+    assert_eq!(
+        outcome.diagnostics.plan.len(),
+        1,
+        "hybrid diagnostics must report the active-segment vector plan"
+    );
     assert_eq!(
         diagnostics_v1_text(&outcome.diagnostics),
         include_str!("fixtures/diagnostics_v1.txt")

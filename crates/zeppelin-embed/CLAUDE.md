@@ -414,7 +414,8 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   rejection is mutation-free.
 - Segment replacement compacts survivors into dense row ids and rewrites codes,
   quantization factors, f32 rescore rows, alive state, document versions,
-  columns, and stored metadata in that same survivor order. Graph node blocks
+  columns, stored metadata, and an existing lexical Postings region in that
+  same survivor order. Graph node blocks
   are deliberately omitted because their neighbor ids name the old dense row
   space; `maintain()` is responsible for rebuilding a graph later.
 - WAL retirement is not physical erasure. Purge serializes only the surviving
@@ -468,3 +469,31 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   file immediately before minting, keep existing goldens byte-identical unless
   deliberately breaking one and say so when one moves, prove old artifacts still
   open, give every new region its own frozen golden, and record the change here.
+
+## Task 17 Part B text and typed-column ingest invariants
+
+- New document upserts use WAL operation id 7 only. Its payload begins with a
+  little-endian `u32` field-presence bitmap, then the fixed
+  `(doc_id:u128, revision:u64)` identity. Bit 0 carries the vector, bit 1 UTF-8
+  text, bit 2 the canonical timestamp, bit 3 opaque stored metadata, and bit 4
+  typed column values. Bit 5 is reserved-unused for a future per-record epoch
+  tag; bits 6 through 31 are reserved-unused. A set field follows in bit order.
+  Operations 1 through 6 remain readable and are never reinterpreted.
+- The optional sealed lexical container is region kind 6 / format family 8.
+  Version 1 is hand-written little-endian bytes: the `ZFTS` header freezes row,
+  span, field, term-byte, and postings-byte counts; fixed 48-byte term/field
+  spans locate each embedded posting list; each field carries one dense u32
+  length per row; concatenated term bytes and the existing validated postings
+  blob follow. Reserved words are zero. Open validates ordering, row bounds,
+  lengths, every embedded posting stream, and cross-region row count before use.
+  Older segments omit the region and continue to open.
+- Store creation may commit a typed `Schema`; reopen uses that manifest schema
+  and rejects an explicitly different declaration. Ingest validates unknown,
+  duplicate, missing-required, and type-mismatched values before WAL append.
+  Seal materializes the same values through `ColumnStoreBuilder`; the manifest
+  schema encoding is unchanged.
+- Lexical local rows join to the existing document-version region and hybrid
+  fusion joins on stable `DocId`. A postings-bearing segment without document
+  identity is a typed error, never a dropped candidate. The existing fusion
+  module remains the sole owner of normalization, alpha policy, RRF fallback,
+  termination, and `FusionReport`.

@@ -3,14 +3,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::fts::sealed::{SealedSegment, SealedSegmentError};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::{CancelToken, Store, StoreError, StoreState};
 use crate::manifest::Manifest;
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
     write_segment_with_documents, write_segment_with_documents_and_metadata,
+    write_segment_with_documents_and_postings, write_segment_with_documents_metadata_and_postings,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId};
 use crate::vfs::{StdVfs, Vfs};
@@ -81,9 +83,14 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        let manifest =
-            load_current_manifest(vfs, &self.directory, absorbed_through, current.generation)?;
-        let columns = active_columns(&manifest.schema, current.segment.timestamps(), cancel)?;
+        let manifest = load_current_manifest(
+            vfs,
+            &self.directory,
+            absorbed_through,
+            current.generation,
+            &self.schema,
+        )?;
+        let columns = active_columns(&manifest.schema, &current.segment, cancel)?;
         let alive = current.segment.alive()?;
         let clustering_key_range = clustering_key_range(current.segment.timestamps(), &alive)?;
         let dims = current
@@ -106,26 +113,58 @@ impl Store {
             doc_ids: current.segment.doc_ids(),
             revisions: current.segment.revisions(),
         };
-        let written = if current.segment.metadata_bytes().is_empty() {
-            write_segment_with_documents(
-                vfs,
-                &self.directory,
-                build,
-                documents,
-                self.durability_policy,
+        let postings = if current.segment.has_text() {
+            let sealed = SealedSegment::seal(current.segment.lexical())
+                .map_err(SealedSegmentError::from)
+                .map_err(crate::segment::SegmentError::from)
+                .map_err(StoreError::Segment)?;
+            Some(
+                sealed
+                    .encode_region()
+                    .map_err(crate::segment::SegmentError::from)
+                    .map_err(StoreError::Segment)?,
             )
         } else {
-            write_segment_with_documents_and_metadata(
+            None
+        };
+        let metadata =
+            (!current.segment.metadata_bytes().is_empty()).then_some(SegmentStoredMetadata {
+                end_offsets: current.segment.metadata_end_offsets(),
+                bytes: current.segment.metadata_bytes(),
+            });
+        let written = match (metadata, postings.as_deref()) {
+            (None, None) => write_segment_with_documents(
                 vfs,
                 &self.directory,
                 build,
                 documents,
-                SegmentStoredMetadata {
-                    end_offsets: current.segment.metadata_end_offsets(),
-                    bytes: current.segment.metadata_bytes(),
-                },
                 self.durability_policy,
-            )
+            ),
+            (Some(metadata), None) => write_segment_with_documents_and_metadata(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                metadata,
+                self.durability_policy,
+            ),
+            (None, Some(postings)) => write_segment_with_documents_and_postings(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                SegmentPostings { bytes: postings },
+                self.durability_policy,
+            ),
+            (Some(metadata), Some(postings)) => write_segment_with_documents_metadata_and_postings(
+                vfs,
+                &self.directory,
+                build,
+                documents,
+                metadata,
+                SegmentPostings { bytes: postings },
+                self.durability_policy,
+            ),
         };
         let mut meta = match written {
             Ok(meta) => meta,
@@ -181,6 +220,7 @@ fn load_current_manifest(
     directory: &Path,
     durable_end: u64,
     generation: u64,
+    schema: &Schema,
 ) -> Result<Manifest, StoreError> {
     let path = directory.join(MANIFEST_FILE);
     match vfs.open(&path) {
@@ -190,9 +230,7 @@ fn load_current_manifest(
             log_seq: 0,
             segments: Vec::new(),
             epochs: Vec::new(),
-            schema: Schema::new(Vec::new()).map_err(|source| {
-                StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
-            })?,
+            schema: schema.clone(),
         }),
         Err(source) => Err(StoreError::Io { path, source }),
     }
@@ -200,17 +238,20 @@ fn load_current_manifest(
 
 fn active_columns(
     schema: &Schema,
-    timestamps: &[i64],
+    active: &super::ActiveSegment,
     cancel: Option<&CancelToken>,
 ) -> Result<ColumnStore, StoreError> {
     let mut builder = ColumnStoreBuilder::new(schema.clone());
-    for (row, timestamp) in timestamps.iter().copied().enumerate() {
+    for (row, timestamp) in active.timestamps().iter().copied().enumerate() {
         if row.is_multiple_of(64) {
             check_cancelled(cancel)?;
         }
-        builder.push_row(timestamp, &[]).map_err(|error| {
-            StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))
-        })?;
+        let values = active.column_values(row)?;
+        builder
+            .push_row(timestamp, &super::column_inputs(&values))
+            .map_err(|error| {
+                StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))
+            })?;
     }
     builder.finish().map_err(|error| {
         StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))

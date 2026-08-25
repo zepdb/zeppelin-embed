@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::fts::index::{Document as LexicalDocument, SegmentIndex};
+use crate::fts::tokenizer::{Analyzer, TokenizerConfig};
 use crate::lifecycle::StoreError;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::{Accounted, AccountedCounter, Accounting, AllocationComponent};
@@ -16,6 +18,7 @@ use super::wal_payload::MutationPayload;
 use super::{DocId, DocumentVersion, IngestDocument, IngestError, Revision, wal_payload};
 
 type AccountedMetadata = (Accounted<Vec<u64>>, Accounted<Vec<u8>>);
+type AccountedText = (Accounted<Vec<u8>>, Accounted<Vec<u64>>, Accounted<Vec<u8>>);
 
 pub(crate) struct ActiveState {
     pub(crate) generation: u64,
@@ -35,13 +38,15 @@ impl ActiveState {
         generation: u64,
         absorbed_through: u64,
         accounting: &Arc<Accounting>,
+        schema: &crate::meta::Schema,
     ) -> Result<(Self, Option<CleanWalReader>), StoreError> {
         match StdVfs.open(path) {
             Ok(0) => Ok((Self::empty(generation), None)),
             Ok(_) => {
                 let reader = WalReader::open(&StdVfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-                let active = Self::replay(generation, absorbed_through, &clean, accounting)?;
+                let active =
+                    Self::replay(generation, absorbed_through, &clean, accounting, schema)?;
                 Ok((active, Some(clean)))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -56,6 +61,7 @@ impl ActiveState {
         absorbed_through: u64,
         recovered: &CleanWalReader,
         accounting: &Arc<Accounting>,
+        schema: &crate::meta::Schema,
     ) -> Result<Self, StoreError> {
         let mut segment = ActiveSegment::empty();
         for record in recovered.records() {
@@ -75,6 +81,8 @@ impl ActiveState {
             })?;
             segment = match mutation {
                 MutationPayload::Upsert(document) => {
+                    super::validate_document_columns(schema, &document)
+                        .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
                     apply_recovered_upsert(&segment, &document, record.seq, record.op, accounting)?
                 }
                 MutationPayload::Delete(doc_ids) => {
@@ -160,6 +168,21 @@ fn recovery_apply_error(seq: LogSeq, op: u16, error: IngestError) -> StoreError 
             attempted,
         },
         IngestError::Vector(source) => StoreError::WalVector { seq, source },
+        IngestError::Lexical(source) => StoreError::WalMutation {
+            seq,
+            op,
+            source: wal_payload::PayloadError::Lexical(source.to_string()),
+        },
+        IngestError::Tokenizer(source) => StoreError::WalMutation {
+            seq,
+            op,
+            source: wal_payload::PayloadError::Lexical(source.to_string()),
+        },
+        IngestError::Columns(source) => StoreError::WalMutation {
+            seq,
+            op,
+            source: wal_payload::PayloadError::Columns(source.to_string()),
+        },
         IngestError::Payload(source) => StoreError::WalMutation { seq, op, source },
     }
 }
@@ -172,6 +195,13 @@ pub(crate) struct ActiveSegment {
     timestamps: Accounted<Vec<i64>>,
     metadata_end_offsets: Accounted<Vec<u64>>,
     metadata_bytes: Accounted<Vec<u8>>,
+    text_present: Accounted<Vec<u8>>,
+    text_end_offsets: Accounted<Vec<u64>>,
+    text_bytes: Accounted<Vec<u8>>,
+    column_end_offsets: Accounted<Vec<u64>>,
+    column_bytes: Accounted<Vec<u8>>,
+    lexical: SegmentIndex,
+    lexical_bytes: Option<AccountedCounter>,
     vectors: Accounted<Vec<f32>>,
     codes: Accounted<Vec<u8>>,
     factors: Accounted<Vec<Bit4Factors>>,
@@ -188,6 +218,13 @@ impl ActiveSegment {
             timestamps: Accounted::unaccounted_empty(),
             metadata_end_offsets: Accounted::unaccounted_empty(),
             metadata_bytes: Accounted::unaccounted_empty(),
+            text_present: Accounted::unaccounted_empty(),
+            text_end_offsets: Accounted::unaccounted_empty(),
+            text_bytes: Accounted::unaccounted_empty(),
+            column_end_offsets: Accounted::unaccounted_empty(),
+            column_bytes: Accounted::unaccounted_empty(),
+            lexical: SegmentIndex::new(),
+            lexical_bytes: None,
             vectors: Accounted::unaccounted_empty(),
             codes: Accounted::unaccounted_empty(),
             factors: Accounted::unaccounted_empty(),
@@ -244,6 +281,10 @@ impl ActiveSegment {
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let mut metadata_bytes =
             copy_accounted(accounting, &self.metadata_bytes, metadata_capacity)?;
+        let (text_present, text_end_offsets, text_bytes) =
+            self.appended_text(document.text(), accounting)?;
+        let (column_end_offsets, column_bytes) =
+            self.appended_columns(document.has_columns(), document.columns(), accounting)?;
         let mut vectors = copy_accounted(accounting, &self.vectors, vector_count)?;
         let mut codes = copy_accounted(accounting, &self.codes, code_count)?;
         let mut factors = copy_accounted(accounting, &self.factors, row_count)?;
@@ -276,6 +317,7 @@ impl ActiveSegment {
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let factor = quantize_bit4(document.vector(), encoded).map_err(IngestError::Vector)?;
         factors.push(factor)?;
+        let (lexical, lexical_bytes) = self.appended_lexical(document.text(), accounting)?;
         Ok(Self {
             dims: Some(dims),
             doc_ids,
@@ -284,6 +326,13 @@ impl ActiveSegment {
             timestamps,
             metadata_end_offsets,
             metadata_bytes,
+            text_present,
+            text_end_offsets,
+            text_bytes,
+            column_end_offsets,
+            column_bytes,
+            lexical,
+            lexical_bytes,
             vectors,
             codes,
             factors,
@@ -313,6 +362,10 @@ impl ActiveSegment {
         let mut timestamps = copy_accounted(accounting, &self.timestamps, self.timestamps.len())?;
         let (metadata_end_offsets, metadata_bytes) =
             self.replaced_metadata(row, document.metadata(), accounting)?;
+        let (text_present, text_end_offsets, text_bytes) =
+            self.replaced_text(row, document.text(), accounting)?;
+        let (column_end_offsets, column_bytes) =
+            self.replaced_columns(row, document.has_columns(), document.columns(), accounting)?;
         let mut vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let mut codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let mut factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
@@ -377,6 +430,15 @@ impl ActiveSegment {
             .as_mut_slice()
             .get_mut(row)
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = factor;
+        let tracks_text = self.tracks_text() || document.text().is_some();
+        let lexical = if tracks_text {
+            self.rebuild_lexical(Some((row, document.text())))?
+        } else {
+            SegmentIndex::new()
+        };
+        let lexical_bytes = tracks_text
+            .then(|| account_lexical(accounting, &lexical))
+            .transpose()?;
         Ok(Self {
             dims: self.dims,
             doc_ids,
@@ -385,6 +447,13 @@ impl ActiveSegment {
             timestamps,
             metadata_end_offsets,
             metadata_bytes,
+            text_present,
+            text_end_offsets,
+            text_bytes,
+            column_end_offsets,
+            column_bytes,
+            lexical,
+            lexical_bytes,
             vectors,
             codes,
             factors,
@@ -426,6 +495,19 @@ impl ActiveSegment {
         )?;
         let metadata_bytes =
             copy_accounted(accounting, &self.metadata_bytes, self.metadata_bytes.len())?;
+        let text_present = copy_accounted(accounting, &self.text_present, self.text_present.len())?;
+        let text_end_offsets = copy_accounted(
+            accounting,
+            &self.text_end_offsets,
+            self.text_end_offsets.len(),
+        )?;
+        let text_bytes = copy_accounted(accounting, &self.text_bytes, self.text_bytes.len())?;
+        let column_end_offsets = copy_accounted(
+            accounting,
+            &self.column_end_offsets,
+            self.column_end_offsets.len(),
+        )?;
+        let column_bytes = copy_accounted(accounting, &self.column_bytes, self.column_bytes.len())?;
         let vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
@@ -453,6 +535,12 @@ impl ActiveSegment {
                 tombstones.push(row)?;
             }
         }
+        let lexical = self.lexical.clone();
+        let lexical_bytes = self
+            .lexical_bytes
+            .as_ref()
+            .map(|_| account_lexical(accounting, &lexical))
+            .transpose()?;
         Ok((
             Self {
                 dims: self.dims,
@@ -462,6 +550,13 @@ impl ActiveSegment {
                 timestamps,
                 metadata_end_offsets,
                 metadata_bytes,
+                text_present,
+                text_end_offsets,
+                text_bytes,
+                column_end_offsets,
+                column_bytes,
+                lexical,
+                lexical_bytes,
                 vectors,
                 codes,
                 factors,
@@ -509,6 +604,18 @@ impl ActiveSegment {
                 .checked_add(length)
                 .ok_or(StoreError::ActiveRowOverflow)
         })?;
+        let tracks_text = self.tracks_text();
+        let tracks_columns = self.tracks_columns();
+        let text_capacity = if tracks_text {
+            self.retained_row_bytes_capacity(doc_ids, &self.text_end_offsets, &self.text_bytes)?
+        } else {
+            0
+        };
+        let column_capacity = if tracks_columns {
+            self.retained_row_bytes_capacity(doc_ids, &self.column_end_offsets, &self.column_bytes)?
+        } else {
+            0
+        };
         let mut doc_id_rows =
             Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
         let mut revisions =
@@ -524,6 +631,31 @@ impl ActiveSegment {
             metadata_capacity,
             AllocationComponent::Active,
         )?;
+        let mut text_present = if tracks_text {
+            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+        } else {
+            Accounted::unaccounted_empty()
+        };
+        let mut text_end_offsets = if tracks_text {
+            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+        } else {
+            Accounted::unaccounted_empty()
+        };
+        let mut text_bytes = if tracks_text {
+            Accounted::try_with_capacity(accounting, text_capacity, AllocationComponent::Active)?
+        } else {
+            Accounted::unaccounted_empty()
+        };
+        let mut column_end_offsets = if tracks_columns {
+            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+        } else {
+            Accounted::unaccounted_empty()
+        };
+        let mut column_bytes = if tracks_columns {
+            Accounted::try_with_capacity(accounting, column_capacity, AllocationComponent::Active)?
+        } else {
+            Accounted::unaccounted_empty()
+        };
         let mut vectors =
             Accounted::try_with_capacity(accounting, vector_capacity, AllocationComponent::Active)?;
         let mut codes =
@@ -545,6 +677,15 @@ impl ActiveSegment {
             retained_tombstones,
             AllocationComponent::Active,
         )?;
+        let analyzer = tracks_text
+            .then(store_analyzer)
+            .transpose()
+            .map_err(|error| StoreError::WalMutation {
+                seq: LogSeq::new(0),
+                op: wal_payload::UPSERT_V2,
+                source: wal_payload::PayloadError::Lexical(error.to_string()),
+            })?;
+        let mut lexical = SegmentIndex::new();
         let mut next_row = 0_u32;
         for row in 0..self.row_count() {
             let doc_id = self
@@ -580,6 +721,41 @@ impl ActiveSegment {
             metadata_end_offsets.push(
                 u64::try_from(metadata_bytes.len()).map_err(|_| StoreError::ActiveRowOverflow)?,
             )?;
+            if tracks_text {
+                let text = self.text(row)?;
+                text_present.push(u8::from(text.is_some()))?;
+                if let Some(text) = text {
+                    for byte in text.as_bytes() {
+                        text_bytes.push(*byte)?;
+                    }
+                }
+                text_end_offsets.push(
+                    u64::try_from(text_bytes.len()).map_err(|_| StoreError::ActiveRowOverflow)?,
+                )?;
+                let lexical_document =
+                    text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
+                lexical
+                    .push_document(
+                        analyzer.as_ref().ok_or(StoreError::ActiveRowOverflow)?,
+                        &lexical_document,
+                    )
+                    .map_err(|error| StoreError::WalMutation {
+                        seq: LogSeq::new(0),
+                        op: wal_payload::UPSERT_V2,
+                        source: wal_payload::PayloadError::Lexical(error.to_string()),
+                    })?;
+            }
+            if tracks_columns {
+                for byte in self
+                    .column_bytes_at(row)
+                    .ok_or(StoreError::ActiveRowOverflow)?
+                {
+                    column_bytes.push(*byte)?;
+                }
+                column_end_offsets.push(
+                    u64::try_from(column_bytes.len()).map_err(|_| StoreError::ActiveRowOverflow)?,
+                )?;
+            }
             let vector_start = row.checked_mul(dims).ok_or(StoreError::ActiveRowOverflow)?;
             let vector_end = vector_start
                 .checked_add(dims)
@@ -618,6 +794,9 @@ impl ActiveSegment {
                 .checked_add(1)
                 .ok_or(StoreError::ActiveRowOverflow)?;
         }
+        let lexical_bytes = (tracks_text && rows != 0)
+            .then(|| account_lexical(accounting, &lexical))
+            .transpose()?;
         Ok((
             Self {
                 dims: (rows != 0).then_some(dims),
@@ -627,6 +806,13 @@ impl ActiveSegment {
                 timestamps,
                 metadata_end_offsets,
                 metadata_bytes,
+                text_present,
+                text_end_offsets,
+                text_bytes,
+                column_end_offsets,
+                column_bytes,
+                lexical,
+                lexical_bytes,
                 vectors,
                 codes,
                 factors,
@@ -681,20 +867,77 @@ impl ActiveSegment {
     }
 
     pub(crate) fn metadata(&self, row: usize) -> Option<&[u8]> {
-        let end = self
-            .metadata_end_offsets
+        row_bytes(&self.metadata_end_offsets, &self.metadata_bytes, row)
+    }
+
+    pub(crate) fn text(&self, row: usize) -> Result<Option<&str>, StoreError> {
+        if row >= self.row_count() {
+            return Err(StoreError::ActiveRowOverflow);
+        }
+        if !self.tracks_text() {
+            return Ok(None);
+        }
+        let present = self
+            .text_present
             .get(row)
             .copied()
-            .and_then(|value| usize::try_from(value).ok())?;
-        let start = if row == 0 {
-            0
-        } else {
-            self.metadata_end_offsets
-                .get(row.saturating_sub(1))
-                .copied()
-                .and_then(|value| usize::try_from(value).ok())?
-        };
-        self.metadata_bytes.get(start..end)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        if present > 1 {
+            return Err(StoreError::ActiveRowOverflow);
+        }
+        let bytes = self
+            .text_bytes_at(row)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        if present == 0 {
+            return Ok(None);
+        }
+        std::str::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| StoreError::ActiveRowOverflow)
+    }
+
+    pub(crate) fn has_text(&self) -> bool {
+        self.text_present.contains(&1)
+    }
+
+    fn tracks_text(&self) -> bool {
+        !self.text_present.is_empty()
+    }
+
+    fn tracks_columns(&self) -> bool {
+        !self.column_end_offsets.is_empty()
+    }
+
+    pub(crate) const fn lexical(&self) -> &SegmentIndex {
+        &self.lexical
+    }
+
+    pub(crate) fn column_values(
+        &self,
+        row: usize,
+    ) -> Result<Vec<(crate::meta::ColumnId, crate::meta::PredicateValue)>, StoreError> {
+        if row >= self.row_count() {
+            return Err(StoreError::ActiveRowOverflow);
+        }
+        if !self.tracks_columns() {
+            return Ok(Vec::new());
+        }
+        let bytes = self
+            .column_bytes_at(row)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        wal_payload::decode_column_values(bytes).map_err(|source| StoreError::WalMutation {
+            seq: self.sequences.get(row).copied().unwrap_or(LogSeq::new(0)),
+            op: wal_payload::UPSERT_V2,
+            source,
+        })
+    }
+
+    fn text_bytes_at(&self, row: usize) -> Option<&[u8]> {
+        row_bytes(&self.text_end_offsets, &self.text_bytes, row)
+    }
+
+    fn column_bytes_at(&self, row: usize) -> Option<&[u8]> {
+        row_bytes(&self.column_end_offsets, &self.column_bytes, row)
     }
 
     pub(crate) fn is_tombstoned(&self, row: usize) -> bool {
@@ -741,6 +984,16 @@ impl ActiveSegment {
             .saturating_add(self.timestamps.resident_bytes())
             .saturating_add(self.metadata_end_offsets.resident_bytes())
             .saturating_add(self.metadata_bytes.resident_bytes())
+            .saturating_add(self.text_present.resident_bytes())
+            .saturating_add(self.text_end_offsets.resident_bytes())
+            .saturating_add(self.text_bytes.resident_bytes())
+            .saturating_add(self.column_end_offsets.resident_bytes())
+            .saturating_add(self.column_bytes.resident_bytes())
+            .saturating_add(
+                self.lexical_bytes
+                    .as_ref()
+                    .map_or(0, AccountedCounter::bytes),
+            )
             .saturating_add(self.vectors.resident_bytes())
             .saturating_add(self.codes.resident_bytes())
             .saturating_add(self.factors.resident_bytes())
@@ -798,7 +1051,338 @@ impl ActiveSegment {
         Ok((end_offsets, bytes))
     }
 
+    fn replaced_text(
+        &self,
+        row: usize,
+        replacement: Option<&str>,
+        accounting: &Arc<Accounting>,
+    ) -> Result<AccountedText, IngestError> {
+        if row >= self.row_count() {
+            return Err(IngestError::Store(StoreError::ActiveRowOverflow));
+        }
+        if !self.tracks_text() {
+            let Some(replacement) = replacement else {
+                return Ok((
+                    Accounted::unaccounted_empty(),
+                    Accounted::unaccounted_empty(),
+                    Accounted::unaccounted_empty(),
+                ));
+            };
+            let mut present = Accounted::try_with_capacity(
+                accounting,
+                self.row_count(),
+                AllocationComponent::Active,
+            )?;
+            let mut end_offsets = Accounted::try_with_capacity(
+                accounting,
+                self.row_count(),
+                AllocationComponent::Active,
+            )?;
+            let mut bytes = Accounted::try_with_capacity(
+                accounting,
+                replacement.len(),
+                AllocationComponent::Active,
+            )?;
+            for current_row in 0..self.row_count() {
+                let is_replacement = current_row == row;
+                present.push(u8::from(is_replacement))?;
+                if is_replacement {
+                    for byte in replacement.as_bytes() {
+                        bytes.push(*byte)?;
+                    }
+                }
+                end_offsets.push(
+                    u64::try_from(bytes.len())
+                        .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+                )?;
+            }
+            return Ok((present, end_offsets, bytes));
+        }
+        let (end_offsets, bytes) = self.replaced_row_bytes(
+            row,
+            replacement.unwrap_or("").as_bytes(),
+            &self.text_end_offsets,
+            &self.text_bytes,
+            accounting,
+        )?;
+        let mut present = copy_accounted(accounting, &self.text_present, self.text_present.len())?;
+        *present
+            .as_mut_slice()
+            .get_mut(row)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? =
+            u8::from(replacement.is_some());
+        Ok((present, end_offsets, bytes))
+    }
+
+    fn appended_text(
+        &self,
+        text: Option<&str>,
+        accounting: &Arc<Accounting>,
+    ) -> Result<AccountedText, IngestError> {
+        if !self.tracks_text() && text.is_none() {
+            return Ok((
+                Accounted::unaccounted_empty(),
+                Accounted::unaccounted_empty(),
+                Accounted::unaccounted_empty(),
+            ));
+        }
+        let row_count = self
+            .row_count()
+            .checked_add(1)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let is_present = text.is_some();
+        let text = text.unwrap_or("");
+        let text_capacity = self
+            .text_bytes
+            .len()
+            .checked_add(text.len())
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let mut present = copy_accounted(accounting, &self.text_present, row_count)?;
+        let mut end_offsets = copy_accounted(accounting, &self.text_end_offsets, row_count)?;
+        let mut bytes = copy_accounted(accounting, &self.text_bytes, text_capacity)?;
+        if !self.tracks_text() {
+            for _ in 0..self.row_count() {
+                present.push(0)?;
+                end_offsets.push(0)?;
+            }
+        }
+        present.push(u8::from(is_present))?;
+        for byte in text.as_bytes() {
+            bytes.push(*byte)?;
+        }
+        end_offsets.push(
+            u64::try_from(bytes.len())
+                .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+        )?;
+        Ok((present, end_offsets, bytes))
+    }
+
+    fn appended_lexical(
+        &self,
+        text: Option<&str>,
+        accounting: &Arc<Accounting>,
+    ) -> Result<(SegmentIndex, Option<AccountedCounter>), IngestError> {
+        if !self.tracks_text() && text.is_none() {
+            return Ok((SegmentIndex::new(), None));
+        }
+        let analyzer = store_analyzer()?;
+        let mut lexical = self.lexical.clone();
+        if !self.tracks_text() {
+            for _ in 0..self.row_count() {
+                lexical
+                    .push_document(&analyzer, &LexicalDocument::new())
+                    .map_err(IngestError::Lexical)?;
+            }
+        }
+        let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
+        lexical
+            .push_document(&analyzer, &document)
+            .map_err(IngestError::Lexical)?;
+        let lexical_bytes = Some(account_lexical(accounting, &lexical)?);
+        Ok((lexical, lexical_bytes))
+    }
+
+    fn appended_columns(
+        &self,
+        columns_present: bool,
+        columns: &[(crate::meta::ColumnId, crate::meta::PredicateValue)],
+        accounting: &Arc<Accounting>,
+    ) -> Result<AccountedMetadata, IngestError> {
+        if !self.tracks_columns() && !columns_present {
+            return Ok((
+                Accounted::unaccounted_empty(),
+                Accounted::unaccounted_empty(),
+            ));
+        }
+        let encoded = wal_payload::encode_column_values(columns).map_err(IngestError::Payload)?;
+        let empty = wal_payload::encode_column_values(&[]).map_err(IngestError::Payload)?;
+        let backfill_bytes = if self.tracks_columns() {
+            0
+        } else {
+            self.row_count()
+                .checked_mul(empty.len())
+                .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
+        };
+        let capacity = self
+            .column_bytes
+            .len()
+            .checked_add(backfill_bytes)
+            .and_then(|value| value.checked_add(encoded.len()))
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let row_count = self
+            .row_count()
+            .checked_add(1)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let mut end_offsets = copy_accounted(accounting, &self.column_end_offsets, row_count)?;
+        let mut bytes = copy_accounted(accounting, &self.column_bytes, capacity)?;
+        if !self.tracks_columns() {
+            for _ in 0..self.row_count() {
+                for byte in &empty {
+                    bytes.push(*byte)?;
+                }
+                end_offsets.push(
+                    u64::try_from(bytes.len())
+                        .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+                )?;
+            }
+        }
+        for byte in encoded {
+            bytes.push(byte)?;
+        }
+        end_offsets.push(
+            u64::try_from(bytes.len())
+                .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+        )?;
+        Ok((end_offsets, bytes))
+    }
+
+    fn replaced_columns(
+        &self,
+        row: usize,
+        columns_present: bool,
+        columns: &[(crate::meta::ColumnId, crate::meta::PredicateValue)],
+        accounting: &Arc<Accounting>,
+    ) -> Result<AccountedMetadata, IngestError> {
+        if row >= self.row_count() {
+            return Err(IngestError::Store(StoreError::ActiveRowOverflow));
+        }
+        if !self.tracks_columns() && !columns_present {
+            return Ok((
+                Accounted::unaccounted_empty(),
+                Accounted::unaccounted_empty(),
+            ));
+        }
+        let replacement =
+            wal_payload::encode_column_values(columns).map_err(IngestError::Payload)?;
+        if self.tracks_columns() {
+            return self.replaced_row_bytes(
+                row,
+                &replacement,
+                &self.column_end_offsets,
+                &self.column_bytes,
+                accounting,
+            );
+        }
+        let empty = wal_payload::encode_column_values(&[]).map_err(IngestError::Payload)?;
+        let capacity = self
+            .row_count()
+            .checked_sub(1)
+            .and_then(|rows| rows.checked_mul(empty.len()))
+            .and_then(|bytes| bytes.checked_add(replacement.len()))
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let mut end_offsets = Accounted::try_with_capacity(
+            accounting,
+            self.row_count(),
+            AllocationComponent::Active,
+        )?;
+        let mut bytes =
+            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
+        for current_row in 0..self.row_count() {
+            let value = if current_row == row {
+                replacement.as_slice()
+            } else {
+                empty.as_slice()
+            };
+            for byte in value {
+                bytes.push(*byte)?;
+            }
+            end_offsets.push(
+                u64::try_from(bytes.len())
+                    .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+            )?;
+        }
+        Ok((end_offsets, bytes))
+    }
+
+    fn replaced_row_bytes(
+        &self,
+        row: usize,
+        replacement: &[u8],
+        source_offsets: &[u64],
+        source_bytes: &[u8],
+        accounting: &Arc<Accounting>,
+    ) -> Result<AccountedMetadata, IngestError> {
+        let current = row_bytes(source_offsets, source_bytes, row)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let capacity = source_bytes
+            .len()
+            .checked_sub(current.len())
+            .and_then(|value| value.checked_add(replacement.len()))
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let mut offsets = Accounted::try_with_capacity(
+            accounting,
+            self.row_count(),
+            AllocationComponent::Active,
+        )?;
+        let mut bytes =
+            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
+        for current_row in 0..self.row_count() {
+            let value = if current_row == row {
+                replacement
+            } else {
+                row_bytes(source_offsets, source_bytes, current_row)
+                    .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
+            };
+            for byte in value {
+                bytes.push(*byte)?;
+            }
+            offsets.push(
+                u64::try_from(bytes.len())
+                    .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
+            )?;
+        }
+        Ok((offsets, bytes))
+    }
+
+    fn rebuild_lexical(
+        &self,
+        replacement: Option<(usize, Option<&str>)>,
+    ) -> Result<SegmentIndex, IngestError> {
+        let analyzer = store_analyzer()?;
+        let mut lexical = SegmentIndex::new();
+        for row in 0..self.row_count() {
+            let text = match replacement {
+                Some((target, text)) if target == row => text,
+                _ => self.text(row).map_err(IngestError::Store)?,
+            };
+            let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
+            lexical
+                .push_document(&analyzer, &document)
+                .map_err(IngestError::Lexical)?;
+        }
+        Ok(lexical)
+    }
+
+    fn retained_row_bytes_capacity(
+        &self,
+        removed_ids: &[DocId],
+        offsets: &[u64],
+        bytes: &[u8],
+    ) -> Result<usize, StoreError> {
+        (0..self.row_count()).try_fold(0_usize, |total, row| {
+            let keep = self
+                .doc_ids
+                .get(row)
+                .is_some_and(|doc_id| !removed_ids.contains(doc_id));
+            if !keep {
+                return Ok(total);
+            }
+            let length = row_bytes(offsets, bytes, row)
+                .ok_or(StoreError::ActiveRowOverflow)?
+                .len();
+            total
+                .checked_add(length)
+                .ok_or(StoreError::ActiveRowOverflow)
+        })
+    }
+
     fn copy(&self, accounting: &Arc<Accounting>) -> Result<Self, StoreError> {
+        let lexical = self.lexical.clone();
+        let lexical_bytes = self
+            .lexical_bytes
+            .as_ref()
+            .map(|_| account_lexical(accounting, &lexical))
+            .transpose()?;
         Ok(Self {
             dims: self.dims,
             doc_ids: copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?,
@@ -815,12 +1399,56 @@ impl ActiveSegment {
                 &self.metadata_bytes,
                 self.metadata_bytes.len(),
             )?,
+            text_present: copy_accounted(accounting, &self.text_present, self.text_present.len())?,
+            text_end_offsets: copy_accounted(
+                accounting,
+                &self.text_end_offsets,
+                self.text_end_offsets.len(),
+            )?,
+            text_bytes: copy_accounted(accounting, &self.text_bytes, self.text_bytes.len())?,
+            column_end_offsets: copy_accounted(
+                accounting,
+                &self.column_end_offsets,
+                self.column_end_offsets.len(),
+            )?,
+            column_bytes: copy_accounted(accounting, &self.column_bytes, self.column_bytes.len())?,
+            lexical,
+            lexical_bytes,
             vectors: copy_accounted(accounting, &self.vectors, self.vectors.len())?,
             codes: copy_accounted(accounting, &self.codes, self.codes.len())?,
             factors: copy_accounted(accounting, &self.factors, self.factors.len())?,
             tombstones: copy_accounted(accounting, &self.tombstones, self.tombstones.len())?,
         })
     }
+}
+
+fn row_bytes<'a>(offsets: &[u64], bytes: &'a [u8], row: usize) -> Option<&'a [u8]> {
+    let end = offsets
+        .get(row)
+        .copied()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let start = if row == 0 {
+        0
+    } else {
+        offsets
+            .get(row.saturating_sub(1))
+            .copied()
+            .and_then(|value| usize::try_from(value).ok())?
+    };
+    bytes.get(start..end)
+}
+
+fn store_analyzer() -> Result<Analyzer, IngestError> {
+    Analyzer::new(TokenizerConfig::text_default()).map_err(IngestError::Tokenizer)
+}
+
+fn account_lexical(
+    accounting: &Arc<Accounting>,
+    lexical: &SegmentIndex,
+) -> Result<AccountedCounter, StoreError> {
+    let mut counter = AccountedCounter::new(accounting, AllocationComponent::Active)?;
+    counter.set(lexical.resident_bytes())?;
+    Ok(counter)
 }
 
 fn copy_accounted<T: Copy>(

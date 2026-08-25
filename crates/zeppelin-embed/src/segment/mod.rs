@@ -137,6 +137,8 @@ pub enum SegmentError {
     Alive(String),
     /// Fixed-stride graph node-block bytes were invalid.
     Graph(crate::graph::block::GraphNodeError),
+    /// Whole-segment lexical bytes were invalid.
+    Postings(crate::fts::sealed::SealedSegmentError),
 }
 
 impl SegmentError {
@@ -170,6 +172,9 @@ impl std::fmt::Display for SegmentError {
             Self::Columns(detail) => write!(formatter, "segment columns are invalid: {detail}"),
             Self::Alive(detail) => write!(formatter, "segment alive set is invalid: {detail}"),
             Self::Graph(error) => write!(formatter, "segment graph region is invalid: {error}"),
+            Self::Postings(error) => {
+                write!(formatter, "segment postings region is invalid: {error}")
+            }
         }
     }
 }
@@ -180,6 +185,7 @@ impl std::error::Error for SegmentError {
             Self::Io { source, .. } => Some(source),
             Self::Format(error) => Some(error),
             Self::Graph(error) => Some(error),
+            Self::Postings(error) => Some(error),
             Self::WrongObject { .. }
             | Self::MissingRegion(_)
             | Self::Geometry(_)
@@ -198,5 +204,11 @@ impl From<FormatError> for SegmentError {
 impl From<crate::graph::block::GraphNodeError> for SegmentError {
     fn from(error: crate::graph::block::GraphNodeError) -> Self {
         Self::Graph(error)
+    }
+}
+
+impl From<crate::fts::sealed::SealedSegmentError> for SegmentError {
+    fn from(error: crate::fts::sealed::SealedSegmentError) -> Self {
+        Self::Postings(error)
     }
 }

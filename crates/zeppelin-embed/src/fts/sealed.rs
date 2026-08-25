@@ -63,6 +63,38 @@ use super::postings::{
 use super::search::FieldWeights;
 use crate::kernels::postings::{prefix_sum, unpack};
 
+const REGION_MAGIC: [u8; 4] = *b"ZFTS";
+const REGION_VERSION: u16 = 1;
+const REGION_HEADER_LEN: usize = 40;
+const REGION_SPAN_LEN: usize = 48;
+const REGION_FIELD_HEADER_LEN: usize = 8;
+
+/// A rejected whole-segment lexical region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SealedSegmentError {
+    /// Container geometry or a cross-field invariant was invalid.
+    Geometry(&'static str),
+    /// One embedded posting list was invalid.
+    Postings(PostingsError),
+}
+
+impl std::fmt::Display for SealedSegmentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Geometry(detail) => write!(formatter, "sealed lexical geometry: {detail}"),
+            Self::Postings(error) => write!(formatter, "sealed lexical postings: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SealedSegmentError {}
+
+impl From<PostingsError> for SealedSegmentError {
+    fn from(error: PostingsError) -> Self {
+        Self::Postings(error)
+    }
+}
+
 /// One field's dense analyzed token counts, indexed by row.
 #[derive(Clone, Debug)]
 struct FieldLengths {
@@ -224,6 +256,361 @@ impl SealedSegment {
         }
         finish_union_group(&mut sealed.spans, group_start, &group_lists);
         Ok(sealed)
+    }
+
+    /// Encodes the complete sealed lexical segment for RegionKind 6.
+    pub fn encode_region(&self) -> Result<Vec<u8>, SealedSegmentError> {
+        let span_count = u32::try_from(self.spans.len())
+            .map_err(|_| SealedSegmentError::Geometry("span count exceeds u32"))?;
+        let field_count = u32::try_from(self.lengths.len())
+            .map_err(|_| SealedSegmentError::Geometry("field count exceeds u32"))?;
+        let terms_len = u64::try_from(self.terms.len())
+            .map_err(|_| SealedSegmentError::Geometry("term bytes exceed u64"))?;
+        let blob_len = u64::try_from(self.blob.len())
+            .map_err(|_| SealedSegmentError::Geometry("postings bytes exceed u64"))?;
+        let spans_len = self
+            .spans
+            .len()
+            .checked_mul(REGION_SPAN_LEN)
+            .ok_or(SealedSegmentError::Geometry("span bytes overflow"))?;
+        let fields_len = self.lengths.iter().try_fold(0_usize, |total, entry| {
+            if entry.lengths.len() != self.row_count as usize {
+                return Err(SealedSegmentError::Geometry(
+                    "field lengths do not cover every row",
+                ));
+            }
+            let body = entry
+                .lengths
+                .len()
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(REGION_FIELD_HEADER_LEN))
+                .ok_or(SealedSegmentError::Geometry("field bytes overflow"))?;
+            total
+                .checked_add(body)
+                .ok_or(SealedSegmentError::Geometry("field bytes overflow"))
+        })?;
+        let capacity = REGION_HEADER_LEN
+            .checked_add(spans_len)
+            .and_then(|value| value.checked_add(fields_len))
+            .and_then(|value| value.checked_add(self.terms.len()))
+            .and_then(|value| value.checked_add(self.blob.len()))
+            .ok_or(SealedSegmentError::Geometry(
+                "lexical region length overflow",
+            ))?;
+        let mut bytes = Vec::with_capacity(capacity);
+        bytes.extend_from_slice(&REGION_MAGIC);
+        bytes.extend_from_slice(&REGION_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&self.postings_per_block.to_le_bytes());
+        bytes.extend_from_slice(&self.row_count.to_le_bytes());
+        bytes.extend_from_slice(&span_count.to_le_bytes());
+        bytes.extend_from_slice(&field_count.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&terms_len.to_le_bytes());
+        bytes.extend_from_slice(&blob_len.to_le_bytes());
+        for span in &self.spans {
+            bytes.extend_from_slice(&span.field.0.to_le_bytes());
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&span.term_start.to_le_bytes());
+            bytes.extend_from_slice(&span.term_len.to_le_bytes());
+            bytes.extend_from_slice(&span.meta_start.to_le_bytes());
+            bytes.extend_from_slice(&span.docids_start.to_le_bytes());
+            bytes.extend_from_slice(&span.tfs_start.to_le_bytes());
+            bytes.extend_from_slice(&span.block_count.to_le_bytes());
+            bytes.extend_from_slice(&span.doc_freq.to_le_bytes());
+            bytes.extend_from_slice(&span.overall_max_tf.to_le_bytes());
+            bytes.extend_from_slice(&span.overall_min_len.to_le_bytes());
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&span.union_doc_freq.to_le_bytes());
+            bytes.extend_from_slice(&span.field_count.to_le_bytes());
+        }
+        for entry in &self.lengths {
+            bytes.extend_from_slice(&entry.field.0.to_le_bytes());
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&self.row_count.to_le_bytes());
+            for length in &entry.lengths {
+                bytes.extend_from_slice(&length.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&self.terms);
+        bytes.extend_from_slice(&self.blob);
+        Ok(bytes)
+    }
+
+    /// Decodes and validates a complete RegionKind 6 lexical segment.
+    pub fn decode_region(bytes: &[u8]) -> Result<Self, SealedSegmentError> {
+        let mut cursor = RegionCursor::new(bytes);
+        if cursor.take_array::<4>()? != REGION_MAGIC {
+            return Err(SealedSegmentError::Geometry("magic did not match"));
+        }
+        if cursor.read_u16()? != REGION_VERSION {
+            return Err(SealedSegmentError::Geometry("version is not readable"));
+        }
+        let postings_per_block = cursor.read_u16()?;
+        if postings_per_block == 0 {
+            return Err(SealedSegmentError::Geometry("postings per block is zero"));
+        }
+        let row_count = cursor.read_u32()?;
+        let span_count = usize::try_from(cursor.read_u32()?)
+            .map_err(|_| SealedSegmentError::Geometry("span count exceeds usize"))?;
+        let field_count = usize::try_from(cursor.read_u32()?)
+            .map_err(|_| SealedSegmentError::Geometry("field count exceeds usize"))?;
+        if cursor.read_u32()? != 0 {
+            return Err(SealedSegmentError::Geometry(
+                "header reserved field is nonzero",
+            ));
+        }
+        let terms_len = usize::try_from(cursor.read_u64()?)
+            .map_err(|_| SealedSegmentError::Geometry("term bytes exceed usize"))?;
+        let blob_len = usize::try_from(cursor.read_u64()?)
+            .map_err(|_| SealedSegmentError::Geometry("postings bytes exceed usize"))?;
+        let mut spans = Vec::with_capacity(span_count);
+        for _ in 0..span_count {
+            let field = FieldId(cursor.read_u16()?);
+            if cursor.read_u16()? != 0 {
+                return Err(SealedSegmentError::Geometry(
+                    "span reserved field is nonzero",
+                ));
+            }
+            let span = ListSpan {
+                field,
+                term_start: cursor.read_u32()?,
+                term_len: cursor.read_u32()?,
+                meta_start: cursor.read_u32()?,
+                docids_start: cursor.read_u32()?,
+                tfs_start: cursor.read_u32()?,
+                block_count: cursor.read_u32()?,
+                doc_freq: cursor.read_u32()?,
+                overall_max_tf: cursor.read_u32()?,
+                overall_min_len: cursor.read_u16()?,
+                union_doc_freq: {
+                    if cursor.read_u16()? != 0 {
+                        return Err(SealedSegmentError::Geometry(
+                            "span trailing reserved field is nonzero",
+                        ));
+                    }
+                    cursor.read_u32()?
+                },
+                field_count: cursor.read_u32()?,
+            };
+            spans.push(span);
+        }
+        let mut lengths = Vec::with_capacity(field_count);
+        let rows = usize::try_from(row_count)
+            .map_err(|_| SealedSegmentError::Geometry("row count exceeds usize"))?;
+        let mut previous_field: Option<FieldId> = None;
+        for _ in 0..field_count {
+            let field = FieldId(cursor.read_u16()?);
+            if previous_field.is_some_and(|previous| previous >= field) {
+                return Err(SealedSegmentError::Geometry(
+                    "fields are not strictly ascending",
+                ));
+            }
+            previous_field = Some(field);
+            if cursor.read_u16()? != 0 || cursor.read_u32()? != row_count {
+                return Err(SealedSegmentError::Geometry("field header is invalid"));
+            }
+            let mut field_lengths = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                field_lengths.push(cursor.read_u32()?);
+            }
+            lengths.push(FieldLengths {
+                field,
+                lengths: field_lengths,
+            });
+        }
+        let terms = cursor.take(terms_len)?.to_vec();
+        let blob = cursor.take(blob_len)?.to_vec();
+        cursor.finish()?;
+        validate_decoded_spans(&spans, &terms, &blob, postings_per_block, row_count)?;
+        let mut total_lengths = vec![0_u32; rows];
+        for entry in &lengths {
+            for (slot, length) in entry.lengths.iter().enumerate() {
+                if let Some(total) = total_lengths.get_mut(slot) {
+                    *total = total.saturating_add(*length);
+                }
+            }
+        }
+        Ok(Self {
+            terms,
+            spans,
+            blob,
+            lengths,
+            total_lengths,
+            row_count,
+            postings_per_block,
+        })
+    }
+
+    /// Rewrites dense lexical row ids through an ascending survivor list.
+    ///
+    /// This is used by physical purge so vector, column, identity, and lexical
+    /// regions retain the same survivor order.
+    pub fn retain_rows(&self, survivors: &[usize]) -> Result<Self, SealedSegmentError> {
+        let old_rows = usize::try_from(self.row_count)
+            .map_err(|_| SealedSegmentError::Geometry("row count exceeds usize"))?;
+        let mut mapping = vec![None; old_rows];
+        let mut previous = None;
+        for (new_row, old_row) in survivors.iter().copied().enumerate() {
+            if old_row >= old_rows || previous.is_some_and(|value| value >= old_row) {
+                return Err(SealedSegmentError::Geometry(
+                    "survivor rows are not ascending and in bounds",
+                ));
+            }
+            previous = Some(old_row);
+            let new_row = u32::try_from(new_row)
+                .map_err(|_| SealedSegmentError::Geometry("survivor row exceeds u32"))?;
+            let target = mapping
+                .get_mut(old_row)
+                .ok_or(SealedSegmentError::Geometry(
+                    "survivor row is out of bounds",
+                ))?;
+            *target = Some(new_row);
+        }
+        let row_count = u32::try_from(survivors.len())
+            .map_err(|_| SealedSegmentError::Geometry("survivor count exceeds u32"))?;
+        let mut retained = Self {
+            terms: Vec::new(),
+            spans: Vec::new(),
+            blob: Vec::new(),
+            lengths: Vec::with_capacity(self.lengths.len()),
+            total_lengths: vec![0; survivors.len()],
+            row_count,
+            postings_per_block: self.postings_per_block,
+        };
+        for entry in &self.lengths {
+            let mut lengths = Vec::with_capacity(survivors.len());
+            for row in survivors {
+                lengths.push(entry.lengths.get(*row).copied().ok_or(
+                    SealedSegmentError::Geometry("survivor field length is missing"),
+                )?);
+            }
+            retained.lengths.push(FieldLengths {
+                field: entry.field,
+                lengths,
+            });
+        }
+        for entry in &retained.lengths {
+            for (row, length) in entry.lengths.iter().copied().enumerate() {
+                let total =
+                    retained
+                        .total_lengths
+                        .get_mut(row)
+                        .ok_or(SealedSegmentError::Geometry(
+                            "retained total-length row is missing",
+                        ))?;
+                *total = total.saturating_add(length);
+            }
+        }
+
+        let mut lists = Vec::new();
+        for (index, span) in self.spans.iter().enumerate() {
+            let encoded = self.list_bytes(index)?;
+            let decoded = PostingsReader::open(encoded)?.decode_all()?;
+            let mut list = PostingList::new();
+            for posting in decoded.postings() {
+                let old_row = usize::try_from(posting.docid)
+                    .map_err(|_| SealedSegmentError::Geometry("posting row exceeds usize"))?;
+                let Some(new_row) = mapping.get(old_row).copied().flatten() else {
+                    continue;
+                };
+                let mut posting = posting.clone();
+                posting.docid = new_row;
+                list.push(posting)?;
+            }
+            if list.is_empty() {
+                continue;
+            }
+            let field_lengths = retained
+                .lengths
+                .iter()
+                .find(|entry| entry.field == span.field)
+                .map_or(&[][..], |entry| entry.lengths.as_slice());
+            let impacts = block_impacts(&list, retained.postings_per_block, field_lengths);
+            let encoded = encode_v2(&list, retained.postings_per_block, &[], &impacts)?;
+            let reader = PostingsReader::open(encoded.as_bytes())?;
+            let base = u32::try_from(retained.blob.len())
+                .map_err(|_| SealedSegmentError::Geometry("postings blob exceeds u32"))?;
+            let block_count = u32::try_from(reader.blocks().len())
+                .map_err(|_| SealedSegmentError::Geometry("posting blocks exceed u32"))?;
+            let meta_start =
+                base.checked_add(HEADER_LEN_U32)
+                    .ok_or(SealedSegmentError::Geometry(
+                        "posting metadata offset overflow",
+                    ))?;
+            let streams = meta_start
+                .checked_add(block_count.saturating_mul(META_LEN_U32))
+                .ok_or(SealedSegmentError::Geometry(
+                    "posting stream offset overflow",
+                ))?;
+            let docid_bytes = reader
+                .blocks()
+                .iter()
+                .map(|meta| stream_end(meta.docids_offset, meta.count, meta.docid_bits))
+                .max()
+                .unwrap_or(0);
+            let mut overall_max_tf = 0_u32;
+            let mut overall_min_len = u16::MAX;
+            for meta in reader.blocks() {
+                let impact = BlockImpact::from_meta(meta);
+                overall_max_tf = overall_max_tf.max(impact.max_tf);
+                overall_min_len = overall_min_len.min(impact.min_len);
+            }
+            let term = self.term_of(index);
+            let term_start = u32::try_from(retained.terms.len())
+                .map_err(|_| SealedSegmentError::Geometry("term bytes exceed u32"))?;
+            let term_len = u32::try_from(term.len())
+                .map_err(|_| SealedSegmentError::Geometry("term length exceeds u32"))?;
+            retained.terms.extend_from_slice(term);
+            retained.spans.push(ListSpan {
+                field: span.field,
+                term_start,
+                term_len,
+                meta_start,
+                docids_start: streams,
+                tfs_start: streams.saturating_add(docid_bytes),
+                block_count,
+                doc_freq: reader.document_frequency(),
+                overall_max_tf,
+                overall_min_len,
+                union_doc_freq: 0,
+                field_count: 0,
+            });
+            retained.blob.extend_from_slice(encoded.as_bytes());
+            lists.push(list);
+        }
+        stamp_retained_unions(&mut retained, &lists)?;
+        Ok(retained)
+    }
+
+    fn list_bytes(&self, index: usize) -> Result<&[u8], SealedSegmentError> {
+        let span = self
+            .spans
+            .get(index)
+            .ok_or(SealedSegmentError::Geometry("posting span is missing"))?;
+        let start = usize::try_from(span.meta_start)
+            .map_err(|_| SealedSegmentError::Geometry("posting offset exceeds usize"))?
+            .checked_sub(HEADER_LEN)
+            .ok_or(SealedSegmentError::Geometry(
+                "posting header start underflows",
+            ))?;
+        let end = self
+            .spans
+            .get(index.saturating_add(1))
+            .map(|next| {
+                usize::try_from(next.meta_start)
+                    .map_err(|_| SealedSegmentError::Geometry("posting offset exceeds usize"))?
+                    .checked_sub(HEADER_LEN)
+                    .ok_or(SealedSegmentError::Geometry(
+                        "posting header start underflows",
+                    ))
+            })
+            .transpose()?
+            .unwrap_or(self.blob.len());
+        self.blob
+            .get(start..end)
+            .ok_or(SealedSegmentError::Geometry(
+                "posting list is out of bounds",
+            ))
     }
 
     /// Returns the term bytes of one span.
@@ -416,6 +803,269 @@ impl SealedSegment {
             .ok()
             .and_then(|start| self.blob.get(start..))
             .unwrap_or(&[])
+    }
+}
+
+fn stamp_retained_unions(
+    segment: &mut SealedSegment,
+    lists: &[PostingList],
+) -> Result<(), SealedSegmentError> {
+    if segment.spans.len() != lists.len() {
+        return Err(SealedSegmentError::Geometry(
+            "retained posting list count differs from spans",
+        ));
+    }
+    let mut start = 0_usize;
+    while start < segment.spans.len() {
+        let term = segment.term_of(start).to_vec();
+        let mut end = start.saturating_add(1);
+        while end < segment.spans.len() && segment.term_of(end) == term {
+            end = end.saturating_add(1);
+        }
+        let mut documents = std::collections::BTreeSet::new();
+        for list in lists.get(start..end).ok_or(SealedSegmentError::Geometry(
+            "retained posting-list group is missing",
+        ))? {
+            documents.extend(list.postings().iter().map(|posting| posting.docid));
+        }
+        let union = u32::try_from(documents.len())
+            .map_err(|_| SealedSegmentError::Geometry("union document count exceeds u32"))?;
+        let field_count = u32::try_from(end.saturating_sub(start))
+            .map_err(|_| SealedSegmentError::Geometry("field count exceeds u32"))?;
+        let spans = segment
+            .spans
+            .get_mut(start..end)
+            .ok_or(SealedSegmentError::Geometry(
+                "retained span group is missing",
+            ))?;
+        for span in spans {
+            span.union_doc_freq = union;
+            span.field_count = field_count;
+        }
+        start = end;
+    }
+    Ok(())
+}
+
+fn validate_decoded_spans(
+    spans: &[ListSpan],
+    terms: &[u8],
+    blob: &[u8],
+    postings_per_block: u16,
+    row_count: u32,
+) -> Result<(), SealedSegmentError> {
+    let mut previous_key: Option<(&[u8], FieldId)> = None;
+    let mut decoded_lists = Vec::with_capacity(spans.len());
+    for (index, span) in spans.iter().enumerate() {
+        let term_start = usize::try_from(span.term_start)
+            .map_err(|_| SealedSegmentError::Geometry("term start exceeds usize"))?;
+        let term_len = usize::try_from(span.term_len)
+            .map_err(|_| SealedSegmentError::Geometry("term length exceeds usize"))?;
+        let term_end = term_start
+            .checked_add(term_len)
+            .ok_or(SealedSegmentError::Geometry("term span overflows"))?;
+        let term = terms
+            .get(term_start..term_end)
+            .ok_or(SealedSegmentError::Geometry("term span is out of bounds"))?;
+        if previous_key.is_some_and(|(previous_term, previous_field)| {
+            previous_term > term || (previous_term == term && previous_field >= span.field)
+        }) {
+            return Err(SealedSegmentError::Geometry(
+                "term spans are not strictly ordered",
+            ));
+        }
+        previous_key = Some((term, span.field));
+        let meta_start = usize::try_from(span.meta_start)
+            .map_err(|_| SealedSegmentError::Geometry("posting offset exceeds usize"))?;
+        let list_start = meta_start
+            .checked_sub(HEADER_LEN)
+            .ok_or(SealedSegmentError::Geometry(
+                "posting header start underflows",
+            ))?;
+        let list_end = spans
+            .get(index.saturating_add(1))
+            .map(|next| {
+                usize::try_from(next.meta_start)
+                    .map_err(|_| SealedSegmentError::Geometry("posting offset exceeds usize"))?
+                    .checked_sub(HEADER_LEN)
+                    .ok_or(SealedSegmentError::Geometry(
+                        "posting header start underflows",
+                    ))
+            })
+            .transpose()?
+            .unwrap_or(blob.len());
+        let list = blob
+            .get(list_start..list_end)
+            .ok_or(SealedSegmentError::Geometry(
+                "posting list is out of bounds",
+            ))?;
+        let reader = PostingsReader::open(list)?;
+        let block_count = u32::try_from(reader.blocks().len())
+            .map_err(|_| SealedSegmentError::Geometry("posting blocks exceed u32"))?;
+        let expected_meta = u32::try_from(list_start)
+            .map_err(|_| SealedSegmentError::Geometry("posting start exceeds u32"))?
+            .checked_add(HEADER_LEN_U32)
+            .ok_or(SealedSegmentError::Geometry(
+                "posting metadata offset overflow",
+            ))?;
+        let expected_docids = expected_meta
+            .checked_add(block_count.saturating_mul(META_LEN_U32))
+            .ok_or(SealedSegmentError::Geometry(
+                "posting stream offset overflow",
+            ))?;
+        let docid_bytes = reader
+            .blocks()
+            .iter()
+            .map(|meta| stream_end(meta.docids_offset, meta.count, meta.docid_bits))
+            .max()
+            .unwrap_or(0);
+        let expected_tfs = expected_docids
+            .checked_add(docid_bytes)
+            .ok_or(SealedSegmentError::Geometry("posting tf offset overflow"))?;
+        let mut overall_max_tf = 0_u32;
+        let mut overall_min_len = u16::MAX;
+        for block in reader.blocks() {
+            let impact = BlockImpact::from_meta(block);
+            overall_max_tf = overall_max_tf.max(impact.max_tf);
+            overall_min_len = overall_min_len.min(impact.min_len);
+        }
+        if reader.postings_per_block() != postings_per_block
+            || reader.document_frequency() != span.doc_freq
+            || block_count != span.block_count
+            || span.meta_start != expected_meta
+            || span.docids_start != expected_docids
+            || span.tfs_start != expected_tfs
+            || span.overall_max_tf != overall_max_tf
+            || span.overall_min_len != overall_min_len
+            || span.field_count == 0
+            || span.union_doc_freq > row_count
+        {
+            return Err(SealedSegmentError::Geometry(
+                "posting-list summary does not match span",
+            ));
+        }
+        if reader
+            .blocks()
+            .iter()
+            .any(|block| block.last_docid >= row_count)
+        {
+            return Err(SealedSegmentError::Geometry(
+                "posting docid exceeds row count",
+            ));
+        }
+        decoded_lists.push(reader.decode_all()?);
+    }
+    validate_union_summaries(spans, terms, &decoded_lists)?;
+    Ok(())
+}
+
+fn validate_union_summaries(
+    spans: &[ListSpan],
+    terms: &[u8],
+    lists: &[PostingList],
+) -> Result<(), SealedSegmentError> {
+    if spans.len() != lists.len() {
+        return Err(SealedSegmentError::Geometry(
+            "decoded posting list count differs from spans",
+        ));
+    }
+    let term_of = |span: &ListSpan| -> Result<&[u8], SealedSegmentError> {
+        let start = usize::try_from(span.term_start)
+            .map_err(|_| SealedSegmentError::Geometry("term start exceeds usize"))?;
+        let length = usize::try_from(span.term_len)
+            .map_err(|_| SealedSegmentError::Geometry("term length exceeds usize"))?;
+        let end = start
+            .checked_add(length)
+            .ok_or(SealedSegmentError::Geometry("term span overflows"))?;
+        terms
+            .get(start..end)
+            .ok_or(SealedSegmentError::Geometry("term span is out of bounds"))
+    };
+    let mut start = 0_usize;
+    while start < spans.len() {
+        let first = spans
+            .get(start)
+            .ok_or(SealedSegmentError::Geometry("term group start is missing"))?;
+        let term = term_of(first)?;
+        let mut end = start.saturating_add(1);
+        while let Some(span) = spans.get(end) {
+            if term_of(span)? != term {
+                break;
+            }
+            end = end.saturating_add(1);
+        }
+        let field_count = u32::try_from(end.saturating_sub(start))
+            .map_err(|_| SealedSegmentError::Geometry("term field count exceeds u32"))?;
+        let mut documents = std::collections::BTreeSet::new();
+        for list in lists.get(start..end).ok_or(SealedSegmentError::Geometry(
+            "term posting-list group is missing",
+        ))? {
+            documents.extend(list.postings().iter().map(|posting| posting.docid));
+        }
+        let union = u32::try_from(documents.len())
+            .map_err(|_| SealedSegmentError::Geometry("union document count exceeds u32"))?;
+        if spans
+            .get(start..end)
+            .ok_or(SealedSegmentError::Geometry("term span group is missing"))?
+            .iter()
+            .any(|span| span.field_count != field_count || span.union_doc_freq != union)
+        {
+            return Err(SealedSegmentError::Geometry(
+                "term union summary does not match posting lists",
+            ));
+        }
+        start = end;
+    }
+    Ok(())
+}
+
+struct RegionCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> RegionCursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], SealedSegmentError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(SealedSegmentError::Geometry("cursor offset overflow"))?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(SealedSegmentError::Geometry("region is truncated"))?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], SealedSegmentError> {
+        self.take(N)?
+            .try_into()
+            .map_err(|_| SealedSegmentError::Geometry("region is truncated"))
+    }
+
+    fn read_u16(&mut self) -> Result<u16, SealedSegmentError> {
+        self.take_array().map(u16::from_le_bytes)
+    }
+
+    fn read_u32(&mut self) -> Result<u32, SealedSegmentError> {
+        self.take_array().map(u32::from_le_bytes)
+    }
+
+    fn read_u64(&mut self) -> Result<u64, SealedSegmentError> {
+        self.take_array().map(u64::from_le_bytes)
+    }
+
+    fn finish(self) -> Result<(), SealedSegmentError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(SealedSegmentError::Geometry("region has trailing bytes"))
+        }
     }
 }
 

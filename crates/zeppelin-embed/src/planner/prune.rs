@@ -26,8 +26,6 @@ pub enum PlanError {
         /// Alive row count.
         alive: u32,
     },
-    /// Active rows cannot represent user columns before owner decision D2.
-    ActiveColumnsUnavailable,
 }
 
 impl std::fmt::Display for PlanError {
@@ -49,9 +47,6 @@ impl std::fmt::Display for PlanError {
             Self::RowCountMismatch { columns, alive } => write!(
                 formatter,
                 "column row count {columns} differs from alive row count {alive}"
-            ),
-            Self::ActiveColumnsUnavailable => formatter.write_str(
-                "active rows cannot evaluate user columns before typed-column ingest is defined",
             ),
         }
     }

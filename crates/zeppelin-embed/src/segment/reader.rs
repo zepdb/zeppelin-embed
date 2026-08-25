@@ -477,6 +477,27 @@ impl SegmentReader {
         Ok(columns)
     }
 
+    /// Decodes the optional whole-segment lexical region.
+    pub fn postings(&self) -> Result<Option<crate::fts::sealed::SealedSegment>, SegmentError> {
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.kind == RegionKind::Postings.id())
+        {
+            return Ok(None);
+        }
+        let postings =
+            crate::fts::sealed::SealedSegment::decode_region(self.region(RegionKind::Postings)?)?;
+        if postings.row_count() != self.meta.row_count {
+            return Err(SegmentError::Geometry(format!(
+                "postings rows {}, header rows {}",
+                postings.row_count(),
+                self.meta.row_count
+            )));
+        }
+        Ok(Some(postings))
+    }
+
     /// Decodes the checksummed alive/tombstone region.
     pub fn alive(&self) -> Result<AliveSet, SegmentError> {
         let alive = decode_alive(self.region(RegionKind::Alive)?)?;

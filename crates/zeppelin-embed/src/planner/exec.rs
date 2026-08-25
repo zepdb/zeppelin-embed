@@ -163,19 +163,8 @@ fn execute_store(
         .cloned()
         .ok_or(QueryError::Store(StoreError::Closed))?;
 
-    let schema = match snapshot.segments().first() {
-        Some(segment) => segment
-            .columns()
-            .map_err(StoreError::Segment)
-            .map_err(QueryError::Store)?
-            .schema()
-            .clone(),
-        None => crate::meta::Schema::timestamp_only(),
-    };
+    let schema = store.schema.clone();
     validate_predicate(predicate, &schema)?;
-    if !active.is_empty() && schema.user_column_count() != 0 {
-        return Err(PlanError::ActiveColumnsUnavailable.into());
-    }
     if matches!(options.tier(), SearchTier::Graph(_)) {
         for segment in snapshot.segments() {
             if !has_graph(segment) {
@@ -200,6 +189,7 @@ fn execute_store(
     let result = execute_pinned(
         &snapshot,
         &active,
+        &schema,
         &store.accounting,
         generation,
         store.epoch_identity(),
@@ -218,6 +208,7 @@ fn execute_store(
 fn execute_pinned(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
     generation: u64,
     epoch: Option<crate::epoch::EpochIdentity>,
@@ -244,7 +235,7 @@ fn execute_pinned(
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
-        let columns = active_timestamp_columns(active.timestamps())?;
+        let columns = active_columns(active, schema)?;
         let allow_list = evaluate(predicate, &columns, &alive).map_err(map_eval_error)?;
         let branch = choose_scan_branch(allow_list.cardinality());
         let source = RowSource::Active;
@@ -891,11 +882,15 @@ fn map_graph_error(error: crate::graph::search::GraphSearchError) -> FilteredSea
     query.into()
 }
 
-fn active_timestamp_columns(timestamps: &[i64]) -> Result<ColumnStore, FilteredSearchError> {
-    let mut builder = ColumnStoreBuilder::new(crate::meta::Schema::timestamp_only());
-    for timestamp in timestamps {
+fn active_columns(
+    active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
+) -> Result<ColumnStore, FilteredSearchError> {
+    let mut builder = ColumnStoreBuilder::new(schema.clone());
+    for (row, timestamp) in active.timestamps().iter().enumerate() {
+        let values = active.column_values(row).map_err(QueryError::Store)?;
         builder
-            .push_row(*timestamp, &[])
+            .push_row(*timestamp, &crate::ingest::column_inputs(&values))
             .map_err(|error| FilteredSearchError::ActiveMetadata(error.to_string()))?;
     }
     builder

@@ -295,6 +295,7 @@ pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
     epochs: Vec<crate::manifest::EpochMeta>,
+    schema: crate::meta::Schema,
     segments: Accounted<Vec<SegmentReader>>,
     cancelled: AtomicBool,
     reader_changed: Condvar,
@@ -310,6 +311,7 @@ impl PublishedSnapshot {
             generation,
             absorbed_through: 0,
             epochs: Vec::new(),
+            schema: crate::meta::Schema::timestamp_only(),
             segments: Accounted::unaccounted_empty(),
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -384,6 +386,7 @@ impl PublishedSnapshot {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
             epochs: manifest.epochs.clone(),
+            schema: manifest.schema.clone(),
             segments,
             cancelled: AtomicBool::new(false),
             reader_changed: Condvar::new(),
@@ -411,6 +414,10 @@ impl PublishedSnapshot {
 
     pub(crate) fn epochs(&self) -> &[crate::manifest::EpochMeta] {
         &self.epochs
+    }
+
+    pub(crate) const fn schema(&self) -> &crate::meta::Schema {
+        &self.schema
     }
 
     /// Returns the complete immutable segment-reader set for this generation.

@@ -153,6 +153,31 @@ pub(crate) struct VectorDiagnostics {
     pub elapsed: Duration,
 }
 
+pub(crate) struct LexicalDiagnostics {
+    pub snapshot_generation: u64,
+    pub indexed_through_seq: LogSeq,
+    pub requested_k: usize,
+    pub returned: usize,
+    pub counters: SearchCounters,
+    pub elapsed: Duration,
+}
+
+pub(crate) struct HybridDiagnostics {
+    pub snapshot_generation: u64,
+    pub indexed_through_seq: LogSeq,
+    pub plan: Vec<SegmentPlan>,
+    pub approximate: bool,
+    pub exact_rescore: bool,
+    pub requested_k: usize,
+    pub returned: usize,
+    pub scan: ScanStats,
+    pub graph: GraphSearchStats,
+    pub lexical: SearchCounters,
+    pub report: FusionReport,
+    pub epoch: Option<crate::epoch::EpochIdentity>,
+    pub elapsed: Duration,
+}
+
 impl QueryDiagnostics {
     pub(crate) fn vector(input: VectorDiagnostics) -> Self {
         Self {
@@ -172,6 +197,58 @@ impl QueryDiagnostics {
             },
             embedding_epoch: input.epoch.map(|epoch| epoch.embedding),
             tokenizer_epoch: None,
+            observed_qos: ObservedQos::current(),
+            elapsed: input.elapsed,
+        }
+    }
+
+    pub(crate) fn lexical(input: LexicalDiagnostics) -> Self {
+        Self {
+            snapshot_generation: input.snapshot_generation,
+            indexed_through_seq: input.indexed_through_seq,
+            plan: Vec::new(),
+            approximate: false,
+            exact_rescore: false,
+            fusion: None,
+            requested_k: input.requested_k,
+            returned: input.returned,
+            budget_exhausted: false,
+            counters: QueryCounters {
+                scan: ScanStats {
+                    dims_touched: 0,
+                    bytes_read: 0,
+                    threads_used: 0,
+                    worker_thread_ids: Vec::new(),
+                },
+                graph: GraphSearchStats::default(),
+                lexical: input.counters,
+            },
+            embedding_epoch: None,
+            tokenizer_epoch: Some(crate::fts::tokenizer::TokenizerConfig::text_default().epoch()),
+            observed_qos: ObservedQos::current(),
+            elapsed: input.elapsed,
+        }
+    }
+
+    pub(crate) fn hybrid(input: HybridDiagnostics) -> Self {
+        let budget_exhausted = input.report.budget_exhausted;
+        Self {
+            snapshot_generation: input.snapshot_generation,
+            indexed_through_seq: input.indexed_through_seq,
+            plan: input.plan,
+            approximate: input.approximate,
+            exact_rescore: input.exact_rescore,
+            fusion: Some(input.report),
+            requested_k: input.requested_k,
+            returned: input.returned,
+            budget_exhausted,
+            counters: QueryCounters {
+                scan: input.scan,
+                graph: input.graph,
+                lexical: input.lexical,
+            },
+            embedding_epoch: input.epoch.map(|epoch| epoch.embedding),
+            tokenizer_epoch: Some(crate::fts::tokenizer::TokenizerConfig::text_default().epoch()),
             observed_qos: ObservedQos::current(),
             elapsed: input.elapsed,
         }

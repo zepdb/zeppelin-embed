@@ -275,6 +275,42 @@ impl SegmentIndex {
             .sum()
     }
 
+    pub(crate) fn resident_bytes(&self) -> usize {
+        let term_slots = self
+            .terms
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(TermKey, usize)>().saturating_add(1));
+        let term_bytes = self
+            .terms
+            .keys()
+            .map(|key| key.term.capacity())
+            .fold(0_usize, usize::saturating_add);
+        let list_bytes = self
+            .lists
+            .capacity()
+            .saturating_mul(std::mem::size_of::<PostingList>())
+            .saturating_add(
+                self.lists
+                    .iter()
+                    .map(PostingList::resident_bytes)
+                    .fold(0_usize, usize::saturating_add),
+            );
+        let length_bytes = self
+            .lengths
+            .capacity()
+            .saturating_mul(std::mem::size_of::<FieldLengths>())
+            .saturating_add(
+                self.lengths
+                    .iter()
+                    .map(|entry| entry.lengths.capacity().saturating_mul(4))
+                    .fold(0_usize, usize::saturating_add),
+            );
+        term_slots
+            .saturating_add(term_bytes)
+            .saturating_add(list_bytes)
+            .saturating_add(length_bytes)
+    }
+
     /// Records one row's analyzed length for one field.
     ///
     /// Pads the field's array with zeros for any earlier row that did not

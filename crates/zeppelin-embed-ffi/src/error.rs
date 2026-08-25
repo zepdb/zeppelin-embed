@@ -29,7 +29,9 @@ impl FfiError {
             | StoreError::Statistics { .. }
             | StoreError::BackgroundStart { .. }
             | StoreError::QueryPoolStart { .. } => ZeErrorCode::Io,
-            StoreError::NotDirectory { .. } => ZeErrorCode::InvalidArgument,
+            StoreError::NotDirectory { .. } | StoreError::SchemaMismatch { .. } => {
+                ZeErrorCode::InvalidArgument
+            }
             StoreError::StoreBusy { .. } => ZeErrorCode::StoreBusy,
             StoreError::Durability(_)
             | StoreError::GraphUnavailable { .. }
@@ -81,8 +83,11 @@ impl FfiError {
             IngestError::EpochUndeclared => ZeErrorCode::EpochUndeclared,
             IngestError::EpochUnstamped => ZeErrorCode::EpochUnstamped,
             IngestError::StaleRevision { .. } => ZeErrorCode::StaleRevision,
-            IngestError::Vector(_) => ZeErrorCode::InvalidArgument,
-            IngestError::Payload(_) => ZeErrorCode::InvalidArgument,
+            IngestError::Vector(_)
+            | IngestError::Lexical(_)
+            | IngestError::Tokenizer(_)
+            | IngestError::Columns(_)
+            | IngestError::Payload(_) => ZeErrorCode::InvalidArgument,
         };
         Self::new(code, message)
     }

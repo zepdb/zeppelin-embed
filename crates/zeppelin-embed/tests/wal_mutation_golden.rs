@@ -3,15 +3,16 @@
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::ingest::wal_payload::{
     DELETE_V1, METADATA_EDIT_V1, MetadataEdit, MetadataValue, MutationPayload, PayloadError,
-    UPSERT_V1, UPSERT_WITH_METADATA_V1, UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
-    UPSERT_WITH_TIMESTAMP_V1, decode_delete, decode_metadata_edit, decode_mutation, decode_upsert,
+    UPSERT_V1, UPSERT_V2, UPSERT_V2_EPOCH_TAG_RESERVED, UPSERT_WITH_METADATA_V1,
+    UPSERT_WITH_TIMESTAMP_AND_METADATA_V1, UPSERT_WITH_TIMESTAMP_V1, decode_delete,
+    decode_metadata_edit, decode_mutation, decode_upsert, decode_upsert_v2,
     decode_upsert_with_metadata, decode_upsert_with_timestamp,
     decode_upsert_with_timestamp_and_metadata, encode_delete, encode_metadata_edit, encode_upsert,
-    encode_upsert_with_metadata, encode_upsert_with_timestamp,
+    encode_upsert_v2, encode_upsert_with_metadata, encode_upsert_with_timestamp,
     encode_upsert_with_timestamp_and_metadata,
 };
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
-use zeppelin_embed::meta::ColumnId;
+use zeppelin_embed::meta::{ColumnId, PredicateValue};
 use zeppelin_embed::wal::LogSeq;
 use zeppelin_embed::wal::record::{WalRecord, decode_record, encode_record};
 
@@ -48,6 +49,27 @@ fn wal_upsert_payload_v1_is_byte_exact() {
         &payload,
         include_str!("fixtures/format/wal_upsert_record_v1.hex"),
         MutationPayload::Upsert(document),
+    );
+}
+
+#[test]
+fn prechange_store_wal_fixture_is_byte_exact() {
+    let document = IngestDocument::new(
+        DocumentVersion::new(DocId::new(41), Revision::new(1)),
+        vec![1.0, 0.0],
+    );
+    let payload = encode_upsert(&document).expect("encode legacy store upsert");
+    let record = encode_record(WalRecord {
+        seq: LogSeq::new(1),
+        op: UPSERT_V1,
+        payload: &payload,
+    })
+    .expect("encode legacy store record");
+    let mut image = fixture(include_str!("fixtures/format/wal_empty_v1.hex"));
+    image.extend_from_slice(&record);
+    assert_eq!(
+        image,
+        fixture(include_str!("fixtures/format/store_wal_prechange_v1.hex"))
     );
 }
 
@@ -114,6 +136,40 @@ fn wal_stored_metadata_upsert_payloads_v1_are_byte_exact() {
 }
 
 #[test]
+fn wal_upsert_payload_v2_bitmap_is_byte_exact() {
+    let document = IngestDocument::new(
+        DocumentVersion::new(
+            DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            Revision::new(0x1122_3344_5566_7788),
+        ),
+        vec![1.5, -2.25],
+    )
+    .with_text("bronze")
+    .with_timestamp(-1234)
+    .with_metadata(b"meta".to_vec())
+    .with_columns(vec![
+        (ColumnId::new(9), PredicateValue::U64(17)),
+        (ColumnId::new(10), PredicateValue::String("blue".to_owned())),
+    ]);
+    let payload = encode_upsert_v2(&document).expect("encode bitmap upsert");
+    assert_eq!(decode_upsert_v2(&payload), Ok(document.clone()));
+    assert_record_golden(
+        UPSERT_V2,
+        &payload,
+        include_str!("fixtures/format/wal_upsert_bitmap_record_v2.hex"),
+        MutationPayload::Upsert(document),
+    );
+    let mut reserved = payload;
+    let bitmap = u32::from_le_bytes(reserved[0..4].try_into().expect("bitmap"))
+        | UPSERT_V2_EPOCH_TAG_RESERVED;
+    reserved[0..4].copy_from_slice(&bitmap.to_le_bytes());
+    assert_eq!(
+        decode_upsert_v2(&reserved),
+        Err(PayloadError::FieldBitmap(UPSERT_V2_EPOCH_TAG_RESERVED))
+    );
+}
+
+#[test]
 fn wal_delete_payload_v1_is_byte_exact() {
     let doc_ids = vec![
         DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
@@ -169,8 +225,9 @@ fn mutation_operation_ids_are_append_only() {
             UPSERT_WITH_TIMESTAMP_V1,
             UPSERT_WITH_METADATA_V1,
             UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
+            UPSERT_V2,
         ),
-        (1, 2, 3, 4, 5, 6)
+        (1, 2, 3, 4, 5, 6, 7)
     );
 }
 

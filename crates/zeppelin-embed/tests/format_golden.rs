@@ -412,6 +412,23 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
 }
 
 #[test]
+fn prechange_segment_fixture_opens_without_postings() {
+    let (generated, id) = golden_segment(3, 1, false);
+    let frozen = fixture(include_str!(
+        "fixtures/format/segment_prechange_full_v1.hex"
+    ));
+    assert_eq!(generated, frozen);
+    let directory = tempfile::tempdir().expect("prechange segment directory");
+    let path = directory.path().join(id.file_name());
+    std::fs::write(&path, &frozen).expect("install prechange segment fixture");
+    let reader = SegmentReader::open(&path, id).expect("open prechange segment fixture");
+    reader
+        .validate_all()
+        .expect("validate prechange segment fixture");
+    assert!(reader.postings().expect("optional postings").is_none());
+}
+
+#[test]
 fn purge_intent_v1_is_byte_exact() {
     let directory = tempfile::tempdir().expect("purge-intent tempdir");
     let doc_id = DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff);

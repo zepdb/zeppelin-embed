@@ -10,6 +10,7 @@ pub mod wal_payload;
 use std::sync::Arc;
 
 use crate::lifecycle::{Store, StoreError, StoreState};
+use crate::meta::{ColumnId, ColumnInput, ColumnStoreBuilder, ColumnValue, PredicateValue, Schema};
 use crate::scan::ScanStats;
 use crate::segment::SegmentId;
 use crate::vfs::StdVfs;
@@ -91,7 +92,12 @@ pub struct IngestDocument {
     version: DocumentVersion,
     vector: Vec<f32>,
     timestamp: i64,
+    timestamp_present: bool,
     metadata: Vec<u8>,
+    metadata_present: bool,
+    text: Option<String>,
+    columns: Vec<(ColumnId, PredicateValue)>,
+    columns_present: bool,
 }
 
 impl IngestDocument {
@@ -102,7 +108,12 @@ impl IngestDocument {
             version,
             vector,
             timestamp: 0,
+            timestamp_present: false,
             metadata: Vec::new(),
+            metadata_present: false,
+            text: None,
+            columns: Vec::new(),
+            columns_present: false,
         }
     }
 
@@ -110,6 +121,7 @@ impl IngestDocument {
     #[must_use]
     pub const fn with_timestamp(mut self, timestamp: i64) -> Self {
         self.timestamp = timestamp;
+        self.timestamp_present = true;
         self
     }
 
@@ -117,6 +129,22 @@ impl IngestDocument {
     #[must_use]
     pub fn with_metadata(mut self, metadata: Vec<u8>) -> Self {
         self.metadata = metadata;
+        self.metadata_present = true;
+        self
+    }
+
+    /// Assigns the UTF-8 body indexed by the store's frozen text analyzer.
+    #[must_use]
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = Some(text.into());
+        self
+    }
+
+    /// Assigns typed user-column values keyed by the store schema.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<(ColumnId, PredicateValue)>) -> Self {
+        self.columns = columns;
+        self.columns_present = true;
         self
     }
 
@@ -138,11 +166,55 @@ impl IngestDocument {
         self.timestamp
     }
 
+    pub(crate) const fn has_timestamp(&self) -> bool {
+        self.timestamp_present
+    }
+
     /// Returns the opaque stored metadata bytes.
     #[must_use]
     pub fn metadata(&self) -> &[u8] {
         &self.metadata
     }
+
+    pub(crate) const fn has_metadata(&self) -> bool {
+        self.metadata_present
+    }
+
+    /// Returns the optional UTF-8 body indexed by lexical search.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// Returns the typed schema-column values in caller order.
+    #[must_use]
+    pub fn columns(&self) -> &[(ColumnId, PredicateValue)] {
+        &self.columns
+    }
+
+    pub(crate) const fn has_columns(&self) -> bool {
+        self.columns_present
+    }
+
+    pub(crate) fn column_inputs(&self) -> Vec<ColumnInput<'_>> {
+        column_inputs(&self.columns)
+    }
+}
+
+pub(crate) fn column_inputs(columns: &[(ColumnId, PredicateValue)]) -> Vec<ColumnInput<'_>> {
+    columns
+        .iter()
+        .map(|(column, value)| ColumnInput {
+            column: *column,
+            value: match value {
+                PredicateValue::U64(value) => ColumnValue::U64(*value),
+                PredicateValue::I64(value) => ColumnValue::I64(*value),
+                PredicateValue::F64(value) => ColumnValue::F64(*value),
+                PredicateValue::Bool(value) => ColumnValue::Bool(*value),
+                PredicateValue::String(value) => ColumnValue::String(value),
+            },
+        })
+        .collect()
 }
 
 /// One atomic caller batch of document upserts.
@@ -241,6 +313,12 @@ pub enum IngestError {
     },
     /// A vector could not be quantized under the frozen Bit4 contract.
     Vector(crate::quant::QuantError),
+    /// The frozen analyzer or active lexical index rejected the text row.
+    Lexical(crate::fts::index::IndexError),
+    /// The frozen text analyzer configuration failed to compile.
+    Tokenizer(crate::fts::tokenizer::TokenizerError),
+    /// Typed values did not satisfy the store's declared schema.
+    Columns(crate::meta::BuildError),
     /// A WAL operation payload could not be encoded.
     Payload(wal_payload::PayloadError),
 }
@@ -267,6 +345,9 @@ impl std::fmt::Display for IngestError {
                 current.get()
             ),
             Self::Vector(error) => write!(formatter, "ingest vector: {error}"),
+            Self::Lexical(error) => write!(formatter, "ingest text: {error}"),
+            Self::Tokenizer(error) => write!(formatter, "ingest tokenizer: {error}"),
+            Self::Columns(error) => write!(formatter, "ingest columns: {error}"),
             Self::Payload(error) => error.fmt(formatter),
         }
     }
@@ -278,6 +359,9 @@ impl std::error::Error for IngestError {
             Self::Store(error) => Some(error),
             Self::EpochMismatch(error) => Some(error),
             Self::Vector(error) => Some(error),
+            Self::Lexical(error) => Some(error),
+            Self::Tokenizer(error) => Some(error),
+            Self::Columns(error) => Some(error),
             Self::Payload(error) => Some(error),
             Self::EmptyBatch
             | Self::EpochUndeclared
@@ -431,6 +515,86 @@ pub struct SearchOutcome {
     pub diagnostics: crate::diag::QueryDiagnostics,
 }
 
+/// One store-backed lexical hit joined to its stable document identity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LexicalCandidate {
+    /// Stable application document version.
+    pub document: DocumentVersion,
+    /// Larger-is-better BM25 score.
+    pub score: f64,
+}
+
+/// Store-backed lexical hits and truthful diagnostics from one pinned generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreLexicalSearchOutcome {
+    /// Globally ranked lexical hits.
+    pub candidates: Vec<LexicalCandidate>,
+    /// Active generation pinned with the immutable snapshot.
+    pub generation: u64,
+    /// Unconditional report of the lexical work actually performed.
+    pub diagnostics: crate::diag::QueryDiagnostics,
+}
+
+/// Store-level exact vector/lexical fusion over stable DocIds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreHybridSearchOutcome {
+    /// Fused hits keyed by stable store document id.
+    pub hits: Vec<crate::fusion::FusedHit<DocId>>,
+    /// Active generation pinned with the immutable snapshot.
+    pub generation: u64,
+    /// Unconditional report including the existing fusion report type.
+    pub diagnostics: crate::diag::QueryDiagnostics,
+}
+
+/// Typed store lexical query failure.
+#[derive(Debug)]
+pub enum StoreLexicalError {
+    /// Store admission, cancellation, or lifecycle failed.
+    Query(crate::lifecycle::QueryError),
+    /// Lexical planning or scoring failed.
+    Lexical(crate::planner::LexicalFilterError),
+    /// A postings-bearing immutable segment has no document-identity region.
+    MissingDocumentIdentity {
+        /// Immutable segment that cannot join local rows to store DocIds.
+        segment_id: SegmentId,
+    },
+}
+
+impl std::fmt::Display for StoreLexicalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Query(error) => error.fmt(formatter),
+            Self::Lexical(error) => error.fmt(formatter),
+            Self::MissingDocumentIdentity { segment_id } => write!(
+                formatter,
+                "sealed lexical segment {segment_id} has no document identity"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StoreLexicalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Query(error) => Some(error),
+            Self::Lexical(error) => Some(error),
+            Self::MissingDocumentIdentity { .. } => None,
+        }
+    }
+}
+
+impl From<crate::lifecycle::QueryError> for StoreLexicalError {
+    fn from(error: crate::lifecycle::QueryError) -> Self {
+        Self::Query(error)
+    }
+}
+
+impl From<crate::planner::LexicalFilterError> for StoreLexicalError {
+    fn from(error: crate::planner::LexicalFilterError) -> Self {
+        Self::Lexical(error)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ResolvedRevision {
     version: DocumentVersion,
@@ -491,6 +655,9 @@ impl Store {
         }
         if batch.documents.is_empty() {
             return Err(IngestError::EmptyBatch);
+        }
+        for document in &batch.documents {
+            validate_document_columns(&self.schema, document)?;
         }
         let mut wal = self
             .wal_writer
@@ -761,23 +928,20 @@ impl Store {
 }
 
 fn encode_persisted_upsert(document: &IngestDocument) -> Result<(u16, Vec<u8>), IngestError> {
-    if document.timestamp() == 0 && document.metadata().is_empty() {
-        wal_payload::encode_upsert(document)
-            .map(|payload| (wal_payload::UPSERT_V1, payload))
-            .map_err(IngestError::Payload)
-    } else if document.metadata().is_empty() {
-        wal_payload::encode_upsert_with_timestamp(document)
-            .map(|payload| (wal_payload::UPSERT_WITH_TIMESTAMP_V1, payload))
-            .map_err(IngestError::Payload)
-    } else if document.timestamp() == 0 {
-        wal_payload::encode_upsert_with_metadata(document)
-            .map(|payload| (wal_payload::UPSERT_WITH_METADATA_V1, payload))
-            .map_err(IngestError::Payload)
-    } else {
-        wal_payload::encode_upsert_with_timestamp_and_metadata(document)
-            .map(|payload| (wal_payload::UPSERT_WITH_TIMESTAMP_AND_METADATA_V1, payload))
-            .map_err(IngestError::Payload)
-    }
+    wal_payload::encode_upsert_v2(document)
+        .map(|payload| (wal_payload::UPSERT_V2, payload))
+        .map_err(IngestError::Payload)
+}
+
+pub(crate) fn validate_document_columns(
+    schema: &Schema,
+    document: &IngestDocument,
+) -> Result<(), IngestError> {
+    let mut builder = ColumnStoreBuilder::new(schema.clone());
+    builder
+        .push_row(document.timestamp(), &document.column_inputs())
+        .map(|_| ())
+        .map_err(IngestError::Columns)
 }
 
 impl From<WalWriteError> for IngestError {

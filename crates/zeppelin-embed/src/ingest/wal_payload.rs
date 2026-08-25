@@ -1,6 +1,6 @@
 //! Versioned payloads inside the frozen task-08 WAL record frame.
 
-use crate::meta::ColumnId;
+use crate::meta::{ColumnId, PredicateValue};
 
 use super::{DocId, DocumentVersion, IngestDocument, Revision};
 
@@ -12,6 +12,16 @@ use super::{DocId, DocumentVersion, IngestDocument, Revision};
 //   4 = vector/document upsert with canonical ts v1
 //   5 = vector/document upsert with opaque stored metadata v1
 //   6 = vector/document upsert with canonical ts and opaque stored metadata v1
+//   7 = document upsert v2 with a u32 field-presence bitmap
+//
+// Upsert-v2 bitmap bits are append-only persisted meanings:
+//   bit 0 = vector (`dims:u32`, then `f32[dims]`)
+//   bit 1 = UTF-8 text (`len:u32`, then bytes)
+//   bit 2 = canonical timestamp (`i64`)
+//   bit 3 = opaque stored metadata (`len:u32`, then bytes)
+//   bit 4 = typed columns (count plus typed length-delimited entries)
+//   bit 5 = reserved-unused for a future per-record epoch tag
+//   bits 6..31 = reserved-unused
 /// Upsert payload v1.
 pub const UPSERT_V1: u16 = 1;
 /// Delete payload v1.
@@ -24,6 +34,27 @@ pub const UPSERT_WITH_TIMESTAMP_V1: u16 = 4;
 pub const UPSERT_WITH_METADATA_V1: u16 = 5;
 /// Upsert payload with canonical timestamp and opaque stored metadata v1.
 pub const UPSERT_WITH_TIMESTAMP_AND_METADATA_V1: u16 = 6;
+/// Bitmap-based upsert payload v2.
+pub const UPSERT_V2: u16 = 7;
+
+/// Upsert-v2 vector field bit.
+pub const UPSERT_V2_VECTOR: u32 = 1 << 0;
+/// Upsert-v2 text field bit.
+pub const UPSERT_V2_TEXT: u32 = 1 << 1;
+/// Upsert-v2 timestamp field bit.
+pub const UPSERT_V2_TIMESTAMP: u32 = 1 << 2;
+/// Upsert-v2 opaque-metadata field bit.
+pub const UPSERT_V2_METADATA: u32 = 1 << 3;
+/// Upsert-v2 typed-column field bit.
+pub const UPSERT_V2_TYPED_COLUMNS: u32 = 1 << 4;
+/// Reserved-unused upsert-v2 bit for a future per-record epoch tag.
+pub const UPSERT_V2_EPOCH_TAG_RESERVED: u32 = 1 << 5;
+
+const UPSERT_V2_KNOWN_FIELDS: u32 = UPSERT_V2_VECTOR
+    | UPSERT_V2_TEXT
+    | UPSERT_V2_TIMESTAMP
+    | UPSERT_V2_METADATA
+    | UPSERT_V2_TYPED_COLUMNS;
 
 const PAYLOAD_VERSION: u16 = 1;
 const COMMON_HEADER_LEN: usize = 4;
@@ -84,6 +115,12 @@ pub enum PayloadError {
     Utf8,
     /// Bytes remain after the declared payload.
     TrailingBytes(usize),
+    /// An upsert-v2 bitmap named a reserved or unimplemented field.
+    FieldBitmap(u32),
+    /// Active lexical reconstruction failed during WAL replay.
+    Lexical(String),
+    /// Active typed-column reconstruction failed during WAL replay.
+    Columns(String),
 }
 
 impl std::fmt::Display for PayloadError {
@@ -131,6 +168,12 @@ impl std::fmt::Display for PayloadError {
             Self::TrailingBytes(bytes) => {
                 write!(formatter, "WAL mutation payload has {bytes} trailing bytes")
             }
+            Self::FieldBitmap(bitmap) => write!(
+                formatter,
+                "WAL upsert-v2 field bitmap {bitmap:#010x} names reserved fields"
+            ),
+            Self::Lexical(detail) => write!(formatter, "WAL lexical replay failed: {detail}"),
+            Self::Columns(detail) => write!(formatter, "WAL column replay failed: {detail}"),
         }
     }
 }
@@ -224,6 +267,98 @@ pub fn encode_upsert_with_timestamp_and_metadata(
     document: &IngestDocument,
 ) -> Result<Vec<u8>, PayloadError> {
     encode_upsert_body(document, Some(document.timestamp()), true)
+}
+
+/// Encodes one bitmap-based upsert v2. The operation id carries the payload
+/// version, so the first four payload bytes are the field-presence bitmap.
+pub fn encode_upsert_v2(document: &IngestDocument) -> Result<Vec<u8>, PayloadError> {
+    let mut bitmap = UPSERT_V2_VECTOR;
+    if document.text().is_some() {
+        bitmap |= UPSERT_V2_TEXT;
+    }
+    if document.has_timestamp() {
+        bitmap |= UPSERT_V2_TIMESTAMP;
+    }
+    if document.has_metadata() {
+        bitmap |= UPSERT_V2_METADATA;
+    }
+    if document.has_columns() {
+        bitmap |= UPSERT_V2_TYPED_COLUMNS;
+    }
+    validate_vector(document.vector())?;
+    let dims = u32::try_from(document.vector().len()).map_err(|_| PayloadError::LengthOverflow)?;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&bitmap.to_le_bytes());
+    append_version(&mut payload, document.version());
+    payload.extend_from_slice(&dims.to_le_bytes());
+    for value in document.vector() {
+        payload.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    if let Some(text) = document.text() {
+        append_length_prefixed(text.as_bytes(), &mut payload)?;
+    }
+    if document.has_timestamp() {
+        payload.extend_from_slice(&document.timestamp().to_le_bytes());
+    }
+    if document.has_metadata() {
+        append_length_prefixed(document.metadata(), &mut payload)?;
+    }
+    if document.has_columns() {
+        encode_typed_columns(document.columns(), &mut payload)?;
+    }
+    Ok(payload)
+}
+
+fn validate_vector(vector: &[f32]) -> Result<(), PayloadError> {
+    if vector.is_empty() {
+        return Err(PayloadError::EmptyVector);
+    }
+    if let Some(index) = vector.iter().position(|value| !value.is_finite()) {
+        return Err(PayloadError::NonFiniteVector { index });
+    }
+    Ok(())
+}
+
+fn append_length_prefixed(bytes: &[u8], output: &mut Vec<u8>) -> Result<(), PayloadError> {
+    let length = u32::try_from(bytes.len()).map_err(|_| PayloadError::LengthOverflow)?;
+    output.extend_from_slice(&length.to_le_bytes());
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn encode_typed_columns(
+    columns: &[(ColumnId, PredicateValue)],
+    output: &mut Vec<u8>,
+) -> Result<(), PayloadError> {
+    let count = u32::try_from(columns.len()).map_err(|_| PayloadError::LengthOverflow)?;
+    output.extend_from_slice(&count.to_le_bytes());
+    for (column, value) in columns {
+        let metadata = predicate_to_metadata(value);
+        let (kind, body) = encode_metadata_value(&metadata)?;
+        output.extend_from_slice(&column.get().to_le_bytes());
+        output.push(kind);
+        output.extend_from_slice(&[0_u8; 3]);
+        append_length_prefixed(&body, output)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_column_values(
+    columns: &[(ColumnId, PredicateValue)],
+) -> Result<Vec<u8>, PayloadError> {
+    let mut encoded = Vec::new();
+    encode_typed_columns(columns, &mut encoded)?;
+    Ok(encoded)
+}
+
+fn predicate_to_metadata(value: &PredicateValue) -> MetadataValue {
+    match value {
+        PredicateValue::U64(value) => MetadataValue::U64(*value),
+        PredicateValue::I64(value) => MetadataValue::I64(*value),
+        PredicateValue::F64(value) => MetadataValue::F64(*value),
+        PredicateValue::Bool(value) => MetadataValue::Bool(*value),
+        PredicateValue::String(value) => MetadataValue::String(value.clone()),
+    }
 }
 
 fn encode_upsert_body(
@@ -339,7 +474,110 @@ pub fn decode_mutation(op: u16, payload: &[u8]) -> Result<MutationPayload, Paylo
         UPSERT_WITH_TIMESTAMP_AND_METADATA_V1 => {
             decode_upsert_with_timestamp_and_metadata(payload).map(MutationPayload::Upsert)
         }
+        UPSERT_V2 => decode_upsert_v2(payload).map(MutationPayload::Upsert),
         unknown => Err(PayloadError::UnknownOperation(unknown)),
+    }
+}
+
+/// Decodes one bitmap-based upsert-v2 payload.
+pub fn decode_upsert_v2(payload: &[u8]) -> Result<IngestDocument, PayloadError> {
+    let mut cursor = Cursor::new(payload);
+    let bitmap = cursor.read_u32()?;
+    let reserved = bitmap & !UPSERT_V2_KNOWN_FIELDS;
+    if reserved != 0 {
+        return Err(PayloadError::FieldBitmap(reserved));
+    }
+    let version = cursor.read_version()?;
+    let vector = if bitmap & UPSERT_V2_VECTOR != 0 {
+        let dims = usize::try_from(cursor.read_u32()?).map_err(|_| PayloadError::LengthOverflow)?;
+        if dims == 0 {
+            return Err(PayloadError::EmptyVector);
+        }
+        let mut vector = Vec::with_capacity(dims);
+        for index in 0..dims {
+            let value = f32::from_bits(cursor.read_u32()?);
+            if !value.is_finite() {
+                return Err(PayloadError::NonFiniteVector { index });
+            }
+            vector.push(value);
+        }
+        vector
+    } else {
+        Vec::new()
+    };
+    let text = if bitmap & UPSERT_V2_TEXT != 0 {
+        Some(cursor.read_string()?)
+    } else {
+        None
+    };
+    let timestamp = if bitmap & UPSERT_V2_TIMESTAMP != 0 {
+        Some(i64::from_le_bytes(cursor.take()?))
+    } else {
+        None
+    };
+    let metadata = if bitmap & UPSERT_V2_METADATA != 0 {
+        Some(cursor.read_length_prefixed()?.to_vec())
+    } else {
+        None
+    };
+    let columns = if bitmap & UPSERT_V2_TYPED_COLUMNS != 0 {
+        Some(decode_typed_columns(&mut cursor)?)
+    } else {
+        None
+    };
+    cursor.finish()?;
+    let mut document = IngestDocument::new(version, vector);
+    if let Some(text) = text {
+        document = document.with_text(text);
+    }
+    if let Some(timestamp) = timestamp {
+        document = document.with_timestamp(timestamp);
+    }
+    if let Some(metadata) = metadata {
+        document = document.with_metadata(metadata);
+    }
+    if let Some(columns) = columns {
+        document = document.with_columns(columns);
+    }
+    Ok(document)
+}
+
+fn decode_typed_columns(
+    cursor: &mut Cursor<'_>,
+) -> Result<Vec<(ColumnId, PredicateValue)>, PayloadError> {
+    let count = usize::try_from(cursor.read_u32()?).map_err(|_| PayloadError::LengthOverflow)?;
+    let mut columns = Vec::with_capacity(count);
+    for _ in 0..count {
+        let column = ColumnId::new(cursor.read_u32()?);
+        let kind = cursor.read_u8()?;
+        let reserved = cursor.read_u24()?;
+        if reserved != 0 {
+            return Err(PayloadError::Reserved(reserved));
+        }
+        let body = cursor.read_length_prefixed()?;
+        let value = metadata_to_predicate(decode_metadata_value(kind, body)?)?;
+        columns.push((column, value));
+    }
+    Ok(columns)
+}
+
+pub(crate) fn decode_column_values(
+    encoded: &[u8],
+) -> Result<Vec<(ColumnId, PredicateValue)>, PayloadError> {
+    let mut cursor = Cursor::new(encoded);
+    let columns = decode_typed_columns(&mut cursor)?;
+    cursor.finish()?;
+    Ok(columns)
+}
+
+fn metadata_to_predicate(value: MetadataValue) -> Result<PredicateValue, PayloadError> {
+    match value {
+        MetadataValue::Null => Err(PayloadError::ValueKind(VALUE_NULL)),
+        MetadataValue::U64(value) => Ok(PredicateValue::U64(value)),
+        MetadataValue::I64(value) => Ok(PredicateValue::I64(value)),
+        MetadataValue::F64(value) => Ok(PredicateValue::F64(value)),
+        MetadataValue::Bool(value) => Ok(PredicateValue::Bool(value)),
+        MetadataValue::String(value) => Ok(PredicateValue::String(value)),
     }
 }
 
@@ -404,9 +642,14 @@ fn decode_upsert_body(
         vector.push(value);
     }
     cursor.finish()?;
-    Ok(IngestDocument::new(version, vector)
-        .with_timestamp(timestamp)
-        .with_metadata(metadata))
+    let mut document = IngestDocument::new(version, vector);
+    if has_timestamp {
+        document = document.with_timestamp(timestamp);
+    }
+    if has_metadata {
+        document = document.with_metadata(metadata);
+    }
+    Ok(document)
 }
 
 /// Decodes and validates one complete delete payload.
@@ -606,6 +849,17 @@ impl<'a> Cursor<'a> {
 
     fn read_u128(&mut self) -> Result<u128, PayloadError> {
         self.take().map(u128::from_le_bytes)
+    }
+
+    fn read_length_prefixed(&mut self) -> Result<&'a [u8], PayloadError> {
+        let length = usize::try_from(self.read_u32()?).map_err(|_| PayloadError::LengthOverflow)?;
+        self.read_bytes(length)
+    }
+
+    fn read_string(&mut self) -> Result<String, PayloadError> {
+        std::str::from_utf8(self.read_length_prefixed()?)
+            .map(str::to_owned)
+            .map_err(|_| PayloadError::Utf8)
     }
 
     fn remaining(&self) -> usize {

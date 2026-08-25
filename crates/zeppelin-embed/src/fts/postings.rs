@@ -187,6 +187,18 @@ impl PostingList {
         &self.postings
     }
 
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.postings
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Posting>())
+            .saturating_add(
+                self.postings
+                    .iter()
+                    .map(|posting| posting.positions.capacity().saturating_mul(4))
+                    .fold(0_usize, usize::saturating_add),
+            )
+    }
+
     /// Returns the number of documents containing the term.
     #[must_use]
     pub fn document_frequency(&self) -> u32 {

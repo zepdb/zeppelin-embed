@@ -72,6 +72,13 @@ pub struct SegmentStoredMetadata<'a> {
     pub bytes: &'a [u8],
 }
 
+/// One complete encoded lexical segment for the Postings region.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentPostings<'a> {
+    /// Bytes produced by `SealedSegment::encode_region`.
+    pub bytes: &'a [u8],
+}
+
 struct RegionBytes {
     kind: RegionKind,
     family: FormatFamily,
@@ -80,7 +87,7 @@ struct RegionBytes {
 
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
-    encode_segment_inner(build, None, None, None)
+    encode_segment_inner(build, None, None, None, None)
 }
 
 /// Encodes a complete segment with one fixed-stride graph node-block region.
@@ -103,7 +110,7 @@ pub fn encode_segment_with_graph(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), None, None)
+    encode_segment_inner(build, Some(graph_bytes), None, None, None)
 }
 
 /// Encodes a graph segment while preserving dense application document identities.
@@ -127,7 +134,7 @@ pub fn encode_segment_with_graph_and_documents(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), Some(documents), None)
+    encode_segment_inner(build, Some(graph_bytes), Some(documents), None, None)
 }
 
 fn encode_segment_inner(
@@ -135,6 +142,7 @@ fn encode_segment_inner(
     graph_bytes: Option<Vec<u8>>,
     document_versions: Option<SegmentDocumentVersions<'_>>,
     stored_metadata: Option<SegmentStoredMetadata<'_>>,
+    postings: Option<SegmentPostings<'_>>,
 ) -> Result<Vec<u8>, SegmentError> {
     let row_count = build.columns.row_count();
     if build.alive.row_count() != row_count {
@@ -257,6 +265,20 @@ fn encode_segment_inner(
             kind: RegionKind::StoredMetadata,
             family: FormatFamily::StoredMetadata,
             bytes: encode_stored_metadata(metadata, rows)?,
+        });
+    }
+    if let Some(postings) = postings {
+        let decoded = crate::fts::sealed::SealedSegment::decode_region(postings.bytes)?;
+        if decoded.row_count() != row_count {
+            return Err(SegmentError::Geometry(format!(
+                "postings rows {}, segment rows {row_count}",
+                decoded.row_count()
+            )));
+        }
+        regions.push(RegionBytes {
+            kind: RegionKind::Postings,
+            family: FormatFamily::Postings,
+            bytes: postings.bytes.to_vec(),
         });
     }
     encode_regions(build, &regions)
@@ -554,7 +576,7 @@ pub fn write_segment_with_documents(
     documents: SegmentDocumentVersions<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), None)?;
+    let bytes = encode_segment_inner(build, None, Some(documents), None, None)?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -567,7 +589,49 @@ pub fn write_segment_with_documents_and_metadata(
     metadata: SegmentStoredMetadata<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata))?;
+    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), None)?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes document identities and a sealed lexical Postings region.
+pub fn write_segment_with_documents_and_postings(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    postings: SegmentPostings<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents), None, Some(postings))?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes a sealed lexical region without application document identities.
+///
+/// This remains readable for format compatibility, while store-level lexical
+/// and hybrid joins reject the missing identity as a typed query error.
+pub fn write_segment_with_postings(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    postings: SegmentPostings<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, None, None, Some(postings))?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes document identities, opaque metadata, and a sealed lexical region.
+pub fn write_segment_with_documents_metadata_and_postings(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    metadata: SegmentStoredMetadata<'_>,
+    postings: SegmentPostings<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), Some(postings))?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 

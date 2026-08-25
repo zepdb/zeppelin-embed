@@ -20,8 +20,9 @@ use crate::quant::Bit4Factors;
 use crate::segment::layout::Int8Factors;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
     write_segment_with_documents, write_segment_with_documents_and_metadata,
+    write_segment_with_documents_and_postings, write_segment_with_documents_metadata_and_postings,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use crate::vfs::{StdVfs, Vfs};
@@ -1084,20 +1085,43 @@ fn rewrite_segment(
         doc_ids: &doc_ids,
         revisions: &revisions,
     };
-    let written = if source_metadata.is_some() {
-        write_segment_with_documents_and_metadata(
+    let postings = reader
+        .postings()
+        .map_err(StoreError::Segment)?
+        .map(|postings| postings.retain_rows(survivors))
+        .transpose()
+        .map_err(crate::segment::SegmentError::from)
+        .map_err(StoreError::Segment)?
+        .map(|postings| postings.encode_region())
+        .transpose()
+        .map_err(crate::segment::SegmentError::from)
+        .map_err(StoreError::Segment)?;
+    let metadata = source_metadata.map(|_| SegmentStoredMetadata {
+        end_offsets: &metadata_offsets,
+        bytes: &metadata_bytes,
+    });
+    let written = match (metadata, postings.as_deref()) {
+        (None, None) => write_segment_with_documents(vfs, directory, build, documents, policy),
+        (Some(metadata), None) => write_segment_with_documents_and_metadata(
+            vfs, directory, build, documents, metadata, policy,
+        ),
+        (None, Some(postings)) => write_segment_with_documents_and_postings(
             vfs,
             directory,
             build,
             documents,
-            SegmentStoredMetadata {
-                end_offsets: &metadata_offsets,
-                bytes: &metadata_bytes,
-            },
+            SegmentPostings { bytes: postings },
             policy,
-        )
-    } else {
-        write_segment_with_documents(vfs, directory, build, documents, policy)
+        ),
+        (Some(metadata), Some(postings)) => write_segment_with_documents_metadata_and_postings(
+            vfs,
+            directory,
+            build,
+            documents,
+            metadata,
+            SegmentPostings { bytes: postings },
+            policy,
+        ),
     }
     .map_err(StoreError::Segment)?;
     let mut written = written;
@@ -1234,7 +1258,7 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
             .checked_add(dims)
             .ok_or(StoreError::ActiveRowOverflow)?;
         let version = segment.document(row).ok_or(StoreError::ActiveRowOverflow)?;
-        let document = IngestDocument::new(
+        let mut document = IngestDocument::new(
             version,
             segment
                 .vectors()
@@ -1255,6 +1279,10 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
                 .ok_or(StoreError::ActiveRowOverflow)?
                 .to_vec(),
         );
+        if let Some(text) = segment.text(row)? {
+            document = document.with_text(text);
+        }
+        document = document.with_columns(segment.column_values(row)?);
         records.push(super::encode_persisted_upsert(&document).map_err(purge_ingest_error)?);
         let is_tombstoned = segment.is_tombstoned(row);
         tombstoned.push(is_tombstoned);
@@ -1288,6 +1316,15 @@ fn purge_ingest_error(error: super::IngestError) -> PurgeError {
         ),
         super::IngestError::Vector(error) => PurgeError::IntentDecode(format!(
             "active WAL rewrite rejected a persisted vector: {error}"
+        )),
+        super::IngestError::Lexical(error) => PurgeError::IntentDecode(format!(
+            "active WAL rewrite rejected persisted text: {error}"
+        )),
+        super::IngestError::Tokenizer(error) => PurgeError::IntentDecode(format!(
+            "active WAL rewrite rejected the frozen tokenizer: {error}"
+        )),
+        super::IngestError::Columns(error) => PurgeError::IntentDecode(format!(
+            "active WAL rewrite rejected persisted columns: {error}"
         )),
     }
 }
