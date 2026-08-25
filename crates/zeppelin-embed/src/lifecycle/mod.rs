@@ -701,7 +701,9 @@ impl Store {
                 }));
             }
             (Some(_), None) => return Err(StoreError::EpochUndeclared),
-            (None, Some(_)) if manifest_exists => return Err(StoreError::EpochUnstamped),
+            (None, Some(_)) if manifest_exists || options.access_mode == AccessMode::ReadOnly => {
+                return Err(StoreError::EpochUnstamped);
+            }
             (Some(_), Some(_)) | (None, Some(_)) | (None, None) => {}
         }
         let absorbed_through = snapshot.absorbed_through();
@@ -712,6 +714,28 @@ impl Store {
             absorbed_through,
             &accounting,
         )?;
+        if options.access_mode == AccessMode::ReadWrite
+            && !manifest_exists
+            && let Some(epoch) = options.epoch.as_ref()
+        {
+            crate::manifest::io::commit_manifest(
+                &crate::vfs::StdVfs,
+                path,
+                &crate::manifest::Manifest {
+                    generation: active.generation,
+                    log_seq: 0,
+                    segments: Vec::new(),
+                    epochs: vec![crate::manifest::EpochMeta::from(epoch.clone())],
+                    schema: crate::meta::Schema::new(Vec::new()).map_err(|source| {
+                        StoreError::Segment(crate::segment::SegmentError::Columns(
+                            source.to_string(),
+                        ))
+                    })?,
+                },
+                durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
+        }
         let wal_writer = match options.access_mode {
             AccessMode::ReadWrite => Some(match recovered_wal {
                 Some(recovered) => crate::ingest::StoreWal::resume(

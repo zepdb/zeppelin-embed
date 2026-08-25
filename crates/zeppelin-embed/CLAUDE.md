@@ -432,10 +432,15 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   creation: a non-empty registry plus the same declared identity opens; a
   non-empty registry plus a different declaration is `EpochMismatch`; a
   non-empty registry without a declaration is `EpochUndeclared`; and an empty
-  registry preserves legacy behavior only when no identity is declared. A new
-  store without a manifest adopts a declaration for its first manifest commit,
-  while an existing empty-registry manifest rejects one as `EpochUnstamped`.
-  Every rejected open leaves the manifest and WAL untouched.
+  registry preserves legacy behavior only when no identity is declared. A
+  read-write store created with a declared epoch commits the registry at
+  creation, before any WAL write is admitted, so an unsealed store cannot be
+  reopened under a different epoch; this creation-time stamp is necessary
+  because `close` does not seal. A read-only declaration without a manifest and
+  an existing empty-registry manifest both reject as `EpochUnstamped`. Every
+  rejected open leaves the manifest and WAL untouched.
+- `OpenOptions` is no longer `Copy` because it carries a declared `StoreEpoch`;
+  this is a deliberate breaking public API change.
 - A stamped store requires every embedding write to declare the matching
   embedding/tokenizer identity. Once a migration starts, the old epoch becomes
   read-only; that is the recorded product rule even though Part A does not

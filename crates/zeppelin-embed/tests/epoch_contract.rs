@@ -235,6 +235,57 @@ fn the_declared_epoch_survives_ingest_seal_close_and_reopen() {
 }
 
 #[test]
+fn a_store_created_under_one_epoch_cannot_be_reopened_under_another_without_ever_sealing() {
+    let directory = tempdir().expect("store directory");
+    let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
+    let conflicting = store_epoch("model-b", "1", TokenizerConfig::text_default());
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_epoch(declared.clone()),
+    )
+    .expect("open epoch store");
+    store
+        .ingest(batch(1).with_epoch(declared.identity()))
+        .expect("ingest declared epoch");
+    store.close().expect("close without sealing");
+
+    let error = Store::open(directory.path(), OpenOptions::new().with_epoch(conflicting))
+        .err()
+        .expect("reopen under a conflicting epoch must fail");
+    assert!(matches!(error, StoreError::EpochMismatch(_)));
+
+    let reopened = Store::open(
+        directory.path(),
+        OpenOptions::new().with_epoch(declared.clone()),
+    )
+    .expect("reopen matching epoch");
+    let outcome = search(&reopened, 1);
+    assert_eq!(outcome.epoch, Some(declared.identity()));
+    assert_eq!(outcome.candidates.len(), 1);
+    assert_eq!(
+        outcome.candidates[0].document(),
+        Some(DocumentVersion::new(DocId::new(1), Revision::new(1)))
+    );
+}
+
+#[test]
+fn a_read_only_open_declaring_an_epoch_against_an_unstamped_store_is_a_typed_error() {
+    let directory = tempdir().expect("store directory");
+    let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
+    let before = directory_bytes(directory.path());
+
+    let error = Store::open(
+        directory.path(),
+        OpenOptions::read_only().with_epoch(declared),
+    )
+    .err()
+    .expect("read-only open cannot stamp an epoch");
+
+    assert!(matches!(error, StoreError::EpochUnstamped));
+    assert_eq!(directory_bytes(directory.path()), before);
+}
+
+#[test]
 fn two_epoch_ids_differing_only_in_the_high_thirty_two_bits_are_not_interchangeable() {
     let directory = tempdir().expect("store directory");
     let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
