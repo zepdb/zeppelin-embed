@@ -85,9 +85,20 @@ struct RegionBytes {
     bytes: Vec<u8>,
 }
 
+/// One source region copied byte-for-byte into a rewritten segment.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentCopiedRegion<'a> {
+    /// Permanent or forward-compatible source region kind.
+    pub kind: u16,
+    /// Exact additive region version from the source directory.
+    pub version: u16,
+    /// Original checksummed region payload.
+    pub bytes: &'a [u8],
+}
+
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
-    encode_segment_inner(build, None, None, None, None)
+    encode_segment_inner(build, None, None, None, None, &[])
 }
 
 /// Encodes a complete segment with one fixed-stride graph node-block region.
@@ -110,7 +121,7 @@ pub fn encode_segment_with_graph(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), None, None, None)
+    encode_segment_inner(build, Some(graph_bytes), None, None, None, &[])
 }
 
 /// Encodes a graph segment while preserving dense application document identities.
@@ -134,7 +145,7 @@ pub fn encode_segment_with_graph_and_documents(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), Some(documents), None, None)
+    encode_segment_inner(build, Some(graph_bytes), Some(documents), None, None, &[])
 }
 
 fn encode_segment_inner(
@@ -143,6 +154,7 @@ fn encode_segment_inner(
     document_versions: Option<SegmentDocumentVersions<'_>>,
     stored_metadata: Option<SegmentStoredMetadata<'_>>,
     postings: Option<SegmentPostings<'_>>,
+    copied_regions: &[SegmentCopiedRegion<'_>],
 ) -> Result<Vec<u8>, SegmentError> {
     let row_count = build.columns.row_count();
     if build.alive.row_count() != row_count {
@@ -281,7 +293,7 @@ fn encode_segment_inner(
             bytes: postings.bytes.to_vec(),
         });
     }
-    encode_regions(build, &regions)
+    encode_regions(build, &regions, copied_regions)
 }
 
 fn encode_stored_metadata(
@@ -417,8 +429,12 @@ fn encode_factors(
 fn encode_regions(
     build: SegmentBuild<'_>,
     regions: &[RegionBytes],
+    copied_regions: &[SegmentCopiedRegion<'_>],
 ) -> Result<Vec<u8>, SegmentError> {
-    let region_count = regions.len().saturating_add(1);
+    let region_count = regions
+        .len()
+        .saturating_add(copied_regions.len())
+        .saturating_add(1);
     let header_length = FILE_HEADER_LEN
         .checked_add(SEGMENT_PREFIX_LEN)
         .and_then(|value| value.checked_add(region_count.saturating_mul(REGION_ENTRY_LEN)))
@@ -442,8 +458,32 @@ fn encode_regions(
             .ok_or_else(|| SegmentError::Geometry("region end overflow".to_owned()))?;
         next_offset = align_up(next_offset, REGION_ALIGNMENT)?;
     }
+    for region in copied_regions {
+        if region.kind == RegionKind::ChecksumTable.id()
+            || entries.iter().any(|entry| entry.kind == region.kind)
+        {
+            return Err(SegmentError::Geometry(format!(
+                "copied region kind {} conflicts with the rewritten segment",
+                region.kind
+            )));
+        }
+        let length = u64::try_from(region.bytes.len())
+            .map_err(|_| SegmentError::Geometry("region length exceeds u64".to_owned()))?;
+        entries.push(RegionEntry {
+            kind: region.kind,
+            version: region.version,
+            reserved: 0,
+            offset: next_offset as u64,
+            length,
+            checksum: xxh3_64(region.bytes),
+        });
+        next_offset = next_offset
+            .checked_add(region.bytes.len())
+            .ok_or_else(|| SegmentError::Geometry("region end overflow".to_owned()))?;
+        next_offset = align_up(next_offset, REGION_ALIGNMENT)?;
+    }
 
-    let checksum_table = encode_checksum_table(regions);
+    let checksum_table = encode_checksum_table(regions, copied_regions);
     entries.push(RegionEntry {
         kind: RegionKind::ChecksumTable.id(),
         version: current_version(FormatFamily::ChecksumTable)?,
@@ -507,6 +547,22 @@ fn encode_regions(
         output.extend_from_slice(&region.bytes);
         output.resize(align_up(output.len(), REGION_ALIGNMENT)?, 0);
     }
+    for (region, entry) in copied_regions
+        .iter()
+        .zip(entries.iter().skip(regions.len()))
+    {
+        let offset = usize::try_from(entry.offset)
+            .map_err(|_| SegmentError::Geometry("region offset exceeds usize".to_owned()))?;
+        if output.len() != offset {
+            return Err(SegmentError::Geometry(format!(
+                "copied region {} offset {offset}, current length {}",
+                region.kind,
+                output.len()
+            )));
+        }
+        output.extend_from_slice(region.bytes);
+        output.resize(align_up(output.len(), REGION_ALIGNMENT)?, 0);
+    }
     let checksum_entry = entries.last().ok_or_else(|| {
         SegmentError::Geometry("missing checksum-table directory entry".to_owned())
     })?;
@@ -530,10 +586,18 @@ fn encode_regions(
     Ok(output)
 }
 
-fn encode_checksum_table(regions: &[RegionBytes]) -> Vec<u8> {
+fn encode_checksum_table(
+    regions: &[RegionBytes],
+    copied_regions: &[SegmentCopiedRegion<'_>],
+) -> Vec<u8> {
     let entry_count = regions
         .iter()
         .map(|region| region.bytes.len().div_ceil(CHECKSUM_CHUNK_BYTES))
+        .chain(
+            copied_regions
+                .iter()
+                .map(|region| region.bytes.len().div_ceil(CHECKSUM_CHUNK_BYTES)),
+        )
         .sum::<usize>();
     let mut output = Vec::with_capacity(8_usize.saturating_add(entry_count.saturating_mul(16)));
     output.extend_from_slice(&(entry_count as u32).to_le_bytes());
@@ -541,6 +605,14 @@ fn encode_checksum_table(regions: &[RegionBytes]) -> Vec<u8> {
     for region in regions {
         for (chunk_index, chunk) in region.bytes.chunks(CHECKSUM_CHUNK_BYTES).enumerate() {
             output.extend_from_slice(&region.kind.id().to_le_bytes());
+            output.extend_from_slice(&0_u16.to_le_bytes());
+            output.extend_from_slice(&(chunk_index as u32).to_le_bytes());
+            output.extend_from_slice(&xxh3_64(chunk).to_le_bytes());
+        }
+    }
+    for region in copied_regions {
+        for (chunk_index, chunk) in region.bytes.chunks(CHECKSUM_CHUNK_BYTES).enumerate() {
+            output.extend_from_slice(&region.kind.to_le_bytes());
             output.extend_from_slice(&0_u16.to_le_bytes());
             output.extend_from_slice(&(chunk_index as u32).to_le_bytes());
             output.extend_from_slice(&xxh3_64(chunk).to_le_bytes());
@@ -576,7 +648,7 @@ pub fn write_segment_with_documents(
     documents: SegmentDocumentVersions<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), None, None)?;
+    let bytes = encode_segment_inner(build, None, Some(documents), None, None, &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -589,7 +661,7 @@ pub fn write_segment_with_documents_and_metadata(
     metadata: SegmentStoredMetadata<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), None)?;
+    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), None, &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -602,7 +674,7 @@ pub fn write_segment_with_documents_and_postings(
     postings: SegmentPostings<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), None, Some(postings))?;
+    let bytes = encode_segment_inner(build, None, Some(documents), None, Some(postings), &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -617,7 +689,7 @@ pub fn write_segment_with_postings(
     postings: SegmentPostings<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, None, None, Some(postings))?;
+    let bytes = encode_segment_inner(build, None, None, None, Some(postings), &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -631,7 +703,14 @@ pub fn write_segment_with_documents_metadata_and_postings(
     postings: SegmentPostings<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), Some(postings))?;
+    let bytes = encode_segment_inner(
+        build,
+        None,
+        Some(documents),
+        Some(metadata),
+        Some(postings),
+        &[],
+    )?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -660,6 +739,42 @@ pub fn write_segment_with_graph_and_documents(
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
+/// Writes graph blocks while copying opaque source regions without reinterpretation.
+pub(crate) fn write_segment_with_graph_and_copied_regions(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    graph: GraphNodeBlockBuild<'_>,
+    documents: Option<SegmentDocumentVersions<'_>>,
+    copied_regions: &[SegmentCopiedRegion<'_>],
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    if graph.layout.dims() != build.dims {
+        return Err(SegmentError::Geometry(format!(
+            "graph dimensions {}, segment dimensions {}",
+            graph.layout.dims(),
+            build.dims
+        )));
+    }
+    if graph.nodes.len() != build.columns.row_count() as usize {
+        return Err(SegmentError::Geometry(format!(
+            "graph nodes {}, segment rows {}",
+            graph.nodes.len(),
+            build.columns.row_count()
+        )));
+    }
+    let graph_bytes = encode_node_blocks(graph)?.into_bytes();
+    let bytes = encode_segment_inner(
+        build,
+        Some(graph_bytes),
+        documents,
+        None,
+        None,
+        copied_regions,
+    )?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
 fn publish_segment(
     vfs: &dyn Vfs,
     directory: &Path,
@@ -671,32 +786,25 @@ fn publish_segment(
     let temporary_path = temporary_path(directory, build.id);
     vfs.write(&temporary_path, bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
-    let observed = vfs
-        .read(&temporary_path)
-        .map_err(|error| SegmentError::io(&temporary_path, error))?;
-    if observed != bytes {
-        let (check, detail) = if observed.len() != bytes.len() {
-            (
-                FormatCheck::FileLength,
-                format!(
-                    "temporary segment write retained {} bytes, expected {}",
-                    observed.len(),
-                    bytes.len()
-                ),
-            )
-        } else {
-            (
-                FormatCheck::FileChecksum,
-                "temporary segment bytes differ from the encoded image".to_owned(),
-            )
-        };
-        return Err(FormatError::new(temporary_path.display().to_string(), check, detail).into());
-    }
     match policy.data_file_sync() {
         SyncRequirement::Skip => {}
         SyncRequirement::Sync(kind) => vfs
             .sync(&temporary_path, kind)
             .map_err(|error| SegmentError::io(&temporary_path, error))?,
+    }
+    let expected_length = bytes.len() as u64;
+    let observed_length = vfs
+        .open(&temporary_path)
+        .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    if observed_length != expected_length {
+        return Err(FormatError::new(
+            temporary_path.display().to_string(),
+            FormatCheck::FileLength,
+            format!(
+                "temporary segment length {observed_length}, expected {expected_length} after data sync"
+            ),
+        )
+        .into());
     }
     vfs.rename(&temporary_path, &final_path)
         .map_err(|error| SegmentError::io(&final_path, error))?;
@@ -711,7 +819,7 @@ fn publish_segment(
         row_count: build.columns.row_count(),
         scheme: build.scheme,
         dims: build.dims,
-        file_size: bytes.len() as u64,
+        file_size: expected_length,
         epoch_id: None,
         clustering_key_range: super::ClusteringKeyRange::Unstamped,
     })

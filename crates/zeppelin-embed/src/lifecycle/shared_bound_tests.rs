@@ -475,7 +475,7 @@ fn a_pruned_segment_never_hides_a_winning_matching_row() {
             SearchRequest::new(&winning_vector),
             &predicate,
             K,
-            SearchOptions::default(),
+            graph_options(FILTER_ROWS),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("filtered shared-bound query");

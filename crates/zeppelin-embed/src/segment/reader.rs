@@ -304,6 +304,28 @@ impl SegmentReader {
         Ok(bytes)
     }
 
+    /// Validates and returns one source region by its numeric directory kind.
+    pub(crate) fn region_by_id(&self, kind: u16) -> Result<&[u8], SegmentError> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == kind)
+            .ok_or_else(|| {
+                SegmentError::Geometry(format!("segment is missing region kind {kind}"))
+            })?;
+        let bytes = self.region_slice(entry)?;
+        let actual = xxh3_64(bytes);
+        if actual != entry.checksum {
+            return Err(FormatError::new(
+                format!("segment:{}:region-{kind}", self.meta.id),
+                FormatCheck::BlockChecksum,
+                format!("expected {:#018x}, computed {actual:#018x}", entry.checksum),
+            )
+            .into());
+        }
+        Ok(bytes)
+    }
+
     /// Validates one 64-KB chunk and returns only that mmap-backed chunk.
     pub fn region_chunk(&self, kind: RegionKind, chunk_index: u32) -> Result<&[u8], SegmentError> {
         let entry = self.entry(kind)?;

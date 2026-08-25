@@ -16,10 +16,11 @@ use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent}
 use crate::lifecycle::{QueryControl, SnapshotLease, Store, StoreError};
 use crate::quant::{Bit4Factors, QuantError, est_dot_bit4, prepare_bit4_query};
 use crate::scan::ScanError;
+use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_graph,
-    write_segment_with_graph_and_documents,
+    SegmentBuild, SegmentCopiedRegion, SegmentDocumentVersions, SegmentFactors,
+    write_segment_with_graph_and_copied_regions,
 };
 use crate::segment::{SegmentError, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
@@ -31,6 +32,45 @@ const CHECKPOINT_VERSION: u16 = 1;
 const CHECKPOINT_HEADER_BYTES: usize = 80;
 const CHECKPOINT_CHECKSUM_BYTES: usize = 8;
 const CANCELLATION_CHECK_ROWS: usize = 64;
+
+/// How graph promotion accounts for one source directory region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GraphRewriteRegion {
+    /// The graph writer reconstructs this region from validated typed input.
+    Reencoded,
+    /// The graph writer replaces this derived region with a newly built one.
+    Replaced,
+    /// The graph writer copies the exact source version and payload bytes.
+    CopyForward,
+    /// Promotion must remain deferred because this region is not carried.
+    Unsupported,
+}
+
+/// Defines the single guard/rewrite contract for every source region kind.
+pub(crate) const fn graph_rewrite_source_region(kind: u16) -> GraphRewriteRegion {
+    match RegionKind::from_id(kind) {
+        Some(
+            RegionKind::Columns
+            | RegionKind::Alive
+            | RegionKind::VectorCodes
+            | RegionKind::VectorFactors
+            | RegionKind::VectorRescore
+            | RegionKind::DocumentVersions,
+        ) => GraphRewriteRegion::Reencoded,
+        Some(RegionKind::GraphNodeBlocks | RegionKind::ChecksumTable) => {
+            GraphRewriteRegion::Replaced
+        }
+        Some(RegionKind::Postings | RegionKind::StoredMetadata) | None => {
+            GraphRewriteRegion::CopyForward
+        }
+        Some(
+            RegionKind::GraphColocatedCodes
+            | RegionKind::SignPlane
+            | RegionKind::PdxClusteredBlocks
+            | RegionKind::VectorSpaceN,
+        ) => GraphRewriteRegion::Unsupported,
+    }
+}
 
 /// Number of alpha-pruning passes applied by one measurement/build request.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -134,29 +174,47 @@ impl GraphBuildArtifact {
             layout: decoded.layout(),
             nodes: &nodes,
         };
-        if has_documents == Some(true) {
-            write_segment_with_graph_and_documents(
-                vfs,
-                directory,
-                build,
-                graph,
-                SegmentDocumentVersions {
-                    doc_ids: &doc_ids,
-                    revisions: &revisions,
-                },
-                policy,
-            )
-            .map_err(GraphBuildError::Segment)
-        } else {
-            write_segment_with_graph(vfs, directory, build, graph, policy)
-                .map_err(GraphBuildError::Segment)
+        let documents = (has_documents == Some(true)).then_some(SegmentDocumentVersions {
+            doc_ids: &doc_ids,
+            revisions: &revisions,
+        });
+        let mut copied_regions = Vec::new();
+        for entry in input.directory() {
+            match graph_rewrite_source_region(entry.kind) {
+                GraphRewriteRegion::CopyForward => {
+                    copied_regions.push(SegmentCopiedRegion {
+                        kind: entry.kind,
+                        version: entry.version,
+                        bytes: input.region_by_id(entry.kind)?,
+                    });
+                }
+                GraphRewriteRegion::Unsupported => {
+                    return Err(GraphBuildError::Segment(SegmentError::Geometry(format!(
+                        "graph rewrite cannot carry source region kind {}",
+                        entry.kind
+                    ))));
+                }
+                GraphRewriteRegion::Reencoded | GraphRewriteRegion::Replaced => {}
+            }
         }
+        write_segment_with_graph_and_copied_regions(
+            vfs,
+            directory,
+            build,
+            graph,
+            documents,
+            &copied_regions,
+            policy,
+        )
+        .map_err(GraphBuildError::Segment)
     }
 }
 
 /// Typed failure from construction before any graph artifact is published.
 #[derive(Debug)]
 pub enum GraphBuildError {
+    /// The pinned epoch has no measured graph-construction profile.
+    Profile(crate::graph::search::GraphProfileError),
     /// Reading, replacing, or removing the resumable checkpoint failed.
     CheckpointIo {
         /// Checkpoint or checkpoint-temporary path.
@@ -208,6 +266,7 @@ pub enum GraphBuildError {
 impl std::fmt::Display for GraphBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Profile(error) => write!(formatter, "graph build {error}"),
             Self::CheckpointIo { path, source } => {
                 write!(
                     formatter,
@@ -254,6 +313,7 @@ impl std::fmt::Display for GraphBuildError {
 impl std::error::Error for GraphBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Profile(error) => Some(error),
             Self::CheckpointIo { source, .. } => Some(source),
             Self::Segment(error) => Some(error),
             Self::Quant(error) => Some(error),

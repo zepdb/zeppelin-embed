@@ -127,6 +127,8 @@ pub struct SegmentPlan {
     pub ef_requested: Option<usize>,
     /// Actual filter-aware graph width, or `None` when no traversal ran.
     pub ef_effective: Option<usize>,
+    /// Graph profile actually used, or `None` when no traversal ran.
+    pub graph_profile: Option<crate::graph::search::GraphSearchProfile>,
     /// Recursive typed node for this segment.
     pub node: PlanNode,
 }
@@ -144,6 +146,7 @@ impl SegmentPlan {
             fallback: PlanFallback::None,
             ef_requested: None,
             ef_effective: None,
+            graph_profile: None,
             node: PlanNode::Scan { source, branch },
         }
     }
@@ -153,6 +156,7 @@ impl SegmentPlan {
         cardinality: u64,
         ef_requested: Option<usize>,
         ef_effective: usize,
+        graph_profile: crate::graph::search::GraphSearchProfile,
     ) -> Self {
         Self {
             source,
@@ -164,6 +168,7 @@ impl SegmentPlan {
             fallback: PlanFallback::None,
             ef_requested,
             ef_effective: Some(ef_effective),
+            graph_profile: Some(graph_profile),
             node: PlanNode::Graph {
                 source,
                 fallback: None,
@@ -182,6 +187,7 @@ impl SegmentPlan {
             fallback: PlanFallback::None,
             ef_requested: None,
             ef_effective: None,
+            graph_profile: None,
             node: PlanNode::Scan {
                 source,
                 branch: SegmentBranch::Pruned,
@@ -205,6 +211,7 @@ impl SegmentPlan {
             fallback: PlanFallback::None,
             ef_requested: None,
             ef_effective: None,
+            graph_profile: None,
             node: PlanNode::Scan { source, branch },
         }
     }
@@ -216,6 +223,7 @@ impl SegmentPlan {
         ef_effective: usize,
         branch: SegmentBranch,
         fallback: PlanFallback,
+        graph_profile: crate::graph::search::GraphSearchProfile,
     ) -> Self {
         let (node, filter_mode, approximate) = match branch {
             SegmentBranch::FilteredGraph => (
@@ -249,6 +257,7 @@ impl SegmentPlan {
             fallback,
             ef_requested,
             ef_effective: Some(ef_effective),
+            graph_profile: Some(graph_profile),
             node,
         }
     }

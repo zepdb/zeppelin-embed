@@ -4,7 +4,10 @@ pub mod maintain;
 pub mod policy;
 pub mod thresholds;
 
-pub use maintain::{MaintenanceBudget, MaintenanceError, MaintenanceReport, MaintenanceStatus};
+pub use maintain::{
+    GraphBuildProfileReport, MaintenanceBudget, MaintenanceError, MaintenanceReport,
+    MaintenanceStatus,
+};
 pub use policy::{SegmentStats, StoreStats, TierPlan, decide};
 pub use thresholds::{PROVISIONAL_TIER_THRESHOLDS, TierThresholds};
 
