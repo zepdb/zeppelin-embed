@@ -399,7 +399,7 @@ pub extern "C" fn ze_ingest(
         run_named_panic_probe("ze_ingest");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 if request.dimension == 0 {
@@ -446,23 +446,21 @@ pub extern "C" fn ze_ingest(
                         .with_metadata(metadata),
                     );
                 }
-                registry::with_writer(handle, |access| {
-                    let ack = access
-                        .store
-                        .ingest(IngestBatch::new(documents))
-                        .map_err(FfiError::ingest)?;
-                    marshal::write_output(
-                        out_report,
-                        ZeMutationReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            sequence: ack.seq().get(),
-                            generation: ack.generation(),
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let ack = access
+                    .store
+                    .ingest(IngestBatch::new(documents))
+                    .map_err(FfiError::ingest)?;
+                marshal::write_output(
+                    out_report,
+                    ZeMutationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        sequence: ack.seq().get(),
+                        generation: ack.generation(),
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }
@@ -478,7 +476,7 @@ pub extern "C" fn ze_delete(
         run_named_panic_probe("ze_delete");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 let ids = marshal::read_slice(request.doc_ids, request.doc_id_count)?;
@@ -489,23 +487,21 @@ pub extern "C" fn ze_delete(
                     ));
                 }
                 let ids = ids.iter().copied().map(doc_id).collect::<Vec<_>>();
-                registry::with_writer(handle, |access| {
-                    let ack = access
-                        .store
-                        .delete(DeleteBatch::new(ids))
-                        .map_err(FfiError::ingest)?;
-                    marshal::write_output(
-                        out_report,
-                        ZeMutationReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            sequence: ack.seq().get(),
-                            generation: ack.generation(),
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let ack = access
+                    .store
+                    .delete(DeleteBatch::new(ids))
+                    .map_err(FfiError::ingest)?;
+                marshal::write_output(
+                    out_report,
+                    ZeMutationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        sequence: ack.seq().get(),
+                        generation: ack.generation(),
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }
@@ -648,7 +644,7 @@ pub extern "C" fn ze_seal(
         run_named_panic_probe("ze_seal");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 let cancel = if request.cancel_token == 0 {
@@ -656,23 +652,21 @@ pub extern "C" fn ze_seal(
                 } else {
                     Some(registry::lookup_cancel(request.cancel_token)?)
                 };
-                registry::with_writer(handle, |access| {
-                    let generation = match cancel.as_ref() {
-                        Some(cancel) => access.store.seal_with_cancel(cancel),
-                        None => access.store.seal(),
-                    }
-                    .map_err(FfiError::store)?;
-                    marshal::write_output(
-                        out_report,
-                        ZeGenerationReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            generation,
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let generation = match cancel.as_ref() {
+                    Some(cancel) => access.store.seal_with_cancel(cancel),
+                    None => access.store.seal(),
+                }
+                .map_err(FfiError::store)?;
+                marshal::write_output(
+                    out_report,
+                    ZeGenerationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation,
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }
@@ -709,7 +703,7 @@ pub extern "C" fn ze_drop_partition(
         run_named_panic_probe("ze_drop_partition");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 if request.start_ts >= request.end_ts {
@@ -717,14 +711,12 @@ pub extern "C" fn ze_drop_partition(
                         "partition range must be a nonempty half-open interval",
                     ));
                 }
-                registry::with_writer(handle, |access| {
-                    let report = access
-                        .store
-                        .drop_partition(request.start_ts..request.end_ts)
-                        .map_err(FfiError::store)?;
-                    write_partition_report(out_report, abi_size, report)
-                })
-            })(),
+                let report = access
+                    .store
+                    .drop_partition(request.start_ts..request.end_ts)
+                    .map_err(FfiError::store)?;
+                write_partition_report(out_report, abi_size, report)
+            }),
         )
     })
 }
@@ -740,19 +732,17 @@ pub extern "C" fn ze_apply_retention(
         run_named_panic_probe("ze_apply_retention");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 let policy = zeppelin_embed::ingest::RetentionPolicy::new(request.window)
                     .map_err(|error| FfiError::invalid(error.to_string()))?;
-                registry::with_writer(handle, |access| {
-                    let report = access
-                        .store
-                        .apply_retention(policy, request.now_ts)
-                        .map_err(FfiError::store)?;
-                    write_partition_report(out_report, abi_size, report)
-                })
-            })(),
+                let report = access
+                    .store
+                    .apply_retention(policy, request.now_ts)
+                    .map_err(FfiError::store)?;
+                write_partition_report(out_report, abi_size, report)
+            }),
         )
     })
 }
@@ -768,7 +758,7 @@ pub extern "C" fn ze_purge(
         run_named_panic_probe("ze_purge");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 let ids = marshal::read_slice(request.doc_ids, request.doc_id_count)?;
@@ -779,37 +769,32 @@ pub extern "C" fn ze_purge(
                     ));
                 }
                 let ids = ids.iter().copied().map(doc_id).collect::<Vec<_>>();
-                registry::with_writer(handle, |access| {
-                    let token = access.store.purge(&ids).map_err(FfiError::purge)?;
-                    let token_id = token.id();
-                    access
-                        .purge_tokens
-                        .lock()
-                        .map_err(|_| {
-                            FfiError::new(
-                                ZeErrorCode::Synchronization,
-                                "purge-token registry mutex is poisoned",
-                            )
-                        })?
-                        .insert(token_id, token.clone());
-                    marshal::write_output(
-                        out_report,
-                        ZePurgeTokenReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            token_id,
-                            generation: token.generation(),
-                            unknown_id_count: usize_u64(
-                                token.unknown_ids().len(),
-                                "unknown_id_count",
-                            )?,
-                            is_no_op: bool_u32(token.is_no_op()),
-                            reserved: 0,
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let token = access.store.purge(&ids).map_err(FfiError::purge)?;
+                let token_id = token.id();
+                access
+                    .purge_tokens
+                    .lock()
+                    .map_err(|_| {
+                        FfiError::new(
+                            ZeErrorCode::Synchronization,
+                            "purge-token registry mutex is poisoned",
+                        )
+                    })?
+                    .insert(token_id, token.clone());
+                marshal::write_output(
+                    out_report,
+                    ZePurgeTokenReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        token_id,
+                        generation: token.generation(),
+                        unknown_id_count: usize_u64(token.unknown_ids().len(), "unknown_id_count")?,
+                        is_no_op: bool_u32(token.is_no_op()),
+                        reserved: 0,
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }
@@ -825,59 +810,55 @@ pub extern "C" fn ze_await_physical_purge(
         run_named_panic_probe("ze_await_physical_purge");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
-                registry::with_writer(handle, |access| {
-                    let token = access
-                        .purge_tokens
-                        .lock()
-                        .map_err(|_| {
-                            FfiError::new(
-                                ZeErrorCode::Synchronization,
-                                "purge-token registry mutex is poisoned",
-                            )
-                        })?
-                        .get(&request.token_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            FfiError::invalid("purge token is unknown for this handle")
-                        })?;
-                    let report = access
-                        .store
-                        .await_physical_purge(token)
-                        .map_err(FfiError::purge)?;
-                    access
-                        .purge_tokens
-                        .lock()
-                        .map_err(|_| {
-                            FfiError::new(
-                                ZeErrorCode::Synchronization,
-                                "purge-token registry mutex is poisoned",
-                            )
-                        })?
-                        .remove(&request.token_id);
-                    marshal::write_output(
-                        out_report,
-                        ZePurgeReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            generation: report.generation(),
-                            segments_rewritten: usize_u64(
-                                report.segments_rewritten(),
-                                "segments_rewritten",
-                            )?,
-                            unknown_id_count: usize_u64(
-                                report.unknown_ids().len(),
-                                "unknown_id_count",
-                            )?,
-                            wal_rewritten: bool_u32(report.wal_rewritten()),
-                            is_no_op: bool_u32(report.is_no_op()),
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let token = access
+                    .purge_tokens
+                    .lock()
+                    .map_err(|_| {
+                        FfiError::new(
+                            ZeErrorCode::Synchronization,
+                            "purge-token registry mutex is poisoned",
+                        )
+                    })?
+                    .get(&request.token_id)
+                    .cloned()
+                    .ok_or_else(|| FfiError::invalid("purge token is unknown for this handle"))?;
+                let report = access
+                    .store
+                    .await_physical_purge(token)
+                    .map_err(FfiError::purge)?;
+                access
+                    .purge_tokens
+                    .lock()
+                    .map_err(|_| {
+                        FfiError::new(
+                            ZeErrorCode::Synchronization,
+                            "purge-token registry mutex is poisoned",
+                        )
+                    })?
+                    .remove(&request.token_id);
+                marshal::write_output(
+                    out_report,
+                    ZePurgeReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation: report.generation(),
+                        segments_rewritten: usize_u64(
+                            report.segments_rewritten(),
+                            "segments_rewritten",
+                        )?,
+                        unknown_id_count: usize_u64(
+                            report.unknown_ids().len(),
+                            "unknown_id_count",
+                        )?,
+                        wal_rewritten: bool_u32(report.wal_rewritten()),
+                        is_no_op: bool_u32(report.is_no_op()),
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }
@@ -893,36 +874,34 @@ pub extern "C" fn ze_maintain(
         run_named_panic_probe("ze_maintain");
         finish(
             Some(handle),
-            (|| {
+            registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
-                registry::with_writer(handle, |access| {
-                    let report = access.store.maintain(MaintenanceBudget {
-                        wall_time: Duration::from_nanos(request.wall_time_ns),
-                        bytes: request.bytes,
-                    });
-                    let status = match report.status {
-                        MaintenanceStatus::Complete => 0,
-                        MaintenanceStatus::BudgetExhausted => 1,
-                        MaintenanceStatus::Failed(error) => {
-                            return Err(FfiError::maintenance(error));
-                        }
-                    };
-                    marshal::write_output(
-                        out_report,
-                        ZeMaintainReport {
-                            abi_size,
-                            abi_reserved: 0,
-                            graphs_built: report.graphs_built,
-                            bytes_consumed: report.bytes_consumed,
-                            checkpoints_resumed: report.checkpoints_resumed,
-                            status,
-                            reserved: 0,
-                        },
-                    );
-                    Ok(())
-                })
-            })(),
+                let report = access.store.maintain(MaintenanceBudget {
+                    wall_time: Duration::from_nanos(request.wall_time_ns),
+                    bytes: request.bytes,
+                });
+                let status = match report.status {
+                    MaintenanceStatus::Complete => 0,
+                    MaintenanceStatus::BudgetExhausted => 1,
+                    MaintenanceStatus::Failed(error) => {
+                        return Err(FfiError::maintenance(error));
+                    }
+                };
+                marshal::write_output(
+                    out_report,
+                    ZeMaintainReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        graphs_built: report.graphs_built,
+                        bytes_consumed: report.bytes_consumed,
+                        checkpoints_resumed: report.checkpoints_resumed,
+                        status,
+                        reserved: 0,
+                    },
+                );
+                Ok(())
+            }),
         )
     })
 }

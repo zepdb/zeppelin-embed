@@ -5,6 +5,13 @@ use std::process::Command;
 
 use zeppelin_embed_ffi::*;
 
+fn process_sensitive_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("process-sensitive test mutex")
+}
+
 #[test]
 fn error_codes_are_append_only() {
     let codes = [
@@ -138,6 +145,7 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
 
 #[test]
 fn use_after_close_double_close_and_a_stale_generation_each_return_typed_errors() {
+    let _process_guard = process_sensitive_lock();
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("store");
     let (code, first) = common::open_path(&path);
@@ -211,8 +219,17 @@ fn trigger_panic(handle: ZeHandle) -> ZeErrorCode {
     ze_search(handle, &request, &mut result)
 }
 
+#[cfg(feature = "abi-panic-probe")]
+fn arm_named_panic(entry_point: &'static str) {
+    zeppelin_embed_ffi::arm_abi_panic_probe(entry_point);
+}
+
+#[cfg(not(feature = "abi-panic-probe"))]
+fn arm_named_panic(_entry_point: &'static str) {}
+
 #[test]
 fn a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives() {
+    let _process_guard = process_sensitive_lock();
     const NAME: &str =
         "a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives";
     if delegate_to_panic_feature(NAME) {
@@ -389,6 +406,7 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
 
 #[test]
 fn every_entry_point_returns_ze_err_poisoned_after_a_caught_panic() {
+    let _process_guard = process_sensitive_lock();
     const NAME: &str = "every_entry_point_returns_ze_err_poisoned_after_a_caught_panic";
     if delegate_to_panic_feature(NAME) {
         return;
@@ -397,7 +415,7 @@ fn every_entry_point_returns_ze_err_poisoned_after_a_caught_panic() {
     assert_eq!(table.len(), POISON_TABLE_NAMES.len());
     for (name, call) in table {
         let mut context = PoisonContext::new();
-        zeppelin_embed_ffi::arm_abi_panic_probe(name);
+        arm_named_panic(name);
         assert_eq!(
             call(&mut context),
             ZeErrorCode::Panic,
@@ -463,6 +481,7 @@ fn a_second_concurrent_writer_call_returns_ze_err_busy() {
         common::ingest_rows(handle, 500, 256)
     });
     started_rx.recv().expect("writer start");
+    std::thread::sleep(std::time::Duration::from_millis(1));
 
     let request = ZeMaintainRequest {
         abi_size: size_of::<ZeMaintainRequest>() as u32,
@@ -494,6 +513,7 @@ fn a_second_concurrent_writer_call_returns_ze_err_busy() {
 
 #[test]
 fn a_second_process_opening_the_same_path_gets_store_busy() {
+    let _process_guard = process_sensitive_lock();
     const NAME: &str = "a_second_process_opening_the_same_path_gets_store_busy";
     if let Some(path) = std::env::var_os("ZE_STORE_BUSY_CHILD_PATH") {
         let (code, handle) = common::open_path(std::path::Path::new(&path));
@@ -564,4 +584,112 @@ fn a_deadline_mid_query_returns_typed_timeout_through_the_boundary() {
     );
     assert_eq!(result.hit_count, 0);
     assert!(result.hits.is_null());
+}
+
+#[test]
+fn search_result_ownership_and_the_phase_one_engine_seams_are_real() {
+    let store = common::TestStore::new();
+    let mut state: ZeStateReport = common::sized_zeroed();
+    assert_eq!(ze_state(store.handle, &mut state), ZeErrorCode::Ok);
+    assert_eq!(state.state, 0);
+    let mut stats: ZeStatsReport = common::sized_zeroed();
+    assert_eq!(ze_stats(store.handle, &mut stats), ZeErrorCode::Ok);
+
+    assert_eq!(common::ingest_rows(store.handle, 2, 4), ZeErrorCode::Ok);
+    let deleted = [ZeDocId { high: 0, low: 1 }];
+    let delete = ZeDeleteRequest {
+        abi_size: size_of::<ZeDeleteRequest>() as u32,
+        abi_reserved: 0,
+        doc_ids: deleted.as_ptr(),
+        doc_id_count: deleted.len(),
+    };
+    let mut mutation: ZeMutationReport = common::sized_zeroed();
+    assert_eq!(
+        ze_delete(store.handle, &delete, &mut mutation),
+        ZeErrorCode::Ok
+    );
+    let vector = vec![0.25_f32; 4];
+    let request = common::valid_search_request(&vector);
+    let mut result: ZeSearchResult = common::sized_zeroed();
+    assert_eq!(
+        ze_search(store.handle, &request, &mut result),
+        ZeErrorCode::Ok
+    );
+    assert_eq!(result.hit_count, 1);
+    assert!(!result.hits.is_null());
+    assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::Ok);
+    assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::Ok);
+    let mut zeroed: ZeSearchResult = unsafe { std::mem::zeroed() };
+    assert_eq!(ze_search_result_free(&mut zeroed), ZeErrorCode::Ok);
+
+    let seal = ZeSealRequest {
+        abi_size: size_of::<ZeSealRequest>() as u32,
+        abi_reserved: 0,
+        cancel_token: 0,
+    };
+    let mut generation: ZeGenerationReport = common::sized_zeroed();
+    assert_eq!(
+        ze_seal(store.handle, &seal, &mut generation),
+        ZeErrorCode::Ok
+    );
+
+    let drop_request = ZeDropPartitionRequest {
+        abi_size: size_of::<ZeDropPartitionRequest>() as u32,
+        abi_reserved: 0,
+        start_ts: i64::MIN,
+        end_ts: 1,
+    };
+    let mut partition: ZePartitionReport = common::sized_zeroed();
+    assert_eq!(
+        ze_drop_partition(store.handle, &drop_request, &mut partition),
+        ZeErrorCode::Ok
+    );
+
+    let retention = ZeRetentionRequest {
+        abi_size: size_of::<ZeRetentionRequest>() as u32,
+        abi_reserved: 0,
+        window: 10,
+        now_ts: 10,
+    };
+    assert_eq!(
+        ze_apply_retention(store.handle, &retention, &mut partition),
+        ZeErrorCode::Ok
+    );
+
+    let ids = [ZeDocId {
+        high: u64::MAX,
+        low: u64::MAX,
+    }];
+    let purge = ZePurgeRequest {
+        abi_size: size_of::<ZePurgeRequest>() as u32,
+        abi_reserved: 0,
+        doc_ids: ids.as_ptr(),
+        doc_id_count: ids.len(),
+    };
+    let mut token: ZePurgeTokenReport = common::sized_zeroed();
+    assert_eq!(ze_purge(store.handle, &purge, &mut token), ZeErrorCode::Ok);
+    assert_eq!(token.is_no_op, 1);
+    let await_request = ZeAwaitPurgeRequest {
+        abi_size: size_of::<ZeAwaitPurgeRequest>() as u32,
+        abi_reserved: 0,
+        token_id: token.token_id,
+    };
+    let mut purge_report: ZePurgeReport = common::sized_zeroed();
+    assert_eq!(
+        ze_await_physical_purge(store.handle, &await_request, &mut purge_report),
+        ZeErrorCode::Ok
+    );
+
+    let maintain = ZeMaintainRequest {
+        abi_size: size_of::<ZeMaintainRequest>() as u32,
+        abi_reserved: 0,
+        wall_time_ns: 0,
+        bytes: 0,
+    };
+    let mut maintenance: ZeMaintainReport = common::sized_zeroed();
+    assert_eq!(
+        ze_maintain(store.handle, &maintain, &mut maintenance),
+        ZeErrorCode::Ok
+    );
+    assert_eq!(maintenance.status, 1);
 }

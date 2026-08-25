@@ -13,7 +13,7 @@ default = []
 abi-panic-probe = []
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -171,4 +171,18 @@ fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
     assert!(measured > 0, "zero crate source objects measured");
     assert_eq!(declared, allowlist, "header and allowlist differ");
     assert_eq!(exported, allowlist, "staticlib and allowlist differ");
+
+    let source = std::fs::read_to_string(crate_dir.join("src/lib.rs")).expect("FFI source");
+    for function in &allowlist {
+        let marker = format!("fn {function}");
+        let start = source.find(&marker).expect("exported function definition");
+        let remainder = &source[start..];
+        let end = remainder
+            .find("#[unsafe(no_mangle)]")
+            .unwrap_or(remainder.len());
+        assert!(
+            remainder[..end].contains("ffi_entry!("),
+            "{function} omitted the sole catch_unwind wrapper macro"
+        );
+    }
 }
