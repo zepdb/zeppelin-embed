@@ -93,14 +93,18 @@ fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
         .and_then(Path::parent)
         .expect("workspace root");
     let archive = workspace.join("target/release/libzeppelin_embed_ffi.a");
-    if !archive.is_file() {
-        let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
-            .current_dir(workspace)
-            .args(["build", "-p", "zeppelin-embed-ffi", "--release"])
-            .status()
-            .expect("build FFI staticlib");
-        assert!(status.success(), "release staticlib build failed");
-    }
+    // Always rebuild. Reusing an existing archive measures whatever bytes a
+    // previous run happened to leave behind, so a newly exported symbol is
+    // invisible to this gate on any machine with a warm `target/release` --
+    // the drift gate then reports green about source it never read. The
+    // rebuild is incremental and is a no-op when nothing changed.
+    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+        .current_dir(workspace)
+        .args(["build", "-p", "zeppelin-embed-ffi", "--release"])
+        .status()
+        .expect("build FFI staticlib");
+    assert!(status.success(), "release staticlib build failed");
+    assert!(archive.is_file(), "release staticlib missing after build");
 
     let header = std::fs::read_to_string(crate_dir.join("include/zeppelin_embed.h"))
         .expect("committed header");
