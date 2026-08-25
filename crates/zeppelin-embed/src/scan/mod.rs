@@ -332,6 +332,50 @@ pub fn top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, S
     candidate_stream(request).pull(k)
 }
 
+/// Forces the planner's gather executor for threshold calibration.
+///
+/// This seam is available only to repository test and benchmark tooling. It
+/// keeps calibration on the shipping gather implementation without making a
+/// forced execution branch part of the product API.
+#[cfg(any(test, feature = "test-support"))]
+pub fn calibration_gather_top_k(
+    query: ScanQuery<'_>,
+    rows: ScanRows<'_>,
+    allow_list: &crate::meta::DocBitmap,
+    k: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
+    Ok(gather_top_k(
+        ScanRequest {
+            query,
+            rows,
+            row_mask: Some(allow_list.as_roaring()),
+        },
+        k,
+        None,
+    )?
+    .candidates)
+}
+
+/// Forces the planner's masked full-sweep executor for threshold calibration.
+///
+/// This seam is available only to repository test and benchmark tooling.
+#[cfg(any(test, feature = "test-support"))]
+pub fn calibration_masked_top_k(
+    query: ScanQuery<'_>,
+    rows: ScanRows<'_>,
+    allow_list: &crate::meta::DocBitmap,
+    k: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
+    scan_top_k(
+        ScanRequest {
+            query,
+            rows,
+            row_mask: Some(allow_list.as_roaring()),
+        },
+        k,
+    )
+}
+
 fn scan_top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, ScanError> {
     match (request.query, request.rows) {
         (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {

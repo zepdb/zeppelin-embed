@@ -13,7 +13,7 @@ use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnType,
-    ColumnValue, Predicate, PredicateValue, RangeBound, RangePredicate, Schema, TIMESTAMP_COLUMN,
+    ColumnValue, Predicate, PredicateValue, RangeBound, RangePredicate, Schema,
 };
 use zeppelin_embed::planner::{SegmentBranch, SegmentTier};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4, quantize_int8};
@@ -57,10 +57,6 @@ impl PredicateOp {
         Self::Not,
     ];
 
-    const fn supports_timestamp_only(self) -> bool {
-        !matches!(self, Self::Exists | Self::IsNull)
-    }
-
     fn predicate(self, column: ColumnId) -> Predicate {
         let eq = |value| Predicate::Eq {
             column,
@@ -87,34 +83,6 @@ impl PredicateOp {
             Self::And => Predicate::And(vec![eq(1), Predicate::Exists(column)]),
             Self::Or => Predicate::Or(vec![eq(1), eq(2)]),
             Self::Not => Predicate::Not(Box::new(eq(0))),
-        }
-    }
-
-    fn timestamp_predicate(self) -> Predicate {
-        let eq = |value| Predicate::Eq {
-            column: TIMESTAMP_COLUMN,
-            value: PredicateValue::I64(value),
-        };
-        match self {
-            Self::Eq => eq(1),
-            Self::In => Predicate::In {
-                column: TIMESTAMP_COLUMN,
-                values: vec![PredicateValue::I64(1), PredicateValue::I64(2)],
-            },
-            Self::RangeTwoSided => Predicate::Range(RangePredicate {
-                column: TIMESTAMP_COLUMN,
-                lower: Some(RangeBound::inclusive(PredicateValue::I64(1))),
-                upper: Some(RangeBound::inclusive(PredicateValue::I64(1))),
-            }),
-            Self::RangeHalfOpen => Predicate::Range(RangePredicate {
-                column: TIMESTAMP_COLUMN,
-                lower: Some(RangeBound::inclusive(PredicateValue::I64(1))),
-                upper: None,
-            }),
-            Self::And => Predicate::And(vec![eq(1), Predicate::Exists(TIMESTAMP_COLUMN)]),
-            Self::Or => Predicate::Or(vec![eq(1), eq(2)]),
-            Self::Not => Predicate::Not(Box::new(eq(0))),
-            Self::Exists | Self::IsNull => unreachable!("registered as skipped for public ingest"),
         }
     }
 }
@@ -162,11 +130,10 @@ impl StoreState {
 enum SkipReason {
     TierStateNotRepresentable,
     PublicIngestHasNoQuantSelection,
-    NonTimestampColumnNeedsOwnerD2,
 }
 
 fn skip_reason(
-    op: PredicateOp,
+    _op: PredicateOp,
     tier: Tier,
     scheme: QuantScheme,
     state: StoreState,
@@ -190,13 +157,6 @@ fn skip_reason(
     ) && scheme != QuantScheme::Bit4
     {
         return Some(SkipReason::PublicIngestHasNoQuantSelection);
-    }
-    if matches!(
-        state,
-        StoreState::PublicIngestActive | StoreState::PublicIngestReopened
-    ) && !op.supports_timestamp_only()
-    {
-        return Some(SkipReason::NonTimestampColumnNeedsOwnerD2);
     }
     None
 }
@@ -267,41 +227,33 @@ fn every_registered_filter_cell_is_exact_or_counted_as_skipped() {
         }
     }
 
-    for target in TARGETS {
-        let fixture = tempdir().expect("public-ingest fixture");
-        let store = Store::open(fixture.path(), OpenOptions::default()).expect("open ingest");
-        ingest_public_rows(&store, target);
-        for op in PredicateOp::ALL
-            .into_iter()
-            .filter(|op| op.supports_timestamp_only())
-        {
+    for op in PredicateOp::ALL {
+        for target in TARGETS {
+            let fixture = tempdir().expect("public-ingest fixture");
+            let store = Store::open(
+                fixture.path(),
+                OpenOptions::default().with_schema(filter_schema()),
+            )
+            .expect("open ingest");
+            ingest_public_rows(&store, op, target);
             assert_public_cell(&store, op, target, SegmentTier::ActiveScan);
             ran += 1;
-        }
-        store.seal().expect("seal public-ingest rows");
-        store.close().expect("close ingested store");
-        let reopened = Store::open(fixture.path(), OpenOptions::default()).expect("reopen ingest");
-        for op in PredicateOp::ALL
-            .into_iter()
-            .filter(|op| op.supports_timestamp_only())
-        {
+            store.seal().expect("seal public-ingest rows");
+            store.close().expect("close ingested store");
+            let reopened =
+                Store::open(fixture.path(), OpenOptions::default()).expect("reopen ingest");
             assert_public_cell(&reopened, op, target, SegmentTier::SealedScan);
             ran += 1;
-        }
-        reopened.close().expect("close public reopened");
+            reopened.close().expect("close public reopened");
 
-        promote_public_fixture_to_graph(&fixture);
-        let graph_reopened =
-            Store::open(fixture.path(), OpenOptions::default()).expect("reopen public graph");
-        for op in PredicateOp::ALL
-            .into_iter()
-            .filter(|op| op.supports_timestamp_only())
-        {
+            promote_public_fixture_to_graph(&fixture);
+            let graph_reopened =
+                Store::open(fixture.path(), OpenOptions::default()).expect("reopen public graph");
             assert_public_cell(&graph_reopened, op, target, SegmentTier::SealedGraph);
             ran += 1;
             graph_ran += 1;
+            graph_reopened.close().expect("close public graph");
         }
-        graph_reopened.close().expect("close public graph");
     }
 
     let skipped_count = skipped.values().sum::<usize>();
@@ -313,47 +265,42 @@ fn every_registered_filter_cell_is_exact_or_counted_as_skipped() {
         "FILTERED_GRAPH_M6 previous_skipped=648 ran={graph_ran} still_skipped={graph_skipped_count} reasons={graph_skipped:?}"
     );
     assert_eq!(registered, 1_944);
-    assert_eq!(expected_run, 774);
+    assert_eq!(expected_run, 810);
     assert_eq!(graph_ran, expected_graph_run);
-    assert_eq!(graph_ran, 366);
-    assert_eq!(graph_skipped_count, 282);
+    assert_eq!(graph_ran, 378);
+    assert_eq!(graph_skipped_count, 270);
     assert_eq!(ran, expected_run);
     assert_eq!(registered, ran + skipped_count);
 }
 
 fn writer_columns(op: PredicateOp, target: usize) -> ColumnStore {
-    let schema = Schema::new(vec![ColumnDefinition::new(
-        FILTER_COLUMN,
-        "filter",
-        ColumnType::U64,
-        true,
-    )])
-    .expect("writer schema");
-    let mut builder = ColumnStoreBuilder::new(schema);
+    let mut builder = ColumnStoreBuilder::new(filter_schema());
     for row in 0..ROWS {
-        let input = match op {
-            PredicateOp::Exists => row_is_selected(row, target).then_some(1_u64),
-            PredicateOp::IsNull => (!row_is_selected(row, target)).then_some(0_u64),
-            PredicateOp::Eq
-            | PredicateOp::In
-            | PredicateOp::RangeTwoSided
-            | PredicateOp::RangeHalfOpen
-            | PredicateOp::And
-            | PredicateOp::Or
-            | PredicateOp::Not => Some(u64::from(row_is_selected(row, target))),
-        };
-        let inputs = input
-            .map(|value| ColumnInput {
-                column: FILTER_COLUMN,
-                value: ColumnValue::U64(value),
-            })
+        let inputs = public_column_values(op, row, target)
             .into_iter()
+            .map(|(column, value)| ColumnInput {
+                column,
+                value: match value {
+                    PredicateValue::U64(value) => ColumnValue::U64(value),
+                    _ => unreachable!("matrix fixture uses only u64 filter values"),
+                },
+            })
             .collect::<Vec<_>>();
         builder
             .push_row(row as i64, &inputs)
             .expect("writer metadata row");
     }
     builder.finish().expect("writer columns")
+}
+
+fn filter_schema() -> Schema {
+    Schema::new(vec![ColumnDefinition::new(
+        FILTER_COLUMN,
+        "filter",
+        ColumnType::U64,
+        true,
+    )])
+    .expect("filter schema")
 }
 
 fn fixture_vectors() -> Vec<f32> {
@@ -687,7 +634,7 @@ fn assert_writer_graph_cell(store: &Store, op: PredicateOp, target: usize) {
     }
 }
 
-fn ingest_public_rows(store: &Store, target: usize) {
+fn ingest_public_rows(store: &Store, op: PredicateOp, target: usize) {
     let documents = (0..ROWS)
         .map(|row| {
             IngestDocument::new(
@@ -695,6 +642,7 @@ fn ingest_public_rows(store: &Store, target: usize) {
                 vec![row as f32 / ROWS as f32, 1.0],
             )
             .with_timestamp(i64::from(row_is_selected(row, target)))
+            .with_columns(public_column_values(op, row, target))
         })
         .collect::<Vec<_>>();
     store
@@ -706,7 +654,7 @@ fn assert_public_cell(store: &Store, op: PredicateOp, target: usize, tier: Segme
     let outcome = store
         .search_filtered(
             SearchRequest::new(&QUERY),
-            &op.timestamp_predicate(),
+            &op.predicate(FILTER_COLUMN),
             ROWS,
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
@@ -716,6 +664,28 @@ fn assert_public_cell(store: &Store, op: PredicateOp, target: usize, tier: Segme
     assert_eq!(outcome.plans.len(), 1);
     assert_eq!(outcome.plans[0].tier, tier);
     assert_eq!(outcome.plans[0].filter_cardinality, target as u64);
+}
+
+fn public_column_values(
+    op: PredicateOp,
+    row: usize,
+    target: usize,
+) -> Vec<(ColumnId, PredicateValue)> {
+    let value = match op {
+        PredicateOp::Exists => row_is_selected(row, target).then_some(1_u64),
+        PredicateOp::IsNull => (!row_is_selected(row, target)).then_some(0_u64),
+        PredicateOp::Eq
+        | PredicateOp::In
+        | PredicateOp::RangeTwoSided
+        | PredicateOp::RangeHalfOpen
+        | PredicateOp::And
+        | PredicateOp::Or
+        | PredicateOp::Not => Some(u64::from(row_is_selected(row, target))),
+    };
+    value
+        .map(|value| (FILTER_COLUMN, PredicateValue::U64(value)))
+        .into_iter()
+        .collect()
 }
 
 fn assert_exact_rows(
