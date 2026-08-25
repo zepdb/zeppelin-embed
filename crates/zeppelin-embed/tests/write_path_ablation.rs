@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use zeppelin_embed::format::frame::FormatCheck;
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::manifest::io::{
     MANIFEST_FILE, MANIFEST_TEMP_FILE, commit_manifest, load_manifest,
@@ -94,6 +95,53 @@ fn seed_segment_store(id: SegmentId) -> MemoryVfs {
         )
         .expect("stale segment temp");
     store
+}
+
+#[derive(Clone)]
+struct TruncatingWriteVfs {
+    inner: MemoryVfs,
+}
+
+impl Vfs for TruncatingWriteVfs {
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner
+            .write(path, bytes.get(..bytes.len() / 2).unwrap_or_default())
+    }
+
+    fn open_append(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<Box<dyn zeppelin_embed::vfs::VfsFile>> {
+        self.inner.open_append(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.delete(path)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -451,6 +499,37 @@ fn write_segment_ablation_all_steps_matches_production() {
         "segment ablation is void unless ALL steps exactly match production\n  ablation: {:?}\n production: {:?}",
         operation_summaries(&ablation_operations),
         operation_summaries(&production_operations)
+    );
+}
+
+#[test]
+fn bl_136_corrupt_temporary_segment_is_not_published() {
+    let id = SegmentId::new(11, [11; 10]);
+    let columns = ColumnStoreBuilder::new(schema()).finish().expect("columns");
+    let alive = AliveSet::new(0);
+    let inner = MemoryVfs::new();
+    let vfs = TruncatingWriteVfs {
+        inner: inner.clone(),
+    };
+
+    let error = write_segment(
+        &vfs,
+        directory(),
+        empty_segment_build(id, &columns, &alive),
+        policy(DurabilityMode::Durable, CommitTier::None),
+    )
+    .expect_err("truncated temporary segment must not publish");
+
+    assert!(
+        matches!(error, SegmentError::Format(ref error) if error.check() == FormatCheck::FileLength),
+        "wrong publication failure: {error}"
+    );
+    assert_eq!(
+        inner
+            .read(&directory().join(id.file_name()))
+            .expect_err("corrupt segment must remain unpublished")
+            .kind(),
+        std::io::ErrorKind::NotFound
     );
 }
 

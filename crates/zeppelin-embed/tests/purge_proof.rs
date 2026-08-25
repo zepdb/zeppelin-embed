@@ -349,6 +349,37 @@ fn active_only_purge_compacts_rows_preserves_tombstones_and_reopens() {
 }
 
 #[test]
+fn bl_135_purge_persists_acked_generation_with_nonempty_wal() {
+    let directory = tempdir().expect("BL-135 purge directory");
+    let removed = DocId::new(851);
+    let retained = DocumentVersion::new(DocId::new(852), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(removed, Revision::new(1)),
+                vec![1.0, 0.0],
+            ),
+            IngestDocument::new(retained, vec![0.0, 1.0]),
+        ]))
+        .expect("ingest active rows");
+
+    let token = store.purge(&[removed]).expect("schedule active purge");
+    let acknowledged = store
+        .await_physical_purge(token)
+        .expect("complete active purge")
+        .generation();
+    store.close().expect("close purged store");
+
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+    assert!(
+        reopened.snapshot().expect("reopened snapshot").generation() >= acknowledged,
+        "reopen regressed below the acknowledged purge generation"
+    );
+    assert_eq!(search_one(&reopened, &[0.0, 1.0]).document(), Some(retained));
+}
+
+#[test]
 fn int8_physical_purge_preserves_surviving_codes_and_tombstones() {
     let directory = tempdir().expect("Int8 purge directory");
     let (first, removed, deleted) = publish_int8_document_segment(directory.path());

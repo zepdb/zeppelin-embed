@@ -645,7 +645,7 @@ impl Store {
             active_state.segment.purge(&[], &self.accounting)?.0
         };
         let (records, tombstoned) = active_wal_records(&next_active)?;
-        if records.is_empty() && manifest.generation < active_state.generation {
+        if manifest.generation < active_state.generation {
             manifest.generation = active_state.generation;
             manifest.epochs = self.epoch_registry(&manifest.epochs);
             let remapped =
