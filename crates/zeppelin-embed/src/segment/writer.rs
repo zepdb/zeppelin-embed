@@ -786,25 +786,32 @@ fn publish_segment(
     let temporary_path = temporary_path(directory, build.id);
     vfs.write(&temporary_path, bytes)
         .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    let observed = vfs
+        .read(&temporary_path)
+        .map_err(|error| SegmentError::io(&temporary_path, error))?;
+    if observed != bytes {
+        let (check, detail) = if observed.len() != bytes.len() {
+            (
+                FormatCheck::FileLength,
+                format!(
+                    "temporary segment write retained {} bytes, expected {}",
+                    observed.len(),
+                    bytes.len()
+                ),
+            )
+        } else {
+            (
+                FormatCheck::FileChecksum,
+                "temporary segment bytes differ from the encoded image".to_owned(),
+            )
+        };
+        return Err(FormatError::new(temporary_path.display().to_string(), check, detail).into());
+    }
     match policy.data_file_sync() {
         SyncRequirement::Skip => {}
         SyncRequirement::Sync(kind) => vfs
             .sync(&temporary_path, kind)
             .map_err(|error| SegmentError::io(&temporary_path, error))?,
-    }
-    let expected_length = bytes.len() as u64;
-    let observed_length = vfs
-        .open(&temporary_path)
-        .map_err(|error| SegmentError::io(&temporary_path, error))?;
-    if observed_length != expected_length {
-        return Err(FormatError::new(
-            temporary_path.display().to_string(),
-            FormatCheck::FileLength,
-            format!(
-                "temporary segment length {observed_length}, expected {expected_length} after data sync"
-            ),
-        )
-        .into());
     }
     vfs.rename(&temporary_path, &final_path)
         .map_err(|error| SegmentError::io(&final_path, error))?;
@@ -819,7 +826,7 @@ fn publish_segment(
         row_count: build.columns.row_count(),
         scheme: build.scheme,
         dims: build.dims,
-        file_size: expected_length,
+        file_size: bytes.len() as u64,
         epoch_id: None,
         clustering_key_range: super::ClusteringKeyRange::Unstamped,
     })
