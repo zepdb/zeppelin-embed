@@ -2032,7 +2032,10 @@ mod tests {
                 .all(|candidate| candidate.row_id() != 4),
             "the exact nearest row is planted outside the effective alive-and-filter mask"
         );
-        assert_eq!(result.counters().candidates_rescored(), allowed.cardinality() as usize);
+        assert_eq!(
+            result.counters().candidates_rescored(),
+            allowed.cardinality() as usize
+        );
 
         let mut seeded = crate::test_support::seeded_rng(
             "graph::search::tests::every_filtered_graph_result_satisfies_the_predicate_and_is_alive",
