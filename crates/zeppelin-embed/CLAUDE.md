@@ -453,7 +453,18 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   tokenizer is lowercase hex. Part A changes no manifest byte layout and moves
   no existing golden.
 - Epoch identity is now declared and enforced. The migration path -- alias,
-  per-segment epoch tags, and background re-embedding -- is not implemented and
-  remains blocked on an owner decision about the manifest layout. The last free
-  format change remains unspent. Pre-launch format-change authorization lapses
-  only when that change is spent and the migration path lands, not before.
+  per-segment epoch tags, and background re-embedding -- is not implemented.
+  The owner decision it was blocked on has been taken: widen `EpochMeta` with
+  the alias and a per-segment epoch id, regenerating the manifest golden
+  deliberately.
+- Persisted-format changes are AUTHORIZED, including minting a region kind, a
+  format family, or a WAL op id. Do not stop and ask. This crate previously
+  recorded a "last free format change" that "lapses" at the migration task;
+  that framing was retracted by the owner on 2026-08-25. There are no live
+  customers and nothing is shipped, so a wrong shape is a delete and a re-mint,
+  not a permanent scar. The only trigger that ends this is a real user holding
+  real data, or a published binary someone has installed -- never a task number.
+  Authorization does not excuse the verification that has value: read the id
+  file immediately before minting, keep existing goldens byte-identical unless
+  deliberately breaking one and say so when one moves, prove old artifacts still
+  open, give every new region its own frozen golden, and record the change here.
