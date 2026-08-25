@@ -1578,19 +1578,14 @@ fn search_pinned(
             }
         }
     }
-    let auto_uses_graph = matches!(options.tier(), SearchTier::Auto)
-        && snapshot.segments().iter().any(|segment| {
-            segment
-                .directory()
-                .iter()
-                .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
-        });
+    let auto_full_precision =
+        matches!(options.tier(), SearchTier::Auto) && auto_uses_full_precision(snapshot, active);
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
-        let exact_score = auto_uses_graph || matches!(options.tier(), SearchTier::Graph(_));
+        let exact_score = auto_full_precision || matches!(options.tier(), SearchTier::Graph(_));
         let outcome = match options.tier() {
-            SearchTier::Auto if auto_uses_graph => {
+            SearchTier::Auto if auto_full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 let cancellation = QueryCancellation::new(&control, &lease);
                 scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
@@ -1702,10 +1697,7 @@ fn search_pinned(
                         (graph, graph_validated, false, None)
                     }
                 };
-            let rescore = segment
-                .rescore_f32()
-                .map_err(StoreError::Segment)
-                .map_err(QueryError::Store)?;
+            let rescore = exact_rescore_rows(segment)?;
             let node_count = graph.node_count() as usize;
             let segment_k = k.min(node_count);
             let has_tombstones = alive.tombstone_count() != 0;
@@ -1932,13 +1924,10 @@ fn search_pinned(
             continue;
         }
 
-        let outcome = if auto_uses_graph {
+        let outcome = if auto_full_precision {
             let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
             let cancellation = QueryCancellation::new(&control, &lease);
-            let vectors = segment
-                .rescore_f32()
-                .map_err(StoreError::Segment)
-                .map_err(QueryError::Store)?;
+            let vectors = exact_rescore_rows(segment)?;
             scan_squared_l2(
                 vectors,
                 segment.meta().row_count as usize,
@@ -2030,7 +2019,7 @@ fn search_pinned(
                 }
             }
         };
-        let exact_score = auto_uses_graph || segment.meta().scheme == 0;
+        let exact_score = auto_full_precision || segment.meta().scheme == 0;
         merge_store_outcome(
             outcome,
             source,
@@ -2095,6 +2084,45 @@ fn search_pinned(
         generation,
         epoch,
         diagnostics,
+    })
+}
+
+pub(crate) fn auto_uses_full_precision(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+) -> bool {
+    let mut has_exact = false;
+    let mut has_estimated = !active.is_empty();
+    for segment in snapshot.segments() {
+        if segment
+            .directory()
+            .iter()
+            .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+        {
+            return true;
+        }
+        if segment.meta().row_count == 0 {
+            continue;
+        }
+        match segment.meta().scheme {
+            0 => has_exact = true,
+            2 | 4 => has_estimated = true,
+            _ => {}
+        }
+    }
+    has_exact && has_estimated
+}
+
+pub(crate) fn exact_rescore_rows(
+    segment: &crate::segment::reader::SegmentReader,
+) -> Result<&[f32], QueryError> {
+    segment.rescore_f32().map_err(|source| {
+        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+            format!(
+                "exact scores unavailable for segment {}: {source}",
+                segment.meta().id
+            ),
+        )))
     })
 }
 

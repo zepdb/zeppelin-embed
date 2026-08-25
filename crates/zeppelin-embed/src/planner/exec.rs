@@ -8,6 +8,7 @@ use crate::ingest::{RowSource, SearchCandidate, SearchRequest};
 use crate::lifecycle::{
     GraphSearchOptions, PublishedSnapshot, QueryCancellation, QueryControl, QueryError,
     SearchOptions, SearchTier, SnapshotLease, Store, StoreError, StoreState,
+    auto_uses_full_precision, exact_rescore_rows,
 };
 use crate::meta::{ColumnStore, ColumnStoreBuilder, EvalError, Predicate, evaluate};
 use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -231,7 +232,9 @@ fn execute_pinned(
         .map_err(QueryError::Scan)?;
     let auto_uses_graph =
         matches!(options.tier(), SearchTier::Auto) && snapshot.segments().iter().any(has_graph);
-    let full_precision = auto_uses_graph || matches!(options.tier(), SearchTier::Graph(_));
+    let full_precision = (matches!(options.tier(), SearchTier::Auto)
+        && auto_uses_full_precision(snapshot, active))
+        || matches!(options.tier(), SearchTier::Graph(_));
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
@@ -394,11 +397,8 @@ fn execute_pinned(
         let branch = choose_scan_branch(allow_list.cardinality());
         let plan = SegmentPlan::exact(source, tier, branch, allow_list.cardinality())
             .with_predicate(predicate);
-        let (local, local_stats, executed) = if auto_uses_graph || graph_selected {
-            let vectors = segment
-                .rescore_f32()
-                .map_err(StoreError::Segment)
-                .map_err(QueryError::Store)?;
+        let (local, local_stats, executed) = if full_precision {
+            let vectors = exact_rescore_rows(segment)?;
             execute_squared_l2_plan(
                 &plan.node,
                 vectors,
@@ -500,7 +500,7 @@ fn execute_pinned(
                     .map_err(QueryError::Store)
             },
             &mut candidates,
-            auto_uses_graph || graph_selected || segment.meta().scheme == 0,
+            full_precision || segment.meta().scheme == 0,
         )?;
         stats.add(local_stats)?;
         plans.push(plan);
@@ -601,10 +601,7 @@ fn execute_filtered_graph(
         .prepare_shared(segment, cancellation)
         .map_err(map_graph_cache_error)?;
     let graph = prepared.graph;
-    let rescore = segment
-        .rescore_f32()
-        .map_err(StoreError::Segment)
-        .map_err(QueryError::Store)?;
+    let rescore = exact_rescore_rows(segment)?;
     let node_count = graph.node_count() as usize;
     let allow_count = usize::try_from(allow_list.cardinality())
         .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?;
