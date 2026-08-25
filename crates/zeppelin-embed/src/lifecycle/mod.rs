@@ -795,18 +795,19 @@ impl Store {
         Ok(store)
     }
 
+    /// Carries the committed epoch registry forward unchanged.
+    ///
+    /// A declared epoch is stamped once, during open, before any write is
+    /// admitted, so every later commit only propagates what is already
+    /// committed. There is deliberately no "stamp it later" branch here: a
+    /// store that reaches this point with an empty registry has no declared
+    /// identity, and inventing one would be the silent adoption that
+    /// creation-time stamping exists to prevent.
     pub(crate) fn epoch_registry(
         &self,
         prior: &[crate::manifest::EpochMeta],
     ) -> Vec<crate::manifest::EpochMeta> {
-        if prior.is_empty() {
-            self.epoch
-                .as_ref()
-                .map(|epoch| vec![crate::manifest::EpochMeta::from(epoch)])
-                .unwrap_or_default()
-        } else {
-            prior.to_vec()
-        }
+        prior.to_vec()
     }
 
     pub(crate) fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
