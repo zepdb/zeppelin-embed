@@ -6,16 +6,17 @@ use std::time::Duration;
 
 use crate::graph::GraphParamsError;
 use crate::graph::build::{
-    CheckpointedGraphBuild, GraphBuildError, GraphBuildPasses, build_graph_checkpointed,
+    CheckpointedGraphBuild, GraphBuildError, GraphBuildPasses, GraphRewriteRegion,
+    build_graph_checkpointed, graph_rewrite_source_region,
 };
 use crate::lifecycle::{
     Deadline, DeadlineError, PublishedSnapshot, QueryControl, Store, StoreError,
 };
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
-use crate::segment::SegmentId;
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
-use crate::vfs::StdVfs;
+use crate::segment::{SegmentError, SegmentId};
+use crate::vfs::{StdVfs, Vfs};
 
 use super::SegmentTier;
 use super::TierThresholds;
@@ -309,7 +310,7 @@ fn promotion_deferral(segment: &SegmentReader) -> Option<MaintenanceDeferral> {
     let uncarried_regions = segment
         .directory()
         .iter()
-        .filter(|entry| !graph_rewrite_carries_source_region(entry.kind))
+        .filter(|entry| graph_rewrite_source_region(entry.kind) == GraphRewriteRegion::Unsupported)
         .map(|entry| {
             RegionKind::from_id(entry.kind).map_or(
                 UncarriedRegionKind::Unknown(entry.kind),
@@ -321,21 +322,6 @@ fn promotion_deferral(segment: &SegmentReader) -> Option<MaintenanceDeferral> {
         segment_id: segment.meta().id,
         uncarried_regions,
     })
-}
-
-fn graph_rewrite_carries_source_region(kind: u16) -> bool {
-    matches!(
-        RegionKind::from_id(kind),
-        Some(
-            RegionKind::Columns
-                | RegionKind::Alive
-                | RegionKind::VectorCodes
-                | RegionKind::VectorFactors
-                | RegionKind::VectorRescore
-                | RegionKind::ChecksumTable
-                | RegionKind::DocumentVersions
-        )
-    )
 }
 
 fn transition_due(segment: &SegmentReader, thresholds: Option<TierThresholds>) -> bool {
@@ -488,6 +474,12 @@ fn publish_transition(
     drop(wal);
     drop(writer);
     drop(state);
+    let source_path = store.directory.join(source_id.file_name());
+    StdVfs
+        .delete(&source_path)
+        .map_err(|error| SegmentError::io(&source_path, error))
+        .map_err(StoreError::Segment)
+        .map_err(MaintenanceError::Store)?;
     Ok(true)
 }
 

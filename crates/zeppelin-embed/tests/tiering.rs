@@ -1,10 +1,13 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
 
+use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
+use xxhash_rust::xxh3::xxh3_64;
+use zeppelin_embed::format::frame::{FILE_HEADER_LEN, FILE_TRAILER_LEN};
 use zeppelin_embed::ingest::{
     DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
@@ -13,12 +16,14 @@ use zeppelin_embed::lifecycle::{InMemorySegment, InMemorySegmentFactors, OpenOpt
 use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::segment::SegmentId;
-use zeppelin_embed::segment::layout::RegionKind;
+use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, RegionKind, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::tier::maintain::UncarriedRegionKind;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, PROVISIONAL_TIER_THRESHOLDS};
 
 const DIMS: usize = 1;
 const MAINTENANCE_TEST_BUDGET: Duration = Duration::from_secs(600);
+const UNKNOWN_REGION_KIND: u16 = 65_000;
+const DIRECTORY_START: usize = FILE_HEADER_LEN + SEGMENT_PREFIX_LEN;
 
 struct SealedFixture {
     _directory: TempDir,
@@ -78,6 +83,76 @@ fn has_graph(store: &Store) -> bool {
     })
 }
 
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(
+        bytes[offset..offset + 2]
+            .try_into()
+            .expect("u16 fixture bytes"),
+    )
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("u32 fixture bytes"),
+    )
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("u64 fixture bytes"),
+    )
+}
+
+fn region_entry_offset(bytes: &[u8], kind: u16) -> usize {
+    let region_count = usize::from(read_u16(bytes, FILE_HEADER_LEN + 20));
+    (0..region_count)
+        .map(|index| DIRECTORY_START + index * REGION_ENTRY_LEN)
+        .find(|offset| read_u16(bytes, *offset) == kind)
+        .expect("fixture region entry")
+}
+
+fn region_bytes(bytes: &[u8], kind: u16) -> &[u8] {
+    let entry = region_entry_offset(bytes, kind);
+    let start = usize::try_from(read_u64(bytes, entry + 8)).expect("region offset");
+    let length = usize::try_from(read_u64(bytes, entry + 16)).expect("region length");
+    &bytes[start..start + length]
+}
+
+fn region_version(bytes: &[u8], kind: u16) -> u16 {
+    read_u16(bytes, region_entry_offset(bytes, kind) + 2)
+}
+
+fn relabel_region(bytes: &mut [u8], from: RegionKind, to: u16) {
+    let entry = region_entry_offset(bytes, from.id());
+    bytes[entry..entry + 2].copy_from_slice(&to.to_le_bytes());
+    let checksum_entry = region_entry_offset(bytes, RegionKind::ChecksumTable.id());
+    let checksum_start =
+        usize::try_from(read_u64(bytes, checksum_entry + 8)).expect("checksum-table offset");
+    let checksum_length =
+        usize::try_from(read_u64(bytes, checksum_entry + 16)).expect("checksum-table length");
+    let checksum_end = checksum_start + checksum_length;
+    let chunk_count = usize::try_from(read_u32(bytes, checksum_start)).expect("chunk count");
+    for chunk in 0..chunk_count {
+        let chunk_entry = checksum_start + 8 + chunk * 16;
+        if read_u16(bytes, chunk_entry) == from.id() {
+            bytes[chunk_entry..chunk_entry + 2].copy_from_slice(&to.to_le_bytes());
+        }
+    }
+    let checksum_table_checksum = xxh3_64(&bytes[checksum_start..checksum_end]).to_le_bytes();
+    bytes[checksum_entry + 24..checksum_entry + 32].copy_from_slice(&checksum_table_checksum);
+    let header_length = usize::try_from(read_u64(bytes, 16)).expect("header length");
+    let header_checksum_offset = header_length - 8;
+    let header_checksum = xxh3_64(&bytes[..header_checksum_offset]).to_le_bytes();
+    bytes[header_checksum_offset..header_length].copy_from_slice(&header_checksum);
+    let trailer = bytes.len() - FILE_TRAILER_LEN;
+    let file_checksum = xxh3_64(&bytes[..trailer]).to_le_bytes();
+    bytes[trailer..].copy_from_slice(&file_checksum);
+}
+
 #[test]
 fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
     const METADATA: &[u8] = b"tier-maintenance-metadata";
@@ -93,9 +168,7 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
                 vec![row as f32],
             );
             if row == 0 {
-                document
-                    .with_text("guarded lexical row")
-                    .with_metadata(METADATA.to_vec())
+                document.with_metadata(METADATA.to_vec())
             } else {
                 document
             }
@@ -105,6 +178,33 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
         .ingest(IngestBatch::new(documents))
         .expect("ingest guarded fixture");
     store.seal().expect("seal guarded fixture");
+    let source_id = store
+        .snapshot()
+        .expect("guarded source snapshot")
+        .segments()
+        .first()
+        .expect("guarded source segment")
+        .meta()
+        .id;
+    let source_path = directory.path().join(source_id.file_name());
+    store.close().expect("close before guarded relabel");
+    let mut source_bytes = fs::read(&source_path).expect("read guarded source bytes");
+    relabel_region(
+        &mut source_bytes,
+        RegionKind::StoredMetadata,
+        RegionKind::GraphColocatedCodes.id(),
+    );
+    fs::write(&source_path, source_bytes).expect("write guarded source bytes");
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen guarded tiering store");
+    store
+        .snapshot()
+        .expect("guarded source snapshot")
+        .segments()
+        .first()
+        .expect("guarded source segment")
+        .validate_all()
+        .expect("valid guarded source segment");
 
     let report = store.maintain(MaintenanceBudget {
         wall_time: MAINTENANCE_TEST_BUDGET,
@@ -113,21 +213,7 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
 
     let snapshot = store.snapshot().expect("guarded snapshot");
     let segment = snapshot.segments().first().expect("guarded sealed segment");
-    let postings = segment.postings().expect("read postings region");
-    assert!(
-        postings.is_some(),
-        "maintenance promotion dropped the postings region"
-    );
-    let metadata = segment.stored_metadata().expect("read metadata region");
-    assert!(
-        metadata.is_some(),
-        "maintenance promotion dropped the stored-metadata region"
-    );
-    assert_eq!(
-        metadata.and_then(|rows| rows.row(0)),
-        Some(METADATA),
-        "stored metadata changed while promotion was deferred"
-    );
+    assert_eq!(segment.meta().id, source_id);
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert_eq!(report.promotion_deferrals.len(), 1);
     let deferral = report
@@ -135,19 +221,179 @@ fn maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry() {
         .first()
         .expect("typed promotion deferral");
     assert_eq!(deferral.segment_id, segment.meta().id);
-    assert_eq!(deferral.uncarried_regions.len(), 2);
-    assert!(
-        deferral
-            .uncarried_regions
-            .contains(&UncarriedRegionKind::Known(RegionKind::Postings))
-    );
-    assert!(
-        deferral
-            .uncarried_regions
-            .contains(&UncarriedRegionKind::Known(RegionKind::StoredMetadata))
+    assert_eq!(
+        deferral.uncarried_regions,
+        vec![UncarriedRegionKind::Known(RegionKind::GraphColocatedCodes)]
     );
     assert_eq!(report.graphs_built, 0);
     assert!(!has_graph(&store));
+}
+
+#[test]
+fn graph_promotion_preserves_stored_metadata_and_postings() {
+    const METADATA: &[u8] = b"promoted-tier-metadata";
+
+    let directory = tempdir().expect("promotion preservation directory");
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("open promotion preservation store");
+    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let documents = (0..rows)
+        .map(|row| {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vec![row as f32],
+            );
+            if row == 0 {
+                document
+                    .with_text("promoted lexical row")
+                    .with_metadata(METADATA.to_vec())
+            } else {
+                document
+            }
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest promotion preservation fixture");
+    store.seal().expect("seal promotion preservation fixture");
+
+    let source = store.snapshot().expect("source snapshot");
+    let source_segment = source.segments().first().expect("source segment");
+    let source_id = source_segment.meta().id;
+    let postings_before = source_segment
+        .region(RegionKind::Postings)
+        .expect("source postings bytes")
+        .to_vec();
+    let metadata_before = source_segment
+        .region(RegionKind::StoredMetadata)
+        .expect("source metadata bytes")
+        .to_vec();
+    drop(source);
+
+    let report = store.maintain(MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    });
+
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(
+        report.graphs_built, 1,
+        "text-bearing segment was not promoted"
+    );
+    assert!(report.promotion_deferrals.is_empty());
+    let promoted = store.snapshot().expect("promoted snapshot");
+    let promoted_segment = promoted.segments().first().expect("promoted segment");
+    assert_ne!(promoted_segment.meta().id, source_id);
+    assert!(has_graph(&store));
+    assert!(
+        promoted_segment
+            .postings()
+            .expect("read promoted postings")
+            .is_some()
+    );
+    let metadata = promoted_segment
+        .stored_metadata()
+        .expect("read promoted metadata")
+        .expect("promoted metadata region");
+    assert_eq!(metadata.row(0), Some(METADATA));
+    assert_eq!(
+        promoted_segment
+            .region(RegionKind::Postings)
+            .expect("promoted postings bytes"),
+        postings_before
+    );
+    assert_eq!(
+        promoted_segment
+            .region(RegionKind::StoredMetadata)
+            .expect("promoted metadata bytes"),
+        metadata_before
+    );
+}
+
+#[test]
+fn graph_promotion_copies_unknown_region_bytes_forward() {
+    const UNKNOWN_BYTES: &[u8] = b"unknown promotion payload";
+
+    let directory = tempdir().expect("unknown promotion directory");
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("open unknown promotion store");
+    let rows = PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize;
+    let documents = (0..rows)
+        .map(|row| {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vec![row as f32],
+            );
+            if row == 0 {
+                document.with_metadata(UNKNOWN_BYTES.to_vec())
+            } else {
+                document
+            }
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest unknown promotion fixture");
+    store.seal().expect("seal unknown promotion fixture");
+    let source_id = store
+        .snapshot()
+        .expect("unknown source snapshot")
+        .segments()
+        .first()
+        .expect("unknown source segment")
+        .meta()
+        .id;
+    let source_path = directory.path().join(source_id.file_name());
+    store.close().expect("close before fixture relabel");
+
+    let mut source_bytes = fs::read(&source_path).expect("read source segment bytes");
+    relabel_region(
+        &mut source_bytes,
+        RegionKind::StoredMetadata,
+        UNKNOWN_REGION_KIND,
+    );
+    let unknown_before = region_bytes(&source_bytes, UNKNOWN_REGION_KIND).to_vec();
+    let version_before = region_version(&source_bytes, UNKNOWN_REGION_KIND);
+    fs::write(&source_path, source_bytes).expect("write unknown-region fixture");
+
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen unknown promotion store");
+    store
+        .snapshot()
+        .expect("unknown source snapshot")
+        .segments()
+        .first()
+        .expect("unknown source segment")
+        .validate_all()
+        .expect("valid unknown source segment");
+    let report = store.maintain(MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    });
+
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(
+        report.graphs_built, 1,
+        "unknown-region segment was not promoted"
+    );
+    assert!(report.promotion_deferrals.is_empty());
+    let promoted = store.snapshot().expect("unknown promoted snapshot");
+    let segment = promoted
+        .segments()
+        .first()
+        .expect("unknown promoted segment");
+    assert_eq!(segment.unknown_region_ids(), vec![UNKNOWN_REGION_KIND]);
+    assert!(has_graph(&store));
+    let promoted_bytes =
+        fs::read(directory.path().join(segment.meta().id.file_name())).expect("promoted bytes");
+    assert_eq!(
+        region_bytes(&promoted_bytes, UNKNOWN_REGION_KIND),
+        unknown_before
+    );
+    assert_eq!(
+        region_version(&promoted_bytes, UNKNOWN_REGION_KIND),
+        version_before
+    );
 }
 
 #[test]
@@ -163,6 +409,35 @@ fn maintain_still_promotes_plain_vector_only_segments() {
     assert!(report.promotion_deferrals.is_empty());
     assert_eq!(report.graphs_built, 1);
     assert!(has_graph(&fixture.store));
+}
+
+#[test]
+fn publish_transition_unlinks_the_replaced_segment() {
+    let fixture = sealed_fixture(PROVISIONAL_TIER_THRESHOLDS.graph_min_rows as usize);
+    let source = fixture
+        .store
+        .snapshot()
+        .expect("source snapshot")
+        .segments()
+        .first()
+        .expect("source segment")
+        .meta()
+        .id;
+    let source_path = fixture._directory.path().join(source.file_name());
+    assert!(source_path.exists(), "source segment fixture is missing");
+
+    let report = fixture.store.maintain(MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    });
+
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(report.graphs_built, 1);
+    assert!(
+        !source_path.exists(),
+        "replaced segment file still exists after transition: {}",
+        source_path.display()
+    );
 }
 
 #[test]
