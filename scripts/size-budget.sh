@@ -11,17 +11,11 @@ if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-cargo build --release -p zeppelin-embed
+cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
-ARTIFACT="$TARGET_ROOT/release/libzeppelin_embed.a"
 MEASURE_DIR="$TARGET_ROOT/size-budget"
-STRIPPED_ARTIFACT="$MEASURE_DIR/libzeppelin_embed-stripped.a"
 
-if [[ ! -f "$ARTIFACT" ]]; then
-    echo "error: expected static library not found at $ARTIFACT" >&2
-    exit 2
-fi
 if ! command -v strip >/dev/null 2>&1; then
     echo "error: platform 'strip' tool is required for the size gate" >&2
     exit 2
@@ -32,33 +26,53 @@ if ! command -v size >/dev/null 2>&1; then
 fi
 
 mkdir -p "$MEASURE_DIR"
-cp "$ARTIFACT" "$STRIPPED_ARTIFACT"
-case "$(uname -s)" in
-    Darwin)
-        strip -S -x "$STRIPPED_ARTIFACT"
-        SIZE_BYTES="$(size -m "$STRIPPED_ARTIFACT" | awk '
-            /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += $NF }
-            END { print total + 0 }
-        ')"
-        ;;
-    Linux)
-        strip --strip-unneeded "$STRIPPED_ARTIFACT"
-        SIZE_BYTES="$(size -A "$STRIPPED_ARTIFACT" | awk '
-            $1 ~ /^\./ && $1 !~ /^\.llvm/ { total += $2 }
-            END { print total + 0 }
-        ')"
-        ;;
-    *)
-        echo "error: size-budget.sh supports Darwin and Linux" >&2
+
+# Measures one static library's post-strip linkable sections. Task 22 (D9)
+# added the FFI staticlib as a second measured artifact under the same bar:
+# adding an artifact strengthens the gate, and the core measurement is never
+# traded away for it. Moving the 5,120 KB bar itself remains an owner call.
+measure_artifact() {
+    local label="$1"
+    local artifact="$2"
+    local stripped="$MEASURE_DIR/$(basename "${artifact%.a}")-stripped.a"
+    local size_bytes size_kb archive_kb
+
+    if [[ ! -f "$artifact" ]]; then
+        echo "error: expected static library not found at $artifact" >&2
         exit 2
-        ;;
-esac
+    fi
 
-SIZE_KB="$(( (SIZE_BYTES + 1023) / 1024 ))"
-ARCHIVE_KB="$(du -k "$STRIPPED_ARTIFACT" | awk '{print $1}')"
-echo "Stripped staticlib linked size: $SIZE_KB KB (archive: $ARCHIVE_KB KB; budget: $BUDGET_KB KB)"
+    cp "$artifact" "$stripped"
+    case "$(uname -s)" in
+        Darwin)
+            strip -S -x "$stripped"
+            size_bytes="$(size -m "$stripped" | awk '
+                /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += $NF }
+                END { print total + 0 }
+            ')"
+            ;;
+        Linux)
+            strip --strip-unneeded "$stripped"
+            size_bytes="$(size -A "$stripped" | awk '
+                $1 ~ /^\./ && $1 !~ /^\.llvm/ { total += $2 }
+                END { print total + 0 }
+            ')"
+            ;;
+        *)
+            echo "error: size-budget.sh supports Darwin and Linux" >&2
+            exit 2
+            ;;
+    esac
 
-if (( SIZE_KB > BUDGET_KB )); then
-    echo "error: stripped staticlib linked size $SIZE_KB KB exceeds budget $BUDGET_KB KB" >&2
-    exit 1
-fi
+    size_kb="$(( (size_bytes + 1023) / 1024 ))"
+    archive_kb="$(du -k "$stripped" | awk '{print $1}')"
+    echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; budget: $BUDGET_KB KB)"
+
+    if (( size_kb > BUDGET_KB )); then
+        echo "error: $label stripped staticlib linked size $size_kb KB exceeds budget $BUDGET_KB KB" >&2
+        exit 1
+    fi
+}
+
+measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
+measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"

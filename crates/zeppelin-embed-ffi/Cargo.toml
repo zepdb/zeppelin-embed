@@ -6,5 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
+[features]
+default = []
+abi-panic-probe = []
+
+[dependencies]
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0" }
+
+[dev-dependencies]
+tempfile.workspace = true

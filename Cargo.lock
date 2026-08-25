@@ -649,6 +649,10 @@ dependencies = [
 [[package]]
 name = "zeppelin-embed-ffi"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "zeppelin-embed",
+]
 
 [[package]]
 name = "zeppelin-embed-workspace-tests"
