@@ -12,6 +12,7 @@ use zeppelin_embed_bench::frontier::measure::{
 };
 use zeppelin_embed_bench::frontier::roofline::{RooflineInput, RooflineModel};
 use zeppelin_embed_bench::frontier::variants::{RegisteredVariant, VariantRegistry};
+use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile;
 
 const SEED: u64 = 0x27_2026_0820;
 const ROW_COUNT: usize = 100_000;
@@ -26,6 +27,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    verify_bench_profile()?;
     let root = repository_root();
     let attestation = FileAttestationSource::new(default_attestation_path(&root));
     let provenance = match preflight_with_attestation(&SystemMachineProbe, &attestation) {

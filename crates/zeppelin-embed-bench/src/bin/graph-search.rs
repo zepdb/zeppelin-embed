@@ -9,7 +9,7 @@ use std::time::Instant;
 use zeppelin_embed::graph::block::CACHE_LINE_BYTES;
 use zeppelin_embed::graph::build::GraphBuildPasses;
 use zeppelin_embed::graph::search::{
-    GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher, QueryCoreClass,
+    GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher, QueryQosClass,
     TraversalPrefetch,
 };
 use zeppelin_embed::segment::SegmentId;
@@ -243,9 +243,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut total_candidates = 0_u64;
     let mut total_rescored = 0_u64;
     let mut total_pushes = 0_u64;
-    let mut qos_class = None;
+    let mut qos_class: Option<QueryQosClass> = None;
     let mut qos_priority = None;
-    let mut core_class = None;
     for query_index in 0..config.queries {
         let query = query_row(&queries, query_index, dimensions)?;
         let started = Instant::now();
@@ -262,8 +261,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     profile,
                     Some(effective_ef),
                     config.prefetch,
-                )
-                .with_observed_core_class(QueryCoreClass::Performance),
+                ),
                 None,
             )?;
             let mut returned_count = 0_usize;
@@ -298,11 +296,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         total_candidates = total_candidates.saturating_add(counters.candidates_scored() as u64);
         total_rescored = total_rescored.saturating_add(counters.candidates_rescored() as u64);
         total_pushes = total_pushes.saturating_add(counters.pushes() as u64);
-        let observed_qos = format!("{:?}", counters.qos_class());
+        let observed_qos = counters.qos_class();
         match qos_class.as_ref() {
             None => qos_class = Some(observed_qos),
             Some(current) if current == &observed_qos => {}
-            Some(_) => qos_class = Some(String::from("Mixed")),
+            Some(current) => {
+                return Err(io::Error::other(format!(
+                    "query QoS changed during measured loop: {current:?} then {observed_qos:?}"
+                ))
+                .into());
+            }
         }
         let observed_priority = counters.qos_relative_priority();
         match qos_priority {
@@ -310,20 +313,26 @@ fn run() -> Result<(), Box<dyn Error>> {
             Some(current) if current == observed_priority => {}
             Some(_) => qos_priority = None,
         }
-        let observed_core = format!("{:?}", counters.core_class());
-        match core_class.as_ref() {
-            None => core_class = Some(observed_core),
-            Some(current) if current == &observed_core => {}
-            Some(_) => core_class = Some(String::from("Mixed")),
-        }
     }
+    if matches!(
+        qos_class,
+        Some(QueryQosClass::Utility | QueryQosClass::Background)
+    ) {
+        return Err(io::Error::other(format!(
+            "latency run observed disallowed QoS class {:?}",
+            qos_class.unwrap_or(QueryQosClass::Unknown)
+        ))
+        .into());
+    }
+    let post_run_canary = calibrate_core()?;
+    post_run_canary.print();
     elapsed_us.sort_by(f64::total_cmp);
     let p50_us = percentile_50(&elapsed_us)?;
     let within_rsd_percent = relative_standard_deviation_percent(&elapsed_us);
     let denominator = (config.queries * TOP_K) as f64;
     let query_denominator = config.queries as f64;
     println!(
-        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_rescored={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class={} load1={} taint={}",
+        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_rescored={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class=Performance load1={} taint={}",
         config.dataset_name,
         config.queries,
         config.run,
@@ -335,11 +344,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         zero_norm_rows.len(),
         layout.stride(),
         score_cache_lines,
-        qos_class.as_deref().unwrap_or("Unavailable"),
+        qos_class
+            .map(|class| format!("{class:?}"))
+            .unwrap_or_else(|| String::from("Unavailable")),
         qos_priority
             .map(|priority| priority.to_string())
             .unwrap_or_else(|| String::from("mixed")),
-        core_class.as_deref().unwrap_or("Unverified"),
         format_load1(taint.load1),
         format_taint_labels(&taint.taints),
     );

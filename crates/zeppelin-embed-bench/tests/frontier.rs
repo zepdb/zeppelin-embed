@@ -46,6 +46,15 @@ use zeppelin_embed_bench::frontier::tune::{
     save_search_state,
 };
 use zeppelin_embed_bench::frontier::variants::{KernelPoint, VariantRegistry};
+use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile_contract;
+
+#[test]
+fn b1_profile_contract_rejects_release_and_debug_codegen() {
+    assert!(verify_bench_profile_contract("3", "true", false).is_ok());
+    assert!(verify_bench_profile_contract("3", "false", false).is_err());
+    assert!(verify_bench_profile_contract("z", "true", false).is_err());
+    assert!(verify_bench_profile_contract("3", "true", true).is_err());
+}
 
 #[test]
 fn scheme_level_scoring_matches_production_entry_points_and_measures_actual_buffers() {
@@ -2656,12 +2665,14 @@ fn frontier_variant_registry_consumes_task03_knob_space_and_materializes_real_bu
         .expect("task-03 declarations form a valid registry");
     assert_eq!(registry.declared_points().len(), 4 * 4 * 5 * 5 * 6);
     assert!(!registry.materialized().is_empty());
-    assert!(
-        registry
-            .materialized()
-            .iter()
-            .all(|variant| variant.is_monomorphized())
-    );
+    let baseline = zeppelin_embed::kernels::BASELINE_KERNEL_CONFIG;
+    assert!(registry.materialized().iter().all(|variant| {
+        let point = variant.point();
+        point.unroll == baseline.unroll
+            && point.accumulators == baseline.accumulators
+            && point.rows_per_block == baseline.rows_per_block
+            && point.prefetch_dist == baseline.prefetch_dist
+    }));
 }
 
 #[test]
@@ -2688,24 +2699,15 @@ fn frontier_variant_identity_and_callable_builds_preserve_tier_and_shape_provena
     let registry = VariantRegistry::from_kernel_knob_space().expect("the registry is valid");
     for variant in registry.materialized() {
         assert_eq!(variant.dot_i8(&[1, 2], &[3, 4]), 11);
-        let expected_shape = format!(
-            "Shape<{}, {}, {}, {}>",
-            variant.point().unroll,
-            variant.point().accumulators,
-            variant.point().rows_per_block,
-            variant.point().prefetch_dist,
-        );
-        assert!(variant.build_name().contains(&expected_shape));
         let debug = format!("{variant:?}");
         assert!(debug.contains("RegisteredVariant"));
-        assert!(debug.contains(variant.build_name()));
         assert!(registry.declared_points().contains(&variant.point()));
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[test]
-fn frontier_registry_materializes_the_declared_dotprod_accumulator_search() {
+fn frontier_registry_labels_only_the_production_dotprod_shape() {
     if !zeppelin_embed::kernels::detected_features().dotprod {
         return;
     }
@@ -2716,19 +2718,12 @@ fn frontier_registry_materializes_the_declared_dotprod_accumulator_search() {
         .filter(|variant| variant.point().tier == InstructionTier::NeonDotprod)
         .map(|variant| variant.point())
         .collect::<Vec<_>>();
-    for (unroll, accumulators, prefetch_dist) in
-        [(2, 2, 0), (4, 4, 0), (6, 6, 0), (8, 8, 0), (4, 4, 1)]
-    {
-        assert!(
-            points.iter().any(|point| {
-                point.unroll == unroll
-                    && point.accumulators == accumulators
-                    && point.rows_per_block == 1
-                    && point.prefetch_dist == prefetch_dist
-            }),
-            "missing u{unroll}/a{accumulators}/p{prefetch_dist}"
-        );
-    }
+    let baseline = zeppelin_embed::kernels::BASELINE_KERNEL_CONFIG;
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].unroll, baseline.unroll);
+    assert_eq!(points[0].accumulators, baseline.accumulators);
+    assert_eq!(points[0].rows_per_block, baseline.rows_per_block);
+    assert_eq!(points[0].prefetch_dist, baseline.prefetch_dist);
 }
 
 #[test]

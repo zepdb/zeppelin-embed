@@ -7,9 +7,13 @@ pub mod beir;
 pub mod frontier;
 /// Recall-only flat-Vamana construction and measurement scaffold for M3.
 pub mod graph_recall;
+/// Task-03 hot-kernel roofline and cross-kernel regression contracts.
+pub mod kernel_gate;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;
+/// Across-process aggregation for DRAM-regime measurements.
+pub mod process_median;
 /// Quantization recall-retention and deterministic byte-count harness.
 pub mod recall;
 /// Full scheme-level coarse-scoring benchmark support.

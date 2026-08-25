@@ -36,17 +36,11 @@ impl KernelPoint {
     }
 }
 
-type I8Executor = fn(KernelVariant, &[i8], &[i8]) -> i32;
-type I8BatchExecutor = fn(KernelVariant, &[i8], &[i8], usize, &mut [i32]);
-
-/// A currently executable, compile-time-shaped kernel point.
+/// One executable production kernel with an honest baseline-shape label.
 #[derive(Clone, Copy)]
 pub struct RegisteredVariant {
     point: KernelPoint,
     kernel: KernelVariant,
-    i8_executor: I8Executor,
-    i8_batch_executor: I8BatchExecutor,
-    build_name: &'static str,
 }
 
 impl fmt::Debug for RegisteredVariant {
@@ -55,7 +49,6 @@ impl fmt::Debug for RegisteredVariant {
             .debug_struct("RegisteredVariant")
             .field("point", &self.point)
             .field("kernel", &self.kernel)
-            .field("build_name", &self.build_name)
             .finish()
     }
 }
@@ -67,27 +60,15 @@ impl RegisteredVariant {
         self.point
     }
 
-    /// Returns the monomorphized build symbol description.
-    #[must_use]
-    pub const fn build_name(&self) -> &'static str {
-        self.build_name
-    }
-
-    /// Reports that this registration owns a compile-time-shaped executor.
-    #[must_use]
-    pub const fn is_monomorphized(&self) -> bool {
-        true
-    }
-
-    /// Executes an i8 dot product through this concrete task-03 table.
+    /// Executes an i8 dot product through this concrete production table.
     #[must_use]
     pub fn dot_i8(&self, left: &[i8], right: &[i8]) -> i32 {
-        (self.i8_executor)(self.kernel, left, right)
+        self.kernel.dot_i8(left, right)
     }
 
-    /// Executes a contiguous row-major i8 batch through this task-03 table.
+    /// Executes a contiguous row-major i8 batch through the production table.
     pub fn dot_i8_batch(&self, query: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
-        (self.i8_batch_executor)(self.kernel, query, rows, d, out);
+        self.kernel.dot_i8_batch(query, rows, d, out);
     }
 }
 
@@ -124,26 +105,18 @@ impl VariantRegistry {
                 }
             }
         }
-        let mut dotprod_index = 0_usize;
-        let materialized = KernelVariant::available()
+        let mut materialized: Vec<RegisteredVariant> = Vec::new();
+        for kernel in KernelVariant::available()
             .filter(|variant| KERNEL_KNOB_SPACE.tier.contains(&variant.tier()))
-            .map(|kernel| match kernel.tier() {
-                InstructionTier::NeonI8mmReserved => materialize::<4, 4, 2, 0>(kernel),
-                InstructionTier::NeonDotprod => {
-                    let point = match dotprod_index {
-                        0 => materialize::<4, 4, 1, 0>(kernel),
-                        1 => materialize::<2, 2, 1, 0>(kernel),
-                        2 => materialize::<6, 6, 1, 0>(kernel),
-                        3 => materialize::<8, 8, 1, 0>(kernel),
-                        4 => materialize::<4, 4, 1, 1>(kernel),
-                        _ => materialize_task03_baseline(kernel),
-                    };
-                    dotprod_index += 1;
-                    point
-                }
-                _ => materialize_task03_baseline(kernel),
-            })
-            .collect();
+        {
+            if materialized
+                .iter()
+                .any(|variant| variant.point.tier == kernel.tier())
+            {
+                continue;
+            }
+            materialized.push(materialize_task03_baseline(kernel));
+        }
         Ok(Self {
             declared,
             materialized,
@@ -234,67 +207,16 @@ fn validate_space() -> Result<(), VariantRegistryError> {
 }
 
 fn materialize_task03_baseline(kernel: KernelVariant) -> RegisteredVariant {
-    materialize::<4, 4, 1, 0>(kernel)
-}
-
-fn materialize<
-    const UNROLL: usize,
-    const ACCUMULATORS: usize,
-    const ROWS: usize,
-    const PREFETCH: usize,
->(
-    kernel: KernelVariant,
-) -> RegisteredVariant {
     RegisteredVariant {
         point: KernelPoint {
-            unroll: UNROLL,
-            accumulators: ACCUMULATORS,
-            rows_per_block: ROWS,
-            prefetch_dist: PREFETCH,
+            unroll: BASELINE_KERNEL_CONFIG.unroll,
+            accumulators: BASELINE_KERNEL_CONFIG.accumulators,
+            rows_per_block: BASELINE_KERNEL_CONFIG.rows_per_block,
+            prefetch_dist: BASELINE_KERNEL_CONFIG.prefetch_dist,
             tier: kernel.tier(),
         },
         kernel,
-        i8_executor: execute_i8::<UNROLL, ACCUMULATORS, ROWS, PREFETCH>,
-        i8_batch_executor: execute_i8_batch::<UNROLL, ACCUMULATORS, ROWS, PREFETCH>,
-        build_name: std::any::type_name::<Shape<UNROLL, ACCUMULATORS, ROWS, PREFETCH>>(),
     }
-}
-
-struct Shape<
-    const UNROLL: usize,
-    const ACCUMULATORS: usize,
-    const ROWS: usize,
-    const PREFETCH: usize,
->;
-
-fn execute_i8<
-    const UNROLL: usize,
-    const ACCUMULATORS: usize,
-    const ROWS: usize,
-    const PREFETCH: usize,
->(
-    kernel: KernelVariant,
-    left: &[i8],
-    right: &[i8],
-) -> i32 {
-    let _shape = (UNROLL, ACCUMULATORS, ROWS, PREFETCH);
-    kernel.dot_i8(left, right)
-}
-
-fn execute_i8_batch<
-    const UNROLL: usize,
-    const ACCUMULATORS: usize,
-    const ROWS: usize,
-    const PREFETCH: usize,
->(
-    kernel: KernelVariant,
-    query: &[i8],
-    rows: &[i8],
-    d: usize,
-    out: &mut [i32],
-) {
-    let _shape = (UNROLL, ACCUMULATORS, ROWS, PREFETCH);
-    kernel.dot_i8_batch(query, rows, d, out);
 }
 
 fn tier_name(tier: InstructionTier) -> &'static str {
