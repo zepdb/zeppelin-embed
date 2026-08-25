@@ -159,9 +159,26 @@ pub fn select_epoch_graph_profile(
         query_normalization: epoch.embedding.query.normalization,
         metric,
     };
-    if shape.document_dims == 128
+    // The refusal axis is NORMALIZATION and METRIC, not dimension count.
+    //
+    // `SiftClass` is the one measured profile, and what it is measured on is
+    // unnormalized data scored by squared Euclidean distance. Handing that
+    // profile to L2-normalized (angular) data is the silent mis-profiling R06
+    // exists to stop, and whether angular is a supported v1 metric surface is
+    // an open owner decision, so a normalized epoch is refused here.
+    //
+    // Dimension is deliberately NOT a refusal axis. The profile's parameters
+    // are graph degree, alpha and ef, which track intrinsic dimensionality and
+    // corpus size rather than the raw dimension count, and refusing on an
+    // exact equality to 128 would refuse every real deployment -- 384, 768 and
+    // 1536-dimension embeddings included -- while admitting nothing SIFT-like
+    // that a 128-dimension check admits. Tuning a profile per dimension band
+    // is a measurement campaign, not a predicate.
+    //
+    // Mismatched document and query towers are refused: a graph built in one
+    // space and queried from another is not a profile question.
+    if shape.document_dims == shape.query_dims
         && shape.document_normalization == crate::epoch::Normalization::None
-        && shape.query_dims == 128
         && shape.query_normalization == crate::epoch::Normalization::None
         && shape.metric == GraphDistanceMetric::SquaredL2
     {

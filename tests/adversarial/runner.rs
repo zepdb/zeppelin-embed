@@ -56,7 +56,12 @@ fn declared_store_epoch() -> StoreEpoch {
         model_version: "1".to_owned(),
         weights_digest: vec![0xad, 0x12],
         dims: program::DIMENSIONS as u32,
-        normalization: Normalization::L2,
+        // The harness's own vectors are NOT unit length -- `program::vector`
+        // returns arbitrary magnitudes and `Model` scores them with
+        // `squared_l2`. Declaring L2 here made the epoch metadata lie about
+        // the data, which R06's profile selection correctly refused. Declare
+        // what the fixture actually produces.
+        normalization: Normalization::None,
         prompt_prefix: "search_document: ".to_owned(),
         max_tokens: 64,
         runtime: EmbeddingRuntime::CpuReference,
