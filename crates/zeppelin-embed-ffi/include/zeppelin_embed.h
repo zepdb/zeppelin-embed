@@ -39,7 +39,10 @@ typedef enum ze_error_code {
     ZE_ERR_NOT_FOUND = 19,
     ZE_ERR_SYNCHRONIZATION = 20,
     ZE_ERR_ACCESS_MODE = 21,
-    ZE_ERR_INTERNAL = 22
+    ZE_ERR_INTERNAL = 22,
+    ZE_ERR_EPOCH_MISMATCH = 23,
+    ZE_ERR_EPOCH_UNDECLARED = 24,
+    ZE_ERR_EPOCH_UNSTAMPED = 25
 } ze_error_code;
 
 typedef struct ZeOpenRequest {

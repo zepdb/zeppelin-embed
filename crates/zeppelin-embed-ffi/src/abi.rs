@@ -48,6 +48,12 @@ pub enum ZeErrorCode {
     AccessMode = 21,
     /// An invariant failed without a more specific public classification.
     Internal = 22,
+    /// The caller's declared embedding epoch differs from the store identity.
+    EpochMismatch = 23,
+    /// The store requires an embedding epoch declaration, but none was supplied.
+    EpochUndeclared = 24,
+    /// An embedding epoch was declared for a store that has no stamped identity.
+    EpochUnstamped = 25,
 }
 
 /// Opaque generation-tagged store handle.

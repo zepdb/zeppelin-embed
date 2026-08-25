@@ -971,6 +971,9 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             20 => b"ZE_ERR_SYNCHRONIZATION\0",
             21 => b"ZE_ERR_ACCESS_MODE\0",
             22 => b"ZE_ERR_INTERNAL\0",
+            23 => b"ZE_ERR_EPOCH_MISMATCH\0",
+            24 => b"ZE_ERR_EPOCH_UNDECLARED\0",
+            25 => b"ZE_ERR_EPOCH_UNSTAMPED\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()

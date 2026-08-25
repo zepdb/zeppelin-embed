@@ -47,6 +47,9 @@ impl FfiError {
             StoreError::BudgetExceeded { .. } => ZeErrorCode::BudgetExceeded,
             StoreError::AllocationFailed { .. } => ZeErrorCode::OutOfMemory,
             StoreError::DimensionMismatch { .. } => ZeErrorCode::DimensionMismatch,
+            StoreError::EpochMismatch(_) => ZeErrorCode::EpochMismatch,
+            StoreError::EpochUndeclared => ZeErrorCode::EpochUndeclared,
+            StoreError::EpochUnstamped => ZeErrorCode::EpochUnstamped,
             StoreError::ActiveRowOverflow
             | StoreError::GenerationOverflow
             | StoreError::PartitionBytesOverflow
@@ -74,6 +77,9 @@ impl FfiError {
         let code = match error {
             IngestError::Store(error) => Self::store(error).code,
             IngestError::EmptyBatch => ZeErrorCode::EmptyBatch,
+            IngestError::EpochMismatch(_) => ZeErrorCode::EpochMismatch,
+            IngestError::EpochUndeclared => ZeErrorCode::EpochUndeclared,
+            IngestError::EpochUnstamped => ZeErrorCode::EpochUnstamped,
             IngestError::StaleRevision { .. } => ZeErrorCode::StaleRevision,
             IngestError::Vector(_) => ZeErrorCode::InvalidArgument,
             IngestError::Payload(_) => ZeErrorCode::InvalidArgument,

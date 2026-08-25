@@ -38,6 +38,9 @@ fn error_codes_are_append_only() {
         (ZeErrorCode::Synchronization, 20),
         (ZeErrorCode::AccessMode, 21),
         (ZeErrorCode::Internal, 22),
+        (ZeErrorCode::EpochMismatch, 23),
+        (ZeErrorCode::EpochUndeclared, 24),
+        (ZeErrorCode::EpochUnstamped, 25),
     ];
     for (actual, expected) in codes {
         assert_eq!(actual as i32, expected);

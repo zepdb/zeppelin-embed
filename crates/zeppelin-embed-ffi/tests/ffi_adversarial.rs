@@ -424,7 +424,7 @@ fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
             match call(&context, *cell) {
                 CellResult::Executed(code) => {
                     assert_ne!(code, ZeErrorCode::Ok, "{operation} {cell:?}");
-                    assert!((1..=22).contains(&(code as i32)), "typed error code");
+                    assert!((1..=25).contains(&(code as i32)), "typed error code");
                     executed += 1;
                 }
                 CellResult::Skipped(reason) => skipped.push(format!(
