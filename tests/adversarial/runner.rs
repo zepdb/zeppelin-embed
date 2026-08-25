@@ -16,8 +16,8 @@ use zeppelin_embed::fts::tokenizer::{Analyzer, Profile};
 use zeppelin_embed::fusion::{HybridQuery, LexicalCandidate, VectorCandidate, fuse};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
-    SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, GraphSearchStats, IngestBatch, IngestDocument,
+    IngestError, Revision, RowSource, SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
@@ -29,7 +29,9 @@ use zeppelin_embed::meta::{
     AliveSet, ColumnStoreBuilder, Predicate, PredicateValue, RangeBound, RangePredicate,
     TIMESTAMP_COLUMN,
 };
-use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
+use zeppelin_embed::planner::{
+    FilterMode, PlanFallback, PlanNode, SegmentBranch, SegmentPlan, SegmentTier,
+};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentId;
@@ -233,6 +235,145 @@ struct SearchObservation {
     diagnostics_plan_matches_execution: bool,
     expected_exact_rescore: bool,
     expected_budget_exhausted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UnfilteredSegmentExecution {
+    source: RowSource,
+    tier: SegmentTier,
+    live_rows: u64,
+    row_count: u32,
+}
+
+fn observe_unfiltered_segments(store: &Store) -> Result<Vec<UnfilteredSegmentExecution>, String> {
+    let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+    let mut segments = snapshot
+        .segments()
+        .iter()
+        .map(|segment| {
+            let tier = if segment.directory().iter().any(|entry| {
+                entry.kind == zeppelin_embed::segment::layout::RegionKind::GraphNodeBlocks.id()
+            }) {
+                SegmentTier::SealedGraph
+            } else {
+                SegmentTier::SealedScan
+            };
+            Ok(UnfilteredSegmentExecution {
+                source: RowSource::Sealed(segment.meta().id),
+                tier,
+                live_rows: segment
+                    .alive()
+                    .map_err(|error| error.to_string())?
+                    .live_count(),
+                row_count: segment.meta().row_count,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    segments.sort_unstable_by(|left, right| {
+        right
+            .row_count
+            .cmp(&left.row_count)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    Ok(segments)
+}
+
+fn unfiltered_plan_node_matches(plan: &SegmentPlan) -> bool {
+    match (&plan.node, plan.branch) {
+        (PlanNode::Scan { source, branch }, SegmentBranch::MaskedScan | SegmentBranch::Pruned) => {
+            *source == plan.source && *branch == plan.branch
+        }
+        (
+            PlanNode::Graph {
+                source,
+                fallback: None,
+            },
+            SegmentBranch::Graph,
+        ) => *source == plan.source,
+        _ => false,
+    }
+}
+
+fn unfiltered_plan_matches_execution(
+    plans: &[SegmentPlan],
+    kind: SearchKind,
+    segments: &[UnfilteredSegmentExecution],
+    graph: GraphSearchStats,
+) -> bool {
+    let mut active_plans = 0_usize;
+    let mut sealed_plans = Vec::new();
+    let mut traversed = 0_usize;
+    let mut pruned = 0_usize;
+
+    for plan in plans {
+        if plan.filter_mode != FilterMode::None
+            || plan.fallback != PlanFallback::None
+            || !unfiltered_plan_node_matches(plan)
+        {
+            return false;
+        }
+        match plan.source {
+            RowSource::Active => {
+                active_plans = active_plans.saturating_add(1);
+                if active_plans > 1
+                    || plan.tier != SegmentTier::ActiveScan
+                    || plan.branch != SegmentBranch::MaskedScan
+                    || plan.approximate
+                    || plan.ef_requested.is_some()
+                    || plan.ef_effective.is_some()
+                {
+                    return false;
+                }
+            }
+            RowSource::Sealed(_) => {
+                traversed =
+                    traversed.saturating_add(usize::from(plan.branch == SegmentBranch::Graph));
+                pruned = pruned.saturating_add(usize::from(plan.branch == SegmentBranch::Pruned));
+                sealed_plans.push(plan);
+            }
+        }
+    }
+
+    if sealed_plans.len() != segments.len()
+        || traversed != graph.segments_traversed
+        || pruned != graph.segments_pruned_by_bound
+    {
+        return false;
+    }
+
+    sealed_plans
+        .into_iter()
+        .zip(segments)
+        .all(|(plan, executed)| {
+            let branch_matches_tier = matches!(
+                (kind, executed.tier, plan.branch),
+                (SearchKind::Scan, _, SegmentBranch::MaskedScan)
+                    | (
+                        SearchKind::Auto,
+                        SegmentTier::SealedScan,
+                        SegmentBranch::MaskedScan
+                    )
+                    | (
+                        SearchKind::Auto | SearchKind::Graph,
+                        SegmentTier::SealedGraph,
+                        SegmentBranch::Graph | SegmentBranch::Pruned,
+                    )
+            );
+            let graph_shape = match plan.branch {
+                SegmentBranch::Graph => {
+                    plan.approximate && plan.ef_requested.is_none() && plan.ef_effective.is_some()
+                }
+                SegmentBranch::MaskedScan | SegmentBranch::Pruned => {
+                    !plan.approximate && plan.ef_requested.is_none() && plan.ef_effective.is_none()
+                }
+                _ => false,
+            };
+            plan.source == executed.source
+                && plan.tier == executed.tier
+                && plan.filter_cardinality == executed.live_rows
+                && branch_matches_tier
+                && graph_shape
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -620,6 +761,7 @@ impl Engine for RealEngine {
         kind: SearchKind,
         seed: u64,
     ) -> Result<SearchObservation, String> {
+        let execution_segments = observe_unfiltered_segments(self.store()?)?;
         let graph_available = self
             .store()?
             .snapshot()
@@ -684,7 +826,12 @@ impl Engine for RealEngine {
             diagnostics_budget_exhausted: outcome.diagnostics.budget_exhausted,
             diagnostics_counters_match: outcome.diagnostics.counters.scan == outcome.stats
                 && outcome.diagnostics.counters.graph == outcome.graph_stats,
-            diagnostics_plan_matches_execution: true,
+            diagnostics_plan_matches_execution: unfiltered_plan_matches_execution(
+                &outcome.diagnostics.plan,
+                kind,
+                &execution_segments,
+                outcome.graph_stats,
+            ),
             expected_exact_rescore,
             expected_budget_exhausted: false,
         })
