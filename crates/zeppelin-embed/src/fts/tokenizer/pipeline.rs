@@ -258,9 +258,7 @@ fn emit_surface(config: &TokenizerConfig, text: &str) -> (Vec<Emission>, u32) {
             // `SARS-CoV-2` are discriminated by exactly that digit. The
             // dropped part's position stays spent, exactly as a removed
             // stopword's does.
-            if config.drop_single_char_parts
-                && is_single_letter(&term)
-            {
+            if config.drop_single_char_parts && is_single_letter(&term) {
                 continue;
             }
             let offset = u32::try_from(index).unwrap_or(u32::MAX);
@@ -549,14 +547,14 @@ mod tests {
         // apostrophe splits of `don't` and `investor's` lose only their
         // `t` and `s`. Dropped parts leave their positions spent, so the
         // analyzed length is unchanged.
-        let tokens = analyze_with(
-            Profile::TextDefault.config(),
-            "401k don't investor's fund",
-        );
+        let tokens = analyze_with(Profile::TextDefault.config(), "401k don't investor's fund");
         let all = terms(&tokens);
         assert!(all.iter().any(|term| term == "401k"), "original survives");
         assert!(all.iter().any(|term| term == "401"), "long part survives");
-        assert!(all.iter().any(|term| term == "investor"), "long part survives");
+        assert!(
+            all.iter().any(|term| term == "investor"),
+            "long part survives"
+        );
         assert!(all.iter().any(|term| term == "don"), "long part survives");
         for junk in ["k", "t", "s"] {
             assert!(
@@ -573,7 +571,10 @@ mod tests {
         assert_eq!(fund_position, Some(6), "dropped parts keep their positions");
 
         // A single DIGIT part survives: `type-2` is discriminated by it.
-        let typed = terms(&analyze_with(Profile::TextDefault.config(), "type-2 diabetes"));
+        let typed = terms(&analyze_with(
+            Profile::TextDefault.config(),
+            "type-2 diabetes",
+        ));
         assert!(
             typed.iter().any(|term| term == "2"),
             "single digit parts are kept, got {typed:?}"
@@ -582,7 +583,10 @@ mod tests {
         // The identifier profile keeps one-character parts: `x` in `x_max`
         // is a real search target in code.
         let code = terms(&analyze_with(Profile::Code.config(), "x_max"));
-        assert!(code.iter().any(|term| term == "x"), "code keeps short parts");
+        assert!(
+            code.iter().any(|term| term == "x"),
+            "code keeps short parts"
+        );
     }
 
     #[test]
