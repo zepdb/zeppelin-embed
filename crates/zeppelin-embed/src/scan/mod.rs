@@ -156,54 +156,6 @@ pub struct ScanRequest<'a> {
     pub row_mask: Option<&'a roaring::RoaringBitmap>,
 }
 
-/// Pull-based stream of exact candidates in permanent parity order.
-///
-/// Every batch is ranked by descending score and ascending row id on ties.
-/// For every valid stream and `k`, concatenating `pull(k)` followed by another
-/// `pull(k)` is exactly equal to `pull(2 * k)` from a fresh stream. Future
-/// filter and fusion stages may stop pulling without changing candidates that
-/// were already yielded.
-pub trait CandidateStream {
-    /// Pulls at most `maximum` not-yet-yielded candidates.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ScanError`] if the request is invalid or scoring fails.
-    fn pull(&mut self, maximum: usize) -> Result<Vec<ScanCandidate>, ScanError>;
-}
-
-/// Exact single-threaded candidate stream used by the Part A entry point.
-#[derive(Debug)]
-pub struct ExactCandidateStream<'a> {
-    request: ScanRequest<'a>,
-    yielded: usize,
-}
-
-impl CandidateStream for ExactCandidateStream<'_> {
-    fn pull(&mut self, maximum: usize) -> Result<Vec<ScanCandidate>, ScanError> {
-        let requested = self
-            .yielded
-            .checked_add(maximum)
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        let ranked = scan_top_k(self.request, requested)?;
-        let batch = ranked.into_iter().skip(self.yielded).collect::<Vec<_>>();
-        self.yielded = self
-            .yielded
-            .checked_add(batch.len())
-            .ok_or(ScanError::ArithmeticOverflow)?;
-        Ok(batch)
-    }
-}
-
-/// Creates a pull-based exact candidate stream.
-#[must_use]
-pub const fn candidate_stream(request: ScanRequest<'_>) -> ExactCandidateStream<'_> {
-    ExactCandidateStream {
-        request,
-        yielded: 0,
-    }
-}
-
 /// Typed failure from exact scan validation or scoring.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScanError {
@@ -321,15 +273,15 @@ impl From<QuantError> for ScanError {
 /// Returns the exact best `k` candidates in permanent parity order.
 ///
 /// Scores are ordered descending. Equal scores are always ordered by ascending
-/// row id. This is a permanent public contract shared by row-major, streaming,
-/// and parallel implementations.
+/// row id. This is a permanent public contract shared by row-major and parallel
+/// implementations.
 ///
 /// # Errors
 ///
 /// Returns [`ScanError`] for invalid shapes, non-finite inputs, or non-finite
 /// scores.
 pub fn top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, ScanError> {
-    candidate_stream(request).pull(k)
+    scan_top_k(request, k)
 }
 
 /// Forces the planner's gather executor for threshold calibration.
@@ -1066,10 +1018,7 @@ mod tests {
     use roaring::RoaringBitmap;
     use tempfile::{TempDir, tempdir};
 
-    use super::{
-        CandidateStream, F32Rows, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows,
-        candidate_stream, top_k,
-    };
+    use super::{F32Rows, Int8Factors, ScanOptions, ScanQuery, ScanRequest, ScanRows, top_k};
     use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, QueryError, Store};
     use crate::quant::{prepare_bit4_query, prepare_int8_query, quantize_bit4};
 
@@ -1171,33 +1120,6 @@ mod tests {
         };
 
         assert!(top_k(request, 4).expect("valid empty scan").is_empty());
-    }
-
-    #[test]
-    fn prop_candidate_stream_prefix_consistent() {
-        let mut random =
-            crate::test_support::seeded_rng("scan::prop_candidate_stream_prefix_consistent");
-        let query = (0..17)
-            .map(|_| random.random_range(-2.0_f32..=2.0_f32))
-            .collect::<Vec<_>>();
-        let rows = F32Rows::new(
-            (0..127 * query.len())
-                .map(|_| random.random_range(-2.0_f32..=2.0_f32))
-                .collect::<Vec<_>>(),
-        );
-        let request = ScanRequest {
-            query: ScanQuery::F32(&query),
-            rows: ScanRows::F32RowMajor(&rows),
-            row_mask: None,
-        };
-
-        let mut incremental = candidate_stream(request);
-        let mut two_pulls = incremental.pull(19).expect("first pull");
-        two_pulls.extend(incremental.pull(19).expect("second pull"));
-        let mut fresh = candidate_stream(request);
-        let one_pull = fresh.pull(38).expect("fresh pull");
-
-        assert_eq!(two_pulls, one_pull);
     }
 
     #[test]
@@ -1960,12 +1882,6 @@ mod tests {
         for error in errors {
             assert!(!error.to_string().is_empty());
         }
-        let empty_rows = F32Rows::new(Vec::new());
-        let mut stream = super::ExactCandidateStream {
-            request: mask_fixture(&f32_query, &empty_rows, None),
-            yielded: usize::MAX,
-        };
-        assert_eq!(stream.pull(1), Err(super::ScanError::ArithmeticOverflow));
         assert!(
             !super::ScanError::from(crate::quant::QuantError::EmptyVector)
                 .to_string()
