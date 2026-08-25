@@ -231,8 +231,10 @@ struct KernelTable {
 
 /// One bounds-validated packed four-bit row borrowed from a mapped region.
 ///
-/// The only constructor derives the row from an in-bounds offset and length,
-/// so the stored address remains readable while this handle is alive.
+/// `from_mapped_region` validates an in-bounds offset and length; the
+/// crate-only `from_validated_bytes` wraps a slice whose persisted range was
+/// already validated. Both retain a borrowed slice, so the stored address is
+/// readable for that slice's complete length while this handle is alive.
 #[derive(Clone, Copy)]
 pub struct Bit4Row<'a> {
     bytes: &'a [u8],
@@ -450,6 +452,15 @@ impl KernelVariant {
     }
 
     /// Iterates over every arm executable on the current CPU.
+    ///
+    /// BL-072: `dispatch::variant_tables()` returns the SMMLA table plus the
+    /// u2/u6/u8/prefetch DotProd shape tables, none of which the engine ever
+    /// selects on its own. They exist so the scalar oracle, the property
+    /// suite, the fuzzer and the frontier harness can evaluate each arm
+    /// independently. That is a test and measurement surface, not an engine
+    /// surface, so it is gated: a consumer of the shipped staticlib does not
+    /// see it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn available() -> impl Iterator<Item = Self> {
         dispatch::variant_tables()
             .into_iter()
@@ -588,8 +599,9 @@ fn score_bit4_ptrs_with_table(
     }
     debug_assert!(q.len() <= MAX_DOT_I8_DIMENSION);
     debug_assert_eq!(rows.row_bytes, q.len().div_ceil(2));
-    // SAFETY: the validated row handles prove every pointer is readable for
-    // row_bytes and keep every backing region alive for the dispatched call.
+    // SAFETY: Bit4Rows4::from_rows verified that every Bit4Row's readable
+    // slice is row_bytes long, and their borrow keeps each backing region alive
+    // for the dispatched call.
     unsafe {
         (table.score_bit4_ptrs)(
             q,

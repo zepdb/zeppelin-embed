@@ -18,6 +18,10 @@ roaring.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+# BL-072: the crate's own integration tests need `test-support` so they can
+# enumerate KernelVariant::available(); a plain `cargo test -p zeppelin-embed`
+# does not otherwise enable a feature of the crate under test.
+zeppelin-embed = { path = ".", features = ["test-support"] }
 criterion.workspace = true
 proptest.workspace = true
 rand.workspace = true

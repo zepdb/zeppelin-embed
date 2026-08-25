@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4.13"
 rand = "0.9.5"
 rand_chacha = "0.9.0"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
-zeppelin-embed = { path = "../crates/zeppelin-embed" }
+zeppelin-embed = { path = "../crates/zeppelin-embed", features = ["test-support"] }
 
 [workspace]
 members = ["."]
