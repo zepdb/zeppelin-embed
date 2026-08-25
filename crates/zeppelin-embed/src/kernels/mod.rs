@@ -452,6 +452,15 @@ impl KernelVariant {
     }
 
     /// Iterates over every arm executable on the current CPU.
+    ///
+    /// BL-072: `dispatch::variant_tables()` returns the SMMLA table plus the
+    /// u2/u6/u8/prefetch DotProd shape tables, none of which the engine ever
+    /// selects on its own. They exist so the scalar oracle, the property
+    /// suite, the fuzzer and the frontier harness can evaluate each arm
+    /// independently. That is a test and measurement surface, not an engine
+    /// surface, so it is gated: a consumer of the shipped staticlib does not
+    /// see it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn available() -> impl Iterator<Item = Self> {
         dispatch::variant_tables()
             .into_iter()

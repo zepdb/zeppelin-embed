@@ -633,6 +633,7 @@ dependencies = [
  "roaring",
  "tempfile",
  "xxhash-rust",
+ "zeppelin-embed",
 ]
 
 [[package]]

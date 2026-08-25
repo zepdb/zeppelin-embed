@@ -54,6 +54,7 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
     KernelTable {
         arm: KernelArm::Neon,
@@ -72,22 +73,27 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u2_table(features: KernelFeatures) -> KernelTable {
     dotprod_shape_table(features, dot_i8_dotprod_u2, dot_i8_batch_dotprod_u2)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u6_table(features: KernelFeatures) -> KernelTable {
     dotprod_shape_table(features, dot_i8_dotprod_u6, dot_i8_batch_dotprod_u6)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u8_table(features: KernelFeatures) -> KernelTable {
     dotprod_shape_table(features, dot_i8_dotprod_u8, dot_i8_batch_dotprod_u8)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_prefetch_table(features: KernelFeatures) -> KernelTable {
     dotprod_shape_table(features, dot_i8_dotprod, dot_i8_batch_dotprod_prefetch)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dotprod_shape_table(
     features: KernelFeatures,
     dot_i8: super::DotI8Fn,
@@ -178,18 +184,22 @@ unsafe fn dot_i8_dotprod_inner(a: &[i8], b: &[i8]) -> i32 {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_dotprod_u2(a: &[i8], b: &[i8]) -> i32 {
     dot_i8_dotprod_shape::<2>(a, b)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_dotprod_u6(a: &[i8], b: &[i8]) -> i32 {
     dot_i8_dotprod_shape::<6>(a, b)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_dotprod_u8(a: &[i8], b: &[i8]) -> i32 {
     dot_i8_dotprod_shape::<8>(a, b)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_dotprod_shape<const ACCUMULATORS: usize>(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len(), "kernel lengths must be pre-validated");
     debug_assert!(
@@ -202,6 +212,7 @@ fn dot_i8_dotprod_shape<const ACCUMULATORS: usize>(a: &[i8], b: &[i8]) -> i32 {
 }
 
 #[target_feature(enable = "dotprod")]
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn dot_i8_dotprod_shape_inner<const ACCUMULATORS: usize>(a: &[i8], b: &[i8]) -> i32 {
     debug_assert!(ACCUMULATORS > 0);
     let block = I8_LANES * ACCUMULATORS;
@@ -912,18 +923,22 @@ fn dot_i8_batch_widen(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_widen);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_batch_dotprod_u2(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_dotprod_u2);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_batch_dotprod_u6(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_dotprod_u6);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_batch_dotprod_u8(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     batch_i8(q, rows, d, out, dot_i8_dotprod_u8);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_batch_dotprod_prefetch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
     debug_assert!(
@@ -945,6 +960,7 @@ fn dot_i8_batch_dotprod_prefetch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32
 }
 
 #[target_feature(enable = "dotprod")]
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn dot_i8_batch_dotprod_prefetch_inner(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     let row_count = out.len();
     for (row_index, (row, result)) in rows.chunks_exact(d).zip(out.iter_mut()).enumerate() {
@@ -964,6 +980,7 @@ unsafe fn dot_i8_batch_dotprod_prefetch_inner(q: &[i8], rows: &[i8], d: usize, o
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn dot_i8_batch_i8mm(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     debug_assert_eq!(q.len(), d, "query dimension must be pre-validated");
     debug_assert!(
@@ -985,6 +1002,7 @@ fn dot_i8_batch_i8mm(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
 }
 
 #[target_feature(enable = "i8mm,dotprod")]
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn dot_i8_batch_i8mm_inner(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     let paired_rows = out.len() / 2 * 2;
     let processed = d / I8_LANES * I8_LANES;
@@ -1035,6 +1053,7 @@ unsafe fn dot_i8_batch_i8mm_inner(q: &[i8], rows: &[i8], d: usize, out: &mut [i3
 }
 
 #[target_feature(enable = "i8mm")]
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn i8mm_mac(mut acc: int32x4_t, left: int8x16_t, right: int8x16_t) -> int32x4_t {
     // SAFETY: runtime dispatch established FEAT_I8MM. SMMLA treats both
     // operands as two 8-byte rows and returns their four pairwise dot products.
