@@ -12,6 +12,8 @@ pub mod kernel_gate;
 
 /// Platform-truth measurement harnesses.
 pub mod platform;
+/// Across-process aggregation for DRAM-regime measurements.
+pub mod process_median;
 /// Quantization recall-retention and deterministic byte-count harness.
 pub mod recall;
 /// Full scheme-level coarse-scoring benchmark support.

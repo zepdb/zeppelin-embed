@@ -247,12 +247,34 @@ fn resolve_cache_line_size(
 #[doc(hidden)]
 pub fn verify_bench_profile() -> Result<(), Box<dyn Error>> {
     let opt_level = env!("ZEPPELIN_BENCH_OPT_LEVEL");
-    if opt_level != "3" || cfg!(debug_assertions) {
-        return Err(io::Error::other(format!(
-            "refusing measurement: build opt-level is {opt_level:?} (debug_assertions={}); use `cargo run --profile bench -p zeppelin-embed-bench --bin platform-truth -- memory-graph <h1|h2|h3>`",
-            cfg!(debug_assertions)
+    let debug_info = env!("ZEPPELIN_BENCH_DEBUG_INFO");
+    verify_bench_profile_contract(opt_level, debug_info, cfg!(debug_assertions)).map_err(|reason| {
+        io::Error::other(format!(
+            "refusing measurement: {reason}; use `cargo run --profile bench -p zeppelin-embed-bench --bin <measurement>`"
         ))
-        .into());
+        .into()
+    })
+}
+
+/// Checks the compile-time facts that distinguish the repository's bench profile.
+#[doc(hidden)]
+pub fn verify_bench_profile_contract(
+    opt_level: &str,
+    debug_info: &str,
+    debug_assertions: bool,
+) -> Result<(), String> {
+    if opt_level != "3" {
+        return Err(format!("build opt-level is {opt_level:?}, expected \"3\""));
+    }
+    if debug_info != "true" {
+        return Err(format!(
+            "build debug-info flag is {debug_info:?}, expected \"true\" from [profile.bench]"
+        ));
+    }
+    if debug_assertions {
+        return Err(String::from(
+            "debug assertions are enabled, expected optimized bench codegen",
+        ));
     }
     Ok(())
 }

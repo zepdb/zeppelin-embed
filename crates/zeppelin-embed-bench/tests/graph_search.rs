@@ -9,6 +9,7 @@ use zeppelin_embed::graph::block::{
 };
 use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearchScratch, GraphSearcher};
 use zeppelin_embed::quant::quantize_bit4;
+use zeppelin_embed_bench::process_median::ProcessMedian;
 
 const COVERAGE_FIXTURE_ENV: &str = "ZE_COVERAGE_SMALL_FIXTURE";
 const COVERAGE_DIMS: usize = 128;
@@ -20,6 +21,7 @@ struct Observation {
     ef: usize,
     ef_source: String,
     build_passes: String,
+    core_class: String,
 }
 
 #[test]
@@ -34,23 +36,32 @@ fn sift1m_p50_under_250us_at_recall_at_least_093() {
         .map(|run| run_process(run, &binary))
         .collect::<Result<Vec<_>, _>>()
         .expect("three independent bench-profile processes must succeed");
-    let mut p50_values = observations
+    let p50_values = observations
         .iter()
         .map(|observation| observation.p50_us)
         .collect::<Vec<_>>();
-    p50_values.sort_by(f64::total_cmp);
-    let process_median = *p50_values.get(1).expect("exactly three observations");
+    let process_summary =
+        ProcessMedian::new(p50_values).expect("exactly three valid process observations");
+    let process_median = process_summary.median();
+    println!(
+        "GRAPH_SEARCH_PROCESS_RESULT p50_us={:?} median_us={process_median:.3} between_process_spread_percent={:.3}",
+        process_summary.values(),
+        process_summary.spread_percent(),
+    );
 
     assert!(
         observations.iter().all(|observation| observation.ef == 200
             && observation.ef_source == "adaptive"
             && observation.build_passes == "one"
+            && observation.core_class == "Performance"
             && observation.recall_at_100 >= 0.93),
         "recall/ef gate failed: {observations:?}"
     );
     assert!(
         process_median <= 250.0,
-        "p50 gate failed: process p50 values {p50_values:?}, median {process_median:.3} us"
+        "p50 gate failed: process p50 values {:?}, median {process_median:.3} us, between-process spread {:.3}%",
+        process_summary.values(),
+        process_summary.spread_percent(),
     );
 }
 
@@ -172,6 +183,7 @@ fn run_process(run: usize, binary: &Path) -> Result<Observation, String> {
         ef: parse_value(line, "ef")?,
         ef_source: parse_value(line, "ef_source")?,
         build_passes: parse_value(line, "build_passes")?,
+        core_class: parse_value(line, "core_class")?,
     })
 }
 
