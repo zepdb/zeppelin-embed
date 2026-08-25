@@ -20,12 +20,11 @@
 //!
 //! # Strategy selection
 //!
-//! Block-max WAND wins at small `k` with few terms; block-max MAXSCORE
-//! degrades more gracefully as the term count grows and is Lucene's choice
-//! (`research/02a:282`). The v1 rule is the spec's: WAND when the query has
-//! at most four terms and `k` is at most ten, else MAXSCORE. That rule came
-//! from GOV2 on x86 and is explicitly a starting point to be recalibrated
-//! from our own counters — see `docs/14-pruning-contracts.md`.
+//! The current counter-derived rule selects block-max MAXSCORE for three terms
+//! or fewer and block-max WAND for four or more, independent of `k`. See
+//! [`select_strategy`](crate::fts::prune::select_strategy) for the measurements
+//! and recalibration history and `docs/14-pruning-contracts.md` for the
+//! executable contract.
 
 pub mod bounds;
 pub mod maxscore;

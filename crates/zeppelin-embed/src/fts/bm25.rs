@@ -127,8 +127,9 @@ impl Default for Bm25Params {
 
 /// Store-wide corpus statistics.
 ///
-/// These live in the manifest and are updated at seal/commit, which is the
-/// manifest's only writer. They are never derived per segment.
+/// [`crate::fts::index::LexicalIndex`] derives these store-wide values from
+/// all of its sealed segments. Scoring never substitutes per-segment corpus
+/// statistics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CorpusStats {
     doc_count: u64,

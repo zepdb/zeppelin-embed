@@ -93,7 +93,7 @@ is unchanged and adding to it remains an owner decision.
 scripts/ci-gates.sh
 cargo test --workspace
 cargo deny check
-cargo llvm-cov --workspace --fail-under-lines 90
+scripts/coverage.sh
 scripts/size-budget.sh
 cargo fuzz run fuzz_smoke -- -max_total_time=60
 ```
