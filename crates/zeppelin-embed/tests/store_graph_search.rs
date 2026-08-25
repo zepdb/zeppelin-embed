@@ -260,6 +260,11 @@ fn a_traversal_that_crosses_the_filtered_budget_falls_back_and_still_returns_the
     assert_eq!(outcome.plans[0].branch, SegmentBranch::GraphExactFallback);
     assert_eq!(outcome.plans[0].fallback, PlanFallback::VisitedBudget);
     assert!(!outcome.plans[0].approximate);
+    assert_eq!(outcome.diagnostics.plan, outcome.plans);
+    assert!(outcome.diagnostics.budget_exhausted);
+    assert!(!outcome.diagnostics.approximate);
+    assert!(outcome.diagnostics.exact_rescore);
+    assert_eq!(outcome.diagnostics.counters.graph.segments_traversed, 1);
     store.close().expect("close graph store");
 }
 
@@ -287,6 +292,10 @@ fn a_widened_explicit_ef_under_a_filter_is_reported_in_the_plan() {
     assert_eq!(outcome.plans[0].ef_requested, Some(1));
     assert!(outcome.plans[0].ef_effective.is_some_and(|ef| ef > 1));
     assert_eq!(outcome.plans[0].fallback, PlanFallback::EfWidened);
+    assert_eq!(outcome.diagnostics.plan, outcome.plans);
+    assert!(!outcome.diagnostics.budget_exhausted);
+    assert!(outcome.diagnostics.approximate);
+    assert!(outcome.diagnostics.exact_rescore);
     store.close().expect("close graph store");
 }
 
@@ -544,6 +553,34 @@ fn store_search_reaches_the_graph_tier_end_to_end() {
     assert_eq!(actual, expected);
     assert_eq!(outcome.graph_stats.segments_traversed, 1);
     assert_eq!(outcome.graph_stats.candidates_rescored, ROWS);
+    store.close().expect("close store");
+}
+
+#[test]
+fn graph_diagnostics_make_membership_and_score_provenance_independent() {
+    let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
+    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
+    let query = query(5.25);
+    let outcome = store
+        .search(
+            SearchRequest::new(&query),
+            4,
+            graph_options(ROWS),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("graph-tier store search");
+
+    assert!(outcome.diagnostics.approximate);
+    assert!(outcome.diagnostics.exact_rescore);
+    assert_eq!(outcome.diagnostics.returned, outcome.candidates.len());
+    assert_eq!(outcome.diagnostics.counters.graph, outcome.graph_stats);
+    assert!(
+        outcome
+            .diagnostics
+            .plan
+            .iter()
+            .any(|plan| plan.branch == SegmentBranch::Graph)
+    );
     store.close().expect("close store");
 }
 

@@ -402,6 +402,14 @@ impl ActiveSegment {
         Ok(())
     }
 
+    pub(crate) fn indexed_through_seq(&self) -> LogSeq {
+        self.sequences
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(LogSeq::new(0))
+    }
+
     pub(crate) fn tombstone(
         &self,
         doc_ids: &[DocId],

@@ -38,6 +38,8 @@ pub struct FilteredSearchOutcome {
     pub generation: u64,
     /// One report for every active or manifest-visible segment considered.
     pub plans: Vec<SegmentPlan>,
+    /// Unconditional report of the executed query path.
+    pub diagnostics: crate::diag::QueryDiagnostics,
 }
 
 /// Typed failure from filtered planning or exact execution.
@@ -129,6 +131,7 @@ fn execute_store(
     options: SearchOptions,
     control: QueryControl,
 ) -> Result<FilteredSearchOutcome, FilteredSearchError> {
+    let started = std::time::Instant::now();
     let state = store
         .state
         .lock()
@@ -199,11 +202,13 @@ fn execute_store(
         &active,
         &store.accounting,
         generation,
+        store.epoch_identity(),
         request,
         predicate,
         k,
         options,
         &cancellation,
+        started,
     );
     drop(query_guard);
     result
@@ -215,15 +220,18 @@ fn execute_pinned(
     active: &crate::ingest::ActiveSegment,
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
     generation: u64,
+    epoch: Option<crate::epoch::EpochIdentity>,
     request: SearchRequest<'_>,
     predicate: &Predicate,
     k: usize,
     options: SearchOptions,
     cancellation: &QueryCancellation<'_>,
+    started: std::time::Instant,
 ) -> Result<FilteredSearchOutcome, FilteredSearchError> {
     let mut candidates = Vec::new();
     let mut plans = Vec::new();
     let mut stats = MutableStats::default();
+    let mut graph_stats = crate::ingest::GraphSearchStats::default();
     let bit4_query = prepare_bit4_query(request.vector(), 0)
         .map_err(ScanError::Quant)
         .map_err(QueryError::Scan)?;
@@ -279,6 +287,7 @@ fn execute_pinned(
             source,
             |row| Ok(active.document(row)),
             &mut candidates,
+            full_precision,
         )?;
         stats.add(local_stats)?;
         plans.push(plan);
@@ -329,11 +338,11 @@ fn execute_pinned(
         if let Some(graph_options) = graph_options {
             validate_filtered_explicit_ef(graph_options, k.min(row_count), row_count)?;
             if allow_list.cardinality() > ALLOW_LIST_ROWS_THRESHOLD {
-                let norm_range = segment
+                let prepared = segment
                     .graph_search_cache
                     .prepare_shared(segment, cancellation)
-                    .map_err(map_graph_cache_error)?
-                    .norm_range;
+                    .map_err(map_graph_cache_error)?;
+                let norm_range = prepared.norm_range;
                 if let Some(competitive_distance) = global_competitive_distance(&candidates, k)
                     && norm_range.squared_l2_upper_bound(request.vector()) <= f64::from(f32::MAX)
                     && (norm_range.squared_l2_lower_bound(request.vector()) as f32)
@@ -359,6 +368,8 @@ fn execute_pinned(
                     graph_options,
                     cancellation,
                     accounting,
+                    prepared.graph_validated,
+                    prepared.entry_seed_discovered,
                 )?;
                 let plan = SegmentPlan::filtered_graph(
                     source,
@@ -380,8 +391,10 @@ fn execute_pinned(
                             .map_err(QueryError::Store)
                     },
                     &mut candidates,
+                    true,
                 )?;
                 stats.add(execution.stats)?;
+                add_graph_stats(&mut graph_stats, execution.graph_stats)?;
                 plans.push(plan);
                 retain_global_top_k(&mut candidates, k);
                 continue;
@@ -496,6 +509,7 @@ fn execute_pinned(
                     .map_err(QueryError::Store)
             },
             &mut candidates,
+            auto_uses_graph || graph_selected || segment.meta().scheme == 0,
         )?;
         stats.add(local_stats)?;
         plans.push(plan);
@@ -510,11 +524,34 @@ fn execute_pinned(
     });
     candidates.truncate(k);
     cancellation.check_graph().map_err(map_scan_error)?;
+    let stats = stats.finish();
+    let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
+        snapshot_generation: generation,
+        indexed_through_seq: active
+            .indexed_through_seq()
+            .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
+        approximate: plans.iter().any(|plan| plan.approximate),
+        exact_rescore: candidates.iter().all(|candidate| candidate.exact_score()),
+        requested_k: k,
+        returned: candidates.len(),
+        budget_exhausted: plans.iter().any(|plan| {
+            matches!(
+                plan.fallback,
+                PlanFallback::VisitedBudget | PlanFallback::CandidateShortfall
+            )
+        }),
+        plan: plans.clone(),
+        scan: stats.clone(),
+        graph: graph_stats,
+        epoch,
+        elapsed: started.elapsed(),
+    });
     Ok(FilteredSearchOutcome {
         candidates,
-        stats: stats.finish(),
+        stats,
         generation,
         plans,
+        diagnostics,
     })
 }
 
@@ -525,6 +562,7 @@ struct FilteredGraphExecution {
     fallback: PlanFallback,
     ef_requested: Option<usize>,
     ef_effective: usize,
+    graph_stats: crate::ingest::GraphSearchStats,
 }
 
 fn validate_filtered_explicit_ef(
@@ -563,6 +601,8 @@ fn execute_filtered_graph(
     options: GraphSearchOptions,
     cancellation: &QueryCancellation<'_>,
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
+    graph_validated_before: bool,
+    entry_seed_discovered_before: bool,
 ) -> Result<FilteredGraphExecution, FilteredSearchError> {
     cancellation.check_graph().map_err(map_scan_error)?;
     let prepared = segment
@@ -612,6 +652,9 @@ fn execute_filtered_graph(
         .graph_search_cache
         .checkout(graph, scratch_capacity, accounting)
         .map_err(map_graph_cache_error)?;
+    let entry_seed_discovered = entry_seed_discovered_before
+        || prepared.entry_seed_discovered
+        || scratch.entry_seed_discovered();
     let entries = scratch.entries();
     let mut searcher = crate::graph::search::GraphSearcher::with_entry_row_ids(
         graph,
@@ -623,6 +666,11 @@ fn execute_filtered_graph(
     let ef_requested = options.ef();
     let mut current_ef = ef_effective;
     let mut traversal_stats = MutableStats::default();
+    let mut graph_stats = crate::ingest::GraphSearchStats {
+        graph_validations: usize::from(graph_validated_before || prepared.graph_validated),
+        entry_seed_discoveries: usize::from(entry_seed_discovered),
+        ..crate::ingest::GraphSearchStats::default()
+    };
     loop {
         let request = GraphSearchRequest::new(query, target_k, options.seed())
             .with_profile(options.profile())
@@ -637,6 +685,7 @@ fn execute_filtered_graph(
             .map_err(map_graph_error)?;
         match outcome {
             FilteredGraphSearchOutcome::Traversed(result) => {
+                add_graph_counters(&mut graph_stats, result.counters())?;
                 traversal_stats.add(graph_scan_stats(result.counters())?)?;
                 if result.candidates().len() >= target_k {
                     let candidates = result
@@ -658,6 +707,7 @@ fn execute_filtered_graph(
                         },
                         ef_requested,
                         ef_effective: current_ef,
+                        graph_stats: with_traversed_segment(graph_stats)?,
                     });
                 }
                 if current_ef < maximum_corrective_ef {
@@ -678,9 +728,11 @@ fn execute_filtered_graph(
                     PlanFallback::CandidateShortfall,
                     ef_requested,
                     current_ef,
+                    graph_stats,
                 );
             }
             FilteredGraphSearchOutcome::VisitedBudgetExceeded { counters, .. } => {
+                add_graph_counters(&mut graph_stats, counters)?;
                 traversal_stats.add(graph_scan_stats(counters)?)?;
                 return exact_filtered_graph_fallback(
                     rescore,
@@ -693,6 +745,7 @@ fn execute_filtered_graph(
                     PlanFallback::VisitedBudget,
                     ef_requested,
                     current_ef,
+                    graph_stats,
                 );
             }
         }
@@ -711,6 +764,7 @@ fn exact_filtered_graph_fallback(
     fallback: PlanFallback,
     ef_requested: Option<usize>,
     ef_effective: usize,
+    graph_stats: crate::ingest::GraphSearchStats,
 ) -> Result<FilteredGraphExecution, FilteredSearchError> {
     let (candidates, exact_stats, _) = execute_squared_l2_rows(
         rescore,
@@ -729,7 +783,72 @@ fn exact_filtered_graph_fallback(
         fallback,
         ef_requested,
         ef_effective,
+        graph_stats: with_traversed_segment(graph_stats)?,
     })
+}
+
+fn add_graph_counters(
+    stats: &mut crate::ingest::GraphSearchStats,
+    counters: GraphSearchCounters,
+) -> Result<(), FilteredSearchError> {
+    stats.visited_epoch_clears = stats
+        .visited_epoch_clears
+        .checked_add(usize::from(counters.visited_epoch_cleared()))
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    stats.candidates_scored = stats
+        .candidates_scored
+        .checked_add(counters.candidates_scored())
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    stats.candidates_rescored = stats
+        .candidates_rescored
+        .checked_add(counters.candidates_rescored())
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    Ok(())
+}
+
+fn with_traversed_segment(
+    mut stats: crate::ingest::GraphSearchStats,
+) -> Result<crate::ingest::GraphSearchStats, FilteredSearchError> {
+    stats.segments_traversed = stats
+        .segments_traversed
+        .checked_add(1)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    Ok(stats)
+}
+
+fn add_graph_stats(
+    total: &mut crate::ingest::GraphSearchStats,
+    delta: crate::ingest::GraphSearchStats,
+) -> Result<(), FilteredSearchError> {
+    total.segments_traversed = total
+        .segments_traversed
+        .checked_add(delta.segments_traversed)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.graph_validations = total
+        .graph_validations
+        .checked_add(delta.graph_validations)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.entry_seed_discoveries = total
+        .entry_seed_discoveries
+        .checked_add(delta.entry_seed_discoveries)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.visited_epoch_clears = total
+        .visited_epoch_clears
+        .checked_add(delta.visited_epoch_clears)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.candidates_scored = total
+        .candidates_scored
+        .checked_add(delta.candidates_scored)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.candidates_rescored = total
+        .candidates_rescored
+        .checked_add(delta.candidates_rescored)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    total.segments_pruned_by_bound = total
+        .segments_pruned_by_bound
+        .checked_add(delta.segments_pruned_by_bound)
+        .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+    Ok(())
 }
 
 fn graph_scan_stats(counters: GraphSearchCounters) -> Result<ScanStats, FilteredSearchError> {
@@ -798,7 +917,7 @@ fn execute_scan_request(
     cancellation: &QueryCancellation<'_>,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, SegmentBranch), FilteredSearchError> {
     let outcome = match branch {
-        SegmentBranch::FilteredGraph => {
+        SegmentBranch::FilteredGraph | SegmentBranch::Graph => {
             return Err(FilteredSearchError::InvalidPlanNode(
                 "filtered graph branch reached exact scan request",
             ));
@@ -958,7 +1077,7 @@ fn execute_squared_l2_rows(
     let mut candidates = Vec::new();
     let mut scored_rows = 0_u64;
     match branch {
-        SegmentBranch::FilteredGraph => {
+        SegmentBranch::FilteredGraph | SegmentBranch::Graph => {
             return Err(FilteredSearchError::InvalidPlanNode(
                 "filtered graph branch reached exact squared-L2 rows",
             ));
@@ -1082,6 +1201,7 @@ fn append_candidates(
     source: RowSource,
     document: impl Fn(usize) -> Result<Option<crate::ingest::DocumentVersion>, QueryError>,
     candidates: &mut Vec<SearchCandidate>,
+    exact_score: bool,
 ) -> Result<(), FilteredSearchError> {
     for candidate in local {
         let local_row = u32::try_from(candidate.row)
@@ -1090,6 +1210,7 @@ fn append_candidates(
             crate::ingest::GlobalRowId::new(source, local_row),
             document(candidate.row)?,
             candidate.score,
+            exact_score,
         ));
     }
     Ok(())

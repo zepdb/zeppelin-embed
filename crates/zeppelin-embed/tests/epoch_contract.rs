@@ -240,6 +240,11 @@ fn every_search_outcome_from_an_epoch_stamped_store_names_that_store_epoch() {
 
     for outcome in [search(&store, 1), search(&store, 4)] {
         assert_eq!(outcome.epoch, Some(declared.identity()));
+        assert_eq!(
+            outcome.diagnostics.embedding_epoch,
+            Some(declared.identity().embedding)
+        );
+        assert_eq!(outcome.diagnostics.tokenizer_epoch, None);
     }
 }
 

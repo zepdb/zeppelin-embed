@@ -49,6 +49,13 @@ fn self_test_filtered_result_outside_predicate_trips_i5() {
 }
 
 #[test]
+fn self_test_diagnostics_lie_trips_i13() {
+    let violation = adversarial::runner::planted_counterexample(Invariant::I13);
+    assert_eq!(violation.invariant, Invariant::I13);
+    println!("{}", violation.report());
+}
+
+#[test]
 fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
     for invariant in [
         Invariant::I1,
@@ -63,6 +70,7 @@ fn every_implemented_invariant_has_a_counterexample_that_trips_it() {
         Invariant::I10,
         Invariant::I11,
         Invariant::I12,
+        Invariant::I13,
     ] {
         let violation = adversarial::runner::planted_counterexample(invariant);
         assert_eq!(violation.invariant, invariant);

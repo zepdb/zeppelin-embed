@@ -25,7 +25,7 @@ use zeppelin_embed::lifecycle::{
 use zeppelin_embed::meta::{
     Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
 };
-use zeppelin_embed::planner::{SegmentBranch, SegmentTier};
+use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::Vfs;
@@ -81,6 +81,7 @@ pub enum Invariant {
     I10,
     I11,
     I12,
+    I13,
 }
 
 impl Invariant {
@@ -99,6 +100,7 @@ impl Invariant {
             Self::I10 => "I10 purge-proof",
             Self::I11 => "I11 revision-ordering",
             Self::I12 => "I12 responses-name-the-store-epoch",
+            Self::I13 => "I13 diagnostics-never-lie",
         }
     }
 }
@@ -182,6 +184,15 @@ struct SearchObservation {
     graph_segments: usize,
     graph_rescored: usize,
     graph_pruned: usize,
+    diagnostics_requested_k: usize,
+    diagnostics_returned: usize,
+    diagnostics_approximate: bool,
+    diagnostics_exact_rescore: bool,
+    diagnostics_budget_exhausted: bool,
+    diagnostics_counters_match: bool,
+    diagnostics_plan_matches_execution: bool,
+    expected_exact_rescore: bool,
+    expected_budget_exhausted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -420,6 +431,17 @@ impl Engine for RealEngine {
         kind: SearchKind,
         seed: u64,
     ) -> Result<SearchObservation, String> {
+        let graph_available = self
+            .store()?
+            .snapshot()
+            .map_err(|error| error.to_string())?
+            .segments()
+            .iter()
+            .any(|segment| {
+                segment.directory().iter().any(|entry| {
+                    entry.kind == zeppelin_embed::segment::layout::RegionKind::GraphNodeBlocks.id()
+                })
+            });
         let tier = match kind {
             SearchKind::Scan => SearchTier::Scan,
             SearchKind::Auto => SearchTier::Auto,
@@ -455,14 +477,27 @@ impl Engine for RealEngine {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let expected_exact_rescore = hits.is_empty()
+            || matches!(kind, SearchKind::Graph)
+            || (matches!(kind, SearchKind::Auto) && graph_available);
         Ok(SearchObservation {
             hits,
             generation: outcome.generation,
             epoch: outcome.epoch,
-            graph_available: self.graphs_built != 0,
+            graph_available,
             graph_segments: outcome.graph_stats.segments_traversed,
             graph_rescored: outcome.graph_stats.candidates_rescored,
             graph_pruned: outcome.graph_stats.segments_pruned_by_bound,
+            diagnostics_requested_k: outcome.diagnostics.requested_k,
+            diagnostics_returned: outcome.diagnostics.returned,
+            diagnostics_approximate: outcome.diagnostics.approximate,
+            diagnostics_exact_rescore: outcome.diagnostics.exact_rescore,
+            diagnostics_budget_exhausted: outcome.diagnostics.budget_exhausted,
+            diagnostics_counters_match: outcome.diagnostics.counters.scan == outcome.stats
+                && outcome.diagnostics.counters.graph == outcome.graph_stats,
+            diagnostics_plan_matches_execution: true,
+            expected_exact_rescore,
+            expected_budget_exhausted: false,
         })
     }
 
@@ -515,6 +550,13 @@ impl Engine for RealEngine {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let expected_exact_rescore = hits.is_empty() || graph_available;
+        let expected_budget_exhausted = outcome.plans.iter().any(|plan| {
+            matches!(
+                plan.fallback,
+                PlanFallback::VisitedBudget | PlanFallback::CandidateShortfall
+            )
+        });
         Ok(SearchObservation {
             hits,
             generation: outcome.generation,
@@ -523,6 +565,15 @@ impl Engine for RealEngine {
             graph_segments: filtered_graph_segments,
             graph_rescored: 0,
             graph_pruned: 0,
+            diagnostics_requested_k: outcome.diagnostics.requested_k,
+            diagnostics_returned: outcome.diagnostics.returned,
+            diagnostics_approximate: outcome.diagnostics.approximate,
+            diagnostics_exact_rescore: outcome.diagnostics.exact_rescore,
+            diagnostics_budget_exhausted: outcome.diagnostics.budget_exhausted,
+            diagnostics_counters_match: outcome.diagnostics.counters.scan == outcome.stats,
+            diagnostics_plan_matches_execution: outcome.diagnostics.plan == outcome.plans,
+            expected_exact_rescore,
+            expected_budget_exhausted,
         })
     }
 
@@ -1251,6 +1302,13 @@ fn check_filtered_search(
     observed: &SearchObservation,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
+    let available = model
+        .expected_filtered(query, model.len(), maximum_timestamp)
+        .len();
+    if let Some(violation) = diagnostics_violation(seed, profile, op_index, k, available, observed)
+    {
+        violations.push(violation);
+    }
     if let Some(hit) = observed.hits.iter().find(|hit| {
         model
             .timestamp(hit.doc_id)
@@ -1328,6 +1386,11 @@ fn check_search(
     content_fault_fired: bool,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
+    if let Some(violation) =
+        diagnostics_violation(seed, profile, op_index, k, model.len(), observed)
+    {
+        violations.push(violation);
+    }
     if let Some(violation) = epoch_identity_violation(seed, profile, op_index, observed) {
         violations.push(violation);
     }
@@ -1456,6 +1519,65 @@ fn check_search(
         }
     }
     violations
+}
+
+fn diagnostics_violation(
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    requested_k: usize,
+    available_matches: usize,
+    observed: &SearchObservation,
+) -> Option<Violation> {
+    let expected_approximate = observed.graph_segments != 0;
+    let silent_shortfall = observed.hits.len() < requested_k
+        && available_matches >= requested_k
+        && !observed.diagnostics_budget_exhausted;
+    let mut lies = Vec::new();
+    if observed.diagnostics_requested_k != requested_k {
+        lies.push(format!(
+            "requested_k={} expected {requested_k}",
+            observed.diagnostics_requested_k
+        ));
+    }
+    if observed.diagnostics_returned != observed.hits.len() {
+        lies.push(format!(
+            "returned={} actual {}",
+            observed.diagnostics_returned,
+            observed.hits.len()
+        ));
+    }
+    if observed.diagnostics_approximate != expected_approximate {
+        lies.push(format!(
+            "approximate={} expected {expected_approximate}",
+            observed.diagnostics_approximate
+        ));
+    }
+    if observed.diagnostics_exact_rescore != observed.expected_exact_rescore {
+        lies.push(format!(
+            "exact_rescore={} expected {}",
+            observed.diagnostics_exact_rescore, observed.expected_exact_rescore
+        ));
+    }
+    if observed.diagnostics_budget_exhausted != observed.expected_budget_exhausted {
+        lies.push(format!(
+            "budget_exhausted={} expected {}",
+            observed.diagnostics_budget_exhausted, observed.expected_budget_exhausted
+        ));
+    }
+    if !observed.diagnostics_counters_match {
+        lies.push("composed counters differ from executor counters".to_owned());
+    }
+    if !observed.diagnostics_plan_matches_execution {
+        lies.push("reported plan differs from executor plan".to_owned());
+    }
+    if silent_shortfall {
+        lies.push(format!(
+            "silent shortfall returned {} of {requested_k} with {available_matches} matches",
+            observed.hits.len()
+        ));
+    }
+    (!lies.is_empty()).then(|| violation(Invariant::I13, seed, profile, op_index, lies.join("; ")))
 }
 
 fn epoch_identity_violation(
@@ -1652,14 +1774,27 @@ fn json_escape(value: &str) -> String {
 pub fn planted_counterexample(invariant: Invariant) -> Violation {
     let seed = 91_000 + invariant as u64;
     let query = program::query(0);
-    let observation = |hits, graph_available, graph_segments, graph_rescored| SearchObservation {
-        hits,
-        generation: 1,
-        epoch: Some(declared_identity()),
-        graph_available,
-        graph_segments,
-        graph_rescored,
-        graph_pruned: 0,
+    let observation = |hits: Vec<Hit>, graph_available, graph_segments, graph_rescored| {
+        let returned = hits.len();
+        let exact_rescore = returned == 0 || graph_segments != 0;
+        SearchObservation {
+            hits,
+            generation: 1,
+            epoch: Some(declared_identity()),
+            graph_available,
+            graph_segments,
+            graph_rescored,
+            graph_pruned: 0,
+            diagnostics_requested_k: returned,
+            diagnostics_returned: returned,
+            diagnostics_approximate: graph_segments != 0,
+            diagnostics_exact_rescore: exact_rescore,
+            diagnostics_budget_exhausted: false,
+            diagnostics_counters_match: true,
+            diagnostics_plan_matches_execution: true,
+            expected_exact_rescore: exact_rescore,
+            expected_budget_exhausted: false,
+        }
     };
     match invariant {
         Invariant::I5 => {
@@ -1842,9 +1977,26 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
                 graph_segments: 0,
                 graph_rescored: 0,
                 graph_pruned: 0,
+                diagnostics_requested_k: 0,
+                diagnostics_returned: 0,
+                diagnostics_approximate: false,
+                diagnostics_exact_rescore: true,
+                diagnostics_budget_exhausted: false,
+                diagnostics_counters_match: true,
+                diagnostics_plan_matches_execution: true,
+                expected_exact_rescore: true,
+                expected_budget_exhausted: false,
             };
             epoch_identity_violation(seed, FaultProfile::None, 1, &observed)
                 .expect("missing response epoch must trip I12")
+        }
+        Invariant::I13 => {
+            let observed = SearchObservation {
+                diagnostics_returned: 1,
+                ..observation(Vec::new(), false, 0, 0)
+            };
+            diagnostics_violation(seed, FaultProfile::None, 1, 0, 0, &observed)
+                .expect("lying returned count must trip I13")
         }
     }
 }

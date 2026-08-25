@@ -121,7 +121,7 @@ impl Store {
         budget: MaintenanceBudget,
         thresholds: Option<TierThresholds>,
     ) -> MaintenanceReport {
-        match maintain_one(self, budget, thresholds) {
+        let report = match maintain_one(self, budget, thresholds) {
             Ok(report) => report,
             Err(error) => MaintenanceReport {
                 graphs_built: 0,
@@ -129,7 +129,16 @@ impl Store {
                 checkpoints_resumed: 0,
                 status: MaintenanceStatus::Failed(error),
             },
+        };
+        if let Err(error) = self.record_maintenance(&report) {
+            return MaintenanceReport {
+                graphs_built: report.graphs_built,
+                bytes_consumed: report.bytes_consumed,
+                checkpoints_resumed: report.checkpoints_resumed,
+                status: MaintenanceStatus::Failed(MaintenanceError::Store(error)),
+            };
         }
+        report
     }
 }
 

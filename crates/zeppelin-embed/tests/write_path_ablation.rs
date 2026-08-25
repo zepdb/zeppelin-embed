@@ -120,10 +120,7 @@ impl Vfs for TruncatingWriteVfs {
             .write(path, bytes.get(..bytes.len() / 2).unwrap_or_default())
     }
 
-    fn open_append(
-        &self,
-        path: &Path,
-    ) -> std::io::Result<Box<dyn zeppelin_embed::vfs::VfsFile>> {
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn zeppelin_embed::vfs::VfsFile>> {
         self.inner.open_append(path)
     }
 

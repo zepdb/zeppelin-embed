@@ -501,6 +501,12 @@ impl Store {
             StoreState::Closing => return Err(StoreError::Closing),
             StoreState::Closed => return Err(StoreError::Closed),
         }
+        let stats = self.stats_while_open();
+        drop(state);
+        stats
+    }
+
+    pub(crate) fn stats_while_open(&self) -> Result<Stats, StoreError> {
         let writer_lock = self
             .writer_lock
             .lock()
@@ -594,7 +600,6 @@ impl Store {
         drop(active_guard);
         drop(wal_writer);
         drop(writer_lock);
-        drop(state);
         Ok(Stats {
             resident_owned_bytes: accounting.resident_owned_bytes,
             mapped_bytes: accounting.mapped_bytes,

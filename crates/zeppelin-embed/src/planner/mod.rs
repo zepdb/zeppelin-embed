@@ -29,6 +29,8 @@ pub enum SegmentBranch {
     FilteredGraph,
     /// Filtered traversal abandoned to an exact allow-list answer.
     GraphExactFallback,
+    /// Unfiltered graph traversal.
+    Graph,
 }
 
 /// The physical tier represented by one segment plan.
@@ -45,6 +47,8 @@ pub enum SegmentTier {
 /// Where the exact filter is enforced relative to candidate scoring.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterMode {
+    /// No filter was requested.
+    None,
     /// The bitmap restricts rows before scoring.
     Pre,
     /// Traversal enforces the filter while visiting nodes.
@@ -128,6 +132,63 @@ pub struct SegmentPlan {
 }
 
 impl SegmentPlan {
+    pub(crate) fn unfiltered_scan(source: RowSource, tier: SegmentTier, cardinality: u64) -> Self {
+        let branch = SegmentBranch::MaskedScan;
+        Self {
+            source,
+            tier,
+            branch,
+            filter_mode: FilterMode::None,
+            filter_cardinality: cardinality,
+            approximate: false,
+            fallback: PlanFallback::None,
+            ef_requested: None,
+            ef_effective: None,
+            node: PlanNode::Scan { source, branch },
+        }
+    }
+
+    pub(crate) fn unfiltered_graph(
+        source: RowSource,
+        cardinality: u64,
+        ef_requested: Option<usize>,
+        ef_effective: usize,
+    ) -> Self {
+        Self {
+            source,
+            tier: SegmentTier::SealedGraph,
+            branch: SegmentBranch::Graph,
+            filter_mode: FilterMode::None,
+            filter_cardinality: cardinality,
+            approximate: true,
+            fallback: PlanFallback::None,
+            ef_requested,
+            ef_effective: Some(ef_effective),
+            node: PlanNode::Graph {
+                source,
+                fallback: None,
+            },
+        }
+    }
+
+    pub(crate) fn unfiltered_pruned(source: RowSource, cardinality: u64) -> Self {
+        Self {
+            source,
+            tier: SegmentTier::SealedGraph,
+            branch: SegmentBranch::Pruned,
+            filter_mode: FilterMode::None,
+            filter_cardinality: cardinality,
+            approximate: false,
+            fallback: PlanFallback::None,
+            ef_requested: None,
+            ef_effective: None,
+            node: PlanNode::Scan {
+                source,
+                branch: SegmentBranch::Pruned,
+            },
+        }
+    }
+
     pub(crate) fn exact(
         source: RowSource,
         tier: SegmentTier,

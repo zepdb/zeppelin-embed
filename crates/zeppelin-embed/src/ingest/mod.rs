@@ -353,6 +353,7 @@ pub struct SearchCandidate {
     row_id: GlobalRowId,
     document: Option<DocumentVersion>,
     score: f32,
+    exact_score: bool,
 }
 
 impl SearchCandidate {
@@ -360,11 +361,13 @@ impl SearchCandidate {
         row_id: GlobalRowId,
         document: Option<DocumentVersion>,
         score: f32,
+        exact_score: bool,
     ) -> Self {
         Self {
             row_id,
             document,
             score,
+            exact_score,
         }
     }
 
@@ -385,6 +388,10 @@ impl SearchCandidate {
     #[must_use]
     pub const fn score(self) -> f32 {
         self.score
+    }
+
+    pub(crate) const fn exact_score(self) -> bool {
+        self.exact_score
     }
 }
 
@@ -420,6 +427,8 @@ pub struct SearchOutcome {
     pub generation: u64,
     /// Embedding and tokenizer identity that interpreted this query.
     pub epoch: Option<crate::epoch::EpochIdentity>,
+    /// Unconditional report of the executed query path.
+    pub diagnostics: crate::diag::QueryDiagnostics,
 }
 
 #[derive(Clone, Copy)]

@@ -95,7 +95,10 @@ impl DropPartitionReport {
 impl Store {
     /// Drops immutable segments wholly contained by the half-open timestamp range.
     pub fn drop_partition(&self, key_range: Range<i64>) -> Result<DropPartitionReport, StoreError> {
-        self.drop_partition_on_vfs(key_range, &StdVfs)
+        let retained_through = key_range.end;
+        let report = self.drop_partition_on_vfs(key_range, &StdVfs)?;
+        self.record_retention(retained_through)?;
+        Ok(report)
     }
 
     /// Evaluates a retention policy now and explicitly invokes partition drop.

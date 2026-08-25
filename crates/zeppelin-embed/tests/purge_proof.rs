@@ -376,7 +376,10 @@ fn bl_135_purge_persists_acked_generation_with_nonempty_wal() {
         reopened.snapshot().expect("reopened snapshot").generation() >= acknowledged,
         "reopen regressed below the acknowledged purge generation"
     );
-    assert_eq!(search_one(&reopened, &[0.0, 1.0]).document(), Some(retained));
+    assert_eq!(
+        search_one(&reopened, &[0.0, 1.0]).document(),
+        Some(retained)
+    );
 }
 
 #[test]

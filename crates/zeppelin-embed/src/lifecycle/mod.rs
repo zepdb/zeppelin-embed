@@ -624,6 +624,7 @@ pub struct Store {
     pub(crate) wal_writer: Mutex<Option<crate::ingest::StoreWal>>,
     pub(crate) writer_lock: Mutex<Option<StoreLock>>,
     pub(crate) maintenance: Mutex<()>,
+    pub(crate) health_state: Mutex<crate::diag::HealthState>,
     pub(crate) durability_policy: DurabilityPolicy,
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
@@ -778,6 +779,7 @@ impl Store {
             wal_writer: Mutex::new(wal_writer),
             writer_lock: Mutex::new(writer_lock),
             maintenance: Mutex::new(()),
+            health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
@@ -980,6 +982,7 @@ impl Store {
         control: QueryControl,
         graph_bound_mode: GraphBoundMode,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        let started = std::time::Instant::now();
         let state = self
             .state
             .lock()
@@ -1065,6 +1068,7 @@ impl Store {
             options,
             control,
             graph_bound_mode,
+            started,
         );
         drop(active_query);
         result
@@ -1095,6 +1099,7 @@ fn search_pinned(
     options: SearchOptions,
     control: QueryControl,
     graph_bound_mode: GraphBoundMode,
+    started: std::time::Instant,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
     use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
     use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -1112,6 +1117,7 @@ fn search_pinned(
     let mut bytes_read = 0_u64;
     let mut worker_thread_ids = Vec::new();
     let mut graph_stats = GraphSearchStats::default();
+    let mut plans = Vec::new();
 
     if matches!(options.tier(), SearchTier::Graph(_)) {
         for segment in snapshot.segments() {
@@ -1136,6 +1142,7 @@ fn search_pinned(
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
+        let exact_score = auto_uses_graph || matches!(options.tier(), SearchTier::Graph(_));
         let outcome = match options.tier() {
             SearchTier::Auto if auto_uses_graph => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
@@ -1175,7 +1182,13 @@ fn search_pinned(
             &mut dims_touched,
             &mut bytes_read,
             &mut worker_thread_ids,
+            exact_score,
         )?;
+        plans.push(crate::planner::SegmentPlan::unfiltered_scan(
+            RowSource::Active,
+            crate::planner::SegmentTier::ActiveScan,
+            alive.live_count(),
+        ));
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
         }
@@ -1326,6 +1339,10 @@ fn search_pinned(
                     .segments_pruned_by_bound
                     .checked_add(1)
                     .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+                plans.push(crate::planner::SegmentPlan::unfiltered_pruned(
+                    source,
+                    alive.live_count(),
+                ));
                 continue;
             }
             let mut scratch = segment
@@ -1454,8 +1471,15 @@ fn search_pinned(
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                     score,
+                    true,
                 ));
             }
+            plans.push(crate::planner::SegmentPlan::unfiltered_graph(
+                source,
+                alive.live_count(),
+                graph_options.ef(),
+                effective_ef,
+            ));
             if matches!(graph_bound_mode, GraphBoundMode::Shared) {
                 retain_global_top_k(&mut candidates, k);
             }
@@ -1560,6 +1584,7 @@ fn search_pinned(
                 }
             }
         };
+        let exact_score = auto_uses_graph || segment.meta().scheme == 0;
         merge_store_outcome(
             outcome,
             source,
@@ -1573,24 +1598,57 @@ fn search_pinned(
             &mut dims_touched,
             &mut bytes_read,
             &mut worker_thread_ids,
+            exact_score,
         )?;
+        let tier = if segment
+            .directory()
+            .iter()
+            .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+        {
+            crate::planner::SegmentTier::SealedGraph
+        } else {
+            crate::planner::SegmentTier::SealedScan
+        };
+        plans.push(crate::planner::SegmentPlan::unfiltered_scan(
+            source,
+            tier,
+            alive.live_count(),
+        ));
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
         }
     }
 
     retain_global_top_k(&mut candidates, k);
+    let stats = ScanStats {
+        dims_touched,
+        bytes_read,
+        threads_used: worker_thread_ids.len(),
+        worker_thread_ids,
+    };
+    let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
+        snapshot_generation: generation,
+        indexed_through_seq: active
+            .indexed_through_seq()
+            .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
+        approximate: plans.iter().any(|plan| plan.approximate),
+        exact_rescore: candidates.iter().all(|candidate| candidate.exact_score()),
+        requested_k: k,
+        returned: candidates.len(),
+        budget_exhausted: false,
+        plan: plans,
+        scan: stats.clone(),
+        graph: graph_stats,
+        epoch,
+        elapsed: started.elapsed(),
+    });
     Ok(SearchOutcome {
         candidates,
-        stats: ScanStats {
-            dims_touched,
-            bytes_read,
-            threads_used: worker_thread_ids.len(),
-            worker_thread_ids,
-        },
+        stats,
         graph_stats,
         generation,
         epoch,
+        diagnostics,
     })
 }
 
@@ -1764,6 +1822,7 @@ fn merge_store_outcome(
     dims_touched: &mut u64,
     bytes_read: &mut u64,
     worker_thread_ids: &mut Vec<std::thread::ThreadId>,
+    exact_score: bool,
 ) -> Result<(), QueryError> {
     *dims_touched = dims_touched
         .checked_add(outcome.stats.dims_touched)
@@ -1783,6 +1842,7 @@ fn merge_store_outcome(
             crate::ingest::GlobalRowId::new(source, local_row),
             document(candidate.row_id)?,
             candidate.score,
+            exact_score,
         ));
     }
     Ok(())
