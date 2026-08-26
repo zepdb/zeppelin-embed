@@ -4,6 +4,13 @@
 task-21 D6+D9 merge — epoch transition, embedder seam, I14 — which is about
 to be committed; nothing here touches it). Assessment date 2026-08-25.
 
+**Live update 2026-08-25:** BL-160 is ruled and implemented on
+`api/bl160-r15`: no hybrid tier preference selects exact scoring, an explicit
+tier still wins, and estimated vector scores still fail with
+`FusionError::EstimatedVectorScore`. R15's remaining fusion header and local
+decision ledger are also implemented there. Inventory counts below are the
+assessment-time snapshot, not current status.
+
 **Inventory:** 110 open items — 95 `BL-*` from `tasks/execution_order.md`
 plus R01–R15 from `tasks/recommendations-from-codex.md`, read through
 `tasks/assessment-of-codex-recommendations.md` (same-day, source-verified).
@@ -226,8 +233,9 @@ k×region-size; currently RED by construction. Requires the Batch 6
 baseline banked first. Cost: S–M.
 
 **Batch 11 — BL-134: one score scale per merged answer** [correctness][api]
-Items: BL-134 [correctness][api]; re-reads BL-160 [api][owner] and BL-159
-[test-gap] afterward. Verified: `segment::writer::write_segment` is public;
+Items: BL-134 [correctness][api]; re-reads BL-159 [test-gap] afterward.
+BL-160 was subsequently ruled exact-by-default for hybrid with no explicit
+tier. Verified: `segment::writer::write_segment` is public;
 under Auto, graphless segments are exact-scanned
 (`lifecycle/mod.rs:1935-1942` via `rescore_f32`/`scan_squared_l2`) while
 Bit4 scan segments emit estimates, so a `scheme: 0` F32 segment published
@@ -239,11 +247,9 @@ constructs `SegmentBuild` directly and would break.** Files:
 query path itself. RED: `auto_never_merges_estimated_and_exact_scores` —
 publish the mixed pair through the public writer, query Auto, assert either
 a single scale or a typed refusal; today it merges silently. After it
-lands: re-run the BL-160 repro (`store_text_columns.rs:338`) — BL-160 may
-dissolve; re-read BL-159's I13 bound note and retire it if the planner
-can no longer be wrong about `approximate`. **The owner decision on the
-hybrid default (fork §4.1) should be taken before this batch is designed,
-because Task 22's C ABI query shape depends on it.** Cost: M–L.
+lands: re-read BL-159's I13 bound note and retire it if the planner can no
+longer be wrong about `approximate`. Task 22 consumes the later BL-160 ruling;
+it does not reopen the score-scale decision. Cost: M–L.
 
 **Batch 12 — R03: snapshot-lifetime decoded views, exactly accounted** [perf]
 Items: R03 [perf] (+ the per-query Roaring `alive_bitmap().clone()` counter
@@ -303,18 +309,16 @@ proptests. RED: the Batch 8 floor plus bit-identical scores across the
 dispatch-width change. Cost: S–M.
 
 **Batch 16 — R06: epoch-keyed graph profiles** [correctness]
-Items: R06 [correctness]. Verified: `GraphSearchOptions::default()` is
-`SiftClass` everywhere Auto runs, and `tier/maintain.rs:187,321` hardcodes
-`GraphParams::sift_1m()` for every build. Manifest-v2 `EpochMeta` now
-persists dims/normalization/model identity, so this is wiring: profile
-selection keyed on the epoch registry; unknown profile ⇒ typed report,
-never silent SIFT; lift the `maintain` hardcode into the same policy.
-Gated on fork §4.5 (is angular a supported v1 surface?). Files:
-`lifecycle/mod.rs`, `tier/maintain.rs`, `graph/search.rs`, `planner/exec.rs`.
-VERIFY-NOW: graph build + query behavior. RED:
-`auto_profile_follows_epoch_normalization` — publish an angular epoch,
-assert the profile is not SiftClass; currently RED. The recall-evidence
-campaign rides separately (§5). Cost: M.
+Items: R06 [correctness]. **LANDED at `b256c71` + `a67f3d4`.** Auto query
+and maintenance now resolve the same graph profile from the persisted epoch's
+document/query normalization and metric. An unnormalized squared-L2 epoch
+selects `SiftClass`; a normalized shape has no owner-approved profile and
+returns the typed `GraphProfileError::UnrecognizedEpochShape` instead of
+silently using SIFT. Executable evidence:
+[`auto_profile_follows_epoch_normalization` and
+`genuine_sift_epoch_selects_sift_class`](../crates/zeppelin-embed/tests/store_graph_search.rs),
+and [`maintain_builds_with_the_same_profile_auto_query_selects`](../crates/zeppelin-embed/src/tier/maintain.rs).
+The separate recall-evidence campaign remains outstanding (§5). Cost: landed.
 
 **Batch 17 — R05: lexical stats consistency** [correctness][owner]
 Items: R05 [correctness][owner]. After fork §4.4 is answered. Slice (i):
@@ -376,18 +380,17 @@ rules never fire from the Store path). Files: `lifecycle/mod.rs`,
 Cost: S.
 
 **Batch 22 — R04: bounded hybrid producers** [perf][api]
-Items: R04 [perf][api]; absorbs the BL-160 [api][owner] acceptance
-(exact-by-default producer makes `SearchOptions::default()` hybrid work, if
-§4.1 decides that way). Verified: `hybrid_vector_candidate_limit`
+Items: R04 [perf][api]. BL-160's exact default and R15's fusion narration were
+split out and implemented independently; this batch must preserve both.
+Verified: `hybrid_vector_candidate_limit`
 (`lifecycle/mod.rs:1408-1425`) sets `vector_k` to the total corpus row
 count, and `exact_lexical_leg` requests `k = document_count` with forced
 `AllowListDrive`, bypassing MAXSCORE/WAND; legs serial, fully
 materialized. Design per the assessment: bounded producers, serial first,
 score-scale contract at the seam defined against BL-134's fix (Batch 11)
 so the producer does not rebuild that bug behind an abstraction. Requires:
-Batch 6 baseline, Batch 11 landed, fork §4.1 decided. Also finish R15's
-`fusion/mod.rs` header here. Files: `lifecycle/mod.rs`, `fusion/mod.rs`,
-`planner/*` (5–10 files) + property tests. VERIFY-NOW: the hybrid query
+Batch 6 baseline and Batch 11 landed. Files: `lifecycle/mod.rs`,
+`fusion/mod.rs`, `planner/*` (5–10 files) + property tests. VERIFY-NOW: the hybrid query
 path end to end. RED: counter test showing `vector_k = N` and forced
 `AllowListDrive` today (the assessment's rebased RED evidence), then the
 bounded-producer contract tests. Cost: L. **Largest hybrid-latency lever
@@ -446,11 +449,11 @@ subject IS that gate.
 ## 3. Dependency graph
 
 ```
-owner §4.1 (hybrid default + producer contract)──► B11 ──► re-read BL-160, BL-159
-                                                   │
+BL-160 ruling (resolved; exact hybrid default) ─────────────────────► Task 22 ABI
+B11 ──► re-read BL-159                             │
 B6 (R13 baseline, numbers banked) ──► B10 ──► B12 ─┼─► B13
                                       │            │
-                                      └────────────┴─► B22 (also needs §4.1, B11)
+                                      └────────────┴─► B22 (also needs B11)
 B9 ──► B13   (welded pair: revert together)
 B3 (BL-156) ──► B24 (coverage.sh must run twice)
 B8 (perf floors) ──► B14, B15 (floors are their regression guard)
@@ -460,7 +463,7 @@ B14, B15, B16, B17, B18, B19, B20, B23 independent of each other,
   each revertible alone; B22 conflicts textually with B11/B12 in
   lifecycle/mod.rs — rebase, don't reorder
 campaigns: BL-142 ──► BL-149(=R09), BL-131 · B7 ──► BL-122, BL-089
-  · B12 ──► re-profile BL-114 · task 22 ABI freeze waits on §4.1
+  · B12 ──► re-profile BL-114
 ```
 
 Welded (must revert as a unit): **B9+B13** (guard and rewrite), and
@@ -471,10 +474,11 @@ against B11's score-scale rule).
 
 ## 4. DO NOT FIX — owner decisions
 
-1. **BL-160 [api][owner] + R04 seam — hybrid default.** Keep the loud
-   `EstimatedVectorScore` on default options, or make hybrid
-   exact-by-default? Decides the Task 22 C ABI query shape; needed before
-   Batch 11 is designed. (BL-160 itself is then a re-read, not work.)
+1. **BL-160 [api][owner] — RESOLVED 2026-08-25.** Hybrid with no explicit
+   tier selects exact scoring. `SearchOptions::with_tier` records an explicit
+   choice, including explicit `Auto`, and that choice still wins. Fusion still
+   rejects every estimated vector score with `EstimatedVectorScore`. Task 22
+   consumes this ruling; R04 must preserve it while changing producer bounds.
 2. **BL-100 [owner][perf] — the 19-M1 L2 target.** 2.034 ns/row vs an
    extrapolated 1.8: re-baseline is an owner HARD STOP; materiality note
    says the miss is 0.45% of the gate that matters. Rule at M4.
@@ -603,8 +607,9 @@ Verified fixed, subsumed, or unreachable. Confidence high unless flagged.
 | BL-031 (P2) | [test-gap] | **Medium confidence.** Process item; the mutation-based mitigation is recorded in-entry, the dispatch-prompt rule lives in the lessons file, and the entry's own body carries two RESOLVED sub-notes. No code deliverable remains. |
 
 Also closing-by-motion: **BL-159** (recorded bound, no work — retire when
-Batch 11 lands and I13 can see the planner again) and **BL-160** (becomes
-either documentation or dissolves entirely at Batch 11/22 + fork §4.1).
+Batch 11 lands and I13 can see the planner again). **BL-160 is implemented**
+independently of R04, with RED/GREEN and mutation guards in
+`store_text_columns.rs`.
 
 ---
 
@@ -708,7 +713,7 @@ verification pass. B*n* = batch; CLOSE = §6; CAMP = §5; OWNER = §4.
 | BL-157 | [test-gap] | P2 | CAMP #9 | diag assembly control arm | S | 1 |
 | BL-158 | [test-gap] | P2 | B5 | adversarial runner + trace source | M | 2 |
 | BL-159 | [test-gap] | P3 | re-read after B11 | — | — | 1 |
-| BL-160 | [api][owner] | P2 | OWNER §4.1 + re-read after B11/B22 | hybrid default, C ABI shape | — | 1 (assessment) |
+| BL-160 | [api][owner] | P2 | LANDED (`api/bl160-r15`) | hybrid default, C ABI shape | S | RED/GREEN + mutation guards |
 | BL-161 | [test-gap][format] | P2 | B3 | tests/corruption.rs | S | 2-partial |
 | R01 | [correctness] | P0 | B9 + B13 | graph/build, segment/writer, tier/maintain | S then L | 2 (re-verified) |
 | R02 | [perf] | P0 | B10 | segment/reader.rs | S–M | 2 (re-verified) |

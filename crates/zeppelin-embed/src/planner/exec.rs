@@ -237,9 +237,9 @@ fn execute_pinned(
     } else {
         None
     };
-    let full_precision = (matches!(options.tier(), SearchTier::Auto)
-        && auto_uses_full_precision(snapshot, active))
-        || matches!(options.tier(), SearchTier::Graph(_));
+    let full_precision = matches!(options.tier(), SearchTier::Exact | SearchTier::Graph(_))
+        || (matches!(options.tier(), SearchTier::Auto)
+            && auto_uses_full_precision(snapshot, active));
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
@@ -326,7 +326,7 @@ fn execute_pinned(
         let graph_options = match options.tier() {
             SearchTier::Graph(graph_options) if graph_selected => Some(graph_options),
             SearchTier::Auto if graph_selected => auto_graph_options,
-            SearchTier::Auto | SearchTier::Scan | SearchTier::Graph(_) => None,
+            SearchTier::Auto | SearchTier::Exact | SearchTier::Scan | SearchTier::Graph(_) => None,
         };
         if let Some(graph_options) = graph_options {
             validate_filtered_explicit_ef(graph_options, k.min(row_count), row_count)?;
