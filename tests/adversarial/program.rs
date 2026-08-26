@@ -10,7 +10,7 @@ pub const DIMENSIONS: usize = 4;
 /// This is a HARNESS KNOB, not a measurement: it only has to be large enough
 /// that a graph is genuinely built and traversed, and small enough that the
 /// fault matrix stays cheap. The shipped tier threshold is
-/// `PROVISIONAL_TIER_THRESHOLDS.graph_min_rows` (10,000) and is never
+/// `PROVISIONAL_TIER_THRESHOLDS.graph_min_rows` (30,000, measured in `tasks/evidence/20-crossover.md`) and is never
 /// inferred from this value.
 pub const GRAPH_ROWS: u32 = 96;
 
