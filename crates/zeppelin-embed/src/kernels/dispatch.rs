@@ -94,7 +94,7 @@ fn detect_features() -> KernelFeatures {
         detected.dotprod = std::arch::is_aarch64_feature_detected!("dotprod");
         detected.fp16 = std::arch::is_aarch64_feature_detected!("fp16");
         detected.i8mm = std::arch::is_aarch64_feature_detected!("i8mm");
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
             detected.dotprod |=
                 super::neon::darwin_optional_feature(b"hw.optional.arm.FEAT_DotProd\0");

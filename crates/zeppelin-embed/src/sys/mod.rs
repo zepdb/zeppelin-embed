@@ -4,5 +4,5 @@
 pub(crate) mod memory;
 
 /// Darwin-specific durability and virtual-memory probes.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod darwin;

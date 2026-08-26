@@ -235,6 +235,27 @@ if [ "${#simulator_inputs[@]}" -gt 0 ]; then
 fi
 
 xcodebuild -create-xcframework "${xcframework_args[@]}" -output "$ARTIFACT"
+
+# xcodebuild emits AvailableLibraries in an arbitrary order, so two builds of
+# identical inputs differ only by a permutation of that array. The entries have
+# the same total byte length either way, which is why the artifact size is
+# stable while its checksum is not. Sort by LibraryIdentifier so the pinned
+# checksum is reproducible.
+python3 - "$ARTIFACT/Info.plist" <<'NORMALISE_PLIST'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    plist = plistlib.load(handle)
+plist["AvailableLibraries"] = sorted(
+    plist.get("AvailableLibraries", []),
+    key=lambda entry: entry.get("LibraryIdentifier", ""),
+)
+with open(path, "wb") as handle:
+    plistlib.dump(plist, handle, sort_keys=True)
+NORMALISE_PLIST
+
 cp "$PRIVACY_MANIFEST" "$ARTIFACT/PrivacyInfo.xcprivacy"
 while IFS= read -r slice_dir; do
     cp "$PRIVACY_MANIFEST" "$slice_dir/PrivacyInfo.xcprivacy"

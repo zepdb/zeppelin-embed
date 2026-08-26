@@ -34,7 +34,7 @@ pub struct ObservedQos {
 }
 
 impl ObservedQos {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     fn current() -> Self {
         match crate::sys::darwin::observed_qos() {
             Ok((class, relative_priority)) => Self {
@@ -55,7 +55,7 @@ impl ObservedQos {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     const fn current() -> Self {
         Self {
             class: QueryQosClass::Unavailable,

@@ -588,7 +588,7 @@ impl Store {
                     }
                 })?;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         let phys_footprint =
             Some(
                 crate::sys::darwin::phys_footprint().map_err(|error| StoreError::Statistics {
@@ -596,7 +596,7 @@ impl Store {
                     source: std::io::Error::other(error),
                 })?,
             );
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         let phys_footprint = None;
         drop(snapshot_guard);
         drop(active_guard);
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(mapped_stats.cache_bytes, 0);
         assert_eq!(mapped_stats.temporary_bytes, 0);
         assert_eq!(mapped_stats.open_files, 2);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         assert!(mapped_stats.phys_footprint.is_some_and(|bytes| bytes > 0));
 
         mapped.close().expect("close mapped store");

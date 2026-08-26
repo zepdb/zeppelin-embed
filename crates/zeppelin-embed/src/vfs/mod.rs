@@ -452,7 +452,7 @@ fn is_segment_path(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
     let result = match kind {
         SyncKind::Barrier => crate::sys::darwin::barrier_fsync(file.as_raw_fd()),
@@ -461,7 +461,7 @@ fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
     result.map_err(std::io::Error::other)
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
 fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
     let result = unsafe {
         // SAFETY: both calls accept an owned live descriptor and report failures through errno.

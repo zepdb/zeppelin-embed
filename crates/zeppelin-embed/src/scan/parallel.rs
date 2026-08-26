@@ -54,11 +54,11 @@ pub fn physical_thread_capacity() -> Result<usize, ScanError> {
 }
 
 fn detect_physical_thread_capacity() -> Result<usize, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         crate::sys::darwin::physical_performance_core_count().map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)

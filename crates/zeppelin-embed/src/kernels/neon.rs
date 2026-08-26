@@ -1592,7 +1592,7 @@ unsafe fn hamming_u1_batch_inner(q: &[u8], rows: &[u8], d_bytes: usize, out: &mu
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(super) fn darwin_optional_feature(name: &[u8]) -> bool {
     let Ok(name) = std::ffi::CStr::from_bytes_with_nul(name) else {
         return false;
