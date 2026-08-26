@@ -459,8 +459,7 @@ fn bitmap_wal_replays_text_and_typed_columns_before_seal() {
     reopened.close().expect("close replayed store");
 }
 
-#[test]
-fn store_level_hybrid_populates_fusion_and_lexical_diagnostics() {
+fn hybrid_store() -> (tempfile::TempDir, Store) {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
     store
@@ -477,6 +476,46 @@ fn store_level_hybrid_populates_fusion_and_lexical_diagnostics() {
             .with_text("silver airship"),
         ]))
         .expect("ingest hybrid rows");
+    (directory, store)
+}
+
+#[test]
+fn store_level_hybrid_default_is_exact_and_populates_diagnostics() {
+    let (_directory, store) = hybrid_store();
+    let vector = SearchRequest::new(&[1.0, 0.0]);
+    let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    let outcome = store
+        .search_hybrid(
+            vector,
+            &lexical,
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("default hybrid tier is exact");
+    assert_eq!(outcome.hits[0].key, DocId::new(51));
+    assert!(outcome.diagnostics.fusion.is_some());
+    assert!(outcome.diagnostics.tokenizer_epoch.is_some());
+    assert!(outcome.diagnostics.exact_rescore);
+    assert!(outcome.diagnostics.counters.lexical.docs_evaluated > 0);
+    store.seal().expect("seal hybrid rows without a graph");
+    let sealed = store
+        .search_hybrid(
+            vector,
+            &lexical,
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("default hybrid tier exactly scans a graphless sealed segment");
+    assert_eq!(sealed.hits[0].key, DocId::new(51));
+    assert!(sealed.diagnostics.exact_rescore);
+    store.close().expect("close store");
+}
+
+#[test]
+fn store_level_hybrid_explicit_estimated_tier_is_rejected() {
+    let (_directory, store) = hybrid_store();
     let vector = SearchRequest::new(&[1.0, 0.0]);
     let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
     assert_eq!(
@@ -484,11 +523,19 @@ fn store_level_hybrid_populates_fusion_and_lexical_diagnostics() {
             vector,
             &lexical,
             &HybridQuery::new(2),
-            SearchOptions::default(),
+            SearchOptions::default().with_tier(SearchTier::Auto),
             QueryControl::Cancel(CancelToken::new()),
         ),
         Err(FusionError::EstimatedVectorScore { rank: 0 })
     );
+    store.close().expect("close store");
+}
+
+#[test]
+fn store_level_hybrid_explicit_exact_tier_preserves_ordered_score_bits() {
+    let (_directory, store) = hybrid_store();
+    let vector = SearchRequest::new(&[1.0, 0.0]);
+    let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
     let outcome = store
         .search_hybrid(
             vector,
@@ -498,10 +545,18 @@ fn store_level_hybrid_populates_fusion_and_lexical_diagnostics() {
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("search hybrid");
-    assert_eq!(outcome.hits[0].key, DocId::new(51));
-    assert!(outcome.diagnostics.fusion.is_some());
-    assert!(outcome.diagnostics.tokenizer_epoch.is_some());
-    assert!(outcome.diagnostics.counters.lexical.docs_evaluated > 0);
+    let ordered_score_bits = outcome
+        .hits
+        .iter()
+        .map(|hit| (hit.key, hit.vector_squared_l2.map(f64::to_bits)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordered_score_bits,
+        [
+            (DocId::new(51), Some(0.0_f64.to_bits())),
+            (DocId::new(52), Some(2.0_f64.to_bits())),
+        ]
+    );
     store.close().expect("close store");
 }
 

@@ -1,9 +1,13 @@
-//! Deterministic fusion of exact vector and lexical result legs.
+//! Deterministic vector/lexical fusion for library callers and
+//! [`Store::search_hybrid`](crate::lifecycle::Store::search_hybrid).
 //!
-//! This module is deliberately a library seam. Callers run the vector store
-//! and lexical index themselves, map both result identities onto one ordered
-//! join key, and pass the ranked exact-score lists here. Store-owned text
-//! ingest and a store-level hybrid query are not part of this module.
+//! Store-owned hybrid pins both legs to one generation and delegates score
+//! validation, normalization, alpha policy, RRF fallback, termination, and
+//! [`FusionReport`] construction here. A hybrid query with no explicit store
+//! tier uses exact vector scores; explicit tiers retain their selected score
+//! provenance, including typed refusal of estimated scores.
+//!
+//! See the local [architecture-decision ledger](ARCHITECTURE.md).
 
 mod cc;
 mod normalize;

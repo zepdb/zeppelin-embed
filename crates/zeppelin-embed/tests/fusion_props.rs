@@ -6,9 +6,10 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::RngCore;
 use zeppelin_embed::fusion::{
-    DEFAULT_ALPHA, DegenerateKind, DegenerateLeg, FusionError, FusionLeg, FusionMethod, FusionRule,
-    FusionTermination, HybridQuery, LEXICAL_RULE_ALPHA, LexicalCandidate, RuleSignals,
-    ScorePrecision, VectorCandidate, execute_hybrid, fuse,
+    DEFAULT_ALPHA, DEFAULT_MAX_ROUNDS, DegenerateKind, DegenerateLeg, FusionError, FusionLeg,
+    FusionMethod, FusionRule, FusionTermination, HybridQuery, LEXICAL_RULE_ALPHA, LexicalCandidate,
+    RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision, VectorCandidate,
+    execute_hybrid, fuse,
 };
 
 fn proptest_cases() -> u32 {
@@ -16,6 +17,15 @@ fn proptest_cases() -> u32 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(256)
+}
+
+#[test]
+fn unmeasured_policy_placeholders_are_explicit() {
+    assert_eq!(DEFAULT_ALPHA.to_bits(), 0.7_f64.to_bits());
+    assert_eq!(LEXICAL_RULE_ALPHA.to_bits(), 0.4_f64.to_bits());
+    assert_eq!(RARE_DOCUMENT_FREQUENCY_THRESHOLD, 5);
+    assert_eq!(RRF_K, 60);
+    assert_eq!(DEFAULT_MAX_ROUNDS, 8);
 }
 
 fn offline_cc(vector: &[(u32, f64)], lexical: &[(u32, f64)], alpha: f64, k: usize) -> Vec<u32> {

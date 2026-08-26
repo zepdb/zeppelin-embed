@@ -217,6 +217,8 @@ pub enum SearchTier {
     /// Select graph traversal per sealed segment when that graph is published.
     #[default]
     Auto,
+    /// Exhaustively score full-precision vectors.
+    Exact,
     /// Preserve the existing exhaustive sealed-segment scan.
     Scan,
     /// Traverse every sealed segment's Vamana graph.
@@ -227,7 +229,7 @@ pub enum SearchTier {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SearchOptions {
     scan: crate::scan::ScanOptions,
-    tier: SearchTier,
+    tier: Option<SearchTier>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,19 +240,16 @@ enum GraphBoundMode {
 }
 
 impl SearchOptions {
-    /// Creates automatic-tier options with the supplied scan worker budget.
+    /// Creates options with no tier preference and the supplied scan worker budget.
     #[must_use]
     pub const fn new(scan: crate::scan::ScanOptions) -> Self {
-        Self {
-            scan,
-            tier: SearchTier::Auto,
-        }
+        Self { scan, tier: None }
     }
 
     /// Explicitly selects one store-search tier.
     #[must_use]
     pub const fn with_tier(mut self, tier: SearchTier) -> Self {
-        self.tier = tier;
+        self.tier = Some(tier);
         self
     }
 
@@ -260,9 +259,17 @@ impl SearchOptions {
         self.scan
     }
 
-    /// Returns the caller-selected execution tier.
+    /// Returns the effective execution tier, using automatic selection when
+    /// the caller expressed no preference.
     #[must_use]
     pub const fn tier(self) -> SearchTier {
+        match self.tier {
+            Some(tier) => tier,
+            None => SearchTier::Auto,
+        }
+    }
+
+    const fn explicit_tier(self) -> Option<SearchTier> {
         self.tier
     }
 }
@@ -1203,7 +1210,10 @@ impl Store {
         control: QueryControl,
     ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
         let started = std::time::Instant::now();
-        let options = options.into();
+        let mut options = options.into();
+        if options.explicit_tier().is_none() {
+            options = options.with_tier(SearchTier::Exact);
+        }
         let admitted = self
             .admit_vector_search(options)
             .map_err(crate::fusion::FusionError::from)?;
@@ -1353,6 +1363,7 @@ impl Store {
                         entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id()
                     })
                 }),
+                SearchTier::Exact => false,
                 SearchTier::Scan => true,
                 SearchTier::Graph(_) => false,
             };
@@ -1615,14 +1626,15 @@ fn search_pinned(
             }
         }
     }
-    let auto_full_precision =
-        matches!(options.tier(), SearchTier::Auto) && auto_uses_full_precision(snapshot, active);
+    let full_precision = matches!(options.tier(), SearchTier::Exact | SearchTier::Graph(_))
+        || (matches!(options.tier(), SearchTier::Auto)
+            && auto_uses_full_precision(snapshot, active));
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
-        let exact_score = auto_full_precision || matches!(options.tier(), SearchTier::Graph(_));
+        let exact_score = full_precision;
         let outcome = match options.tier() {
-            SearchTier::Auto if auto_full_precision => {
+            SearchTier::Auto if full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 let cancellation = QueryCancellation::new(&control, &lease);
                 scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
@@ -1646,7 +1658,7 @@ fn search_pinned(
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
                 )?
             }
-            SearchTier::Graph(_) => {
+            SearchTier::Exact | SearchTier::Graph(_) => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 let cancellation = QueryCancellation::new(&control, &lease);
                 scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
@@ -1702,7 +1714,7 @@ fn search_pinned(
             {
                 auto_graph_options
             }
-            SearchTier::Auto | SearchTier::Scan => None,
+            SearchTier::Auto | SearchTier::Exact | SearchTier::Scan => None,
         };
         if let Some(graph_options) = graph_options {
             let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
@@ -1960,7 +1972,7 @@ fn search_pinned(
             continue;
         }
 
-        let outcome = if auto_full_precision {
+        let outcome = if full_precision {
             let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
             let cancellation = QueryCancellation::new(&control, &lease);
             let vectors = exact_rescore_rows(segment)?;
@@ -2055,7 +2067,7 @@ fn search_pinned(
                 }
             }
         };
-        let exact_score = auto_full_precision || segment.meta().scheme == 0;
+        let exact_score = full_precision || segment.meta().scheme == 0;
         merge_store_outcome(
             outcome,
             source,
