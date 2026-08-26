@@ -220,6 +220,70 @@ fn assert_header_gate() {
     }
 }
 
+const CBINDGEN_VERSION_PREFIX: &str = "cbindgen 0.29.";
+
+fn cbindgen_output(crate_dir: &Path) -> String {
+    let version = match Command::new("cbindgen").arg("--version").output() {
+        Ok(output) => String::from_utf8(output.stdout).expect("UTF-8 cbindgen version"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => panic!(
+            "cbindgen is not installed; the header drift gate requires it: \
+             cargo install cbindgen --version 0.29.4 --locked"
+        ),
+        Err(error) => panic!("failed to execute cbindgen: {error}"),
+    };
+    assert!(
+        version.trim().starts_with(CBINDGEN_VERSION_PREFIX),
+        "header drift gate is pinned to {CBINDGEN_VERSION_PREFIX}x, found {}",
+        version.trim()
+    );
+    let output = Command::new("cbindgen")
+        .current_dir(crate_dir)
+        .args(["--config", "cbindgen.toml", "--crate", "zeppelin-embed-ffi"])
+        .output()
+        .expect("run cbindgen");
+    assert!(
+        output.status.success(),
+        "cbindgen failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("UTF-8 cbindgen output")
+}
+
+#[test]
+fn the_committed_header_is_the_exact_cbindgen_output() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let generated = cbindgen_output(crate_dir);
+    let committed = std::fs::read_to_string(crate_dir.join("include/zeppelin_embed.h"))
+        .expect("committed header");
+    if generated != committed {
+        let mut drift = Vec::new();
+        for (line, (expected, actual)) in generated.lines().zip(committed.lines()).enumerate() {
+            if expected != actual {
+                drift.push(format!(
+                    "line {}:\n  generated: {expected}\n  committed: {actual}",
+                    line + 1
+                ));
+            }
+            if drift.len() == 5 {
+                break;
+            }
+        }
+        if generated.lines().count() != committed.lines().count() {
+            drift.push(format!(
+                "line count: generated {} vs committed {}",
+                generated.lines().count(),
+                committed.lines().count()
+            ));
+        }
+        panic!(
+            "include/zeppelin_embed.h drifted from the cbindgen output; regenerate with \
+             `cbindgen --config cbindgen.toml --crate zeppelin-embed-ffi \
+             --output include/zeppelin_embed.h` inside crates/zeppelin-embed-ffi\n{}",
+            drift.join("\n")
+        );
+    }
+}
+
 #[test]
 fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
     assert_header_gate();

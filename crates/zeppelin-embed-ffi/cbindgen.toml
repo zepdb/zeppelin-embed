@@ -1,0 +1,33 @@
+# Generates include/zeppelin_embed.h from the Rust ABI surface.
+#
+# Pinned to cbindgen 0.29.x. The drift gate in tests/ffi_header.rs regenerates
+# this header and fails when the committed file differs, so every change to a
+# C-visible type, constant, or function must be regenerated and committed.
+language = "C"
+include_guard = "ZEPPELIN_EMBED_H"
+cpp_compat = true
+documentation = true
+documentation_style = "c"
+style = "both"
+no_includes = true
+sys_includes = ["stddef.h", "stdint.h"]
+usize_is_size_t = true
+tab_width = 4
+line_length = 80
+
+[export.rename]
+"ZeHandle" = "ze_handle"
+"ZeCancelToken" = "ze_cancel_token"
+"ZeErrorCode" = "ze_error_code"
+"Ok" = "ZE_OK"
+"InvalidArgument" = "ZE_ERR_INVALID_ARGUMENT"
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = false
+
+[fn]
+args = "auto"
+
+[parse]
+parse_deps = false
