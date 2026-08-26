@@ -921,7 +921,8 @@ typedef struct ZeQueryRequest {
      */
     uint32_t has_alpha;
     /*
-     One to allow query-shape alpha rules; ignored when `has_alpha` is one.
+     One to enable the query-shape alpha rules, which are off by default
+     (policy version 2); ignored when `has_alpha` is one.
      */
     uint32_t rules_enabled;
     /*

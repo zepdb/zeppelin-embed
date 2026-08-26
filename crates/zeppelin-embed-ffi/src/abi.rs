@@ -693,7 +693,8 @@ pub struct ZeQueryRequest {
     pub graph_seed: u64,
     /// One when `alpha` carries an explicit fusion weight.
     pub has_alpha: u32,
-    /// One to allow query-shape alpha rules; ignored when `has_alpha` is one.
+    /// One to enable the query-shape alpha rules, which are off by default
+    /// (policy version 2); ignored when `has_alpha` is one.
     pub rules_enabled: u32,
     /// Explicit convex-combination alpha in `0..=1`.
     pub alpha: f64,

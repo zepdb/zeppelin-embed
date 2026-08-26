@@ -196,6 +196,22 @@ fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
     assert!(hits.iter().all(|hit| hit.has_vector_score == 1));
     assert_eq!(ze_query_result_free(&mut hybrid), ZeErrorCode::ZeOk);
 
+    // Rules are opt-in (policy version 2): the same identifier signal moves
+    // the effective alpha only when rules_enabled is one.
+    let mut signalled = request;
+    signalled.rules_enabled = 0;
+    signalled.identifier_token = 1;
+    let (code, mut result) = query(handle, &signalled);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(result.has_fusion, 1);
+    let default_alpha = result.effective_alpha;
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+    signalled.rules_enabled = 1;
+    let (code, mut result) = query(handle, &signalled);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_ne!(result.effective_alpha, default_alpha);
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+
     let mut explicit = request;
     explicit.has_alpha = 1;
     explicit.alpha = 0.25;

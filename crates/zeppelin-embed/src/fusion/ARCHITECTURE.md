@@ -20,13 +20,18 @@ priors are not substitutes for these executable invariants.
 | Weight raw cross-leg scores without per-leg normalization. | [`affine_transforming_one_legs_raw_scores_never_changes_the_fused_order`](../../tests/fusion_props.rs) |
 | Invent a convex-combination value when min-max normalization is undefined. | [`degenerate_legs_take_the_rrf_fallback_and_the_report_says_so`](../../tests/fusion_props.rs) |
 
-## Unmeasured policies
+## Measured and unmeasured policies
 
-`DEFAULT_ALPHA`, `LEXICAL_RULE_ALPHA`, `RARE_DOCUMENT_FREQUENCY_THRESHOLD`,
-`RRF_K`, and `DEFAULT_MAX_ROUNDS` remain explicitly labeled **NOT YET
-MEASURED** for a Zeppelin corpus. Their current values are shipped placeholders,
-not quality claims. [`unmeasured_policy_placeholders_are_explicit`](../../tests/fusion_props.rs)
-pins those values so a policy change cannot masquerade as refactoring.
+`DEFAULT_ALPHA = 0.7` is MEASURED: `tasks/evidence/17-fusion.md` (BEIR
+SciFact, Cohere embed-english-v3, 2026-08-26) reads the optimum off an
+eleven-point grid, nDCG@10 0.7642 against 0.7181 dense-only. The query-shape
+rules (`LEXICAL_RULE_ALPHA`, `RARE_DOCUMENT_FREQUENCY_THRESHOLD`) were
+measured harmful at every cell of a 28-cell sweep, so policy version 2 ships
+them off by default and `HybridQuery::with_rules` is the explicit opt-in.
+`RRF_K` and `DEFAULT_MAX_ROUNDS` remain labeled NOT YET MEASURED.
+[`fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values`](../../tests/fusion_props.rs)
+pins every value and the rules-off default so a policy change cannot
+masquerade as refactoring.
 
 R04 may replace the currently materialized leg producers with bounded producers.
 It must preserve every fusion invariant above; this ledger does not authorize

@@ -1,16 +1,23 @@
 use super::{DEFAULT_ALPHA, FusionError};
 
-/// Version of the rule data interpreted by fusion reports.
-pub const ALPHA_POLICY_VERSION: u16 = 1;
+/// Version of the rule data interpreted by fusion reports. Version 2
+/// (2026-08-26) turned the rules off by default on measured evidence.
+pub const ALPHA_POLICY_VERSION: u16 = 2;
 
-/// PLACEHOLDER -- NOT YET MEASURED.
-///
-/// Alpha selected when any exact-match rule shifts weight toward lexical.
+/// MEASURED HARMFUL AT EVERY CELL on BEIR SciFact
+/// (`tasks/evidence/17-fusion.md`): with rules on, this pair scores nDCG@10
+/// 0.7458 against the 0.7642 no-rule baseline, and no `(threshold,
+/// rule_alpha)` cell in a 28-cell sweep beat the baseline. The rules are
+/// therefore opt-in (`HybridQuery::with_rules`) and this value is retained
+/// only for a caller who has measured an identifier-heavy corpus of their
+/// own; it is not a quality claim.
 pub const LEXICAL_RULE_ALPHA: f64 = 0.4;
 
-/// PLACEHOLDER -- NOT YET MEASURED.
-///
 /// A query token at or below this document frequency is considered rare.
+/// Measured with `LEXICAL_RULE_ALPHA` above: on SciFact the min-over-terms
+/// signal fires on 211 of 300 queries at this value because any
+/// out-of-vocabulary token trips it, so it does not isolate rare exact
+/// tokens there. Opt-in only; see `LEXICAL_RULE_ALPHA`.
 pub const RARE_DOCUMENT_FREQUENCY_THRESHOLD: u64 = 5;
 
 /// Stable rule names emitted by the fusion report.

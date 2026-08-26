@@ -21,10 +21,11 @@ pub use rules::{
     RuleSignals,
 };
 
-/// PLACEHOLDER -- NOT YET MEASURED.
-///
-/// Literature prior from Bruch, TOIS 2024. No Zeppelin corpus measurement has
-/// established this value.
+/// MEASURED (`tasks/evidence/17-fusion.md`, 2026-08-26, BEIR SciFact with
+/// Cohere embed-english-v3 vectors): the optimum of an eleven-point grid,
+/// nDCG@10 0.7642 against 0.7181 dense-only and 0.6917 lexical-only; the
+/// band within one point is 0.6..0.8. It coincides with the Bruch, TOIS
+/// 2024 literature prior the placeholder started from.
 pub const DEFAULT_ALPHA: f64 = 0.7;
 
 /// PLACEHOLDER -- NOT YET MEASURED.
@@ -141,14 +142,15 @@ pub struct HybridQuery {
 }
 
 impl HybridQuery {
-    /// Constructs a query using the unmeasured policy defaults.
+    /// Constructs a query using the measured policy defaults: alpha
+    /// `DEFAULT_ALPHA` and query-shape rules disabled (policy version 2).
     #[must_use]
     pub const fn new(k: usize) -> Self {
         Self {
             k,
             alpha: None,
             rule_signals: RuleSignals::none(),
-            rules_enabled: true,
+            rules_enabled: false,
             max_rounds: DEFAULT_MAX_ROUNDS,
             epoch: None,
         }
@@ -168,7 +170,16 @@ impl HybridQuery {
         self
     }
 
-    /// Disables every query-shape alpha rule.
+    /// Enables the query-shape alpha rules (`fusion::rules`). Off by default
+    /// since policy version 2: every measured rule cell lost against the
+    /// no-rule baseline on SciFact (`tasks/evidence/17-fusion.md`).
+    #[must_use]
+    pub const fn with_rules(mut self) -> Self {
+        self.rules_enabled = true;
+        self
+    }
+
+    /// Disables every query-shape alpha rule (the default).
     #[must_use]
     pub const fn without_rules(mut self) -> Self {
         self.rules_enabled = false;

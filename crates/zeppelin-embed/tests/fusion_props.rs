@@ -19,13 +19,23 @@ fn proptest_cases() -> u32 {
         .unwrap_or(256)
 }
 
+/// Pins the fusion policy so a value change cannot masquerade as a
+/// refactor. `DEFAULT_ALPHA` and the rules-off default are measured
+/// (`tasks/evidence/17-fusion.md`); the rule constants are opt-in values
+/// measured harmful on SciFact; `RRF_K` and `DEFAULT_MAX_ROUNDS` remain
+/// unmeasured placeholders.
 #[test]
-fn unmeasured_policy_placeholders_are_explicit() {
+fn fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values() {
     assert_eq!(DEFAULT_ALPHA.to_bits(), 0.7_f64.to_bits());
     assert_eq!(LEXICAL_RULE_ALPHA.to_bits(), 0.4_f64.to_bits());
     assert_eq!(RARE_DOCUMENT_FREQUENCY_THRESHOLD, 5);
     assert_eq!(RRF_K, 60);
     assert_eq!(DEFAULT_MAX_ROUNDS, 8);
+    assert_eq!(zeppelin_embed::fusion::ALPHA_POLICY_VERSION, 2);
+    assert!(
+        !HybridQuery::new(1).rules_enabled,
+        "policy version 2: query-shape rules are opt-in"
+    );
 }
 
 fn offline_cc(vector: &[(u32, f64)], lexical: &[(u32, f64)], alpha: f64, k: usize) -> Vec<u32> {
@@ -352,7 +362,7 @@ fn a_quoted_phrase_query_shifts_alpha_and_the_report_names_the_rule() {
         identifier_token: true,
     };
     let shifted = fuse(
-        &HybridQuery::new(3).with_rule_signals(signals),
+        &HybridQuery::new(3).with_rules().with_rule_signals(signals),
         &vector,
         &lexical,
         |key| Some(*key),
@@ -366,11 +376,13 @@ fn a_quoted_phrase_query_shifts_alpha_and_the_report_names_the_rule() {
     );
 
     let rare = fuse(
-        &HybridQuery::new(3).with_rule_signals(RuleSignals {
-            quoted_phrase: false,
-            rarest_exact_document_frequency: Some(1),
-            identifier_token: false,
-        }),
+        &HybridQuery::new(3)
+            .with_rules()
+            .with_rule_signals(RuleSignals {
+                quoted_phrase: false,
+                rarest_exact_document_frequency: Some(1),
+                identifier_token: false,
+            }),
         &vector,
         &lexical,
         |key| Some(*key),

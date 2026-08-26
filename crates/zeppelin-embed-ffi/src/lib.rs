@@ -460,8 +460,8 @@ fn parse_hybrid(request: &ZeQueryRequest, hybrid: bool) -> Result<Option<HybridQ
     if has_alpha {
         query = query.with_alpha(request.alpha);
     }
-    if !rules_enabled {
-        query = query.without_rules();
+    if rules_enabled {
+        query = query.with_rules();
     }
     if has_max_rounds {
         let max_rounds = usize::try_from(request.max_rounds)
