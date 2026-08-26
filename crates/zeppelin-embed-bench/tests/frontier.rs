@@ -48,6 +48,92 @@ use zeppelin_embed_bench::frontier::tune::{
 use zeppelin_embed_bench::frontier::variants::{KernelPoint, VariantRegistry};
 use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile_contract;
 
+#[path = "beir_eval.rs"]
+mod beir_eval_contract;
+#[path = "kernel_roofline_gate.rs"]
+mod kernel_roofline_contract;
+#[path = "process_median.rs"]
+mod process_median_contract;
+
+#[test]
+fn beir_loader_reads_the_standard_layout_without_dropping_optional_or_blank_rows() {
+    let directory = tempfile::tempdir().expect("BEIR fixture directory");
+    let corpus = directory.path().join("tiny");
+    fs::create_dir_all(corpus.join("qrels")).expect("qrels directory");
+    fs::write(
+        corpus.join("corpus.jsonl"),
+        "{\"_id\":\"d1\",\"title\":\"Title\",\"text\":\"first body\"}\n\n{\"_id\":\"d2\",\"text\":\"second body\"}\n",
+    )
+    .expect("corpus fixture");
+    fs::write(
+        corpus.join("queries.jsonl"),
+        "{\"_id\":\"q1\",\"text\":\"find first\"}\n\n",
+    )
+    .expect("query fixture");
+    fs::write(
+        corpus.join("qrels/test.tsv"),
+        "query-id\tcorpus-id\tscore\nq1\td1\t2\nq1\td2\t0\n",
+    )
+    .expect("qrels fixture");
+
+    let loaded = zeppelin_embed_bench::beir::load_corpus(directory.path(), "tiny")
+        .expect("standard BEIR layout loads");
+    assert_eq!(loaded.name, "tiny");
+    assert_eq!(loaded.documents.len(), 2);
+    assert_eq!(loaded.documents[0].id, "d1");
+    assert_eq!(loaded.documents[0].title, "Title");
+    assert_eq!(loaded.documents[1].title, "");
+    assert_eq!(loaded.documents[1].text, "second body");
+    assert_eq!(loaded.queries.len(), 1);
+    assert_eq!(loaded.queries[0].id, "q1");
+    assert_eq!(loaded.queries[0].text, "find first");
+    assert_eq!(loaded.qrels["q1"]["d1"], 2);
+    assert_eq!(loaded.qrels["q1"]["d2"], 0);
+}
+
+#[test]
+fn beir_loader_reports_the_exact_malformed_file_and_line() {
+    let directory = tempfile::tempdir().expect("BEIR fixture directory");
+    let corpus = directory.path().join("broken");
+    fs::create_dir_all(corpus.join("qrels")).expect("qrels directory");
+    fs::write(
+        corpus.join("corpus.jsonl"),
+        "{\"_id\":\"d1\",\"text\":\"ok\"}\n{\"_id\":7,\"text\":\"bad id\"}\n",
+    )
+    .expect("corpus fixture");
+    fs::write(corpus.join("queries.jsonl"), "").expect("query fixture");
+    fs::write(corpus.join("qrels/test.tsv"), "").expect("qrels fixture");
+
+    let error = zeppelin_embed_bench::beir::load_corpus(directory.path(), "broken")
+        .expect_err("non-string document id must fail closed");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{}:2: missing string field \"_id\"",
+            corpus.join("corpus.jsonl").display()
+        )
+    );
+}
+
+#[test]
+fn beir_loader_reports_the_required_missing_path_and_io_source() {
+    use std::error::Error;
+
+    let directory = tempfile::tempdir().expect("BEIR fixture directory");
+    let missing = directory.path().join("absent/corpus.jsonl");
+    let error = zeppelin_embed_bench::beir::load_corpus(directory.path(), "absent")
+        .expect_err("a missing corpus must fail closed");
+    assert!(
+        error
+            .to_string()
+            .starts_with(&format!("cannot read {}:", missing.display()))
+    );
+    assert!(
+        error.source().is_none(),
+        "BeirError deliberately has no source implementation"
+    );
+}
+
 #[test]
 fn b1_profile_contract_rejects_release_and_debug_codegen() {
     assert!(verify_bench_profile_contract("3", "true", false).is_ok());
