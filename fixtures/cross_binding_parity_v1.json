@@ -1,0 +1,27 @@
+{
+  "schema": "zeppelin-embed-cross-binding-parity",
+  "version": 1,
+  "seed": 25172023,
+  "score_precision": 6,
+  "epoch": {
+    "document": {"model_id": "ffi-embedding", "model_version": "1", "weights_digest_hex": "ad12", "dims": 4, "normalization": 0, "prompt_prefix": "search_document: ", "max_tokens": 64, "runtime": 3, "compute_units": 1, "os_build": null},
+    "query": {"model_id": "ffi-embedding", "model_version": "1", "weights_digest_hex": "ad12", "dims": 4, "normalization": 0, "prompt_prefix": "search_query: ", "max_tokens": 64, "runtime": 3, "compute_units": 1, "os_build": null},
+    "alignment_digest_hex": "",
+    "tokenizer_profile": 0,
+    "expected_identity": {"embedding_epoch": 9489301568760753347, "tokenizer_epoch": 1035315901113778624}
+  },
+  "operations": [
+    {"kind": "open_with_epoch", "expected": {"error_code": "ZE_OK"}},
+    {"kind": "ingest", "documents": [
+      {"doc_id": {"high": 0, "low": 1}, "revision": 1, "timestamp": 100, "vector": [0.500000, 0.687500, 0.125000, 0.375000], "text": "zeppelin airship over the harbour", "metadata_hex": "616c706861"},
+      {"doc_id": {"high": 0, "low": 2}, "revision": 1, "timestamp": 110, "vector": [1.000000, 0.250000, 0.250000, 0.375000], "text": "harbour lights at dusk", "metadata_hex": "627261766f"},
+      {"doc_id": {"high": 0, "low": 3}, "revision": 1, "timestamp": 120, "vector": [0.625000, 0.250000, 0.125000, 0.812500], "text": "quantized vectors and postings", "metadata_hex": "636861726c6965"},
+      {"doc_id": {"high": 0, "low": 4}, "revision": 1, "timestamp": 130, "vector": [0.687500, 1.000000, 0.937500, 0.812500], "text": "epoch aligned harbour search", "metadata_hex": "64656c7461"}
+    ], "expected": {"error_code": "ZE_OK", "sequence": 4, "generation": 1}},
+    {"kind": "query", "name": "vector", "request": {"vector": [1.000000, 0.250000, 0.250000, 0.375000], "text": null, "k": 4, "tier": null, "rules_enabled": false}, "expected": {"error_code": "ZE_OK", "generation": 1, "mode": 0, "embedding_epoch": 9489301568760753347, "tokenizer_epoch": null, "hits": [{"doc_id": {"high": 0, "low": 4}, "score": 1.465950, "vector_squared_l2": -1.465950, "lexical_bm25": null}, {"doc_id": {"high": 0, "low": 2}, "score": 1.264636, "vector_squared_l2": -1.264636, "lexical_bm25": null}, {"doc_id": {"high": 0, "low": 3}, "score": 1.018921, "vector_squared_l2": -1.018921, "lexical_bm25": null}, {"doc_id": {"high": 0, "low": 1}, "score": 0.847620, "vector_squared_l2": -0.847620, "lexical_bm25": null}]}},
+    {"kind": "query", "name": "lexical", "request": {"vector": null, "text": "harbour", "k": 4, "tier": null, "rules_enabled": false}, "expected": {"error_code": "ZE_OK", "generation": 1, "mode": 1, "embedding_epoch": null, "tokenizer_epoch": 1035315901113778624, "hits": [{"doc_id": {"high": 0, "low": 2}, "score": 0.365470, "vector_squared_l2": null, "lexical_bm25": 0.365470}, {"doc_id": {"high": 0, "low": 4}, "score": 0.365470, "vector_squared_l2": null, "lexical_bm25": 0.365470}, {"doc_id": {"high": 0, "low": 1}, "score": 0.332659, "vector_squared_l2": null, "lexical_bm25": 0.332659}]}},
+    {"kind": "query", "name": "hybrid", "request": {"vector": [1.000000, 0.250000, 0.250000, 0.375000], "text": "harbour", "k": 4, "tier": null, "rules_enabled": true}, "expected": {"error_code": "ZE_OK", "generation": 1, "mode": 2, "embedding_epoch": 9489301568760753347, "tokenizer_epoch": 1035315901113778624, "hits": [{"doc_id": {"high": 0, "low": 2}, "score": 1.000000, "vector_squared_l2": 0.000000, "lexical_bm25": 0.365470}, {"doc_id": {"high": 0, "low": 3}, "score": 0.516224, "vector_squared_l2": 0.347656, "lexical_bm25": null}, {"doc_id": {"high": 0, "low": 1}, "score": 0.458407, "vector_squared_l2": 0.457031, "lexical_bm25": 0.332659}, {"doc_id": {"high": 0, "low": 4}, "score": 0.300000, "vector_squared_l2": 1.324219, "lexical_bm25": 0.365470}]}},
+    {"kind": "invalid_empty_query", "request": {"vector": null, "text": null}, "expected": {"error_code": "ZE_ERR_INVALID_ARGUMENT"}},
+    {"kind": "close", "expected": {"error_code": "ZE_OK"}}
+  ]
+}
