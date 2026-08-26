@@ -30,6 +30,7 @@ use zeppelin_embed::meta::{
 use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::scan::ScanOptions;
+use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, write_segment, write_segment_with_graph,
 };
@@ -804,6 +805,13 @@ fn graph_tier_scratch_is_exactly_accounted() {
     let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
     let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
     let before = store.stats().expect("stats before graph query");
+    let before_query_views = store
+        .snapshot()
+        .expect("snapshot before graph query")
+        .segments()
+        .iter()
+        .map(SegmentReader::retained_query_view_bytes)
+        .sum::<u64>();
     let query = query(3.5);
 
     store
@@ -816,12 +824,24 @@ fn graph_tier_scratch_is_exactly_accounted() {
         .expect("graph query");
 
     let after = store.stats().expect("stats after graph query");
+    let after_query_views = store
+        .snapshot()
+        .expect("snapshot after graph query")
+        .segments()
+        .iter()
+        .map(SegmentReader::retained_query_view_bytes)
+        .sum::<u64>();
+    let query_view_delta = after_query_views - before_query_views;
     let expected = GraphSearchScratch::allocation_bytes(ROWS as u32, (ROWS - 1) as u8, ROWS)
         .expect("scratch byte geometry") as u64;
     assert_eq!(after.cache_bytes - before.cache_bytes, expected);
     assert_eq!(
+        after.snapshot_bytes - before.snapshot_bytes,
+        query_view_delta
+    );
+    assert_eq!(
         after.resident_owned_bytes - before.resident_owned_bytes,
-        expected
+        expected + query_view_delta
     );
     store.close().expect("close releases scratch");
 

@@ -12,7 +12,7 @@ use crate::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
 use crate::segment::SegmentId;
-use crate::segment::layout::{Int8Factors, RegionEntry};
+use crate::segment::layout::Int8Factors;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use crate::vfs::{StdVfs, Vfs};
@@ -378,17 +378,17 @@ impl PublishedSnapshot {
             );
         for expected in ordered_segments {
             let path = directory.join(expected.id.file_name());
-            let reader = SegmentReader::open_accounted(&path, expected, |region_count| {
-                let bytes = region_count
-                    .checked_mul(std::mem::size_of::<RegionEntry>())
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(StoreError::BudgetExceeded {
-                        needed: u64::MAX,
-                        budget: u64::MAX,
-                        component: "snapshot",
+            let reader =
+                SegmentReader::open_accounted(&path, expected, accounting, |allocation_bytes| {
+                    let bytes = u64::try_from(allocation_bytes).map_err(|_| {
+                        StoreError::BudgetExceeded {
+                            needed: u64::MAX,
+                            budget: u64::MAX,
+                            component: "snapshot",
+                        }
                     })?;
-                segments.reserve_additional_bytes(bytes)
-            })?;
+                    segments.reserve_additional_bytes(bytes)
+                })?;
             segments.push(reader)?;
         }
         let mapped_bytes = segments.iter().try_fold(0_u64, |total, segment| {

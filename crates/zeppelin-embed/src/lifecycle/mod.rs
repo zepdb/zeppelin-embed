@@ -1092,14 +1092,10 @@ impl Store {
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let mut index = crate::fts::index::LexicalIndex::new();
-        let mut allow_lists = Vec::new();
+        let mut alive_sets = Vec::new();
         let mut sources = Vec::new();
         for (ordinal, segment) in snapshot.segments().iter().enumerate() {
-            if let Some(postings) = segment
-                .postings()
-                .map_err(StoreError::Segment)
-                .map_err(QueryError::Store)?
-            {
+            if let Some(postings) = segment.query_postings().map_err(QueryError::Store)? {
                 if postings.row_count() != 0
                     && segment
                         .document_version(0)
@@ -1111,31 +1107,32 @@ impl Store {
                         segment_id: segment.meta().id,
                     });
                 }
-                let alive = segment
-                    .alive()
-                    .map_err(StoreError::Segment)
-                    .map_err(QueryError::Store)?;
+                let alive = segment.query_alive().map_err(QueryError::Store)?;
                 let live_rows = alive.alive_bitmap();
                 index
-                    .push_sealed_with_live_rows(postings, live_rows)
+                    .push_shared_with_live_rows(postings, live_rows)
                     .map_err(crate::planner::LexicalFilterError::from)?;
-                allow_lists.push(live_rows.clone());
+                alive_sets.push(alive);
                 sources.push(LexicalSource::Sealed(ordinal));
             }
         }
         if active.has_text() {
-            let sealed = crate::fts::sealed::SealedSegment::seal(active.lexical())
-                .map_err(crate::fts::index::IndexError::from)
-                .map_err(crate::planner::LexicalFilterError::from)?;
-            let active_alive = active.alive().map_err(QueryError::Store)?;
+            let sealed = active
+                .sealed_lexical(&self.accounting)
+                .map_err(QueryError::Store)?;
+            let active_alive = Arc::new(active.alive().map_err(QueryError::Store)?);
             let live_rows = active_alive.alive_bitmap();
             index
-                .push_sealed_with_live_rows(sealed, live_rows)
+                .push_shared_with_live_rows(sealed, live_rows)
                 .map_err(crate::planner::LexicalFilterError::from)?;
-            allow_lists.push(live_rows.clone());
+            alive_sets.push(active_alive);
             sources.push(LexicalSource::Active);
         }
-        let lexical = crate::planner::search_lexical_filtered(
+        let allow_lists = alive_sets
+            .iter()
+            .map(|alive| alive.alive_bitmap())
+            .collect::<Vec<_>>();
+        let lexical = crate::planner::search_lexical_filtered_refs(
             &index,
             query,
             k,
@@ -1256,6 +1253,7 @@ impl Store {
         let (lexical, lexical_counters) = exact_lexical_leg(
             &admitted.snapshot,
             &admitted.active_segment,
+            &self.accounting,
             lexical_query,
             &cancellation,
         )?;
@@ -1438,6 +1436,7 @@ fn hybrid_vector_candidate_limit(
 fn exact_lexical_leg(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
+    accounting: &Arc<stats::Accounting>,
     query: &crate::fts::search::TermQuery,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
@@ -1446,7 +1445,7 @@ fn exact_lexical_leg(
         Active,
     }
     let mut index = crate::fts::index::LexicalIndex::new();
-    let mut allow_lists = Vec::new();
+    let mut alive_sets = Vec::new();
     let mut sources = Vec::new();
     for (ordinal, segment) in snapshot.segments().iter().enumerate() {
         cancellation
@@ -1455,58 +1454,65 @@ fn exact_lexical_leg(
             .map_err(crate::fusion::FusionError::from)?;
         if let Some(postings) =
             segment
-                .postings()
+                .query_postings()
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
                     detail: error.to_string(),
                 })?
         {
             let alive = segment
-                .alive()
+                .query_alive()
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
                     detail: error.to_string(),
                 })?;
             let live_rows = alive.alive_bitmap();
             index
-                .push_sealed_with_live_rows(postings, live_rows)
+                .push_shared_with_live_rows(postings, live_rows)
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
                     detail: error.to_string(),
                 })?;
-            allow_lists.push(live_rows.clone());
+            alive_sets.push(alive);
             sources.push(Source::Sealed(ordinal));
         }
     }
     if active.has_text() {
         let sealed =
-            crate::fts::sealed::SealedSegment::seal(active.lexical()).map_err(|error| {
-                crate::fusion::FusionError::Leg {
+            active
+                .sealed_lexical(accounting)
+                .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
                     detail: error.to_string(),
-                }
-            })?;
-        let active_alive = active
-            .alive()
-            .map_err(|error| crate::fusion::FusionError::Leg {
-                leg: crate::fusion::FusionLeg::Lexical,
-                detail: error.to_string(),
-            })?;
+                })?;
+        let active_alive =
+            Arc::new(
+                active
+                    .alive()
+                    .map_err(|error| crate::fusion::FusionError::Leg {
+                        leg: crate::fusion::FusionLeg::Lexical,
+                        detail: error.to_string(),
+                    })?,
+            );
         let live_rows = active_alive.alive_bitmap();
         index
-            .push_sealed_with_live_rows(sealed, live_rows)
+            .push_shared_with_live_rows(sealed, live_rows)
             .map_err(|error| crate::fusion::FusionError::Leg {
                 leg: crate::fusion::FusionLeg::Lexical,
                 detail: error.to_string(),
             })?;
-        allow_lists.push(live_rows.clone());
+        alive_sets.push(active_alive);
         sources.push(Source::Active);
     }
     if index.segments().is_empty() {
         return Ok((Vec::new(), crate::fts::search::SearchCounters::default()));
     }
     let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
-    let outcome = crate::planner::search_lexical_filtered(
+    let allow_lists = alive_sets
+        .iter()
+        .map(|alive| alive.alive_bitmap())
+        .collect::<Vec<_>>();
+    let outcome = crate::planner::search_lexical_filtered_refs(
         &index,
         query,
         k,
@@ -1681,10 +1687,7 @@ fn search_pinned(
     }
 
     for segment in ordered_segments {
-        let alive = segment
-            .alive()
-            .map_err(StoreError::Segment)
-            .map_err(QueryError::Store)?;
+        let alive = segment.query_alive().map_err(QueryError::Store)?;
         let source = RowSource::Sealed(segment.meta().id);
         // Automatic tiering follows the artifact that is atomically published
         // now, not the tier policy's desired future state. A due-but-unbuilt
@@ -1728,7 +1731,7 @@ fn search_pinned(
                         (graph, graph_validated, false, None)
                     }
                 };
-            let rescore = exact_rescore_rows(segment)?;
+            let rescore = query_rescore_rows(segment)?;
             let node_count = graph.node_count() as usize;
             let segment_k = k.min(node_count);
             let has_tombstones = alive.tombstone_count() != 0;
@@ -1827,7 +1830,8 @@ fn search_pinned(
                 entries,
                 scratch.scratch_mut().map_err(map_graph_error)?,
             )
-            .map_err(map_graph_error)?;
+            .map_err(map_graph_error)?
+            .with_rescore_validator(segment);
             let mut traversal_dims_touched = 0_u64;
             let mut traversal_bytes_read = 0_u64;
             let mut traversal_epoch_clears = 0_usize;
@@ -2158,6 +2162,19 @@ pub(crate) fn exact_rescore_rows(
     })
 }
 
+pub(crate) fn query_rescore_rows(
+    segment: &crate::segment::reader::SegmentReader,
+) -> Result<&[f32], QueryError> {
+    segment.query_rescore_f32().map_err(|source| {
+        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+            format!(
+                "exact scores unavailable for segment {}: {source}",
+                segment.meta().id
+            ),
+        )))
+    })
+}
+
 fn retain_global_top_k(candidates: &mut Vec<crate::ingest::SearchCandidate>, k: usize) {
     candidates.sort_unstable_by(|left, right| {
         right
@@ -2190,6 +2207,11 @@ fn map_graph_cache_error(error: graph_cache::GraphCacheError) -> QueryError {
 
 fn map_graph_error(error: crate::graph::search::GraphSearchError) -> QueryError {
     match error {
+        crate::graph::search::GraphSearchError::ExactRescoreUnavailable(detail) => {
+            QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                detail,
+            )))
+        }
         crate::graph::search::GraphSearchError::Cancelled { partial } => {
             QueryError::Cancelled { partial }
         }

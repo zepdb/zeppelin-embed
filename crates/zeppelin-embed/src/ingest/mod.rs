@@ -671,20 +671,18 @@ impl Store {
             .ok_or(StoreError::Closed)?;
         let mut index = crate::fts::index::LexicalIndex::new();
         for segment in snapshot.segments() {
-            if let Some(postings) = segment.postings().map_err(StoreError::Segment)? {
-                let alive = segment.alive().map_err(StoreError::Segment)?;
+            if let Some(postings) = segment.query_postings()? {
+                let alive = segment.query_alive()?;
                 index
-                    .push_sealed_with_live_rows(postings, alive.alive_bitmap())
+                    .push_shared_with_live_rows(postings, alive.alive_bitmap())
                     .map_err(crate::planner::LexicalFilterError::from)?;
             }
         }
         if active.segment.has_text() {
-            let sealed = crate::fts::sealed::SealedSegment::seal(active.segment.lexical())
-                .map_err(crate::fts::index::IndexError::from)
-                .map_err(crate::planner::LexicalFilterError::from)?;
+            let sealed = active.segment.sealed_lexical(&self.accounting)?;
             let alive = active.segment.alive()?;
             index
-                .push_sealed_with_live_rows(sealed, alive.alive_bitmap())
+                .push_shared_with_live_rows(sealed, alive.alive_bitmap())
                 .map_err(crate::planner::LexicalFilterError::from)?;
         }
         index

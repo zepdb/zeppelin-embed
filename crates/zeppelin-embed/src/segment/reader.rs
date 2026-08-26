@@ -4,8 +4,8 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -33,6 +33,162 @@ thread_local! {
     static DATA_READ_AUDIT: std::cell::RefCell<Option<Arc<AtomicU64>>> = const {
         std::cell::RefCell::new(None)
     };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static SEGMENT_COST_AUDIT: std::cell::RefCell<Option<Arc<SegmentCostCounters>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct SegmentCostCounters {
+    identity_hash_bytes: AtomicU64,
+    rescore_hash_bytes: AtomicU64,
+    postings_hash_bytes: AtomicU64,
+    postings_decode_bytes: AtomicU64,
+    columns_hash_bytes: AtomicU64,
+    columns_decode_bytes: AtomicU64,
+    alive_hash_bytes: AtomicU64,
+    alive_decode_bytes: AtomicU64,
+}
+
+/// Test-only deterministic costs observed while reading immutable segments.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SegmentCostSnapshot {
+    /// Bytes hashed while validating document identities.
+    pub identity_hash_bytes: u64,
+    /// Bytes hashed while validating exact-rescore rows.
+    pub rescore_hash_bytes: u64,
+    /// Bytes hashed while validating sealed postings.
+    pub postings_hash_bytes: u64,
+    /// Sealed-postings bytes heap-decoded into query-ready state.
+    pub postings_decode_bytes: u64,
+    /// Bytes hashed while validating typed columns.
+    pub columns_hash_bytes: u64,
+    /// Typed-column bytes heap-decoded into query-ready state.
+    pub columns_decode_bytes: u64,
+    /// Bytes hashed while validating alive state.
+    pub alive_hash_bytes: u64,
+    /// Alive-state bytes heap-decoded into query-ready state.
+    pub alive_decode_bytes: u64,
+}
+
+/// Test-only scoped collector for deterministic segment read-path costs.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
+pub struct SegmentCostAudit {
+    counters: Arc<SegmentCostCounters>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct SegmentCostAuditGuard {
+    previous: Option<Arc<SegmentCostCounters>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for SegmentCostAuditGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        SEGMENT_COST_AUDIT.with(|slot| {
+            slot.replace(previous);
+        });
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl SegmentCostAudit {
+    /// Creates a zeroed cost collector.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Runs one operation with this collector installed on the calling thread.
+    pub fn measure<T>(&self, operation: impl FnOnce() -> T) -> T {
+        let previous =
+            SEGMENT_COST_AUDIT.with(|slot| slot.replace(Some(Arc::clone(&self.counters))));
+        let _guard = SegmentCostAuditGuard { previous };
+        operation()
+    }
+
+    /// Returns the exact accumulated byte counters.
+    #[must_use]
+    pub fn snapshot(&self) -> SegmentCostSnapshot {
+        SegmentCostSnapshot {
+            identity_hash_bytes: self.counters.identity_hash_bytes.load(Ordering::Relaxed),
+            rescore_hash_bytes: self.counters.rescore_hash_bytes.load(Ordering::Relaxed),
+            postings_hash_bytes: self.counters.postings_hash_bytes.load(Ordering::Relaxed),
+            postings_decode_bytes: self.counters.postings_decode_bytes.load(Ordering::Relaxed),
+            columns_hash_bytes: self.counters.columns_hash_bytes.load(Ordering::Relaxed),
+            columns_decode_bytes: self.counters.columns_decode_bytes.load(Ordering::Relaxed),
+            alive_hash_bytes: self.counters.alive_hash_bytes.load(Ordering::Relaxed),
+            alive_decode_bytes: self.counters.alive_decode_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn account_region_hash(kind: RegionKind, bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    SEGMENT_COST_AUDIT.with(|slot| {
+        let Some(counters) = slot.borrow().as_ref().cloned() else {
+            return;
+        };
+        let counter = match kind {
+            RegionKind::DocumentVersions => &counters.identity_hash_bytes,
+            RegionKind::VectorRescore => &counters.rescore_hash_bytes,
+            RegionKind::Postings => &counters.postings_hash_bytes,
+            RegionKind::Columns => &counters.columns_hash_bytes,
+            RegionKind::Alive => &counters.alive_hash_bytes,
+            _ => return,
+        };
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_add(bytes))
+        });
+    });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn account_region_decode(kind: RegionKind, bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    SEGMENT_COST_AUDIT.with(|slot| {
+        let Some(counters) = slot.borrow().as_ref().cloned() else {
+            return;
+        };
+        let counter = match kind {
+            RegionKind::Postings => &counters.postings_decode_bytes,
+            RegionKind::Columns => &counters.columns_decode_bytes,
+            RegionKind::Alive => &counters.alive_decode_bytes,
+            _ => return,
+        };
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_add(bytes))
+        });
+    });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn account_active_postings_decode(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    SEGMENT_COST_AUDIT.with(|slot| {
+        if let Some(counters) = slot.borrow().as_ref() {
+            let _ = counters.postings_decode_bytes.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |current| Some(current.saturating_add(bytes)),
+            );
+        }
+    });
+}
+
+fn region_hash(kind: RegionKind, bytes: &[u8]) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    account_region_hash(kind, bytes.len());
+    xxh3_64(bytes)
 }
 
 pub(crate) struct DataReadAuditGuard {
@@ -133,6 +289,17 @@ unsafe impl Send for MappedFile {}
 // SAFETY: all shared access exposes read-only slices.
 unsafe impl Sync for MappedFile {}
 
+impl crate::graph::search::RescoreValidator for SegmentReader {
+    fn validate_rows(&self, rows: &[u32]) -> Result<(), String> {
+        self.validate_rescore_rows(rows).map_err(|source| {
+            format!(
+                "exact scores unavailable for segment {}: {source}",
+                self.meta.id
+            )
+        })
+    }
+}
+
 struct ParsedHeader {
     meta: SegmentMeta,
     header_length: usize,
@@ -145,9 +312,40 @@ pub struct SegmentReader {
     meta: SegmentMeta,
     header_length: usize,
     entries: Vec<RegionEntry>,
+    document_versions_validation: OnceLock<Result<(), DocumentVersionValidationError>>,
+    rescore_valid_chunks: Mutex<Box<[u64]>>,
+    query_accounting: Option<Arc<crate::lifecycle::stats::Accounting>>,
+    postings_cache: OnceLock<CachedQueryValue<Arc<crate::fts::sealed::SealedSegment>>>,
+    columns_cache: OnceLock<CachedQueryValue<Arc<ColumnStore>>>,
+    alive_cache: OnceLock<CachedQueryValue<Arc<AliveSet>>>,
     // Inline cached graph metadata is covered by this reader's exactly
     // accounted snapshot slot; its heap-backed scratch is charged to Cache.
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
+}
+
+struct CachedQueryValue<T> {
+    value: T,
+    _accounting: Option<crate::lifecycle::stats::AccountedCounter>,
+}
+
+#[derive(Clone, Debug)]
+enum DocumentVersionValidationError {
+    Geometry(String),
+    Checksum,
+}
+
+impl DocumentVersionValidationError {
+    fn into_segment_error(self, segment_id: SegmentId) -> SegmentError {
+        match self {
+            Self::Geometry(detail) => SegmentError::Geometry(detail),
+            Self::Checksum => FormatError::new(
+                format!("segment:{segment_id}:document-versions"),
+                FormatCheck::BlockChecksum,
+                "document-version region checksum mismatch",
+            )
+            .into(),
+        }
+    }
 }
 
 /// Validated mmap-backed opaque metadata rows.
@@ -202,11 +400,18 @@ impl SegmentReader {
             mapping.length as u64,
             expected_id,
         )?;
+        let rescore_valid_chunks = rescore_validation_words(&parsed.entries)?;
         Ok(Self {
             mapping,
             meta: parsed.meta,
             header_length: parsed.header_length,
             entries: parsed.entries,
+            document_versions_validation: OnceLock::new(),
+            rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
+            query_accounting: None,
+            postings_cache: OnceLock::new(),
+            columns_cache: OnceLock::new(),
+            alive_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
@@ -214,14 +419,22 @@ impl SegmentReader {
     pub(crate) fn open_accounted(
         path: &Path,
         expected: &SegmentMeta,
-        before_directory_allocation: impl FnOnce(usize) -> Result<(), crate::lifecycle::StoreError>,
+        accounting: &Arc<crate::lifecycle::stats::Accounting>,
+        mut before_reader_allocation: impl FnMut(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
         let mapping = MappedFile::open(path).map_err(crate::lifecycle::StoreError::Segment)?;
         let artifact = path.display().to_string();
         let region_count =
             preflight_region_count(&artifact, mapping.as_bytes(), mapping.length as u64)
                 .map_err(crate::lifecycle::StoreError::Segment)?;
-        before_directory_allocation(region_count)?;
+        let directory_bytes = region_count
+            .checked_mul(std::mem::size_of::<RegionEntry>())
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        before_reader_allocation(directory_bytes)?;
         let parsed = parse_segment_header(
             &artifact,
             mapping.as_bytes(),
@@ -237,11 +450,27 @@ impl SegmentReader {
                 )),
             ));
         }
+        let rescore_valid_chunks = rescore_validation_words(&parsed.entries)
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        let validation_bytes = rescore_valid_chunks
+            .checked_mul(std::mem::size_of::<u64>())
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        before_reader_allocation(validation_bytes)?;
         Ok(Self {
             mapping,
             meta: expected.clone(),
             header_length: parsed.header_length,
             entries: parsed.entries,
+            document_versions_validation: OnceLock::new(),
+            rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
+            query_accounting: Some(Arc::clone(accounting)),
+            postings_cache: OnceLock::new(),
+            columns_cache: OnceLock::new(),
+            alive_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
@@ -269,6 +498,44 @@ impl SegmentReader {
         crate::sys::memory::mincore_resident_bytes(self.mapping.as_bytes())
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_validation_bytes(&self) -> usize {
+        self.rescore_valid_chunks
+            .lock()
+            .map_or(0, |words| std::mem::size_of_val(words.as_ref()))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn retained_query_view_bytes(&self) -> u64 {
+        let postings = self.postings_cache.get().and_then(|cached| {
+            cached
+                .value
+                .resident_bytes()
+                .ok()
+                .and_then(arc_resident_bytes::<crate::fts::sealed::SealedSegment>)
+        });
+        let columns = self.columns_cache.get().and_then(|cached| {
+            cached
+                .value
+                .resident_bytes()
+                .and_then(arc_resident_bytes::<ColumnStore>)
+        });
+        let alive = self.alive_cache.get().and_then(|cached| {
+            cached
+                .value
+                .resident_bytes()
+                .and_then(arc_resident_bytes::<AliveSet>)
+        });
+        postings
+            .into_iter()
+            .chain(columns)
+            .chain(alive)
+            .fold(0_u64, |total, bytes| {
+                total.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX))
+            })
+    }
+
     /// Returns the validated region directory, including unknown skippable kinds.
     #[must_use]
     pub fn directory(&self) -> &[RegionEntry] {
@@ -292,7 +559,7 @@ impl SegmentReader {
     pub fn region(&self, kind: RegionKind) -> Result<&[u8], SegmentError> {
         let entry = self.entry(kind)?;
         let bytes = self.region_slice(entry)?;
-        let actual = xxh3_64(bytes);
+        let actual = region_hash(kind, bytes);
         if actual != entry.checksum {
             return Err(FormatError::new(
                 format!("segment:{}:{kind:?}", self.meta.id),
@@ -343,7 +610,7 @@ impl SegmentReader {
             )));
         }
         let expected = self.chunk_checksum(kind, chunk_index)?;
-        let actual = xxh3_64(chunk);
+        let actual = region_hash(kind, chunk);
         if actual != expected {
             return Err(FormatError::new(
                 format!("segment:{}:{kind:?}:chunk-{chunk_index}", self.meta.id),
@@ -486,9 +753,47 @@ impl SegmentReader {
         cast_slice::<f32>(payload, count, "f32 rescore")
     }
 
+    pub(crate) fn query_rescore_f32(&self) -> Result<&[f32], SegmentError> {
+        self.validate_rescore_byte_range(0, VECTOR_HEADER_LEN)?;
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorRescore)?;
+        if header.scheme != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "v1 rescore scheme must be F32/0, got {}",
+                header.scheme
+            )));
+        }
+        let count = (self.meta.row_count as usize)
+            .checked_mul(self.meta.dims as usize)
+            .ok_or_else(|| SegmentError::Geometry("rescore count overflow".to_owned()))?;
+        cast_slice::<f32>(payload, count, "f32 rescore")
+    }
+
+    pub(crate) fn validate_rescore_rows(&self, rows: &[u32]) -> Result<(), SegmentError> {
+        let row_bytes = (self.meta.dims as usize)
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| SegmentError::Geometry("rescore row byte length overflow".to_owned()))?;
+        for row in rows {
+            if *row >= self.meta.row_count {
+                return Err(SegmentError::Geometry(format!(
+                    "rescore row {row} is outside {} rows",
+                    self.meta.row_count
+                )));
+            }
+            let start = (*row as usize)
+                .checked_mul(row_bytes)
+                .and_then(|offset| offset.checked_add(VECTOR_HEADER_LEN))
+                .ok_or_else(|| SegmentError::Geometry("rescore row offset overflow".to_owned()))?;
+            self.validate_rescore_byte_range(start, row_bytes)?;
+        }
+        Ok(())
+    }
+
     /// Decodes the checksummed metadata region into typed column arrays.
     pub fn columns(&self) -> Result<ColumnStore, SegmentError> {
-        let columns = decode_columns(self.region(RegionKind::Columns)?)?;
+        let region = self.region(RegionKind::Columns)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Columns, region.len());
+        let columns = decode_columns(region)?;
         if columns.row_count() != self.meta.row_count {
             return Err(SegmentError::Geometry(format!(
                 "column rows {}, header rows {}",
@@ -497,6 +802,49 @@ impl SegmentReader {
             )));
         }
         Ok(columns)
+    }
+
+    pub(crate) fn query_columns(&self) -> Result<Arc<ColumnStore>, crate::lifecycle::StoreError> {
+        if let Some(cached) = self.columns_cache.get() {
+            return Ok(Arc::clone(&cached.value));
+        }
+        let region = self
+            .region(RegionKind::Columns)
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Columns, region.len());
+        let mut columns = decode_columns(region).map_err(crate::lifecycle::StoreError::Segment)?;
+        if columns.row_count() != self.meta.row_count {
+            return Err(crate::lifecycle::StoreError::Segment(
+                SegmentError::Geometry(format!(
+                    "column rows {}, header rows {}",
+                    columns.row_count(),
+                    self.meta.row_count
+                )),
+            ));
+        }
+        columns.compact_for_cache();
+        let resident_bytes = columns
+            .resident_bytes()
+            .and_then(arc_resident_bytes::<ColumnStore>)
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        let cached = CachedQueryValue {
+            value: Arc::new(columns),
+            _accounting: self.account_query_cache(resident_bytes)?,
+        };
+        if self.columns_cache.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.columns_cache
+            .get()
+            .map(|cached| Arc::clone(&cached.value))
+            .ok_or(crate::lifecycle::StoreError::Synchronization {
+                component: "columns query cache",
+            })
     }
 
     /// Decodes the optional whole-segment lexical region.
@@ -508,8 +856,10 @@ impl SegmentReader {
         {
             return Ok(None);
         }
-        let postings =
-            crate::fts::sealed::SealedSegment::decode_region(self.region(RegionKind::Postings)?)?;
+        let region = self.region(RegionKind::Postings)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Postings, region.len());
+        let postings = crate::fts::sealed::SealedSegment::decode_region(region)?;
         if postings.row_count() != self.meta.row_count {
             return Err(SegmentError::Geometry(format!(
                 "postings rows {}, header rows {}",
@@ -520,9 +870,81 @@ impl SegmentReader {
         Ok(Some(postings))
     }
 
+    pub(crate) fn query_postings(
+        &self,
+    ) -> Result<Option<Arc<crate::fts::sealed::SealedSegment>>, crate::lifecycle::StoreError> {
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.kind == RegionKind::Postings.id())
+        {
+            return Ok(None);
+        }
+        if let Some(cached) = self.postings_cache.get() {
+            return Ok(Some(Arc::clone(&cached.value)));
+        }
+        let region = self
+            .region(RegionKind::Postings)
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Postings, region.len());
+        let postings = crate::fts::sealed::SealedSegment::decode_region(region)
+            .map_err(SegmentError::from)
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        if postings.row_count() != self.meta.row_count {
+            return Err(crate::lifecycle::StoreError::Segment(
+                SegmentError::Geometry(format!(
+                    "postings rows {}, header rows {}",
+                    postings.row_count(),
+                    self.meta.row_count
+                )),
+            ));
+        }
+        let resident_bytes = postings
+            .resident_bytes()
+            .map_err(SegmentError::from)
+            .map_err(crate::lifecycle::StoreError::Segment)?
+            .checked_add(std::mem::size_of::<crate::fts::sealed::SealedSegment>())
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        let mut cache_accounting = self
+            .query_accounting
+            .as_ref()
+            .map(|accounting| {
+                crate::lifecycle::stats::AccountedCounter::new(
+                    accounting,
+                    crate::lifecycle::stats::AllocationComponent::Snapshot,
+                )
+            })
+            .transpose()?;
+        if let Some(counter) = cache_accounting.as_mut() {
+            counter.set(resident_bytes)?;
+        }
+        let cached = CachedQueryValue {
+            value: Arc::new(postings),
+            _accounting: cache_accounting,
+        };
+        if self.postings_cache.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.postings_cache
+            .get()
+            .map(|cached| Some(Arc::clone(&cached.value)))
+            .ok_or(crate::lifecycle::StoreError::Synchronization {
+                component: "postings query cache",
+            })
+    }
+
     /// Decodes the checksummed alive/tombstone region.
     pub fn alive(&self) -> Result<AliveSet, SegmentError> {
-        let alive = decode_alive(self.region(RegionKind::Alive)?)?;
+        let region = self.region(RegionKind::Alive)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Alive, region.len());
+        let alive = decode_alive(region)?;
         if alive.row_count() != self.meta.row_count {
             return Err(SegmentError::Geometry(format!(
                 "alive rows {}, header rows {}",
@@ -531,6 +953,49 @@ impl SegmentReader {
             )));
         }
         Ok(alive)
+    }
+
+    pub(crate) fn query_alive(&self) -> Result<Arc<AliveSet>, crate::lifecycle::StoreError> {
+        if let Some(cached) = self.alive_cache.get() {
+            return Ok(Arc::clone(&cached.value));
+        }
+        let region = self
+            .region(RegionKind::Alive)
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::Alive, region.len());
+        let mut alive = decode_alive(region).map_err(crate::lifecycle::StoreError::Segment)?;
+        if alive.row_count() != self.meta.row_count {
+            return Err(crate::lifecycle::StoreError::Segment(
+                SegmentError::Geometry(format!(
+                    "alive rows {}, header rows {}",
+                    alive.row_count(),
+                    self.meta.row_count
+                )),
+            ));
+        }
+        alive.compact_for_cache();
+        let resident_bytes = alive
+            .resident_bytes()
+            .and_then(arc_resident_bytes::<AliveSet>)
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        let cached = CachedQueryValue {
+            value: Arc::new(alive),
+            _accounting: self.account_query_cache(resident_bytes)?,
+        };
+        if self.alive_cache.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.alive_cache
+            .get()
+            .map(|cached| Arc::clone(&cached.value))
+            .ok_or(crate::lifecycle::StoreError::Synchronization {
+                component: "alive query cache",
+            })
     }
 
     /// Decodes one optional sealed-row document identity directly from the mapping.
@@ -542,24 +1007,32 @@ impl SegmentReader {
         else {
             return Ok(None);
         };
-        let bytes = self.region_slice(entry)?;
-        if xxh3_64(bytes) != entry.checksum {
-            return Err(FormatError::new(
-                format!("segment:{}:document-versions", self.meta.id),
-                FormatCheck::BlockChecksum,
-                "document-version region checksum mismatch",
-            )
-            .into());
+        let validation = self.document_versions_validation.get_or_init(|| {
+            let bytes = self
+                .region_slice(entry)
+                .map_err(|error| DocumentVersionValidationError::Geometry(error.to_string()))?;
+            if region_hash(RegionKind::DocumentVersions, bytes) != entry.checksum {
+                return Err(DocumentVersionValidationError::Checksum);
+            }
+            let expected = (self.meta.row_count as usize)
+                .checked_mul(24)
+                .ok_or_else(|| {
+                    DocumentVersionValidationError::Geometry(
+                        "document-version length overflow".to_owned(),
+                    )
+                })?;
+            if bytes.len() != expected {
+                return Err(DocumentVersionValidationError::Geometry(format!(
+                    "document-version bytes {}, expected {expected}",
+                    bytes.len()
+                )));
+            }
+            Ok(())
+        });
+        if let Err(error) = validation {
+            return Err(error.clone().into_segment_error(self.meta.id));
         }
-        let expected = (self.meta.row_count as usize)
-            .checked_mul(24)
-            .ok_or_else(|| SegmentError::Geometry("document-version length overflow".to_owned()))?;
-        if bytes.len() != expected {
-            return Err(SegmentError::Geometry(format!(
-                "document-version bytes {}, expected {expected}",
-                bytes.len()
-            )));
-        }
+        let bytes = self.region_slice_unaccounted(entry)?;
         let start = row
             .checked_mul(24)
             .ok_or_else(|| SegmentError::Geometry("document-version row overflow".to_owned()))?;
@@ -762,6 +1235,92 @@ impl SegmentReader {
         Ok((header, payload))
     }
 
+    fn vector_payload_unchecked(
+        &self,
+        kind: RegionKind,
+    ) -> Result<(super::layout::VectorHeader, &[u8]), SegmentError> {
+        let entry = self.entry(kind)?;
+        let region = self.region_slice_unaccounted(entry)?;
+        let header_bytes = region.get(..VECTOR_HEADER_LEN).ok_or_else(|| {
+            SegmentError::Geometry(format!("{kind:?} is shorter than vector header"))
+        })?;
+        let header = decode_vector_header(header_bytes)?;
+        if header.dims != self.meta.dims
+            || header.row_count != self.meta.row_count
+            || (kind != RegionKind::VectorRescore && header.scheme != self.meta.scheme)
+        {
+            return Err(SegmentError::Geometry(format!(
+                "{kind:?} header scheme/dims/rows {}/{}/{}, segment {}/{}/{}",
+                header.scheme,
+                header.dims,
+                header.row_count,
+                self.meta.scheme,
+                self.meta.dims,
+                self.meta.row_count
+            )));
+        }
+        let payload = region
+            .get(VECTOR_HEADER_LEN..)
+            .ok_or_else(|| SegmentError::Geometry(format!("{kind:?} payload offset is invalid")))?;
+        Ok((header, payload))
+    }
+
+    fn validate_rescore_byte_range(&self, start: usize, length: usize) -> Result<(), SegmentError> {
+        let entry = self.entry(RegionKind::VectorRescore)?;
+        let region_length = usize::try_from(entry.length).map_err(|_| {
+            SegmentError::Geometry("rescore region length exceeds usize".to_owned())
+        })?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| SegmentError::Geometry("rescore byte range overflow".to_owned()))?;
+        if end > region_length {
+            return Err(SegmentError::Geometry(format!(
+                "rescore byte range {start}..{end} exceeds {region_length}"
+            )));
+        }
+        if length == 0 {
+            return Ok(());
+        }
+        let first_chunk = start / CHECKSUM_CHUNK_BYTES;
+        let last_chunk = end.saturating_sub(1) / CHECKSUM_CHUNK_BYTES;
+        let mut validated = self.rescore_valid_chunks.lock().map_err(|_| {
+            SegmentError::Geometry("rescore validation state is poisoned".to_owned())
+        })?;
+        for chunk in first_chunk..=last_chunk {
+            let word = chunk / u64::BITS as usize;
+            let bit = chunk % u64::BITS as usize;
+            let mask = 1_u64 << bit;
+            let state = validated.get_mut(word).ok_or_else(|| {
+                SegmentError::Geometry(format!("rescore checksum chunk {chunk} is untracked"))
+            })?;
+            if *state & mask != 0 {
+                continue;
+            }
+            let chunk_index = u32::try_from(chunk).map_err(|_| {
+                SegmentError::Geometry("rescore checksum chunk exceeds u32".to_owned())
+            })?;
+            self.region_chunk(RegionKind::VectorRescore, chunk_index)?;
+            *state |= mask;
+        }
+        Ok(())
+    }
+
+    fn account_query_cache(
+        &self,
+        bytes: usize,
+    ) -> Result<Option<crate::lifecycle::stats::AccountedCounter>, crate::lifecycle::StoreError>
+    {
+        let Some(accounting) = &self.query_accounting else {
+            return Ok(None);
+        };
+        let mut counter = crate::lifecycle::stats::AccountedCounter::new(
+            accounting,
+            crate::lifecycle::stats::AllocationComponent::Snapshot,
+        )?;
+        counter.set(bytes)?;
+        Ok(Some(counter))
+    }
+
     fn entry(&self, kind: RegionKind) -> Result<&RegionEntry, SegmentError> {
         self.entries
             .iter()
@@ -770,6 +1329,12 @@ impl SegmentReader {
     }
 
     fn region_slice(&self, entry: &RegionEntry) -> Result<&[u8], SegmentError> {
+        let bytes = self.region_slice_unaccounted(entry)?;
+        account_data_read(bytes.len());
+        Ok(bytes)
+    }
+
+    fn region_slice_unaccounted(&self, entry: &RegionEntry) -> Result<&[u8], SegmentError> {
         let start = usize::try_from(entry.offset)
             .map_err(|_| SegmentError::Geometry("region offset exceeds usize".to_owned()))?;
         let length = usize::try_from(entry.length)
@@ -783,7 +1348,6 @@ impl SegmentReader {
                 entry.kind, self.mapping.length
             ))
         })?;
-        account_data_read(bytes.len());
         Ok(bytes)
     }
 
@@ -819,6 +1383,25 @@ impl SegmentReader {
             ))
         })
     }
+}
+
+fn arc_resident_bytes<T>(deep_bytes: usize) -> Option<usize> {
+    deep_bytes
+        .checked_add(std::mem::size_of::<T>())?
+        .checked_add(2 * std::mem::size_of::<usize>())
+}
+
+fn rescore_validation_words(entries: &[RegionEntry]) -> Result<usize, SegmentError> {
+    let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.kind == RegionKind::VectorRescore.id())
+    else {
+        return Ok(0);
+    };
+    let length = usize::try_from(entry.length)
+        .map_err(|_| SegmentError::Geometry("rescore region length exceeds usize".to_owned()))?;
+    let chunks = length.div_ceil(CHECKSUM_CHUNK_BYTES);
+    Ok(chunks.div_ceil(u64::BITS as usize))
 }
 
 /// Reads and validates only one bounded segment header through a VFS decorator.

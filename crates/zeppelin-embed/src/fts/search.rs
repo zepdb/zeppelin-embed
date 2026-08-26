@@ -352,7 +352,7 @@ pub(crate) fn search_allow_list_driven(
     query: &TermQuery,
     k: usize,
     params: Bm25Params,
-    allow_lists: &[crate::meta::DocBitmap],
+    allow_lists: &[&crate::meta::DocBitmap],
 ) -> Result<SearchResult, IndexError> {
     let stats = index.corpus_stats()?;
     let fields = query.fields.fields();

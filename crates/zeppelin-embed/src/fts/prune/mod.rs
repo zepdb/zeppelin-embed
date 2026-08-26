@@ -311,7 +311,7 @@ pub(crate) fn search_pruned_filtered(
     k: usize,
     params: Bm25Params,
     strategy: Strategy,
-    allow_lists: &[DocBitmap],
+    allow_lists: &[&DocBitmap],
 ) -> Result<SearchResult, IndexError> {
     search_pruned_inner(index, query, k, params, strategy, Some(allow_lists))
 }
@@ -322,7 +322,7 @@ fn search_pruned_inner(
     k: usize,
     params: Bm25Params,
     strategy: Strategy,
-    allow_lists: Option<&[DocBitmap]>,
+    allow_lists: Option<&[&DocBitmap]>,
 ) -> Result<SearchResult, IndexError> {
     if strategy == Strategy::Exhaustive {
         return allow_lists.map_or_else(
@@ -346,7 +346,7 @@ fn search_pruned_inner(
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
         let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
-        let allow_list = allow_lists.and_then(|lists| lists.get(ordinal));
+        let allow_list = allow_lists.and_then(|lists| lists.get(ordinal)).copied();
         // Borrowed outright in the flat single-field case; see
         // `crate::fts::search::weighted_lengths`. This used to be an
         // O(row_count) rebuild on every query.

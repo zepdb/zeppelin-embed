@@ -142,6 +142,18 @@ pub struct Schema {
 }
 
 impl Schema {
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        let definitions = self
+            .columns
+            .capacity()
+            .checked_mul(std::mem::size_of::<ColumnDefinition>())?;
+        self.columns
+            .iter()
+            .try_fold(definitions, |total, definition| {
+                total.checked_add(definition.name.capacity())
+            })
+    }
+
     /// Creates the mandatory timestamp-only schema used by public ingest today.
     #[must_use]
     pub fn timestamp_only() -> Self {

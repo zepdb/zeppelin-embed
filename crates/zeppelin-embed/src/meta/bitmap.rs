@@ -11,6 +11,23 @@ pub struct DocBitmap {
 impl Eq for DocBitmap {}
 
 impl DocBitmap {
+    pub(crate) fn compact_for_cache(&mut self) {
+        self.inner = self.inner.clone();
+    }
+
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        let statistics = self.inner.statistics();
+        #[cfg(target_pointer_width = "64")]
+        const CONTAINER_BYTES: usize = 32;
+        #[cfg(target_pointer_width = "32")]
+        const CONTAINER_BYTES: usize = 16;
+        let containers = (statistics.n_containers as usize).checked_mul(CONTAINER_BYTES)?;
+        let arrays = (statistics.n_values_array_containers as usize)
+            .checked_mul(std::mem::size_of::<u16>())?;
+        let bitsets = usize::try_from(statistics.n_bytes_bitset_containers).ok()?;
+        containers.checked_add(arrays)?.checked_add(bitsets)
+    }
+
     /// Creates an empty bitmap.
     #[must_use]
     pub fn new() -> Self {
