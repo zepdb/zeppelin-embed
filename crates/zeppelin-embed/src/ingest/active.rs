@@ -1,7 +1,7 @@
 //! Exactly accounted in-RAM active-segment storage.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::fts::index::{Document as LexicalDocument, SegmentIndex};
 use crate::fts::tokenizer::{Analyzer, TokenizerConfig};
@@ -202,10 +202,16 @@ pub(crate) struct ActiveSegment {
     column_bytes: Accounted<Vec<u8>>,
     lexical: SegmentIndex,
     lexical_bytes: Option<AccountedCounter>,
+    sealed_lexical: OnceLock<CachedActiveLexical>,
     vectors: Accounted<Vec<f32>>,
     codes: Accounted<Vec<u8>>,
     factors: Accounted<Vec<Bit4Factors>>,
     tombstones: Accounted<Vec<u32>>,
+}
+
+struct CachedActiveLexical {
+    value: Arc<crate::fts::sealed::SealedSegment>,
+    accounting: AccountedCounter,
 }
 
 impl ActiveSegment {
@@ -225,6 +231,7 @@ impl ActiveSegment {
             column_bytes: Accounted::unaccounted_empty(),
             lexical: SegmentIndex::new(),
             lexical_bytes: None,
+            sealed_lexical: OnceLock::new(),
             vectors: Accounted::unaccounted_empty(),
             codes: Accounted::unaccounted_empty(),
             factors: Accounted::unaccounted_empty(),
@@ -333,6 +340,7 @@ impl ActiveSegment {
             column_bytes,
             lexical,
             lexical_bytes,
+            sealed_lexical: OnceLock::new(),
             vectors,
             codes,
             factors,
@@ -454,6 +462,7 @@ impl ActiveSegment {
             column_bytes,
             lexical,
             lexical_bytes,
+            sealed_lexical: OnceLock::new(),
             vectors,
             codes,
             factors,
@@ -557,6 +566,7 @@ impl ActiveSegment {
                 column_bytes,
                 lexical,
                 lexical_bytes,
+                sealed_lexical: OnceLock::new(),
                 vectors,
                 codes,
                 factors,
@@ -813,6 +823,7 @@ impl ActiveSegment {
                 column_bytes,
                 lexical,
                 lexical_bytes,
+                sealed_lexical: OnceLock::new(),
                 vectors,
                 codes,
                 factors,
@@ -912,6 +923,47 @@ impl ActiveSegment {
         &self.lexical
     }
 
+    pub(crate) fn sealed_lexical(
+        &self,
+        accounting: &Arc<Accounting>,
+    ) -> Result<Arc<crate::fts::sealed::SealedSegment>, StoreError> {
+        if let Some(cached) = self.sealed_lexical.get() {
+            return Ok(Arc::clone(&cached.value));
+        }
+        let sealed = crate::fts::sealed::SealedSegment::seal(&self.lexical)
+            .map_err(crate::fts::sealed::SealedSegmentError::Postings)
+            .map_err(crate::segment::SegmentError::Postings)
+            .map_err(StoreError::Segment)?;
+        let resident_bytes = sealed
+            .resident_bytes()
+            .map_err(crate::segment::SegmentError::Postings)
+            .map_err(StoreError::Segment)?
+            .checked_add(std::mem::size_of::<crate::fts::sealed::SealedSegment>())
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or(StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "active segment",
+            })?;
+        #[cfg(any(test, feature = "test-support"))]
+        crate::segment::reader::account_active_postings_decode(resident_bytes);
+        let mut cache_accounting = AccountedCounter::new(accounting, AllocationComponent::Active)?;
+        cache_accounting.set(resident_bytes)?;
+        let cached = CachedActiveLexical {
+            value: Arc::new(sealed),
+            accounting: cache_accounting,
+        };
+        if self.sealed_lexical.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.sealed_lexical
+            .get()
+            .map(|cached| Arc::clone(&cached.value))
+            .ok_or(StoreError::Synchronization {
+                component: "active lexical query cache",
+            })
+    }
+
     pub(crate) fn column_values(
         &self,
         row: usize,
@@ -993,6 +1045,11 @@ impl ActiveSegment {
                 self.lexical_bytes
                     .as_ref()
                     .map_or(0, AccountedCounter::bytes),
+            )
+            .saturating_add(
+                self.sealed_lexical
+                    .get()
+                    .map_or(0, |cached| cached.accounting.bytes()),
             )
             .saturating_add(self.vectors.resident_bytes())
             .saturating_add(self.codes.resident_bytes())
@@ -1414,6 +1471,7 @@ impl ActiveSegment {
             column_bytes: copy_accounted(accounting, &self.column_bytes, self.column_bytes.len())?,
             lexical,
             lexical_bytes,
+            sealed_lexical: OnceLock::new(),
             vectors: copy_accounted(accounting, &self.vectors, self.vectors.len())?,
             codes: copy_accounted(accounting, &self.codes, self.codes.len())?,
             factors: copy_accounted(accounting, &self.factors, self.factors.len())?,

@@ -7,6 +7,7 @@ mod prune;
 
 pub use choose::{ALLOW_LIST_ROWS_THRESHOLD, choose_scan_branch};
 pub use exec::{FilteredSearchError, FilteredSearchOutcome};
+pub(crate) use lexical::search_lexical_filtered_refs;
 pub use lexical::{
     LEXICAL_ALLOW_LIST_DIVISOR, LexicalBranch, LexicalFilterError, LexicalSearchOutcome,
     search_lexical_filtered,

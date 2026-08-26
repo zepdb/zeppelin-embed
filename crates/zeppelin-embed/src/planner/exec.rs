@@ -319,14 +319,8 @@ fn execute_pinned(
             );
             continue;
         }
-        let columns = segment
-            .columns()
-            .map_err(StoreError::Segment)
-            .map_err(QueryError::Store)?;
-        let alive = segment
-            .alive()
-            .map_err(StoreError::Segment)
-            .map_err(QueryError::Store)?;
+        let columns = segment.query_columns().map_err(QueryError::Store)?;
+        let alive = segment.query_alive().map_err(QueryError::Store)?;
         let allow_list = evaluate(predicate, &columns, &alive).map_err(map_eval_error)?;
         let row_count = segment.meta().row_count as usize;
         let graph_options = match options.tier() {
@@ -607,7 +601,7 @@ fn execute_filtered_graph(
         .prepare_shared(segment, cancellation)
         .map_err(map_graph_cache_error)?;
     let graph = prepared.graph;
-    let rescore = exact_rescore_rows(segment)?;
+    let rescore = crate::lifecycle::query_rescore_rows(segment)?;
     let node_count = graph.node_count() as usize;
     let allow_count = usize::try_from(allow_list.cardinality())
         .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?;
@@ -656,7 +650,8 @@ fn execute_filtered_graph(
         entries,
         scratch.scratch_mut().map_err(map_graph_error)?,
     )
-    .map_err(map_graph_error)?;
+    .map_err(map_graph_error)?
+    .with_rescore_validator(segment);
     let ef_requested = options.ef();
     let mut current_ef = ef_effective;
     let mut traversal_stats = MutableStats::default();
@@ -871,6 +866,11 @@ fn map_graph_cache_error(
 
 fn map_graph_error(error: crate::graph::search::GraphSearchError) -> FilteredSearchError {
     let query = match error {
+        crate::graph::search::GraphSearchError::ExactRescoreUnavailable(detail) => {
+            QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                detail,
+            )))
+        }
         crate::graph::search::GraphSearchError::Cancelled { partial } => {
             QueryError::Cancelled { partial }
         }

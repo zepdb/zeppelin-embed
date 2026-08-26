@@ -153,6 +153,44 @@ pub struct SealedSegment {
 }
 
 impl SealedSegment {
+    pub(crate) fn resident_bytes(&self) -> Result<usize, SealedSegmentError> {
+        let direct = self
+            .terms
+            .capacity()
+            .checked_add(self.blob.capacity())
+            .and_then(|bytes| {
+                self.spans
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<ListSpan>())
+                    .and_then(|spans| bytes.checked_add(spans))
+            })
+            .and_then(|bytes| {
+                self.lengths
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<FieldLengths>())
+                    .and_then(|lengths| bytes.checked_add(lengths))
+            })
+            .and_then(|bytes| {
+                self.total_lengths
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<u32>())
+                    .and_then(|lengths| bytes.checked_add(lengths))
+            })
+            .ok_or(SealedSegmentError::Geometry(
+                "sealed lexical resident bytes overflow",
+            ))?;
+        self.lengths.iter().try_fold(direct, |total, entry| {
+            entry
+                .lengths
+                .capacity()
+                .checked_mul(std::mem::size_of::<u32>())
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(SealedSegmentError::Geometry(
+                    "sealed lexical resident bytes overflow",
+                ))
+        })
+    }
+
     /// Seals an active segment into the persisted layout.
     ///
     /// # Errors

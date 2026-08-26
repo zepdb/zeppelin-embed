@@ -44,6 +44,17 @@ pub struct AliveSet {
 }
 
 impl AliveSet {
+    pub(crate) fn compact_for_cache(&mut self) {
+        self.alive.compact_for_cache();
+        self.tombstones.compact_for_cache();
+    }
+
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        self.alive
+            .resident_bytes()?
+            .checked_add(self.tombstones.resident_bytes()?)
+    }
+
     /// Creates a segment state in which every document is alive.
     #[must_use]
     pub fn new(row_count: u32) -> Self {

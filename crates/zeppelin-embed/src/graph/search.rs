@@ -645,6 +645,8 @@ pub enum GraphSearchError {
     AdaptiveEf(AdaptiveEfError),
     /// The canonical f32 pool-rescore path rejected its inputs.
     Rescore(RescoreError),
+    /// Chunk-local integrity validation rejected exact-rescore bytes.
+    ExactRescoreUnavailable(String),
     /// Unfiltered traversal crossed the Task-16 collapse guard; M6 owns fallback.
     VisitedCapExceeded {
         /// Distinct nodes marked before traversal stopped.
@@ -683,6 +685,7 @@ impl std::fmt::Display for GraphSearchError {
             Self::Gather(error) => error.fmt(formatter),
             Self::AdaptiveEf(error) => error.fmt(formatter),
             Self::Rescore(error) => error.fmt(formatter),
+            Self::ExactRescoreUnavailable(detail) => formatter.write_str(detail),
             Self::VisitedCapExceeded { visited, cap } => write!(
                 formatter,
                 "graph search visited {visited} nodes, exceeding the fail-closed cap {cap}"
@@ -716,6 +719,7 @@ impl std::error::Error for GraphSearchError {
             Self::Rescore(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Geometry(_)
+            | Self::ExactRescoreUnavailable(_)
             | Self::VisitedCapExceeded { .. }
             | Self::Cancelled { .. }
             | Self::Timeout { .. }
@@ -1030,14 +1034,18 @@ impl GraphSearchScratch {
 }
 
 /// Per-query binding of mmap-backed graph views to owned reusable scratch.
-#[derive(Debug)]
 pub struct GraphSearcher<'a> {
     graph: GraphNodeBlocks<'a>,
     rescore: &'a [f32],
+    rescore_validator: Option<&'a dyn RescoreValidator>,
     entries: [CheckedNodeId; 4],
     scratch: &'a mut GraphSearchScratch,
     #[cfg(test)]
     hop_cancellation: Option<TestHopCancellation>,
+}
+
+pub(crate) trait RescoreValidator {
+    fn validate_rows(&self, rows: &[u32]) -> Result<(), String>;
 }
 
 #[cfg(test)]
@@ -1125,11 +1133,17 @@ impl<'a> GraphSearcher<'a> {
         Ok(Self {
             graph,
             rescore,
+            rescore_validator: None,
             entries: [first?, second?, third?, fourth?],
             scratch,
             #[cfg(test)]
             hop_cancellation: None,
         })
+    }
+
+    pub(crate) fn with_rescore_validator(mut self, validator: &'a dyn RescoreValidator) -> Self {
+        self.rescore_validator = Some(validator);
+        self
     }
 
     #[cfg(test)]
@@ -1394,6 +1408,11 @@ impl<'a> GraphSearcher<'a> {
                 )));
             }
             self.scratch.rescore_coarse_scores.push(score);
+        }
+        if let Some(validator) = self.rescore_validator {
+            validator
+                .validate_rows(&self.scratch.rescore_row_ids)
+                .map_err(GraphSearchError::ExactRescoreUnavailable)?;
         }
         let coarse_bytes_per_row = self
             .graph

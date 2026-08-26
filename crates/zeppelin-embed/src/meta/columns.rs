@@ -369,6 +369,30 @@ pub struct ColumnStore {
 }
 
 impl ColumnStore {
+    pub(crate) fn compact_for_cache(&mut self) {
+        for column in &mut self.columns {
+            match column {
+                Column::U64(column) => column.present.compact_for_cache(),
+                Column::I64(column) => column.present.compact_for_cache(),
+                Column::F64(column) => column.present.compact_for_cache(),
+                Column::Bool(column) => column.present.compact_for_cache(),
+                Column::DictionaryString(column) => column.present.compact_for_cache(),
+                Column::RawString(column) => column.present.compact_for_cache(),
+            }
+        }
+    }
+
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        let direct = self.schema.resident_bytes()?.checked_add(
+            self.columns
+                .capacity()
+                .checked_mul(std::mem::size_of::<Column>())?,
+        )?;
+        self.columns.iter().try_fold(direct, |total, column| {
+            total.checked_add(column_resident_bytes(column)?)
+        })
+    }
+
     /// Returns the schema that defines these physical arrays.
     #[must_use]
     pub fn schema(&self) -> &Schema {
@@ -407,6 +431,39 @@ impl ColumnStore {
             Some(Column::I64(column)) => column.values(),
             _ => &[],
         }
+    }
+}
+
+fn column_resident_bytes(column: &Column) -> Option<usize> {
+    match column {
+        Column::U64(column) => column
+            .values
+            .capacity()
+            .checked_mul(std::mem::size_of::<u64>())?
+            .checked_add(column.present.resident_bytes()?),
+        Column::I64(column) => column
+            .values
+            .capacity()
+            .checked_mul(std::mem::size_of::<i64>())?
+            .checked_add(column.present.resident_bytes()?),
+        Column::F64(column) => column
+            .values
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())?
+            .checked_add(column.present.resident_bytes()?),
+        Column::Bool(column) => column
+            .values
+            .capacity()
+            .checked_add(column.present.resident_bytes()?),
+        Column::DictionaryString(column) => column
+            .codes
+            .resident_bytes()?
+            .checked_add(column.dictionary.resident_bytes()?)?
+            .checked_add(column.present.resident_bytes()?),
+        Column::RawString(column) => column
+            .values
+            .resident_bytes()?
+            .checked_add(column.present.resident_bytes()?),
     }
 }
 

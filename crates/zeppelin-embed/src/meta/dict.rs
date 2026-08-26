@@ -41,6 +41,13 @@ pub enum DictionaryCodes {
 }
 
 impl DictionaryCodes {
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        match self {
+            Self::U16(codes) => codes.capacity().checked_mul(std::mem::size_of::<u16>()),
+            Self::U32(codes) => codes.capacity().checked_mul(std::mem::size_of::<u32>()),
+        }
+    }
+
     /// Returns the physical code width.
     #[must_use]
     pub const fn width(&self) -> CodeWidth {
@@ -130,6 +137,12 @@ pub(crate) struct StringStorage {
 }
 
 impl StringStorage {
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        self.offsets
+            .capacity()
+            .checked_mul(std::mem::size_of::<u32>())?
+            .checked_add(self.bytes.capacity())
+    }
     pub(crate) fn new() -> Self {
         Self {
             offsets: vec![0],
@@ -185,6 +198,10 @@ pub struct StringDictionary {
 }
 
 impl StringDictionary {
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        self.values.resident_bytes()
+    }
+
     /// Returns the number of distinct values.
     #[must_use]
     pub fn len(&self) -> usize {

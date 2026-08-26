@@ -31,6 +31,7 @@
 //! silent cut.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
@@ -563,7 +564,7 @@ impl SegmentIndex {
 /// one that ships and a persisted one that is only ever tested.
 #[derive(Clone, Debug, Default)]
 pub struct LexicalIndex {
-    segments: Vec<SealedSegment>,
+    segments: Vec<Arc<SealedSegment>>,
     live_counters: Vec<LiveSegmentCounters>,
 }
 
@@ -595,6 +596,10 @@ impl LexicalIndex {
 
     /// Appends an already-sealed segment.
     pub fn push_sealed(&mut self, segment: SealedSegment) {
+        self.push_shared(Arc::new(segment));
+    }
+
+    fn push_shared(&mut self, segment: Arc<SealedSegment>) {
         self.live_counters.push(LiveSegmentCounters {
             documents: u64::from(segment.row_count()),
             tokens: segment.total_tokens(),
@@ -619,6 +624,14 @@ impl LexicalIndex {
         segment: SealedSegment,
         live_rows: &DocBitmap,
     ) -> Result<(), IndexError> {
+        self.push_shared_with_live_rows(Arc::new(segment), live_rows)
+    }
+
+    pub(crate) fn push_shared_with_live_rows(
+        &mut self,
+        segment: Arc<SealedSegment>,
+        live_rows: &DocBitmap,
+    ) -> Result<(), IndexError> {
         let ordinal = self.segments.len();
         let counters = live_segment_counters(ordinal, &segment, live_rows)?;
         self.segments.push(segment);
@@ -628,7 +641,7 @@ impl LexicalIndex {
 
     /// Returns the segments in seal order.
     #[must_use]
-    pub fn segments(&self) -> &[SealedSegment] {
+    pub fn segments(&self) -> &[Arc<SealedSegment>] {
         &self.segments
     }
 

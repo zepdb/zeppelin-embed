@@ -97,10 +97,22 @@ pub fn search_lexical_filtered(
     allow_lists: &[DocBitmap],
     forced: Option<LexicalBranch>,
 ) -> Result<LexicalSearchOutcome, LexicalFilterError> {
+    let references = allow_lists.iter().collect::<Vec<_>>();
+    search_lexical_filtered_refs(index, query, k, params, &references, forced)
+}
+
+pub(crate) fn search_lexical_filtered_refs(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    allow_lists: &[&DocBitmap],
+    forced: Option<LexicalBranch>,
+) -> Result<LexicalSearchOutcome, LexicalFilterError> {
     validate_allow_lists(index, allow_lists)?;
     let allowed = allow_lists
         .iter()
-        .map(DocBitmap::cardinality)
+        .map(|allow_list| allow_list.cardinality())
         .fold(0_u64, u64::saturating_add);
     let corpus = index.document_count();
     let branch = forced.unwrap_or_else(|| {
@@ -128,7 +140,7 @@ pub fn search_lexical_filtered(
 
 fn validate_allow_lists(
     index: &LexicalIndex,
-    allow_lists: &[DocBitmap],
+    allow_lists: &[&DocBitmap],
 ) -> Result<(), LexicalFilterError> {
     if index.segments().len() != allow_lists.len() {
         return Err(LexicalFilterError::SegmentCount {

@@ -451,6 +451,8 @@ impl Accounted<Vec<u8>> {
 pub struct Stats {
     /// Exact bytes in engine-owned anonymous allocation arenas and vectors.
     pub resident_owned_bytes: u64,
+    /// Exact bytes retained by published snapshot metadata and decoded views.
+    pub snapshot_bytes: u64,
     /// Exact byte length of the store's live read-only mappings.
     pub mapped_bytes: u64,
     /// Bytes in resident mapped pages, counted by `mincore`.
@@ -602,6 +604,7 @@ impl Store {
         drop(writer_lock);
         Ok(Stats {
             resident_owned_bytes: accounting.resident_owned_bytes,
+            snapshot_bytes: accounting.snapshot_bytes,
             mapped_bytes: accounting.mapped_bytes,
             mapped_resident_bytes,
             segment_bytes: accounting.mapped_bytes,
@@ -693,8 +696,9 @@ mod tests {
         let mapped = Store::open(published.path(), OpenOptions::default()).expect("mapped open");
         let snapshot = mapped.snapshot().expect("mapped snapshot");
         let segment = snapshot.segments().first().expect("fixture segment");
-        let expected_snapshot_bytes =
-            std::mem::size_of::<SegmentReader>() + std::mem::size_of_val(segment.directory());
+        let expected_snapshot_bytes = std::mem::size_of::<SegmentReader>()
+            + std::mem::size_of_val(segment.directory())
+            + segment.retained_validation_bytes();
         drop(snapshot);
         let mapped_stats = mapped.stats().expect("mapped stats");
         assert_eq!(
