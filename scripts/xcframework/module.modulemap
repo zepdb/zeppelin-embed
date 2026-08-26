@@ -1,0 +1,4 @@
+module CZeppelinEmbed {
+    header "zeppelin_embed.h"
+    export *
+}

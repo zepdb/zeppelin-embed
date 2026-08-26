@@ -125,6 +125,64 @@ fn error_codes_are_append_only() {
     assert_eq!(unknown.to_str(), Ok("ZE_ERR_UNKNOWN"));
 }
 
+fn swift_error_case(c_name: &str) -> String {
+    let stem = c_name
+        .strip_prefix("ZE_ERR_")
+        .or_else(|| c_name.strip_prefix("ZE_"))
+        .expect("error-code C prefix");
+    let mut words = stem.split('_');
+    let mut name = words
+        .next()
+        .expect("error-code name word")
+        .to_ascii_lowercase();
+    for word in words {
+        let mut characters = word.chars();
+        if let Some(first) = characters.next() {
+            name.push(first.to_ascii_uppercase());
+            name.extend(characters.map(|character| character.to_ascii_lowercase()));
+        }
+    }
+    if name == "internal" {
+        name.push_str("Error");
+    }
+    name
+}
+
+fn generated_swift_error_enum() -> String {
+    use std::fmt::Write as _;
+
+    let mut source = String::from(
+        "// Generated from ffi_contract::ERROR_CODE_GOLDEN. Do not edit by hand.\n\n\
+         public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {\n",
+    );
+    for (_, value, c_name) in ERROR_CODE_GOLDEN {
+        writeln!(source, "    case {} = {value}", swift_error_case(c_name))
+            .expect("write generated Swift error case");
+    }
+    source.push_str("}\n");
+    source
+}
+
+#[test]
+fn swift_error_enum_is_generated_from_the_append_only_error_table() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let path = workspace.join("swift/ZeppelinEmbed/Sources/ZeppelinEmbed/ZeppelinError.swift");
+    let generated = generated_swift_error_enum();
+    if std::env::var_os("ZE_WRITE_SWIFT_ERROR").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        std::fs::write(&path, &generated).expect("write generated Swift error enum");
+    }
+    let committed = std::fs::read_to_string(&path).expect("committed Swift error enum");
+    assert_eq!(
+        committed, generated,
+        "Swift error enum drifted; regenerate with \
+         ZE_WRITE_SWIFT_ERROR=1 cargo test -p zeppelin-embed-ffi --test ffi_contract \
+         swift_error_enum_is_generated_from_the_append_only_error_table -- --exact"
+    );
+}
+
 macro_rules! assert_layout {
     ($type:ty, $size:literal, $align:literal, {$($field:ident: $offset:literal),+ $(,)?}) => {{
         assert_eq!(size_of::<$type>(), $size, "{} size", stringify!($type));

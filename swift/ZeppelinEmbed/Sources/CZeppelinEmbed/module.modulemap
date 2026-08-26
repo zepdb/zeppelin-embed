@@ -1,0 +1,4 @@
+module CZeppelinEmbed [system] {
+    header "shim.h"
+    export *
+}
