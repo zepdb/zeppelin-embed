@@ -19,6 +19,8 @@ mod abi;
 mod error;
 mod marshal;
 mod registry;
+mod slots;
+mod sync;
 
 use std::any::Any;
 use std::ffi::c_char;

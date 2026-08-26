@@ -178,8 +178,11 @@ mod tests {
             read_slice::<u32>(std::ptr::null(), 1).unwrap_err(),
             MarshalError("nonempty input buffer pointer is null")
         );
-        let bytes = [0_u8; 8];
-        let misaligned = unsafe { bytes.as_ptr().add(1).cast::<u32>() };
+        // Offset from a u32-aligned buffer: a `[u8; 8]` has alignment one, so
+        // its address plus one is 4-aligned whenever the base is 3 mod 4,
+        // which Miri's randomized placement reaches and native stacks can too.
+        let aligned = [0_u32; 2];
+        let misaligned = unsafe { aligned.as_ptr().cast::<u8>().add(1).cast::<u32>() };
         assert_eq!(
             read_slice::<u32>(misaligned, 1).unwrap_err(),
             MarshalError("input buffer pointer is misaligned")

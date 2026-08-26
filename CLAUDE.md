@@ -93,6 +93,15 @@ is unchanged and adding to it remains an owner decision.
   registry keys on pointer and element type, and
   `ffi_ownership` proves the heap is flat across allocate/free loops.
 
+- Phase 3 matrix: ASan and TSan run the ffi suites with `-Zbuild-std` on
+  both platforms; rustc has no UBSan, so Miri covers the raw-pointer marshal
+  layer instead. The handle state machine lives in `slots.rs` as a generic
+  `SlotTable` so loom can drive it with a stand-in payload; `loom` is a
+  `cfg(loom)`-only dependency of the ffi crate (decision taken 2026-08-26:
+  it never enters a default build, `cargo deny check` passes with it in the
+  lockfile). `ffi_requests` fuzzes the extern "C" surface with honest
+  pointer/length pairs; `ffi_soak` is the 10k-round footprint gate.
+
 ## Engineering method
 
 - Work strictly RED -> GREEN: write the named test, observe the intended

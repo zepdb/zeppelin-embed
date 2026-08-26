@@ -225,6 +225,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeppelin-embed-ffi"
+version = "0.1.0"
+dependencies = [
+ "zeppelin-embed",
+]
+
+[[package]]
 name = "zeppelin-embed-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -233,6 +240,7 @@ dependencies = [
  "rand_chacha",
  "xxhash-rust",
  "zeppelin-embed",
+ "zeppelin-embed-ffi",
 ]
 
 [[package]]

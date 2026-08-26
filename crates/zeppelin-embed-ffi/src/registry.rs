@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::OnceLock;
 
 use zeppelin_embed::epoch::EpochIdentity;
 use zeppelin_embed::ingest::PurgeToken;
@@ -7,31 +7,13 @@ use zeppelin_embed::lifecycle::{CancelToken, Store};
 
 use crate::abi::{ZeCancelToken, ZeErrorCode, ZeHandle};
 use crate::error::FfiError;
+use crate::slots::SlotTable;
+use crate::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-struct Slot {
-    generation: u32,
-    store: Option<Arc<Store>>,
-    epoch: Option<EpochIdentity>,
-    writer: Arc<Mutex<()>>,
-    purge_tokens: Arc<Mutex<HashMap<u64, PurgeToken>>>,
-    last_error: String,
-    poisoned: bool,
-    closing: bool,
-}
+pub(crate) use crate::slots::{bump_generation, decode, encode};
 
-pub(crate) struct HandleAccess {
-    pub(crate) store: Arc<Store>,
-    /// Identity declared when the handle was opened; attached to every
-    /// batch the engine requires a declaration for.
-    pub(crate) epoch: Option<EpochIdentity>,
-    pub(crate) writer: Arc<Mutex<()>>,
-    pub(crate) purge_tokens: Arc<Mutex<HashMap<u64, PurgeToken>>>,
-}
-
-pub(crate) enum CloseAccess {
-    Poisoned,
-    Store(Arc<Store>),
-}
+pub(crate) type HandleAccess = crate::slots::Access<Store, PurgeToken>;
+pub(crate) type CloseAccess = crate::slots::CloseAccess<Store>;
 
 #[derive(Clone)]
 struct CancelSlot {
@@ -39,9 +21,9 @@ struct CancelSlot {
     token: Option<CancelToken>,
 }
 
-fn handles() -> &'static Mutex<Vec<Slot>> {
-    static HANDLES: OnceLock<Mutex<Vec<Slot>>> = OnceLock::new();
-    HANDLES.get_or_init(|| Mutex::new(Vec::new()))
+fn handles() -> &'static Mutex<SlotTable<Store, PurgeToken>> {
+    static HANDLES: OnceLock<Mutex<SlotTable<Store, PurgeToken>>> = OnceLock::new();
+    HANDLES.get_or_init(|| Mutex::new(SlotTable::new()))
 }
 
 fn cancels() -> &'static Mutex<Vec<CancelSlot>> {
@@ -65,7 +47,7 @@ fn global_error() -> &'static Mutex<String> {
     GLOBAL_ERROR.get_or_init(|| Mutex::new(String::new()))
 }
 
-fn lock_handles() -> Result<MutexGuard<'static, Vec<Slot>>, FfiError> {
+fn lock_handles() -> Result<MutexGuard<'static, SlotTable<Store, PurgeToken>>, FfiError> {
     handles().lock().map_err(|_| {
         FfiError::new(
             ZeErrorCode::ZeErrSynchronization,
@@ -74,117 +56,15 @@ fn lock_handles() -> Result<MutexGuard<'static, Vec<Slot>>, FfiError> {
     })
 }
 
-fn decode(value: u64) -> Result<(usize, u32), FfiError> {
-    if value == 0 {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle zero is permanently invalid",
-        ));
-    }
-    let generation = u32::try_from(value >> 32)
-        .map_err(|_| FfiError::new(ZeErrorCode::ZeErrInvalidHandle, "invalid handle generation"))?;
-    if generation == 0 {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle generation zero is permanently reserved",
-        ));
-    }
-    let index = usize::try_from(value & u64::from(u32::MAX))
-        .map_err(|_| FfiError::new(ZeErrorCode::ZeErrInvalidHandle, "invalid handle slot"))?;
-    Ok((index, generation))
-}
-
-fn encode(index: usize, generation: u32) -> Result<u64, FfiError> {
-    let index = u32::try_from(index).map_err(|_| {
-        FfiError::new(
-            ZeErrorCode::ZeErrOutOfMemory,
-            "handle registry exhausted its u32 slot address space",
-        )
-    })?;
-    Ok((u64::from(generation) << 32) | u64::from(index))
-}
-
-fn bump_generation(generation: &mut u32) {
-    *generation = generation.checked_add(1).unwrap_or(0);
-}
-
 pub(crate) fn insert_store(
     store: Store,
     epoch: Option<EpochIdentity>,
 ) -> Result<ZeHandle, FfiError> {
-    let mut registry = lock_handles()?;
-    if let Some((index, slot)) = registry
-        .iter_mut()
-        .enumerate()
-        .find(|(_, slot)| slot.store.is_none() && !slot.closing && slot.generation != 0)
-    {
-        slot.store = Some(Arc::new(store));
-        slot.epoch = epoch;
-        slot.writer = Arc::new(Mutex::new(()));
-        slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
-        slot.last_error.clear();
-        slot.poisoned = false;
-        return encode(index, slot.generation);
-    }
-    let index = registry.len();
-    registry.try_reserve(1).map_err(|_| {
-        FfiError::new(
-            ZeErrorCode::ZeErrOutOfMemory,
-            "handle registry allocation failed",
-        )
-    })?;
-    registry.push(Slot {
-        generation: 1,
-        store: Some(Arc::new(store)),
-        epoch,
-        writer: Arc::new(Mutex::new(())),
-        purge_tokens: Arc::new(Mutex::new(HashMap::new())),
-        last_error: String::new(),
-        poisoned: false,
-        closing: false,
-    });
-    encode(index, 1)
+    lock_handles()?.insert(store, epoch)
 }
 
 pub(crate) fn lookup(handle: ZeHandle) -> Result<HandleAccess, FfiError> {
-    let (index, generation) = decode(handle)?;
-    let registry = lock_handles()?;
-    let slot = registry.get(index).ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle slot was never allocated",
-        )
-    })?;
-    if slot.generation != generation || slot.store.is_none() {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle is closed or belongs to a stale generation",
-        ));
-    }
-    if slot.poisoned {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrPoisoned,
-            "handle was poisoned by a caught panic",
-        ));
-    }
-    if slot.closing {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosing,
-            "handle is closing",
-        ));
-    }
-    let store = slot.store.as_ref().cloned().ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle store has already been released",
-        )
-    })?;
-    Ok(HandleAccess {
-        store,
-        epoch: slot.epoch,
-        writer: Arc::clone(&slot.writer),
-        purge_tokens: Arc::clone(&slot.purge_tokens),
-    })
+    lock_handles()?.lookup(handle)
 }
 
 pub(crate) fn with_writer<T>(
@@ -214,101 +94,43 @@ pub(crate) fn with_writer<T>(
 }
 
 pub(crate) fn begin_close(handle: ZeHandle) -> Result<CloseAccess, FfiError> {
-    let (index, generation) = decode(handle)?;
-    let mut registry = lock_handles()?;
-    let slot = registry.get_mut(index).ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle slot was never allocated",
-        )
-    })?;
-    if slot.generation != generation || slot.store.is_none() {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle is closed or belongs to a stale generation",
-        ));
-    }
-    if slot.poisoned {
-        slot.store = None;
-        slot.epoch = None;
-        slot.closing = false;
-        slot.poisoned = false;
-        slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
-        bump_generation(&mut slot.generation);
-        return Ok(CloseAccess::Poisoned);
-    }
-    if slot.closing {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosing,
-            "handle is already closing",
-        ));
-    }
-    slot.closing = true;
-    let store = slot.store.as_ref().cloned().ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle store has already been released",
-        )
-    })?;
-    Ok(CloseAccess::Store(store))
+    lock_handles()?.begin_close(handle)
 }
 
 pub(crate) fn finish_close(handle: ZeHandle) -> Result<(), FfiError> {
-    let (index, generation) = decode(handle)?;
-    let mut registry = lock_handles()?;
-    let slot = registry.get_mut(index).ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle slot was never allocated",
-        )
-    })?;
-    if slot.generation != generation {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle became stale while closing",
-        ));
-    }
-    slot.store = None;
-    slot.epoch = None;
-    slot.closing = false;
-    slot.poisoned = false;
-    slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
-    bump_generation(&mut slot.generation);
-    Ok(())
+    lock_handles()?.finish_close(handle)
 }
 
 pub(crate) fn set_error(handle: Option<ZeHandle>, message: String) {
-    if let Some(handle) = handle
-        && let Ok((index, generation)) = decode(handle)
-        && let Ok(mut registry) = handles().lock()
-        && let Some(slot) = registry.get_mut(index)
-        && slot.generation == generation
-    {
-        slot.last_error = message;
-        return;
-    }
+    let message = match handle {
+        Some(handle) => match handles().lock() {
+            Ok(mut table) => match table.set_error(handle, message) {
+                Some(message) => message,
+                None => return,
+            },
+            Err(_) => return,
+        },
+        None => message,
+    };
     if let Ok(mut error) = global_error().lock() {
         *error = message;
     }
 }
 
 pub(crate) fn poison(handle: Option<ZeHandle>, message: String) {
-    if let Some(handle) = handle
-        && let Ok((index, generation)) = decode(handle)
-    {
-        let mut registry = match handles().lock() {
-            Ok(registry) => registry,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if let Some(slot) = registry.get_mut(index)
-            && slot.generation == generation
-            && slot.store.is_some()
-        {
-            slot.poisoned = true;
-            slot.last_error = message;
-            return;
+    let message = match handle {
+        Some(handle) => {
+            let mut table = match handles().lock() {
+                Ok(table) => table,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            match table.poison(handle, message) {
+                Some(message) => message,
+                None => return,
+            }
         }
-    }
+        None => message,
+    };
     let mut error = match global_error().lock() {
         Ok(error) => error,
         Err(poisoned) => poisoned.into_inner(),
@@ -328,21 +150,7 @@ pub(crate) fn last_error(handle: ZeHandle) -> Result<String, FfiError> {
                 )
             });
     }
-    let (index, generation) = decode(handle)?;
-    let registry = lock_handles()?;
-    let slot = registry.get(index).ok_or_else(|| {
-        FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle slot was never allocated",
-        )
-    })?;
-    if slot.generation != generation || slot.store.is_none() {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrClosed,
-            "handle is closed or belongs to a stale generation",
-        ));
-    }
-    Ok(slot.last_error.clone())
+    lock_handles()?.last_error(handle)
 }
 
 pub(crate) fn insert_cancel(token: CancelToken) -> Result<ZeCancelToken, FfiError> {

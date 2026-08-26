@@ -150,6 +150,70 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p zeppelin-embed-bench --bin platform-truth -- --smoke
 
+  ffi-sanitizers:
+    name: ffi-${{ matrix.sanitizer }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+        sanitizer: [address, thread]
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - name: ffi test suites under ${{ matrix.sanitizer }} sanitizer
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+          ZE_CARGO_TEST_ARGS: -Zbuild-std --target ${{ matrix.target }}
+        run: >-
+          cargo +nightly test -Zbuild-std --target ${{ matrix.target }}
+          -p zeppelin-embed-ffi --lib --test ffi_query --test ffi_contract
+          --test ffi_adversarial --test ffi_ownership
+      - name: ffi soak under ${{ matrix.sanitizer }} sanitizer
+        if: matrix.sanitizer == 'address'
+        env:
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+          ZE_FFI_SOAK_ITERATIONS: 2000
+        run: >-
+          cargo +nightly test -Zbuild-std --target ${{ matrix.target }}
+          -p zeppelin-embed-ffi --test ffi_soak -- --ignored
+
+  ffi-soak:
+    name: ffi-soak (macos-14, 10k rounds)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p zeppelin-embed-ffi --test ffi_soak -- --ignored --nocapture
+
+  ffi-loom:
+    name: ffi-loom (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - env:
+          RUSTFLAGS: --cfg loom
+        run: cargo test -p zeppelin-embed-ffi --lib slots::loom_model
+
   fuzz-smoke:
     name: fuzz-smoke (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -166,6 +230,7 @@ jobs:
       - run: scripts/cargo-fuzz-nightly run segment_reader -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run graph_node_block_decode -- -max_total_time=60
       - run: scripts/cargo-fuzz-nightly run manifest_decode -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run ffi_requests -- -max_total_time=60
 
   address-sanitizer:
     name: address-sanitizer-corruption (ubuntu-latest)
@@ -206,3 +271,4 @@ jobs:
         with:
           components: miri
       - run: cargo +nightly miri test -p zeppelin-embed --lib
+      - run: cargo +nightly miri test -p zeppelin-embed-ffi --lib marshal

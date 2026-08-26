@@ -326,10 +326,22 @@ fn delegate_to_panic_feature(test_name: &str) -> bool {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("workspace root");
+    // A sanitizer build passes `-Zbuild-std --target <triple>`; the child
+    // cargo must repeat them or its dependencies fail the sanitizer ABI
+    // check. CI sets ZE_CARGO_TEST_ARGS for exactly that.
+    let extra = std::env::var("ZE_CARGO_TEST_ARGS")
+        .map(|value| {
+            value
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
         .current_dir(workspace)
+        .arg("test")
+        .args(extra)
         .args([
-            "test",
             "-p",
             "zeppelin-embed-ffi",
             "--features",
