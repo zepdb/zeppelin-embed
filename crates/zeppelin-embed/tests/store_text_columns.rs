@@ -239,6 +239,151 @@ fn optional_text_and_columns_activate_after_text_free_rows() {
 }
 
 #[test]
+fn replacing_an_active_revision_adds_and_then_removes_optional_payloads() {
+    let directory = tempdir().expect("store directory");
+    let category = ColumnId::new(24);
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        category,
+        "category",
+        ColumnType::U64,
+        true,
+    )])
+    .expect("optional typed schema");
+    let store = Store::open(directory.path(), OpenOptions::default().with_schema(schema))
+        .expect("create typed store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2401), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_metadata(b"first metadata".to_vec()),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2402), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_metadata(b"second metadata".to_vec()),
+        ]))
+        .expect("ingest payload-free revisions");
+
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2401), Revision::new(2)),
+                vec![0.9, 0.1],
+            )
+            .with_metadata(b"replacement metadata is longer".to_vec())
+            .with_text("replacement zeppelin")
+            .with_columns(vec![(category, PredicateValue::U64(24))]),
+        ]))
+        .expect("add optional payloads by replacement");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2403), Revision::new(1)),
+                vec![-1.0, 0.0],
+            )
+            .with_text("retained airship"),
+        ]))
+        .expect("retain a non-matching lexical row");
+
+    let lexical = store
+        .search_lexical(
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search replacement text");
+    assert_eq!(lexical.candidates.len(), 1);
+    assert_eq!(lexical.candidates[0].document.revision(), Revision::new(2));
+    let filtered = store
+        .search_filtered(
+            SearchRequest::new(&[1.0, 0.0]),
+            &Predicate::Eq {
+                column: category,
+                value: PredicateValue::U64(24),
+            },
+            10,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("filter replacement columns");
+    assert_eq!(filtered.candidates.len(), 1);
+    assert_eq!(
+        filtered.candidates[0]
+            .document()
+            .expect("replacement identity")
+            .revision(),
+        Revision::new(2)
+    );
+
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(2401), Revision::new(3)),
+            vec![0.8, 0.2],
+        )]))
+        .expect("remove optional payloads by replacement");
+    let lexical = store
+        .search_lexical(
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after text removal");
+    assert!(lexical.candidates.is_empty());
+    let filtered = store
+        .search_filtered(
+            SearchRequest::new(&[1.0, 0.0]),
+            &Predicate::Eq {
+                column: category,
+                value: PredicateValue::U64(24),
+            },
+            10,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("filter after column removal");
+    assert!(filtered.candidates.is_empty());
+    let vector = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search latest replacement");
+    assert_eq!(
+        vector.candidates[0].document().expect("latest identity"),
+        DocumentVersion::new(DocId::new(2401), Revision::new(3))
+    );
+    store.close().expect("close store");
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("replay revisions");
+    let replayed = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search replayed latest replacement");
+    assert_eq!(
+        replayed.candidates[0]
+            .document()
+            .expect("replayed identity"),
+        DocumentVersion::new(DocId::new(2401), Revision::new(3))
+    );
+    let removed_text = reopened
+        .search_lexical(
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search replayed text removal");
+    assert!(removed_text.candidates.is_empty());
+    reopened.close().expect("close replayed store");
+}
+
+#[test]
 fn prechange_wal_fixture_replays_to_the_same_active_state() {
     let directory = tempdir().expect("store directory");
     let bytes = decode_hex(include_str!("fixtures/format/store_wal_prechange_v1.hex"))

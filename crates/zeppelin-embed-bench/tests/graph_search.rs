@@ -120,6 +120,14 @@ fn exercise_graph_search_with_small_coverage_fixture() {
 
     assert_eq!(result.candidates()[0].row_id(), 8);
     assert_eq!(result.candidate_sequence(), Some(&[0, 1, 2, 3, 8][..]));
+
+    let process_summary = ProcessMedian::new(vec![102.0, 100.0, 101.0])
+        .expect("coverage process observations are valid");
+    assert_eq!(process_summary.values(), &[100.0, 101.0, 102.0]);
+    assert_eq!(process_summary.minimum(), 100.0);
+    assert_eq!(process_summary.median(), 101.0);
+    assert_eq!(process_summary.maximum(), 102.0);
+    assert!((process_summary.spread_percent() - (2.0 / 101.0 * 100.0)).abs() < f64::EPSILON);
 }
 
 fn build_bench_binary(workspace: &Path) -> Result<std::path::PathBuf, String> {

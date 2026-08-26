@@ -4,7 +4,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 use zeppelin_embed::diag::MaintenanceOutcome;
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, RetentionPolicy, Revision,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, RetentionPolicy, Revision,
 };
 use zeppelin_embed::lifecycle::{OpenOptions, Store};
 use zeppelin_embed::tier::SegmentTier;
@@ -79,4 +79,78 @@ fn retained_through_reflects_an_executed_retention_run_and_last_maintenance_matc
     assert_eq!(last.checkpoints_resumed, maintenance.checkpoints_resumed);
     assert_eq!(last.outcome, MaintenanceOutcome::BudgetExhausted);
     store.close().expect("close store");
+}
+
+#[test]
+fn self_check_samples_only_live_active_and_sealed_documents_against_the_exact_oracle() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+
+    let empty = store.self_check(8, 0x24_5e1f_c4ec);
+    assert_eq!(empty.requested_samples, 8);
+    assert_eq!(empty.sampled_documents, 0);
+    assert_eq!(empty.expected_hits, 0);
+    assert_eq!(empty.recalled_hits, 0);
+    assert_eq!(empty.recall, 1.0);
+    assert!(empty.failures.is_empty());
+
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(11), Revision::new(1)),
+                vec![1.0, 0.0, 0.0, 0.0],
+            ),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(12), Revision::new(1)),
+                vec![0.0, 1.0, 0.0, 0.0],
+            ),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(13), Revision::new(1)),
+                vec![0.0, 0.0, 1.0, 0.0],
+            ),
+        ]))
+        .expect("ingest self-check rows");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(12)]))
+        .expect("tombstone one active row");
+
+    let active = store.self_check(8, 0x24_5e1f_c4ec);
+    assert_eq!(active.sampled_documents, 2);
+    assert_eq!(active.expected_hits, 4);
+    assert_eq!(active.recalled_hits, 4);
+    assert_eq!(active.recall, 1.0);
+    assert!(
+        (2.0..2.1).contains(&active.max_score_delta),
+        "the self-check must expose the coarse-score delta: {active:?}"
+    );
+    assert!(active.failures.is_empty());
+
+    store.seal().expect("seal self-check rows");
+    let sealed = store.self_check(1, 0x24_5e1f_c4ec);
+    assert_eq!(sealed.sampled_documents, 1);
+    assert_eq!(sealed.expected_hits, 2);
+    assert_eq!(sealed.recalled_hits, 2);
+    assert_eq!(sealed.recall, 1.0);
+    assert!(
+        (2.0..2.1).contains(&sealed.max_score_delta),
+        "the sealed self-check must retain score provenance: {sealed:?}"
+    );
+    assert!(sealed.failures.is_empty());
+}
+
+#[test]
+fn self_check_after_close_reports_a_typed_state_failure_without_partial_samples() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store.close().expect("close store");
+
+    let report = store.self_check(3, 0x24_c105_ed00);
+    assert_eq!(report.requested_samples, 3);
+    assert_eq!(report.sampled_documents, 0);
+    assert_eq!(report.expected_hits, 0);
+    assert_eq!(report.recalled_hits, 0);
+    assert_eq!(report.recall, 0.0);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].stage, "state");
+    assert_eq!(report.failures[0].detail, "store is closed");
 }
