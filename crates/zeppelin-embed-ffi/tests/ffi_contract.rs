@@ -154,9 +154,10 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
         has_phys_footprint: 136, reserved: 140
     });
     assert_layout!(ZeDocId, 16, 8, { high: 0, low: 8 });
-    assert_layout!(ZeIngestDocument, 72, 8, {
+    assert_layout!(ZeIngestDocument, 88, 8, {
         abi_size: 0, abi_reserved: 4, doc_id: 8, revision: 24, timestamp: 32,
-        vector: 40, vector_len: 48, metadata: 56, metadata_len: 64
+        vector: 40, vector_len: 48, metadata: 56, metadata_len: 64,
+        text: 72, text_len: 80
     });
     assert_layout!(ZeIngestRequest, 32, 8, {
         abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16, dimension: 24
@@ -167,11 +168,11 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeMutationReport, 24, 8, {
         abi_size: 0, abi_reserved: 4, sequence: 8, generation: 16
     });
-    assert_layout!(ZeSearchRequest, 88, 8, {
+    assert_layout!(ZeSearchRequest, 96, 8, {
         abi_size: 0, abi_reserved: 4, vector: 8, vector_len: 16,
-        dimension: 24, k: 32, thread_budget: 40, search_tier: 48,
-        graph_profile: 52, graph_ef: 56, graph_seed: 64,
-        cancel_token: 72, deadline_ns: 80
+        dimension: 24, k: 32, thread_budget: 40, has_tier: 48, tier: 52,
+        graph_profile: 56, reserved: 60, graph_ef: 64, graph_seed: 72,
+        cancel_token: 80, deadline_ns: 88
     });
     assert_layout!(ZeSearchHit, 64, 8, {
         source_kind: 0, reserved: 4, segment_id: 8, local_row: 24,
@@ -454,6 +455,8 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
                 vector_len: context.vector.len(),
                 metadata: std::ptr::null(),
                 metadata_len: 0,
+                text: std::ptr::null(),
+                text_len: 0,
             };
             let request = ZeIngestRequest {
                 abi_size: size_of::<ZeIngestRequest>() as u32,

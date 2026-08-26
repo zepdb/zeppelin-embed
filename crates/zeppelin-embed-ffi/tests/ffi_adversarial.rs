@@ -120,6 +120,8 @@ fn ingest_cell(context: &MatrixContext, cell: Cell) -> CellResult {
         vector_len: context.vector.len(),
         metadata: std::ptr::null(),
         metadata_len: 0,
+        text: std::ptr::null(),
+        text_len: 0,
     };
     let mut request = ZeIngestRequest {
         abi_size: size_of::<ZeIngestRequest>() as u32,
@@ -228,7 +230,8 @@ fn search_cell(context: &MatrixContext, cell: Cell) -> CellResult {
             ze_search(context.store.handle, &request, &mut result)
         }
         Cell::BadEnumDiscriminant => {
-            request.search_tier = i32::MAX;
+            request.has_tier = 1;
+            request.tier = i32::MAX;
             ze_search(context.store.handle, &request, &mut result)
         }
         Cell::UndersizedAbi => {

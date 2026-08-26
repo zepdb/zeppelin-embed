@@ -88,6 +88,8 @@ pub fn ingest_rows(handle: ZeHandle, rows: usize, dimension: usize) -> ZeErrorCo
             vector_len: vector.len(),
             metadata: std::ptr::null(),
             metadata_len: 0,
+            text: std::ptr::null(),
+            text_len: 0,
         })
         .collect::<Vec<_>>();
     let request = ZeIngestRequest {
@@ -110,8 +112,10 @@ pub fn valid_search_request(vector: &[f32]) -> ZeSearchRequest {
         dimension: vector.len(),
         k: 1,
         thread_budget: 1,
-        search_tier: 1,
+        has_tier: 1,
+        tier: 2,
         graph_profile: 0,
+        reserved: 0,
         graph_ef: 0,
         graph_seed: 0,
         cancel_token: 0,

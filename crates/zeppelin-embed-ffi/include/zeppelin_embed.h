@@ -577,6 +577,14 @@ typedef struct ZeIngestDocument {
      Number of metadata bytes.
      */
     size_t metadata_len;
+    /*
+     Caller-owned UTF-8 document text for the lexical index, or null.
+     */
+    const uint8_t *text;
+    /*
+     Number of `text` bytes; zero means the document carries no text.
+     */
+    size_t text_len;
 } ZeIngestDocument;
 
 /*
@@ -687,13 +695,22 @@ typedef struct ZeSearchRequest {
      */
     size_t thread_budget;
     /*
-     `0` automatic, `1` exact scan, `2` explicit graph.
+     One when `tier` carries an explicit preference; zero expresses no
+     preference, which is distinct from explicitly choosing `tier` zero.
      */
-    int32_t search_tier;
+    uint32_t has_tier;
+    /*
+     `0` automatic, `1` exact, `2` scan, or `3` explicit graph.
+     */
+    int32_t tier;
     /*
      `0` SIFT-class or `1` angular graph defaults.
      */
     int32_t graph_profile;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
     /*
      Explicit graph width, or zero for adaptive width.
      */
@@ -1444,8 +1461,9 @@ ze_error_code ze_stats(ze_handle handle, struct ZeStatsReport *out_report);
 
 /*
  Atomically ingests caller-owned document records. Every const pointer
- is caller-owned and need only outlive the call. Not cancellable in v1;
- the engine offers no token here.
+ is caller-owned and need only outlive the call. A record with nonzero
+ `text_len` is analyzed into the lexical index with the ingest tokenizer.
+ Not cancellable in v1; the engine offers no token here.
  */
 ze_error_code ze_ingest(ze_handle handle,
                         const struct ZeIngestRequest *request,

@@ -195,6 +195,10 @@ pub struct ZeIngestDocument {
     pub metadata: *const u8,
     /// Number of metadata bytes.
     pub metadata_len: usize,
+    /// Caller-owned UTF-8 document text for the lexical index, or null.
+    pub text: *const u8,
+    /// Number of `text` bytes; zero means the document carries no text.
+    pub text_len: usize,
 }
 
 /// Atomic document-ingest request.
@@ -259,10 +263,15 @@ pub struct ZeSearchRequest {
     pub k: usize,
     /// Zero selects all detected physical performance cores.
     pub thread_budget: usize,
-    /// `0` automatic, `1` exact scan, `2` explicit graph.
-    pub search_tier: i32,
+    /// One when `tier` carries an explicit preference; zero expresses no
+    /// preference, which is distinct from explicitly choosing `tier` zero.
+    pub has_tier: u32,
+    /// `0` automatic, `1` exact, `2` scan, or `3` explicit graph.
+    pub tier: i32,
     /// `0` SIFT-class or `1` angular graph defaults.
     pub graph_profile: i32,
+    /// Must be zero.
+    pub reserved: u32,
     /// Explicit graph width, or zero for adaptive width.
     pub graph_ef: usize,
     /// Deterministic graph query-preparation seed.

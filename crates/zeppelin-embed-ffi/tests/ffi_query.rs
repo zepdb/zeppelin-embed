@@ -2,9 +2,6 @@ mod common;
 
 use std::mem::size_of;
 
-use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
-use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
-use zeppelin_embed::lifecycle::{OpenOptions, Store};
 use zeppelin_embed_ffi::*;
 
 const DIMENSION: usize = 4;
@@ -15,29 +12,39 @@ fn vector(seed: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Ingests documents with text through the core crate so the lexical leg has
-/// postings to score; the C surface carries no text at ingest (reported gap).
-fn seed_text_store(path: &std::path::Path, texts: &[&str]) {
-    let store = Store::open(
-        path,
-        OpenOptions::new().with_durability(DurabilityMode::Derived, CommitTier::Ordered),
-    )
-    .expect("open store through the core crate");
+/// Ingests documents with text through the C surface (BL-162).
+fn ingest_text(handle: ZeHandle, texts: &[&str]) -> ZeErrorCode {
+    let vectors = (0..texts.len()).map(vector).collect::<Vec<_>>();
     let documents = texts
         .iter()
+        .zip(&vectors)
         .enumerate()
-        .map(|(index, text)| {
-            IngestDocument::new(
-                DocumentVersion::new(DocId::new(index as u128 + 1), Revision::new(1)),
-                vector(index),
-            )
-            .with_text(*text)
+        .map(|(index, (text, vector))| ZeIngestDocument {
+            abi_size: size_of::<ZeIngestDocument>() as u32,
+            abi_reserved: 0,
+            doc_id: ZeDocId {
+                high: 0,
+                low: index as u64 + 1,
+            },
+            revision: 1,
+            timestamp: index as i64,
+            vector: vector.as_ptr(),
+            vector_len: vector.len(),
+            metadata: std::ptr::null(),
+            metadata_len: 0,
+            text: text.as_ptr(),
+            text_len: text.len(),
         })
-        .collect();
-    store
-        .ingest(IngestBatch::new(documents))
-        .expect("ingest text");
-    store.close().expect("close core store");
+        .collect::<Vec<_>>();
+    let request = ZeIngestRequest {
+        abi_size: size_of::<ZeIngestRequest>() as u32,
+        abi_reserved: 0,
+        documents: documents.as_ptr(),
+        document_count: documents.len(),
+        dimension: DIMENSION,
+    };
+    let mut report: ZeMutationReport = common::sized_zeroed();
+    ze_ingest(handle, &request, &mut report)
 }
 
 fn query(handle: ZeHandle, request: &ZeQueryRequest) -> (ZeErrorCode, ZeQueryResult) {
@@ -93,18 +100,49 @@ fn a_vector_only_query_returns_the_same_hits_as_ze_search_with_no_tier_preferenc
 
 #[test]
 fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("store");
-    seed_text_store(
-        &path,
-        &[
-            "zeppelin airship over the harbour",
-            "harbour lights at dusk",
-            "quantized vectors and postings",
-        ],
+    let store = common::TestStore::new();
+    let handle = store.handle;
+    assert_eq!(
+        ingest_text(
+            handle,
+            &[
+                "zeppelin airship over the harbour",
+                "harbour lights at dusk",
+                "quantized vectors and postings",
+            ],
+        ),
+        ZeErrorCode::ZeOk
     );
-    let (code, handle) = common::open_path(&path);
-    assert_eq!(code, ZeErrorCode::ZeOk);
+    let invalid = [0xff_u8];
+    let mut bad = ZeIngestDocument {
+        abi_size: size_of::<ZeIngestDocument>() as u32,
+        abi_reserved: 0,
+        doc_id: ZeDocId { high: 0, low: 9 },
+        revision: 1,
+        timestamp: 9,
+        vector: std::ptr::null(),
+        vector_len: 0,
+        metadata: std::ptr::null(),
+        metadata_len: 0,
+        text: invalid.as_ptr(),
+        text_len: invalid.len(),
+    };
+    let probe = vector(9);
+    bad.vector = probe.as_ptr();
+    bad.vector_len = probe.len();
+    let request = ZeIngestRequest {
+        abi_size: size_of::<ZeIngestRequest>() as u32,
+        abi_reserved: 0,
+        documents: &bad,
+        document_count: 1,
+        dimension: DIMENSION,
+    };
+    let mut report: ZeMutationReport = common::sized_zeroed();
+    assert_eq!(
+        ze_ingest(handle, &request, &mut report),
+        ZeErrorCode::ZeErrInvalidArgument,
+        "invalid UTF-8 text is a typed error"
+    );
 
     let text = b"harbour";
     let mut request = common::valid_query_request(&[]);
@@ -173,7 +211,6 @@ fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
     let (code, result) = query(handle, &explicit);
     assert_eq!(code, ZeErrorCode::ZeErrInvalidArgument);
     assert_eq!(result.hit_count, 0);
-    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
 }
 
 #[test]

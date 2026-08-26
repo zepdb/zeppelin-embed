@@ -162,29 +162,22 @@ fn parse_graph_profile(value: i32) -> Result<GraphSearchProfile, FfiError> {
 }
 
 fn parse_search_options(request: ZeSearchRequest) -> Result<SearchOptions, FfiError> {
-    let profile = parse_graph_profile(request.graph_profile)?;
-    let scan = ScanOptions {
+    if request.reserved != 0 {
+        return Err(FfiError::invalid("search reserved field must be zero"));
+    }
+    let mut options = SearchOptions::new(ScanOptions {
         thread_budget: request.thread_budget,
-    };
-    let tier = match request.search_tier {
-        0 => SearchTier::Auto,
-        1 => SearchTier::Scan,
-        2 => {
-            let graph = GraphSearchOptions::new(profile).with_seed(request.graph_seed);
-            let graph = if request.graph_ef == 0 {
-                graph
-            } else {
-                graph.with_ef(request.graph_ef)
-            };
-            SearchTier::Graph(graph)
-        }
-        _ => {
-            return Err(FfiError::invalid(
-                "search_tier discriminant is out of range",
-            ));
-        }
-    };
-    Ok(SearchOptions::new(scan).with_tier(tier))
+    });
+    if let Some(tier) = parse_tier_fields(
+        request.has_tier,
+        request.tier,
+        request.graph_profile,
+        request.graph_ef,
+        request.graph_seed,
+    )? {
+        options = options.with_tier(tier);
+    }
+    Ok(options)
 }
 
 fn empty_search_result(abi_size: u32) -> ZeSearchResult {
@@ -385,8 +378,24 @@ fn open_store(
 }
 
 fn parse_tier(request: &ZeQueryRequest) -> Result<Option<SearchTier>, FfiError> {
-    let profile = parse_graph_profile(request.graph_profile)?;
-    match (request.has_tier, request.tier) {
+    parse_tier_fields(
+        request.has_tier,
+        request.tier,
+        request.graph_profile,
+        request.graph_ef,
+        request.graph_seed,
+    )
+}
+
+fn parse_tier_fields(
+    has_tier: u32,
+    tier: i32,
+    graph_profile: i32,
+    graph_ef: usize,
+    graph_seed: u64,
+) -> Result<Option<SearchTier>, FfiError> {
+    let profile = parse_graph_profile(graph_profile)?;
+    match (has_tier, tier) {
         (0, 0) => Ok(None),
         (0, _) => Err(FfiError::invalid(
             "tier must be zero when has_tier expresses no preference",
@@ -395,11 +404,11 @@ fn parse_tier(request: &ZeQueryRequest) -> Result<Option<SearchTier>, FfiError> 
         (1, 1) => Ok(Some(SearchTier::Exact)),
         (1, 2) => Ok(Some(SearchTier::Scan)),
         (1, 3) => {
-            let graph = GraphSearchOptions::new(profile).with_seed(request.graph_seed);
-            let graph = if request.graph_ef == 0 {
+            let graph = GraphSearchOptions::new(profile).with_seed(graph_seed);
+            let graph = if graph_ef == 0 {
                 graph
             } else {
-                graph.with_ef(request.graph_ef)
+                graph.with_ef(graph_ef)
             };
             Ok(Some(SearchTier::Graph(graph)))
         }
@@ -850,8 +859,9 @@ pub extern "C" fn ze_stats(handle: ZeHandle, out_report: *mut ZeStatsReport) -> 
 }
 
 /// Atomically ingests caller-owned document records. Every const pointer
-/// is caller-owned and need only outlive the call. Not cancellable in v1;
-/// the engine offers no token here.
+/// is caller-owned and need only outlive the call. A record with nonzero
+/// `text_len` is analyzed into the lexical index with the ingest tokenizer.
+/// Not cancellable in v1; the engine offers no token here.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_ingest(
     handle: ZeHandle,
@@ -897,17 +907,20 @@ pub extern "C" fn ze_ingest(
                     marshal::checked_buffer_len(record.vector_len, size_of::<f32>(), vector_bytes)?;
                     let vector = marshal::copy_slice(record.vector, record.vector_len)?;
                     let metadata = marshal::copy_slice(record.metadata, record.metadata_len)?;
-                    documents.push(
-                        IngestDocument::new(
-                            DocumentVersion::new(
-                                doc_id(record.doc_id),
-                                Revision::new(record.revision),
-                            ),
-                            vector,
-                        )
-                        .with_timestamp(record.timestamp)
-                        .with_metadata(metadata),
-                    );
+                    let mut document = IngestDocument::new(
+                        DocumentVersion::new(doc_id(record.doc_id), Revision::new(record.revision)),
+                        vector,
+                    )
+                    .with_timestamp(record.timestamp)
+                    .with_metadata(metadata);
+                    if record.text_len != 0 {
+                        document = document.with_text(utf8_field(
+                            record.text,
+                            record.text_len,
+                            "document text",
+                        )?);
+                    }
+                    documents.push(document);
                 }
                 let mut batch = IngestBatch::new(documents);
                 if let Some(epoch) = access.epoch {
