@@ -145,6 +145,261 @@ final class ZeppelinStoreTests: XCTestCase {
         XCTAssertEqual(ZeppelinError.allCases.map(\.rawValue), Array(0...28))
     }
 
+    func testSwiftMatchesRustCrossBindingParityFixture() async throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures/cross_binding_parity_v1.json")
+        let fixtureData: Data
+        do {
+            fixtureData = try Data(contentsOf: fixtureURL)
+        } catch {
+            XCTFail("operation fixture_load: missing fixture at \(fixtureURL.path): \(error)")
+            return
+        }
+
+        let fixture: ParityFixture
+        do {
+            fixture = try JSONDecoder().decode(ParityFixture.self, from: fixtureData)
+        } catch {
+            XCTFail("operation fixture_decode: could not parse fixture: \(error)")
+            return
+        }
+
+        XCTAssertEqual(
+            fixture.schema,
+            "zeppelin-embed-cross-binding-parity",
+            "operation fixture_header: schema"
+        )
+        XCTAssertEqual(fixture.version, 1, "operation fixture_header: version")
+        XCTAssertEqual(fixture.seed, 25_172_023, "operation fixture_header: seed")
+        XCTAssertEqual(fixture.scorePrecision, 6, "operation fixture_header: score precision")
+
+        let epoch: Epoch
+        do {
+            XCTAssertEqual(
+                fixture.epoch.tokenizerProfile,
+                0,
+                "operation epoch_identity: tokenizer profile"
+            )
+            epoch = Epoch(
+                embedding: EmbeddingEpoch(
+                    document: try parityTower(
+                        fixture.epoch.document,
+                        operation: "epoch_identity.document"
+                    ),
+                    query: try parityTower(
+                        fixture.epoch.query,
+                        operation: "epoch_identity.query"
+                    ),
+                    alignmentDigest: try parityData(
+                        hex: fixture.epoch.alignmentDigestHex,
+                        operation: "epoch_identity.alignment_digest_hex"
+                    )
+                )
+            )
+        } catch {
+            XCTFail("operation epoch_identity: invalid epoch fixture: \(error)")
+            return
+        }
+
+        let expectedIdentity = EpochIdentity(
+            embeddingEpoch: fixture.epoch.expectedIdentity.embeddingEpoch,
+            tokenizerEpoch: fixture.epoch.expectedIdentity.tokenizerEpoch
+        )
+        do {
+            let identity = try await ZeppelinStore.epochIdentity(epoch)
+            XCTAssertEqual(
+                identity,
+                expectedIdentity,
+                "operation epoch_identity: identity"
+            )
+        } catch {
+            XCTFail("operation epoch_identity failed: \(error)")
+            return
+        }
+
+        let path = try storePath(#function)
+        defer { try? FileManager.default.removeItem(at: path) }
+        var store: ZeppelinStore?
+
+        for operation in fixture.operations {
+            do {
+                switch operation {
+                case .openWithEpoch(let expected):
+                    XCTAssertNil(store, "operation \(operation.label): store already open")
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    store = try await ZeppelinStore.openWithEpoch(at: path, epoch: epoch)
+
+                case .ingest(let documents, let expected):
+                    guard let store else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let records = try documents.map { document in
+                        IngestDocument(
+                            id: DocumentID(
+                                high: document.docID.high,
+                                low: document.docID.low
+                            ),
+                            revision: document.revision,
+                            timestamp: document.timestamp,
+                            vector: document.vector,
+                            text: document.text,
+                            metadata: try parityData(
+                                hex: document.metadataHex,
+                                operation: operation.label
+                            )
+                        )
+                    }
+                    let report = try await store.ingest(records)
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        report.sequence,
+                        expected.sequence,
+                        "operation \(operation.label): sequence"
+                    )
+                    XCTAssertEqual(
+                        report.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+
+                case .query(let name, let request, let expected):
+                    guard let store else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let result = try await store.query(
+                        vector: request.vector.value,
+                        text: request.text.value,
+                        options: QueryOptions(
+                            k: request.k,
+                            threadBudget: 1,
+                            tier: try parityTier(request.tier.value, operation: operation.label),
+                            rulesEnabled: request.rulesEnabled
+                        )
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        result.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+                    XCTAssertEqual(
+                        result.mode.rawValue,
+                        expected.mode,
+                        "operation \(operation.label): mode"
+                    )
+                    XCTAssertEqual(
+                        result.diagnostics.embeddingEpoch,
+                        expected.embeddingEpoch.value,
+                        "operation \(operation.label): embedding epoch"
+                    )
+                    XCTAssertEqual(
+                        result.diagnostics.tokenizerEpoch,
+                        expected.tokenizerEpoch.value,
+                        "operation \(operation.label): tokenizer epoch"
+                    )
+                    XCTAssertEqual(
+                        result.hits.count,
+                        expected.hits.count,
+                        "operation \(operation.label): hit count"
+                    )
+                    for index in 0..<min(result.hits.count, expected.hits.count) {
+                        let hit = result.hits[index]
+                        let expectedHit = expected.hits[index]
+                        XCTAssertEqual(
+                            hit.documentID,
+                            DocumentID(
+                                high: expectedHit.docID.high,
+                                low: expectedHit.docID.low
+                            ),
+                            "operation query \(name) hit \(index): document id"
+                        )
+                        XCTAssertEqual(
+                            parityRounded(hit.score, precision: fixture.scorePrecision),
+                            expectedHit.score,
+                            "operation query \(name) hit \(index): score"
+                        )
+                        XCTAssertEqual(
+                            hit.vectorSquaredL2.map {
+                                parityRounded($0, precision: fixture.scorePrecision)
+                            },
+                            expectedHit.vectorSquaredL2.value,
+                            "operation query \(name) hit \(index): vector_squared_l2"
+                        )
+                        XCTAssertEqual(
+                            hit.lexicalBM25.map {
+                                parityRounded($0, precision: fixture.scorePrecision)
+                            },
+                            expectedHit.lexicalBM25.value,
+                            "operation query \(name) hit \(index): lexical_bm25"
+                        )
+                    }
+
+                case .invalidEmptyQuery(let request, let expected):
+                    guard let store else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    do {
+                        _ = try await store.query(
+                            vector: request.vector.value,
+                            text: request.text.value,
+                            options: QueryOptions(k: 4)
+                        )
+                        XCTFail("operation \(operation.label): query unexpectedly succeeded")
+                    } catch let error as ZeppelinError {
+                        XCTAssertEqual(
+                            try error.codeName,
+                            expected.errorCode,
+                            "operation \(operation.label): exact C error name"
+                        )
+                    }
+                    let currentEpoch = try await store.currentEpoch()
+                    XCTAssertEqual(
+                        currentEpoch,
+                        expectedIdentity,
+                        "operation \(operation.label): current epoch"
+                    )
+
+                case .close(let expected):
+                    guard let current = store else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    try await current.close()
+                    store = nil
+                }
+            } catch {
+                XCTFail("operation \(operation.label) failed: \(error)")
+                if let store {
+                    try? await store.close()
+                }
+                return
+            }
+        }
+
+        XCTAssertNil(store, "operation fixture_complete: close was not replayed")
+    }
+
     func testDefaultOpenExcludesTheStoreFromBackup() async throws {
         let path = try storePath(#function)
         defer { try? FileManager.default.removeItem(at: path) }
@@ -445,11 +700,373 @@ final class ZeppelinStoreTests: XCTestCase {
         (0..<4).map { Float($0 + seed + 1) / 8 }
     }
 
+    private func parityTower(_ value: ParityTower, operation: String) throws -> EmbeddingTower {
+        guard let normalization = VectorNormalization(rawValue: value.normalization) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "normalization",
+                value: String(value.normalization)
+            )
+        }
+        guard let runtime = EmbeddingRuntime(rawValue: value.runtime) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "runtime",
+                value: String(value.runtime)
+            )
+        }
+        guard let computeUnits = ComputeUnits(rawValue: value.computeUnits) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "compute_units",
+                value: String(value.computeUnits)
+            )
+        }
+        return EmbeddingTower(
+            modelID: value.modelID,
+            modelVersion: value.modelVersion,
+            weightsDigest: try parityData(hex: value.weightsDigestHex, operation: operation),
+            dimensions: value.dimensions,
+            normalization: normalization,
+            promptPrefix: value.promptPrefix,
+            maxTokens: value.maxTokens,
+            runtime: runtime,
+            computeUnits: computeUnits,
+            operatingSystemBuild: value.operatingSystemBuild.value
+        )
+    }
+
+    private func parityData(hex: String, operation: String) throws -> Data {
+        guard hex.count.isMultiple(of: 2) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "hex",
+                value: hex
+            )
+        }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(hex.count / 2)
+        var start = hex.startIndex
+        while start < hex.endIndex {
+            let end = hex.index(start, offsetBy: 2)
+            guard let byte = UInt8(hex[start..<end], radix: 16) else {
+                throw ParityFixtureError.invalidValue(
+                    operation: operation,
+                    field: "hex",
+                    value: hex
+                )
+            }
+            bytes.append(byte)
+            start = end
+        }
+        return Data(bytes)
+    }
+
+    private func parityTier(_ rawValue: Int32?, operation: String) throws -> SearchTier? {
+        guard let rawValue else {
+            return nil
+        }
+        guard let tier = SearchTier(rawValue: rawValue) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "tier",
+                value: String(rawValue)
+            )
+        }
+        return tier
+    }
+
+    private func parityRounded(_ value: Double, precision: Int) -> Double {
+        let scale = pow(10, Double(precision))
+        return (value * scale).rounded() / scale
+    }
+
     private func storePath(_ name: String) throws -> URL {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-stores", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+    }
+}
+
+private struct ParityFixture: Decodable {
+    let schema: String
+    let version: Int
+    let seed: UInt64
+    let scorePrecision: Int
+    let epoch: ParityEpoch
+    let operations: [ParityOperation]
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case version
+        case seed
+        case scorePrecision = "score_precision"
+        case epoch
+        case operations
+    }
+}
+
+private struct ParityEpoch: Decodable {
+    let document: ParityTower
+    let query: ParityTower
+    let alignmentDigestHex: String
+    let tokenizerProfile: Int32
+    let expectedIdentity: ParityEpochIdentity
+
+    private enum CodingKeys: String, CodingKey {
+        case document
+        case query
+        case alignmentDigestHex = "alignment_digest_hex"
+        case tokenizerProfile = "tokenizer_profile"
+        case expectedIdentity = "expected_identity"
+    }
+}
+
+private struct ParityTower: Decodable {
+    let modelID: String
+    let modelVersion: String
+    let weightsDigestHex: String
+    let dimensions: UInt32
+    let normalization: Int32
+    let promptPrefix: String
+    let maxTokens: UInt32
+    let runtime: Int32
+    let computeUnits: Int32
+    let operatingSystemBuild: ParityNullable<String>
+
+    private enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case modelVersion = "model_version"
+        case weightsDigestHex = "weights_digest_hex"
+        case dimensions = "dims"
+        case normalization
+        case promptPrefix = "prompt_prefix"
+        case maxTokens = "max_tokens"
+        case runtime
+        case computeUnits = "compute_units"
+        case operatingSystemBuild = "os_build"
+    }
+}
+
+private struct ParityEpochIdentity: Decodable {
+    let embeddingEpoch: UInt64
+    let tokenizerEpoch: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case embeddingEpoch = "embedding_epoch"
+        case tokenizerEpoch = "tokenizer_epoch"
+    }
+}
+
+private struct ParityDocumentID: Decodable {
+    let high: UInt64
+    let low: UInt64
+}
+
+private struct ParityDocument: Decodable {
+    let docID: ParityDocumentID
+    let revision: UInt64
+    let timestamp: Int64
+    let vector: [Float]
+    let text: String
+    let metadataHex: String
+
+    private enum CodingKeys: String, CodingKey {
+        case docID = "doc_id"
+        case revision
+        case timestamp
+        case vector
+        case text
+        case metadataHex = "metadata_hex"
+    }
+}
+
+private struct ParityErrorExpectation: Decodable {
+    let errorCode: String
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+    }
+}
+
+private struct ParityMutationExpectation: Decodable {
+    let errorCode: String
+    let sequence: UInt64
+    let generation: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case sequence
+        case generation
+    }
+}
+
+private struct ParityQueryRequest: Decodable {
+    let vector: ParityNullable<[Float]>
+    let text: ParityNullable<String>
+    let k: Int
+    let tier: ParityNullable<Int32>
+    let rulesEnabled: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case vector
+        case text
+        case k
+        case tier
+        case rulesEnabled = "rules_enabled"
+    }
+}
+
+private struct ParityEmptyQueryRequest: Decodable {
+    let vector: ParityNullable<[Float]>
+    let text: ParityNullable<String>
+}
+
+private struct ParityQueryExpectation: Decodable {
+    let errorCode: String
+    let generation: UInt64
+    let mode: Int32
+    let embeddingEpoch: ParityNullable<UInt64>
+    let tokenizerEpoch: ParityNullable<UInt64>
+    let hits: [ParityQueryHit]
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case generation
+        case mode
+        case embeddingEpoch = "embedding_epoch"
+        case tokenizerEpoch = "tokenizer_epoch"
+        case hits
+    }
+}
+
+private struct ParityQueryHit: Decodable {
+    let docID: ParityDocumentID
+    let score: Double
+    let vectorSquaredL2: ParityNullable<Double>
+    let lexicalBM25: ParityNullable<Double>
+
+    private enum CodingKeys: String, CodingKey {
+        case docID = "doc_id"
+        case score
+        case vectorSquaredL2 = "vector_squared_l2"
+        case lexicalBM25 = "lexical_bm25"
+    }
+}
+
+private enum ParityOperation: Decodable {
+    case openWithEpoch(ParityErrorExpectation)
+    case ingest([ParityDocument], ParityMutationExpectation)
+    case query(String, ParityQueryRequest, ParityQueryExpectation)
+    case invalidEmptyQuery(ParityEmptyQueryRequest, ParityErrorExpectation)
+    case close(ParityErrorExpectation)
+
+    var label: String {
+        switch self {
+        case .openWithEpoch:
+            "open_with_epoch"
+        case .ingest:
+            "ingest"
+        case .query(let name, _, _):
+            "query \(name)"
+        case .invalidEmptyQuery:
+            "invalid_empty_query"
+        case .close:
+            "close"
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case name
+        case documents
+        case request
+        case expected
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(String.self, forKey: .kind)
+        let label = try container.decodeIfPresent(String.self, forKey: .name) ?? kind
+        do {
+            switch kind {
+            case "open_with_epoch":
+                self = .openWithEpoch(
+                    try container.decode(ParityErrorExpectation.self, forKey: .expected)
+                )
+            case "ingest":
+                self = .ingest(
+                    try container.decode([ParityDocument].self, forKey: .documents),
+                    try container.decode(ParityMutationExpectation.self, forKey: .expected)
+                )
+            case "query":
+                self = .query(
+                    try container.decode(String.self, forKey: .name),
+                    try container.decode(ParityQueryRequest.self, forKey: .request),
+                    try container.decode(ParityQueryExpectation.self, forKey: .expected)
+                )
+            case "invalid_empty_query":
+                self = .invalidEmptyQuery(
+                    try container.decode(ParityEmptyQueryRequest.self, forKey: .request),
+                    try container.decode(ParityErrorExpectation.self, forKey: .expected)
+                )
+            case "close":
+                self = .close(
+                    try container.decode(ParityErrorExpectation.self, forKey: .expected)
+                )
+            default:
+                throw DecodingError.dataCorruptedError(
+                    forKey: .kind,
+                    in: container,
+                    debugDescription: "operation \(label): unknown kind \(kind)"
+                )
+            }
+        } catch {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "operation \(label): \(error)"
+                )
+            )
+        }
+    }
+}
+
+private enum ParityNullable<Value: Decodable>: Decodable {
+    case null
+    case present(Value)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else {
+            self = .present(try container.decode(Value.self))
+        }
+    }
+
+    var value: Value? {
+        switch self {
+        case .null:
+            nil
+        case .present(let value):
+            value
+        }
+    }
+}
+
+private enum ParityFixtureError: LocalizedError {
+    case invalidValue(operation: String, field: String, value: String)
+    case missingStore(operation: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidValue(let operation, let field, let value):
+            "operation \(operation): invalid \(field) value \(value)"
+        case .missingStore(let operation):
+            "operation \(operation): store is not open"
+        }
     }
 }
 
