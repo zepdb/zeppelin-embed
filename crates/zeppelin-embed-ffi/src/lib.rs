@@ -636,6 +636,43 @@ pub extern "C" fn ze_epoch_identity(
     })
 }
 
+/// Reads the identity currently published by an open store. A store that
+/// carries no stamped epoch returns `ZE_ERR_EPOCH_UNSTAMPED`. `out_identity`
+/// is caller-owned and must have `abi_size` initialized.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_epoch_current(
+    handle: ZeHandle,
+    out_identity: *mut ZeEpochIdentity,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_epoch_current");
+        finish(
+            Some(handle),
+            (|| {
+                let abi_size = marshal::validate_output(out_identity)?;
+                let access = registry::lookup(handle)?;
+                let identity = access.store.epoch_identity().ok_or_else(|| {
+                    FfiError::new(
+                        ZeErrorCode::ZeErrEpochUnstamped,
+                        "store carries no stamped epoch identity",
+                    )
+                })?;
+                let (embedding_epoch, tokenizer_epoch) = ffi_identity(identity);
+                marshal::write_output(
+                    out_identity,
+                    ZeEpochIdentity {
+                        abi_size,
+                        abi_reserved: 0,
+                        embedding_epoch,
+                        tokenizer_epoch,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Atomically publishes a registered epoch whose segments are retained.
 /// Requires a sealed active segment; a writer-slot conflict returns
 /// `ZE_ERR_BUSY`. Not cancellable in v1; the engine offers no token here.

@@ -304,6 +304,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_close",
     "ze_delete",
     "ze_drop_partition",
+    "ze_epoch_current",
     "ze_epoch_drop",
     "ze_epoch_switch_alias",
     "ze_ingest",
@@ -483,6 +484,10 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let request = common::valid_query_request(&context.vector);
             let mut result: ZeQueryResult = common::sized_zeroed();
             ze_query(context.store.handle, &request, &mut result)
+        }),
+        ("ze_epoch_current", |context| {
+            let mut identity: ZeEpochIdentity = common::sized_zeroed();
+            ze_epoch_current(context.store.handle, &mut identity)
         }),
         ("ze_epoch_switch_alias", |context| {
             let epoch = common::EpochFixture::new(1);

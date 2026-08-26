@@ -1398,6 +1398,14 @@ ze_error_code ze_epoch_identity(const struct ZeEpochRequest *epoch,
                                 struct ZeEpochIdentity *out_identity);
 
 /*
+ Reads the identity currently published by an open store. A store that
+ carries no stamped epoch returns `ZE_ERR_EPOCH_UNSTAMPED`. `out_identity`
+ is caller-owned and must have `abi_size` initialized.
+ */
+ze_error_code ze_epoch_current(ze_handle handle,
+                               struct ZeEpochIdentity *out_identity);
+
+/*
  Atomically publishes a registered epoch whose segments are retained.
  Requires a sealed active segment; a writer-slot conflict returns
  `ZE_ERR_BUSY`. Not cancellable in v1; the engine offers no token here.

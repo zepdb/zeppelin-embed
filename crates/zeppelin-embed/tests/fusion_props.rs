@@ -7,9 +7,9 @@ use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::RngCore;
 use zeppelin_embed::fusion::{
     DEFAULT_ALPHA, DEFAULT_MAX_ROUNDS, DegenerateKind, DegenerateLeg, FusionError, FusionLeg,
-    FusionMethod, FusionRule, FusionTermination, HybridQuery, LEXICAL_RULE_ALPHA, LexicalCandidate,
-    RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision, VectorCandidate,
-    execute_hybrid, fuse,
+    FusionMethod, FusionRule, FusionTermination, HybridQuery, LEXICAL_RULE_ALPHA, LegFailureKind,
+    LexicalCandidate, RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision,
+    VectorCandidate, execute_hybrid, fuse,
 };
 
 fn proptest_cases() -> u32 {
@@ -720,6 +720,7 @@ fn alpha_and_leg_failures_are_typed_displayable_and_short_circuit() {
         FusionError::ReadCancelled { partial: false },
         FusionError::Leg {
             leg: FusionLeg::Lexical,
+            kind: LegFailureKind::Invariant,
             detail: "fixture".to_owned(),
         },
     ];
@@ -746,6 +747,7 @@ fn alpha_and_leg_failures_are_typed_displayable_and_short_circuit() {
         || {
             Err(FusionError::Leg {
                 leg: FusionLeg::Lexical,
+                kind: LegFailureKind::Caller,
                 detail: "lexical fixture".to_owned(),
             })
         },
@@ -756,6 +758,7 @@ fn alpha_and_leg_failures_are_typed_displayable_and_short_circuit() {
         lexical_failure,
         Err(FusionError::Leg {
             leg: FusionLeg::Lexical,
+            kind: LegFailureKind::Caller,
             detail: "lexical fixture".to_owned(),
         })
     );
@@ -773,6 +776,7 @@ fn alpha_and_leg_failures_are_typed_displayable_and_short_circuit() {
         mapped[2],
         FusionError::Leg {
             leg: FusionLeg::Vector,
+            kind: LegFailureKind::Store(zeppelin_embed::lifecycle::StoreErrorKind::Closed),
             detail: "store is closed".to_owned(),
         }
     );

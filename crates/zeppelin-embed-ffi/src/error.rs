@@ -20,56 +20,36 @@ impl FfiError {
     }
 
     pub(crate) fn store(error: zeppelin_embed::lifecycle::StoreError) -> Self {
-        use zeppelin_embed::lifecycle::StoreError;
-
         let message = error.to_string();
-        let code = match &error {
-            StoreError::Io { .. }
-            | StoreError::Lock(_)
-            | StoreError::Statistics { .. }
-            | StoreError::BackgroundStart { .. }
-            | StoreError::QueryPoolStart { .. } => ZeErrorCode::ZeErrIo,
-            StoreError::NotDirectory { .. } | StoreError::SchemaMismatch { .. } => {
-                ZeErrorCode::ZeErrInvalidArgument
-            }
-            StoreError::StoreBusy { .. } => ZeErrorCode::ZeErrStoreBusy,
-            StoreError::Durability(_)
-            | StoreError::GraphUnavailable { .. }
-            | StoreError::UnsupportedWalMutation { .. } => ZeErrorCode::ZeErrUnsupported,
-            StoreError::Manifest(_)
-            | StoreError::Segment(_)
-            | StoreError::Wal(_)
-            | StoreError::WalRecovery(_)
-            | StoreError::WalRecord { .. }
-            | StoreError::WalMutation { .. }
-            | StoreError::WalRevisionOrder { .. }
-            | StoreError::WalVector { .. }
-            | StoreError::PurgeRecovery { .. } => ZeErrorCode::ZeErrCorrupt,
-            StoreError::WalWrite(_) | StoreError::WalRetire(_) => ZeErrorCode::ZeErrIo,
-            StoreError::BudgetExceeded { .. } => ZeErrorCode::ZeErrBudgetExceeded,
-            StoreError::AllocationFailed { .. } => ZeErrorCode::ZeErrOutOfMemory,
-            StoreError::DimensionMismatch { .. } => ZeErrorCode::ZeErrDimensionMismatch,
-            StoreError::EpochMismatch(_) => ZeErrorCode::ZeErrEpochMismatch,
-            StoreError::EpochUndeclared => ZeErrorCode::ZeErrEpochUndeclared,
-            StoreError::EpochUnstamped => ZeErrorCode::ZeErrEpochUnstamped,
-            StoreError::ActiveRowOverflow
-            | StoreError::GenerationOverflow
-            | StoreError::PartitionBytesOverflow
-            | StoreError::ForeignPreparedSegment
-            | StoreError::BackgroundHandshake
-            | StoreError::QueryPoolHandshake
-            | StoreError::QueryPoolCapacity { .. } => ZeErrorCode::ZeErrInternal,
-            StoreError::EmptyActiveSegment => ZeErrorCode::ZeErrEmptyBatch,
-            StoreError::SealCancelled | StoreError::ReadCancelled => ZeErrorCode::ZeErrCancelled,
-            StoreError::ReadOnly => ZeErrorCode::ZeErrAccessMode,
-            StoreError::Closing => ZeErrorCode::ZeErrClosing,
-            StoreError::Closed => ZeErrorCode::ZeErrClosed,
-            StoreError::BackgroundThreadPanicked | StoreError::QueryPoolThreadPanicked => {
-                ZeErrorCode::ZeErrPanic
-            }
-            StoreError::Synchronization { .. } => ZeErrorCode::ZeErrSynchronization,
-        };
-        Self::new(code, message)
+        Self::new(Self::store_kind_code(error.kind()), message)
+    }
+
+    pub(crate) const fn store_kind_code(
+        kind: zeppelin_embed::lifecycle::StoreErrorKind,
+    ) -> ZeErrorCode {
+        use zeppelin_embed::lifecycle::StoreErrorKind;
+
+        match kind {
+            StoreErrorKind::Io => ZeErrorCode::ZeErrIo,
+            StoreErrorKind::InvalidArgument => ZeErrorCode::ZeErrInvalidArgument,
+            StoreErrorKind::StoreBusy => ZeErrorCode::ZeErrStoreBusy,
+            StoreErrorKind::Unsupported => ZeErrorCode::ZeErrUnsupported,
+            StoreErrorKind::Corrupt => ZeErrorCode::ZeErrCorrupt,
+            StoreErrorKind::BudgetExceeded => ZeErrorCode::ZeErrBudgetExceeded,
+            StoreErrorKind::OutOfMemory => ZeErrorCode::ZeErrOutOfMemory,
+            StoreErrorKind::DimensionMismatch => ZeErrorCode::ZeErrDimensionMismatch,
+            StoreErrorKind::EpochMismatch => ZeErrorCode::ZeErrEpochMismatch,
+            StoreErrorKind::EpochUndeclared => ZeErrorCode::ZeErrEpochUndeclared,
+            StoreErrorKind::EpochUnstamped => ZeErrorCode::ZeErrEpochUnstamped,
+            StoreErrorKind::Internal => ZeErrorCode::ZeErrInternal,
+            StoreErrorKind::EmptyBatch => ZeErrorCode::ZeErrEmptyBatch,
+            StoreErrorKind::Cancelled => ZeErrorCode::ZeErrCancelled,
+            StoreErrorKind::ReadOnly => ZeErrorCode::ZeErrAccessMode,
+            StoreErrorKind::Closing => ZeErrorCode::ZeErrClosing,
+            StoreErrorKind::Closed => ZeErrorCode::ZeErrClosed,
+            StoreErrorKind::Panic => ZeErrorCode::ZeErrPanic,
+            StoreErrorKind::Synchronization => ZeErrorCode::ZeErrSynchronization,
+        }
     }
 
     pub(crate) fn ingest(error: zeppelin_embed::ingest::IngestError) -> Self {
@@ -162,16 +142,25 @@ impl FfiError {
             FusionError::Cancelled { .. } | FusionError::ReadCancelled { .. } => {
                 ZeErrorCode::ZeErrCancelled
             }
-            // The engine flattens every other leg failure into a display
-            // string, so the finer store classification is not recoverable.
+            FusionError::Leg { kind, .. } => Self::leg_kind_code(kind),
             FusionError::NonFiniteScore { .. }
             | FusionError::NegativeScore { .. }
             | FusionError::UnrankedInput { .. }
             | FusionError::MissingDocumentIdentity { .. }
-            | FusionError::DuplicateDocumentIdentity { .. }
-            | FusionError::Leg { .. } => ZeErrorCode::ZeErrInternal,
+            | FusionError::DuplicateDocumentIdentity { .. } => ZeErrorCode::ZeErrInternal,
         };
         Self::new(code, message)
+    }
+
+    const fn leg_kind_code(kind: zeppelin_embed::fusion::LegFailureKind) -> ZeErrorCode {
+        use zeppelin_embed::fusion::LegFailureKind;
+
+        match kind {
+            LegFailureKind::Store(kind) => Self::store_kind_code(kind),
+            LegFailureKind::Scan | LegFailureKind::Lexical => ZeErrorCode::ZeErrInvalidArgument,
+            LegFailureKind::Graph | LegFailureKind::Segment => ZeErrorCode::ZeErrCorrupt,
+            LegFailureKind::Invariant | LegFailureKind::Caller => ZeErrorCode::ZeErrInternal,
+        }
     }
 
     pub(crate) fn epoch_transition(error: zeppelin_embed::epoch::EpochTransitionError) -> Self {
@@ -199,5 +188,28 @@ impl FfiError {
 impl From<MarshalError> for FfiError {
     fn from(error: MarshalError) -> Self {
         Self::invalid(error.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeppelin_embed::fusion::{FusionError, FusionLeg, LegFailureKind};
+    use zeppelin_embed::lifecycle::StoreErrorKind;
+
+    #[test]
+    fn a_hybrid_leg_failure_keeps_its_store_classification() {
+        let closing = FfiError::fusion(FusionError::Leg {
+            leg: FusionLeg::Vector,
+            kind: LegFailureKind::Store(StoreErrorKind::Closing),
+            detail: "store is closing".to_owned(),
+        });
+        assert_eq!(closing.code, ZeErrorCode::ZeErrClosing);
+        let lexical = FfiError::fusion(FusionError::Leg {
+            leg: FusionLeg::Lexical,
+            kind: LegFailureKind::Lexical,
+            detail: "bad terms".to_owned(),
+        });
+        assert_eq!(lexical.code, ZeErrorCode::ZeErrInvalidArgument);
     }
 }

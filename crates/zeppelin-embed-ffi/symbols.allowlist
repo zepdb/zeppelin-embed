@@ -7,6 +7,7 @@ ze_cancel_token_free
 ze_close
 ze_delete
 ze_drop_partition
+ze_epoch_current
 ze_epoch_drop
 ze_epoch_identity
 ze_epoch_switch_alias

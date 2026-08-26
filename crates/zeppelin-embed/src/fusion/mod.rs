@@ -348,9 +348,30 @@ pub enum FusionError {
     Leg {
         /// Affected leg.
         leg: FusionLeg,
+        /// Typed classification of the failure, so hosts do not parse `detail`.
+        kind: LegFailureKind,
         /// Stable caller-provided failure description.
         detail: String,
     },
+}
+
+/// Typed classification of a leg failure carried by [`FusionError::Leg`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LegFailureKind {
+    /// Store admission, lifecycle, or persistence failed; see the kind.
+    Store(crate::lifecycle::StoreErrorKind),
+    /// Scan-tier execution failed.
+    Scan,
+    /// Graph-tier execution failed.
+    Graph,
+    /// An immutable segment read failed.
+    Segment,
+    /// Lexical planning, indexing, or scoring failed.
+    Lexical,
+    /// A leg-internal invariant failed.
+    Invariant,
+    /// A caller-owned leg reported an opaque failure.
+    Caller,
 }
 
 impl std::fmt::Display for FusionError {
@@ -393,7 +414,9 @@ impl std::fmt::Display for FusionError {
                 formatter,
                 "store close cancelled hybrid query (partial={partial})"
             ),
-            Self::Leg { leg, detail } => write!(formatter, "{leg:?} leg failed: {detail}"),
+            Self::Leg { leg, kind, detail } => {
+                write!(formatter, "{leg:?} leg failed ({kind:?}): {detail}")
+            }
         }
     }
 }
@@ -408,10 +431,23 @@ impl From<crate::lifecycle::QueryError> for FusionError {
             crate::lifecycle::QueryError::ReadCancelled { .. } => {
                 Self::ReadCancelled { partial: false }
             }
-            other => Self::Leg {
-                leg: FusionLeg::Vector,
-                detail: other.to_string(),
-            },
+            other => {
+                let kind = match &other {
+                    crate::lifecycle::QueryError::Store(error) => {
+                        LegFailureKind::Store(error.kind())
+                    }
+                    crate::lifecycle::QueryError::Scan(_) => LegFailureKind::Scan,
+                    crate::lifecycle::QueryError::Graph(_) => LegFailureKind::Graph,
+                    crate::lifecycle::QueryError::Timeout { .. }
+                    | crate::lifecycle::QueryError::Cancelled { .. }
+                    | crate::lifecycle::QueryError::ReadCancelled { .. } => LegFailureKind::Caller,
+                };
+                Self::Leg {
+                    leg: FusionLeg::Vector,
+                    kind,
+                    detail: other.to_string(),
+                }
+            }
         }
     }
 }

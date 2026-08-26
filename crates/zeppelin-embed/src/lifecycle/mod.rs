@@ -603,6 +603,104 @@ impl std::fmt::Display for StoreError {
     }
 }
 
+/// Coarse, exhaustive classification of a [`StoreError`], stable for hosts
+/// that map engine failures onto their own status codes. Every variant of
+/// [`StoreError`] maps to exactly one kind; adding a variant is a compile
+/// error here until it is classified.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StoreErrorKind {
+    /// An operating-system or filesystem operation failed.
+    Io,
+    /// A caller-supplied path or schema was invalid.
+    InvalidArgument,
+    /// Another process or handle owns the store's writer lock.
+    StoreBusy,
+    /// The requested mode or operation is unsupported.
+    Unsupported,
+    /// Persisted data failed validation.
+    Corrupt,
+    /// A configured memory, disk, or work budget was exceeded.
+    BudgetExceeded,
+    /// A checked allocation could not be reserved.
+    OutOfMemory,
+    /// Vector dimensions disagreed.
+    DimensionMismatch,
+    /// The declared epoch differs from the persisted identity.
+    EpochMismatch,
+    /// The store requires an epoch declaration and none was supplied.
+    EpochUndeclared,
+    /// An epoch was declared for a store with no stamped identity.
+    EpochUnstamped,
+    /// An internal invariant failed.
+    Internal,
+    /// A batch or active segment was empty.
+    EmptyBatch,
+    /// Cooperative cancellation stopped the operation.
+    Cancelled,
+    /// The store is read-only.
+    ReadOnly,
+    /// The store is closing.
+    Closing,
+    /// The store is closed.
+    Closed,
+    /// A background or query-pool thread panicked.
+    Panic,
+    /// A synchronization primitive was poisoned or unavailable.
+    Synchronization,
+}
+
+impl StoreError {
+    /// Classifies this error; see [`StoreErrorKind`].
+    #[must_use]
+    pub fn kind(&self) -> StoreErrorKind {
+        match self {
+            Self::Io { .. }
+            | Self::Lock(_)
+            | Self::Statistics { .. }
+            | Self::BackgroundStart { .. }
+            | Self::QueryPoolStart { .. }
+            | Self::WalWrite(_)
+            | Self::WalRetire(_) => StoreErrorKind::Io,
+            Self::NotDirectory { .. } | Self::SchemaMismatch { .. } => {
+                StoreErrorKind::InvalidArgument
+            }
+            Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
+            Self::Durability(_)
+            | Self::GraphUnavailable { .. }
+            | Self::UnsupportedWalMutation { .. } => StoreErrorKind::Unsupported,
+            Self::Manifest(_)
+            | Self::Segment(_)
+            | Self::Wal(_)
+            | Self::WalRecovery(_)
+            | Self::WalRecord { .. }
+            | Self::WalMutation { .. }
+            | Self::WalRevisionOrder { .. }
+            | Self::WalVector { .. }
+            | Self::PurgeRecovery { .. } => StoreErrorKind::Corrupt,
+            Self::BudgetExceeded { .. } => StoreErrorKind::BudgetExceeded,
+            Self::AllocationFailed { .. } => StoreErrorKind::OutOfMemory,
+            Self::DimensionMismatch { .. } => StoreErrorKind::DimensionMismatch,
+            Self::EpochMismatch(_) => StoreErrorKind::EpochMismatch,
+            Self::EpochUndeclared => StoreErrorKind::EpochUndeclared,
+            Self::EpochUnstamped => StoreErrorKind::EpochUnstamped,
+            Self::ActiveRowOverflow
+            | Self::GenerationOverflow
+            | Self::PartitionBytesOverflow
+            | Self::ForeignPreparedSegment
+            | Self::BackgroundHandshake
+            | Self::QueryPoolHandshake
+            | Self::QueryPoolCapacity { .. } => StoreErrorKind::Internal,
+            Self::EmptyActiveSegment => StoreErrorKind::EmptyBatch,
+            Self::SealCancelled | Self::ReadCancelled => StoreErrorKind::Cancelled,
+            Self::ReadOnly => StoreErrorKind::ReadOnly,
+            Self::Closing => StoreErrorKind::Closing,
+            Self::Closed => StoreErrorKind::Closed,
+            Self::BackgroundThreadPanicked | Self::QueryPoolThreadPanicked => StoreErrorKind::Panic,
+            Self::Synchronization { .. } => StoreErrorKind::Synchronization,
+        }
+    }
+}
+
 impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -884,7 +982,10 @@ impl Store {
         }
     }
 
-    pub(crate) fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
+    /// Returns the published embedding and tokenizer identity, or `None`
+    /// for a store that carries no stamped epoch.
+    #[must_use]
+    pub fn epoch_identity(&self) -> Option<crate::epoch::EpochIdentity> {
         self.epoch_alias.load()
     }
 
@@ -1468,6 +1569,7 @@ fn exact_lexical_leg(
                 .query_postings()
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
                     detail: error.to_string(),
                 })?
         {
@@ -1475,6 +1577,7 @@ fn exact_lexical_leg(
                 .query_alive()
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
                     detail: error.to_string(),
                 })?;
             let live_rows = alive.alive_bitmap();
@@ -1482,6 +1585,7 @@ fn exact_lexical_leg(
                 .push_shared_with_live_rows(postings, live_rows)
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Lexical,
                     detail: error.to_string(),
                 })?;
             alive_sets.push(alive);
@@ -1494,6 +1598,7 @@ fn exact_lexical_leg(
                 .sealed_lexical(accounting)
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
                     detail: error.to_string(),
                 })?;
         let active_alive =
@@ -1502,6 +1607,7 @@ fn exact_lexical_leg(
                     .alive()
                     .map_err(|error| crate::fusion::FusionError::Leg {
                         leg: crate::fusion::FusionLeg::Lexical,
+                        kind: crate::fusion::LegFailureKind::Store(error.kind()),
                         detail: error.to_string(),
                     })?,
             );
@@ -1510,6 +1616,7 @@ fn exact_lexical_leg(
             .push_shared_with_live_rows(sealed, live_rows)
             .map_err(|error| crate::fusion::FusionError::Leg {
                 leg: crate::fusion::FusionLeg::Lexical,
+                kind: crate::fusion::LegFailureKind::Lexical,
                 detail: error.to_string(),
             })?;
         alive_sets.push(active_alive);
@@ -1533,6 +1640,7 @@ fn exact_lexical_leg(
     )
     .map_err(|error| crate::fusion::FusionError::Leg {
         leg: crate::fusion::FusionLeg::Lexical,
+        kind: crate::fusion::LegFailureKind::Lexical,
         detail: error.to_string(),
     })?;
     let mut joined = Vec::with_capacity(outcome.result.hits.len());
@@ -1542,10 +1650,12 @@ fn exact_lexical_leg(
             .and_then(|slot| sources.get(slot))
             .ok_or_else(|| crate::fusion::FusionError::Leg {
                 leg: crate::fusion::FusionLeg::Lexical,
+                kind: crate::fusion::LegFailureKind::Invariant,
                 detail: "lexical source ordinal is out of range".to_owned(),
             })?;
         let row = usize::try_from(hit.doc.row).map_err(|_| crate::fusion::FusionError::Leg {
             leg: crate::fusion::FusionLeg::Lexical,
+            kind: crate::fusion::LegFailureKind::Invariant,
             detail: "lexical row exceeds usize".to_owned(),
         })?;
         let document = match source {
@@ -1554,11 +1664,13 @@ fn exact_lexical_leg(
                 .get(*ordinal)
                 .ok_or_else(|| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Invariant,
                     detail: "lexical sealed source is absent".to_owned(),
                 })?
                 .document_version(row)
                 .map_err(|error| crate::fusion::FusionError::Leg {
                     leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Segment,
                     detail: error.to_string(),
                 })?
                 .map(|version| version.doc_id()),

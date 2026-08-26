@@ -177,6 +177,20 @@ fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
 }
 
 #[test]
+fn an_unstamped_store_reports_no_current_epoch_as_a_typed_error() {
+    let store = common::TestStore::new();
+    let mut current: ZeEpochIdentity = common::sized_zeroed();
+    assert_eq!(
+        ze_epoch_current(store.handle, &mut current),
+        ZeErrorCode::ZeErrEpochUnstamped
+    );
+    assert_eq!(
+        ze_epoch_current(store.handle, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+
+#[test]
 fn no_tier_preference_is_encoded_distinctly_from_an_explicit_tier() {
     let store = common::TestStore::new();
     assert_eq!(
@@ -269,6 +283,11 @@ fn epoch_identity_open_with_epoch_and_transitions_are_typed_through_the_boundary
     let (code, handle) = common::open_path_with_epoch(&path, &fixture);
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(common::ingest_rows(handle, 2, DIMENSION), ZeErrorCode::ZeOk);
+
+    let mut current: ZeEpochIdentity = common::sized_zeroed();
+    assert_eq!(ze_epoch_current(handle, &mut current), ZeErrorCode::ZeOk);
+    assert_eq!(current.embedding_epoch, identity.embedding_epoch);
+    assert_eq!(current.tokenizer_epoch, identity.tokenizer_epoch);
 
     let probe = vector(0);
     let (code, mut result) = query(handle, &common::valid_query_request(&probe));
