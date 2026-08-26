@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,cbindgen@0.29.4
       - run: cargo test --workspace
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels

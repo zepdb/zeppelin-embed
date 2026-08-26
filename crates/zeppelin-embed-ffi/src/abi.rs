@@ -3,57 +3,63 @@
 #[repr(i32)]
 pub enum ZeErrorCode {
     /// Success.
-    Ok = 0,
+    ZeOk = 0,
     /// A pointer, size, enum value, or request field was invalid.
-    InvalidArgument = 1,
+    ZeErrInvalidArgument = 1,
     /// The handle value was never valid.
-    InvalidHandle = 2,
+    ZeErrInvalidHandle = 2,
     /// The generation-tagged handle is closed or stale.
-    Closed = 3,
+    ZeErrClosed = 3,
     /// The store is currently closing.
-    Closing = 4,
+    ZeErrClosing = 4,
     /// A prior caught panic poisoned the handle.
-    Poisoned = 5,
+    ZeErrPoisoned = 5,
     /// A Rust panic was caught at the ABI boundary.
-    Panic = 6,
+    ZeErrPanic = 6,
     /// Another FFI writer call owns this handle's writer slot.
-    Busy = 7,
+    ZeErrBusy = 7,
     /// Another process or handle owns the store's kernel writer lock.
-    StoreBusy = 8,
+    ZeErrStoreBusy = 8,
     /// An operating-system I/O operation failed.
-    Io = 9,
+    ZeErrIo = 9,
     /// Persisted data failed validation.
-    Corrupt = 10,
+    ZeErrCorrupt = 10,
     /// The requested mode or operation is unsupported.
-    Unsupported = 11,
+    ZeErrUnsupported = 11,
     /// Cooperative cancellation stopped the operation.
-    Cancelled = 12,
+    ZeErrCancelled = 12,
     /// A monotonic deadline expired.
-    Timeout = 13,
+    ZeErrTimeout = 13,
     /// A checked allocation could not be reserved.
-    OutOfMemory = 14,
+    ZeErrOutOfMemory = 14,
     /// A configured memory, disk, or work budget was exceeded.
-    BudgetExceeded = 15,
+    ZeErrBudgetExceeded = 15,
     /// A mutation batch or active segment was empty.
-    EmptyBatch = 16,
+    ZeErrEmptyBatch = 16,
     /// A document revision would move backward.
-    StaleRevision = 17,
+    ZeErrStaleRevision = 17,
     /// Vector dimensions disagreed.
-    DimensionMismatch = 18,
+    ZeErrDimensionMismatch = 18,
     /// A requested object was not found.
-    NotFound = 19,
+    ZeErrNotFound = 19,
     /// A synchronization primitive was poisoned or unavailable.
-    Synchronization = 20,
+    ZeErrSynchronization = 20,
     /// The handle's access mode forbids the operation.
-    AccessMode = 21,
+    ZeErrAccessMode = 21,
     /// An invariant failed without a more specific public classification.
-    Internal = 22,
+    ZeErrInternal = 22,
     /// The caller's declared embedding epoch differs from the store identity.
-    EpochMismatch = 23,
+    ZeErrEpochMismatch = 23,
     /// The store requires an embedding epoch declaration, but none was supplied.
-    EpochUndeclared = 24,
+    ZeErrEpochUndeclared = 24,
     /// An embedding epoch was declared for a store that has no stamped identity.
-    EpochUnstamped = 25,
+    ZeErrEpochUnstamped = 25,
+    /// The target epoch does not contain exactly the published live revisions.
+    ZeErrEpochIncomplete = 26,
+    /// The published epoch cannot be dropped while queries name it.
+    ZeErrEpochPublished = 27,
+    /// An epoch transition was attempted before active writes were sealed.
+    ZeErrUnsealedWrites = 28,
 }
 
 /// Opaque generation-tagged store handle.
@@ -61,6 +67,9 @@ pub type ZeHandle = u64;
 
 /// Opaque generation-tagged cooperative-cancellation handle.
 pub type ZeCancelToken = u64;
+
+/// Frozen ABI version returned by `ze_abi_version`.
+pub const ZE_ABI_VERSION: u32 = 1;
 
 /// Largest request structure accepted by ABI v1.
 pub const ZE_ABI_MAX_STRUCT_SIZE: u32 = 65_536;
@@ -496,4 +505,275 @@ pub struct ZeMaintainReport {
     pub status: i32,
     /// Must be zero.
     pub reserved: u32,
+}
+
+/// One encoder tower of an embedding epoch declaration. Every pointer is
+/// caller-owned UTF-8 or opaque bytes that need only outlive the call.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEmbeddingTower {
+    /// Host-selected model identifier (UTF-8).
+    pub model_id: *const u8,
+    /// Number of `model_id` bytes.
+    pub model_id_len: usize,
+    /// Host-selected model version (UTF-8).
+    pub model_version: *const u8,
+    /// Number of `model_version` bytes.
+    pub model_version_len: usize,
+    /// Opaque digest of the exact model weights.
+    pub weights_digest: *const u8,
+    /// Number of `weights_digest` bytes.
+    pub weights_digest_len: usize,
+    /// Output vector dimensions.
+    pub dims: u32,
+    /// `0` none or `1` unit L2 normalization.
+    pub normalization: i32,
+    /// Exact prompt or prefix applied before inference (UTF-8), empty for none.
+    pub prompt_prefix: *const u8,
+    /// Number of `prompt_prefix` bytes.
+    pub prompt_prefix_len: usize,
+    /// Maximum input token count.
+    pub max_tokens: u32,
+    /// `1` Core ML, `2` MLX, or `3` CPU reference runtime.
+    pub runtime: i32,
+    /// `1` CPU, `2` CPU and GPU, `3` CPU and Neural Engine, or `4` all units.
+    pub compute_units: i32,
+    /// One when `os_build` is present.
+    pub has_os_build: u32,
+    /// Optional operating-system build (UTF-8).
+    pub os_build: *const u8,
+    /// Number of `os_build` bytes.
+    pub os_build_len: usize,
+}
+
+/// Complete embedding interpretation: document tower, query tower, and the
+/// alignment artifact digest.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEmbeddingEpoch {
+    /// Encoder used for persisted document vectors.
+    pub document: ZeEmbeddingTower,
+    /// Encoder used for query vectors compared with those documents.
+    pub query: ZeEmbeddingTower,
+    /// Opaque digest of the pairing/alignment artifact, empty for none.
+    pub alignment_digest: *const u8,
+    /// Number of `alignment_digest` bytes.
+    pub alignment_digest_len: usize,
+}
+
+/// Caller-declared store interpretation: an embedding epoch plus a tokenizer
+/// profile. The tokenizer epoch is derived from the profile because the
+/// engine derives it from a tokenizer configuration, never from a raw digest.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEpochRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Embedding interpretation.
+    pub embedding: ZeEmbeddingEpoch,
+    /// `0` for the general-purpose text tokenizer profile used by ingest.
+    pub tokenizer_profile: i32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
+/// Compact epoch identity pair.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEpochIdentity {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Embedding identity digest.
+    pub embedding_epoch: u64,
+    /// Tokenizer identity digest.
+    pub tokenizer_epoch: u64,
+}
+
+/// Result of one atomic published-alias transition.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEpochAliasReport {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Committed or unchanged generation.
+    pub generation: u64,
+    /// Embedding identity visible before the call.
+    pub previous_embedding_epoch: u64,
+    /// Tokenizer identity visible before the call.
+    pub previous_tokenizer_epoch: u64,
+    /// Embedding identity visible after the call.
+    pub published_embedding_epoch: u64,
+    /// Tokenizer identity visible after the call.
+    pub published_tokenizer_epoch: u64,
+    /// One when the call crossed the manifest commit point.
+    pub manifest_committed: u32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
+/// Result of one explicit embedding-epoch drop.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeEpochDropReport {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Generation committed without the dropped segments.
+    pub generation: u64,
+    /// Number of immutable segments omitted by the committed manifest.
+    pub segments_dropped: u64,
+    /// Exact segment-file bytes unlinked after commit.
+    pub bytes_reclaimed: u64,
+}
+
+/// Structured query request. Encoding decision (task 22 phase 2): a
+/// size-versioned `repr(C)` struct, the same shape as every other request in
+/// this ABI, rather than a compact binary encoding. Reasons: the fields are
+/// fixed-arity scalars and caller-owned buffers with no nesting, so a struct
+/// is the encoding a C compiler already validates; Swift (task 23) and Python
+/// (task 25) get typed field access instead of a serializer to keep in sync;
+/// evolution follows the existing `abi_size` rule (append a new struct, never
+/// grow this one); and the layout is pinned by an offset golden so the wire
+/// shape cannot move silently.
+///
+/// The vector leg is present when `vector_len` is nonzero and the lexical leg
+/// when `text_len` is nonzero. Both present selects hybrid fusion. Query text
+/// is analyzed with the same tokenizer configuration ingest uses.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQueryRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned aligned f32 query vector, or null when absent.
+    pub vector: *const f32,
+    /// Scalar count in `vector`; zero means no vector leg.
+    pub vector_len: usize,
+    /// Declared vector dimension; must equal `vector_len`.
+    pub dimension: usize,
+    /// Caller-owned UTF-8 query text, or null when absent.
+    pub text: *const u8,
+    /// Number of `text` bytes; zero means no lexical leg.
+    pub text_len: usize,
+    /// Number of requested results.
+    pub k: usize,
+    /// Zero selects all detected physical performance cores.
+    pub thread_budget: usize,
+    /// One when `tier` carries an explicit preference. Zero expresses no
+    /// preference, which is distinct from explicitly choosing `tier` zero:
+    /// no preference lets the engine pick, and hybrid fusion then selects
+    /// exact scoring.
+    pub has_tier: u32,
+    /// `0` automatic, `1` exact, `2` scan, or `3` explicit graph.
+    pub tier: i32,
+    /// `0` SIFT-class or `1` angular graph defaults.
+    pub graph_profile: i32,
+    /// Must be zero.
+    pub reserved: u32,
+    /// Explicit graph width, or zero for adaptive width.
+    pub graph_ef: usize,
+    /// Deterministic graph query-preparation seed.
+    pub graph_seed: u64,
+    /// One when `alpha` carries an explicit fusion weight.
+    pub has_alpha: u32,
+    /// One to allow query-shape alpha rules; ignored when `has_alpha` is one.
+    pub rules_enabled: u32,
+    /// Explicit convex-combination alpha in `0..=1`.
+    pub alpha: f64,
+    /// One when `max_rounds` overrides the fusion widening cap.
+    pub has_max_rounds: u32,
+    /// One when the query contains a quoted phrase.
+    pub quoted_phrase: u32,
+    /// Fusion widening round cap; zero materializes full lists immediately.
+    pub max_rounds: u64,
+    /// One when token classification found an identifier.
+    pub identifier_token: u32,
+    /// One when `rarest_exact_document_frequency` is present.
+    pub has_rarest_exact_document_frequency: u32,
+    /// Lowest exact-token document frequency.
+    pub rarest_exact_document_frequency: u64,
+    /// Optional generation-tagged cancellation token; zero means absent.
+    pub cancel_token: ZeCancelToken,
+    /// Relative monotonic deadline in nanoseconds; zero means absent.
+    pub deadline_ns: u64,
+}
+
+/// One callee-owned structured-query hit.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQueryHit {
+    /// One when document identity is present.
+    pub has_document: u32,
+    /// One when `revision` is present; fused hits carry identity only.
+    pub has_revision: u32,
+    /// Document id when `has_document` is one.
+    pub doc_id: ZeDocId,
+    /// Document revision when `has_revision` is one.
+    pub revision: u64,
+    /// Larger-is-better ranking score of the executed mode.
+    pub score: f64,
+    /// One when `vector_squared_l2` is present.
+    pub has_vector_score: u32,
+    /// One when `lexical_bm25` is present.
+    pub has_lexical_score: u32,
+    /// Squared L2 distance of the vector leg.
+    pub vector_squared_l2: f64,
+    /// BM25 score of the lexical leg.
+    pub lexical_bm25: f64,
+}
+
+/// Callee-owned structured-query result; release with `ze_query_result_free`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQueryResult {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Callee-owned hit array, or null when `hit_count` is zero.
+    pub hits: *mut ZeQueryHit,
+    /// Number of initialized hits.
+    pub hit_count: usize,
+    /// Pinned store generation queried.
+    pub generation: u64,
+    /// `0` vector, `1` lexical, or `2` hybrid mode executed.
+    pub mode: i32,
+    /// One when any candidate membership came from a non-exhaustive path.
+    pub approximate: u32,
+    /// One when every returned score came from full-precision rows.
+    pub exact_rescore: u32,
+    /// One when an execution budget fired.
+    pub budget_exhausted: u32,
+    /// One when the fusion fields are present.
+    pub has_fusion: u32,
+    /// `0` convex combination or `1` reciprocal rank fusion.
+    pub fusion_method: i32,
+    /// Effective fusion alpha.
+    pub effective_alpha: f64,
+    /// Fusion widening rounds attempted.
+    pub fusion_rounds: u64,
+    /// One when `embedding_epoch` is present.
+    pub has_embedding_epoch: u32,
+    /// One when `tokenizer_epoch` is present.
+    pub has_tokenizer_epoch: u32,
+    /// Embedding identity that interpreted the vector leg.
+    pub embedding_epoch: u64,
+    /// Tokenizer identity that interpreted the lexical leg.
+    pub tokenizer_epoch: u64,
+    /// Logical row-coordinate multiply-accumulates.
+    pub dims_touched: u64,
+    /// Row-major payload bytes read.
+    pub bytes_read: u64,
+    /// Lexical documents whose score was computed.
+    pub docs_evaluated: u64,
+    /// Lexical posting entries decoded.
+    pub postings_decoded: u64,
 }

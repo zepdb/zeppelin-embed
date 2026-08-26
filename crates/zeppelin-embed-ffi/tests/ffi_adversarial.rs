@@ -103,7 +103,7 @@ fn open_cell(context: &MatrixContext, cell: Cell) -> CellResult {
             return not_applicable("ZeOpenRequest has no vector, k, or multi-byte count buffer");
         }
     };
-    if code == ZeErrorCode::Ok {
+    if code == ZeErrorCode::ZeOk {
         let _ = ze_close(handle);
     }
     expected_error(code)
@@ -247,6 +247,106 @@ fn search_cell(context: &MatrixContext, cell: Cell) -> CellResult {
         }
         Cell::InvalidUtf8Path | Cell::InteriorNulPath => {
             return not_applicable("ZeSearchRequest has no path field");
+        }
+    };
+    expected_error(code)
+}
+
+fn query_cell(context: &MatrixContext, cell: Cell) -> CellResult {
+    let mut request = common::valid_query_request(&context.vector);
+    let mut result: ZeQueryResult = common::sized_zeroed();
+    let code = match cell {
+        Cell::NullPointer => ze_query(context.store.handle, std::ptr::null(), &mut result),
+        Cell::WrongDimensions => {
+            request.dimension += 1;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::ZeroK => {
+            request.k = 0;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::HugeK => {
+            request.k = ZE_MAX_K + 1;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::MisalignedBuffer => {
+            let aligned = [0_u32; 2];
+            request.vector = unsafe { aligned.as_ptr().cast::<u8>().add(1).cast::<f32>() };
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::BadEnumDiscriminant => {
+            request.has_tier = 1;
+            request.tier = i32::MAX;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::UndersizedAbi => {
+            request.abi_size -= 1;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::OversizedAbi => {
+            request.abi_size = ZE_ABI_MAX_STRUCT_SIZE + 1;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::CountLengthOverflow => {
+            request.vector = std::ptr::NonNull::<f32>::dangling().as_ptr();
+            request.vector_len = usize::MAX;
+            request.dimension = usize::MAX;
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::InvalidUtf8Path => {
+            // The lexical leg is the query surface's text buffer.
+            let bytes = [0xff_u8];
+            request.text = bytes.as_ptr();
+            request.text_len = bytes.len();
+            ze_query(context.store.handle, &request, &mut result)
+        }
+        Cell::InteriorNulPath => {
+            return not_applicable("query text is opaque UTF-8, not a path");
+        }
+    };
+    expected_error(code)
+}
+
+fn epoch_alias_cell(context: &MatrixContext, cell: Cell) -> CellResult {
+    let fixture = common::EpochFixture::new(1);
+    let mut request = fixture.request();
+    let mut report: ZeEpochAliasReport = common::sized_zeroed();
+    let code = match cell {
+        Cell::NullPointer => {
+            ze_epoch_switch_alias(context.store.handle, std::ptr::null(), &mut report)
+        }
+        Cell::MisalignedBuffer => {
+            // u8 buffers are always aligned; a misaligned request struct is the
+            // only alignment fault this surface can observe.
+            let bytes = vec![0_u8; std::mem::size_of::<ZeEpochRequest>() + 8];
+            let misaligned = unsafe { bytes.as_ptr().add(1).cast::<ZeEpochRequest>() };
+            ze_epoch_switch_alias(context.store.handle, misaligned, &mut report)
+        }
+        Cell::InvalidUtf8Path => {
+            let bytes = [0xff_u8];
+            request.embedding.query.model_id = bytes.as_ptr();
+            request.embedding.query.model_id_len = bytes.len();
+            ze_epoch_switch_alias(context.store.handle, &request, &mut report)
+        }
+        Cell::BadEnumDiscriminant => {
+            request.embedding.document.runtime = i32::MAX;
+            ze_epoch_switch_alias(context.store.handle, &request, &mut report)
+        }
+        Cell::UndersizedAbi => {
+            request.abi_size -= 1;
+            ze_epoch_switch_alias(context.store.handle, &request, &mut report)
+        }
+        Cell::OversizedAbi => {
+            request.abi_size = ZE_ABI_MAX_STRUCT_SIZE + 1;
+            ze_epoch_switch_alias(context.store.handle, &request, &mut report)
+        }
+        Cell::CountLengthOverflow => {
+            request.embedding.alignment_digest = std::ptr::NonNull::<u8>::dangling().as_ptr();
+            request.embedding.alignment_digest_len = usize::MAX;
+            ze_epoch_switch_alias(context.store.handle, &request, &mut report)
+        }
+        Cell::WrongDimensions | Cell::ZeroK | Cell::HugeK | Cell::InteriorNulPath => {
+            return not_applicable("ZeEpochRequest has no vector, k, or path field");
         }
     };
     expected_error(code)
@@ -398,8 +498,8 @@ impl MatrixContext {
 
 #[test]
 fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
-    const EXPECTED_EXECUTED: usize = 46;
-    const EXPECTED_SKIPPED: usize = 66;
+    const EXPECTED_EXECUTED: usize = 63;
+    const EXPECTED_SKIPPED: usize = 71;
     let context = MatrixContext {
         store: common::TestStore::new(),
         vector: vec![1.0_f32],
@@ -410,6 +510,8 @@ fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
         ("ze_ingest", ingest_cell),
         ("ze_delete", delete_cell),
         ("ze_search", search_cell),
+        ("ze_query", query_cell),
+        ("ze_epoch_switch_alias", epoch_alias_cell),
         ("ze_seal", seal_cell),
         ("ze_drop_partition", drop_cell),
         ("ze_apply_retention", retention_cell),
@@ -423,8 +525,8 @@ fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
         for cell in CELLS {
             match call(&context, *cell) {
                 CellResult::Executed(code) => {
-                    assert_ne!(code, ZeErrorCode::Ok, "{operation} {cell:?}");
-                    assert!((1..=25).contains(&(code as i32)), "typed error code");
+                    assert_ne!(code, ZeErrorCode::ZeOk, "{operation} {cell:?}");
+                    assert!((1..=28).contains(&(code as i32)), "typed error code");
                     executed += 1;
                 }
                 CellResult::Skipped(reason) => skipped.push(format!(
@@ -453,7 +555,7 @@ fn concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_u
     let search_store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(search_store.handle, 20, 128),
-        ZeErrorCode::Ok
+        ZeErrorCode::ZeOk
     );
     let search_handle = search_store.handle;
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -463,16 +565,19 @@ fn concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_u
         let mut result: ZeSearchResult = common::sized_zeroed();
         ready_tx.send(()).expect("search ready");
         let code = ze_search(search_handle, &request, &mut result);
-        if code == ZeErrorCode::Ok {
-            assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::Ok);
+        if code == ZeErrorCode::ZeOk {
+            assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
         }
         code
     });
     ready_rx.recv().expect("search ready");
-    assert_eq!(ze_close(search_handle), ZeErrorCode::Ok);
+    assert_eq!(ze_close(search_handle), ZeErrorCode::ZeOk);
     assert!(matches!(
         search.join().expect("search thread"),
-        ZeErrorCode::Ok | ZeErrorCode::Closed | ZeErrorCode::Closing | ZeErrorCode::Cancelled
+        ZeErrorCode::ZeOk
+            | ZeErrorCode::ZeErrClosed
+            | ZeErrorCode::ZeErrClosing
+            | ZeErrorCode::ZeErrCancelled
     ));
 
     let ingest_store = common::TestStore::new();
@@ -483,10 +588,10 @@ fn concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_u
         common::ingest_rows(ingest_handle, 20, 64)
     });
     ready_rx.recv().expect("ingest ready");
-    assert_eq!(ze_close(ingest_handle), ZeErrorCode::Ok);
+    assert_eq!(ze_close(ingest_handle), ZeErrorCode::ZeOk);
     assert!(matches!(
         ingest.join().expect("ingest thread"),
-        ZeErrorCode::Ok | ZeErrorCode::Closed | ZeErrorCode::Closing
+        ZeErrorCode::ZeOk | ZeErrorCode::ZeErrClosed | ZeErrorCode::ZeErrClosing
     ));
 }
 
@@ -494,8 +599,8 @@ fn concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_u
 fn two_handles_on_the_same_path_in_one_process_are_typed() {
     let store = common::TestStore::new();
     let (code, second) = common::open_path(&store.path);
-    assert_eq!(code, ZeErrorCode::StoreBusy);
+    assert_eq!(code, ZeErrorCode::ZeErrStoreBusy);
     assert_eq!(second, 0);
     let mut state: ZeStateReport = common::sized_zeroed();
-    assert_eq!(ze_state(store.handle, &mut state), ZeErrorCode::Ok);
+    assert_eq!(ze_state(store.handle, &mut state), ZeErrorCode::ZeOk);
 }
