@@ -30,6 +30,10 @@
 #[cfg(feature = "allocation-audit")]
 mod allocation_audit;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod adversarial_test_support;
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.

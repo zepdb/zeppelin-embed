@@ -376,6 +376,34 @@ fn isolated_vfs_probes_cannot_issue_feature_fault_receipts() {
 }
 
 #[test]
+fn production_feature_receipt_boundary_is_hidden_and_fact_complete() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/zeppelin-embed/src");
+    let source_path = root.join("adversarial_test_support.rs");
+    assert!(
+        source_path.is_file(),
+        "production receipt boundary is missing: {}",
+        source_path.display()
+    );
+    let source = std::fs::read_to_string(&source_path).expect("read receipt boundary");
+    for required in [
+        "campaign",
+        "operation",
+        "fault",
+        "site",
+        "cardinality",
+        "effect",
+        "pub(crate) fn new",
+    ] {
+        assert!(source.contains(required), "receipt omitted {required}");
+    }
+    let lib = std::fs::read_to_string(root.join("lib.rs")).expect("read core lib");
+    assert!(
+        lib.contains("#[cfg(any(test, feature = \"test-support\"))]\n#[doc(hidden)]\npub mod adversarial_test_support;"),
+        "receipt boundary escaped the hidden test-support gate"
+    );
+}
+
+#[test]
 fn selected_feature_fault_fires_once_at_its_declared_operation() {
     let campaign = CampaignKind::StorageDurability;
     let seed = (0..12)
