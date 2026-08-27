@@ -404,10 +404,11 @@ fn feature_episode_writes_schema_v3_replay_metadata() {
             .expect("feature metadata episode");
     assert_eq!(outcome.campaign, campaign);
     let directory = root.path().join(format!("fts/seed-{seed}-none"));
-    let metadata: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.join("episode.json")).expect("episode metadata"),
-    )
-    .expect("parse episode metadata");
+    let metadata: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(directory.join("episode.json")).expect("episode metadata"),
+        )
+        .expect("parse episode metadata");
     assert_eq!(metadata["version"], 3);
     assert_eq!(metadata["campaign"], "fts");
     assert_eq!(
@@ -420,13 +421,13 @@ fn feature_episode_writes_schema_v3_replay_metadata() {
 #[test]
 fn legacy_replay_artifacts_are_implicit_overall() {
     for fixture in [
-        serde_json::json!({"version": 2}),
-        serde_json::json!({"schema": "zeppelin-embed-adversarial-failure", "version": 1}),
+        zeppelin_embed_bench::harness_json::json!({"version": 2}),
+        zeppelin_embed_bench::harness_json::json!({"schema": "zeppelin-embed-adversarial-failure", "version": 1}),
     ] {
         let directory = tempfile::tempdir().expect("legacy replay directory");
         std::fs::write(
             directory.path().join("legacy.json"),
-            serde_json::to_vec(&fixture).expect("legacy fixture JSON"),
+            zeppelin_embed_bench::harness_json::to_vec(&fixture).expect("legacy fixture JSON"),
         )
         .expect("write legacy fixture");
         assert_eq!(
@@ -1176,8 +1177,8 @@ struct CampaignFailure {
 }
 
 impl CampaignFailure {
-    fn json(&self) -> serde_json::Value {
-        serde_json::json!({
+    fn json(&self) -> zeppelin_embed_bench::harness_json::Value {
+        zeppelin_embed_bench::harness_json::json!({
             "seed": self.seed,
             "profile": self.profile.key(),
             "kind": self.kind.key(),
@@ -1214,11 +1215,12 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         "a campaign with failed seeds must fail qualification after it finishes: {transcript}"
     );
 
-    let summary: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(artifacts.path().join("campaign-summary.json"))
-            .expect("completed campaign summary"),
-    )
-    .expect("valid campaign summary JSON");
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("completed campaign summary"),
+        )
+        .expect("valid campaign summary JSON");
     assert_eq!(summary["complete"], true, "{transcript}");
     assert_eq!(summary["qualification_passed"], false, "{transcript}");
     assert_eq!(
@@ -1298,11 +1300,12 @@ fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!output.status.success(), "{transcript}");
-    let summary: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(artifacts.path().join("campaign-summary.json"))
-            .expect("exploratory summary"),
-    )
-    .expect("valid exploratory summary");
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("exploratory summary"),
+        )
+        .expect("valid exploratory summary");
     assert_eq!(summary["version"], 3);
     assert_eq!(summary["campaign"], "fts");
     assert_eq!(summary["qualification"], "exploratory");
@@ -1372,10 +1375,12 @@ fn release_feature_campaign_refuses_unimplemented_oracles() {
         .output()
         .expect("run release coverage probe");
     assert!(!output.status.success());
-    let summary: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(artifacts.path().join("campaign-summary.json")).expect("release summary"),
-    )
-    .expect("valid release summary");
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("release summary"),
+        )
+        .expect("valid release summary");
     assert_eq!(summary["run_verdict"], "failed");
     assert_eq!(summary["qualification_passed"], false);
     assert!(summary["violations"].as_u64().unwrap() > 0);
@@ -1552,16 +1557,18 @@ fn preserve_campaign_failure(
     );
     partial_artifacts |= ensure_failure_artifact(
         &destination.join("episode.json"),
-        &serde_json::to_vec_pretty(&serde_json::json!({
-            "schema": "zeppelin-embed-adversarial-episode",
-            "version": 3,
-            "campaign": campaign.key(),
-            "seed": seed,
-            "profile": profile.key(),
-        }))
+        &zeppelin_embed_bench::harness_json::to_vec_pretty(
+            &zeppelin_embed_bench::harness_json::json!({
+                "schema": "zeppelin-embed-adversarial-episode",
+                "version": 3,
+                "campaign": campaign.key(),
+                "seed": seed,
+                "profile": profile.key(),
+            }),
+        )
         .expect("serialize fallback episode metadata"),
     );
-    let failure = serde_json::json!({
+    let failure = zeppelin_embed_bench::harness_json::json!({
         "schema": "zeppelin-embed-adversarial-episode-failure",
         "version": 2,
         "campaign": campaign.key(),
@@ -1574,7 +1581,8 @@ fn preserve_campaign_failure(
     });
     write_file_synced(
         &destination.join("failure.json"),
-        &serde_json::to_vec_pretty(&failure).expect("serialize campaign failure"),
+        &zeppelin_embed_bench::harness_json::to_vec_pretty(&failure)
+            .expect("serialize campaign failure"),
     );
     File::open(&failures_root)
         .and_then(|directory| directory.sync_all())
@@ -1737,8 +1745,9 @@ fn write_campaign_summary(
         .cloned()
         .collect::<Vec<_>>();
     let missing_coverage = missing_campaign_coverage(config.campaign, coverage);
-    let coverage_json: serde_json::Value =
-        serde_json::from_str(coverage.json().trim()).expect("coverage registry JSON");
+    let coverage_json: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_str(coverage.json().trim())
+            .expect("coverage registry JSON");
     let run_verdict = if complete {
         if failures.is_empty() {
             "passed"
@@ -1748,7 +1757,7 @@ fn write_campaign_summary(
     } else {
         "running"
     };
-    let summary = serde_json::json!({
+    let summary = zeppelin_embed_bench::harness_json::json!({
         "schema": "zeppelin-embed-adversarial-campaign",
         "version": 3,
         "campaign": config.campaign.key(),
@@ -1813,7 +1822,8 @@ fn write_campaign_summary(
         "failures": failures.iter().map(CampaignFailure::json).collect::<Vec<_>>(),
         "coverage": coverage_json,
     });
-    let mut summary = serde_json::to_vec(&summary).expect("serialize campaign summary v3");
+    let mut summary = zeppelin_embed_bench::harness_json::to_vec(&summary)
+        .expect("serialize campaign summary v3");
     summary.push(b'\n');
     let final_path = root.join("campaign-summary.json");
     let temporary_path = root.join(".campaign-summary.json.tmp");
@@ -1831,8 +1841,9 @@ fn write_campaign_summary(
 fn validate_completed_campaign_summary(root: &Path, config: &RunConfig) {
     let bytes =
         std::fs::read(root.join("campaign-summary.json")).expect("read final campaign summary");
-    let summary: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("parse final campaign summary");
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(&bytes)
+            .expect("parse final campaign summary");
     assert_eq!(summary["version"], 3, "campaign summary schema version");
     assert_eq!(summary["campaign"], config.campaign.key());
     assert_eq!(summary["qualification"], config.qualification.key());
@@ -1849,9 +1860,10 @@ fn validate_completed_campaign_summary(root: &Path, config: &RunConfig) {
         && summary["violations"].as_u64() == Some(0)
         && summary["execution_errors"].as_u64() == Some(0)
         && summary["unfired_scheduled_faults"].as_u64() == Some(0);
-    let coverage_complete = summary["missing_coverage"] == serde_json::json!([])
-        && summary["missing_invariants"] == serde_json::json!([])
-        && summary["missing_feature_faults"] == serde_json::json!([]);
+    let coverage_complete = summary["missing_coverage"]
+        == zeppelin_embed_bench::harness_json::json!([])
+        && summary["missing_invariants"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["missing_feature_faults"] == zeppelin_embed_bench::harness_json::json!([]);
     let expected_qualification = run_passed
         && (config.campaign == CampaignKind::Overall
             && config.qualification == Qualification::Exploratory

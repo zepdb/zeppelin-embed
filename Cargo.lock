@@ -848,9 +848,9 @@ version = "0.1.0"
 dependencies = [
  "rand",
  "rand_chacha",
- "serde_json",
  "tempfile",
  "zeppelin-embed",
+ "zeppelin-embed-bench",
 ]
 
 [[package]]

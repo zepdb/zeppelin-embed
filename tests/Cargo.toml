@@ -20,6 +20,6 @@ path = "adversarial_cli.rs"
 [dependencies]
 rand.workspace = true
 rand_chacha.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.1.0", features = ["test-support"] }
+zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.1.0" }

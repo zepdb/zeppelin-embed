@@ -343,8 +343,9 @@ pub fn campaign_from_replay_metadata(directory: &Path) -> Result<CampaignKind, S
     }
     let bytes = std::fs::read(&metadata_path)
         .map_err(|error| format!("read {}: {error}", metadata_path.display()))?;
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("parse {}: {error}", metadata_path.display()))?;
+    let metadata: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(&bytes)
+            .map_err(|error| format!("parse {}: {error}", metadata_path.display()))?;
     if metadata["version"].as_u64() != Some(3) {
         return Err(format!(
             "unsupported episode metadata version in {}",

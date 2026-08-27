@@ -111,14 +111,16 @@ impl RunArtifacts {
         profile: FaultProfile,
         reproduction: &str,
     ) -> Result<Vec<u8>, String> {
-        let mut bytes = serde_json::to_vec_pretty(&serde_json::json!({
-            "schema": "zeppelin-embed-adversarial-episode",
-            "version": 3,
-            "campaign": campaign.key(),
-            "seed": seed,
-            "profile": profile.key(),
-            "reproduction": reproduction,
-        }))
+        let mut bytes = zeppelin_embed_bench::harness_json::to_vec_pretty(
+            &zeppelin_embed_bench::harness_json::json!({
+                "schema": "zeppelin-embed-adversarial-episode",
+                "version": 3,
+                "campaign": campaign.key(),
+                "seed": seed,
+                "profile": profile.key(),
+                "reproduction": reproduction,
+            }),
+        )
         .map_err(|error| format!("serialize episode.json: {error}"))?;
         bytes.push(b'\n');
         fs::write(self.directory.join("episode.json"), &bytes)
