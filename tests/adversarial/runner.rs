@@ -325,6 +325,9 @@ pub struct RunOutcome {
     pub controls_bytes: Vec<u8>,
     pub receipts_bytes: Vec<u8>,
     pub mutations_bytes: Vec<u8>,
+    pub comparison_counts: BTreeMap<String, u64>,
+    pub same_seed_clean_controls: u64,
+    pub integrated_feature_fault_receipts: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2316,6 +2319,15 @@ fn run_program_for_with_clock(
     } else {
         artifacts.write_mutations(&mutation_records)?
     };
+    let mut comparison_counts = BTreeMap::<String, u64>::new();
+    for record in &oracle_records {
+        let count = comparison_counts
+            .entry(format!("I{}", record.invariant))
+            .or_default();
+        *count = count.saturating_add(1);
+    }
+    let same_seed_clean_controls = control_records.len() as u64;
+    let integrated_feature_fault_receipts = receipt_records.len() as u64;
     let mut outcome = RunOutcome {
         campaign,
         seed,
@@ -2360,16 +2372,12 @@ fn run_program_for_with_clock(
         controls_bytes,
         receipts_bytes,
         mutations_bytes,
+        comparison_counts,
+        same_seed_clean_controls,
+        integrated_feature_fault_receipts,
     };
     outcome.coverage_bytes = artifacts.write_coverage(&outcome.coverage)?;
     if campaign != CampaignKind::Overall {
-        let mut comparison_counts = BTreeMap::<String, u64>::new();
-        for record in &oracle_records {
-            let count = comparison_counts
-                .entry(format!("I{}", record.invariant))
-                .or_default();
-            *count = count.saturating_add(1);
-        }
         let mut evidence_digests = BTreeMap::<String, String>::new();
         evidence_digests.insert(
             "operation_evidence".to_owned(),
@@ -2388,9 +2396,9 @@ fn run_program_for_with_clock(
             ]),
         );
         let attestation = super::artifacts::EpisodeAttestation {
-            comparison_counts,
-            same_seed_clean_controls: control_records.len() as u64,
-            integrated_feature_fault_receipts: receipt_records.len() as u64,
+            comparison_counts: outcome.comparison_counts.clone(),
+            same_seed_clean_controls: outcome.same_seed_clean_controls,
+            integrated_feature_fault_receipts: outcome.integrated_feature_fault_receipts,
             evidence_digests,
         };
         let _ = artifacts.write_episode_metadata(

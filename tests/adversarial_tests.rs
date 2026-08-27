@@ -612,6 +612,22 @@ fn feature_replay_rejects_schema_v3_without_independent_oracle_attestation() {
 }
 
 #[test]
+fn completed_feature_summary_rejects_pre_attestation_schema_v3() {
+    let root = tempfile::tempdir().expect("old feature summary root");
+    let summary = zeppelin_embed_bench::harness_json::json!({
+        "schema": "zeppelin-embed-adversarial-campaign",
+        "version": 3,
+        "campaign": "fts",
+        "complete": true,
+        "episodes": 1,
+        "qualification_passed": true,
+    });
+    let error = verify_feature_summary_attestation(root.path(), CampaignKind::Fts, 1, &summary)
+        .expect_err("pre-attestation summary must be rejected");
+    assert!(error.contains("oracle_contract_version"), "{error}");
+}
+
+#[test]
 fn injected_store_vfs_reaches_open_and_wal_creation() {
     let directory = tempfile::tempdir().expect("injected VFS store");
     let scheduled = Arc::new(ScheduledVfs::new(
@@ -1145,6 +1161,7 @@ fn campaign() {
     let mut failures = Vec::<CampaignFailure>::new();
     let mut successful_artifacts = VecDeque::<PathBuf>::new();
     let mut coverage = CoverageRegistry::default();
+    let mut attestation_counters = CampaignAttestationCounters::default();
     let mut merged_evidence = if config.campaign == CampaignKind::Overall {
         None
     } else {
@@ -1204,6 +1221,7 @@ fn campaign() {
                         format!("merged evidence append failed: {error}"),
                     ))
                 } else {
+                    attestation_counters.merge(&outcome);
                     let episode_violations = (outcome.violations.len() as u64).saturating_add(
                         u64::from(injected == Some(CampaignInjectedFailure::Violation)),
                     );
@@ -1294,6 +1312,8 @@ fn campaign() {
             panics,
             unfired_scheduled_faults,
             &failures,
+            &attestation_counters,
+            merged_evidence.as_ref().map(|merged| merged.stats()),
         );
         if episodes.is_multiple_of(100) {
             println!(
@@ -1308,7 +1328,15 @@ fn campaign() {
 
     let missing = missing_campaign_coverage(config.campaign, &coverage);
     let run_passed = failures.is_empty();
+    let attestation_complete = config.campaign == CampaignKind::Overall
+        || feature_attestation_complete(
+            &config,
+            episodes,
+            &attestation_counters,
+            merged_evidence.as_ref().map(|merged| merged.stats()),
+        );
     let qualification_passed = run_passed
+        && attestation_complete
         && (config.campaign == CampaignKind::Overall
             && config.qualification == Qualification::Exploratory
             || missing.is_empty());
@@ -1329,6 +1357,8 @@ fn campaign() {
         panics,
         unfired_scheduled_faults,
         &failures,
+        &attestation_counters,
+        merged_evidence.as_ref().map(|merged| merged.stats()),
     );
     validate_completed_campaign_summary(&root, &config);
     println!(
@@ -1416,6 +1446,32 @@ struct CampaignFailure {
     kind: CampaignFailureKind,
     detail: String,
     artifact_directory: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct CampaignAttestationCounters {
+    comparison_counts: BTreeMap<String, u64>,
+    same_seed_clean_controls: u64,
+    integrated_feature_fault_receipts: u64,
+    selected_feature_fault_events: u64,
+}
+
+impl CampaignAttestationCounters {
+    fn merge(&mut self, outcome: &adversarial::runner::RunOutcome) {
+        for (invariant, count) in &outcome.comparison_counts {
+            let total = self.comparison_counts.entry(invariant.clone()).or_default();
+            *total = total.saturating_add(*count);
+        }
+        self.same_seed_clean_controls = self
+            .same_seed_clean_controls
+            .saturating_add(outcome.same_seed_clean_controls);
+        self.integrated_feature_fault_receipts = self
+            .integrated_feature_fault_receipts
+            .saturating_add(outcome.integrated_feature_fault_receipts);
+        self.selected_feature_fault_events = self
+            .selected_feature_fault_events
+            .saturating_add(outcome.feature_faults_scheduled as u64);
+    }
 }
 
 impl CampaignFailure {
@@ -1551,10 +1607,10 @@ fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification
     assert_eq!(summary["version"], 3);
     assert_eq!(summary["campaign"], "fts");
     assert_eq!(summary["qualification"], "exploratory");
-    assert_eq!(summary["verdict"], "failed");
-    assert_eq!(summary["run_verdict"], "failed");
+    assert_eq!(summary["verdict"], "passed");
+    assert_eq!(summary["run_verdict"], "passed");
     assert_eq!(summary["qualification_passed"], false);
-    assert!(summary["violations"].as_u64().unwrap() > 0);
+    assert_eq!(summary["violations"], 0);
     assert!(summary["host"]["os"].is_string());
     assert!(summary["host"]["arch"].is_string());
     assert!(summary["required_operations"].is_array());
@@ -1568,6 +1624,29 @@ fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification
     assert!(summary["missing_generic_faults"].is_array());
     assert!(summary["languages"]["required"].is_array());
     assert!(summary["backends"]["required"].is_array());
+    assert_eq!(summary["attestation"]["oracle_contract_version"], 1);
+    assert!(
+        summary["attestation"]["harness_git_revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty() && revision != "unknown")
+    );
+    assert!(summary["attestation"]["comparison_counts"].is_object());
+    assert!(summary["attestation"]["same_seed_clean_controls"].is_u64());
+    assert!(summary["attestation"]["integrated_feature_fault_receipts"].is_u64());
+    assert_eq!(summary["attestation"]["merged_evidence"]["episodes"], 1);
+    assert_eq!(summary["attestation"]["merged_evidence"]["complete"], true);
+    for stream in ["oracle", "controls", "receipts", "mutations"] {
+        assert!(
+            summary["attestation"]["merged_evidence"]["streams"][stream]["records"].is_u64(),
+            "missing merged {stream} record count"
+        );
+        assert!(
+            summary["attestation"]["merged_evidence"]["streams"][stream]["digest"]
+                .as_str()
+                .is_some_and(|digest| digest.starts_with("fnv1a64:")),
+            "missing merged {stream} digest"
+        );
+    }
     assert_eq!(summary["panics"], 0);
     assert_eq!(summary["counters"]["panics"], 0);
     assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
@@ -1902,6 +1981,82 @@ fn write_file_synced(path: &Path, bytes: &[u8]) {
         .unwrap_or_else(|error| panic!("sync campaign artifact {}: {error}", path.display()));
 }
 
+fn feature_attestation_complete(
+    config: &RunConfig,
+    episodes: u64,
+    counters: &CampaignAttestationCounters,
+    merged: Option<adversarial::artifacts::MergedEvidenceStats>,
+) -> bool {
+    let Some(merged) = merged else {
+        return false;
+    };
+    let spec = CampaignSpec::for_kind(config.campaign);
+    let exact_comparisons = spec.owned_invariants.iter().all(|invariant| {
+        counters.comparison_counts.get(&invariant.key()).copied() == Some(episodes)
+    });
+    let stream_records = |name: &str| merged.streams.get(name).map_or(0, |stream| stream.records);
+    merged.episodes == episodes
+        && exact_comparisons
+        && counters.same_seed_clean_controls == counters.selected_feature_fault_events
+        && counters.integrated_feature_fault_receipts == counters.selected_feature_fault_events
+        && stream_records("oracle") == counters.comparison_counts.values().copied().sum::<u64>()
+        && stream_records("controls") == counters.same_seed_clean_controls
+        && stream_records("receipts") == counters.integrated_feature_fault_receipts
+}
+
+fn merged_stream_json(
+    merged: &adversarial::artifacts::MergedEvidenceStats,
+    name: &str,
+) -> zeppelin_embed_bench::harness_json::Value {
+    let stream = merged
+        .streams
+        .get(name)
+        .unwrap_or_else(|| panic!("merged evidence omitted {name}"));
+    zeppelin_embed_bench::harness_json::json!({
+        "records": stream.records,
+        "bytes": stream.bytes,
+        "digest": stream.digest,
+    })
+}
+
+fn campaign_attestation_json(
+    config: &RunConfig,
+    episodes: u64,
+    counters: &CampaignAttestationCounters,
+    merged: Option<adversarial::artifacts::MergedEvidenceStats>,
+) -> Option<zeppelin_embed_bench::harness_json::Value> {
+    if config.campaign == CampaignKind::Overall {
+        return None;
+    }
+    let merged = merged.expect("feature campaign owns merged evidence");
+    let valid = feature_attestation_complete(config, episodes, counters, Some(merged.clone()));
+    Some(zeppelin_embed_bench::harness_json::json!({
+        "oracle_contract_version": zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+        "harness_git_revision": adversarial::artifacts::harness_git_revision(),
+        "comparison_counts": counters.comparison_counts,
+        "same_seed_clean_controls": counters.same_seed_clean_controls,
+        "integrated_feature_fault_receipts": counters.integrated_feature_fault_receipts,
+        "selected_feature_fault_events": counters.selected_feature_fault_events,
+        "valid": valid,
+        "evidence_digests": {
+            "checker": merged.streams["oracle"].digest,
+            "control": merged.streams["controls"].digest,
+            "receipt": merged.streams["receipts"].digest,
+            "mutation": merged.streams["mutations"].digest,
+        },
+        "merged_evidence": {
+            "episodes": merged.episodes,
+            "complete": merged.episodes == episodes,
+            "streams": {
+                "oracle": merged_stream_json(&merged, "oracle"),
+                "controls": merged_stream_json(&merged, "controls"),
+                "receipts": merged_stream_json(&merged, "receipts"),
+                "mutations": merged_stream_json(&merged, "mutations"),
+            },
+        },
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_campaign_summary(
     root: &Path,
@@ -1920,6 +2075,8 @@ fn write_campaign_summary(
     panics: u64,
     unfired_scheduled_faults: u64,
     failures: &[CampaignFailure],
+    attestation_counters: &CampaignAttestationCounters,
+    merged_evidence: Option<adversarial::artifacts::MergedEvidenceStats>,
 ) {
     let spec = CampaignSpec::for_kind(config.campaign);
     let required_invariants = spec
@@ -2051,6 +2208,8 @@ fn write_campaign_summary(
     } else {
         "running"
     };
+    let attestation =
+        campaign_attestation_json(config, episodes, attestation_counters, merged_evidence);
     let summary = zeppelin_embed_bench::harness_json::json!({
         "schema": "zeppelin-embed-adversarial-campaign",
         "version": 3,
@@ -2115,6 +2274,7 @@ fn write_campaign_summary(
         "missing_coverage": missing_coverage,
         "failures": failures.iter().map(CampaignFailure::json).collect::<Vec<_>>(),
         "coverage": coverage_json,
+        "attestation": attestation,
     });
     let mut summary = zeppelin_embed_bench::harness_json::to_vec(&summary)
         .expect("serialize campaign summary v3");
@@ -2157,8 +2317,20 @@ fn validate_completed_campaign_summary(root: &Path, config: &RunConfig) {
     let coverage_complete = summary["missing_coverage"]
         == zeppelin_embed_bench::harness_json::json!([])
         && summary["missing_invariants"] == zeppelin_embed_bench::harness_json::json!([])
-        && summary["missing_feature_faults"] == zeppelin_embed_bench::harness_json::json!([]);
+        && summary["missing_feature_faults"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["missing_operations"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["missing_profiles"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["missing_generic_faults"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["languages"]["missing"] == zeppelin_embed_bench::harness_json::json!([])
+        && summary["backends"]["missing"] == zeppelin_embed_bench::harness_json::json!([]);
+    let episodes = summary["episodes"]
+        .as_u64()
+        .expect("campaign summary episode count");
+    let attestation_valid =
+        verify_feature_summary_attestation(root, config.campaign, episodes, &summary)
+            .unwrap_or_else(|error| panic!("campaign summary attestation rejected: {error}"));
     let expected_qualification = run_passed
+        && attestation_valid
         && (config.campaign == CampaignKind::Overall
             && config.qualification == Qualification::Exploratory
             || coverage_complete);
@@ -2172,9 +2344,142 @@ fn validate_completed_campaign_summary(root: &Path, config: &RunConfig) {
         "campaign summary did not meet its duration"
     );
     assert!(
-        summary["episodes"].as_u64().unwrap_or_default() >= config.minimum_episodes,
+        episodes >= config.minimum_episodes,
         "campaign summary did not meet its episode count"
     );
+}
+
+fn verify_feature_summary_attestation(
+    root: &Path,
+    campaign: CampaignKind,
+    episodes: u64,
+    summary: &zeppelin_embed_bench::harness_json::Value,
+) -> Result<bool, String> {
+    if campaign == CampaignKind::Overall {
+        return Ok(true);
+    }
+    let attestation = &summary["attestation"];
+    if attestation["oracle_contract_version"].as_u64()
+        != Some(u64::from(
+            zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+        ))
+    {
+        return Err("feature summary attestation missing: oracle_contract_version".to_owned());
+    }
+    match attestation["harness_git_revision"].as_str() {
+        Some(revision) if revision == adversarial::artifacts::harness_git_revision() => {}
+        Some(_) => return Err("feature summary harness_git_revision is stale".to_owned()),
+        None => return Err("feature summary attestation missing: harness_git_revision".to_owned()),
+    }
+    let reported_comparisons = attestation["comparison_counts"]
+        .as_object()
+        .ok_or_else(|| "feature summary attestation missing: comparison_counts".to_owned())?
+        .iter()
+        .map(|(invariant, count)| {
+            count
+                .as_u64()
+                .map(|count| (invariant.clone(), count))
+                .ok_or_else(|| format!("comparison count for {invariant} is not u64"))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let required_count = |field: &str| {
+        attestation[field]
+            .as_u64()
+            .ok_or_else(|| format!("feature summary attestation missing: {field}"))
+    };
+    let clean_controls = required_count("same_seed_clean_controls")?;
+    let integrated_receipts = required_count("integrated_feature_fault_receipts")?;
+    let selected_faults = required_count("selected_feature_fault_events")?;
+    let merged = &attestation["merged_evidence"];
+    let merged_episodes = merged["episodes"].as_u64().ok_or_else(|| {
+        "feature summary attestation missing: merged_evidence.episodes".to_owned()
+    })?;
+    let index_bytes = std::fs::read(root.join("merged-index.jsonl"))
+        .map_err(|error| format!("read merged-index.jsonl: {error}"))?;
+    let index_records = index_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .count() as u64;
+    if index_records != merged_episodes {
+        return Err(format!(
+            "merged index count mismatch: summary={merged_episodes} file={index_records}"
+        ));
+    }
+
+    let mut observed_comparisons = BTreeMap::<String, u64>::new();
+    let mut every_comparison_passed = true;
+    let mut observed_stream_records = BTreeMap::<String, u64>::new();
+    for name in ["oracle", "controls", "receipts", "mutations"] {
+        let path = root.join(format!("merged-{name}.jsonl"));
+        let bytes =
+            std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        let records = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count() as u64;
+        observed_stream_records.insert(name.to_owned(), records);
+        let reported = &merged["streams"][name];
+        if reported["records"].as_u64() != Some(records)
+            || reported["bytes"].as_u64() != Some(bytes.len() as u64)
+            || reported["digest"].as_str()
+                != Some(adversarial::artifacts::evidence_digest(&[&bytes]).as_str())
+        {
+            return Err(format!("merged {name} count/bytes/digest mismatch"));
+        }
+        if name == "oracle" {
+            for line in bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+            {
+                let envelope: zeppelin_embed_bench::harness_json::Value =
+                    zeppelin_embed_bench::harness_json::from_slice(line)
+                        .map_err(|error| format!("parse merged oracle row: {error}"))?;
+                let invariant = envelope["record"]["invariant"]
+                    .as_str()
+                    .ok_or_else(|| "merged oracle row omitted invariant".to_owned())?;
+                let count = observed_comparisons
+                    .entry(invariant.to_owned())
+                    .or_default();
+                *count = count.saturating_add(1);
+                every_comparison_passed &= envelope["record"]["passed"].as_bool() == Some(true);
+            }
+        }
+    }
+    if observed_comparisons != reported_comparisons {
+        return Err("comparison counts disagree with merged oracle rows".to_owned());
+    }
+    let evidence_digests = &attestation["evidence_digests"];
+    for (field, stream) in [
+        ("checker", "oracle"),
+        ("control", "controls"),
+        ("receipt", "receipts"),
+        ("mutation", "mutations"),
+    ] {
+        if evidence_digests[field] != merged["streams"][stream]["digest"] {
+            return Err(format!(
+                "{field} evidence digest disagrees with merged {stream}"
+            ));
+        }
+    }
+    let spec = CampaignSpec::for_kind(campaign);
+    let exact_comparisons = spec
+        .owned_invariants
+        .iter()
+        .all(|invariant| observed_comparisons.get(&invariant.key()).copied() == Some(episodes));
+    let valid = merged_episodes == episodes
+        && exact_comparisons
+        && every_comparison_passed
+        && clean_controls == selected_faults
+        && integrated_receipts == selected_faults
+        && observed_stream_records.get("controls").copied() == Some(clean_controls)
+        && observed_stream_records.get("receipts").copied() == Some(integrated_receipts);
+    if merged["complete"].as_bool() != Some(merged_episodes == episodes) {
+        return Err("merged evidence completeness flag disagrees with index".to_owned());
+    }
+    if attestation["valid"].as_bool() != Some(valid) {
+        return Err("feature attestation validity flag disagrees with evidence".to_owned());
+    }
+    Ok(valid)
 }
 
 fn campaign_invariant_checked(

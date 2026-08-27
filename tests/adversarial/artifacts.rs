@@ -448,7 +448,7 @@ fn finish_fnv(mut digest: u64) -> String {
     format!("fnv1a64:{digest:016x}")
 }
 
-fn harness_git_revision() -> &'static str {
+pub fn harness_git_revision() -> &'static str {
     static REVISION: OnceLock<String> = OnceLock::new();
     REVISION.get_or_init(|| {
         Command::new("git")
