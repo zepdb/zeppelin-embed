@@ -1,5 +1,6 @@
 //! Query diagnostics and health reporting.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::epoch::EpochId;
@@ -298,10 +299,88 @@ pub struct MaintenanceSummary {
     pub outcome: MaintenanceOutcome,
 }
 
+/// Retained result of artifact validation and semantic sampling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthStatus {
+    /// No full self-check has completed for this Store handle.
+    Unchecked,
+    /// Every examined artifact and semantic sample passed.
+    Healthy,
+    /// A semantic/query fault remains unresolved, but storage is readable.
+    Degraded,
+    /// A persistence, format, or resource fault remains unresolved.
+    Unhealthy,
+}
+
+/// Structured identity of one health-validation scope.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ArtifactRef {
+    /// Committed manifest.
+    Manifest,
+    /// Append-only write-ahead log.
+    Wal,
+    /// Whole immutable segment artifact.
+    Segment {
+        /// Collision-free segment identity.
+        id: crate::segment::SegmentId,
+    },
+    /// One immutable segment region.
+    Region {
+        /// Collision-free segment identity.
+        segment_id: crate::segment::SegmentId,
+        /// Append-only region kind identifier.
+        kind: u16,
+    },
+    /// Resumable maintenance checkpoint.
+    Checkpoint {
+        /// Direct-child file name, never an ambient absolute path.
+        name: String,
+    },
+    /// Current active in-memory state.
+    Active,
+}
+
+/// Typed class of one retained health fault.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum HealthFaultKind {
+    /// Filesystem access failed.
+    Io,
+    /// Persisted bytes failed an identity, length, or checksum contract.
+    Format,
+    /// Decoded state disagreed with its semantic model.
+    Semantic,
+    /// A sampled public query failed or disagreed with exact search.
+    Query,
+    /// Exact resource accounting did not balance.
+    Accounting,
+}
+
+/// Stable key for the unresolved-fault ledger.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HealthFaultKey {
+    /// Typed fault class.
+    pub kind: HealthFaultKind,
+    /// Exact artifact scope.
+    pub artifact: ArtifactRef,
+}
+
+/// Retained unresolved health fault.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthFault {
+    /// Stable key repeated for convenient serialization.
+    pub key: HealthFaultKey,
+    /// Typed engine detail; hosts never need to parse it for identity.
+    pub detail: String,
+}
+
 /// Version 1 store health extending exact task-09 statistics.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Health {
+    /// Retained validation state for this Store handle.
+    pub status: HealthStatus,
+    /// Faults retained until their exact artifact scope revalidates.
+    pub unresolved_faults: BTreeMap<HealthFaultKey, HealthFault>,
     /// Exact task-09 resource counters.
     pub stats: crate::lifecycle::Stats,
     /// Current active-state generation.
@@ -330,6 +409,10 @@ pub struct SelfCheckFailure {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct SelfCheckReport {
+    /// Health status after this full artifact and semantic check.
+    pub health_status: HealthStatus,
+    /// Exact artifact scopes examined by this call.
+    pub examined_artifacts: Vec<ArtifactRef>,
     /// Caller-requested sample size.
     pub requested_samples: usize,
     /// Stored documents actually sampled.
@@ -354,10 +437,22 @@ struct StoredSelfCheckDocument {
     vector: Vec<f32>,
 }
 
-#[derive(Default)]
 pub(crate) struct HealthState {
     retained_through: Option<i64>,
     last_maintenance: Option<MaintenanceSummary>,
+    status: HealthStatus,
+    unresolved_faults: BTreeMap<HealthFaultKey, HealthFault>,
+}
+
+impl Default for HealthState {
+    fn default() -> Self {
+        Self {
+            retained_through: None,
+            last_maintenance: None,
+            status: HealthStatus::Unchecked,
+            unresolved_faults: BTreeMap::new(),
+        }
+    }
 }
 
 impl crate::lifecycle::Store {
@@ -365,7 +460,32 @@ impl crate::lifecycle::Store {
     /// against a full-precision brute-force oracle.
     #[must_use]
     pub fn self_check(&self, sample: usize, seed: u64) -> SelfCheckReport {
-        self.self_check_inner(sample, seed, false)
+        let (examined, artifact_faults) = self.audit_artifacts();
+        let mut report = self.self_check_inner(sample, seed, false);
+        let mut faults = artifact_faults;
+        if !report.failures.is_empty() || report.recall < 1.0 {
+            let detail = if report.failures.is_empty() {
+                format!("semantic sample recall was {}", report.recall)
+            } else {
+                report
+                    .failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.stage, failure.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            faults.push(HealthFault {
+                key: HealthFaultKey {
+                    kind: HealthFaultKind::Query,
+                    artifact: ArtifactRef::Active,
+                },
+                detail,
+            });
+        }
+        let (status, _) = self.update_health_ledger(&examined, faults);
+        report.health_status = status;
+        report.examined_artifacts = examined.into_iter().collect();
+        report
     }
 
     fn self_check_inner(&self, sample: usize, seed: u64, force_miss: bool) -> SelfCheckReport {
@@ -373,6 +493,8 @@ impl crate::lifecycle::Store {
             Ok(documents) => documents,
             Err(failure) => {
                 return SelfCheckReport {
+                    health_status: HealthStatus::Unchecked,
+                    examined_artifacts: Vec::new(),
                     requested_samples: sample,
                     sampled_documents: 0,
                     seed,
@@ -455,6 +577,8 @@ impl crate::lifecycle::Store {
             recalled_hits as f64 / expected_hits as f64
         };
         SelfCheckReport {
+            health_status: HealthStatus::Unchecked,
+            examined_artifacts: Vec::new(),
             requested_samples: sample,
             sampled_documents: sampled.len(),
             seed,
@@ -622,6 +746,278 @@ impl crate::lifecycle::Store {
         Ok(documents)
     }
 
+    fn audit_artifacts(&self) -> (BTreeSet<ArtifactRef>, Vec<HealthFault>) {
+        use crate::manifest::io::{DurableLog, MANIFEST_FILE};
+        use crate::segment::layout::RegionKind;
+
+        let mut examined = BTreeSet::new();
+        let mut faults = Vec::new();
+        let mut record = |kind: HealthFaultKind, artifact: ArtifactRef, detail: String| {
+            faults.push(HealthFault {
+                key: HealthFaultKey { kind, artifact },
+                detail,
+            });
+        };
+
+        let wal_artifact = ArtifactRef::Wal;
+        examined.insert(wal_artifact.clone());
+        let wal_path = self.directory.join("wal.ze");
+        let wal = match crate::wal::WalReader::open(self.vfs.as_ref(), &wal_path) {
+            Ok(reader) => {
+                match reader.terminator() {
+                    Some(crate::wal::replay::ReplayTerminator::CleanEnd) => {}
+                    Some(crate::wal::replay::ReplayTerminator::InvalidHeader(
+                        crate::wal::header::WalHeaderError::Missing,
+                    )) if self.vfs.open(&wal_path).is_ok_and(|length| length == 0) => {}
+                    Some(other) => record(
+                        HealthFaultKind::Format,
+                        wal_artifact.clone(),
+                        format!("WAL replay stopped at {other:?}"),
+                    ),
+                    None => record(
+                        HealthFaultKind::Io,
+                        wal_artifact.clone(),
+                        "WAL artifact is absent".to_owned(),
+                    ),
+                }
+                Some(reader)
+            }
+            Err(error) => {
+                record(HealthFaultKind::Format, wal_artifact, error.to_string());
+                None
+            }
+        };
+
+        let manifest_artifact = ArtifactRef::Manifest;
+        examined.insert(manifest_artifact.clone());
+        let durable_end = wal.as_ref().map_or(u64::MAX, DurableLog::durable_end);
+        let manifest_path = self.directory.join(MANIFEST_FILE);
+        match self.vfs.open(&manifest_path) {
+            Ok(_) => {
+                if let Err(error) = crate::manifest::io::load_manifest(
+                    self.vfs.as_ref(),
+                    &manifest_path,
+                    durable_end,
+                ) {
+                    record(
+                        HealthFaultKind::Format,
+                        manifest_artifact,
+                        error.to_string(),
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => record(HealthFaultKind::Io, manifest_artifact, error.to_string()),
+        }
+
+        let active_artifact = ArtifactRef::Active;
+        examined.insert(active_artifact.clone());
+        match self.active.lock() {
+            Ok(active) => match active.as_ref() {
+                Some(active) => {
+                    if let Err(error) = active.segment.alive() {
+                        record(
+                            HealthFaultKind::Semantic,
+                            active_artifact.clone(),
+                            error.to_string(),
+                        );
+                    }
+                    let rows = active.segment.row_count();
+                    if rows != 0 && active.segment.vectors().len() % rows != 0 {
+                        record(
+                            HealthFaultKind::Semantic,
+                            active_artifact.clone(),
+                            "active vectors are not rectangular".to_owned(),
+                        );
+                    }
+                    for row in 0..rows {
+                        if active.segment.document(row).is_none() {
+                            record(
+                                HealthFaultKind::Semantic,
+                                active_artifact.clone(),
+                                format!("active row {row} has no document identity"),
+                            );
+                            break;
+                        }
+                    }
+                }
+                None => record(
+                    HealthFaultKind::Semantic,
+                    active_artifact,
+                    "active state is absent".to_owned(),
+                ),
+            },
+            Err(_) => record(
+                HealthFaultKind::Semantic,
+                active_artifact,
+                "active state lock is poisoned".to_owned(),
+            ),
+        }
+
+        match self.snapshot.read() {
+            Ok(snapshot) => {
+                if let Some(snapshot) = snapshot.as_ref() {
+                    for segment in snapshot.all_segments() {
+                        let expected = segment.meta();
+                        let segment_artifact = ArtifactRef::Segment { id: expected.id };
+                        examined.insert(segment_artifact.clone());
+                        let fresh = match crate::segment::reader::SegmentReader::open(
+                            &self.directory.join(expected.id.file_name()),
+                            expected.id,
+                        ) {
+                            Ok(fresh) => fresh,
+                            Err(error) => {
+                                record(
+                                    HealthFaultKind::Format,
+                                    segment_artifact,
+                                    error.to_string(),
+                                );
+                                continue;
+                            }
+                        };
+                        let segment = &fresh;
+                        let mut region_failed = false;
+                        for entry in segment.directory() {
+                            let artifact = ArtifactRef::Region {
+                                segment_id: segment.meta().id,
+                                kind: entry.kind,
+                            };
+                            examined.insert(artifact.clone());
+                            if let Some(kind) = RegionKind::from_id(entry.kind)
+                                && let Err(error) = segment.region(kind)
+                            {
+                                region_failed = true;
+                                record(HealthFaultKind::Format, artifact, error.to_string());
+                            }
+                        }
+                        if !region_failed {
+                            if let Err(error) = segment.validate_all() {
+                                record(
+                                    HealthFaultKind::Format,
+                                    segment_artifact,
+                                    error.to_string(),
+                                );
+                                continue;
+                            }
+                            if let Err(error) = segment.stored_text() {
+                                record(
+                                    HealthFaultKind::Semantic,
+                                    ArtifactRef::Region {
+                                        segment_id: segment.meta().id,
+                                        kind: RegionKind::StoredText.id(),
+                                    },
+                                    error.to_string(),
+                                );
+                            }
+                            for row in 0..segment.meta().row_count as usize {
+                                if let Err(error) = segment.document_version(row) {
+                                    record(
+                                        HealthFaultKind::Semantic,
+                                        ArtifactRef::Region {
+                                            segment_id: segment.meta().id,
+                                            kind: RegionKind::DocumentVersions.id(),
+                                        },
+                                        error.to_string(),
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => record(
+                HealthFaultKind::Semantic,
+                ArtifactRef::Manifest,
+                "published snapshot lock is poisoned".to_owned(),
+            ),
+        }
+
+        match self.vfs.list(&self.directory) {
+            Ok(paths) => {
+                // A successful directory listing also revalidates the absence
+                // of checkpoints that were observed by an earlier full
+                // check. Without carrying those exact scopes into `examined`,
+                // deleting or completing a damaged checkpoint could never
+                // clear its retained fault.
+                if let Ok(state) = self.health_state.lock() {
+                    examined.extend(state.unresolved_faults.keys().filter_map(|key| {
+                        if matches!(key.artifact, ArtifactRef::Checkpoint { .. }) {
+                            Some(key.artifact.clone())
+                        } else {
+                            None
+                        }
+                    }));
+                }
+                for path in paths {
+                    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    if !name.starts_with(".tier-") || !name.ends_with(".graph.checkpoint") {
+                        continue;
+                    }
+                    let artifact = ArtifactRef::Checkpoint {
+                        name: name.to_owned(),
+                    };
+                    examined.insert(artifact.clone());
+                    match self.vfs.read(&path) {
+                        Ok(bytes) => {
+                            let valid = bytes.len() >= 16
+                                && bytes.get(..8) == Some(b"ZEVAMCP1".as_slice())
+                                && bytes
+                                    .len()
+                                    .checked_sub(8)
+                                    .and_then(|start| {
+                                        bytes.get(start..).and_then(|checksum| {
+                                            checksum.try_into().ok().map(u64::from_le_bytes).map(
+                                                |expected| {
+                                                    xxhash_rust::xxh3::xxh3_64(&bytes[..start])
+                                                        == expected
+                                                },
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                            if !valid {
+                                record(
+                                    HealthFaultKind::Format,
+                                    artifact,
+                                    "maintenance checkpoint identity or checksum is invalid"
+                                        .to_owned(),
+                                );
+                            }
+                        }
+                        Err(error) => record(HealthFaultKind::Io, artifact, error.to_string()),
+                    }
+                }
+            }
+            Err(error) => record(
+                HealthFaultKind::Io,
+                ArtifactRef::Active,
+                format!("list store artifacts: {error}"),
+            ),
+        }
+        (examined, faults)
+    }
+
+    fn update_health_ledger(
+        &self,
+        examined: &BTreeSet<ArtifactRef>,
+        faults: Vec<HealthFault>,
+    ) -> (HealthStatus, BTreeMap<HealthFaultKey, HealthFault>) {
+        let Ok(mut state) = self.health_state.lock() else {
+            return (HealthStatus::Unhealthy, BTreeMap::new());
+        };
+        state
+            .unresolved_faults
+            .retain(|key, _| !examined.contains(&key.artifact));
+        for fault in faults {
+            state.unresolved_faults.insert(fault.key.clone(), fault);
+        }
+        state.status = health_status(&state.unresolved_faults);
+        (state.status, state.unresolved_faults.clone())
+    }
+
     pub(crate) fn record_retention(
         &self,
         retained_through: i64,
@@ -740,6 +1136,8 @@ impl crate::lifecycle::Store {
             }
         })?;
         Ok(Health {
+            status: health_state.status,
+            unresolved_faults: health_state.unresolved_faults.clone(),
             stats,
             generation,
             segments,
@@ -747,6 +1145,22 @@ impl crate::lifecycle::Store {
             retained_through: health_state.retained_through,
             last_maintenance: health_state.last_maintenance.clone(),
         })
+    }
+}
+
+fn health_status(faults: &BTreeMap<HealthFaultKey, HealthFault>) -> HealthStatus {
+    if faults.is_empty() {
+        return HealthStatus::Healthy;
+    }
+    if faults.keys().any(|key| {
+        matches!(
+            key.kind,
+            HealthFaultKind::Io | HealthFaultKind::Format | HealthFaultKind::Accounting
+        )
+    }) {
+        HealthStatus::Unhealthy
+    } else {
+        HealthStatus::Degraded
     }
 }
 

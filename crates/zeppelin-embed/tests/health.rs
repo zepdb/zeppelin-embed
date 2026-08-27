@@ -1,14 +1,32 @@
 #![allow(clippy::expect_used)]
 
 use std::time::Duration;
+use std::{io::Seek, io::SeekFrom, io::Write};
 use tempfile::tempdir;
-use zeppelin_embed::diag::MaintenanceOutcome;
+use zeppelin_embed::diag::{ArtifactRef, HealthFaultKind, HealthStatus, MaintenanceOutcome};
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, RetentionPolicy, Revision,
 };
 use zeppelin_embed::lifecycle::{OpenOptions, Store};
 use zeppelin_embed::tier::SegmentTier;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
+
+fn flip_byte(path: &std::path::Path, offset: u64) {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open segment mutation target");
+    file.seek(SeekFrom::Start(offset))
+        .expect("seek mutation byte");
+    let mut byte = [0_u8; 1];
+    std::io::Read::read_exact(&mut file, &mut byte).expect("read mutation byte");
+    byte[0] ^= 0x80;
+    file.seek(SeekFrom::Start(offset))
+        .expect("rewind mutation byte");
+    file.write_all(&byte).expect("write mutation byte");
+    file.flush().expect("flush mutation byte");
+}
 
 #[test]
 fn pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest() {
@@ -41,6 +59,155 @@ fn pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest()
     let immutable = sealed.segments.first().expect("sealed segment health");
     assert_eq!(immutable.tier, SegmentTier::SealedScan);
     assert_eq!(immutable.rows, 3);
+    store.close().expect("close store");
+}
+
+#[test]
+fn health_starts_unchecked_and_full_self_check_marks_examined_artifacts_healthy() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let initial = store.health().expect("initial health");
+    assert_eq!(initial.status, HealthStatus::Unchecked);
+    assert!(initial.unresolved_faults.is_empty());
+
+    let report = store.self_check(0, 0x63);
+    assert_eq!(report.health_status, HealthStatus::Healthy, "{report:?}");
+    assert!(
+        report
+            .examined_artifacts
+            .iter()
+            .any(|artifact| { matches!(artifact, zeppelin_embed::diag::ArtifactRef::Manifest) })
+    );
+    assert!(
+        report
+            .examined_artifacts
+            .iter()
+            .any(|artifact| { matches!(artifact, zeppelin_embed::diag::ArtifactRef::Wal) })
+    );
+    let checked = store.health().expect("checked health");
+    assert_eq!(checked.status, HealthStatus::Healthy);
+    assert!(checked.unresolved_faults.is_empty());
+    store.close().expect("close store");
+}
+
+#[test]
+fn self_check_attributes_and_clears_only_the_exact_revalidated_region() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    for id in [201, 202] {
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![id as f32, 1.0],
+            )]))
+            .expect("ingest health segment");
+        store.seal().expect("seal health segment");
+    }
+    let snapshot = store.snapshot().expect("pin health snapshot");
+    let scopes = snapshot
+        .segments()
+        .iter()
+        .map(|segment| {
+            let entry = segment
+                .directory()
+                .iter()
+                .find(|entry| {
+                    entry.kind == zeppelin_embed::segment::layout::RegionKind::VectorCodes.id()
+                })
+                .expect("vector-code region");
+            (segment.meta().id, entry.offset)
+        })
+        .collect::<Vec<_>>();
+    drop(snapshot);
+    assert_eq!(scopes.len(), 2);
+
+    let first_path = directory.path().join(scopes[0].0.file_name());
+    let second_path = directory.path().join(scopes[1].0.file_name());
+    flip_byte(&first_path, scopes[0].1);
+    let first = store.self_check(0, 0x64);
+    assert_eq!(first.health_status, HealthStatus::Unhealthy);
+    let first_health = store.health().expect("first corrupt health");
+    assert!(
+        first_health.unresolved_faults.keys().any(|key| {
+            key.kind == HealthFaultKind::Format
+                && key.artifact
+                    == (ArtifactRef::Region {
+                        segment_id: scopes[0].0,
+                        kind: zeppelin_embed::segment::layout::RegionKind::VectorCodes.id(),
+                    })
+        }),
+        "{first_health:?}"
+    );
+    assert!(!first_health.unresolved_faults.keys().any(|key| {
+        matches!(
+            key.artifact,
+            ArtifactRef::Region { segment_id, .. } if segment_id == scopes[1].0
+        )
+    }));
+
+    flip_byte(&first_path, scopes[0].1);
+    flip_byte(&second_path, scopes[1].1);
+    let second = store.self_check(0, 0x65);
+    assert_eq!(second.health_status, HealthStatus::Unhealthy);
+    let second_health = store.health().expect("second corrupt health");
+    assert!(!second_health.unresolved_faults.keys().any(|key| {
+        matches!(
+            key.artifact,
+            ArtifactRef::Region { segment_id, .. } if segment_id == scopes[0].0
+        )
+    }));
+    assert!(second_health.unresolved_faults.keys().any(|key| {
+        key.artifact
+            == (ArtifactRef::Region {
+                segment_id: scopes[1].0,
+                kind: zeppelin_embed::segment::layout::RegionKind::VectorCodes.id(),
+            })
+    }));
+
+    flip_byte(&second_path, scopes[1].1);
+    assert_eq!(
+        store.self_check(0, 0x66).health_status,
+        HealthStatus::Healthy
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn successful_checkpoint_scope_revalidation_clears_a_removed_fault() {
+    let directory = tempdir().expect("store directory");
+    let checkpoint = directory.path().join(".tier-health.graph.checkpoint");
+    std::fs::write(&checkpoint, b"not-a-checkpoint").expect("write damaged checkpoint");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+
+    assert_eq!(
+        store.self_check(0, 0x67).health_status,
+        HealthStatus::Unhealthy
+    );
+    let artifact = ArtifactRef::Checkpoint {
+        name: ".tier-health.graph.checkpoint".to_owned(),
+    };
+    assert!(
+        store
+            .health()
+            .expect("faulted health")
+            .unresolved_faults
+            .keys()
+            .any(|key| key.artifact == artifact)
+    );
+
+    std::fs::remove_file(&checkpoint).expect("complete checkpoint cleanup");
+    assert_eq!(
+        store.self_check(0, 0x68).health_status,
+        HealthStatus::Healthy
+    );
+    assert!(
+        !store
+            .health()
+            .expect("revalidated health")
+            .unresolved_faults
+            .keys()
+            .any(|key| key.artifact == artifact)
+    );
     store.close().expect("close store");
 }
 
