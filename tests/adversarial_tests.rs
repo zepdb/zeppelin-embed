@@ -520,10 +520,53 @@ fn feature_episode_writes_schema_v3_replay_metadata() {
         .expect("parse episode metadata");
     assert_eq!(metadata["version"], 3);
     assert_eq!(metadata["campaign"], "fts");
+    assert_eq!(metadata["attestation"]["oracle_contract_version"], 1);
+    assert!(
+        metadata["attestation"]["harness_git_revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty() && revision != "unknown")
+    );
+    assert!(metadata["attestation"]["comparison_counts"].is_object());
+    assert!(metadata["attestation"]["same_seed_clean_controls"].is_u64());
+    assert!(metadata["attestation"]["integrated_feature_fault_receipts"].is_u64());
+    assert!(metadata["attestation"]["evidence_digests"].is_object());
+    assert_eq!(
+        metadata["attestation"]["replay_artifacts"],
+        zeppelin_embed_bench::harness_json::json!([
+            "program.jsonl",
+            "faults.jsonl",
+            "violations.json",
+            "coverage.json",
+            "oracle.jsonl",
+            "controls.jsonl",
+            "receipts.jsonl",
+            "mutations.jsonl",
+        ])
+    );
+    for name in adversarial::artifacts::REPLAY_ARTIFACTS {
+        assert!(directory.join(name).is_file(), "missing replay artifact {name}");
+    }
     assert_eq!(
         adversarial::campaign::campaign_from_replay_metadata(&directory)
             .expect("feature replay campaign"),
         CampaignKind::Fts
+    );
+}
+
+#[test]
+fn feature_replay_compares_every_attested_artifact() {
+    assert_eq!(
+        adversarial::artifacts::REPLAY_ARTIFACTS,
+        [
+            "program.jsonl",
+            "faults.jsonl",
+            "violations.json",
+            "coverage.json",
+            "oracle.jsonl",
+            "controls.jsonl",
+            "receipts.jsonl",
+            "mutations.jsonl",
+        ]
     );
 }
 
@@ -545,6 +588,28 @@ fn legacy_replay_artifacts_are_implicit_overall() {
             CampaignKind::Overall
         );
     }
+}
+
+#[test]
+fn feature_replay_rejects_schema_v3_without_independent_oracle_attestation() {
+    let directory = tempfile::tempdir().expect("feature replay directory");
+    std::fs::write(
+        directory.path().join("episode.json"),
+        zeppelin_embed_bench::harness_json::to_vec(
+            &zeppelin_embed_bench::harness_json::json!({
+                "schema": "zeppelin-embed-adversarial-episode",
+                "version": 3,
+                "campaign": "fts",
+                "seed": 7,
+                "profile": "none",
+            }),
+        )
+        .expect("feature fixture JSON"),
+    )
+    .expect("write feature fixture");
+    let error = adversarial::campaign::campaign_from_replay_metadata(directory.path())
+        .expect_err("unattested feature replay must be rejected");
+    assert!(error.contains("oracle attestation"), "{error}");
 }
 
 #[test]
@@ -1033,12 +1098,21 @@ fn replay() {
         actual_root.path(),
     )
     .expect("replayed adversarial run");
-    for (name, actual) in [
+    let mut replay_artifacts = vec![
         ("program.jsonl", outcome.program_bytes),
         ("faults.jsonl", outcome.faults_bytes),
         ("violations.json", outcome.violations_bytes),
         ("coverage.json", outcome.coverage_bytes),
-    ] {
+    ];
+    if campaign != CampaignKind::Overall {
+        replay_artifacts.extend([
+            ("oracle.jsonl", outcome.oracle_bytes),
+            ("controls.jsonl", outcome.controls_bytes),
+            ("receipts.jsonl", outcome.receipts_bytes),
+            ("mutations.jsonl", outcome.mutations_bytes),
+        ]);
+    }
+    for (name, actual) in replay_artifacts {
         let expected_bytes = std::fs::read(expected.join(name))
             .unwrap_or_else(|error| panic!("read replay artifact {name}: {error}"));
         assert_eq!(actual, expected_bytes, "replay drifted for {name}");

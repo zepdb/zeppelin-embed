@@ -355,7 +355,66 @@ pub fn campaign_from_replay_metadata(directory: &Path) -> Result<CampaignKind, S
     let key = metadata["campaign"]
         .as_str()
         .ok_or_else(|| format!("{} has no campaign key", metadata_path.display()))?;
-    CampaignKind::from_key(key)
+    let campaign = CampaignKind::from_key(key)?;
+    if campaign != CampaignKind::Overall {
+        validate_feature_replay_attestation(&metadata, &metadata_path)?;
+    }
+    Ok(campaign)
+}
+
+fn validate_feature_replay_attestation(
+    metadata: &zeppelin_embed_bench::harness_json::Value,
+    metadata_path: &Path,
+) -> Result<(), String> {
+    let attestation = &metadata["attestation"];
+    let malformed = || {
+        format!(
+            "{} has no complete independent-oracle attestation",
+            metadata_path.display()
+        )
+    };
+    if attestation["oracle_contract_version"].as_u64()
+        != Some(u64::from(
+            zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+        ))
+    {
+        return Err(malformed());
+    }
+    if !attestation["harness_git_revision"]
+        .as_str()
+        .is_some_and(|revision| !revision.is_empty() && revision != "unknown")
+        || !attestation["comparison_counts"].is_object()
+        || !attestation["same_seed_clean_controls"].is_u64()
+        || !attestation["integrated_feature_fault_receipts"].is_u64()
+    {
+        return Err(malformed());
+    }
+    let digests = &attestation["evidence_digests"];
+    if [
+        "operation_evidence",
+        "checker_evidence",
+        "fault_evidence",
+    ]
+    .into_iter()
+    .any(|key| {
+        !digests[key]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("fnv1a64:") && digest.len() == 24)
+    }) {
+        return Err(malformed());
+    }
+    let replay_artifacts = attestation["replay_artifacts"]
+        .as_array()
+        .ok_or_else(malformed)?;
+    if replay_artifacts.len() != super::artifacts::REPLAY_ARTIFACTS.len()
+        || replay_artifacts
+            .iter()
+            .zip(super::artifacts::REPLAY_ARTIFACTS)
+            .any(|(observed, expected)| observed.as_str() != Some(expected))
+    {
+        return Err(malformed());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1120,6 +1179,19 @@ pub struct FeatureFaultReceipt {
     pub fault: FeatureFault,
     pub operation: FeatureOperation,
     pub cardinality: usize,
+}
+
+impl FeatureFaultReceipt {
+    #[must_use]
+    pub fn json_line(self) -> String {
+        format!(
+            "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"cardinality\":{}}}",
+            self.operation.campaign().key(),
+            self.operation.key(),
+            self.fault.key(),
+            self.cardinality,
+        )
+    }
 }
 
 impl FeatureFaultEvent {

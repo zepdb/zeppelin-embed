@@ -322,6 +322,9 @@ pub struct RunOutcome {
     pub violations_bytes: Vec<u8>,
     pub coverage_bytes: Vec<u8>,
     pub oracle_bytes: Vec<u8>,
+    pub controls_bytes: Vec<u8>,
+    pub receipts_bytes: Vec<u8>,
+    pub mutations_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1650,7 +1653,9 @@ fn run_program_for_with_clock(
     let program_bytes = artifacts.write_program(&program)?;
     let reproduction = reproduction_for(campaign, seed, profile);
     artifacts.write_reproduction(&reproduction)?;
-    let _ = artifacts.write_episode_metadata(campaign, seed, profile, &reproduction)?;
+    if campaign == CampaignKind::Overall {
+        let _ = artifacts.write_episode_metadata(campaign, seed, profile, &reproduction, None)?;
+    }
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let scheduled_event = fault_vfs::scheduled_event_for_program(seed, profile, &program);
     let mut fault_plan =
@@ -1666,6 +1671,9 @@ fn run_program_for_with_clock(
     let mut faults = Vec::<FaultEvent>::new();
     let mut coverage = CoverageRegistry::default();
     let mut oracle_records = Vec::<OracleRecord>::new();
+    let control_records = Vec::<String>::new();
+    let mut receipt_records = Vec::<String>::new();
+    let mutation_records = Vec::<String>::new();
     coverage.hit(format!("fault.profile.{}", profile.key()));
     let mut executed_operations = 0_usize;
     let mut last_generation = 0_u64;
@@ -2024,6 +2032,7 @@ fn run_program_for_with_clock(
                             event.fire_count
                         ));
                     }
+                    receipt_records.push(receipt.json_line());
                     coverage.hit(receipt.fault.coverage_key());
                 }
                 Ok(None)
@@ -2202,6 +2211,7 @@ fn run_program_for_with_clock(
                                         ) {
                                             event.fire_count = event.fire_count.saturating_add(receipt.cardinality);
                                             event.fired = event.fire_count == 1;
+                                            receipt_records.push(receipt.json_line());
                                             coverage.hit(receipt.fault.coverage_key());
                                         }
                                     }
@@ -2291,6 +2301,21 @@ fn run_program_for_with_clock(
     let faults_bytes = artifacts.write_fault_plan(&faults, &fault_plan.feature)?;
     let violations_bytes = artifacts.write_violations_for(campaign, &violations)?;
     let oracle_bytes = artifacts.write_oracle(&oracle_records)?;
+    let controls_bytes = if campaign == CampaignKind::Overall {
+        Vec::new()
+    } else {
+        artifacts.write_controls(&control_records)?
+    };
+    let receipts_bytes = if campaign == CampaignKind::Overall {
+        Vec::new()
+    } else {
+        artifacts.write_receipts(&receipt_records)?
+    };
+    let mutations_bytes = if campaign == CampaignKind::Overall {
+        Vec::new()
+    } else {
+        artifacts.write_mutations(&mutation_records)?
+    };
     let mut outcome = RunOutcome {
         campaign,
         seed,
@@ -2332,8 +2357,50 @@ fn run_program_for_with_clock(
         violations_bytes,
         coverage_bytes: Vec::new(),
         oracle_bytes,
+        controls_bytes,
+        receipts_bytes,
+        mutations_bytes,
     };
     outcome.coverage_bytes = artifacts.write_coverage(&outcome.coverage)?;
+    if campaign != CampaignKind::Overall {
+        let mut comparison_counts = BTreeMap::<String, u64>::new();
+        for record in &oracle_records {
+            let count = comparison_counts
+                .entry(format!("I{}", record.invariant))
+                .or_default();
+            *count = count.saturating_add(1);
+        }
+        let mut evidence_digests = BTreeMap::<String, String>::new();
+        evidence_digests.insert(
+            "operation_evidence".to_owned(),
+            super::artifacts::evidence_digest(&[&outcome.program_bytes, &outcome.controls_bytes]),
+        );
+        evidence_digests.insert(
+            "checker_evidence".to_owned(),
+            super::artifacts::evidence_digest(&[&outcome.oracle_bytes]),
+        );
+        evidence_digests.insert(
+            "fault_evidence".to_owned(),
+            super::artifacts::evidence_digest(&[
+                &outcome.faults_bytes,
+                &outcome.receipts_bytes,
+                &outcome.mutations_bytes,
+            ]),
+        );
+        let attestation = super::artifacts::EpisodeAttestation {
+            comparison_counts,
+            same_seed_clean_controls: control_records.len() as u64,
+            integrated_feature_fault_receipts: receipt_records.len() as u64,
+            evidence_digests,
+        };
+        let _ = artifacts.write_episode_metadata(
+            campaign,
+            seed,
+            profile,
+            &reproduction,
+            Some(&attestation),
+        )?;
+    }
     Ok(outcome)
 }
 
