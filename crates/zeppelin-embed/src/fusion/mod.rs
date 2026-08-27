@@ -3,7 +3,8 @@
 //!
 //! Store-owned hybrid pins both legs to one generation and delegates score
 //! validation, normalization, alpha policy, RRF fallback, termination, and
-//! [`FusionReport`] construction here. A hybrid query with no explicit store
+//! [`FusionReport`](crate::fusion::FusionReport) construction here. A hybrid
+//! query with no explicit store
 //! tier uses exact vector scores; explicit tiers retain their selected score
 //! provenance, including typed refusal of estimated scores.
 //!
