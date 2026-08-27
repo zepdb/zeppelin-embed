@@ -333,3 +333,95 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
     }
     previous.last().copied().unwrap_or(u32::MAX)
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn field() -> FieldId {
+        FieldId(7)
+    }
+
+    #[test]
+    fn structured_query_validation_and_expansion_are_exhaustive() {
+        let vocabulary = vocabulary(
+            [
+                b"cat".as_slice(),
+                b"cats",
+                b"cut",
+                b"dog",
+                b"nite",
+                b"night",
+            ]
+            .into_iter(),
+        );
+        let term = LexicalQuery::term(TermQuery::flat(vec![b"cat".to_vec()], &[field()]));
+        assert_eq!(term.fields(), FieldWeights::flat(&[field()]));
+        assert!(term.phrase_constraint().is_none());
+        assert_eq!(expand(&term, &vocabulary).expect("term expansion").len(), 1);
+
+        let phrase = LexicalQuery::phrase(vec![b"cat".to_vec(), b"dog".to_vec()], 1, field());
+        assert_eq!(
+            phrase.phrase_constraint(),
+            Some((&[b"cat".to_vec(), b"dog".to_vec()][..], 1))
+        );
+        assert_eq!(
+            expand(&phrase, &vocabulary)
+                .expect("phrase expansion")
+                .len(),
+            2
+        );
+        assert_eq!(
+            expand(&LexicalQuery::prefix(b"ca".to_vec(), field()), &vocabulary)
+                .expect("prefix expansion")
+                .len(),
+            2
+        );
+        let fuzzy = expand(
+            &LexicalQuery::fuzzy(b"cat".to_vec(), 1, field()),
+            &vocabulary,
+        )
+        .expect("fuzzy expansion");
+        assert!(fuzzy.iter().any(|entry| entry.boost_thousandths == 1_000));
+        assert!(fuzzy.iter().any(|entry| entry.boost_thousandths == 500));
+        assert!(
+            !expand(
+                &LexicalQuery::phonetic(b"night".to_vec(), field()),
+                &vocabulary,
+            )
+            .expect("phonetic expansion")
+            .is_empty()
+        );
+
+        for query in [
+            LexicalQuery::term(TermQuery::flat(Vec::new(), &[field()])),
+            LexicalQuery::phrase(vec![Vec::new()], 0, field()),
+            LexicalQuery::prefix(Vec::new(), field()),
+            LexicalQuery::fuzzy(Vec::new(), 1, field()),
+        ] {
+            assert_eq!(expand(&query, &vocabulary), Err(LexicalQueryError::Empty));
+        }
+        let distance = expand(
+            &LexicalQuery::fuzzy(b"cat".to_vec(), 3, field()),
+            &vocabulary,
+        )
+        .expect_err("distance ceiling");
+        assert!(distance.to_string().contains("exceeds maximum"));
+        let invalid = expand(&LexicalQuery::phonetic(vec![0xff], field()), &vocabulary)
+            .expect_err("invalid phonetic UTF-8");
+        assert_eq!(invalid, LexicalQueryError::InvalidPhoneticUtf8);
+        assert_eq!(invalid.to_string(), "phonetic query must be UTF-8");
+        let empty_code = expand(
+            &LexicalQuery::phonetic(b"123".to_vec(), field()),
+            &vocabulary,
+        )
+        .expect_err("empty phonetic code");
+        assert_eq!(empty_code, LexicalQueryError::EmptyPhoneticCode);
+        assert_eq!(
+            LexicalQueryError::Empty.to_string(),
+            "structured lexical query must not be empty"
+        );
+        assert_eq!(wagner_fischer(b"kitten", b"sitting"), 3);
+    }
+}

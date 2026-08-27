@@ -233,4 +233,34 @@ mod tests {
         });
         assert_eq!(start.code, ZeErrorCode::ZeErrInternal);
     }
+
+    #[test]
+    fn every_store_error_kind_has_its_frozen_abi_code() {
+        use StoreErrorKind as Kind;
+
+        let cases = [
+            (Kind::Io, ZeErrorCode::ZeErrIo),
+            (Kind::InvalidArgument, ZeErrorCode::ZeErrInvalidArgument),
+            (Kind::StoreBusy, ZeErrorCode::ZeErrStoreBusy),
+            (Kind::Unsupported, ZeErrorCode::ZeErrUnsupported),
+            (Kind::Corrupt, ZeErrorCode::ZeErrCorrupt),
+            (Kind::BudgetExceeded, ZeErrorCode::ZeErrBudgetExceeded),
+            (Kind::OutOfMemory, ZeErrorCode::ZeErrOutOfMemory),
+            (Kind::DimensionMismatch, ZeErrorCode::ZeErrDimensionMismatch),
+            (Kind::EpochMismatch, ZeErrorCode::ZeErrEpochMismatch),
+            (Kind::EpochUndeclared, ZeErrorCode::ZeErrEpochUndeclared),
+            (Kind::EpochUnstamped, ZeErrorCode::ZeErrEpochUnstamped),
+            (Kind::Internal, ZeErrorCode::ZeErrInternal),
+            (Kind::EmptyBatch, ZeErrorCode::ZeErrEmptyBatch),
+            (Kind::Cancelled, ZeErrorCode::ZeErrCancelled),
+            (Kind::ReadOnly, ZeErrorCode::ZeErrAccessMode),
+            (Kind::Closing, ZeErrorCode::ZeErrClosing),
+            (Kind::Closed, ZeErrorCode::ZeErrClosed),
+            (Kind::Panic, ZeErrorCode::ZeErrPanic),
+            (Kind::Synchronization, ZeErrorCode::ZeErrSynchronization),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(FfiError::store_kind_code(kind), expected);
+        }
+    }
 }

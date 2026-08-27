@@ -212,6 +212,62 @@ fn successful_checkpoint_scope_revalidation_clears_a_removed_fault() {
 }
 
 #[test]
+fn self_check_validates_a_good_checkpoint_and_attributes_independent_artifact_damage() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(301), Revision::new(1)),
+            vec![3.0, 1.0],
+        )]))
+        .expect("ingest artifact fixture");
+    store.seal().expect("seal artifact fixture");
+
+    let snapshot = store.snapshot().expect("pin artifact snapshot");
+    let segment_id = snapshot
+        .segments()
+        .first()
+        .expect("sealed segment")
+        .meta()
+        .id;
+    drop(snapshot);
+
+    let checkpoint_name = ".tier-valid.graph.checkpoint";
+    let mut checkpoint = b"ZEVAMCP1".to_vec();
+    let checksum = xxhash_rust::xxh3::xxh3_64(&checkpoint);
+    checkpoint.extend_from_slice(&checksum.to_le_bytes());
+    std::fs::write(directory.path().join(checkpoint_name), checkpoint)
+        .expect("write valid checkpoint");
+    assert_eq!(
+        store.self_check(0, 0x69).health_status,
+        HealthStatus::Healthy
+    );
+
+    flip_byte(&directory.path().join("wal.ze"), 0);
+    flip_byte(&directory.path().join("manifest.ze"), 0);
+    std::fs::remove_file(directory.path().join(segment_id.file_name()))
+        .expect("remove reachable segment");
+    let report = store.self_check(0, 0x6a);
+    assert_eq!(report.health_status, HealthStatus::Unhealthy);
+    let faults = store
+        .health()
+        .expect("damaged artifact health")
+        .unresolved_faults;
+    assert!(faults.keys().any(|key| key.artifact == ArtifactRef::Wal));
+    assert!(
+        faults
+            .keys()
+            .any(|key| key.artifact == ArtifactRef::Manifest)
+    );
+    assert!(
+        faults
+            .keys()
+            .any(|key| { key.artifact == (ArtifactRef::Segment { id: segment_id }) })
+    );
+    store.close().expect("close damaged store");
+}
+
+#[test]
 fn retained_through_reflects_an_executed_retention_run_and_last_maintenance_matches() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");

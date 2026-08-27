@@ -287,3 +287,91 @@ pub(crate) fn take_result<T: 'static>(pointer: *mut T, length: usize) -> Result<
     unsafe { drop(Box::from_raw(slice)) };
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_registry_rejects_stale_tokens_and_reuses_the_slot() {
+        let first = insert_cancel(CancelToken::new()).expect("insert cancel token");
+        let token = lookup_cancel(first).expect("lookup cancel token");
+        token.cancel();
+        lookup_cancel(first).expect("lookup cancelled token");
+        free_cancel(first).expect("free cancel token");
+        assert_eq!(
+            lookup_cancel(first).expect_err("stale lookup").code,
+            ZeErrorCode::ZeErrClosed
+        );
+        assert_eq!(
+            free_cancel(first).expect_err("double free").code,
+            ZeErrorCode::ZeErrClosed
+        );
+        let second = insert_cancel(CancelToken::new()).expect("reuse cancel slot");
+        assert_ne!(second, first);
+        free_cancel(second).expect("free reused token");
+        assert_eq!(
+            lookup_cancel(encode(99, 1).expect("unknown cancel slot"))
+                .expect_err("unknown cancel slot")
+                .code,
+            ZeErrorCode::ZeErrInvalidHandle
+        );
+        assert_eq!(
+            free_cancel(encode(99, 1).expect("unknown free slot"))
+                .expect_err("unknown free slot")
+                .code,
+            ZeErrorCode::ZeErrInvalidHandle
+        );
+    }
+
+    #[test]
+    fn result_registry_preserves_a_valid_allocation_after_hostile_frees() {
+        register_result(std::ptr::null_mut::<u32>(), 0).expect("empty registration");
+        take_result(std::ptr::null_mut::<u32>(), 0).expect("empty free");
+        assert_eq!(
+            take_result(std::ptr::null_mut::<u32>(), 1)
+                .expect_err("null nonempty")
+                .code,
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+
+        let values = vec![3_u32, 5, 8].into_boxed_slice();
+        let length = values.len();
+        let pointer = Box::into_raw(values).cast::<u32>();
+        register_result(pointer, length).expect("register result");
+        assert_eq!(
+            take_result(pointer, length - 1)
+                .expect_err("wrong length")
+                .code,
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        assert_eq!(
+            take_result(pointer.cast::<u8>(), length)
+                .expect_err("wrong type")
+                .code,
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        take_result(pointer, length).expect("correct free");
+        assert_eq!(
+            take_result(pointer, length).expect_err("double free").code,
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+    }
+
+    #[test]
+    fn global_last_error_round_trips_without_a_handle() {
+        set_error(None, "global failure".to_owned());
+        assert_eq!(last_error(0).expect("global last error"), "global failure");
+        poison(None, "global panic".to_owned());
+        assert_eq!(last_error(0).expect("global panic error"), "global panic");
+        poison(
+            Some(encode(99, 1).expect("unknown poison slot")),
+            "unknown handle panic".to_owned(),
+        );
+        assert_eq!(
+            last_error(0).expect("unknown handle panic"),
+            "unknown handle panic"
+        );
+    }
+}

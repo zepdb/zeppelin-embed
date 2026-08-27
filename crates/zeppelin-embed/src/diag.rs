@@ -1250,4 +1250,33 @@ mod tests {
         assert!(report.recall < 1.0);
         store.close().expect("close store");
     }
+
+    #[test]
+    fn health_status_distinguishes_empty_degraded_and_unhealthy_ledgers() {
+        let mut faults = std::collections::BTreeMap::new();
+        assert_eq!(super::health_status(&faults), super::HealthStatus::Healthy);
+
+        let degraded = super::HealthFault {
+            key: super::HealthFaultKey {
+                kind: super::HealthFaultKind::Query,
+                artifact: super::ArtifactRef::Active,
+            },
+            detail: "semantic sample mismatch".to_owned(),
+        };
+        faults.insert(degraded.key.clone(), degraded);
+        assert_eq!(super::health_status(&faults), super::HealthStatus::Degraded);
+
+        let unhealthy = super::HealthFault {
+            key: super::HealthFaultKey {
+                kind: super::HealthFaultKind::Format,
+                artifact: super::ArtifactRef::Wal,
+            },
+            detail: "damaged WAL".to_owned(),
+        };
+        faults.insert(unhealthy.key.clone(), unhealthy);
+        assert_eq!(
+            super::health_status(&faults),
+            super::HealthStatus::Unhealthy
+        );
+    }
 }

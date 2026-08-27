@@ -250,6 +250,101 @@ impl<S, P> SlotTable<S, P> {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn error_code<T>(result: Result<T, FfiError>) -> ZeErrorCode {
+        match result {
+            Ok(_) => unreachable!("operation unexpectedly succeeded"),
+            Err(error) => error.code,
+        }
+    }
+
+    #[test]
+    fn handle_encoding_rejects_reserved_and_exhausted_values() {
+        assert_eq!(
+            decode(0).expect_err("zero handle").code,
+            ZeErrorCode::ZeErrInvalidHandle
+        );
+        assert_eq!(
+            decode(7).expect_err("zero generation").code,
+            ZeErrorCode::ZeErrInvalidHandle
+        );
+        assert_eq!(
+            decode(encode(9, 3).expect("encode")).expect("decode"),
+            (9, 3)
+        );
+        assert_eq!(
+            encode(usize::MAX, 1).expect_err("slot overflow").code,
+            ZeErrorCode::ZeErrOutOfMemory
+        );
+        let mut generation = u32::MAX;
+        bump_generation(&mut generation);
+        assert_eq!(generation, 0);
+    }
+
+    #[test]
+    fn slot_table_exercises_close_poison_error_and_reuse_states() {
+        let mut table = SlotTable::<u32, u64>::new();
+        let first = table.insert(7, None).expect("insert first slot");
+        let access = table.lookup(first).expect("lookup first slot");
+        assert_eq!(*access.store, 7);
+        assert!(access.epoch.is_none());
+        assert!(access.purge_tokens.lock().expect("tokens").is_empty());
+        drop(access);
+
+        assert_eq!(
+            error_code(table.lookup(encode(99, 1).expect("unknown slot"))),
+            ZeErrorCode::ZeErrInvalidHandle
+        );
+        assert!(table.set_error(first, "first error".to_owned()).is_none());
+        assert_eq!(table.last_error(first).expect("last error"), "first error");
+        assert_eq!(
+            table.set_error(0, "global".to_owned()),
+            Some("global".to_owned())
+        );
+        assert_eq!(
+            table.poison(0, "global panic".to_owned()),
+            Some("global panic".to_owned())
+        );
+        assert!(table.poison(first, "panic".to_owned()).is_none());
+        assert_eq!(error_code(table.lookup(first)), ZeErrorCode::ZeErrPoisoned);
+        assert!(matches!(
+            table.begin_close(first).expect("release poisoned slot"),
+            CloseAccess::Poisoned
+        ));
+        assert_eq!(error_code(table.lookup(first)), ZeErrorCode::ZeErrClosed);
+
+        let second = table.insert(11, None).expect("reuse slot");
+        assert_ne!(second, first);
+        assert_eq!(*table.lookup(second).expect("lookup reused slot").store, 11);
+        assert!(matches!(
+            table.begin_close(second).expect("begin close"),
+            CloseAccess::Store(_)
+        ));
+        assert_eq!(error_code(table.lookup(second)), ZeErrorCode::ZeErrClosing);
+        assert_eq!(
+            error_code(table.begin_close(second)),
+            ZeErrorCode::ZeErrClosing
+        );
+        table.finish_close(second).expect("finish close");
+        assert_eq!(
+            table.finish_close(second).expect_err("stale finish").code,
+            ZeErrorCode::ZeErrClosed
+        );
+        assert_eq!(
+            table.last_error(second).expect_err("stale error").code,
+            ZeErrorCode::ZeErrClosed
+        );
+        assert_eq!(
+            table.poison(second, "stale".to_owned()),
+            Some("stale".to_owned())
+        );
+    }
+}
+
 #[cfg(all(test, loom))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod loom_model {
