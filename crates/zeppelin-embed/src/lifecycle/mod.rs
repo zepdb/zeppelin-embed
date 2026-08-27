@@ -74,6 +74,16 @@ pub enum HybridLegTestFault {
     Panic(crate::fusion::FusionLeg),
 }
 
+#[allow(clippy::panic)]
+fn maybe_trigger_hybrid_leg_panic(armed: bool, detail: &'static str) {
+    #[cfg(any(test, feature = "test-support"))]
+    if armed {
+        std::panic::panic_any(detail);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = (armed, detail);
+}
+
 /// Facts emitted by one Store-owned parallel hybrid execution.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1709,9 +1719,10 @@ impl Store {
                 .spawn_scoped(scope, || {
                     let name = std::thread::current().name().map(str::to_owned);
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if panic_lexical {
-                            std::panic::panic_any("injected lexical hybrid leg panic");
-                        }
+                        maybe_trigger_hybrid_leg_panic(
+                            panic_lexical,
+                            "injected lexical hybrid leg panic",
+                        );
                         let lease = SnapshotLease::new_at(
                             Arc::clone(&admitted.snapshot),
                             admitted.generation,
@@ -1738,12 +1749,10 @@ impl Store {
                             ),
                         }
                     }))
-                    .unwrap_or_else(|_| {
-                        Err(crate::fusion::FusionError::LegPanic {
-                            leg: crate::fusion::FusionLeg::Lexical,
-                            detail: "lexical hybrid leg panicked",
-                        })
-                    });
+                    .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
+                        leg: crate::fusion::FusionLeg::Lexical,
+                        detail: "lexical hybrid leg panicked",
+                    }));
                     (name, result)
                 })
                 .map_err(|error| crate::fusion::FusionError::LegThreadStart {
@@ -1751,9 +1760,7 @@ impl Store {
                     detail: error.to_string(),
                 })?;
             let vector_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if panic_vector {
-                    std::panic::panic_any("injected vector hybrid leg panic");
-                }
+                maybe_trigger_hybrid_leg_panic(panic_vector, "injected vector hybrid leg panic");
                 search_pinned(
                     admitted.pool.as_deref(),
                     &admitted.snapshot,
@@ -1770,12 +1777,10 @@ impl Store {
                 )
                 .map_err(crate::fusion::FusionError::from)
             }))
-            .unwrap_or_else(|_| {
-                Err(crate::fusion::FusionError::LegPanic {
-                    leg: crate::fusion::FusionLeg::Vector,
-                    detail: "vector hybrid leg panicked",
-                })
-            });
+            .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
+                leg: crate::fusion::FusionLeg::Vector,
+                detail: "vector hybrid leg panicked",
+            }));
             let (lexical_thread_name, lexical_result) =
                 lexical_thread.join().unwrap_or_else(|_| {
                     (

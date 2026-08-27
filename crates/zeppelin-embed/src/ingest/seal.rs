@@ -10,8 +10,8 @@ use crate::manifest::Manifest;
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
-    SegmentStoredText, write_segment_with_documents_payloads,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPayloads, SegmentPostings,
+    SegmentStoredMetadata, SegmentStoredText, write_segment_with_documents_payloads,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId};
 use crate::vfs::Vfs;
@@ -140,10 +140,12 @@ impl Store {
             vfs,
             &self.directory,
             build,
-            documents,
-            metadata,
-            text,
-            postings.as_deref().map(|bytes| SegmentPostings { bytes }),
+            SegmentPayloads {
+                documents,
+                metadata,
+                text,
+                postings: postings.as_deref().map(|bytes| SegmentPostings { bytes }),
+            },
             self.durability_policy,
         );
         let mut meta = match written {

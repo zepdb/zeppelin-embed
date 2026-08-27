@@ -317,9 +317,16 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
         let mut current = Vec::with_capacity(right.len() + 1);
         current.push(u32::try_from(row + 1).unwrap_or(u32::MAX));
         for (column, right_byte) in right.iter().enumerate() {
-            let deletion = previous[column + 1].saturating_add(1);
-            let insertion = current[column].saturating_add(1);
-            let substitution = previous[column].saturating_add(u32::from(left_byte != right_byte));
+            let (Some(up), Some(left), Some(diagonal)) = (
+                previous.get(column + 1).copied(),
+                current.get(column).copied(),
+                previous.get(column).copied(),
+            ) else {
+                return u32::MAX;
+            };
+            let deletion = up.saturating_add(1);
+            let insertion = left.saturating_add(1);
+            let substitution = diagonal.saturating_add(u32::from(left_byte != right_byte));
             current.push(deletion.min(insertion).min(substitution));
         }
         previous = current;

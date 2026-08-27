@@ -83,6 +83,15 @@ pub struct SegmentStoredText<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Optional immutable payload regions aligned to document rows.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentPayloads<'a> {
+    pub(crate) documents: SegmentDocumentVersions<'a>,
+    pub(crate) metadata: Option<SegmentStoredMetadata<'a>>,
+    pub(crate) text: Option<SegmentStoredText<'a>>,
+    pub(crate) postings: Option<SegmentPostings<'a>>,
+}
+
 /// One complete encoded lexical segment for the Postings region.
 #[derive(Clone, Copy, Debug)]
 pub struct SegmentPostings<'a> {
@@ -849,13 +858,18 @@ pub(crate) fn write_segment_with_documents_payloads(
     vfs: &dyn Vfs,
     directory: &Path,
     build: SegmentBuild<'_>,
-    documents: SegmentDocumentVersions<'_>,
-    metadata: Option<SegmentStoredMetadata<'_>>,
-    text: Option<SegmentStoredText<'_>>,
-    postings: Option<SegmentPostings<'_>>,
+    payloads: SegmentPayloads<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), metadata, text, postings, &[])?;
+    let bytes = encode_segment_inner(
+        build,
+        None,
+        Some(payloads.documents),
+        payloads.metadata,
+        payloads.text,
+        payloads.postings,
+        &[],
+    )?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 

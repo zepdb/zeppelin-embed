@@ -1238,7 +1238,7 @@ impl SegmentReader {
         let bytes = region
             .get(offsets_end..)
             .ok_or_else(|| SegmentError::Geometry("stored-text payload is truncated".to_owned()))?;
-        if row_count % 8 != 0 {
+        if !row_count.is_multiple_of(8) {
             let used = row_count % 8;
             let padding_mask = !((1_u8 << used) - 1);
             if present.last().is_some_and(|byte| byte & padding_mask != 0) {

@@ -971,8 +971,10 @@ impl crate::lifecycle::Store {
                                         bytes.get(start..).and_then(|checksum| {
                                             checksum.try_into().ok().map(u64::from_le_bytes).map(
                                                 |expected| {
-                                                    xxhash_rust::xxh3::xxh3_64(&bytes[..start])
-                                                        == expected
+                                                    bytes.get(..start).is_some_and(|payload| {
+                                                        xxhash_rust::xxh3::xxh3_64(payload)
+                                                            == expected
+                                                    })
                                                 },
                                             )
                                         })

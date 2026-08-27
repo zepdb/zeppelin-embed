@@ -1988,12 +1988,14 @@ fn run_program_for_with_clock(
                 &mut engine,
                 &model,
                 *operation,
-                &selected_feature_faults,
-                seed,
-                profile,
-                op_index,
-                &mut oracle_records,
-                &mut coverage,
+                CampaignOperationContext {
+                    selected_faults: &selected_feature_faults,
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records: &mut oracle_records,
+                    coverage: &mut coverage,
+                },
             )
             .and_then(|receipts| {
                 for receipt in receipts {
@@ -2369,17 +2371,29 @@ fn record_campaign_invariant_checks(
     }
 }
 
+struct CampaignOperationContext<'a> {
+    selected_faults: &'a [super::campaign::FeatureFault],
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &'a mut Vec<OracleRecord>,
+    coverage: &'a mut CoverageRegistry,
+}
+
 fn run_campaign_operation(
     engine: &mut impl Engine,
     model: &Model,
     operation: super::campaign::FeatureOperation,
-    selected_faults: &[super::campaign::FeatureFault],
-    seed: u64,
-    profile: FaultProfile,
-    op_index: usize,
-    _oracle_records: &mut Vec<OracleRecord>,
-    coverage: &mut CoverageRegistry,
+    context: CampaignOperationContext<'_>,
 ) -> Result<Vec<super::campaign::FeatureFaultReceipt>, String> {
+    let CampaignOperationContext {
+        selected_faults,
+        seed,
+        profile,
+        op_index,
+        oracle_records: _oracle_records,
+        coverage,
+    } = context;
     let typed_operation = operation;
     let campaign = typed_operation.campaign();
     let operation = typed_operation.key();

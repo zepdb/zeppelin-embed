@@ -20,8 +20,8 @@ use crate::quant::Bit4Factors;
 use crate::segment::layout::Int8Factors;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
-    SegmentStoredText, write_segment_with_documents_payloads,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPayloads, SegmentPostings,
+    SegmentStoredMetadata, SegmentStoredText, write_segment_with_documents_payloads,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
@@ -1144,7 +1144,16 @@ fn rewrite_segment(
     });
     let postings = postings.as_deref().map(|bytes| SegmentPostings { bytes });
     let written = write_segment_with_documents_payloads(
-        vfs, directory, build, documents, metadata, text, postings, policy,
+        vfs,
+        directory,
+        build,
+        SegmentPayloads {
+            documents,
+            metadata,
+            text,
+            postings,
+        },
+        policy,
     )
     .map_err(StoreError::Segment)?;
     let mut written = written;
