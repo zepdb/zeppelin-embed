@@ -8,7 +8,7 @@
 
 mod adversarial;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -300,7 +300,7 @@ fn isolated_vfs_probes_cannot_issue_feature_fault_receipts() {
 }
 
 #[test]
-fn selected_feature_fault_without_a_production_injector_fails_loudly() {
+fn selected_feature_fault_fires_once_at_its_declared_operation() {
     let campaign = CampaignKind::StorageDurability;
     let seed = (0..12)
         .find(|seed| {
@@ -315,23 +315,51 @@ fn selected_feature_fault_without_a_production_injector_fails_loudly() {
         adversarial::runner::run_program_for(campaign, seed, FaultProfile::None, artifacts.path())
             .expect("the episode retains its failure evidence");
     assert_eq!(outcome.feature_faults_scheduled, 1);
-    assert_eq!(outcome.feature_faults_fired, 0);
-    assert_eq!(outcome.missing_feature_faults.len(), 1);
-    assert!(outcome.violations.iter().any(|violation| {
-        violation
-            .detail
-            .contains("has no production-operation injector")
-            && violation.detail.contains("refusing isolated probe credit")
-    }));
-    let violations = String::from_utf8(outcome.violations_bytes).expect("violation JSON is UTF-8");
-    assert!(
-        violations.contains("ZE_ADV_CAMPAIGN=storage-durability"),
-        "feature replay command lost its campaign namespace: {violations}"
-    );
+    assert_eq!(outcome.feature_faults_fired, 1);
+    assert!(outcome.missing_feature_faults.is_empty());
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
 }
 
 #[test]
-fn clean_feature_episode_refuses_placeholder_checker_credit() {
+fn every_feature_fault_can_fire_once_at_its_declared_operation() {
+    for campaign in CampaignKind::FEATURES {
+        let mut fired = BTreeSet::new();
+        for seed in 0..12 {
+            let program = Program::generate_for(campaign, seed);
+            let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+            if plan.feature.is_empty() {
+                continue;
+            }
+            let artifacts = tempfile::tempdir().expect("feature fault artifacts");
+            let outcome = adversarial::runner::run_program_for(
+                campaign,
+                seed,
+                FaultProfile::None,
+                artifacts.path(),
+            )
+            .expect("feature fault episode");
+            assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+            assert_eq!(
+                outcome.feature_faults_scheduled, outcome.feature_faults_fired,
+                "{campaign} seed {seed} did not fire its selected fault",
+            );
+            assert!(outcome.missing_feature_faults.is_empty());
+            fired.extend(plan.feature.into_iter().map(|event| event.fault.key()));
+        }
+        assert_eq!(
+            fired,
+            CampaignSpec::for_kind(campaign)
+                .feature_faults
+                .iter()
+                .map(|fault| fault.key())
+                .collect(),
+            "{campaign} did not CAN-FIRE its full vocabulary",
+        );
+    }
+}
+
+#[test]
+fn clean_feature_episode_executes_every_bound_checker() {
     let campaign = CampaignKind::StorageDurability;
     let seed = (0..12)
         .find(|seed| {
@@ -350,19 +378,22 @@ fn clean_feature_episode_refuses_placeholder_checker_credit() {
     assert_eq!(outcome.feature_faults_scheduled, 0);
     assert_eq!(outcome.feature_faults_fired, 0);
     assert!(outcome.missing_feature_faults.is_empty());
-    assert!(outcome.oracle_bytes.is_empty());
-    assert!(outcome.violations.iter().any(|violation| {
-        violation
-            .detail
-            .contains("independent oracle I15.publication-atomicity is not implemented")
-            && violation.detail.contains("refusing invariant I15 credit")
-    }));
-    for invariant in CampaignSpec::for_kind(campaign).owned_invariants {
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    let oracle = String::from_utf8(outcome.oracle_bytes).expect("oracle JSON is UTF-8");
+    for binding in CampaignSpec::for_kind(campaign).invariant_specs {
         assert!(
-            outcome.coverage.count(&invariant.checked_coverage_key()) == 0,
-            "{} received placeholder checker credit",
-            invariant.key()
+            oracle.contains(&format!("\"checker_id\":\"{}\"", binding.checker_id)),
+            "{} did not emit its exact checker record: {oracle}",
+            binding.checker_id,
         );
+        assert!(
+            oracle.contains(&format!("\"invariant\":\"{}\"", binding.invariant.key())),
+            "{} did not name its invariant: {oracle}",
+            binding.checker_id,
+        );
+    }
+    for invariant in CampaignSpec::for_kind(campaign).owned_invariants {
+        assert!(outcome.coverage.count(&invariant.checked_coverage_key()) > 0);
     }
 }
 

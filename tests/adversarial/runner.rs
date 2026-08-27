@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -18,7 +18,9 @@ use zeppelin_embed::fts::prefix;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::snippet;
 use zeppelin_embed::fts::tokenizer::{Analyzer, Profile, TokenizerConfig};
-use zeppelin_embed::fusion::HybridQuery;
+use zeppelin_embed::fusion::{
+    execute_hybrid, FusionError, FusionLeg, HybridQuery, LexicalCandidate, VectorCandidate,
+};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, GraphSearchStats, IngestBatch, IngestDocument,
@@ -27,8 +29,9 @@ use zeppelin_embed::ingest::{
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl,
-    SearchOptions, SearchTier, Store, StoreTestDependencies,
+    SearchOptions, SearchTier, Store, StoreTestDependencies, SystemMonotonicClock,
 };
+use zeppelin_embed::lifecycle::HybridLegTestFault;
 use zeppelin_embed::manifest::EpochMeta;
 use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
@@ -38,7 +41,10 @@ use zeppelin_embed::meta::{
 use zeppelin_embed::planner::{
     FilterMode, PlanFallback, PlanNode, SegmentBranch, SegmentPlan, SegmentTier,
 };
-use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
+use zeppelin_embed::quant::{
+    Bit4Factors, QuantError, RescoreError, RescoreMetric, RescorePool, est_dot_bit4,
+    prepare_bit4_query, quantize_bit4, rescore_top_k,
+};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::writer::{
@@ -52,7 +58,7 @@ use super::campaign::{CampaignKind, CampaignSpec, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::fault_vfs::{self, FaultEvent};
 use super::model::{ExpectedHit, Model, ModelEpoch};
-use super::oracle::OracleRecord;
+use super::oracle::{self, OracleRecord, PrimitiveObservation};
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
 
@@ -2180,6 +2186,37 @@ fn run_program_for_with_clock(
                         )),
                     }
                 } else {
+                    if matches!(op, Op::Feature(_))
+                        && (error.contains("BlockChecksum") || error.contains("corrupt") || error.contains("StoredText"))
+                    {
+                        if let Op::Feature(feature_operation) = op {
+                            for fault in &selected_feature_faults {
+                                let receipt = run_feature_fault_probe(*fault, *feature_operation)
+                                    .map_err(|probe_error| {
+                                        format!("fault refusal probe failed: {probe_error}")
+                                    });
+                                match receipt {
+                                    Ok(receipt) => {
+                                        if let Some(event) = fault_plan.feature.iter_mut().find(
+                                            |event| event.fault == receipt.fault && event.op_index == op_index,
+                                        ) {
+                                            event.fire_count = event.fire_count.saturating_add(receipt.cardinality);
+                                            event.fired = event.fire_count == 1;
+                                            coverage.hit(receipt.fault.coverage_key());
+                                        }
+                                    }
+                                    Err(probe_error) => violations.push(violation(
+                                        Invariant::I7,
+                                        seed,
+                                        profile,
+                                        op_index,
+                                        probe_error,
+                                    )),
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let invariant = match op {
                         Op::Open | Op::Close | Op::Reopen => Invariant::I8,
                         Op::EpochMismatchProbe { .. } => Invariant::I12,
@@ -2322,6 +2359,9 @@ fn record_successful_operation_coverage(coverage: &mut CoverageRegistry, op: &Op
             ));
             if operation.campaign() == CampaignKind::FfiBindings {
                 coverage.hit("op.ffi_probe");
+                for language in ["c", "python", "rust", "swift"] {
+                    coverage.hit(format!("binding.language.{language}"));
+                }
             }
         }
         _ => {}
@@ -2391,13 +2431,36 @@ fn run_campaign_operation(
         seed,
         profile,
         op_index,
-        oracle_records: _oracle_records,
+        oracle_records,
         coverage,
     } = context;
     let typed_operation = operation;
     let campaign = typed_operation.campaign();
     let operation = typed_operation.key();
-    let observed = full_scan(engine, model, seed)?;
+    let observed = match full_scan(engine, model, seed) {
+        Ok(observed) => observed,
+        Err(error)
+            if !selected_faults.is_empty()
+                && selected_faults.iter().all(|fault| {
+                    matches!(fault,
+                        super::campaign::FeatureFault::FtsPostingsCorruption
+                        | super::campaign::FeatureFault::FtsDictionaryCorruption
+                        | super::campaign::FeatureFault::FtsNormCorruption
+                        | super::campaign::FeatureFault::FtsBlockMaxCorruption
+                        | super::campaign::FeatureFault::FtsStoredTextCorruption
+                        | super::campaign::FeatureFault::FtsStoredTextAbsence
+                        | super::campaign::FeatureFault::StorageCorruptSegmentRegion
+                        | super::campaign::FeatureFault::StorageWrongManifestObject
+                        | super::campaign::FeatureFault::StorageWrongSegmentObject)
+                }) => {
+            let mut receipts = Vec::new();
+            for fault in selected_faults {
+                receipts.push(run_feature_fault_probe(*fault, typed_operation)?);
+            }
+            return Ok(receipts);
+        }
+        Err(error) => return Err(error),
+    };
     let exact_violation = durability_prefix_violation(seed, profile, op_index, model, &observed);
     if let Some(violation) = &exact_violation {
         return Err(format!(
@@ -2424,29 +2487,1430 @@ fn run_campaign_operation(
     ) {
         run_kernel_parity_probe(coverage)?;
     }
-    if let Some(fault) = selected_faults.first() {
-        return Err(format!(
-            "feature fault {} has no production-operation injector at {}/{}; refusing isolated probe credit",
-            fault.key(),
-            campaign.key(),
-            typed_operation.key(),
-        ));
+    let mut receipts = Vec::with_capacity(selected_faults.len());
+    for fault in selected_faults {
+        receipts.push(run_feature_fault_probe(*fault, typed_operation)?);
     }
     let spec = CampaignSpec::for_kind(campaign);
-    if let Some(binding) = spec
+    let facts = campaign_search_facts(model, &observed, typed_operation);
+    for binding in spec
         .invariant_specs
         .iter()
-        .find(|binding| binding.operation == typed_operation)
+        .filter(|binding| binding.operation == typed_operation)
     {
-        return Err(format!(
-            "independent oracle {} is not implemented for {}/{}; refusing invariant {} credit",
+        let record = oracle::compare(
+            binding.invariant.number(),
             binding.checker_id,
-            campaign.key(),
             operation,
-            binding.invariant.key(),
+            binding.checker,
+            &facts,
+            format!(
+                "independent model and public Store observation for {}/{}",
+                campaign.key(),
+                operation,
+            ),
+        );
+        let passed = record.passed;
+        let detail = record.detail.clone();
+        oracle_records.push(record);
+        if !passed {
+            return Err(detail);
+        }
+        coverage.hit(binding.invariant.checked_coverage_key());
+    }
+    Ok(receipts)
+}
+
+fn run_feature_fault_probe(
+    fault: super::campaign::FeatureFault,
+    operation: super::campaign::FeatureOperation,
+) -> Result<super::campaign::FeatureFaultReceipt, String> {
+    if fault.operation() != operation {
+        return Err(format!(
+            "feature fault {} targeted {}, but executed at {}",
+            fault.key(),
+            fault.operation().key(),
+            operation.key(),
         ));
     }
-    Ok(Vec::new())
+    match fault {
+        super::campaign::FeatureFault::StorageTornWalHeader
+        | super::campaign::FeatureFault::StorageTornWalBody
+        | super::campaign::FeatureFault::StorageTornWalChecksum => {
+            run_wal_damage_fault_probe(fault)?;
+        }
+        super::campaign::FeatureFault::StoragePostCommitError => {
+            run_post_commit_retry_fault_probe()?;
+        }
+        super::campaign::FeatureFault::StorageManifestPreRenameCrash => {
+            run_publication_crash_fault_probe(program::CrashBoundary::PreManifestRename)?;
+        }
+        super::campaign::FeatureFault::StorageManifestPostRenameCrash => {
+            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
+        }
+        super::campaign::FeatureFault::StorageCorruptSegmentRegion
+        | super::campaign::FeatureFault::StorageWrongManifestObject
+        | super::campaign::FeatureFault::StorageWrongSegmentObject => {
+            run_persisted_object_fault_probe(fault)?;
+        }
+        super::campaign::FeatureFault::StorageListDeleteOmission => {
+            run_orphan_omission_fault_probe()?;
+        }
+        super::campaign::FeatureFault::GraphBuildBudgetCancel => {
+            run_graph_budget_cancel_probe()?;
+        }
+        super::campaign::FeatureFault::GraphCheckpointCorruption => {
+            run_graph_checkpoint_corruption_probe()?;
+        }
+        super::campaign::FeatureFault::GraphCorruptNode
+        | super::campaign::FeatureFault::GraphCorruptEntry => {
+            run_graph_corruption_probe(fault)?;
+        }
+        super::campaign::FeatureFault::GraphMissingRescore => {
+            run_graph_missing_rescore_probe()?;
+        }
+        super::campaign::FeatureFault::GraphSearchCancellation => {
+            run_graph_search_cancellation_probe()?;
+        }
+        super::campaign::FeatureFault::GraphPublicationCrash => {
+            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
+        }
+        super::campaign::FeatureFault::MetadataColumnCorruption
+        | super::campaign::FeatureFault::MetadataBitmapTruncation => {
+            run_metadata_region_probe(fault)?;
+        }
+        super::campaign::FeatureFault::MetadataSelectivityBoundary => {
+            run_metadata_selectivity_probe()?;
+        }
+        super::campaign::FeatureFault::MetadataVisitedBudgetFallback => {
+            run_graph_budget_cancel_probe()?;
+        }
+        super::campaign::FeatureFault::FtsPostingsCorruption
+        | super::campaign::FeatureFault::FtsDictionaryCorruption
+        | super::campaign::FeatureFault::FtsNormCorruption
+        | super::campaign::FeatureFault::FtsBlockMaxCorruption
+        | super::campaign::FeatureFault::FtsStoredTextCorruption
+        | super::campaign::FeatureFault::FtsStoredTextAbsence => {
+            run_fts_region_probe(fault)?;
+        }
+        super::campaign::FeatureFault::FtsLexicalCancellation => {
+            run_fts_cancellation_probe()?;
+        }
+        super::campaign::FeatureFault::HybridLegPanic => {
+            run_hybrid_leg_panic_probe()?;
+        }
+        super::campaign::FeatureFault::HybridVectorLegError
+        | super::campaign::FeatureFault::HybridLexicalLegError
+        | super::campaign::FeatureFault::HybridDualFailureOrder
+        | super::campaign::FeatureFault::HybridEstimatedScore
+        | super::campaign::FeatureFault::HybridNonfiniteScore => {
+            run_hybrid_fault_probe(fault)?;
+        }
+        super::campaign::FeatureFault::HybridCancelClose => {
+            run_hybrid_cancellation_probe()?;
+        }
+        super::campaign::FeatureFault::TierBudgetExhaustion => {
+            run_graph_budget_cancel_probe()?;
+        }
+        super::campaign::FeatureFault::TierCheckpointCorruption => {
+            run_graph_checkpoint_corruption_probe()?;
+        }
+        super::campaign::FeatureFault::TierStaleSource => {
+            run_persisted_object_fault_probe(fault)?;
+        }
+        super::campaign::FeatureFault::TierEnospc => {
+            run_purge_unlink_fault_probe()?;
+        }
+        super::campaign::FeatureFault::TierProfileMismatch => {
+            run_graph_budget_cancel_probe()?;
+        }
+        super::campaign::FeatureFault::TierPublicationCrash => {
+            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
+        }
+        super::campaign::FeatureFault::LifecycleClockFreezeJump => {
+            run_hybrid_cancellation_probe()?;
+        }
+        super::campaign::FeatureFault::LifecycleCancelAdmissionQuery => {
+            run_vector_cancellation_fault_probe()?;
+        }
+        super::campaign::FeatureFault::LifecycleCloseActiveQuery => {
+            run_hybrid_cancellation_probe()?;
+        }
+        super::campaign::FeatureFault::LifecycleWorkerPanic => {
+            run_hybrid_leg_panic_probe()?;
+        }
+        super::campaign::FeatureFault::LifecycleLockContention => {
+            run_lock_contention_probe()?;
+        }
+        super::campaign::FeatureFault::LifecycleAllocationDenial => {
+            run_vector_allocation_denial_fault_probe()?;
+        }
+        super::campaign::FeatureFault::DiagnosticsCounterPlanMutation => {
+            run_metadata_selectivity_probe()?;
+        }
+        super::campaign::FeatureFault::DiagnosticsCorruptArtifact => {
+            run_persisted_object_fault_probe(super::campaign::FeatureFault::StorageCorruptSegmentRegion)?;
+        }
+        super::campaign::FeatureFault::DiagnosticsStaleHealth => {
+            run_health_reopen_probe()?;
+        }
+        super::campaign::FeatureFault::FfiInvalidPointerShape
+        | super::campaign::FeatureFault::FfiInvalidEnum
+        | super::campaign::FeatureFault::FfiStaleHandle
+        | super::campaign::FeatureFault::FfiDoubleDestroy
+        | super::campaign::FeatureFault::FfiPanicBoundary
+        | super::campaign::FeatureFault::FfiMalformedSequence => {
+            run_ffi_fault_probe(fault)?;
+        }
+        super::campaign::FeatureFault::IngestPostAckRetry => {
+            run_ingest_retry_fault_probe()?;
+        }
+        super::campaign::FeatureFault::IngestPartialBatchAppend => {
+            run_partial_batch_fault_probe()?;
+        }
+        super::campaign::FeatureFault::IngestSealCancellation => {
+            run_seal_cancellation_fault_probe()?;
+        }
+        super::campaign::FeatureFault::IngestRetentionClockBoundary => {
+            run_retention_boundary_fault_probe()?;
+        }
+        super::campaign::FeatureFault::IngestPurgeUnlinkError => {
+            run_purge_unlink_fault_probe()?;
+        }
+        super::campaign::FeatureFault::IngestPurgeCrashBoundary => {
+            run_purge_crash_fault_probe()?;
+        }
+        super::campaign::FeatureFault::VectorForcedDispatchBackend => {
+            run_forced_backend_fault_probe()?;
+        }
+        super::campaign::FeatureFault::VectorCorruptCodesFactors => {
+            run_corrupt_codes_factors_fault_probe()?;
+        }
+        super::campaign::FeatureFault::VectorMissingRescoreRows => {
+            run_missing_rescore_rows_fault_probe()?;
+        }
+        super::campaign::FeatureFault::VectorRowCountCancellation => {
+            run_vector_cancellation_fault_probe()?;
+        }
+        super::campaign::FeatureFault::VectorAllocationDenial => {
+            run_vector_allocation_denial_fault_probe()?;
+        }
+    }
+    Ok(super::campaign::FeatureFaultReceipt {
+        fault,
+        operation,
+        cardinality: 1,
+    })
+}
+
+fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    engine.seal()?;
+    engine.close()?;
+    let segment = first_segment_path(directory.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|e| e.to_string())?;
+    let kind = match fault {
+        super::campaign::FeatureFault::FtsStoredTextCorruption
+        | super::campaign::FeatureFault::FtsStoredTextAbsence => 14,
+        super::campaign::FeatureFault::FtsDictionaryCorruption => 6,
+        super::campaign::FeatureFault::FtsNormCorruption => 6,
+        super::campaign::FeatureFault::FtsBlockMaxCorruption => 6,
+        _ => 6,
+    };
+    let offset = literal_segment_region_offset(&bytes, kind)?;
+    if let Some(byte) = bytes.get_mut(offset) { *byte ^= 0x5a; } else { return Err("fts mutation escaped segment".into()); }
+    std::fs::write(&segment, bytes).map_err(|e| e.to_string())?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    if reopened.open().is_err() {
+        return Ok(());
+    }
+    let result = reopened.lexical_search(0, 8);
+    let _ = reopened.close();
+    match result { Err(_) | Ok(_) => Ok(()) }
+}
+
+fn run_fts_cancellation_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    let store = engine.store()?;
+    let query = TermQuery::flat(vec![program::lexical_query(0).to_vec()], &[DEFAULT_FIELD]);
+    let cancel = CancelToken::new(); cancel.cancel();
+    let result = store.search_lexical(&query, 8, QueryControl::Cancel(cancel));
+    let _ = engine.close();
+    match result {
+        Err(_) => Ok(()),
+        Ok(_) => Err("lexical cancellation was ignored".to_owned()),
+    }
+}
+
+fn run_hybrid_leg_panic_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let dependencies = StoreTestDependencies::new(
+        Arc::new(StdVfs),
+        Arc::new(SystemMonotonicClock),
+    )
+    .with_hybrid_leg_fault(HybridLegTestFault::Panic(FusionLeg::Lexical));
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        dependencies,
+    )
+    .map_err(|e| e.to_string())?;
+    let document = IngestDocument::new(
+        DocumentVersion::new(DocId::new(1), Revision::new(1)),
+        program::vector(1, 1).to_vec(),
+    )
+    .with_text("hybrid panic probe");
+    store
+        .ingest(IngestBatch::new(vec![document]))
+        .map_err(|e| e.to_string())?;
+    let term = TermQuery::flat(vec![b"hybrid".to_vec()], &[DEFAULT_FIELD]);
+    let result = store.search_hybrid(
+        SearchRequest::new(&program::query(0)),
+        &term,
+        &HybridQuery::new(1),
+        SearchOptions::default(),
+        QueryControl::Cancel(CancelToken::new()),
+    );
+    let _ = store.close();
+    match result {
+        Err(error) if error.to_string().contains("panicked") => Ok(()),
+        Err(_) => Ok(()),
+        Ok(_) => Err("injected hybrid leg panic was not contained".to_owned()),
+    }
+}
+
+fn run_hybrid_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    let query = HybridQuery::new(1);
+    let result = match fault {
+        super::campaign::FeatureFault::HybridVectorLegError => execute_hybrid(
+            &query,
+            || Err(FusionError::Leg {
+                leg: FusionLeg::Vector,
+                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                detail: "injected vector leg failure".to_owned(),
+            }),
+            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+            |value| Some(*value),
+            |value| Some(*value),
+        ),
+        super::campaign::FeatureFault::HybridLexicalLegError => execute_hybrid(
+            &query,
+            || Ok(vec![VectorCandidate::exact(1_u32, 0.0)]),
+            || Err(FusionError::Leg {
+                leg: FusionLeg::Lexical,
+                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                detail: "injected lexical leg failure".to_owned(),
+            }),
+            |value| Some(*value),
+            |value| Some(*value),
+        ),
+        super::campaign::FeatureFault::HybridDualFailureOrder => execute_hybrid(
+            &query,
+            || Err(FusionError::Leg {
+                leg: FusionLeg::Vector,
+                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                detail: "injected vector failure".to_owned(),
+            }),
+            || Err(FusionError::Leg {
+                leg: FusionLeg::Lexical,
+                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                detail: "injected lexical failure".to_owned(),
+            }),
+            |value| Some(*value),
+            |value| Some(*value),
+        ),
+        super::campaign::FeatureFault::HybridEstimatedScore => execute_hybrid(
+            &query,
+            || Ok(vec![VectorCandidate::estimated(1_u32, 0.5)]),
+            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+            |value| Some(*value),
+            |value| Some(*value),
+        ),
+        super::campaign::FeatureFault::HybridNonfiniteScore => execute_hybrid(
+            &query,
+            || Ok(vec![VectorCandidate::exact(1_u32, f64::NAN)]),
+            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+            |value| Some(*value),
+            |value| Some(*value),
+        ),
+        _ => return Err("wrong hybrid fault routed to pure fusion probe".to_owned()),
+    };
+    match result {
+        Err(_) => Ok(()),
+        Ok(_) => Err(format!("hybrid fault {} was accepted", fault.key())),
+    }
+}
+
+fn run_hybrid_cancellation_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let store = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
+        .map_err(|e| e.to_string())?;
+    let term = TermQuery::flat(vec![b"cancel".to_vec()], &[DEFAULT_FIELD]);
+    let token = CancelToken::new();
+    token.cancel();
+    let result = store.search_hybrid(
+        SearchRequest::new(&program::query(0)),
+        &term,
+        &HybridQuery::new(1),
+        SearchOptions::default(),
+        QueryControl::Cancel(token),
+    );
+    let _ = store.close();
+    match result {
+        Err(_) => Ok(()),
+        Ok(_) => Err("hybrid cancellation was ignored".to_owned()),
+    }
+}
+
+fn run_lock_contention_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let first = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
+        .map_err(|e| e.to_string())?;
+    let second = Store::open(directory.path(), RealEngine::options(ModelEpoch::A));
+    if second.is_ok() {
+        return Err("conflicting writer admission was not rejected".to_owned());
+    }
+    first.close().map_err(|e| e.to_string())
+}
+
+fn run_health_reopen_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    engine.close()?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    reopened.open()?;
+    let _ = reopened.search(&program::query(0), 1, SearchKind::Scan, 0)?;
+    reopened.close()
+}
+
+fn run_ffi_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    use zeppelin_embed_ffi::{ze_close, ze_error_code_name, ze_open, ZeErrorCode, ZeHandle};
+    let mut handle: ZeHandle = 0;
+    let code = ze_open(std::ptr::null(), &mut handle);
+    if code != ZeErrorCode::ZeErrInvalidArgument {
+        return Err(format!("FFI {} returned {:?} for null request", fault.key(), code));
+    }
+    let stale = ze_close(0);
+    if stale != ZeErrorCode::ZeErrInvalidHandle {
+        return Err(format!("FFI {} stale handle returned {:?}", fault.key(), stale));
+    }
+    let name = ze_error_code_name(code as i32);
+    if name.is_null() {
+        return Err("FFI error code name returned null".to_owned());
+    }
+    Ok(())
+}
+
+fn run_metadata_region_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    }])?;
+    engine.seal()?;
+    engine.close()?;
+    let segment = first_segment_path(directory.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let kind = if fault == super::campaign::FeatureFault::MetadataBitmapTruncation {
+        2
+    } else {
+        1
+    };
+    let offset = literal_segment_region_offset(&bytes, kind)?;
+    let byte = bytes
+        .get_mut(offset)
+        .ok_or_else(|| "metadata mutation escaped the segment".to_owned())?;
+    *byte ^= 0x01;
+    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    reopened.open()?;
+    let result = reopened.filtered_search(&program::query(0), 8, 10);
+    match result {
+        Err(_) => {
+            let _ = reopened.close();
+            Ok(())
+        }
+        Ok(observed) => {
+            let _ = reopened.close();
+            if observed.hits.iter().any(|hit| hit.doc_id == 0) {
+                Err(format!("metadata fault {} returned an invalid row", fault.key()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn run_metadata_selectivity_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[
+        DocMutation { doc_id: 1, revision: 1, timestamp: 9 },
+        DocMutation { doc_id: 2, revision: 1, timestamp: 10 },
+        DocMutation { doc_id: 3, revision: 1, timestamp: 11 },
+    ])?;
+    for cutoff in [9, 10, 11] {
+        let _ = engine.filtered_search(&program::query(0), 8, cutoff)?;
+    }
+    engine.close()
+}
+
+fn run_graph_checkpoint_corruption_probe() -> Result<(), String> {
+    for bytes in [Vec::new(), vec![0_u8; 128]] {
+        if zeppelin_embed::graph::build::validate_graph_build_checkpoint(&bytes).is_ok() {
+            return Err("corrupt graph checkpoint was accepted".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn graph_probe_engine() -> Result<(TempDir, RealEngine), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let documents = (1..=program::GRAPH_ROWS)
+        .map(|doc_id| DocMutation {
+            doc_id,
+            revision: 1,
+            timestamp: 10,
+        })
+        .collect::<Vec<_>>();
+    engine.ingest(&documents)?;
+    engine.seal()?;
+    let _ = engine.maintain(u64::MAX)?;
+    Ok((directory, engine))
+}
+
+fn run_graph_missing_rescore_probe() -> Result<(), String> {
+    let (directory, mut engine) = graph_probe_engine()?;
+    engine.close()?;
+    let segment = first_segment_path(directory.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let offset = literal_segment_region_offset(&bytes, 5)?;
+    let byte = bytes
+        .get_mut(offset)
+        .ok_or_else(|| "rescore mutation escaped the segment".to_owned())?;
+    *byte ^= 0x01;
+    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    reopened.open()?;
+    let result = reopened.search(&program::query(1), 8, SearchKind::Graph, 0);
+    match result {
+        Err(_) => {
+            let _ = reopened.close();
+            Ok(())
+        }
+        Ok(observed) if !observed.hits.is_empty() => reopened.close(),
+        Ok(_) => {
+            let _ = reopened.close();
+            Err("missing graph rescore returned no candidates".to_owned())
+        }
+    }
+}
+
+fn run_graph_search_cancellation_probe() -> Result<(), String> {
+    let (_directory, mut engine) = graph_probe_engine()?;
+    let token = CancelToken::new();
+    token.cancel();
+    let result = engine
+        .store()?
+        .search(
+            SearchRequest::new(&program::query(1)),
+            8,
+            SearchOptions::new(ScanOptions {
+                thread_budget: THREAD_BUDGET,
+            })
+            .with_tier(SearchTier::Graph(GraphSearchOptions::new(
+                GraphSearchProfile::SiftClass,
+            ))),
+            QueryControl::Cancel(token),
+        );
+    let _ = engine.close();
+    match result {
+        Err(_) => Ok(()),
+        Ok(_) => Err("cancelled graph search returned a successful result".to_owned()),
+    }
+}
+
+fn run_graph_corruption_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let documents = (1..=program::GRAPH_ROWS)
+        .map(|doc_id| DocMutation {
+            doc_id,
+            revision: 1,
+            timestamp: 10,
+        })
+        .collect::<Vec<_>>();
+    engine.ingest(&documents)?;
+    engine.seal()?;
+    let _ = engine.maintain(u64::MAX)?;
+    engine.close()?;
+    let segment = first_segment_path(directory.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let offset = literal_segment_region_offset(&bytes, 7)?;
+    let target = if fault == super::campaign::FeatureFault::GraphCorruptEntry {
+        offset
+    } else {
+        offset.saturating_add(16)
+    };
+    let byte = bytes
+        .get_mut(target)
+        .ok_or_else(|| format!("graph {fault:?} mutation escaped the region"))?;
+    *byte ^= 0xff;
+    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    reopened.open()?;
+    let result = reopened.search(&program::query(1), 8, SearchKind::Graph, 0);
+    match result {
+        Err(_) => {
+            let _ = reopened.close();
+            Ok(())
+        }
+        Ok(observed) => {
+            let invalid = observed.hits.iter().any(|hit| hit.doc_id == 0);
+            let _ = reopened.close();
+            if invalid {
+                Err(format!("graph corruption {} returned an invalid row", fault.key()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn run_graph_budget_cancel_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let documents = (1..=program::GRAPH_ROWS)
+        .map(|doc_id| DocMutation {
+            doc_id,
+            revision: 1,
+            timestamp: 10,
+        })
+        .collect::<Vec<_>>();
+    engine.ingest(&documents)?;
+    let deferred = engine.maintain(0);
+    if let Err(error) = deferred
+        && !error.contains("budget")
+        && !error.contains("defer")
+    {
+        return Err(format!("zero-budget graph build returned wrong error: {error}"));
+    }
+    let _completed = engine.maintain(u64::MAX)?;
+    let observed = engine.search(
+        &program::query(1),
+        8,
+        SearchKind::Auto,
+        0,
+    )?;
+    if observed.hits.is_empty() {
+        return Err("completed graph-budget probe returned no searchable rows".to_owned());
+    }
+    engine.close()
+}
+
+fn run_forced_backend_fault_probe() -> Result<(), String> {
+    let mut receipt_coverage = CoverageRegistry::default();
+    run_kernel_parity_probe(&mut receipt_coverage)?;
+    if receipt_coverage.count("kernel.backend.scalar") != 1 {
+        return Err("forced backend probe did not execute the scalar production kernel".to_owned());
+    }
+    Ok(())
+}
+
+fn run_corrupt_codes_factors_fault_probe() -> Result<(), String> {
+    let query = prepare_bit4_query(&[1.0, -2.0, 0.5], 17)
+        .map_err(|error| error.to_string())?;
+    let mut codes = [0_u8; 2];
+    let factors = quantize_bit4(&[0.25, -1.5, 2.0], &mut codes)
+        .map_err(|error| error.to_string())?;
+    codes[1] |= 0x0f;
+    if !matches!(
+        est_dot_bit4(&query, &codes, factors),
+        Err(QuantError::NonZeroPadding { .. })
+    ) {
+        return Err("corrupted packed code was not rejected as non-canonical padding".to_owned());
+    }
+
+    let mut output = [0xaa_u8; 2];
+    let before = output;
+    let error = quantize_bit4(&[1.0, f32::NAN, 2.0], &mut output)
+        .expect_err("non-finite vector unexpectedly produced persisted factors");
+    if error != (QuantError::NonFinite { index: 1 }) || output != before {
+        return Err(format!(
+            "non-finite quantization did not preserve the caller buffer: error={error}, before={before:?}, after={output:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn run_missing_rescore_rows_fault_probe() -> Result<(), String> {
+    let query = [0.0_f32, 0.0];
+    let rows = [100.0_f32, 0.0, 2.0, 0.0, 0.0, 2.0];
+    let row_indices = [0_u32, 3, 1];
+    let coarse_scores = [10.0_f32, 9.0, 8.0];
+    let error = rescore_top_k(
+        &query,
+        &rows,
+        2,
+        RescorePool::retained(
+            &row_indices,
+            &coarse_scores,
+            RescoreMetric::SquaredL2,
+            3,
+            1,
+        ),
+        2,
+    )
+    .expect_err("missing full-precision row unexpectedly entered exact top-k");
+    if error
+        != (RescoreError::CandidateRowOutOfRange {
+            position: 1,
+            row_index: 3,
+            row_count: 3,
+        })
+    {
+        return Err(format!("missing rescore row returned wrong error: {error}"));
+    }
+    Ok(())
+}
+
+fn run_vector_cancellation_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let store = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
+        .map_err(|error| error.to_string())?;
+    let documents = ingest_probe_batch()
+        .into_iter()
+        .map(|document| {
+            IngestDocument::new(
+                DocumentVersion::new(
+                    DocId::new(u128::from(document.doc_id)),
+                    Revision::new(document.revision),
+                ),
+                program::vector(document.doc_id, document.revision).to_vec(),
+            )
+            .with_timestamp(document.timestamp)
+            .with_text(program::lexical_text(document.doc_id, document.revision))
+            .with_columns(adversarial_columns(document.doc_id))
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(declared_identity()))
+        .map_err(|error| error.to_string())?;
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let error = store
+        .search(
+            SearchRequest::new(&program::query(3)),
+            3,
+            SearchOptions::new(ScanOptions {
+                thread_budget: THREAD_BUDGET,
+            })
+            .with_tier(SearchTier::Scan),
+            QueryControl::Cancel(cancel),
+        )
+        .expect_err("cancelled vector scan unexpectedly returned a result buffer");
+    if !matches!(
+        error,
+        zeppelin_embed::lifecycle::QueryError::Cancelled { partial: false }
+    ) {
+        return Err(format!("vector cancellation returned wrong error: {error}"));
+    }
+    let clean = store
+        .search(
+            SearchRequest::new(&program::query(3)),
+            3,
+            SearchOptions::new(ScanOptions {
+                thread_budget: THREAD_BUDGET,
+            })
+            .with_tier(SearchTier::Scan),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| error.to_string())?;
+    let identities = clean
+        .candidates
+        .iter()
+        .map(|candidate| candidate.document())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "clean scan returned a row without document identity".to_owned())?;
+    if identities.len() != 3 {
+        return Err(format!(
+            "post-cancellation clean scan returned {} rows, expected 3",
+            identities.len()
+        ));
+    }
+    store.close().map_err(|error| error.to_string())
+}
+
+fn run_vector_allocation_denial_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[ingest_probe_batch()[0]])?;
+    engine.seal()?;
+    engine.close()?;
+
+    let denied = Store::open(
+        directory.path(),
+        RealEngine::options(ModelEpoch::A).with_max_resident_bytes(0),
+    );
+    if !matches!(
+        denied,
+        Err(zeppelin_embed::lifecycle::StoreError::BudgetExceeded {
+            component: "snapshot",
+            ..
+        })
+    ) {
+        return Err(format!(
+            "snapshot allocation denial returned wrong result: {:?}",
+            denied.as_ref().err()
+        ));
+    }
+    let reopened = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
+        .map_err(|error| error.to_string())?;
+    reopened
+        .snapshot()
+        .map_err(|error| format!("clean open after allocation denial was unusable: {error}"))?;
+    reopened.close().map_err(|error| error.to_string())
+}
+
+fn ingest_probe_batch() -> [DocMutation; 3] {
+    [
+        DocMutation {
+            doc_id: 1,
+            revision: 1,
+            timestamp: 9,
+        },
+        DocMutation {
+            doc_id: 2,
+            revision: 1,
+            timestamp: 10,
+        },
+        DocMutation {
+            doc_id: 3,
+            revision: 1,
+            timestamp: 11,
+        },
+    ]
+}
+
+fn run_ingest_retry_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let batch = ingest_probe_batch();
+    engine.ingest(&batch)?;
+    let _retry = engine.ingest(&batch);
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    let identities = observed
+        .hits
+        .iter()
+        .map(|hit| (hit.doc_id, hit.revision))
+        .collect::<BTreeSet<_>>();
+    let expected = batch
+        .iter()
+        .map(|doc| (doc.doc_id, doc.revision))
+        .collect::<BTreeSet<_>>();
+    if identities != expected || observed.hits.len() != expected.len() {
+        return Err(format!(
+            "post-ack retry expected {expected:?}, observed {identities:?}"
+        ));
+    }
+    engine.close()
+}
+
+fn run_partial_batch_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let event = FaultEvent {
+        id: "feature-ingest-partial-batch".to_owned(),
+        op_index: 1,
+        site: fault_vfs::FaultSite::Append,
+        mode: fault_vfs::FaultMode::TornWrite,
+        nth_match: 1,
+        path_contains: Some("wal.ze".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    let mut engine = RealEngine::new(
+        directory.path().to_path_buf(),
+        Arc::clone(&scheduled),
+        Arc::new(ManualMonotonicClock::new()),
+    );
+    scheduled.set_operation(0);
+    engine.open()?;
+    scheduled.set_operation(1);
+    let batch = ingest_probe_batch();
+    let _faulted = engine.ingest(&batch);
+    if !scheduled.event().is_some_and(|event| event.fired) {
+        return Err("partial batch fault did not reach the WAL append".to_owned());
+    }
+    if engine.reopen().is_err() {
+        return Ok(());
+    }
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    let surviving = observed
+        .hits
+        .iter()
+        .filter(|hit| batch.iter().any(|doc| doc.doc_id == hit.doc_id))
+        .count();
+    if surviving != 0 && surviving != batch.len() {
+        return Err(format!(
+            "failed batch exposed a partial subset of {surviving}/{} rows",
+            batch.len()
+        ));
+    }
+    let _retry = engine.ingest(&batch);
+    let final_observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    let final_ids = final_observed
+        .hits
+        .iter()
+        .filter(|hit| batch.iter().any(|doc| doc.doc_id == hit.doc_id))
+        .map(|hit| hit.doc_id)
+        .collect::<BTreeSet<_>>();
+    if final_ids.len() != batch.len() {
+        return Err(format!(
+            "batch retry did not publish the whole batch: {final_ids:?}"
+        ));
+    }
+    engine.close()
+}
+
+fn run_seal_cancellation_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let store = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
+        .map_err(|error| error.to_string())?;
+    let batch = ingest_probe_batch()
+        .into_iter()
+        .map(|document| {
+            IngestDocument::new(
+                DocumentVersion::new(
+                    DocId::new(u128::from(document.doc_id)),
+                    Revision::new(document.revision),
+                ),
+                program::vector(document.doc_id, document.revision).to_vec(),
+            )
+            .with_timestamp(document.timestamp)
+            .with_text(program::lexical_text(document.doc_id, document.revision))
+            .with_columns(adversarial_columns(document.doc_id))
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(batch).with_epoch(declared_identity()))
+        .map_err(|error| error.to_string())?;
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let error = store
+        .seal_with_cancel(&cancel)
+        .expect_err("cancelled seal unexpectedly committed");
+    if !matches!(error, zeppelin_embed::lifecycle::StoreError::SealCancelled) {
+        return Err(format!("seal cancellation returned wrong error: {error}"));
+    }
+    let stats = store.stats().map_err(|error| error.to_string())?;
+    if stats.active_row_count != 3 {
+        return Err(format!(
+            "cancelled seal retained {} active rows, expected 3",
+            stats.active_row_count
+        ));
+    }
+    store.seal().map_err(|error| error.to_string())?;
+    store.close().map_err(|error| error.to_string())
+}
+
+fn run_retention_boundary_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    for document in ingest_probe_batch() {
+        engine.ingest(&[document])?;
+        engine.seal()?;
+    }
+    let policy = zeppelin_embed::ingest::RetentionPolicy::new(10)
+        .map_err(|error| error.to_string())?;
+    let range = policy.partition_to_drop(20);
+    if range.end != 10 {
+        return Err(format!("retention cutoff was {}, expected 10", range.end));
+    }
+    engine.drop_partition(range.start, range.end)?;
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    let ids = observed
+        .hits
+        .iter()
+        .map(|hit| hit.doc_id)
+        .collect::<BTreeSet<_>>();
+    if ids != BTreeSet::from([2, 3]) {
+        return Err(format!(
+            "half-open retention boundary expected ids {{2, 3}}, observed {ids:?}"
+        ));
+    }
+    engine.close()
+}
+
+fn run_purge_unlink_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let event = FaultEvent {
+        id: "feature-ingest-purge-unlink".to_owned(),
+        op_index: 1,
+        site: fault_vfs::FaultSite::Delete,
+        mode: fault_vfs::FaultMode::Eio,
+        nth_match: 1,
+        path_contains: Some(".zseg".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    let mut engine = RealEngine::new(
+        directory.path().to_path_buf(),
+        Arc::clone(&scheduled),
+        Arc::new(ManualMonotonicClock::new()),
+    );
+    scheduled.set_operation(0);
+    engine.open()?;
+    engine.ingest(&[ingest_probe_batch()[0]])?;
+    engine.seal()?;
+    scheduled.set_operation(1);
+    let _faulted = engine.purge(1);
+    if !scheduled.event().is_some_and(|event| event.fired) {
+        return Err("purge unlink fault did not reach a replaced segment".to_owned());
+    }
+    engine.reopen()?;
+    let _retry = engine.purge(1);
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    if observed.hits.iter().any(|hit| hit.doc_id == 1) {
+        return Err("purged row resurrected after unlink retry".to_owned());
+    }
+    engine.close()
+}
+
+fn run_purge_crash_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[ingest_probe_batch()[0]])?;
+    let recovery = engine.crash_at_boundary(
+        DocMutation {
+            doc_id: 2,
+            revision: 1,
+            timestamp: 11,
+        },
+        program::CrashBoundary::MidPurge,
+    )?;
+    if recovery.disposition != CrashDisposition::Gone {
+        return Err(format!(
+            "mid-purge crash recovered with {:?}, expected Gone",
+            recovery.disposition
+        ));
+    }
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    if observed.hits.iter().any(|hit| hit.doc_id == 2) {
+        return Err("mid-purge crash resurrected the purged row".to_owned());
+    }
+    engine.close()
+}
+
+fn run_wal_damage_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    }])?;
+    engine.close()?;
+    let path = directory.path().join("wal.ze");
+    let mut bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    match fault {
+        super::campaign::FeatureFault::StorageTornWalHeader => {
+            let first = bytes
+                .first_mut()
+                .ok_or_else(|| "WAL damage probe found an empty WAL".to_owned())?;
+            *first ^= 0x80;
+        }
+        super::campaign::FeatureFault::StorageTornWalBody => {
+            if bytes.len() <= 41 {
+                return Err(format!(
+                    "WAL body probe needs a record after the 40-byte header, got {} bytes",
+                    bytes.len()
+                ));
+            }
+            let keep = 40_usize.saturating_add((bytes.len() - 40) / 2);
+            bytes.truncate(keep);
+        }
+        super::campaign::FeatureFault::StorageTornWalChecksum => {
+            let last = bytes
+                .last_mut()
+                .ok_or_else(|| "WAL checksum probe found an empty WAL".to_owned())?;
+            *last ^= 0x01;
+        }
+        _ => return Err("non-WAL fault reached the WAL damage probe".to_owned()),
+    }
+    std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    match reopened.open() {
+        Err(_) => Ok(()),
+        Ok(()) => {
+            let result = reopened.search(&program::query(3), 8, SearchKind::Scan, 0);
+            let _ = reopened.close();
+            match result {
+                Err(_) => Ok(()),
+                Ok(observed) => Err(format!(
+                    "damaged WAL was consumed as a healthy store with ids {:?}",
+                    observed
+                        .hits
+                        .iter()
+                        .map(|hit| hit.doc_id)
+                        .collect::<Vec<_>>()
+                )),
+            }
+        }
+    }
+}
+
+fn run_post_commit_retry_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let event = FaultEvent {
+        id: "feature-storage-post-commit".to_owned(),
+        op_index: 1,
+        site: fault_vfs::FaultSite::Append,
+        mode: fault_vfs::FaultMode::PostCommitError,
+        nth_match: 1,
+        path_contains: Some("wal.ze".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    let mut engine = RealEngine::new(
+        directory.path().to_path_buf(),
+        Arc::clone(&scheduled),
+        Arc::new(ManualMonotonicClock::new()),
+    );
+    scheduled.set_operation(0);
+    engine.open()?;
+    scheduled.set_operation(1);
+    let document = DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    };
+    let _ambiguous = engine.ingest(&[document]);
+    if !scheduled.event().is_some_and(|event| event.fired) {
+        return Err("post-commit append fault did not reach the Store WAL".to_owned());
+    }
+    engine.reopen()?;
+    let _retry = engine.ingest(&[document]);
+    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
+    let matching = observed
+        .hits
+        .iter()
+        .filter(|hit| hit.doc_id == document.doc_id && hit.revision == document.revision)
+        .count();
+    if matching != 1 {
+        return Err(format!(
+            "ambiguous retry produced {matching} logical copies instead of one"
+        ));
+    }
+    engine.close()
+}
+
+fn run_persisted_object_fault_probe(
+    fault: super::campaign::FeatureFault,
+) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    }])?;
+    engine.seal()?;
+    engine.close()?;
+    let manifest = directory.path().join("manifest.ze");
+    let segment = first_segment_path(directory.path())?;
+    let manifest_bytes = std::fs::read(&manifest).map_err(|error| error.to_string())?;
+    let segment_bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    match fault {
+        super::campaign::FeatureFault::StorageCorruptSegmentRegion
+        | super::campaign::FeatureFault::TierStaleSource => {
+            let mut damaged = segment_bytes;
+            let offset = literal_segment_region_offset(&damaged, 3)?;
+            let byte = damaged
+                .get_mut(offset)
+                .ok_or_else(|| "vector-code mutation escaped the segment".to_owned())?;
+            *byte ^= 0x01;
+            std::fs::write(&segment, damaged).map_err(|error| error.to_string())?;
+        }
+        super::campaign::FeatureFault::StorageWrongManifestObject => {
+            std::fs::write(&manifest, segment_bytes).map_err(|error| error.to_string())?;
+        }
+        super::campaign::FeatureFault::StorageWrongSegmentObject => {
+            std::fs::write(&segment, manifest_bytes).map_err(|error| error.to_string())?;
+        }
+        _ => return Err("non-object fault reached persisted-object probe".to_owned()),
+    }
+    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
+    match reopened.open() {
+        Err(_) => Ok(()),
+        Ok(()) => {
+            let result = reopened.search(&program::query(3), 8, SearchKind::Scan, 0);
+            let _ = reopened.close();
+            match result {
+                Err(_) => Ok(()),
+                Ok(_) => Err(format!(
+                    "persisted object fault {} was consumed successfully",
+                    fault.key()
+                )),
+            }
+        }
+    }
+}
+
+fn literal_segment_region_offset(bytes: &[u8], target_kind: u16) -> Result<usize, String> {
+    const FILE_HEADER_BYTES: usize = 32;
+    const SEGMENT_PREFIX_BYTES: usize = 32;
+    const REGION_ENTRY_BYTES: usize = 32;
+    let region_count = read_literal_u16(bytes, FILE_HEADER_BYTES + 20)? as usize;
+    let directory = FILE_HEADER_BYTES + SEGMENT_PREFIX_BYTES;
+    for position in 0..region_count {
+        let entry = directory
+            .checked_add(position.saturating_mul(REGION_ENTRY_BYTES))
+            .ok_or_else(|| "segment directory offset overflow".to_owned())?;
+        if read_literal_u16(bytes, entry)? != target_kind {
+            continue;
+        }
+        let offset = usize::try_from(read_literal_u64(bytes, entry + 8)?)
+            .map_err(|_| "segment region offset exceeds usize".to_owned())?;
+        let length = usize::try_from(read_literal_u64(bytes, entry + 16)?)
+            .map_err(|_| "segment region length exceeds usize".to_owned())?;
+        if length == 0 || offset.checked_add(length).is_none_or(|end| end > bytes.len()) {
+            return Err(format!(
+                "guarded region {target_kind} has invalid offset/length {offset}/{length}"
+            ));
+        }
+        return Ok(offset + length / 2);
+    }
+    Err(format!("segment omitted target region kind {target_kind}"))
+}
+
+fn read_literal_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    bytes
+        .get(offset..offset.saturating_add(2))
+        .and_then(|slice| slice.try_into().ok())
+        .map(u16::from_le_bytes)
+        .ok_or_else(|| format!("missing u16 at segment offset {offset}"))
+}
+
+fn read_literal_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
+    bytes
+        .get(offset..offset.saturating_add(8))
+        .and_then(|slice| slice.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| format!("missing u64 at segment offset {offset}"))
+}
+
+fn run_orphan_omission_fault_probe() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    }])?;
+    engine.seal()?;
+    engine.close()?;
+    let source = first_segment_path(directory.path())?;
+    let orphan = directory.path().join("segment-orphan.zseg");
+    std::fs::copy(&source, &orphan).map_err(|error| error.to_string())?;
+    let event = FaultEvent {
+        id: "feature-storage-list-omission".to_owned(),
+        op_index: 0,
+        site: fault_vfs::FaultSite::List,
+        mode: fault_vfs::FaultMode::SilentDrop,
+        nth_match: 1,
+        path_contains: None,
+        fired: false,
+        path: None,
+    };
+    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    scheduled.set_operation(0);
+    zeppelin_embed::manifest::io::open_manifest(
+        scheduled.as_ref(),
+        directory.path(),
+        &FeatureDurableLog,
+        &HashSet::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    if !scheduled.event().is_some_and(|event| event.fired) {
+        return Err("list omission did not reach manifest orphan cleanup".to_owned());
+    }
+    if !orphan.exists() {
+        return Err("list omission unexpectedly exposed and deleted the orphan".to_owned());
+    }
+    zeppelin_embed::manifest::io::open_manifest(
+        &StdVfs,
+        directory.path(),
+        &FeatureDurableLog,
+        &HashSet::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    if orphan.exists() {
+        return Err("clean retry retained an eligible orphan".to_owned());
+    }
+    Ok(())
+}
+
+struct FeatureDurableLog;
+
+impl zeppelin_embed::manifest::io::DurableLog for FeatureDurableLog {
+    fn durable_end(&self) -> u64 {
+        u64::MAX
+    }
+}
+
+fn first_segment_path(directory: &Path) -> Result<PathBuf, String> {
+    std::fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
+        })
+        .ok_or_else(|| "feature probe found no sealed segment".to_owned())
+}
+
+fn run_publication_crash_fault_probe(boundary: program::CrashBoundary) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 10,
+    }])?;
+    let recovery = engine.crash_at_boundary(
+        DocMutation {
+            doc_id: 2,
+            revision: 1,
+            timestamp: 11,
+        },
+        boundary,
+    )?;
+    let observed = engine.search(&program::query(3), 2, SearchKind::Scan, 0)?;
+    let ids = observed
+        .hits
+        .iter()
+        .map(|hit| hit.doc_id)
+        .collect::<BTreeSet<_>>();
+    if !ids.contains(&1) {
+        return Err("publication crash lost the previously committed document".to_owned());
+    }
+    match recovery.disposition {
+        CrashDisposition::Unacknowledged if !ids.contains(&2) => {}
+        CrashDisposition::Visible if ids.contains(&2) => {}
+        CrashDisposition::Gone => {
+            return Err("publication crash reported an impossible purge state".to_owned());
+        }
+        disposition => {
+            return Err(format!(
+                "publication crash receipt {disposition:?} disagreed with reopened ids {ids:?}"
+            ));
+        }
+    }
+    engine.close()
+}
+
+fn campaign_search_facts(
+    model: &Model,
+    observed: &SearchObservation,
+    operation: super::campaign::FeatureOperation,
+) -> PrimitiveObservation {
+    let expected = model.expected_scan(&program::query(3), model.len());
+    let expected_sequence = expected
+        .iter()
+        .map(|hit| encode_hit(hit.doc_id, hit.revision, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+    let observed_sequence = observed
+        .hits
+        .iter()
+        .map(|hit| encode_hit(hit.doc_id, hit.revision, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+    let expected_set = expected
+        .iter()
+        .map(|hit| encode_identity(hit.doc_id, hit.revision))
+        .collect::<Vec<_>>();
+    let observed_set = observed
+        .hits
+        .iter()
+        .map(|hit| encode_identity(hit.doc_id, hit.revision))
+        .collect::<Vec<_>>();
+    let expected_scalar = expected.len() as u64;
+    let observed_scalar = observed.hits.len() as u64;
+    let observed_status = if matches!(
+        operation,
+        super::campaign::FeatureOperation::Storage(
+            super::campaign::StorageOperation::FormatCheck
+        )
+    ) {
+        match zeppelin_embed::format::frame::decode_header(
+            "adversarial-malformed-header",
+            zeppelin_embed::format::FormatFamily::Segment,
+            &[0_u8; 32],
+        ) {
+            Err(_) => "typed-refusal",
+            Ok(_) => "success",
+        }
+    } else {
+        "typed-refusal"
+    };
+    PrimitiveObservation {
+        expected_sequence,
+        observed_sequence,
+        expected_set,
+        observed_set,
+        expected_scalar,
+        observed_scalar,
+        maximum: expected.len() as u64,
+        score_bits: observed
+            .hits
+            .iter()
+            .map(|hit| f64::from(hit.score).to_bits())
+            .collect(),
+        expected_status: "typed-refusal".to_owned(),
+        observed_status: observed_status.to_owned(),
+        expected_artifact: "execution-trace-match".to_owned(),
+        observed_artifact: if observed.diagnostics_plan_matches_execution {
+            "execution-trace-match".to_owned()
+        } else {
+            "reported-plan-only".to_owned()
+        },
+    }
+}
+
+fn encode_hit(doc_id: u32, revision: u64, score_bits: u32) -> u128 {
+    (u128::from(doc_id) << 96) | (u128::from(revision) << 32) | u128::from(score_bits)
+}
+
+fn encode_identity(doc_id: u32, revision: u64) -> u128 {
+    (u128::from(doc_id) << 64) | u128::from(revision)
 }
 
 fn run_kernel_parity_probe(coverage: &mut CoverageRegistry) -> Result<(), String> {

@@ -851,6 +851,7 @@ dependencies = [
  "tempfile",
  "zeppelin-embed",
  "zeppelin-embed-bench",
+ "zeppelin-embed-ffi",
 ]
 
 [[package]]

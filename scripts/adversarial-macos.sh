@@ -40,12 +40,12 @@ mkdir -p "$artifacts_root"
 run_failed=0
 if (( verify_only == 0 )); then
   for campaign in "${campaigns[@]}"; do
-    echo "ADV_MACOS_START campaign=$campaign episodes=500"
+    echo "ADV_MACOS_START campaign=$campaign episodes=1000"
     if ! "$repo_root/scripts/adversarial.sh" campaign \
       --campaign "$campaign" \
       --qualification exploratory \
       --min-seconds 0 \
-      --min-episodes 500 \
+      --min-episodes 1000 \
       --retain-successful 256 \
       --artifacts "$artifacts_root/$campaign"; then
       run_failed=1
@@ -81,8 +81,8 @@ for campaign in campaigns:
     if summary.get("complete") is not True:
         errors.append(f"{campaign}: campaign is incomplete")
     episodes = summary.get("episodes")
-    if episodes != 500:
-        errors.append(f"{campaign}: expected exactly 500 episodes, got {episodes!r}")
+    if episodes != 1000:
+        errors.append(f"{campaign}: expected exactly 1000 episodes, got {episodes!r}")
     if isinstance(episodes, int):
         total_episodes += episodes
     for field in (
@@ -114,8 +114,8 @@ for campaign in campaigns:
 
 if len(summaries) != 11:
     errors.append(f"expected 11 summaries, found {len(summaries)}")
-if total_episodes != 5500:
-    errors.append(f"expected exactly 5500 aggregate episodes, got {total_episodes}")
+if total_episodes != 11000:
+    errors.append(f"expected exactly 11000 aggregate episodes, got {total_episodes}")
 
 aggregate = {
     "schema": "zeppelin-embed-adversarial-macos-aggregate",
@@ -151,7 +151,7 @@ if errors:
     for error in errors:
         print(f"adversarial-macos: {error}", file=sys.stderr)
     raise SystemExit(1)
-print("ADV_MACOS_COMPLETE campaigns=11 episodes=5500 failures=0 panics=0")
+print("ADV_MACOS_COMPLETE campaigns=11 episodes=11000 failures=0 panics=0")
 PY
 then
   run_failed=1
