@@ -3,6 +3,7 @@ members = [
     "crates/zeppelin-embed",
     "crates/zeppelin-embed-ffi",
     "crates/zeppelin-embed-bench",
+    "tests/adversarial-oracle",
     "tests",
 ]
 exclude = ["fuzz", "tools/fuzz-dispatch", "tools/size-consumer"]

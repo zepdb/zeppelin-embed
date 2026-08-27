@@ -823,6 +823,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeppelin-embed-adversarial-oracle"
+version = "0.1.0"
+
+[[package]]
 name = "zeppelin-embed-bench"
 version = "0.1.0"
 dependencies = [
@@ -850,6 +854,7 @@ dependencies = [
  "rand_chacha",
  "tempfile",
  "zeppelin-embed",
+ "zeppelin-embed-adversarial-oracle",
  "zeppelin-embed-bench",
  "zeppelin-embed-ffi",
 ]

@@ -212,18 +212,55 @@ fn generic_oracle_checker_kinds_have_planted_counterexamples() {
 }
 
 #[test]
-fn independent_oracle_source_rejects_production_imports() {
-    let source = include_str!("adversarial/oracle.rs");
+fn independent_oracle_is_a_std_only_source_and_dependency_boundary() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial-oracle");
+    let manifest_path = root.join("Cargo.toml");
+    assert!(
+        manifest_path.is_file(),
+        "independent oracle package is missing: {}",
+        manifest_path.display()
+    );
+    let manifest = std::fs::read_to_string(&manifest_path).expect("read oracle manifest");
+    assert!(manifest.contains("name = \"zeppelin-embed-adversarial-oracle\""));
     for forbidden in [
-        "zeppelin_embed::",
-        "crate::fts",
-        "crate::fusion",
-        "crate::planner",
+        "zeppelin-embed =",
+        "zeppelin-embed-ffi =",
+        "zeppelin-embed-bench =",
+        "path = \"../../crates/",
     ] {
         assert!(
-            !source.contains(forbidden),
-            "independent oracle imported production helper {forbidden}"
+            !manifest.contains(forbidden),
+            "independent oracle manifest contains production dependency {forbidden}"
         );
+    }
+
+    let mut pending = vec![root.join("src")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("walk oracle sources") {
+            let entry = entry.expect("read oracle source entry");
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read oracle source");
+            for forbidden in [
+                "zeppelin_embed",
+                "zeppelin-embed",
+                "crate::fts",
+                "crate::fusion",
+                "crate::planner",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} imported production helper {forbidden}",
+                    path.display()
+                );
+            }
+        }
     }
 }
 

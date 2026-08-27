@@ -5,6 +5,8 @@
 
 use std::collections::BTreeSet;
 
+pub use zeppelin_embed_adversarial_oracle::OracleRecord;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckerKind {
     ExactSequence,
@@ -58,35 +60,6 @@ impl PrimitiveObservation {
             expected_artifact: "observed-artifact".to_owned(),
             observed_artifact: "observed-artifact".to_owned(),
         }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OracleRecord {
-    pub invariant: u8,
-    pub checker_id: &'static str,
-    pub operation: &'static str,
-    pub expected: String,
-    pub observed: String,
-    pub provenance: String,
-    pub passed: bool,
-    pub detail: String,
-}
-
-impl OracleRecord {
-    #[must_use]
-    pub fn json_line(&self) -> String {
-        format!(
-            "{{\"invariant\":\"I{}\",\"checker_id\":\"{}\",\"operation\":\"{}\",\"expected\":\"{}\",\"observed\":\"{}\",\"provenance\":\"{}\",\"passed\":{},\"detail\":\"{}\"}}",
-            self.invariant,
-            escape(self.checker_id),
-            escape(self.operation),
-            escape(&self.expected),
-            escape(&self.observed),
-            escape(&self.provenance),
-            self.passed,
-            escape(&self.detail),
-        )
     }
 }
 
@@ -192,8 +165,4 @@ pub fn planted(mut facts: PrimitiveObservation, checker: CheckerKind) -> Primiti
         CheckerKind::Attribution => facts.observed_artifact = "sibling-artifact".to_owned(),
     }
     facts
-}
-
-fn escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
