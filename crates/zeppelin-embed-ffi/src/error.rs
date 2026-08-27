@@ -125,8 +125,13 @@ impl FfiError {
         let message = error.to_string();
         let code = match error {
             StoreLexicalError::Query(error) => Self::query(error).code,
-            StoreLexicalError::Lexical(_) => ZeErrorCode::ZeErrInvalidArgument,
+            StoreLexicalError::Lexical(_)
+            | StoreLexicalError::Structured(_)
+            | StoreLexicalError::Snippet(_)
+            | StoreLexicalError::Tokenizer(_) => ZeErrorCode::ZeErrInvalidArgument,
             StoreLexicalError::MissingDocumentIdentity { .. } => ZeErrorCode::ZeErrCorrupt,
+            StoreLexicalError::MissingStoredText { .. } => ZeErrorCode::ZeErrNotFound,
+            StoreLexicalError::MissingSnippetMatch { .. } => ZeErrorCode::ZeErrInternal,
         };
         Self::new(code, message)
     }
@@ -142,6 +147,8 @@ impl FfiError {
             FusionError::Cancelled { .. } | FusionError::ReadCancelled { .. } => {
                 ZeErrorCode::ZeErrCancelled
             }
+            FusionError::LegThreadStart { .. } => ZeErrorCode::ZeErrInternal,
+            FusionError::LegPanic { .. } => ZeErrorCode::ZeErrPanic,
             FusionError::Leg { kind, .. } => Self::leg_kind_code(kind),
             FusionError::NonFiniteScore { .. }
             | FusionError::NegativeScore { .. }
@@ -211,5 +218,19 @@ mod tests {
             detail: "bad terms".to_owned(),
         });
         assert_eq!(lexical.code, ZeErrorCode::ZeErrInvalidArgument);
+    }
+
+    #[test]
+    fn contained_hybrid_panics_keep_the_frozen_panic_code() {
+        let panic = FfiError::fusion(FusionError::LegPanic {
+            leg: FusionLeg::Lexical,
+            detail: "lexical hybrid leg panicked",
+        });
+        assert_eq!(panic.code, ZeErrorCode::ZeErrPanic);
+        let start = FfiError::fusion(FusionError::LegThreadStart {
+            leg: FusionLeg::Lexical,
+            detail: "thread unavailable".to_owned(),
+        });
+        assert_eq!(start.code, ZeErrorCode::ZeErrInternal);
     }
 }

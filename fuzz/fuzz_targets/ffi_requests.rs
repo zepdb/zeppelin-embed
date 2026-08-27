@@ -17,6 +17,7 @@ const SCRATCH_DIMS: usize = 64;
 struct Fixture {
     handle: ZeHandle,
     vector: Vec<f32>,
+    path: Vec<u8>,
 }
 
 fn fixture() -> &'static Fixture {
@@ -45,7 +46,11 @@ fn fixture() -> &'static Fixture {
         let vector = (0..SCRATCH_DIMS)
             .map(|index| index as f32 / SCRATCH_DIMS as f32)
             .collect();
-        Fixture { handle, vector }
+        Fixture {
+            handle,
+            vector,
+            path: bytes,
+        }
     })
 }
 
@@ -158,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 7 {
+    match bytes.u8() % 12 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -288,6 +293,31 @@ fuzz_target!(|data: &[u8]| {
             let mut drop: ZeEpochDropReport = sized(size_of::<ZeEpochDropReport>() as u32);
             typed(ze_epoch_drop(handle, &request, &mut drop));
             typed(ze_epoch_current(handle, &mut identity));
+            let open = ZeOpenRequest {
+                abi_size: abi_size::<ZeOpenRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                path: fixture.path.as_ptr(),
+                path_len: fixture.path.len(),
+                access_mode: bytes.i32() % 4,
+                durability_mode: bytes.i32() % 4,
+                commit_tier: bytes.i32() % 4,
+                reader_drain_timeout_ms: bytes.u64(),
+                max_resident_bytes: bytes.u64(),
+                max_temp_bytes: bytes.u64(),
+            };
+            let mut opened = 0;
+            let code = ze_open(&open, &mut opened);
+            typed(code);
+            if code == ZeErrorCode::ZeOk {
+                typed(ze_close(opened));
+            }
+            opened = 0;
+            let code = ze_open_with_epoch(&open, &request, &mut opened);
+            typed(code);
+            if code == ZeErrorCode::ZeOk {
+                typed(ze_close(opened));
+            }
+            assert!(ze_abi_version() > 0);
         }
         5 => {
             let request = ZeDropPartitionRequest {
@@ -306,7 +336,71 @@ fuzz_target!(|data: &[u8]| {
             };
             typed(ze_apply_retention(handle, &retention, &mut report));
         }
-        _ => {
+        6 => {
+            let seal = ZeSealRequest {
+                abi_size: abi_size::<ZeSealRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                cancel_token: u64::from(bytes.u8() % 2),
+            };
+            let mut generation: ZeGenerationReport =
+                sized(abi_size::<ZeGenerationReport>(&mut bytes));
+            typed(ze_seal(handle, &seal, &mut generation));
+            let maintain = ZeMaintainRequest {
+                abi_size: abi_size::<ZeMaintainRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                wall_time_ns: bytes.u64(),
+                bytes: bytes.u64(),
+            };
+            let mut report: ZeMaintainReport = sized(abi_size::<ZeMaintainReport>(&mut bytes));
+            typed(ze_maintain(handle, &maintain, &mut report));
+        }
+        7 => {
+            let ids = [
+                ZeDocId {
+                    high: bytes.u64(),
+                    low: bytes.u64(),
+                },
+                ZeDocId { high: 0, low: 1 },
+            ];
+            let purge = ZePurgeRequest {
+                abi_size: abi_size::<ZePurgeRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                doc_ids: ids.as_ptr(),
+                doc_id_count: bytes.len_within(ids.len()),
+            };
+            let mut token: ZePurgeTokenReport = sized(abi_size::<ZePurgeTokenReport>(&mut bytes));
+            typed(ze_purge(handle, &purge, &mut token));
+            let await_request = ZeAwaitPurgeRequest {
+                abi_size: abi_size::<ZeAwaitPurgeRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                token_id: if token.token_id == 0 {
+                    bytes.u64()
+                } else {
+                    token.token_id
+                },
+            };
+            let mut report: ZePurgeReport = sized(abi_size::<ZePurgeReport>(&mut bytes));
+            typed(ze_await_physical_purge(handle, &await_request, &mut report));
+        }
+        8 => {
+            let mut token = 0;
+            let created = ze_cancel_token_create(&mut token);
+            typed(created);
+            if created == ZeErrorCode::ZeOk {
+                typed(ze_cancel_token_cancel(token));
+                typed(ze_cancel_token_cancel(token));
+                typed(ze_cancel_token_free(token));
+                typed(ze_cancel_token_free(token));
+            }
+            typed(ze_cancel_token_cancel(bytes.u64()));
+        }
+        9 => {
+            let mut search: ZeSearchResult = sized(abi_size::<ZeSearchResult>(&mut bytes));
+            typed(ze_search_result_free(&mut search));
+            let mut query: ZeQueryResult = sized(abi_size::<ZeQueryResult>(&mut bytes));
+            typed(ze_query_result_free(&mut query));
+        }
+        10 => {
             let mut buffer = vec![0_u8; bytes.len_within(64)];
             let mut written = 0;
             let pointer = if buffer.is_empty() {
@@ -321,5 +415,6 @@ fuzz_target!(|data: &[u8]| {
             let mut stats: ZeStatsReport = sized(abi_size::<ZeStatsReport>(&mut bytes));
             typed(ze_stats(handle, &mut stats));
         }
+        _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }
 });
