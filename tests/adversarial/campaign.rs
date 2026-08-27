@@ -1324,39 +1324,6 @@ const fn invariant_range<const N: usize>(start: u8) -> [InvariantId; N] {
     result
 }
 
-const STORAGE_REUSED: [InvariantId; 7] = [
-    InvariantId::new(1),
-    InvariantId::new(4),
-    InvariantId::new(7),
-    InvariantId::new(8),
-    InvariantId::new(9),
-    InvariantId::new(10),
-    InvariantId::new(11),
-];
-const INGEST_REUSED: [InvariantId; 6] = [
-    InvariantId::new(1),
-    InvariantId::new(2),
-    InvariantId::new(4),
-    InvariantId::new(9),
-    InvariantId::new(10),
-    InvariantId::new(11),
-];
-const QUERY_REUSED: [InvariantId; 3] = [
-    InvariantId::new(1),
-    InvariantId::new(2),
-    InvariantId::new(3),
-];
-const FILTER_REUSED: [InvariantId; 3] = [
-    InvariantId::new(3),
-    InvariantId::new(5),
-    InvariantId::new(13),
-];
-const LIFECYCLE_REUSED: [InvariantId; 3] = [
-    InvariantId::new(6),
-    InvariantId::new(8),
-    InvariantId::new(9),
-];
-
 macro_rules! feature_faults {
     ($($fault:ident),+ $(,)?) => {
         [$(FeatureFault::$fault),+]
@@ -1878,7 +1845,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "storage durability",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I15_I19,
-        reused_invariants: &STORAGE_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &STORAGE_INVARIANT_SPECS,
         required_operations: &STORAGE_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1891,7 +1858,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "ingest retention",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I20_I23,
-        reused_invariants: &INGEST_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &INGEST_INVARIANT_SPECS,
         required_operations: &INGEST_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1904,7 +1871,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "vector execution",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I24_I27,
-        reused_invariants: &QUERY_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &VECTOR_INVARIANT_SPECS,
         required_operations: &VECTOR_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1917,7 +1884,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "Vamana graph",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I28_I35,
-        reused_invariants: &QUERY_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &GRAPH_INVARIANT_SPECS,
         required_operations: &GRAPH_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1930,7 +1897,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "metadata filter planner",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I36_I39,
-        reused_invariants: &FILTER_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &METADATA_INVARIANT_SPECS,
         required_operations: &FILTER_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1943,7 +1910,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "full text search",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I40_I44,
-        reused_invariants: &QUERY_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &FTS_INVARIANT_SPECS,
         required_operations: &FTS_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1956,7 +1923,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "hybrid fusion",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I45_I49,
-        reused_invariants: &QUERY_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &HYBRID_INVARIANT_SPECS,
         required_operations: &HYBRID_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1969,7 +1936,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "tiering maintenance",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I50_I53,
-        reused_invariants: &QUERY_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &TIER_INVARIANT_SPECS,
         required_operations: &TIER_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1982,7 +1949,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "lifecycle accounting",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I54_I58,
-        reused_invariants: &LIFECYCLE_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &LIFECYCLE_INVARIANT_SPECS,
         required_operations: &LIFECYCLE_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -1995,7 +1962,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "diagnostics health",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I63_I65,
-        reused_invariants: &FILTER_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &DIAGNOSTIC_INVARIANT_SPECS,
         required_operations: &DIAGNOSTIC_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,
@@ -2008,7 +1975,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         label: "FFI bindings",
         generator: CampaignGenerator::FeatureNamespaced,
         owned_invariants: &I66_I70,
-        reused_invariants: &LIFECYCLE_REUSED,
+        reused_invariants: &NO_INVARIANTS,
         invariant_specs: &FFI_INVARIANT_SPECS,
         required_operations: &FFI_OPS,
         fault_profiles: &FaultProfile::DEFAULTS,

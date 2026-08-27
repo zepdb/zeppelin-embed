@@ -142,6 +142,47 @@ fn invariant_registry_assigns_active_ids_once_and_reserves_epoch_ranges() {
 }
 
 #[test]
+fn feature_campaign_registry_owns_exact_ranges_without_generic_credit() {
+    let expected = [
+        (CampaignKind::StorageDurability, 15_u8, 19_u8),
+        (CampaignKind::IngestRetention, 20, 23),
+        (CampaignKind::VectorExecution, 24, 27),
+        (CampaignKind::VamanaGraph, 28, 35),
+        (CampaignKind::MetadataFilterPlanner, 36, 39),
+        (CampaignKind::Fts, 40, 44),
+        (CampaignKind::HybridFusion, 45, 49),
+        (CampaignKind::TieringMaintenance, 50, 53),
+        (CampaignKind::LifecycleAccounting, 54, 58),
+        (CampaignKind::DiagnosticsHealth, 63, 65),
+        (CampaignKind::FfiBindings, 66, 70),
+    ];
+
+    for (campaign, first, last) in expected {
+        let spec = CampaignSpec::for_kind(campaign);
+        assert!(
+            spec.reused_invariants.is_empty(),
+            "{} can earn generic invariant credit: {:?}",
+            campaign.key(),
+            spec.reused_invariants
+        );
+        assert_eq!(
+            spec.owned_invariants,
+            (first..=last)
+                .map(InvariantId::new)
+                .collect::<Vec<_>>(),
+            "{} owns the wrong invariant range",
+            campaign.key()
+        );
+        assert_eq!(
+            spec.required_invariants(),
+            spec.owned_invariants,
+            "{} qualification includes an invariant it does not own",
+            campaign.key()
+        );
+    }
+}
+
+#[test]
 fn generic_oracle_checker_kinds_have_planted_counterexamples() {
     for spec in CampaignSpec::catalog() {
         for binding in spec.invariant_specs {
