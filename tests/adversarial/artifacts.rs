@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -22,6 +23,8 @@ pub const REPLAY_ARTIFACTS: [&str; 8] = [
     "receipts.jsonl",
     "mutations.jsonl",
 ];
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpisodeAttestation {
@@ -29,6 +32,210 @@ pub struct EpisodeAttestation {
     pub same_seed_clean_controls: u64,
     pub integrated_feature_fault_receipts: u64,
     pub evidence_digests: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MergedStreamStats {
+    pub records: u64,
+    pub bytes: u64,
+    pub digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MergedEvidenceStats {
+    pub episodes: u64,
+    pub streams: BTreeMap<String, MergedStreamStats>,
+}
+
+pub struct MergedEvidence {
+    root: PathBuf,
+    oracle: MergedStream,
+    controls: MergedStream,
+    receipts: MergedStream,
+    mutations: MergedStream,
+    index: File,
+    episodes: u64,
+}
+
+struct MergedStream {
+    name: &'static str,
+    file: File,
+    records: u64,
+    bytes: u64,
+    digest_state: u64,
+}
+
+impl MergedEvidence {
+    pub fn create(root: &Path) -> Result<Self, String> {
+        fs::create_dir_all(root)
+            .map_err(|error| format!("create merged evidence root: {error}"))?;
+        let mut evidence = Self {
+            root: root.to_path_buf(),
+            oracle: MergedStream::create(root, "oracle")?,
+            controls: MergedStream::create(root, "controls")?,
+            receipts: MergedStream::create(root, "receipts")?,
+            mutations: MergedStream::create(root, "mutations")?,
+            index: create_merged_file(root, "merged-index.jsonl")?,
+            episodes: 0,
+        };
+        evidence.sync_all()?;
+        Ok(evidence)
+    }
+
+    pub fn append_episode(
+        &mut self,
+        seed: u64,
+        profile: FaultProfile,
+        oracle: &[u8],
+        controls: &[u8],
+        receipts: &[u8],
+        mutations: &[u8],
+    ) -> Result<(), String> {
+        let oracle_episode = self.oracle.append(seed, profile, oracle)?;
+        let controls_episode = self.controls.append(seed, profile, controls)?;
+        let receipts_episode = self.receipts.append(seed, profile, receipts)?;
+        let mutations_episode = self.mutations.append(seed, profile, mutations)?;
+        self.oracle.sync()?;
+        self.controls.sync()?;
+        self.receipts.sync()?;
+        self.mutations.sync()?;
+
+        let mut index = zeppelin_embed_bench::harness_json::to_vec(
+            &zeppelin_embed_bench::harness_json::json!({
+                "campaign_episode": self.episodes,
+                "seed": seed,
+                "profile": profile.key(),
+                "streams": {
+                    "oracle": oracle_episode,
+                    "controls": controls_episode,
+                    "receipts": receipts_episode,
+                    "mutations": mutations_episode,
+                },
+            }),
+        )
+        .map_err(|error| format!("serialize merged evidence index: {error}"))?;
+        index.push(b'\n');
+        self.index
+            .write_all(&index)
+            .map_err(|error| format!("append merged-index.jsonl: {error}"))?;
+        self.index
+            .sync_all()
+            .map_err(|error| format!("sync merged-index.jsonl: {error}"))?;
+        File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("sync merged evidence directory: {error}"))?;
+        self.episodes = self.episodes.saturating_add(1);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> MergedEvidenceStats {
+        MergedEvidenceStats {
+            episodes: self.episodes,
+            streams: [
+                self.oracle.stats(),
+                self.controls.stats(),
+                self.receipts.stats(),
+                self.mutations.stats(),
+            ]
+            .into_iter()
+            .map(|(name, stats)| (name.to_owned(), stats))
+            .collect(),
+        }
+    }
+
+    fn sync_all(&mut self) -> Result<(), String> {
+        self.oracle.sync()?;
+        self.controls.sync()?;
+        self.receipts.sync()?;
+        self.mutations.sync()?;
+        self.index
+            .sync_all()
+            .map_err(|error| format!("sync merged-index.jsonl: {error}"))?;
+        File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("sync merged evidence directory: {error}"))
+    }
+}
+
+impl MergedStream {
+    fn create(root: &Path, name: &'static str) -> Result<Self, String> {
+        Ok(Self {
+            name,
+            file: create_merged_file(root, &format!("merged-{name}.jsonl"))?,
+            records: 0,
+            bytes: 0,
+            digest_state: FNV_OFFSET_BASIS,
+        })
+    }
+
+    fn append(
+        &mut self,
+        seed: u64,
+        profile: FaultProfile,
+        source: &[u8],
+    ) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
+        let mut appended_bytes = 0_u64;
+        let mut appended_records = 0_u64;
+        for line in source
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_slice(line)
+                    .map_err(|error| format!("parse {} evidence row: {error}", self.name))?;
+            let mut envelope = zeppelin_embed_bench::harness_json::to_vec(
+                &zeppelin_embed_bench::harness_json::json!({
+                    "seed": seed,
+                    "profile": profile.key(),
+                    "record": record,
+                }),
+            )
+            .map_err(|error| format!("serialize {} evidence row: {error}", self.name))?;
+            envelope.push(b'\n');
+            self.file
+                .write_all(&envelope)
+                .map_err(|error| format!("append merged-{}.jsonl: {error}", self.name))?;
+            update_fnv(&mut self.digest_state, &envelope);
+            let length = envelope.len() as u64;
+            self.bytes = self.bytes.saturating_add(length);
+            self.records = self.records.saturating_add(1);
+            appended_bytes = appended_bytes.saturating_add(length);
+            appended_records = appended_records.saturating_add(1);
+        }
+        Ok(zeppelin_embed_bench::harness_json::json!({
+            "source_records": source.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).count(),
+            "source_bytes": source.len(),
+            "source_digest": evidence_digest(&[source]),
+            "merged_records": appended_records,
+            "merged_bytes": appended_bytes,
+        }))
+    }
+
+    fn sync(&self) -> Result<(), String> {
+        self.file
+            .sync_all()
+            .map_err(|error| format!("sync merged-{}.jsonl: {error}", self.name))
+    }
+
+    fn stats(&self) -> (&'static str, MergedStreamStats) {
+        (
+            self.name,
+            MergedStreamStats {
+                records: self.records,
+                bytes: self.bytes,
+                digest: finish_fnv(self.digest_state),
+            },
+        )
+    }
+}
+
+fn create_merged_file(root: &Path, name: &str) -> Result<File, String> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(name))
+        .map_err(|error| format!("create {name}: {error}"))
 }
 
 pub struct RunArtifacts {
@@ -163,7 +370,7 @@ impl RunArtifacts {
             })
         };
         let mut bytes = zeppelin_embed_bench::harness_json::to_vec_pretty(&metadata)
-        .map_err(|error| format!("serialize episode.json: {error}"))?;
+            .map_err(|error| format!("serialize episode.json: {error}"))?;
         bytes.push(b'\n');
         fs::write(self.directory.join("episode.json"), &bytes)
             .map_err(|error| format!("write episode.json: {error}"))?;
@@ -219,15 +426,25 @@ impl RunArtifacts {
 
 #[must_use]
 pub fn evidence_digest(parts: &[&[u8]]) -> String {
-    let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+    let mut digest = FNV_OFFSET_BASIS;
     for part in parts {
-        for byte in *part {
-            digest ^= u64::from(*byte);
-            digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        update_fnv(&mut digest, part);
         digest ^= 0xff;
-        digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+        digest = digest.wrapping_mul(FNV_PRIME);
     }
+    format!("fnv1a64:{digest:016x}")
+}
+
+fn update_fnv(digest: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *digest ^= u64::from(*byte);
+        *digest = digest.wrapping_mul(FNV_PRIME);
+    }
+}
+
+fn finish_fnv(mut digest: u64) -> String {
+    digest ^= 0xff;
+    digest = digest.wrapping_mul(FNV_PRIME);
     format!("fnv1a64:{digest:016x}")
 }
 

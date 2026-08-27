@@ -167,9 +167,7 @@ fn feature_campaign_registry_owns_exact_ranges_without_generic_credit() {
         );
         assert_eq!(
             spec.owned_invariants,
-            (first..=last)
-                .map(InvariantId::new)
-                .collect::<Vec<_>>(),
+            (first..=last).map(InvariantId::new).collect::<Vec<_>>(),
             "{} owns the wrong invariant range",
             campaign.key()
         );
@@ -544,7 +542,10 @@ fn feature_episode_writes_schema_v3_replay_metadata() {
         ])
     );
     for name in adversarial::artifacts::REPLAY_ARTIFACTS {
-        assert!(directory.join(name).is_file(), "missing replay artifact {name}");
+        assert!(
+            directory.join(name).is_file(),
+            "missing replay artifact {name}"
+        );
     }
     assert_eq!(
         adversarial::campaign::campaign_from_replay_metadata(&directory)
@@ -595,15 +596,13 @@ fn feature_replay_rejects_schema_v3_without_independent_oracle_attestation() {
     let directory = tempfile::tempdir().expect("feature replay directory");
     std::fs::write(
         directory.path().join("episode.json"),
-        zeppelin_embed_bench::harness_json::to_vec(
-            &zeppelin_embed_bench::harness_json::json!({
-                "schema": "zeppelin-embed-adversarial-episode",
-                "version": 3,
-                "campaign": "fts",
-                "seed": 7,
-                "profile": "none",
-            }),
-        )
+        zeppelin_embed_bench::harness_json::to_vec(&zeppelin_embed_bench::harness_json::json!({
+            "schema": "zeppelin-embed-adversarial-episode",
+            "version": 3,
+            "campaign": "fts",
+            "seed": 7,
+            "profile": "none",
+        }))
         .expect("feature fixture JSON"),
     )
     .expect("write feature fixture");
@@ -1146,6 +1145,14 @@ fn campaign() {
     let mut failures = Vec::<CampaignFailure>::new();
     let mut successful_artifacts = VecDeque::<PathBuf>::new();
     let mut coverage = CoverageRegistry::default();
+    let mut merged_evidence = if config.campaign == CampaignKind::Overall {
+        None
+    } else {
+        Some(
+            adversarial::artifacts::MergedEvidence::create(&root)
+                .expect("create fresh merged feature evidence"),
+        )
+    };
     let required_duration = Duration::from_secs(config.minimum_seconds);
 
     while episodes < config.minimum_episodes || started.elapsed() < required_duration {
@@ -1178,34 +1185,54 @@ fn campaign() {
                 operations = operations.saturating_add(outcome.operations as u64);
                 faults_fired = faults_fired.saturating_add(outcome.faults_fired as u64);
                 coverage.merge(&outcome.coverage);
-                let episode_violations = (outcome.violations.len() as u64).saturating_add(
-                    u64::from(injected == Some(CampaignInjectedFailure::Violation)),
-                );
-                violations = violations.saturating_add(episode_violations);
-                let scheduled_missing = (!matches!(
-                    profile,
-                    FaultProfile::None | FaultProfile::Crash | FaultProfile::Clock
-                ) && outcome.scheduled_faults_fired != 1)
-                    || !outcome.missing_feature_faults.is_empty()
-                    || injected == Some(CampaignInjectedFailure::UnfiredScheduledFault);
-                unfired_scheduled_faults =
-                    unfired_scheduled_faults.saturating_add(u64::from(scheduled_missing));
-                match (episode_violations > 0, scheduled_missing) {
-                    (false, false) => None,
-                    (true, false) => Some((
-                        CampaignFailureKind::InvariantViolation,
-                        format!("{episode_violations} invariant violation(s)"),
-                    )),
-                    (false, true) => Some((
-                        CampaignFailureKind::UnfiredScheduledFault,
-                        "selected scheduled fault did not fire".to_owned(),
-                    )),
-                    (true, true) => Some((
-                        CampaignFailureKind::ViolationAndUnfiredFault,
-                        format!(
-                            "{episode_violations} invariant violation(s) and the selected scheduled fault did not fire"
-                        ),
-                    )),
+                let merge_error = merged_evidence.as_mut().and_then(|merged| {
+                    merged
+                        .append_episode(
+                            outcome.seed,
+                            outcome.profile,
+                            &outcome.oracle_bytes,
+                            &outcome.controls_bytes,
+                            &outcome.receipts_bytes,
+                            &outcome.mutations_bytes,
+                        )
+                        .err()
+                });
+                if let Some(error) = merge_error {
+                    execution_errors = execution_errors.saturating_add(1);
+                    Some((
+                        CampaignFailureKind::ExecutionError,
+                        format!("merged evidence append failed: {error}"),
+                    ))
+                } else {
+                    let episode_violations = (outcome.violations.len() as u64).saturating_add(
+                        u64::from(injected == Some(CampaignInjectedFailure::Violation)),
+                    );
+                    violations = violations.saturating_add(episode_violations);
+                    let scheduled_missing = (!matches!(
+                        profile,
+                        FaultProfile::None | FaultProfile::Crash | FaultProfile::Clock
+                    ) && outcome.scheduled_faults_fired != 1)
+                        || !outcome.missing_feature_faults.is_empty()
+                        || injected == Some(CampaignInjectedFailure::UnfiredScheduledFault);
+                    unfired_scheduled_faults =
+                        unfired_scheduled_faults.saturating_add(u64::from(scheduled_missing));
+                    match (episode_violations > 0, scheduled_missing) {
+                        (false, false) => None,
+                        (true, false) => Some((
+                            CampaignFailureKind::InvariantViolation,
+                            format!("{episode_violations} invariant violation(s)"),
+                        )),
+                        (false, true) => Some((
+                            CampaignFailureKind::UnfiredScheduledFault,
+                            "selected scheduled fault did not fire".to_owned(),
+                        )),
+                        (true, true) => Some((
+                            CampaignFailureKind::ViolationAndUnfiredFault,
+                            format!(
+                                "{episode_violations} invariant violation(s) and the selected scheduled fault did not fire"
+                            ),
+                        )),
+                    }
                 }
             }
             Err(error) => {
@@ -1337,6 +1364,38 @@ enum CampaignFailureKind {
     ExecutionError,
     UnfiredScheduledFault,
     ViolationAndUnfiredFault,
+}
+
+#[test]
+fn campaign_executes_consecutive_seed_numbers() {
+    let artifacts = tempfile::tempdir().expect("consecutive campaign artifacts");
+    let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
+        .args(["campaign", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
+        .env("ZE_ADV_CAMPAIGN", "overall")
+        .env("ZE_ADV_QUALIFICATION", "exploratory")
+        .env("ZE_ADV_MIN_SECONDS", "0")
+        .env("ZE_ADV_MIN_EPISODES", "3")
+        .env("ZE_ADV_RETAIN_SUCCESSFUL", "3")
+        .env("ZE_ADV_CAMPAIGN_START_SEED", "40")
+        .env("ZE_ADV_ARTIFACTS", artifacts.path())
+        .output()
+        .expect("run consecutive campaign probe");
+    let transcript = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{transcript}");
+    for seed in 40..=42 {
+        assert!(
+            artifacts
+                .path()
+                .join(format!("seed-{seed}-{}", campaign_profile(seed - 40).key()))
+                .is_dir(),
+            "seed {seed} was skipped: {transcript}"
+        );
+    }
 }
 
 impl CampaignFailureKind {
@@ -1531,6 +1590,58 @@ fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn feature_rotation_preserves_complete_merged_evidence_first() {
+    let artifacts = tempfile::tempdir().expect("merged feature artifacts");
+    let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
+        .args(["campaign", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
+        .env("ZE_ADV_CAMPAIGN", "fts")
+        .env("ZE_ADV_QUALIFICATION", "exploratory")
+        .env("ZE_ADV_MIN_SECONDS", "0")
+        .env("ZE_ADV_MIN_EPISODES", "2")
+        .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
+        .env("ZE_ADV_CAMPAIGN_START_SEED", "0")
+        .env("ZE_ADV_ARTIFACTS", artifacts.path())
+        .output()
+        .expect("run merged feature campaign probe");
+    let transcript = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "two episodes cannot fully qualify FTS"
+    );
+
+    let index = std::fs::read_to_string(artifacts.path().join("merged-index.jsonl"))
+        .unwrap_or_else(|error| {
+            panic!("merged index missing before rotation: {error}: {transcript}")
+        });
+    assert_eq!(index.lines().count(), 2, "{transcript}");
+    let oracle = std::fs::read_to_string(artifacts.path().join("merged-oracle.jsonl"))
+        .expect("merged oracle");
+    assert!(oracle.contains("\"seed\":0"), "{oracle}");
+    assert!(oracle.contains("\"seed\":1"), "{oracle}");
+    for name in [
+        "merged-controls.jsonl",
+        "merged-receipts.jsonl",
+        "merged-mutations.jsonl",
+    ] {
+        assert!(artifacts.path().join(name).is_file(), "missing {name}");
+    }
+    let retained = std::fs::read_dir(artifacts.path().join("fts"))
+        .expect("retained FTS episodes")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .count();
+    assert_eq!(
+        retained, 1,
+        "rotation did not run after merge: {transcript}"
     );
 }
 
