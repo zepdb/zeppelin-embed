@@ -10,12 +10,14 @@ pub enum FaultProfile {
 }
 
 impl FaultProfile {
-    pub const DEFAULTS: [Self; 5] = [
+    pub const DEFAULTS: [Self; 7] = [
         Self::None,
         Self::IoErrors,
         Self::Content,
         Self::Crash,
         Self::Disk,
+        Self::Clock,
+        Self::Full,
     ];
 
     #[must_use]
@@ -33,15 +35,19 @@ impl FaultProfile {
 
     #[must_use]
     pub fn from_env(value: &str) -> Self {
+        Self::from_key(value).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn from_key(value: &str) -> Result<Self, String> {
         match value {
-            "none" => Self::None,
-            "io" | "io-errors" => Self::IoErrors,
-            "content" => Self::Content,
-            "crash" => Self::Crash,
-            "disk" => Self::Disk,
-            "clock" => Self::Clock,
-            "full" => Self::Full,
-            other => panic!("invalid ZE_ADV_PROFILE={other:?}"),
+            "none" => Ok(Self::None),
+            "io" | "io-errors" => Ok(Self::IoErrors),
+            "content" => Ok(Self::Content),
+            "crash" => Ok(Self::Crash),
+            "disk" => Ok(Self::Disk),
+            "clock" => Ok(Self::Clock),
+            "full" => Ok(Self::Full),
+            other => Err(format!("invalid ZE_ADV_PROFILE={other:?}")),
         }
     }
 }

@@ -1,5 +1,7 @@
 use rand::Rng;
+use rand::seq::SliceRandom;
 
+use super::campaign::{CampaignKind, FeatureOperation};
 use super::test_support;
 
 pub const DIMENSIONS: usize = 4;
@@ -30,6 +32,91 @@ pub enum SearchKind {
     Scan,
     Auto,
     Graph,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PredicateKind {
+    Eq,
+    In,
+    RangeTwoSided,
+    RangeHalfOpen,
+    Bool,
+    String,
+    Exists,
+    IsNull,
+    And,
+    Or,
+    Not,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CrashBoundary {
+    MidWalGroup,
+    PreManifestRename,
+    PostManifestRename,
+    MidSeal,
+    MidPurge,
+}
+
+impl CrashBoundary {
+    pub const ALL: [Self; 5] = [
+        Self::MidWalGroup,
+        Self::PreManifestRename,
+        Self::PostManifestRename,
+        Self::MidSeal,
+        Self::MidPurge,
+    ];
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MidWalGroup => "mid_wal_group",
+            Self::PreManifestRename => "pre_manifest_rename",
+            Self::PostManifestRename => "post_manifest_rename",
+            Self::MidSeal => "mid_seal",
+            Self::MidPurge => "mid_purge",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|boundary| boundary.key() == value)
+            .ok_or_else(|| format!("unknown crash boundary {value:?}"))
+    }
+}
+
+impl PredicateKind {
+    pub const ALL: [Self; 11] = [
+        Self::Eq,
+        Self::In,
+        Self::RangeTwoSided,
+        Self::RangeHalfOpen,
+        Self::Bool,
+        Self::String,
+        Self::Exists,
+        Self::IsNull,
+        Self::And,
+        Self::Or,
+        Self::Not,
+    ];
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::In => "in",
+            Self::RangeTwoSided => "range_two_sided",
+            Self::RangeHalfOpen => "range_half_open",
+            Self::Bool => "bool",
+            Self::String => "string",
+            Self::Exists => "exists",
+            Self::IsNull => "is_null",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Not => "not",
+        }
+    }
 }
 
 impl SearchKind {
@@ -96,10 +183,22 @@ pub enum Op {
         k: usize,
         maximum_timestamp: i64,
     },
+    PredicateSearch {
+        query: u8,
+        k: usize,
+        predicate: PredicateKind,
+    },
     HybridSearch {
         query: u8,
         k: usize,
     },
+    DeadlineProbe {
+        query: u8,
+    },
+    FtsExtrasProbe {
+        slot: u8,
+    },
+    Feature(FeatureOperation),
     Stats,
     Close,
     Reopen,
@@ -107,6 +206,7 @@ pub enum Op {
         doc_id: u32,
         revision: u64,
         timestamp: i64,
+        boundary: CrashBoundary,
     },
 }
 
@@ -131,7 +231,11 @@ impl Op {
             Self::Maintain { .. } => "maintain",
             Self::Search { .. } => "search",
             Self::FilteredSearch { .. } => "filtered_search",
+            Self::PredicateSearch { .. } => "predicate_search",
             Self::HybridSearch { .. } => "hybrid_search",
+            Self::DeadlineProbe { .. } => "deadline_probe",
+            Self::FtsExtrasProbe { .. } => "fts_extras_probe",
+            Self::Feature(_) => "feature",
             Self::Stats => "stats",
             Self::Close => "close",
             Self::Reopen => "reopen",
@@ -176,14 +280,18 @@ impl Op {
                 doc_id,
                 revision,
                 timestamp,
-            }
-            | Self::Crash {
-                doc_id,
-                revision,
-                timestamp,
             } => format!(
                 "{{\"op\":{index},\"kind\":\"{}\",\"doc_id\":{doc_id},\"revision\":{revision},\"timestamp\":{timestamp}}}",
                 self.kind()
+            ),
+            Self::Crash {
+                doc_id,
+                revision,
+                timestamp,
+                boundary,
+            } => format!(
+                "{{\"op\":{index},\"kind\":\"crash\",\"doc_id\":{doc_id},\"revision\":{revision},\"timestamp\":{timestamp},\"boundary\":\"{}\"}}",
+                boundary.key()
             ),
             Self::Delete { doc_id } | Self::Purge { doc_id } => format!(
                 "{{\"op\":{index},\"kind\":\"{}\",\"doc_id\":{doc_id}}}",
@@ -206,9 +314,28 @@ impl Op {
             } => format!(
                 "{{\"op\":{index},\"kind\":\"filtered_search\",\"query\":{query},\"k\":{k},\"maximum_timestamp\":{maximum_timestamp}}}"
             ),
+            Self::PredicateSearch {
+                query,
+                k,
+                predicate,
+            } => format!(
+                "{{\"op\":{index},\"kind\":\"predicate_search\",\"query\":{query},\"k\":{k},\"predicate\":\"{}\"}}",
+                predicate.key()
+            ),
             Self::HybridSearch { query, k } => {
                 format!("{{\"op\":{index},\"kind\":\"hybrid_search\",\"query\":{query},\"k\":{k}}}")
             }
+            Self::DeadlineProbe { query } => {
+                format!("{{\"op\":{index},\"kind\":\"deadline_probe\",\"query\":{query}}}")
+            }
+            Self::FtsExtrasProbe { slot } => {
+                format!("{{\"op\":{index},\"kind\":\"fts_extras_probe\",\"slot\":{slot}}}")
+            }
+            Self::Feature(operation) => format!(
+                "{{\"op\":{index},\"kind\":\"feature\",\"campaign\":\"{}\",\"operation\":\"{}\"}}",
+                operation.campaign().key(),
+                operation.key()
+            ),
         }
     }
 }
@@ -220,6 +347,43 @@ pub struct Program {
 }
 
 impl Program {
+    #[must_use]
+    pub fn generate_for(campaign: CampaignKind, seed: u64) -> Self {
+        match campaign {
+            CampaignKind::Overall => Self::generate(seed),
+            _ => {
+                let mut program = Self::generate(seed);
+                program.ops.retain(|operation| {
+                    !matches!(
+                        operation,
+                        Op::EpochMismatchProbe { .. }
+                            | Op::PrepareEpochB
+                            | Op::SwitchAliasToB
+                            | Op::RollbackToA
+                            | Op::DropEpochA
+                            | Op::RollbackDroppedAProbe
+                    )
+                });
+                let mut operations = super::campaign::feature_operations(campaign).to_vec();
+                let mut rng = test_support::seeded_rng(
+                    &format!("adversarial::program::{}", campaign.key()),
+                    seed,
+                );
+                operations.shuffle(&mut rng);
+                let insertion = program
+                    .ops
+                    .iter()
+                    .position(|operation| matches!(operation, Op::Ingest { .. }))
+                    .map_or(1, |index| index.saturating_add(1));
+                program.ops.splice(
+                    insertion..insertion,
+                    operations.into_iter().map(Op::Feature),
+                );
+                program
+            }
+        }
+    }
+
     #[must_use]
     pub fn generate(seed: u64) -> Self {
         let mut rng = test_support::seeded_rng("adversarial::program", seed);
@@ -258,6 +422,12 @@ impl Program {
                 query: 0,
                 k: 8,
                 maximum_timestamp: 9,
+            },
+            Op::DeadlineProbe { query: 0 },
+            Op::PredicateSearch {
+                query: 0,
+                k: 8,
+                predicate: PredicateKind::ALL[(seed as usize) % PredicateKind::ALL.len()],
             },
             Op::Search {
                 query: 0,
@@ -304,6 +474,9 @@ impl Program {
             Op::Seal,
             Op::Maintain { bytes: u64::MAX },
             Op::HybridSearch { query: 1, k: 8 },
+            Op::FtsExtrasProbe {
+                slot: (seed % 2) as u8,
+            },
             Op::Search {
                 query: 1,
                 k: 8,
@@ -336,6 +509,7 @@ impl Program {
                 doc_id: initial_count + 2,
                 revision: 1,
                 timestamp: 30,
+                boundary: CrashBoundary::ALL[(seed as usize) % CrashBoundary::ALL.len()],
             },
             Op::Ingest {
                 first_id: initial_count + 3,
@@ -471,7 +645,7 @@ pub const fn lexical_query(slot: u8) -> &'static [u8] {
     match slot % 4 {
         0 => b"alpha",
         1 => b"bravo",
-        2 => b"charlie",
+        2 => b"charli",
         _ => b"delta",
     }
 }
@@ -481,13 +655,36 @@ pub fn lexical_text(doc_id: u32, revision: u64) -> String {
     let term = match doc_id % 4 {
         0 => "alpha",
         1 => "bravo",
-        2 => "charlie",
+        2 => "charli",
         _ => "delta",
     };
     let repeats = doc_id % 3 + 1;
     let mut text = (0..repeats).map(|_| term).collect::<Vec<_>>().join(" ");
     text.push_str(&format!(" common ze-{doc_id:08x}-r{revision}"));
     text
+}
+
+#[must_use]
+pub const fn numeric_column(doc_id: u32) -> u64 {
+    (doc_id % 5) as u64
+}
+
+#[must_use]
+pub const fn boolean_column(doc_id: u32) -> Option<bool> {
+    if doc_id.is_multiple_of(3) {
+        None
+    } else {
+        Some(doc_id.is_multiple_of(2))
+    }
+}
+
+#[must_use]
+pub const fn string_column(doc_id: u32) -> &'static str {
+    if doc_id.is_multiple_of(2) {
+        "even"
+    } else {
+        "odd"
+    }
 }
 
 #[must_use]

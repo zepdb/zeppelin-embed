@@ -13,8 +13,13 @@ path = "scaffold_gates.rs"
 name = "adversarial_tests"
 path = "adversarial_tests.rs"
 
+[[test]]
+name = "adversarial_cli"
+path = "adversarial_cli.rs"
+
 [dependencies]
 rand.workspace = true
 rand_chacha.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.1.0", features = ["test-support"] }

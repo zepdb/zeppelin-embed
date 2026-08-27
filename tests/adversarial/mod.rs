@@ -7,8 +7,11 @@
 )]
 
 pub mod artifacts;
+pub mod campaign;
+pub mod coverage;
 pub mod fault_vfs;
 pub mod model;
+pub mod oracle;
 pub mod profiles;
 pub mod program;
 pub mod runner;

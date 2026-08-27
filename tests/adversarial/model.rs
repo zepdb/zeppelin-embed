@@ -32,6 +32,21 @@ pub struct ExpectedHit {
     pub score: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpectedLexicalHit {
+    pub doc_id: u32,
+    pub revision: u64,
+    pub score: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpectedHybridHit {
+    pub doc_id: u32,
+    pub vector_squared_l2: Option<f64>,
+    pub lexical_bm25: Option<f64>,
+    pub fused_score: f64,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ModelEpoch {
     #[default]
@@ -297,6 +312,33 @@ impl Model {
     }
 
     #[must_use]
+    pub fn expected_predicate(
+        &self,
+        query: &[f32],
+        k: usize,
+        predicate: program::PredicateKind,
+    ) -> Vec<ExpectedHit> {
+        let mut hits = self
+            .live
+            .iter()
+            .filter(|(doc_id, _)| predicate_matches(**doc_id, predicate))
+            .map(|(&doc_id, doc)| ExpectedHit {
+                doc_id,
+                revision: doc.revision,
+                score: -squared_l2_f64(&doc.vector, query),
+            })
+            .collect::<Vec<_>>();
+        hits.sort_unstable_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
+    #[must_use]
     pub fn live_ids(&self) -> BTreeSet<u32> {
         self.live.keys().copied().collect()
     }
@@ -333,6 +375,119 @@ impl Model {
             .collect()
     }
 
+    /// Independently scores the harness's deliberately closed text vocabulary.
+    ///
+    /// This is a reference implementation of the documented Lucene BM25
+    /// formula and the fixture's analyzed position counts. It intentionally
+    /// does not call the production tokenizer, postings, or BM25 scorer.
+    #[must_use]
+    pub fn expected_lexical(&self, query_slot: u8, k: usize) -> Vec<ExpectedLexicalHit> {
+        let matching = self
+            .live
+            .iter()
+            .filter(|(doc_id, _)| (**doc_id % 4) == u32::from(query_slot % 4))
+            .collect::<Vec<_>>();
+        if matching.is_empty() || self.live.is_empty() {
+            return Vec::new();
+        }
+        let document_count = self.live.len() as f64;
+        let document_frequency = matching.len() as f64;
+        let total_tokens = self
+            .live
+            .iter()
+            .map(|(doc_id, document)| lexical_document_len(*doc_id, document.revision))
+            .sum::<u32>();
+        let average_document_length = f64::from(total_tokens) / document_count;
+        let idf =
+            (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
+        let mut hits = matching
+            .into_iter()
+            .map(|(doc_id, document)| {
+                let term_frequency = f64::from(*doc_id % 3 + 1);
+                let document_length = f64::from(lexical_document_len(*doc_id, document.revision));
+                let denominator = term_frequency
+                    + 1.2 * (1.0 - 0.75 + 0.75 * document_length / average_document_length);
+                ExpectedLexicalHit {
+                    doc_id: *doc_id,
+                    revision: document.revision,
+                    score: idf * (term_frequency * (1.2 + 1.0)) / denominator,
+                }
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
+    /// Independently applies the default alpha contract (0.7) or the
+    /// documented reciprocal-rank fallback (k=60) to complete model legs.
+    #[must_use]
+    pub fn expected_hybrid(
+        &self,
+        vector_query: &[f32],
+        query_slot: u8,
+        k: usize,
+    ) -> Vec<ExpectedHybridHit> {
+        let vector = self
+            .expected_exact(vector_query, self.len())
+            .into_iter()
+            .map(|hit| (hit.doc_id, -f64::from(hit.score)))
+            .collect::<Vec<_>>();
+        let lexical = self.expected_lexical(query_slot, self.len());
+        let vector_range = score_range(vector.iter().map(|(_, score)| *score));
+        let lexical_range = score_range(lexical.iter().map(|hit| hit.score));
+        let reciprocal_rank = vector_range.is_none() || lexical_range.is_none();
+        let mut accumulated = BTreeMap::<u32, ExpectedHybridHit>::new();
+        for (rank, (doc_id, squared_l2)) in vector.iter().enumerate() {
+            let contribution = if reciprocal_rank {
+                1.0 / (60.0 + rank.saturating_add(1) as f64)
+            } else {
+                let (minimum, maximum) = vector_range.expect("non-degenerate vector range");
+                0.7 * (maximum - squared_l2) / (maximum - minimum)
+            };
+            let hit = accumulated.entry(*doc_id).or_insert(ExpectedHybridHit {
+                doc_id: *doc_id,
+                vector_squared_l2: None,
+                lexical_bm25: None,
+                fused_score: 0.0,
+            });
+            hit.vector_squared_l2 = Some(*squared_l2);
+            hit.fused_score += contribution;
+        }
+        for (rank, lexical_hit) in lexical.iter().enumerate() {
+            let contribution = if reciprocal_rank {
+                1.0 / (60.0 + rank.saturating_add(1) as f64)
+            } else {
+                let (minimum, maximum) = lexical_range.expect("non-degenerate lexical range");
+                0.3 * (lexical_hit.score - minimum) / (maximum - minimum)
+            };
+            let hit = accumulated
+                .entry(lexical_hit.doc_id)
+                .or_insert(ExpectedHybridHit {
+                    doc_id: lexical_hit.doc_id,
+                    vector_squared_l2: None,
+                    lexical_bm25: None,
+                    fused_score: 0.0,
+                });
+            hit.lexical_bm25 = Some(lexical_hit.score);
+            hit.fused_score += contribution;
+        }
+        let mut hits = accumulated.into_values().collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .fused_score
+                .total_cmp(&left.fused_score)
+                .then_with(|| left.doc_id.cmp(&right.doc_id))
+        });
+        hits.truncate(k.min(hits.len()));
+        hits
+    }
+
     #[must_use]
     pub fn sealed_document_count(&self) -> usize {
         self.live
@@ -344,6 +499,52 @@ impl Model {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.live.is_empty()
+    }
+}
+
+fn lexical_document_len(doc_id: u32, _revision: u64) -> u32 {
+    let hexadecimal = format!("{doc_id:08x}");
+    let mut hexadecimal_runs = 0_u32;
+    let mut previous_was_digit = None;
+    for character in hexadecimal.chars() {
+        let is_digit = character.is_ascii_digit();
+        if previous_was_digit != Some(is_digit) {
+            hexadecimal_runs = hexadecimal_runs.saturating_add(1);
+            previous_was_digit = Some(is_digit);
+        }
+    }
+    // term repetitions + `common` + the positions occupied by
+    // `ze`, the hexadecimal runs, `r`, and the revision digits.
+    (doc_id % 3 + 1)
+        .saturating_add(4)
+        .saturating_add(hexadecimal_runs)
+}
+
+fn score_range(scores: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
+    let mut scores = scores;
+    let first = scores.next()?;
+    let (minimum, maximum, count) = scores.fold((first, first, 1_usize), |state, score| {
+        (state.0.min(score), state.1.max(score), state.2 + 1)
+    });
+    (count > 1 && minimum != maximum).then_some((minimum, maximum))
+}
+
+fn predicate_matches(doc_id: u32, predicate: program::PredicateKind) -> bool {
+    let numeric = program::numeric_column(doc_id);
+    let boolean = program::boolean_column(doc_id);
+    let string = program::string_column(doc_id);
+    match predicate {
+        program::PredicateKind::Eq => numeric == 1,
+        program::PredicateKind::In => matches!(numeric, 1 | 3),
+        program::PredicateKind::RangeTwoSided => (1..=3).contains(&numeric),
+        program::PredicateKind::RangeHalfOpen => numeric >= 2,
+        program::PredicateKind::Bool => boolean == Some(true),
+        program::PredicateKind::String => string == "even",
+        program::PredicateKind::Exists => boolean.is_some(),
+        program::PredicateKind::IsNull => boolean.is_none(),
+        program::PredicateKind::And => numeric >= 1 && boolean.is_some(),
+        program::PredicateKind::Or => numeric == 0 || string == "odd",
+        program::PredicateKind::Not => string != "odd",
     }
 }
 
