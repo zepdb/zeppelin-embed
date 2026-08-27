@@ -10,6 +10,13 @@ fn script() -> PathBuf {
         .join("scripts/adversarial.sh")
 }
 
+fn macos_supervisor() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace-tests package has a repository parent")
+        .join("scripts/adversarial-macos.sh")
+}
+
 fn run(arguments: &[&str], environment: &[(&str, &str)]) -> Output {
     let mut command = Command::new("/bin/bash");
     command.arg(script()).args(arguments).env_clear();
@@ -192,4 +199,23 @@ fn comma_separated_feature_campaigns_are_validated_and_preserve_order() {
     let episode = run(&["episode", "--campaign", "fts,hybrid-fusion"], &[]);
     assert!(!episode.status.success());
     assert!(stderr(&episode).contains("exactly one campaign"));
+}
+
+#[test]
+fn macos_supervisor_runs_overall_concurrently_and_reports_it_separately() {
+    let source = std::fs::read_to_string(macos_supervisor()).expect("read macOS supervisor");
+    for required in [
+        "--campaign overall",
+        "overall_pid=$!",
+        "wait \"$overall_pid\"",
+        "\"feature_episodes\": total_feature_episodes",
+        "\"overall_episodes\": overall_episodes",
+        "feature_episodes=11000 overall_episodes=1000",
+    ] {
+        assert!(source.contains(required), "supervisor omitted {required}");
+    }
+    assert!(
+        source.contains("--artifacts \"$overall_artifacts\""),
+        "overall evidence is not isolated in its own artifact root"
+    );
 }
