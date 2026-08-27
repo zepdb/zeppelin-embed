@@ -13,7 +13,6 @@ use crate::lifecycle::{Store, StoreError, StoreState};
 use crate::meta::{ColumnId, ColumnInput, ColumnStoreBuilder, ColumnValue, PredicateValue, Schema};
 use crate::scan::ScanStats;
 use crate::segment::SegmentId;
-use crate::vfs::StdVfs;
 use crate::wal::{LogSeq, WalWriteError};
 
 pub use purge::{PurgeError, PurgeReport, PurgeToken};
@@ -535,11 +534,39 @@ pub struct StoreLexicalSearchOutcome {
     pub diagnostics: crate::diag::QueryDiagnostics,
 }
 
+/// One explained structured lexical hit with owned persisted-source text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplainedLexicalCandidate {
+    /// Stable application document version.
+    pub document: DocumentVersion,
+    /// Larger-is-better boosted BM25 score.
+    pub score: f64,
+    /// Expansions that contributed to this row's score.
+    pub provenance: Vec<crate::fts::query::LexicalExpansion>,
+    /// UTF-8-valid window copied from the exact persisted source text.
+    pub snippet: crate::fts::query::OwnedLexicalSnippet,
+}
+
+/// Explained structured lexical hits from one pinned generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreStructuredLexicalSearchOutcome {
+    /// Globally ranked explained hits.
+    pub candidates: Vec<ExplainedLexicalCandidate>,
+    /// Every vocabulary expansion and its exact boost, in deterministic order.
+    pub expansions: Vec<crate::fts::query::LexicalExpansion>,
+    /// Active generation pinned with the immutable snapshot.
+    pub generation: u64,
+    /// Unconditional report of the lexical work actually performed.
+    pub diagnostics: crate::diag::QueryDiagnostics,
+}
+
 /// Store-level exact vector/lexical fusion over stable DocIds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreHybridSearchOutcome {
     /// Fused hits keyed by stable store document id.
     pub hits: Vec<crate::fusion::FusedHit<DocId>>,
+    /// Structured lexical expansions used by the lexical leg.
+    pub lexical_expansions: Vec<crate::fts::query::LexicalExpansion>,
     /// Active generation pinned with the immutable snapshot.
     pub generation: u64,
     /// Unconditional report including the existing fusion report type.
@@ -558,6 +585,26 @@ pub enum StoreLexicalError {
         /// Immutable segment that cannot join local rows to store DocIds.
         segment_id: SegmentId,
     },
+    /// A matching row predates the append-only stored-text region.
+    MissingStoredText {
+        /// Immutable segment containing the matching row.
+        segment_id: SegmentId,
+        /// Dense row whose source text was requested.
+        row: u32,
+    },
+    /// Stored text existed but none of the reported terms mapped to a source span.
+    MissingSnippetMatch {
+        /// Dense lexical source ordinal.
+        segment: u32,
+        /// Dense row within that source.
+        row: u32,
+    },
+    /// Structured query shape was invalid.
+    Structured(crate::fts::query::LexicalQueryError),
+    /// Snippet options were invalid.
+    Snippet(crate::fts::snippet::SnippetError),
+    /// The pinned tokenizer configuration could not be constructed.
+    Tokenizer(crate::fts::tokenizer::TokenizerError),
 }
 
 impl std::fmt::Display for StoreLexicalError {
@@ -569,6 +616,17 @@ impl std::fmt::Display for StoreLexicalError {
                 formatter,
                 "sealed lexical segment {segment_id} has no document identity"
             ),
+            Self::MissingStoredText { segment_id, row } => write!(
+                formatter,
+                "sealed lexical segment {segment_id} row {row} has no stored source text"
+            ),
+            Self::MissingSnippetMatch { segment, row } => write!(
+                formatter,
+                "lexical source {segment} row {row} has no snippet match span"
+            ),
+            Self::Structured(error) => error.fmt(formatter),
+            Self::Snippet(error) => error.fmt(formatter),
+            Self::Tokenizer(error) => error.fmt(formatter),
         }
     }
 }
@@ -578,7 +636,12 @@ impl std::error::Error for StoreLexicalError {
         match self {
             Self::Query(error) => Some(error),
             Self::Lexical(error) => Some(error),
-            Self::MissingDocumentIdentity { .. } => None,
+            Self::Structured(error) => Some(error),
+            Self::Snippet(error) => Some(error),
+            Self::Tokenizer(error) => Some(error),
+            Self::MissingDocumentIdentity { .. }
+            | Self::MissingStoredText { .. }
+            | Self::MissingSnippetMatch { .. } => None,
         }
     }
 }
@@ -598,6 +661,24 @@ impl From<StoreError> for StoreLexicalError {
 impl From<crate::planner::LexicalFilterError> for StoreLexicalError {
     fn from(error: crate::planner::LexicalFilterError) -> Self {
         Self::Lexical(error)
+    }
+}
+
+impl From<crate::fts::query::LexicalQueryError> for StoreLexicalError {
+    fn from(error: crate::fts::query::LexicalQueryError) -> Self {
+        Self::Structured(error)
+    }
+}
+
+impl From<crate::fts::snippet::SnippetError> for StoreLexicalError {
+    fn from(error: crate::fts::snippet::SnippetError) -> Self {
+        Self::Snippet(error)
+    }
+}
+
+impl From<crate::fts::tokenizer::TokenizerError> for StoreLexicalError {
+    fn from(error: crate::fts::tokenizer::TokenizerError) -> Self {
+        Self::Tokenizer(error)
     }
 }
 
@@ -814,7 +895,7 @@ impl Store {
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
         let prepared = purge::prepare_sealed_tombstones(
-            &StdVfs,
+            self.vfs.as_ref(),
             &self.directory,
             &snapshot,
             &sealed,
@@ -833,7 +914,7 @@ impl Store {
             Ok(sequences) => sequences,
             Err(error) => {
                 if let Some(prepared) = prepared {
-                    prepared.abort(&StdVfs, &self.directory, self.durability_policy)?;
+                    prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
                 }
                 return Err(error.into());
             }
@@ -846,7 +927,14 @@ impl Store {
         }
         let seq = LogSeq::new(sequences.end.get().saturating_sub(1));
         let committed = prepared
-            .map(|prepared| prepared.commit(self, &StdVfs, &self.directory, self.durability_policy))
+            .map(|prepared| {
+                prepared.commit(
+                    self,
+                    self.vfs.as_ref(),
+                    &self.directory,
+                    self.durability_policy,
+                )
+            })
             .transpose()?;
         let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
             let mut published = self
@@ -871,7 +959,7 @@ impl Store {
             Vec::new()
         };
         purge::unlink_replaced_segments(
-            &StdVfs,
+            self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,
             self.durability_policy,
@@ -928,7 +1016,7 @@ impl Store {
             .segment
             .tombstone(&batch.doc_ids, &self.accounting)?;
         let prepared = purge::prepare_sealed_tombstones(
-            &StdVfs,
+            self.vfs.as_ref(),
             &self.directory,
             &snapshot,
             &sealed,
@@ -944,7 +1032,7 @@ impl Store {
             Ok(seq) => seq,
             Err(error) => {
                 if let Some(prepared) = prepared {
-                    prepared.abort(&StdVfs, &self.directory, self.durability_policy)?;
+                    prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
                 }
                 return Err(error.into());
             }
@@ -953,7 +1041,14 @@ impl Store {
             next.set_sequence(row, seq)?;
         }
         let committed = prepared
-            .map(|prepared| prepared.commit(self, &StdVfs, &self.directory, self.durability_policy))
+            .map(|prepared| {
+                prepared.commit(
+                    self,
+                    self.vfs.as_ref(),
+                    &self.directory,
+                    self.durability_policy,
+                )
+            })
             .transpose()?;
         let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
             let mut published = self
@@ -978,7 +1073,7 @@ impl Store {
             Vec::new()
         };
         purge::unlink_replaced_segments(
-            &StdVfs,
+            self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,
             self.durability_policy,

@@ -13,9 +13,9 @@ use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
 use crate::segment::SegmentId;
 use crate::segment::layout::Int8Factors;
-use crate::segment::reader::SegmentReader;
+use crate::segment::reader::{SegmentReader, validate_header_with_vfs};
 use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 use crate::wal::WalReader;
 
 #[cfg(test)]
@@ -205,7 +205,7 @@ impl Store {
     /// one complete segment supplied here; this is snapshot replacement, not
     /// task 10's future append/ingest behavior.
     pub fn seal_snapshot(&self, segment: PreparedSegment<'_>) -> Result<u64, StoreError> {
-        self.seal_snapshot_with_vfs(segment, &StdVfs)
+        self.seal_snapshot_with_vfs(segment, self.vfs.as_ref())
     }
 
     fn seal_snapshot_with_vfs(
@@ -268,7 +268,7 @@ impl Store {
             self.durability_policy,
         )
         .map_err(StoreError::Manifest)?;
-        let remapped = PublishedSnapshot::load(&self.directory, &self.accounting)?;
+        let remapped = PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, vfs)?;
         let mut published = self
             .snapshot
             .write()
@@ -330,9 +330,30 @@ impl PublishedSnapshot {
         }
     }
 
-    pub(crate) fn load(directory: &Path, accounting: &Arc<Accounting>) -> Result<Self, StoreError> {
+    pub(crate) fn load_on_vfs(
+        directory: &Path,
+        accounting: &Arc<Accounting>,
+        vfs: &dyn Vfs,
+    ) -> Result<Self, StoreError> {
+        Self::load_impl(directory, accounting, vfs, false)
+    }
+
+    pub(crate) fn load_for_open_on_vfs(
+        directory: &Path,
+        accounting: &Arc<Accounting>,
+        vfs: &dyn Vfs,
+    ) -> Result<Self, StoreError> {
+        Self::load_impl(directory, accounting, vfs, true)
+    }
+
+    fn load_impl(
+        directory: &Path,
+        accounting: &Arc<Accounting>,
+        vfs: &dyn Vfs,
+        probe_segment_headers: bool,
+    ) -> Result<Self, StoreError> {
         let manifest_path = directory.join(MANIFEST_FILE);
-        match StdVfs.open(&manifest_path) {
+        match vfs.open(&manifest_path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::empty(0));
@@ -344,10 +365,15 @@ impl PublishedSnapshot {
                 });
             }
         }
-        let wal =
-            WalReader::open(&StdVfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
-        let manifest = load_manifest(&StdVfs, &manifest_path, wal.durable_end())
-            .map_err(StoreError::Manifest)?;
+        let wal = WalReader::open(vfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
+        let manifest =
+            load_manifest(vfs, &manifest_path, wal.durable_end()).map_err(StoreError::Manifest)?;
+        if probe_segment_headers {
+            for expected in &manifest.segments {
+                let path = directory.join(expected.id.file_name());
+                validate_header_with_vfs(vfs, &path, expected).map_err(StoreError::Segment)?;
+            }
+        }
         Self::from_manifest(directory, &manifest, accounting)
     }
 
@@ -389,6 +415,10 @@ impl PublishedSnapshot {
                     })?;
                     segments.reserve_additional_bytes(bytes)
                 })?;
+            // Stored text is an optional append-only region. Older segments
+            // omit it, while a present v1 region must be semantically valid
+            // before the snapshot becomes reachable by any query.
+            let _ = reader.stored_text().map_err(StoreError::Segment)?;
             segments.push(reader)?;
         }
         let mapped_bytes = segments.iter().try_fold(0_u64, |total, segment| {

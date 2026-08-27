@@ -21,11 +21,10 @@ use crate::segment::layout::Int8Factors;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
-    write_segment_with_documents, write_segment_with_documents_and_metadata,
-    write_segment_with_documents_and_postings, write_segment_with_documents_metadata_and_postings,
+    SegmentStoredText, write_segment_with_documents_payloads,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 use crate::wal::LogSeq;
 
 use super::{DocId, IngestDocument, wal_payload};
@@ -377,7 +376,7 @@ impl Store {
                 source,
             })
         })?;
-        self.purge_inner(ids, available, &StdVfs)
+        self.purge_inner(ids, available, self.vfs.as_ref())
     }
 
     /// Test seam that supplies a deterministic free-space observation.
@@ -387,7 +386,7 @@ impl Store {
         ids: &[DocId],
         available_bytes: u64,
     ) -> Result<PurgeToken, PurgeError> {
-        self.purge_inner(ids, available_bytes, &StdVfs)
+        self.purge_inner(ids, available_bytes, self.vfs.as_ref())
     }
 
     fn purge_inner(
@@ -499,7 +498,7 @@ impl Store {
 
     /// Resolves only after rewritten artifacts are committed and old paths are unlinked.
     pub fn await_physical_purge(&self, token: PurgeToken) -> Result<PurgeReport, PurgeError> {
-        self.await_physical_purge_on_vfs(token, &StdVfs)
+        self.await_physical_purge_on_vfs(token, self.vfs.as_ref())
     }
 
     /// Test seam that runs the purge protocol through an observable filesystem.
@@ -711,9 +710,9 @@ impl Store {
 
     pub(crate) fn recover_pending_physical_purge(&self) -> Result<(), PurgeError> {
         let path = self.directory.join(PURGE_INTENT_FILE);
-        match StdVfs.open(&path) {
+        match self.vfs.open(&path) {
             Ok(_) => {
-                let intent = read_intent(&StdVfs, &self.directory)?;
+                let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
                 let generation = self
                     .active
                     .lock()
@@ -1088,6 +1087,27 @@ fn rewrite_segment(
             );
         }
     }
+    let source_text = reader.stored_text().map_err(StoreError::Segment)?;
+    let mut text_present = Vec::with_capacity(survivors.len());
+    let mut text_end_offsets = Vec::with_capacity(survivors.len());
+    let mut text_bytes = Vec::new();
+    if let Some(source) = source_text {
+        for row in survivors {
+            match source.row(*row).ok_or_else(|| {
+                StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                    "stored text row {row} is missing"
+                )))
+            })? {
+                Some(text) => {
+                    text_present.push(1);
+                    text_bytes.extend_from_slice(text.as_bytes());
+                }
+                None => text_present.push(0),
+            }
+            text_end_offsets
+                .push(u64::try_from(text_bytes.len()).map_err(|_| StoreError::ActiveRowOverflow)?);
+        }
+    }
     let build = SegmentBuild {
         id: replacement_id,
         scheme: reader.meta().scheme,
@@ -1117,29 +1137,15 @@ fn rewrite_segment(
         end_offsets: &metadata_offsets,
         bytes: &metadata_bytes,
     });
-    let written = match (metadata, postings.as_deref()) {
-        (None, None) => write_segment_with_documents(vfs, directory, build, documents, policy),
-        (Some(metadata), None) => write_segment_with_documents_and_metadata(
-            vfs, directory, build, documents, metadata, policy,
-        ),
-        (None, Some(postings)) => write_segment_with_documents_and_postings(
-            vfs,
-            directory,
-            build,
-            documents,
-            SegmentPostings { bytes: postings },
-            policy,
-        ),
-        (Some(metadata), Some(postings)) => write_segment_with_documents_metadata_and_postings(
-            vfs,
-            directory,
-            build,
-            documents,
-            metadata,
-            SegmentPostings { bytes: postings },
-            policy,
-        ),
-    }
+    let text = source_text.map(|_| SegmentStoredText {
+        present: &text_present,
+        end_offsets: &text_end_offsets,
+        bytes: &text_bytes,
+    });
+    let postings = postings.as_deref().map(|bytes| SegmentPostings { bytes });
+    let written = write_segment_with_documents_payloads(
+        vfs, directory, build, documents, metadata, text, postings, policy,
+    )
     .map_err(StoreError::Segment)?;
     let mut written = written;
     written.clustering_key_range = clustering_range(&columns, &alive)?;

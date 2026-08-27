@@ -5,7 +5,6 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
-use std::time::Instant;
 
 use crate::scan::topk::BoundedTopK;
 use crate::scan::{
@@ -289,7 +288,7 @@ impl<'a> QueryExecution<'a> {
             if let Some(deadline) = self.control.deadline()
                 && self.control.error().is_none()
             {
-                let now = Instant::now();
+                let now = self.control.now().unwrap_or(deadline);
                 if now >= deadline {
                     self.control.mark_timed_out();
                     continue;

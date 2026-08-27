@@ -2,6 +2,7 @@
 
 mod budget;
 mod cancel;
+mod clock;
 mod close;
 pub mod durability;
 pub(crate) mod graph_cache;
@@ -15,11 +16,15 @@ pub(crate) mod stats;
 pub use cancel::{
     CancelToken, Deadline, DeadlineError, QueryCancellation, QueryControl, QueryError,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use clock::ManualMonotonicClock;
+pub use clock::{MonotonicClock, SystemMonotonicClock};
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
 };
 pub use stats::Stats;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -29,6 +34,60 @@ use durability::{CommitTier, DurabilityMode, DurabilityPolicy, DurabilityPolicyE
 use lock::{StoreLock, StoreLockError};
 
 use self::close::BackgroundThread;
+
+/// Store-owned infrastructure injected only by deterministic tests.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct StoreTestDependencies {
+    vfs: Arc<dyn crate::vfs::Vfs>,
+    clock: Arc<dyn MonotonicClock>,
+    hybrid_leg_fault: Option<HybridLegTestFault>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StoreTestDependencies {
+    /// Binds one filesystem and monotonic clock to every operation performed
+    /// by a test store handle.
+    #[must_use]
+    pub fn new(vfs: Arc<dyn crate::vfs::Vfs>, clock: Arc<dyn MonotonicClock>) -> Self {
+        Self {
+            vfs,
+            clock,
+            hybrid_leg_fault: None,
+        }
+    }
+
+    /// Arms one Store-owned hybrid fault; it is consumed exactly once.
+    #[must_use]
+    pub const fn with_hybrid_leg_fault(mut self, fault: HybridLegTestFault) -> Self {
+        self.hybrid_leg_fault = Some(fault);
+        self
+    }
+}
+
+/// Narrow test-only fault at a Store-owned hybrid leg seam.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum HybridLegTestFault {
+    /// Panics after the named leg starts and before it can publish output.
+    Panic(crate::fusion::FusionLeg),
+}
+
+/// Facts emitted by one Store-owned parallel hybrid execution.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct HybridExecutionReceipt {
+    /// Thread that executed vector work.
+    pub vector_thread: std::thread::ThreadId,
+    /// Name of the scoped lexical worker.
+    pub lexical_thread_name: Option<String>,
+    /// Vector leg reached a terminal result before return.
+    pub vector_completed: bool,
+    /// Lexical leg reached a terminal result before return.
+    pub lexical_completed: bool,
+}
 
 /// Default grace period given to admitted readers before close cancellation.
 pub const DEFAULT_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
@@ -755,6 +814,8 @@ impl std::error::Error for StoreError {
 /// One explicitly closeable embedded-store handle.
 pub struct Store {
     pub(crate) directory: PathBuf,
+    pub(crate) vfs: Arc<dyn crate::vfs::Vfs>,
+    pub(crate) clock: Arc<dyn MonotonicClock>,
     pub(crate) state: Mutex<StoreState>,
     pub(crate) state_changed: Condvar,
     pub(crate) background: Mutex<Option<BackgroundThread>>,
@@ -774,6 +835,10 @@ pub struct Store {
     pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) schema: crate::meta::Schema,
+    #[cfg(any(test, feature = "test-support"))]
+    hybrid_leg_fault: Mutex<Option<HybridLegTestFault>>,
+    #[cfg(any(test, feature = "test-support"))]
+    hybrid_execution_receipt: Mutex<Option<HybridExecutionReceipt>>,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
@@ -781,6 +846,23 @@ pub struct Store {
 impl Store {
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
+        Self::open_with_infrastructure(
+            path,
+            options,
+            Arc::new(crate::vfs::StdVfs),
+            Arc::new(SystemMonotonicClock),
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+        )
+    }
+
+    fn open_with_infrastructure(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        vfs: Arc<dyn crate::vfs::Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+        #[cfg(any(test, feature = "test-support"))] hybrid_leg_fault: Option<HybridLegTestFault>,
+    ) -> Result<Self, StoreError> {
         let path = path.as_ref();
         let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
             .map_err(StoreError::Durability)?;
@@ -819,13 +901,21 @@ impl Store {
             AccessMode::ReadOnly => None,
         };
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
-        let manifest_exists = manifest_path
-            .try_exists()
-            .map_err(|source| StoreError::Io {
-                path: manifest_path,
-                source,
-            })?;
-        let snapshot = PublishedSnapshot::load(path, &accounting)?;
+        let manifest_exists = match vfs.open(&manifest_path) {
+            Ok(_) => true,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(StoreError::Io {
+                    path: manifest_path,
+                    source,
+                });
+            }
+        };
+        // A persisted store gets one bounded header probe through the
+        // Store-owned VFS before mmap becomes the query data plane. Internal
+        // manifest-only remaps deliberately skip this probe so their exact
+        // zero-segment-read accounting contracts remain intact.
+        let snapshot = PublishedSnapshot::load_for_open_on_vfs(path, &accounting, vfs.as_ref())?;
         let schema = if manifest_exists {
             let persisted = snapshot.schema().clone();
             if let Some(declared) = options.schema.as_ref()
@@ -864,6 +954,7 @@ impl Store {
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
         let (active, recovered_wal) = crate::ingest::ActiveState::recover(
+            vfs.as_ref(),
             &wal_path,
             snapshot.generation(),
             absorbed_through,
@@ -875,7 +966,7 @@ impl Store {
             && (options.epoch.is_some() || options.schema.is_some())
         {
             crate::manifest::io::commit_manifest(
-                &crate::vfs::StdVfs,
+                vfs.as_ref(),
                 path,
                 &crate::manifest::Manifest {
                     generation: active.generation,
@@ -901,13 +992,19 @@ impl Store {
         let wal_writer = match options.access_mode {
             AccessMode::ReadWrite => Some(match recovered_wal {
                 Some(recovered) => crate::ingest::StoreWal::resume(
+                    vfs.as_ref(),
                     &wal_path,
                     recovered,
                     durability_policy,
                     absorbed_through,
                     &accounting,
                 )?,
-                None => crate::ingest::StoreWal::create(&wal_path, durability_policy, &accounting)?,
+                None => crate::ingest::StoreWal::create(
+                    vfs.as_ref(),
+                    &wal_path,
+                    durability_policy,
+                    &accounting,
+                )?,
             }),
             AccessMode::ReadOnly => {
                 drop(recovered_wal);
@@ -931,6 +1028,8 @@ impl Store {
         };
         let store = Self {
             directory: path.to_path_buf(),
+            vfs,
+            clock,
             state: Mutex::new(StoreState::Open),
             state_changed: Condvar::new(),
             background: Mutex::new(background),
@@ -948,6 +1047,10 @@ impl Store {
             epoch_alias: crate::epoch::EpochAliasCell::new(persisted_epoch.or(declared_epoch)),
             epoch: options.epoch,
             schema,
+            #[cfg(any(test, feature = "test-support"))]
+            hybrid_leg_fault: Mutex::new(hybrid_leg_fault),
+            #[cfg(any(test, feature = "test-support"))]
+            hybrid_execution_receipt: Mutex::new(None),
             #[cfg(test)]
             teardown_probe,
         };
@@ -958,6 +1061,33 @@ impl Store {
                 detail: error.to_string(),
             })?;
         Ok(store)
+    }
+
+    /// Opens a store with deterministic infrastructure for adversarial tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn open_with_test_dependencies(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        dependencies: StoreTestDependencies,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_infrastructure(
+            path,
+            options,
+            dependencies.vfs,
+            dependencies.clock,
+            dependencies.hybrid_leg_fault,
+        )
+    }
+
+    /// Takes the most recent Store-owned hybrid execution receipt.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn take_hybrid_execution_receipt(&self) -> Option<HybridExecutionReceipt> {
+        self.hybrid_execution_receipt
+            .lock()
+            .ok()
+            .and_then(|mut receipt| receipt.take())
     }
 
     /// Carries the committed epoch registry forward unchanged.
@@ -1071,6 +1201,7 @@ impl Store {
         options: crate::scan::ScanOptions,
         control: QueryControl,
     ) -> Result<crate::scan::ScanOutcome, QueryError> {
+        let control = control.with_clock(Arc::clone(&self.clock));
         let state = self
             .state
             .lock()
@@ -1154,6 +1285,7 @@ impl Store {
         k: usize,
         control: QueryControl,
     ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
+        let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let state = self
             .state
@@ -1300,6 +1432,219 @@ impl Store {
         })
     }
 
+    /// Runs a structured lexical query and returns provenance plus snippets
+    /// copied from the exact row text pinned for this generation.
+    pub fn search_lexical_structured(
+        &self,
+        query: &crate::fts::query::LexicalQuery,
+        k: usize,
+        snippet_bytes: usize,
+        control: QueryControl,
+    ) -> Result<crate::ingest::StoreStructuredLexicalSearchOutcome, crate::ingest::StoreLexicalError>
+    {
+        let control = control.with_clock(Arc::clone(&self.clock));
+        let started = std::time::Instant::now();
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing).into()),
+            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed).into()),
+        }
+        let active_guard = self.active.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "active segment",
+            })
+        })?;
+        let active_state = active_guard
+            .as_ref()
+            .ok_or(QueryError::Store(StoreError::Closed))?;
+        let generation = active_state.generation;
+        let active = Arc::clone(&active_state.segment);
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| {
+                QueryError::Store(StoreError::Synchronization {
+                    component: "published snapshot",
+                })
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(QueryError::Store(StoreError::Closed))?;
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let active_query = ActiveQuery {
+            count: &self.active_queries,
+        };
+        drop(active_guard);
+        drop(state);
+
+        let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
+        let cancellation = QueryCancellation::new(&control, &lease);
+        cancellation.check_graph().map_err(QueryError::Scan)?;
+        let analyzer = crate::fts::tokenizer::Analyzer::new(
+            crate::fts::tokenizer::TokenizerConfig::text_default(),
+        )?;
+        let mut index = crate::fts::index::LexicalIndex::new();
+        let mut alive_sets = Vec::new();
+        let mut sources = Vec::new();
+        for (ordinal, segment) in snapshot.segments().iter().enumerate() {
+            cancellation.check_graph().map_err(QueryError::Scan)?;
+            if let Some(postings) = segment.query_postings().map_err(QueryError::Store)? {
+                if postings.row_count() != 0
+                    && segment
+                        .document_version(0)
+                        .map_err(StoreError::Segment)
+                        .map_err(QueryError::Store)?
+                        .is_none()
+                {
+                    return Err(crate::ingest::StoreLexicalError::MissingDocumentIdentity {
+                        segment_id: segment.meta().id,
+                    });
+                }
+                let alive = segment.query_alive().map_err(QueryError::Store)?;
+                index
+                    .push_shared_with_live_rows(Arc::clone(&postings), alive.alive_bitmap())
+                    .map_err(crate::planner::LexicalFilterError::from)?;
+                alive_sets.push(alive);
+                sources.push(StructuredLexicalSource::Sealed(ordinal));
+            }
+        }
+        if active.has_text() {
+            let sealed = active
+                .sealed_lexical(&self.accounting)
+                .map_err(QueryError::Store)?;
+            let alive = Arc::new(active.alive().map_err(QueryError::Store)?);
+            index
+                .push_shared_with_live_rows(sealed, alive.alive_bitmap())
+                .map_err(crate::planner::LexicalFilterError::from)?;
+            alive_sets.push(alive);
+            sources.push(StructuredLexicalSource::Active);
+        }
+        let vocabulary = crate::fts::query::vocabulary(index.terms());
+        let expansions = crate::fts::query::expand(query, &vocabulary)?;
+        let allow_lists = alive_sets
+            .iter()
+            .map(|alive| alive.alive_bitmap())
+            .collect::<Vec<_>>();
+        let mut aggregate = BTreeMap::<
+            crate::fts::search::GlobalDocId,
+            (f64, Vec<crate::fts::query::LexicalExpansion>),
+        >::new();
+        let mut counters = crate::fts::search::SearchCounters::default();
+        let fields = query.fields();
+        let all_rows = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
+        for expansion in &expansions {
+            cancellation.check_graph().map_err(QueryError::Scan)?;
+            let term_query = crate::fts::search::TermQuery {
+                terms: vec![expansion.term.clone()],
+                fields: fields.clone(),
+            };
+            let scored = crate::fts::search::search_allow_list_driven_controlled(
+                &index,
+                &term_query,
+                all_rows,
+                crate::fts::bm25::Bm25Params::beir(),
+                &allow_lists,
+                || cancellation.check_graph(),
+            )
+            .map_err(|error| match error {
+                crate::fts::search::ControlledSearchError::Index(error) => {
+                    crate::ingest::StoreLexicalError::from(
+                        crate::planner::LexicalFilterError::from(error),
+                    )
+                }
+                crate::fts::search::ControlledSearchError::Control(error) => {
+                    crate::ingest::StoreLexicalError::from(QueryError::Scan(error))
+                }
+            })?;
+            counters.docs_evaluated = counters
+                .docs_evaluated
+                .saturating_add(scored.counters.docs_evaluated);
+            counters.postings_decoded = counters
+                .postings_decoded
+                .saturating_add(scored.counters.postings_decoded);
+            counters.blocks_decoded = counters
+                .blocks_decoded
+                .saturating_add(scored.counters.blocks_decoded);
+            counters.blocks_skipped = counters
+                .blocks_skipped
+                .saturating_add(scored.counters.blocks_skipped);
+            let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
+            for hit in scored.hits {
+                let entry = aggregate.entry(hit.doc).or_default();
+                entry.0 += hit.score * boost;
+                entry.1.push(expansion.clone());
+            }
+        }
+        let mut scored = Vec::with_capacity(aggregate.len());
+        for (doc, (score, provenance)) in aggregate {
+            if let Some((terms, slop)) = query.phrase_constraint() {
+                let (text, _) = structured_lexical_row(&snapshot, &active, &sources, doc)?;
+                if !crate::fts::query::phrase_matches(&analyzer, text, terms, slop) {
+                    continue;
+                }
+            }
+            scored.push((doc, score, provenance));
+        }
+        scored.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.0.cmp(&right.0))
+        });
+        scored.truncate(k);
+        let mut candidates = Vec::with_capacity(scored.len());
+        for (doc, score, provenance) in scored {
+            cancellation.check_graph().map_err(QueryError::Scan)?;
+            let (text, document) = structured_lexical_row(&snapshot, &active, &sources, doc)?;
+            let terms = provenance
+                .iter()
+                .map(|entry| entry.term.clone())
+                .collect::<Vec<_>>();
+            let snippet =
+                crate::fts::snippet::best_window(&analyzer, text, &terms, snippet_bytes, true)?
+                    .ok_or(crate::ingest::StoreLexicalError::MissingSnippetMatch {
+                        segment: doc.segment,
+                        row: doc.row,
+                    })?;
+            let snippet_text = snippet
+                .text(text)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            candidates.push(crate::ingest::ExplainedLexicalCandidate {
+                document,
+                score,
+                provenance,
+                snippet: crate::fts::query::OwnedLexicalSnippet {
+                    text: snippet_text.to_owned(),
+                    source: snippet.window,
+                    highlights: snippet.highlights,
+                },
+            });
+        }
+        cancellation.check_graph().map_err(QueryError::Scan)?;
+        let diagnostics = crate::diag::QueryDiagnostics::lexical(crate::diag::LexicalDiagnostics {
+            snapshot_generation: generation,
+            indexed_through_seq: active
+                .indexed_through_seq()
+                .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
+            requested_k: k,
+            returned: candidates.len(),
+            counters,
+            elapsed: started.elapsed(),
+        });
+        drop(active_query);
+        Ok(crate::ingest::StoreStructuredLexicalSearchOutcome {
+            candidates,
+            expansions,
+            generation,
+            diagnostics,
+        })
+    }
+
     /// Runs the store vector engine and exact lexical leg against one pinned
     /// generation, then delegates every blend decision to `crate::fusion`.
     pub fn search_hybrid(
@@ -1310,8 +1655,45 @@ impl Store {
         options: impl Into<SearchOptions>,
         control: QueryControl,
     ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
+        self.search_hybrid_inner(
+            vector_query,
+            PinnedLexicalQuery::Term(lexical_query),
+            hybrid_query,
+            options.into(),
+            control,
+        )
+    }
+
+    /// Runs vector work with any structured lexical operator against the
+    /// same pinned snapshot and generation.
+    pub fn search_hybrid_structured(
+        &self,
+        vector_query: crate::ingest::SearchRequest<'_>,
+        lexical_query: &crate::fts::query::LexicalQuery,
+        hybrid_query: &crate::fusion::HybridQuery,
+        options: impl Into<SearchOptions>,
+        control: QueryControl,
+    ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
+        self.search_hybrid_inner(
+            vector_query,
+            PinnedLexicalQuery::Structured(lexical_query),
+            hybrid_query,
+            options.into(),
+            control,
+        )
+    }
+
+    fn search_hybrid_inner(
+        &self,
+        vector_query: crate::ingest::SearchRequest<'_>,
+        lexical_query: PinnedLexicalQuery<'_>,
+        hybrid_query: &crate::fusion::HybridQuery,
+        options: SearchOptions,
+        control: QueryControl,
+    ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
+        let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
-        let mut options = options.into();
+        let mut options = options;
         if options.explicit_tier().is_none() {
             options = options.with_tier(SearchTier::Exact);
         }
@@ -1319,21 +1701,111 @@ impl Store {
             .admit_vector_search(options)
             .map_err(crate::fusion::FusionError::from)?;
         let vector_k = hybrid_vector_candidate_limit(&admitted.snapshot, &admitted.active_segment)?;
-        let vector_outcome = search_pinned(
-            admitted.pool.as_deref(),
-            &admitted.snapshot,
-            &admitted.active_segment,
-            &self.accounting,
-            admitted.generation,
-            self.epoch_identity(),
-            vector_query,
-            vector_k,
-            options,
-            control.clone(),
-            GraphBoundMode::Shared,
-            started,
-        )
-        .map_err(crate::fusion::FusionError::from)?;
+        let panic_vector = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Vector);
+        let panic_lexical = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Lexical);
+        let parallel = std::thread::scope(|scope| {
+            let lexical_thread = std::thread::Builder::new()
+                .name("zeppelin-fts".to_owned())
+                .spawn_scoped(scope, || {
+                    let name = std::thread::current().name().map(str::to_owned);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if panic_lexical {
+                            std::panic::panic_any("injected lexical hybrid leg panic");
+                        }
+                        let lease = SnapshotLease::new_at(
+                            Arc::clone(&admitted.snapshot),
+                            admitted.generation,
+                        );
+                        let cancellation = QueryCancellation::new(&control, &lease);
+                        cancellation
+                            .check_graph()
+                            .map_err(QueryError::Scan)
+                            .map_err(crate::fusion::FusionError::from)?;
+                        match lexical_query {
+                            PinnedLexicalQuery::Term(query) => exact_lexical_leg(
+                                &admitted.snapshot,
+                                &admitted.active_segment,
+                                &self.accounting,
+                                query,
+                                &cancellation,
+                            ),
+                            PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
+                                &admitted.snapshot,
+                                &admitted.active_segment,
+                                &self.accounting,
+                                query,
+                                &cancellation,
+                            ),
+                        }
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err(crate::fusion::FusionError::LegPanic {
+                            leg: crate::fusion::FusionLeg::Lexical,
+                            detail: "lexical hybrid leg panicked",
+                        })
+                    });
+                    (name, result)
+                })
+                .map_err(|error| crate::fusion::FusionError::LegThreadStart {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    detail: error.to_string(),
+                })?;
+            let vector_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if panic_vector {
+                    std::panic::panic_any("injected vector hybrid leg panic");
+                }
+                search_pinned(
+                    admitted.pool.as_deref(),
+                    &admitted.snapshot,
+                    &admitted.active_segment,
+                    &self.accounting,
+                    admitted.generation,
+                    self.epoch_identity(),
+                    vector_query,
+                    vector_k,
+                    options,
+                    control.clone(),
+                    GraphBoundMode::Shared,
+                    started,
+                )
+                .map_err(crate::fusion::FusionError::from)
+            }))
+            .unwrap_or_else(|_| {
+                Err(crate::fusion::FusionError::LegPanic {
+                    leg: crate::fusion::FusionLeg::Vector,
+                    detail: "vector hybrid leg panicked",
+                })
+            });
+            let (lexical_thread_name, lexical_result) =
+                lexical_thread.join().unwrap_or_else(|_| {
+                    (
+                        Some("zeppelin-fts".to_owned()),
+                        Err(crate::fusion::FusionError::LegPanic {
+                            leg: crate::fusion::FusionLeg::Lexical,
+                            detail: "lexical hybrid leg panicked",
+                        }),
+                    )
+                });
+            Ok::<_, crate::fusion::FusionError>((
+                vector_result,
+                lexical_result,
+                lexical_thread_name,
+            ))
+        })?;
+        let (vector_result, lexical_result, lexical_thread_name) = parallel;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Ok(mut receipt) = self.hybrid_execution_receipt.lock() {
+            *receipt = Some(HybridExecutionReceipt {
+                vector_thread: std::thread::current().id(),
+                lexical_thread_name,
+                vector_completed: true,
+                lexical_completed: true,
+            });
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = lexical_thread_name;
+        let (vector_outcome, (lexical, lexical_counters, lexical_expansions)) =
+            resolve_hybrid_leg_results(vector_result, lexical_result)?;
         let crate::ingest::SearchOutcome {
             candidates,
             stats: scan,
@@ -1354,20 +1826,6 @@ impl Store {
                 }
             })
             .collect();
-
-        let lease = SnapshotLease::new_at(Arc::clone(&admitted.snapshot), generation);
-        let cancellation = QueryCancellation::new(&control, &lease);
-        cancellation
-            .check_graph()
-            .map_err(QueryError::Scan)
-            .map_err(crate::fusion::FusionError::from)?;
-        let (lexical, lexical_counters) = exact_lexical_leg(
-            &admitted.snapshot,
-            &admitted.active_segment,
-            &self.accounting,
-            lexical_query,
-            &cancellation,
-        )?;
         let fused = crate::fusion::execute_hybrid(
             hybrid_query,
             || Ok(vector),
@@ -1392,9 +1850,26 @@ impl Store {
         });
         Ok(crate::ingest::StoreHybridSearchOutcome {
             hits: fused.hits,
+            lexical_expansions,
             generation,
             diagnostics,
         })
+    }
+
+    fn consume_hybrid_test_fault(&self, leg: crate::fusion::FusionLeg) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let Ok(mut fault) = self.hybrid_leg_fault.lock() else {
+                return false;
+            };
+            if matches!(*fault, Some(HybridLegTestFault::Panic(candidate)) if candidate == leg) {
+                *fault = None;
+                return true;
+            }
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = leg;
+        false
     }
 
     fn search_with_graph_bound_mode(
@@ -1405,6 +1880,7 @@ impl Store {
         control: QueryControl,
         graph_bound_mode: GraphBoundMode,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let admitted = self.admit_vector_search(options)?;
         search_pinned(
@@ -1521,10 +1997,275 @@ impl Store {
     }
 }
 
+#[derive(Clone, Copy)]
+enum StructuredLexicalSource {
+    Sealed(usize),
+    Active,
+}
+
+#[derive(Clone, Copy)]
+enum PinnedLexicalQuery<'a> {
+    Term(&'a crate::fts::search::TermQuery),
+    Structured(&'a crate::fts::query::LexicalQuery),
+}
+
+fn structured_lexical_row<'a>(
+    snapshot: &'a PublishedSnapshot,
+    active: &'a crate::ingest::ActiveSegment,
+    sources: &[StructuredLexicalSource],
+    doc: crate::fts::search::GlobalDocId,
+) -> Result<(&'a str, crate::ingest::DocumentVersion), crate::ingest::StoreLexicalError> {
+    let source = usize::try_from(doc.segment)
+        .ok()
+        .and_then(|slot| sources.get(slot))
+        .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+    let row =
+        usize::try_from(doc.row).map_err(|_| QueryError::Store(StoreError::ActiveRowOverflow))?;
+    match source {
+        StructuredLexicalSource::Sealed(ordinal) => {
+            let segment = snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            let text = segment
+                .stored_text()
+                .map_err(StoreError::Segment)
+                .map_err(QueryError::Store)?
+                .and_then(|rows| rows.row(row).flatten())
+                .ok_or(crate::ingest::StoreLexicalError::MissingStoredText {
+                    segment_id: segment.meta().id,
+                    row: doc.row,
+                })?;
+            let document = segment
+                .document_version(row)
+                .map_err(StoreError::Segment)
+                .map_err(QueryError::Store)?
+                .ok_or(crate::ingest::StoreLexicalError::MissingDocumentIdentity {
+                    segment_id: segment.meta().id,
+                })?;
+            Ok((text, document))
+        }
+        StructuredLexicalSource::Active => {
+            let text = active
+                .text(row)
+                .map_err(QueryError::Store)?
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            let document = active
+                .document(row)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            Ok((text, document))
+        }
+    }
+}
+
 type ExactLexicalLeg = (
     Vec<crate::fusion::LexicalCandidate<Option<crate::ingest::DocId>>>,
     crate::fts::search::SearchCounters,
+    Vec<crate::fts::query::LexicalExpansion>,
 );
+
+fn resolve_hybrid_leg_results<Vector, Lexical>(
+    vector: Result<Vector, crate::fusion::FusionError>,
+    lexical: Result<Lexical, crate::fusion::FusionError>,
+) -> Result<(Vector, Lexical), crate::fusion::FusionError> {
+    fn control_priority(error: &crate::fusion::FusionError) -> Option<u8> {
+        match error {
+            crate::fusion::FusionError::ReadCancelled { .. } => Some(0),
+            crate::fusion::FusionError::Timeout { .. } => Some(1),
+            crate::fusion::FusionError::Cancelled { .. } => Some(2),
+            _ => None,
+        }
+    }
+
+    match (vector, lexical) {
+        (Ok(vector), Ok(lexical)) => Ok((vector, lexical)),
+        (Err(vector), Ok(_)) => Err(vector),
+        (Ok(_), Err(lexical)) => Err(lexical),
+        (Err(vector), Err(lexical)) => {
+            match (control_priority(&vector), control_priority(&lexical)) {
+                (Some(vector_priority), Some(lexical_priority)) => {
+                    if vector_priority <= lexical_priority {
+                        Err(vector)
+                    } else {
+                        Err(lexical)
+                    }
+                }
+                (Some(_), None) => Err(vector),
+                (None, Some(_)) => Err(lexical),
+                (None, None) => Err(vector),
+            }
+        }
+    }
+}
+
+fn exact_structured_lexical_leg(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    accounting: &Arc<stats::Accounting>,
+    query: &crate::fts::query::LexicalQuery,
+    cancellation: &QueryCancellation<'_>,
+) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
+    let lexical_error = |detail: String| crate::fusion::FusionError::Leg {
+        leg: crate::fusion::FusionLeg::Lexical,
+        kind: crate::fusion::LegFailureKind::Lexical,
+        detail,
+    };
+    let mut index = crate::fts::index::LexicalIndex::new();
+    let mut alive_sets = Vec::new();
+    let mut sources = Vec::new();
+    for (ordinal, segment) in snapshot.segments().iter().enumerate() {
+        cancellation
+            .check_graph()
+            .map_err(QueryError::Scan)
+            .map_err(crate::fusion::FusionError::from)?;
+        if let Some(postings) =
+            segment
+                .query_postings()
+                .map_err(|error| crate::fusion::FusionError::Leg {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
+                    detail: error.to_string(),
+                })?
+        {
+            let alive = segment
+                .query_alive()
+                .map_err(|error| crate::fusion::FusionError::Leg {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
+                    detail: error.to_string(),
+                })?;
+            index
+                .push_shared_with_live_rows(postings, alive.alive_bitmap())
+                .map_err(|error| lexical_error(error.to_string()))?;
+            alive_sets.push(alive);
+            sources.push(StructuredLexicalSource::Sealed(ordinal));
+        }
+    }
+    if active.has_text() {
+        let sealed =
+            active
+                .sealed_lexical(accounting)
+                .map_err(|error| crate::fusion::FusionError::Leg {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
+                    detail: error.to_string(),
+                })?;
+        let alive = Arc::new(
+            active
+                .alive()
+                .map_err(|error| crate::fusion::FusionError::Leg {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
+                    detail: error.to_string(),
+                })?,
+        );
+        index
+            .push_shared_with_live_rows(sealed, alive.alive_bitmap())
+            .map_err(|error| lexical_error(error.to_string()))?;
+        alive_sets.push(alive);
+        sources.push(StructuredLexicalSource::Active);
+    }
+    let vocabulary = crate::fts::query::vocabulary(index.terms());
+    let expansions = crate::fts::query::expand(query, &vocabulary)
+        .map_err(|error| lexical_error(error.to_string()))?;
+    if index.segments().is_empty() || expansions.is_empty() {
+        return Ok((
+            Vec::new(),
+            crate::fts::search::SearchCounters::default(),
+            expansions,
+        ));
+    }
+    let allow_lists = alive_sets
+        .iter()
+        .map(|alive| alive.alive_bitmap())
+        .collect::<Vec<_>>();
+    let fields = query.fields();
+    let all_rows = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
+    let mut counters = crate::fts::search::SearchCounters::default();
+    let mut aggregate = BTreeMap::<crate::fts::search::GlobalDocId, f64>::new();
+    for expansion in &expansions {
+        let term_query = crate::fts::search::TermQuery {
+            terms: vec![expansion.term.clone()],
+            fields: fields.clone(),
+        };
+        let result = crate::fts::search::search_allow_list_driven_controlled(
+            &index,
+            &term_query,
+            all_rows,
+            crate::fts::bm25::Bm25Params::beir(),
+            &allow_lists,
+            || cancellation.check_graph(),
+        )
+        .map_err(|error| match error {
+            crate::fts::search::ControlledSearchError::Index(error) => {
+                lexical_error(error.to_string())
+            }
+            crate::fts::search::ControlledSearchError::Control(error) => {
+                crate::fusion::FusionError::from(QueryError::Scan(error))
+            }
+        })?;
+        counters.docs_evaluated = counters
+            .docs_evaluated
+            .saturating_add(result.counters.docs_evaluated);
+        counters.postings_decoded = counters
+            .postings_decoded
+            .saturating_add(result.counters.postings_decoded);
+        counters.blocks_decoded = counters
+            .blocks_decoded
+            .saturating_add(result.counters.blocks_decoded);
+        counters.blocks_skipped = counters
+            .blocks_skipped
+            .saturating_add(result.counters.blocks_skipped);
+        let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
+        for hit in result.hits {
+            *aggregate.entry(hit.doc).or_default() += hit.score * boost;
+        }
+    }
+    if let Some((terms, slop)) = query.phrase_constraint() {
+        let analyzer = crate::fts::tokenizer::Analyzer::new(
+            crate::fts::tokenizer::TokenizerConfig::text_default(),
+        )
+        .map_err(|error| lexical_error(error.to_string()))?;
+        let mut retained = BTreeMap::new();
+        for (doc, score) in aggregate {
+            let (text, _) = structured_lexical_row(snapshot, active, &sources, doc)
+                .map_err(|error| lexical_error(error.to_string()))?;
+            if crate::fts::query::phrase_matches(&analyzer, text, terms, slop) {
+                retained.insert(doc, score);
+            }
+        }
+        aggregate = retained;
+    }
+    let mut scored = aggregate.into_iter().collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.0.cmp(&right.0))
+    });
+    let mut joined = Vec::with_capacity(scored.len());
+    for (doc, score) in scored {
+        let source = usize::try_from(doc.segment)
+            .ok()
+            .and_then(|slot| sources.get(slot))
+            .ok_or_else(|| lexical_error("lexical source ordinal is out of range".to_owned()))?;
+        let row = usize::try_from(doc.row)
+            .map_err(|_| lexical_error("lexical row exceeds usize".to_owned()))?;
+        let document = match source {
+            StructuredLexicalSource::Sealed(ordinal) => snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or_else(|| lexical_error("lexical sealed source is absent".to_owned()))?
+                .document_version(row)
+                .map_err(|error| lexical_error(error.to_string()))?
+                .map(|version| version.doc_id()),
+            StructuredLexicalSource::Active => active.document(row).map(|version| version.doc_id()),
+        };
+        joined.push(crate::fusion::LexicalCandidate::new(document, score));
+    }
+    Ok((joined, counters, expansions))
+}
 
 fn hybrid_vector_candidate_limit(
     snapshot: &PublishedSnapshot,
@@ -1623,28 +2364,48 @@ fn exact_lexical_leg(
         sources.push(Source::Active);
     }
     if index.segments().is_empty() {
-        return Ok((Vec::new(), crate::fts::search::SearchCounters::default()));
+        return Ok((
+            Vec::new(),
+            crate::fts::search::SearchCounters::default(),
+            query
+                .terms
+                .iter()
+                .cloned()
+                .map(|term| crate::fts::query::LexicalExpansion {
+                    term,
+                    boost_thousandths: 1_000,
+                    kind: crate::fts::query::LexicalMatchKind::Term,
+                })
+                .collect(),
+        ));
     }
     let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
     let allow_lists = alive_sets
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    let outcome = crate::planner::search_lexical_filtered_refs(
+    let result = crate::fts::search::search_allow_list_driven_controlled(
         &index,
         query,
         k,
         crate::fts::bm25::Bm25Params::beir(),
         &allow_lists,
-        Some(crate::planner::LexicalBranch::AllowListDrive),
+        || cancellation.check_graph(),
     )
-    .map_err(|error| crate::fusion::FusionError::Leg {
-        leg: crate::fusion::FusionLeg::Lexical,
-        kind: crate::fusion::LegFailureKind::Lexical,
-        detail: error.to_string(),
+    .map_err(|error| match error {
+        crate::fts::search::ControlledSearchError::Index(error) => {
+            crate::fusion::FusionError::Leg {
+                leg: crate::fusion::FusionLeg::Lexical,
+                kind: crate::fusion::LegFailureKind::Lexical,
+                detail: error.to_string(),
+            }
+        }
+        crate::fts::search::ControlledSearchError::Control(error) => {
+            crate::fusion::FusionError::from(QueryError::Scan(error))
+        }
     })?;
-    let mut joined = Vec::with_capacity(outcome.result.hits.len());
-    for hit in outcome.result.hits {
+    let mut joined = Vec::with_capacity(result.hits.len());
+    for hit in result.hits {
         let source = usize::try_from(hit.doc.segment)
             .ok()
             .and_then(|slot| sources.get(slot))
@@ -1678,7 +2439,20 @@ fn exact_lexical_leg(
         };
         joined.push(crate::fusion::LexicalCandidate::new(document, hit.score));
     }
-    Ok((joined, outcome.result.counters))
+    Ok((
+        joined,
+        result.counters,
+        query
+            .terms
+            .iter()
+            .cloned()
+            .map(|term| crate::fts::query::LexicalExpansion {
+                term,
+                boost_thousandths: 1_000,
+                kind: crate::fts::query::LexicalMatchKind::Term,
+            })
+            .collect(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2538,7 +3312,58 @@ mod tests {
     use crate::vfs::StdVfs;
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
-    use super::{OpenOptions, Store, StoreError};
+    use super::{OpenOptions, Store, StoreError, resolve_hybrid_leg_results};
+
+    #[test]
+    fn hybrid_dual_failure_precedence_is_independent_of_leg_completion_order() {
+        use crate::fusion::{FusionError, FusionLeg, LegFailureKind};
+
+        let vector_failure = FusionError::Leg {
+            leg: FusionLeg::Vector,
+            kind: LegFailureKind::Scan,
+            detail: "vector failure".to_owned(),
+        };
+        let lexical_failure = FusionError::Leg {
+            leg: FusionLeg::Lexical,
+            kind: LegFailureKind::Lexical,
+            detail: "lexical failure".to_owned(),
+        };
+        assert_eq!(
+            resolve_hybrid_leg_results::<(), ()>(
+                Err(vector_failure.clone()),
+                Err(lexical_failure.clone()),
+            ),
+            Err(vector_failure.clone()),
+        );
+        assert_eq!(
+            resolve_hybrid_leg_results::<(), ()>(
+                Err(vector_failure.clone()),
+                Err(FusionError::Cancelled { partial: false }),
+            ),
+            Err(FusionError::Cancelled { partial: false }),
+        );
+        assert_eq!(
+            resolve_hybrid_leg_results::<(), ()>(
+                Err(FusionError::Timeout { partial: false }),
+                Err(FusionError::ReadCancelled { partial: false }),
+            ),
+            Err(FusionError::ReadCancelled { partial: false }),
+        );
+        assert_eq!(
+            resolve_hybrid_leg_results::<(), ()>(
+                Err(FusionError::Cancelled { partial: false }),
+                Err(FusionError::Timeout { partial: false }),
+            ),
+            Err(FusionError::Timeout { partial: false }),
+        );
+        assert_eq!(
+            resolve_hybrid_leg_results::<(), ()>(
+                Err(FusionError::ReadCancelled { partial: false }),
+                Err(lexical_failure),
+            ),
+            Err(FusionError::ReadCancelled { partial: false }),
+        );
+    }
 
     #[test]
     fn accounting_errors_report_the_typed_context() {

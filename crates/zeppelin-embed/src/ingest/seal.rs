@@ -11,11 +11,10 @@ use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
 use crate::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings, SegmentStoredMetadata,
-    write_segment_with_documents, write_segment_with_documents_and_metadata,
-    write_segment_with_documents_and_postings, write_segment_with_documents_metadata_and_postings,
+    SegmentStoredText, write_segment_with_documents_payloads,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId};
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 use crate::wal::LogSeq;
 
 use super::ActiveState;
@@ -23,12 +22,12 @@ use super::ActiveState;
 impl Store {
     /// Seals the current active segment into one appended immutable segment.
     pub fn seal(&self) -> Result<u64, StoreError> {
-        self.seal_inner(None, &StdVfs)
+        self.seal_inner(None, self.vfs.as_ref())
     }
 
     /// Seals explicitly unless caller cancellation wins before manifest commit.
     pub fn seal_with_cancel(&self, cancel: &CancelToken) -> Result<u64, StoreError> {
-        self.seal_inner(Some(cancel), &StdVfs)
+        self.seal_inner(Some(cancel), self.vfs.as_ref())
     }
 
     /// Test-support seam for deterministic cancellation at filesystem boundaries.
@@ -132,40 +131,21 @@ impl Store {
                 end_offsets: current.segment.metadata_end_offsets(),
                 bytes: current.segment.metadata_bytes(),
             });
-        let written = match (metadata, postings.as_deref()) {
-            (None, None) => write_segment_with_documents(
-                vfs,
-                &self.directory,
-                build,
-                documents,
-                self.durability_policy,
-            ),
-            (Some(metadata), None) => write_segment_with_documents_and_metadata(
-                vfs,
-                &self.directory,
-                build,
-                documents,
-                metadata,
-                self.durability_policy,
-            ),
-            (None, Some(postings)) => write_segment_with_documents_and_postings(
-                vfs,
-                &self.directory,
-                build,
-                documents,
-                SegmentPostings { bytes: postings },
-                self.durability_policy,
-            ),
-            (Some(metadata), Some(postings)) => write_segment_with_documents_metadata_and_postings(
-                vfs,
-                &self.directory,
-                build,
-                documents,
-                metadata,
-                SegmentPostings { bytes: postings },
-                self.durability_policy,
-            ),
-        };
+        let text = current.segment.has_text().then_some(SegmentStoredText {
+            present: current.segment.text_present(),
+            end_offsets: current.segment.text_end_offsets(),
+            bytes: current.segment.text_bytes(),
+        });
+        let written = write_segment_with_documents_payloads(
+            vfs,
+            &self.directory,
+            build,
+            documents,
+            metadata,
+            text,
+            postings.as_deref().map(|bytes| SegmentPostings { bytes }),
+            self.durability_policy,
+        );
         let mut meta = match written {
             Ok(meta) => meta,
             Err(error) => {
@@ -196,8 +176,11 @@ impl Store {
             self.durability_policy,
         )
         .map_err(StoreError::Manifest)?;
-        let remapped =
-            crate::lifecycle::PublishedSnapshot::load(&self.directory, &self.accounting)?;
+        let remapped = crate::lifecycle::PublishedSnapshot::load_on_vfs(
+            &self.directory,
+            &self.accounting,
+            vfs,
+        )?;
         let mut published = self
             .snapshot
             .write()

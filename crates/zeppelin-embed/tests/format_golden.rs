@@ -28,8 +28,9 @@ use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed::segment::layout::{Int8Factors, RegionKind};
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::segment::writer::{
-    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata, encode_segment,
-    write_segment_with_documents, write_segment_with_documents_and_metadata,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentStoredMetadata,
+    SegmentStoredText, encode_segment, write_segment_with_documents,
+    write_segment_with_documents_and_metadata, write_segment_with_documents_and_text,
 };
 use zeppelin_embed::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use zeppelin_embed::vfs::StdVfs;
@@ -394,11 +395,13 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         fixture(include_str!("fixtures/format/postings_reserved_v1.hex")),
         Vec::<u8>::new()
     );
-    assert_eq!(FormatRegistry::families().len(), 15);
+    assert_eq!(FormatRegistry::families().len(), 16);
     assert_eq!(FormatFamily::Wal.id(), 11);
     assert_eq!(FormatFamily::DocumentVersions.id(), 13);
     assert_eq!(FormatFamily::StoredMetadata.id(), 14);
     assert_eq!(FormatFamily::PurgeIntent.id(), 15);
+    assert_eq!(FormatFamily::StoredText.id(), 16);
+    assert_eq!(RegionKind::StoredText.id(), 14);
     assert_eq!(
         FormatRegistry::require(FormatFamily::Wal.id(), 1)
             .expect("WAL family")
@@ -525,6 +528,63 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
             .and_then(|rows| rows.row(0)),
         Some(&b"meta"[..])
     );
+
+    let mut text_columns = ColumnStoreBuilder::new(Schema::timestamp_only());
+    for timestamp in [0, 1, 2] {
+        text_columns
+            .push_row(timestamp, &[])
+            .expect("stored-text column row");
+    }
+    let text_columns = text_columns.finish().expect("stored-text columns");
+    let text_id = SegmentId::new(11, [0x16; 10]);
+    let text_doc_ids = [DocId::new(1), DocId::new(2), DocId::new(3)];
+    let text_revisions = [Revision::new(1), Revision::new(1), Revision::new(1)];
+    let text_vectors = [0.0_f32; 6];
+    let text_codes = text_vectors
+        .iter()
+        .flat_map(|value| value.to_bits().to_le_bytes())
+        .collect::<Vec<_>>();
+    write_segment_with_documents_and_text(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: text_id,
+            scheme: 0,
+            dims: 2,
+            codes: &text_codes,
+            factors: SegmentFactors::F32,
+            rescore: &text_vectors,
+            columns: &text_columns,
+            alive: &AliveSet::new(3),
+        },
+        SegmentDocumentVersions {
+            doc_ids: &text_doc_ids,
+            revisions: &text_revisions,
+        },
+        SegmentStoredText {
+            present: &[1, 0, 1],
+            end_offsets: &[1, 1, 3],
+            bytes: b"A\xc3\xa9",
+        },
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("stored-text policy"),
+    )
+    .expect("write stored-text segment");
+    let text_reader = SegmentReader::open(&directory.path().join(text_id.file_name()), text_id)
+        .expect("open stored-text segment");
+    assert_eq!(
+        text_reader
+            .region(RegionKind::StoredText)
+            .expect("stored-text region"),
+        fixture(include_str!("fixtures/format/stored_text_mixed_v1.hex"))
+    );
+    let text_rows = text_reader
+        .stored_text()
+        .expect("decode stored text")
+        .expect("stored text present");
+    assert_eq!(text_rows.row(0), Some(Some("A")));
+    assert_eq!(text_rows.row(1), Some(None));
+    assert_eq!(text_rows.row(2), Some(Some("é")));
 }
 
 #[test]

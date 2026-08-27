@@ -7,7 +7,7 @@ use crate::lifecycle::durability::SyncRequirement;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 
 /// Pure timestamp-window policy evaluated only when a host calls it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,7 +96,7 @@ impl Store {
     /// Drops immutable segments wholly contained by the half-open timestamp range.
     pub fn drop_partition(&self, key_range: Range<i64>) -> Result<DropPartitionReport, StoreError> {
         let retained_through = key_range.end;
-        let report = self.drop_partition_on_vfs(key_range, &StdVfs)?;
+        let report = self.drop_partition_on_vfs(key_range, self.vfs.as_ref())?;
         self.record_retention(retained_through)?;
         Ok(report)
     }

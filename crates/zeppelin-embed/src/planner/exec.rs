@@ -120,7 +120,14 @@ impl Store {
         options: impl Into<SearchOptions>,
         control: QueryControl,
     ) -> Result<FilteredSearchOutcome, FilteredSearchError> {
-        execute_store(self, request, predicate, k, options.into(), control)
+        execute_store(
+            self,
+            request,
+            predicate,
+            k,
+            options.into(),
+            control.with_clock(Arc::clone(&self.clock)),
+        )
     }
 }
 

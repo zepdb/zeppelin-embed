@@ -10,7 +10,7 @@ use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::{Accounted, AccountedCounter, Accounting, AllocationComponent};
 use crate::meta::AliveSet;
 use crate::quant::{Bit4Factors, quantize_bit4};
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 use crate::wal::record::MIN_RECORD_LEN;
 use crate::wal::{CleanWalReader, LogSeq, WalReadError, WalReader, WalWriter, encode_wal_image};
 
@@ -34,16 +34,17 @@ impl ActiveState {
     }
 
     pub(crate) fn recover(
+        vfs: &dyn Vfs,
         path: &Path,
         generation: u64,
         absorbed_through: u64,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
     ) -> Result<(Self, Option<CleanWalReader>), StoreError> {
-        match StdVfs.open(path) {
+        match vfs.open(path) {
             Ok(0) => Ok((Self::empty(generation), None)),
             Ok(_) => {
-                let reader = WalReader::open(&StdVfs, path).map_err(StoreError::Wal)?;
+                let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
                 let active =
                     Self::replay(generation, absorbed_through, &clean, accounting, schema)?;
@@ -877,6 +878,18 @@ impl ActiveSegment {
         &self.metadata_bytes
     }
 
+    pub(crate) fn text_present(&self) -> &[u8] {
+        &self.text_present
+    }
+
+    pub(crate) fn text_end_offsets(&self) -> &[u64] {
+        &self.text_end_offsets
+    }
+
+    pub(crate) fn text_bytes(&self) -> &[u8] {
+        &self.text_bytes
+    }
+
     pub(crate) fn metadata(&self, row: usize) -> Option<&[u8]> {
         row_bytes(&self.metadata_end_offsets, &self.metadata_bytes, row)
     }
@@ -1529,12 +1542,13 @@ pub(crate) struct StoreWal {
 
 impl StoreWal {
     pub(crate) fn create(
+        vfs: &dyn Vfs,
         path: &Path,
         policy: DurabilityPolicy,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
-        let writer = WalWriter::create(&StdVfs, path, LogSeq::new(1), policy)
-            .map_err(StoreError::WalWrite)?;
+        let writer =
+            WalWriter::create(vfs, path, LogSeq::new(1), policy).map_err(StoreError::WalWrite)?;
         Ok(Self {
             writer,
             retained: AccountedCounter::new(accounting, AllocationComponent::Wal)?,
@@ -1542,6 +1556,7 @@ impl StoreWal {
     }
 
     pub(crate) fn resume(
+        vfs: &dyn Vfs,
         path: &Path,
         recovered: CleanWalReader,
         policy: DurabilityPolicy,
@@ -1549,7 +1564,7 @@ impl StoreWal {
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
         let writer =
-            WalWriter::resume(&StdVfs, path, recovered, policy).map_err(StoreError::WalWrite)?;
+            WalWriter::resume(vfs, path, recovered, policy).map_err(StoreError::WalWrite)?;
         if absorbed_through != 0 {
             writer
                 .retire_visible_through(LogSeq::new(absorbed_through))

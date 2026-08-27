@@ -191,6 +191,18 @@ impl SealedSegment {
         })
     }
 
+    /// Iterates distinct analyzed terms in bytewise order.
+    ///
+    /// Field-specific spans sharing a term are collapsed. Structured query
+    /// expansion consumes this vocabulary without learning the persisted
+    /// dictionary representation.
+    pub fn terms(&self) -> impl Iterator<Item = &[u8]> {
+        (0..self.spans.len()).filter_map(move |index| {
+            let term = self.term_of(index);
+            (index == 0 || self.term_of(index.saturating_sub(1)) != term).then_some(term)
+        })
+    }
+
     /// Seals an active segment into the persisted layout.
     ///
     /// # Errors

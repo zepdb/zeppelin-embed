@@ -50,6 +50,8 @@ pub enum RegionKind {
     DocumentVersions = 12,
     /// Dense length-delimited opaque stored metadata rows.
     StoredMetadata = 13,
+    /// Dense optional UTF-8 source text rows.
+    StoredText = 14,
     /// First id reserved for additive vector-space-N region triples.
     VectorSpaceN = 4096,
 }
@@ -78,6 +80,7 @@ impl RegionKind {
             11 => Some(Self::ChecksumTable),
             12 => Some(Self::DocumentVersions),
             13 => Some(Self::StoredMetadata),
+            14 => Some(Self::StoredText),
             4096 => Some(Self::VectorSpaceN),
             _ => None,
         }
@@ -94,6 +97,7 @@ impl RegionKind {
             Self::GraphNodeBlocks => Some(FormatFamily::GraphNodeBlocks),
             Self::DocumentVersions => Some(FormatFamily::DocumentVersions),
             Self::StoredMetadata => Some(FormatFamily::StoredMetadata),
+            Self::StoredText => Some(FormatFamily::StoredText),
             Self::ChecksumTable => Some(FormatFamily::ChecksumTable),
             Self::GraphColocatedCodes
             | Self::SignPlane

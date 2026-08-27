@@ -51,3 +51,6 @@ pub mod phonetic;
 
 /// Snippets and match offsets.
 pub mod snippet;
+
+/// Structured query descriptions and deterministic expansion provenance.
+pub mod query;

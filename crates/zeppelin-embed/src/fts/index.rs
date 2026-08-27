@@ -645,6 +645,14 @@ impl LexicalIndex {
         &self.segments
     }
 
+    /// Iterates the analyzed vocabulary of every segment.
+    ///
+    /// Terms may repeat across segments; callers that expand a structured
+    /// query must impose their own deterministic de-duplication.
+    pub fn terms(&self) -> impl Iterator<Item = &[u8]> {
+        self.segments.iter().flat_map(|segment| segment.terms())
+    }
+
     /// Returns the store-wide document count.
     #[must_use]
     pub fn document_count(&self) -> u64 {

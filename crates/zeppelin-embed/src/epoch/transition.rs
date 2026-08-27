@@ -7,7 +7,7 @@ use crate::lifecycle::durability::SyncRequirement;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
 use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::segment::SegmentId;
-use crate::vfs::{StdVfs, Vfs};
+use crate::vfs::Vfs;
 
 use super::{EpochId, EpochIdentity};
 
@@ -205,7 +205,7 @@ impl Store {
         &self,
         target: EpochIdentity,
     ) -> Result<EpochAliasReport, EpochTransitionError> {
-        self.switch_epoch_alias_on_vfs(target, &StdVfs)
+        self.switch_epoch_alias_on_vfs(target, self.vfs.as_ref())
     }
 
     fn switch_epoch_alias_on_vfs(
@@ -330,7 +330,7 @@ impl Store {
 
     /// Explicitly drops every immutable segment belonging to an old epoch.
     pub fn drop_epoch(&self, target: EpochId) -> Result<DropEpochReport, EpochTransitionError> {
-        self.drop_epoch_on_vfs(target, &StdVfs)
+        self.drop_epoch_on_vfs(target, self.vfs.as_ref())
     }
 
     /// Test-support seam for observing the commit-then-unlink protocol.

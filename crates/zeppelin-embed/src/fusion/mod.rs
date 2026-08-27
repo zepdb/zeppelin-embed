@@ -355,6 +355,20 @@ pub enum FusionError {
         /// Permanently false.
         partial: bool,
     },
+    /// A Store-owned leg thread could not be created.
+    LegThreadStart {
+        /// Leg whose required execution thread could not start.
+        leg: FusionLeg,
+        /// Stable operating-system error detail.
+        detail: String,
+    },
+    /// A Store-owned leg panicked and was contained at the join seam.
+    LegPanic {
+        /// Leg that panicked.
+        leg: FusionLeg,
+        /// Stable detail that never exposes an unwind payload.
+        detail: &'static str,
+    },
     /// A caller-owned leg failed before fusion.
     Leg {
         /// Affected leg.
@@ -425,6 +439,12 @@ impl std::fmt::Display for FusionError {
                 formatter,
                 "store close cancelled hybrid query (partial={partial})"
             ),
+            Self::LegThreadStart { leg, detail } => {
+                write!(formatter, "{leg:?} leg thread did not start: {detail}")
+            }
+            Self::LegPanic { leg, detail } => {
+                write!(formatter, "{leg:?} leg panic was contained: {detail}")
+            }
             Self::Leg { leg, kind, detail } => {
                 write!(formatter, "{leg:?} leg failed ({kind:?}): {detail}")
             }

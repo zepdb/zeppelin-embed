@@ -185,9 +185,9 @@ pub(crate) fn account_active_postings_decode(bytes: usize) {
     });
 }
 
-fn region_hash(kind: RegionKind, bytes: &[u8]) -> u64 {
+fn region_hash(_kind: RegionKind, bytes: &[u8]) -> u64 {
     #[cfg(any(test, feature = "test-support"))]
-    account_region_hash(kind, bytes.len());
+    account_region_hash(_kind, bytes.len());
     xxh3_64(bytes)
 }
 
@@ -386,6 +386,57 @@ impl<'a> StoredMetadataRows<'a> {
             .map(u64::from_le_bytes)
             .and_then(|value| usize::try_from(value).ok())?;
         self.bytes.get(start..end)
+    }
+}
+
+/// Validated mmap-backed optional UTF-8 source rows.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredTextRows<'a> {
+    present: &'a [u8],
+    offsets: &'a [u8],
+    bytes: &'a [u8],
+    row_count: usize,
+}
+
+impl<'a> StoredTextRows<'a> {
+    /// Returns the number of dense text rows.
+    #[must_use]
+    pub const fn row_count(self) -> usize {
+        self.row_count
+    }
+
+    /// Returns `None` for an invalid row, `Some(None)` for an absent field,
+    /// and `Some(Some(text))` for a present UTF-8 field (including empty text).
+    #[must_use]
+    pub fn row(self, row: usize) -> Option<Option<&'a str>> {
+        if row >= self.row_count {
+            return None;
+        }
+        let end_index = row.checked_mul(8)?;
+        let end = self
+            .offsets
+            .get(end_index..end_index.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())?;
+        let start = if row == 0 {
+            0
+        } else {
+            let start_index = row.checked_sub(1)?.checked_mul(8)?;
+            self.offsets
+                .get(start_index..start_index.checked_add(8)?)?
+                .try_into()
+                .ok()
+                .map(u64::from_le_bytes)
+                .and_then(|value| usize::try_from(value).ok())?
+        };
+        let byte = *self.present.get(row / 8)?;
+        if byte & (1 << (row % 8)) == 0 {
+            return (start == end).then_some(None);
+        }
+        let text = std::str::from_utf8(self.bytes.get(start..end)?).ok()?;
+        Some(Some(text))
     }
 }
 
@@ -1136,6 +1187,107 @@ impl SegmentReader {
             )));
         }
         let _ = entry;
+        Ok(Some(view))
+    }
+
+    /// Returns validated optional UTF-8 source rows, or `None` for older segments.
+    pub fn stored_text(&self) -> Result<Option<StoredTextRows<'_>>, SegmentError> {
+        let Some(_) = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == RegionKind::StoredText.id())
+        else {
+            return Ok(None);
+        };
+        let region = self.region(RegionKind::StoredText)?;
+        let declared_rows = region
+            .get(..4)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| SegmentError::Geometry("stored-text header is truncated".to_owned()))?;
+        let reserved = region
+            .get(4..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-text reserved field is truncated".to_owned())
+            })?;
+        if declared_rows != self.meta.row_count || reserved != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-text rows/reserved {declared_rows}/{reserved}, expected {}/0",
+                self.meta.row_count
+            )));
+        }
+        let row_count = declared_rows as usize;
+        let bitmap_len = row_count.div_ceil(8);
+        let bitmap_end = 8_usize
+            .checked_add(bitmap_len)
+            .ok_or_else(|| SegmentError::Geometry("stored-text bitmap overflow".to_owned()))?;
+        let offsets_len = row_count
+            .checked_mul(8)
+            .ok_or_else(|| SegmentError::Geometry("stored-text offsets overflow".to_owned()))?;
+        let offsets_end = bitmap_end
+            .checked_add(offsets_len)
+            .ok_or_else(|| SegmentError::Geometry("stored-text offset end overflow".to_owned()))?;
+        let present = region.get(8..bitmap_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-text presence bitmap is truncated".to_owned())
+        })?;
+        let offsets = region.get(bitmap_end..offsets_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-text offsets are truncated".to_owned())
+        })?;
+        let bytes = region
+            .get(offsets_end..)
+            .ok_or_else(|| SegmentError::Geometry("stored-text payload is truncated".to_owned()))?;
+        if row_count % 8 != 0 {
+            let used = row_count % 8;
+            let padding_mask = !((1_u8 << used) - 1);
+            if present.last().is_some_and(|byte| byte & padding_mask != 0) {
+                return Err(SegmentError::Geometry(
+                    "stored-text presence padding bits are nonzero".to_owned(),
+                ));
+            }
+        }
+        let view = StoredTextRows {
+            present,
+            offsets,
+            bytes,
+            row_count,
+        };
+        let mut previous = 0_usize;
+        for row in 0..row_count {
+            let value = view.row(row).ok_or_else(|| {
+                SegmentError::Geometry(format!("stored-text row {row} is invalid"))
+            })?;
+            let end_index = row.checked_mul(8).ok_or_else(|| {
+                SegmentError::Geometry("stored-text offset index overflow".to_owned())
+            })?;
+            let end = offsets
+                .get(end_index..end_index + 8)
+                .and_then(|value| value.try_into().ok())
+                .map(u64::from_le_bytes)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    SegmentError::Geometry(format!("stored-text offset row {row} is invalid"))
+                })?;
+            if end < previous || end > bytes.len() {
+                return Err(SegmentError::Geometry(format!(
+                    "stored-text offset row {row} is outside {previous}..={} bytes",
+                    bytes.len()
+                )));
+            }
+            if value.is_none() && end != previous {
+                return Err(SegmentError::Geometry(format!(
+                    "stored-text absent row {row} owns bytes {previous}..{end}"
+                )));
+            }
+            previous = end;
+        }
+        if previous != bytes.len() {
+            return Err(SegmentError::Geometry(format!(
+                "stored-text final offset {previous}, bytes {}",
+                bytes.len()
+            )));
+        }
         Ok(Some(view))
     }
 

@@ -3,8 +3,9 @@
 use tempfile::tempdir;
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
+use zeppelin_embed::fts::query::{LexicalMatchKind, LexicalQuery};
 use zeppelin_embed::fts::search::TermQuery;
-use zeppelin_embed::fusion::{FusionError, HybridQuery};
+use zeppelin_embed::fusion::{FusionError, FusionLeg, HybridQuery};
 use zeppelin_embed::ingest::SearchRequest;
 use zeppelin_embed::ingest::wal_payload::UPSERT_V2;
 use zeppelin_embed::ingest::{
@@ -12,7 +13,8 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::SearchOptions;
 use zeppelin_embed::lifecycle::{
-    CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchTier, Store,
+    CancelToken, GraphSearchOptions, HybridLegTestFault, OpenOptions, QueryControl, SearchTier,
+    Store, StoreTestDependencies, SystemMonotonicClock,
 };
 use zeppelin_embed::meta::{
     BuildError, ColumnDefinition, ColumnId, ColumnType, Predicate, PredicateValue, Schema,
@@ -68,6 +70,187 @@ fn text_ingested_through_the_store_is_searchable_after_reopen() {
     assert!(outcome.diagnostics.tokenizer_epoch.is_some());
     assert!(outcome.diagnostics.counters.lexical.docs_evaluated > 0);
     reopened.close().expect("close reader");
+}
+
+#[test]
+fn stored_text_region_preserves_presence_and_utf8_after_seal() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(101), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("Café 🚀 zeppelin"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(102), Revision::new(1)),
+                vec![0.0, 1.0],
+            ),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(103), Revision::new(1)),
+                vec![0.5, 0.5],
+            )
+            .with_text(""),
+        ]))
+        .expect("ingest mixed text presence");
+    store.seal().expect("seal stored text");
+    let snapshot = store.snapshot().expect("pin snapshot");
+    let rows = snapshot.segments()[0]
+        .stored_text()
+        .expect("validate stored text")
+        .expect("stored text region");
+    assert_eq!(rows.row_count(), 3);
+    assert_eq!(rows.row(0), Some(Some("Café 🚀 zeppelin")));
+    assert_eq!(rows.row(1), Some(None));
+    assert_eq!(rows.row(2), Some(Some("")));
+    drop(snapshot);
+    store.close().expect("close store");
+}
+
+#[test]
+fn structured_phrase_query_returns_owned_utf8_snippet_and_provenance() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(111), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("Café 🚀 quick brown fox"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(112), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_text("quick red brown fox"),
+        ]))
+        .expect("ingest phrase rows");
+    store.seal().expect("seal phrase rows");
+
+    let outcome = store
+        .search_lexical_structured(
+            &LexicalQuery::phrase(vec![b"quick".to_vec(), b"brown".to_vec()], 0, DEFAULT_FIELD),
+            10,
+            64,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("structured phrase search");
+    assert_eq!(outcome.candidates.len(), 1);
+    let candidate = &outcome.candidates[0];
+    assert_eq!(candidate.document.doc_id(), DocId::new(111));
+    assert_eq!(candidate.provenance.len(), 2);
+    assert!(candidate
+        .provenance
+        .iter()
+        .all(|entry| entry.kind == LexicalMatchKind::Phrase && entry.boost_thousandths == 1_000));
+    let source = "Café 🚀 quick brown fox";
+    assert_eq!(candidate.snippet.source.start, 11);
+    assert_eq!(candidate.snippet.source.end as usize, source.len());
+    assert_eq!(candidate.snippet.text, "quick brown fox");
+    assert!(
+        candidate
+            .snippet
+            .highlights
+            .iter()
+            .all(|range| source.is_char_boundary(range.start as usize)
+                && source.is_char_boundary(range.end as usize))
+    );
+    assert_eq!(outcome.expansions, candidate.provenance);
+    let hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &LexicalQuery::phrase(vec![b"quick".to_vec(), b"brown".to_vec()], 0, DEFAULT_FIELD),
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("structured hybrid search");
+    assert_eq!(hybrid.hits[0].key, DocId::new(111));
+    store.close().expect("close store");
+}
+
+#[test]
+fn structured_expansions_report_pinned_prefix_fuzzy_and_phonetic_boosts() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(121), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("alpha Smith"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(122), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_text("alpga Smyth"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(123), Revision::new(1)),
+                vec![0.5, 0.5],
+            )
+            .with_text("alpine Jones"),
+        ]))
+        .expect("ingest expansion rows");
+    store.seal().expect("seal expansion rows");
+
+    let prefix = store
+        .search_lexical_structured(
+            &LexicalQuery::prefix(b"al".to_vec(), DEFAULT_FIELD),
+            10,
+            32,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("prefix search");
+    assert!(prefix.expansions.len() >= 3);
+    assert!(prefix.expansions.iter().all(|entry| {
+        entry.kind == LexicalMatchKind::Prefix && entry.boost_thousandths == 1_000
+    }));
+
+    let fuzzy = store
+        .search_lexical_structured(
+            &LexicalQuery::fuzzy(b"alpha".to_vec(), 1, DEFAULT_FIELD),
+            10,
+            32,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("fuzzy search");
+    assert!(fuzzy.expansions.iter().any(|entry| {
+        entry.term == b"alpha"
+            && entry.kind == LexicalMatchKind::Fuzzy { distance: 0 }
+            && entry.boost_thousandths == 1_000
+    }));
+    assert!(fuzzy.expansions.iter().any(|entry| {
+        entry.term == b"alpga"
+            && entry.kind == LexicalMatchKind::Fuzzy { distance: 1 }
+            && entry.boost_thousandths == 500
+    }));
+
+    let phonetic = store
+        .search_lexical_structured(
+            &LexicalQuery::phonetic(b"Smith".to_vec(), DEFAULT_FIELD),
+            10,
+            32,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("phonetic search");
+    assert!(
+        phonetic
+            .expansions
+            .iter()
+            .any(|entry| entry.term == b"smith")
+    );
+    assert!(
+        phonetic
+            .expansions
+            .iter()
+            .any(|entry| entry.term == b"smyth")
+    );
+    assert!(phonetic.expansions.iter().all(|entry| {
+        entry.kind == LexicalMatchKind::Phonetic && entry.boost_thousandths == 250
+    }));
+    store.close().expect("close store");
 }
 
 #[test]
@@ -561,6 +744,139 @@ fn store_level_hybrid_explicit_exact_tier_preserves_ordered_score_bits() {
 }
 
 #[test]
+fn store_owned_hybrid_runs_both_legs_and_names_the_lexical_thread() {
+    let (_directory, store) = hybrid_store();
+    let caller = std::thread::current().id();
+    store
+        .search_hybrid(
+            SearchRequest::new(&[0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("parallel hybrid search");
+    let receipt = store
+        .take_hybrid_execution_receipt()
+        .expect("hybrid execution receipt");
+    assert_eq!(receipt.vector_thread, caller);
+    assert_eq!(receipt.lexical_thread_name.as_deref(), Some("zeppelin-fts"));
+    assert!(receipt.vector_completed);
+    assert!(receipt.lexical_completed);
+    store.close().expect("close store");
+}
+
+#[test]
+fn lexical_leg_panic_is_typed_and_the_store_remains_usable() {
+    let directory = tempdir().expect("store directory");
+    let dependencies = StoreTestDependencies::new(
+        std::sync::Arc::new(StdVfs),
+        std::sync::Arc::new(SystemMonotonicClock),
+    )
+    .with_hybrid_leg_fault(HybridLegTestFault::Panic(FusionLeg::Lexical));
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open panic fixture");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(131), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("zeppelin panic containment"),
+        ]))
+        .expect("ingest panic fixture");
+    let term = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    assert_eq!(
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &term,
+                &HybridQuery::new(1),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect_err("injected lexical panic must be contained"),
+        FusionError::LegPanic {
+            leg: FusionLeg::Lexical,
+            detail: "lexical hybrid leg panicked",
+        }
+    );
+    assert_eq!(
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &term,
+                &HybridQuery::new(1),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("store reusable after contained panic")
+            .hits
+            .len(),
+        1
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn vector_leg_panic_is_typed_after_join_and_the_store_remains_usable() {
+    let directory = tempdir().expect("store directory");
+    let dependencies = StoreTestDependencies::new(
+        std::sync::Arc::new(StdVfs),
+        std::sync::Arc::new(SystemMonotonicClock),
+    )
+    .with_hybrid_leg_fault(HybridLegTestFault::Panic(FusionLeg::Vector));
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open vector-panic fixture");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(132), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("zeppelin vector panic containment"),
+        ]))
+        .expect("ingest vector-panic fixture");
+    let term = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    assert_eq!(
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &term,
+                &HybridQuery::new(1),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect_err("injected vector panic must be contained"),
+        FusionError::LegPanic {
+            leg: FusionLeg::Vector,
+            detail: "vector hybrid leg panicked",
+        }
+    );
+    let receipt = store
+        .take_hybrid_execution_receipt()
+        .expect("both joined legs report completion");
+    assert!(receipt.vector_completed && receipt.lexical_completed);
+    assert_eq!(
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &term,
+                &HybridQuery::new(1),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("store reusable after contained vector panic")
+            .hits
+            .len(),
+        1
+    );
+    store.close().expect("close store");
+}
+
+#[test]
 fn physical_purge_remaps_the_postings_region_with_survivors() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
@@ -590,5 +906,13 @@ fn physical_purge_remaps_the_postings_region_with_survivors() {
         .expect("search rewritten postings");
     assert_eq!(outcome.candidates.len(), 1);
     assert_eq!(outcome.candidates[0].document.doc_id(), DocId::new(61));
+    let snapshot = store.snapshot().expect("pin purged snapshot");
+    let text = snapshot.segments()[0]
+        .stored_text()
+        .expect("validate rewritten stored text")
+        .expect("stored text survives purge");
+    assert_eq!(text.row_count(), 1);
+    assert_eq!(text.row(0), Some(Some("zeppelin survivor")));
+    drop(snapshot);
     store.close().expect("close store");
 }

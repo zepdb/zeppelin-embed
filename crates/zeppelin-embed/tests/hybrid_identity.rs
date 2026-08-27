@@ -2,11 +2,12 @@
 
 use tempfile::tempdir;
 use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
+use zeppelin_embed::fts::query::LexicalQuery;
 use zeppelin_embed::fts::sealed::SealedSegment;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
 use zeppelin_embed::fusion::{FusionError, FusionLeg, HybridQuery};
-use zeppelin_embed::ingest::{SearchRequest, StoreLexicalError};
+use zeppelin_embed::ingest::{DocId, Revision, SearchRequest, StoreLexicalError};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
 use zeppelin_embed::manifest::Manifest;
@@ -14,7 +15,8 @@ use zeppelin_embed::manifest::io::commit_manifest;
 use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::writer::{
-    SegmentBuild, SegmentFactors, SegmentPostings, write_segment_with_postings,
+    SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPostings,
+    write_segment_with_documents_and_postings, write_segment_with_postings,
 };
 use zeppelin_embed::vfs::StdVfs;
 
@@ -105,4 +107,96 @@ fn postings_segment_without_document_identity_is_a_typed_error() {
         }
     );
     store.close().expect("close fixture store");
+}
+
+#[test]
+fn matching_legacy_postings_row_without_stored_text_is_a_typed_snippet_error() {
+    let directory = tempdir().expect("store directory");
+    let empty = Store::open(directory.path(), OpenOptions::default()).expect("create store");
+    empty.close().expect("close empty store");
+
+    let schema = Schema::timestamp_only();
+    let mut columns = ColumnStoreBuilder::new(schema.clone());
+    columns.push_row(0, &[]).expect("timestamp row");
+    let columns = columns.finish().expect("columns");
+    let alive = AliveSet::new(1);
+    let vector = [1.0_f32, 0.0];
+    let codes = vector
+        .iter()
+        .flat_map(|value| value.to_bits().to_le_bytes())
+        .collect::<Vec<_>>();
+    let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+    let mut lexical = SegmentIndex::new();
+    lexical
+        .push_document(&analyzer, &Document::with_text("bronze zeppelin"))
+        .expect("index legacy text");
+    let postings = SealedSegment::seal(&lexical)
+        .expect("seal legacy text")
+        .encode_region()
+        .expect("encode legacy postings");
+    let id = SegmentId::new(18, [4; 10]);
+    let document = [DocId::new(181)];
+    let revision = [Revision::new(1)];
+    let policy =
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None).expect("test durability");
+    let meta = write_segment_with_documents_and_postings(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id,
+            scheme: 0,
+            dims: 2,
+            codes: &codes,
+            factors: SegmentFactors::F32,
+            rescore: &vector,
+            columns: &columns,
+            alive: &alive,
+        },
+        SegmentDocumentVersions {
+            doc_ids: &document,
+            revisions: &revision,
+        },
+        SegmentPostings { bytes: &postings },
+        policy,
+    )
+    .expect("write legacy postings segment");
+    commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: vec![meta],
+            epochs: Vec::new(),
+            epoch_alias: None,
+            schema,
+        },
+        policy,
+    )
+    .expect("publish legacy segment");
+
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open legacy store");
+    let term = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    assert_eq!(
+        store
+            .search_lexical(&term, 1, QueryControl::Cancel(CancelToken::new()))
+            .expect("term-only compatibility wrapper remains readable")
+            .candidates[0]
+            .document
+            .doc_id(),
+        DocId::new(181)
+    );
+    assert!(matches!(
+        store.search_lexical_structured(
+            &LexicalQuery::term(TermQuery::flat(
+                vec![b"zeppelin".to_vec()],
+                &[DEFAULT_FIELD],
+            )),
+            1,
+            32,
+            QueryControl::Cancel(CancelToken::new()),
+        ),
+        Err(StoreLexicalError::MissingStoredText { segment_id, row: 0 }) if segment_id == id
+    ));
+    store.close().expect("close legacy store");
 }

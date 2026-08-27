@@ -72,6 +72,17 @@ pub struct SegmentStoredMetadata<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Dense optional UTF-8 source text aligned to one segment's local row ids.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentStoredText<'a> {
+    /// One byte per dense row; zero is absent and one is present.
+    pub present: &'a [u8],
+    /// Cumulative exclusive end offset for every row.
+    pub end_offsets: &'a [u64],
+    /// Concatenated UTF-8 row payloads addressed by `end_offsets`.
+    pub bytes: &'a [u8],
+}
+
 /// One complete encoded lexical segment for the Postings region.
 #[derive(Clone, Copy, Debug)]
 pub struct SegmentPostings<'a> {
@@ -98,7 +109,7 @@ pub(crate) struct SegmentCopiedRegion<'a> {
 
 /// Encodes one complete segment in RAM, validating every cross-region shape first.
 pub fn encode_segment(build: SegmentBuild<'_>) -> Result<Vec<u8>, SegmentError> {
-    encode_segment_inner(build, None, None, None, None, &[])
+    encode_segment_inner(build, None, None, None, None, None, &[])
 }
 
 /// Encodes a complete segment with one fixed-stride graph node-block region.
@@ -121,7 +132,7 @@ pub fn encode_segment_with_graph(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), None, None, None, &[])
+    encode_segment_inner(build, Some(graph_bytes), None, None, None, None, &[])
 }
 
 /// Encodes a graph segment while preserving dense application document identities.
@@ -145,7 +156,15 @@ pub fn encode_segment_with_graph_and_documents(
         )));
     }
     let graph_bytes = encode_node_blocks(graph)?.into_bytes();
-    encode_segment_inner(build, Some(graph_bytes), Some(documents), None, None, &[])
+    encode_segment_inner(
+        build,
+        Some(graph_bytes),
+        Some(documents),
+        None,
+        None,
+        None,
+        &[],
+    )
 }
 
 fn encode_segment_inner(
@@ -153,6 +172,7 @@ fn encode_segment_inner(
     graph_bytes: Option<Vec<u8>>,
     document_versions: Option<SegmentDocumentVersions<'_>>,
     stored_metadata: Option<SegmentStoredMetadata<'_>>,
+    stored_text: Option<SegmentStoredText<'_>>,
     postings: Option<SegmentPostings<'_>>,
     copied_regions: &[SegmentCopiedRegion<'_>],
 ) -> Result<Vec<u8>, SegmentError> {
@@ -279,6 +299,13 @@ fn encode_segment_inner(
             bytes: encode_stored_metadata(metadata, rows)?,
         });
     }
+    if let Some(text) = stored_text {
+        regions.push(RegionBytes {
+            kind: RegionKind::StoredText,
+            family: FormatFamily::StoredText,
+            bytes: encode_stored_text(text, rows)?,
+        });
+    }
     if let Some(postings) = postings {
         let decoded = crate::fts::sealed::SealedSegment::decode_region(postings.bytes)?;
         if decoded.row_count() != row_count {
@@ -339,6 +366,79 @@ fn encode_stored_metadata(
         encoded.extend_from_slice(&end.to_le_bytes());
     }
     encoded.extend_from_slice(metadata.bytes);
+    Ok(encoded)
+}
+
+fn encode_stored_text(text: SegmentStoredText<'_>, rows: usize) -> Result<Vec<u8>, SegmentError> {
+    if text.present.len() != rows || text.end_offsets.len() != rows {
+        return Err(SegmentError::Geometry(format!(
+            "stored-text presence/offset rows {}/{}, expected {rows}",
+            text.present.len(),
+            text.end_offsets.len()
+        )));
+    }
+    let mut previous = 0_u64;
+    for (row, (present, end)) in text.present.iter().zip(text.end_offsets).enumerate() {
+        if *present > 1 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-text presence row {row} is {present}, expected 0 or 1"
+            )));
+        }
+        if *end < previous {
+            return Err(SegmentError::Geometry(
+                "stored-text offsets are not monotonic".to_owned(),
+            ));
+        }
+        if *present == 0 && *end != previous {
+            return Err(SegmentError::Geometry(format!(
+                "stored-text absent row {row} owns bytes {previous}..{end}"
+            )));
+        }
+        let start = usize::try_from(previous)
+            .map_err(|_| SegmentError::Geometry("stored-text offset exceeds usize".to_owned()))?;
+        let finish = usize::try_from(*end)
+            .map_err(|_| SegmentError::Geometry("stored-text offset exceeds usize".to_owned()))?;
+        let row_bytes = text.bytes.get(start..finish).ok_or_else(|| {
+            SegmentError::Geometry(format!("stored-text row {row} exceeds payload"))
+        })?;
+        if *present == 1 {
+            std::str::from_utf8(row_bytes).map_err(|_| {
+                SegmentError::Geometry(format!("stored-text row {row} is not UTF-8"))
+            })?;
+        }
+        previous = *end;
+    }
+    let byte_len = u64::try_from(text.bytes.len())
+        .map_err(|_| SegmentError::Geometry("stored-text bytes exceed u64".to_owned()))?;
+    if previous != byte_len {
+        return Err(SegmentError::Geometry(format!(
+            "stored-text final offset {previous}, bytes {byte_len}"
+        )));
+    }
+    let bitmap_len = rows.div_ceil(8);
+    let capacity = 8_usize
+        .checked_add(bitmap_len)
+        .and_then(|value| value.checked_add(rows.saturating_mul(8)))
+        .and_then(|value| value.checked_add(text.bytes.len()))
+        .ok_or_else(|| SegmentError::Geometry("stored-text length overflow".to_owned()))?;
+    let row_count = u32::try_from(rows)
+        .map_err(|_| SegmentError::Geometry("stored-text rows exceed u32".to_owned()))?;
+    let mut encoded = Vec::with_capacity(capacity);
+    encoded.extend_from_slice(&row_count.to_le_bytes());
+    encoded.extend_from_slice(&0_u32.to_le_bytes());
+    encoded.resize(8 + bitmap_len, 0);
+    for (row, present) in text.present.iter().enumerate() {
+        if *present == 1 {
+            let byte = encoded
+                .get_mut(8 + row / 8)
+                .ok_or_else(|| SegmentError::Geometry("stored-text bitmap overflow".to_owned()))?;
+            *byte |= 1 << (row % 8);
+        }
+    }
+    for end in text.end_offsets {
+        encoded.extend_from_slice(&end.to_le_bytes());
+    }
+    encoded.extend_from_slice(text.bytes);
     Ok(encoded)
 }
 
@@ -648,7 +748,7 @@ pub fn write_segment_with_documents(
     documents: SegmentDocumentVersions<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), None, None, &[])?;
+    let bytes = encode_segment_inner(build, None, Some(documents), None, None, None, &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -661,7 +761,28 @@ pub fn write_segment_with_documents_and_metadata(
     metadata: SegmentStoredMetadata<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), Some(metadata), None, &[])?;
+    let bytes = encode_segment_inner(
+        build,
+        None,
+        Some(documents),
+        Some(metadata),
+        None,
+        None,
+        &[],
+    )?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes document identities plus optional lossless UTF-8 source rows.
+pub fn write_segment_with_documents_and_text(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    text: SegmentStoredText<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents), None, Some(text), None, &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -674,7 +795,15 @@ pub fn write_segment_with_documents_and_postings(
     postings: SegmentPostings<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, Some(documents), None, Some(postings), &[])?;
+    let bytes = encode_segment_inner(
+        build,
+        None,
+        Some(documents),
+        None,
+        None,
+        Some(postings),
+        &[],
+    )?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -689,7 +818,7 @@ pub fn write_segment_with_postings(
     postings: SegmentPostings<'_>,
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    let bytes = encode_segment_inner(build, None, None, None, Some(postings), &[])?;
+    let bytes = encode_segment_inner(build, None, None, None, None, Some(postings), &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -708,9 +837,25 @@ pub fn write_segment_with_documents_metadata_and_postings(
         None,
         Some(documents),
         Some(metadata),
+        None,
         Some(postings),
         &[],
     )?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
+/// Writes document identities and any optional payload regions in one segment.
+pub(crate) fn write_segment_with_documents_payloads(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    documents: SegmentDocumentVersions<'_>,
+    metadata: Option<SegmentStoredMetadata<'_>>,
+    text: Option<SegmentStoredText<'_>>,
+    postings: Option<SegmentPostings<'_>>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let bytes = encode_segment_inner(build, None, Some(documents), metadata, text, postings, &[])?;
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
@@ -768,6 +913,7 @@ pub(crate) fn write_segment_with_graph_and_copied_regions(
         build,
         Some(graph_bytes),
         documents,
+        None,
         None,
         None,
         copied_regions,

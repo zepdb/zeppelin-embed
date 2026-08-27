@@ -54,10 +54,21 @@ impl Default for CancelToken {
 }
 
 /// A monotonic absolute query deadline.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Deadline {
     at: Instant,
+    clock: Arc<dyn super::MonotonicClock>,
     state: Arc<AtomicU8>,
+}
+
+impl std::fmt::Debug for Deadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Deadline")
+            .field("at", &self.at)
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Deadline {
@@ -68,11 +79,32 @@ impl Deadline {
     /// Returns [`DeadlineError`] when the requested duration cannot be
     /// represented by [`Instant`].
     pub fn after(duration: Duration) -> Result<Self, DeadlineError> {
-        let at = Instant::now()
+        Self::after_with_clock(duration, Arc::new(super::SystemMonotonicClock))
+    }
+
+    /// Creates a deadline relative to an injected monotonic clock.
+    ///
+    /// This is available only to deterministic test-support builds so a test
+    /// can construct and evaluate the deadline in one clock domain.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn after_with_test_clock(
+        duration: Duration,
+        clock: Arc<dyn super::MonotonicClock>,
+    ) -> Result<Self, DeadlineError> {
+        Self::after_with_clock(duration, clock)
+    }
+
+    pub(crate) fn after_with_clock(
+        duration: Duration,
+        clock: Arc<dyn super::MonotonicClock>,
+    ) -> Result<Self, DeadlineError> {
+        let at = clock
+            .now()
             .checked_add(duration)
             .ok_or(DeadlineError::OutOfRange)?;
         Ok(Self {
             at,
+            clock,
             state: Arc::new(AtomicU8::new(ACTIVE)),
         })
     }
@@ -161,9 +193,23 @@ impl std::error::Error for QueryError {
 }
 
 impl QueryControl {
+    pub(crate) fn with_clock(mut self, clock: Arc<dyn super::MonotonicClock>) -> Self {
+        if let Self::Deadline(deadline) = &mut self {
+            deadline.clock = clock;
+        }
+        self
+    }
+
     pub(crate) fn deadline(&self) -> Option<Instant> {
         match self {
             Self::Deadline(deadline) => Some(deadline.at),
+            Self::Cancel(_) => None,
+        }
+    }
+
+    pub(crate) fn now(&self) -> Option<Instant> {
+        match self {
+            Self::Deadline(deadline) => Some(deadline.clock.now()),
             Self::Cancel(_) => None,
         }
     }
@@ -218,7 +264,8 @@ impl<'a> QueryCancellation<'a> {
         if self
             .control
             .deadline()
-            .is_some_and(|deadline| Instant::now() >= deadline)
+            .zip(self.control.now())
+            .is_some_and(|(deadline, now)| now >= deadline)
         {
             self.control.mark_timed_out();
         }

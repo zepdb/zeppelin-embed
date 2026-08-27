@@ -16,7 +16,6 @@ use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::{SegmentError, SegmentId};
-use crate::vfs::{StdVfs, Vfs};
 
 use super::SegmentTier;
 use super::TierThresholds;
@@ -224,7 +223,8 @@ fn maintain_one(
     }
     // Keep ten percent of the host's wall budget for completed-artifact and
     // manifest publication after construction stops consulting the deadline.
-    let deadline = Deadline::after(build_time).map_err(MaintenanceError::Deadline)?;
+    let deadline = Deadline::after_with_clock(build_time, Arc::clone(&store.clock))
+        .map_err(MaintenanceError::Deadline)?;
     let control = QueryControl::Deadline(deadline);
     let mut report = MaintenanceReport {
         graphs_built: 0,
@@ -325,7 +325,7 @@ fn maintain_one(
         let output_id = graph_segment_id(segment.meta().id, lease.generation());
         let meta = artifact
             .write_segment_with_graph(
-                &StdVfs,
+                store.vfs.as_ref(),
                 &store.directory,
                 segment,
                 output_id,
@@ -465,7 +465,7 @@ fn publish_transition(
         .ok_or(MaintenanceError::Store(StoreError::ReadOnly))?
         .durable_end();
     let manifest_path = store.directory.join(MANIFEST_FILE);
-    let mut manifest = load_manifest(&StdVfs, &manifest_path, durable_end)
+    let mut manifest = load_manifest(store.vfs.as_ref(), &manifest_path, durable_end)
         .map_err(StoreError::Manifest)
         .map_err(MaintenanceError::Store)?;
     let Some(slot) = manifest
@@ -493,15 +493,16 @@ fn publish_transition(
         .ok_or(MaintenanceError::Store(StoreError::GenerationOverflow))?;
     manifest.epochs = store.epoch_registry(&manifest.epochs);
     commit_manifest(
-        &StdVfs,
+        store.vfs.as_ref(),
         &store.directory,
         &manifest,
         store.durability_policy,
     )
     .map_err(StoreError::Manifest)
     .map_err(MaintenanceError::Store)?;
-    let remapped = PublishedSnapshot::load(&store.directory, &store.accounting)
-        .map_err(MaintenanceError::Store)?;
+    let remapped =
+        PublishedSnapshot::load_on_vfs(&store.directory, &store.accounting, store.vfs.as_ref())
+            .map_err(MaintenanceError::Store)?;
     let mut published = store.snapshot.write().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {
             component: "published snapshot",
@@ -516,7 +517,8 @@ fn publish_transition(
     drop(writer);
     drop(state);
     let source_path = store.directory.join(source_id.file_name());
-    StdVfs
+    store
+        .vfs
         .delete(&source_path)
         .map_err(|error| SegmentError::io(&source_path, error))
         .map_err(StoreError::Segment)

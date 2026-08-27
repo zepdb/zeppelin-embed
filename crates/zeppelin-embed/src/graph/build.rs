@@ -60,7 +60,7 @@ pub(crate) const fn graph_rewrite_source_region(kind: u16) -> GraphRewriteRegion
         Some(RegionKind::GraphNodeBlocks | RegionKind::ChecksumTable) => {
             GraphRewriteRegion::Replaced
         }
-        Some(RegionKind::Postings | RegionKind::StoredMetadata) | None => {
+        Some(RegionKind::Postings | RegionKind::StoredMetadata | RegionKind::StoredText) | None => {
             GraphRewriteRegion::CopyForward
         }
         Some(

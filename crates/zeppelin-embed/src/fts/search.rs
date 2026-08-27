@@ -354,7 +354,32 @@ pub(crate) fn search_allow_list_driven(
     params: Bm25Params,
     allow_lists: &[&crate::meta::DocBitmap],
 ) -> Result<SearchResult, IndexError> {
-    let stats = index.corpus_stats()?;
+    match search_allow_list_driven_controlled(index, query, k, params, allow_lists, || {
+        Ok::<(), std::convert::Infallible>(())
+    }) {
+        Ok(result) => Ok(result),
+        Err(ControlledSearchError::Index(error)) => Err(error),
+        Err(ControlledSearchError::Control(error)) => match error {},
+    }
+}
+
+pub(crate) enum ControlledSearchError<Control> {
+    Index(IndexError),
+    Control(Control),
+}
+
+/// Allow-list scorer with deterministic cancellation checkpoints at entry,
+/// exit, segment boundaries, and every 64 posting/document work units.
+pub(crate) fn search_allow_list_driven_controlled<Control>(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    allow_lists: &[&crate::meta::DocBitmap],
+    mut checkpoint: impl FnMut() -> Result<(), Control>,
+) -> Result<SearchResult, ControlledSearchError<Control>> {
+    checkpoint().map_err(ControlledSearchError::Control)?;
+    let stats = index.corpus_stats().map_err(ControlledSearchError::Index)?;
     let fields = query.fields.fields();
     let frequencies = query
         .terms
@@ -363,8 +388,10 @@ pub(crate) fn search_allow_list_driven(
         .collect::<Vec<_>>();
     let mut counters = SearchCounters::default();
     let mut accumulator = Vec::<(GlobalDocId, f64)>::new();
+    let mut work_units = 0_u64;
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
+        checkpoint().map_err(ControlledSearchError::Control)?;
         let Some(allow_list) = allow_lists.get(ordinal) else {
             continue;
         };
@@ -387,6 +414,10 @@ pub(crate) fn search_allow_list_driven(
                 };
                 stream.seek(row);
                 if stream.current_row() == Some(row) {
+                    work_units = work_units.saturating_add(1);
+                    if work_units.is_multiple_of(64) {
+                        checkpoint().map_err(ControlledSearchError::Control)?;
+                    }
                     counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                     let tf = stream.current_tf().unwrap_or(0);
                     total += TermScorer::new(Df(df), &stats, params).score(Tf(tf), DocLen(length));
@@ -398,6 +429,10 @@ pub(crate) fn search_allow_list_driven(
                 counters.blocks_skipped = counters
                     .blocks_skipped
                     .saturating_add(stream.blocks_skipped());
+            }
+            work_units = work_units.saturating_add(1);
+            if work_units.is_multiple_of(64) {
+                checkpoint().map_err(ControlledSearchError::Control)?;
             }
             if matched {
                 counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
@@ -419,6 +454,7 @@ pub(crate) fn search_allow_list_driven(
             .then(left.0.cmp(&right.0))
     });
     accumulator.truncate(k);
+    checkpoint().map_err(ControlledSearchError::Control)?;
     Ok(SearchResult {
         hits: accumulator
             .into_iter()

@@ -70,3 +70,8 @@
 - `stored_metadata_one_v1.hex` freezes the new region payload. Every pre-10-D
   format fixture remains byte-identical; new content uses only additive family,
   region-kind, and WAL-operation ids.
+- Stored text is family id 16 in optional segment region kind id 14. Its v1
+  payload is `row_count:u32`, reserved-zero `u32`, a `ceil(row_count/8)`
+  presence bitmap, one monotonic little-endian `end_offset:u64` per row, then
+  concatenated UTF-8 bytes. Absent rows have an unchanged end offset; readers
+  validate every present row as UTF-8 before returning any row.
