@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use zeppelin_embed::adversarial_test_support::FeatureFaultReceipt;
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochId, EpochIdentity,
     EpochTransitionError, Normalization, StoreEpoch,
@@ -25,13 +24,19 @@ use zeppelin_embed::fusion::{
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, GraphSearchStats, IngestBatch, IngestDocument,
-    IngestError, Revision, RowSource, SearchRequest,
+    IngestError, IngestRetentionCheckpoint, IngestRetentionFaultEffect,
+    IngestRetentionFaultKind as ProductIngestRetentionFaultKind, IngestRetentionFaultReceiptV1,
+    IngestRetentionIoKind, IngestRetentionOperation as ProductIngestRetentionOperation, Revision,
+    RowSource, SearchRequest,
 };
+use zeppelin_embed::kernels::vector_fault::KernelFaultController;
+use zeppelin_embed::kernels::{KernelBackendId, KernelVariant};
 use zeppelin_embed::lifecycle::HybridLegTestFault;
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl,
-    SearchOptions, SearchTier, Store, StoreTestDependencies, SystemMonotonicClock,
+    SearchOptions, SearchTier, StorageCleanupReport, StorageFaultPlan, StorageFaultReceipt, Store,
+    StoreTestDependencies, SystemMonotonicClock,
 };
 use zeppelin_embed::manifest::EpochMeta;
 use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
@@ -40,28 +45,45 @@ use zeppelin_embed::meta::{
     PredicateValue, RangeBound, RangePredicate, Schema, TIMESTAMP_COLUMN,
 };
 use zeppelin_embed::planner::{
-    FilterMode, PlanFallback, PlanNode, SegmentBranch, SegmentPlan, SegmentTier,
+    FilterMode, MetadataExecutionReceipt, MetadataFeatureDetail, MetadataFeatureReceipt,
+    PlanFallback, PlanNode, SegmentBranch, SegmentPlan, SegmentTier,
 };
 use zeppelin_embed::quant::{
     Bit4Factors, QuantError, RescoreError, RescoreMetric, RescorePool, est_dot_bit4,
     prepare_bit4_query, quantize_bit4, rescore_top_k,
 };
 use zeppelin_embed::scan::ScanOptions;
-use zeppelin_embed::segment::SegmentId;
+use zeppelin_embed::scan::vector_fault::{
+    VectorAllocationSite as ProductVectorAllocationSite, VectorCampaign as ProductVectorCampaign,
+    VectorFaultEffect as ProductVectorFaultEffect, VectorFaultKind as ProductVectorFaultKind,
+    VectorFaultReceipt, VectorFaultSite as ProductVectorFaultSite,
+    VectorOperation as ProductVectorOperation, VectorQuantField as ProductVectorQuantField,
+    VectorQuantScheme as ProductVectorQuantScheme, VectorRowSource as ProductVectorRowSource,
+    VectorSearchTier as ProductVectorSearchTier,
+};
 use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
 };
+use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
+use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
+use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
+use zeppelin_embed_adversarial_oracle::vector_execution as vector_oracle;
 
 use super::artifacts::RunArtifacts;
 use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::fault_vfs::{self, FaultEvent};
+use super::ingest_retention as ingest_adapter;
+use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
-use super::oracle::OracleRecord;
+use super::oracle::{OracleFirstDifference, OracleRecord};
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
+use super::storage_durability as storage_adapter;
+use super::vector_execution as vector_adapter;
 
 const THREAD_BUDGET: usize = 1;
 const NUMERIC_COLUMN: ColumnId = ColumnId::new(1);
@@ -213,27 +235,51 @@ pub enum Invariant {
     I13,
     I14,
     I54,
+    Feature(super::campaign::InvariantId),
 }
 
 impl Invariant {
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn number(self) -> u8 {
         match self {
-            Self::I1 => "I1 acked-implies-visible",
-            Self::I2 => "I2 deleted-implies-gone",
-            Self::I3 => "I3 exactness",
-            Self::I4 => "I4 durability-prefix",
-            Self::I5 => "I5 filtered-results-honor-predicate",
-            Self::I6 => "I6 accounting-conservation",
-            Self::I7 => "I7 corruption-never-consumed",
-            Self::I8 => "I8 lifecycle",
-            Self::I9 => "I9 generation-monotonicity",
-            Self::I10 => "I10 purge-proof",
-            Self::I11 => "I11 revision-ordering",
-            Self::I12 => "I12 responses-name-the-store-epoch",
-            Self::I13 => "I13 diagnostics-never-lie",
-            Self::I14 => "I14 alias-target-is-complete-and-single-epoch",
-            Self::I54 => "I54 deadline-correctness",
+            Self::I1 => 1,
+            Self::I2 => 2,
+            Self::I3 => 3,
+            Self::I4 => 4,
+            Self::I5 => 5,
+            Self::I6 => 6,
+            Self::I7 => 7,
+            Self::I8 => 8,
+            Self::I9 => 9,
+            Self::I10 => 10,
+            Self::I11 => 11,
+            Self::I12 => 12,
+            Self::I13 => 13,
+            Self::I14 => 14,
+            Self::I54 => 54,
+            Self::Feature(invariant) => invariant.number(),
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::I1 => "I1 acked-implies-visible".to_owned(),
+            Self::I2 => "I2 deleted-implies-gone".to_owned(),
+            Self::I3 => "I3 exactness".to_owned(),
+            Self::I4 => "I4 durability-prefix".to_owned(),
+            Self::I5 => "I5 filtered-results-honor-predicate".to_owned(),
+            Self::I6 => "I6 accounting-conservation".to_owned(),
+            Self::I7 => "I7 corruption-never-consumed".to_owned(),
+            Self::I8 => "I8 lifecycle".to_owned(),
+            Self::I9 => "I9 generation-monotonicity".to_owned(),
+            Self::I10 => "I10 purge-proof".to_owned(),
+            Self::I11 => "I11 revision-ordering".to_owned(),
+            Self::I12 => "I12 responses-name-the-store-epoch".to_owned(),
+            Self::I13 => "I13 diagnostics-never-lie".to_owned(),
+            Self::I14 => "I14 alias-target-is-complete-and-single-epoch".to_owned(),
+            Self::I54 => "I54 deadline-correctness".to_owned(),
+            Self::Feature(invariant) => format!("{} {}", invariant.key(), invariant.label()),
         }
     }
 }
@@ -275,7 +321,7 @@ impl Violation {
     pub fn json_for(&self, campaign: CampaignKind) -> String {
         format!(
             "{{\"invariant\":\"{}\",\"seed\":{},\"profile\":\"{}\",\"op\":{},\"detail\":\"{}\",\"reproduce\":\"{}\"}}",
-            json_escape(self.invariant.label()),
+            json_escape(&self.invariant.label()),
             self.seed,
             self.profile.key(),
             self.op_index,
@@ -326,9 +372,13 @@ pub struct RunOutcome {
     pub controls_bytes: Vec<u8>,
     pub receipts_bytes: Vec<u8>,
     pub mutations_bytes: Vec<u8>,
+    pub episode_bytes: Vec<u8>,
+    pub family_artifact_bytes: BTreeMap<String, Vec<u8>>,
     pub comparison_counts: BTreeMap<String, u64>,
+    pub comparison_pass_counts: BTreeMap<String, u64>,
     pub same_seed_clean_controls: u64,
     pub integrated_feature_fault_receipts: u64,
+    pub expected_feature_fault_receipts: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1657,14 +1707,26 @@ fn run_program_for_with_clock(
     let program_bytes = artifacts.write_program(&program)?;
     let reproduction = reproduction_for(campaign, seed, profile);
     artifacts.write_reproduction(&reproduction)?;
-    if campaign == CampaignKind::Overall {
-        let _ = artifacts.write_episode_metadata(campaign, seed, profile, &reproduction, None)?;
-    }
+    let mut episode_bytes = if campaign == CampaignKind::Overall {
+        artifacts.write_episode_metadata(campaign, seed, profile, &reproduction, None)?
+    } else {
+        Vec::new()
+    };
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let scheduled_event = fault_vfs::scheduled_event_for_program(seed, profile, &program);
+    let storage_episode = if campaign == CampaignKind::StorageDurability {
+        Some(storage_adapter::build_storage_episode_fixtures(seed)?)
+    } else {
+        None
+    };
     let mut fault_plan =
         FaultPlan::for_program(campaign, seed, profile, &program, scheduled_event.clone());
-    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled(scheduled_event));
+    let expected_feature_fault_receipts = fault_plan
+        .feature
+        .iter()
+        .map(|event| event.fault.required_receipt_cardinality() as u64)
+        .sum();
+    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled(scheduled_event.clone()));
     let mut engine = RealEngine::new(
         directory.path().to_path_buf(),
         Arc::clone(&scheduled_vfs),
@@ -1677,7 +1739,10 @@ fn run_program_for_with_clock(
     let mut oracle_records = Vec::<OracleRecord>::new();
     let mut control_records = Vec::<String>::new();
     let mut receipt_records = Vec::<String>::new();
+    let mut integrated_feature_fault_receipts = 0_u64;
+    let mut same_seed_clean_controls = 0_u64;
     let mut mutation_records = Vec::<String>::new();
+    let mut family_artifact_records = BTreeMap::<&'static str, Vec<String>>::new();
     coverage.hit(format!("fault.profile.{}", profile.key()));
     let mut executed_operations = 0_usize;
     let mut last_generation = 0_u64;
@@ -2002,51 +2067,147 @@ fn run_program_for_with_clock(
                 coverage.hit("fts.snippet");
                 None
             }),
-            Op::Feature(operation) => run_campaign_operation(
-                &mut engine,
-                &model,
-                *operation,
-                CampaignOperationContext {
-                    selected_faults: &selected_feature_faults,
-                    seed,
-                    profile,
-                    op_index,
-                    oracle_records: &mut oracle_records,
-                    control_records: &mut control_records,
-                    mutation_records: &mut mutation_records,
-                    coverage: &mut coverage,
-                },
-            )
-            .and_then(|receipts| {
-                for receipt in receipts {
-                    let event = fault_plan
-                        .feature
-                        .iter_mut()
-                        .find(|event| {
-                            event.fault.key() == receipt.fault() && event.op_index == op_index
-                        })
-                        .ok_or_else(|| {
-                            format!(
-                                "unplanned feature-fault receipt {} at op {op_index}",
-                                receipt.fault()
-                            )
-                        })?;
-                    let cardinality = usize::try_from(receipt.cardinality())
-                        .map_err(|_| "feature receipt cardinality does not fit usize".to_owned())?;
-                    event.fire_count = event.fire_count.saturating_add(cardinality);
-                    event.fired = event.fire_count == 1;
-                    if event.fire_count != 1 {
+            Op::Feature(operation) => {
+                let record_start = oracle_records.len();
+                let control_start = control_records.len();
+                let result = run_campaign_operation(
+                    &mut engine,
+                    &model,
+                    *operation,
+                    CampaignOperationContext {
+                        selected_faults: &selected_feature_faults,
+                        generic_fault: scheduled_event.as_ref(),
+                        storage_episode: storage_episode.as_ref(),
+                        seed,
+                        profile,
+                        op_index,
+                        oracle_records: &mut oracle_records,
+                        control_records: &mut control_records,
+                        mutation_records: &mut mutation_records,
+                        family_artifact_records: &mut family_artifact_records,
+                        coverage: &mut coverage,
+                    },
+                );
+                for record in oracle_records.get(record_start..).unwrap_or_default() {
+                    if !record.passed {
+                        violations.push(Violation {
+                            invariant: Invariant::Feature(super::campaign::InvariantId::new(
+                                record.invariant,
+                            )),
+                            seed,
+                            profile,
+                            op_index,
+                            detail: format!("{}: {}", record.checker_id, record.detail),
+                        });
+                    }
+                }
+                result.and_then(|receipts| {
+                    if !selected_feature_faults.is_empty() {
+                        let observed_controls = control_records.len().saturating_sub(control_start);
+                        let qualifying_controls = if campaign
+                            == CampaignKind::MetadataFilterPlanner
+                        {
+                            control_records
+                                .get(control_start..)
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|record| {
+                                    zeppelin_embed_bench::harness_json::from_str::<
+                                        zeppelin_embed_bench::harness_json::Value,
+                                    >(record)
+                                    .map_err(|error| {
+                                        format!(
+                                            "parse metadata same-seed control evidence: {error}"
+                                        )
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .iter()
+                                .filter(|record| record["fault"].as_str().is_some())
+                                .count()
+                        } else {
+                            observed_controls
+                        };
+                        if qualifying_controls != selected_feature_faults.len() {
+                            return Err(format!(
+                                "feature operation {} produced {qualifying_controls} qualifying same-seed controls ({observed_controls} total) for {} selected faults",
+                                operation.key(),
+                                selected_feature_faults.len()
+                            ));
+                        }
+                        same_seed_clean_controls = same_seed_clean_controls.saturating_add(
+                            u64::try_from(qualifying_controls)
+                                .map_err(|_| "same-seed control count exceeds u64".to_owned())?,
+                        );
+                    }
+                    for receipt in receipts {
+                    if receipt.campaign() != campaign.key()
+                        || receipt.operation() != operation.key()
+                        || receipt.site().is_empty()
+                    {
                         return Err(format!(
-                            "feature fault {} fired {} times, expected exactly once",
-                            event.fault.key(),
-                            event.fire_count
+                            "feature receipt origin mismatch: expected {}/{}, observed {}/{} at {:?}",
+                            campaign.key(),
+                            operation.key(),
+                            receipt.campaign(),
+                            receipt.operation(),
+                            receipt.site(),
                         ));
                     }
+                    if let Some(receipt_fault) = receipt.fault() {
+                        let event = fault_plan
+                            .feature
+                            .iter_mut()
+                            .find(|event| {
+                                event.fault.key() == receipt_fault && event.op_index == op_index
+                            })
+                            .ok_or_else(|| {
+                                format!(
+                                    "unplanned feature-fault receipt {receipt_fault} at op {op_index}"
+                                )
+                            })?;
+                        let cardinality = usize::try_from(receipt.cardinality().ok_or_else(|| {
+                            "feature receipt omitted its cardinality".to_owned()
+                        })?)
+                        .map_err(|_| {
+                            "feature receipt cardinality does not fit usize".to_owned()
+                        })?;
+                        let expected = event.fault.required_receipt_cardinality();
+                        event.fire_count = event.fire_count.saturating_add(cardinality);
+                        integrated_feature_fault_receipts = integrated_feature_fault_receipts
+                            .saturating_add(u64::try_from(cardinality).map_err(|_| {
+                                "feature receipt cardinality exceeds u64".to_owned()
+                            })?);
+                        event.fired = event.fire_count == expected;
+                        if event.fire_count > expected {
+                            return Err(format!(
+                                "feature fault {} fired {} times, expected exactly {expected}",
+                                event.fault.key(),
+                                event.fire_count
+                            ));
+                        }
+                    }
                     receipt_records.push(production_receipt_json(&receipt));
-                    coverage.hit(event.fault.coverage_key());
-                }
-                Ok(None)
-            }),
+                    }
+                    for event in fault_plan
+                        .feature
+                        .iter_mut()
+                        .filter(|event| event.op_index == op_index)
+                    {
+                        let expected = event.fault.required_receipt_cardinality();
+                        event.fired = event.fire_count == expected;
+                        if !event.fired {
+                            return Err(format!(
+                                "feature fault {} fired {} times, expected exactly {expected}",
+                                event.fault.key(),
+                                event.fire_count
+                            ));
+                        }
+                        coverage.hit(event.fault.coverage_key());
+                    }
+                    Ok(None)
+                })
+            }
             Op::Stats => engine.stats().map(|stats| {
                 if let Some(violation) = stats_violation(seed, profile, op_index, stats) {
                     violations.push(violation);
@@ -2183,9 +2344,16 @@ fn run_program_for_with_clock(
                     .is_some_and(|fault| fault.op_index == op_index && fault.fired);
                 if injected && profile == FaultProfile::Content {
                     // A persisted content mutation may be impossible to clear.
-                    // The typed refusal itself satisfies I7; do not pretend a
-                    // poisoned store reached quiescence.
-                    break;
+                    // The typed refusal itself satisfies I7. Feature campaigns
+                    // keep executing so an independently materialized family
+                    // operation scheduled after the refusal still runs. The
+                    // legacy overall campaign preserves its original stop
+                    // semantics and never drives later operations through the
+                    // poisoned generic Store.
+                    if campaign == CampaignKind::Overall {
+                        break;
+                    }
+                    continue;
                 } else if injected {
                     match recover_and_retry_faulted_operation(&mut engine, &mut model, op) {
                         Ok(Some(ack)) => {
@@ -2293,15 +2461,23 @@ fn run_program_for_with_clock(
     } else {
         artifacts.write_mutations(&mutation_records)?
     };
-    let mut comparison_counts = BTreeMap::<String, u64>::new();
-    for record in &oracle_records {
-        let count = comparison_counts
-            .entry(format!("I{}", record.invariant))
-            .or_default();
-        *count = count.saturating_add(1);
+    let mut family_artifact_bytes = BTreeMap::new();
+    for (name, records) in family_artifact_records {
+        let bytes = render_family_artifact(name, &records)?;
+        let written = artifacts.write_family_artifact(campaign, name, &bytes)?;
+        family_artifact_bytes.insert(name.to_owned(), written);
     }
-    let same_seed_clean_controls = control_records.len() as u64;
-    let integrated_feature_fault_receipts = receipt_records.len() as u64;
+    let mut comparison_counts = BTreeMap::<String, u64>::new();
+    let mut comparison_pass_counts = BTreeMap::<String, u64>::new();
+    for record in &oracle_records {
+        let invariant = format!("I{}", record.invariant);
+        let count = comparison_counts.entry(invariant.clone()).or_default();
+        *count = count.saturating_add(1);
+        if record.passed {
+            let passes = comparison_pass_counts.entry(invariant).or_default();
+            *passes = passes.saturating_add(1);
+        }
+    }
     let mut outcome = RunOutcome {
         campaign,
         seed,
@@ -2346,36 +2522,86 @@ fn run_program_for_with_clock(
         controls_bytes,
         receipts_bytes,
         mutations_bytes,
+        episode_bytes: Vec::new(),
+        family_artifact_bytes,
         comparison_counts,
+        comparison_pass_counts,
         same_seed_clean_controls,
         integrated_feature_fault_receipts,
+        expected_feature_fault_receipts,
     };
     outcome.coverage_bytes = artifacts.write_coverage(&outcome.coverage)?;
+    if campaign == CampaignKind::VectorExecution {
+        let coverage_alias =
+            artifacts.write_family_artifact(campaign, "coverage.jsonl", &outcome.coverage_bytes)?;
+        outcome
+            .family_artifact_bytes
+            .insert("coverage.jsonl".to_owned(), coverage_alias);
+        let mut violations_alias = Vec::new();
+        for violation in &outcome.violations {
+            violations_alias.extend_from_slice(violation.json_for(campaign).as_bytes());
+            violations_alias.push(b'\n');
+        }
+        let violations_alias =
+            artifacts.write_family_artifact(campaign, "violations.jsonl", &violations_alias)?;
+        outcome
+            .family_artifact_bytes
+            .insert("violations.jsonl".to_owned(), violations_alias);
+    }
     if campaign != CampaignKind::Overall {
         let mut evidence_digests = BTreeMap::<String, String>::new();
+        let family_evidence = outcome
+            .family_artifact_bytes
+            .values()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let mut operation_evidence = vec![
+            outcome.program_bytes.as_slice(),
+            outcome.controls_bytes.as_slice(),
+        ];
+        operation_evidence.extend(family_evidence.iter().copied());
         evidence_digests.insert(
             "operation_evidence".to_owned(),
-            super::artifacts::evidence_digest(&[&outcome.program_bytes, &outcome.controls_bytes]),
+            super::artifacts::evidence_digest(&operation_evidence),
         );
         evidence_digests.insert(
             "checker_evidence".to_owned(),
             super::artifacts::evidence_digest(&[&outcome.oracle_bytes]),
         );
+        let mut fault_evidence = vec![
+            outcome.faults_bytes.as_slice(),
+            outcome.receipts_bytes.as_slice(),
+            outcome.mutations_bytes.as_slice(),
+        ];
+        fault_evidence.extend(family_evidence.iter().copied());
         evidence_digests.insert(
             "fault_evidence".to_owned(),
-            super::artifacts::evidence_digest(&[
-                &outcome.faults_bytes,
-                &outcome.receipts_bytes,
-                &outcome.mutations_bytes,
-            ]),
+            super::artifacts::evidence_digest(&fault_evidence),
         );
+        let family_oracle_attestation = match campaign {
+            CampaignKind::StorageDurability => Some(storage_episode_oracle_attestation(
+                &outcome,
+                &oracle_records,
+            )?),
+            CampaignKind::VectorExecution => Some(vector_episode_oracle_attestation(
+                &outcome,
+                &oracle_records,
+            )?),
+            CampaignKind::IngestRetention => Some(ingest_episode_oracle_attestation(
+                &outcome,
+                &oracle_records,
+            )?),
+            _ => None,
+        };
         let attestation = super::artifacts::EpisodeAttestation {
             comparison_counts: outcome.comparison_counts.clone(),
             same_seed_clean_controls: outcome.same_seed_clean_controls,
             integrated_feature_fault_receipts: outcome.integrated_feature_fault_receipts,
+            expected_feature_fault_receipts: outcome.expected_feature_fault_receipts,
             evidence_digests,
+            family_oracle_attestation,
         };
-        let _ = artifacts.write_episode_metadata(
+        episode_bytes = artifacts.write_episode_metadata(
             campaign,
             seed,
             profile,
@@ -2383,7 +2609,72 @@ fn run_program_for_with_clock(
             Some(&attestation),
         )?;
     }
+    outcome.episode_bytes = episode_bytes;
+    if campaign == CampaignKind::VectorExecution {
+        let episode_summary = artifacts.write_family_artifact(
+            campaign,
+            "episode-summary.json",
+            &outcome.episode_bytes,
+        )?;
+        outcome
+            .family_artifact_bytes
+            .insert("episode-summary.json".to_owned(), episode_summary);
+    }
     Ok(outcome)
+}
+
+fn render_family_artifact(name: &str, records: &[String]) -> Result<Vec<u8>, String> {
+    if name == "metadata-fixture.json" {
+        let mut bytes = b"{\"campaign\":\"metadata-filter-planner\",\"operations\":[".to_vec();
+        for (index, record) in records.iter().enumerate() {
+            if index != 0 {
+                bytes.push(b',');
+            }
+            bytes.extend_from_slice(record.as_bytes());
+        }
+        bytes.extend_from_slice(b"]}\n");
+        return Ok(bytes);
+    }
+    if name == "fixture.json" {
+        let campaign = records
+            .first()
+            .ok_or_else(|| "family fixture.json requires at least one record".to_owned())
+            .and_then(|record| {
+                zeppelin_embed_bench::harness_json::from_str::<
+                    zeppelin_embed_bench::harness_json::Value,
+                >(record)
+                .map_err(|error| format!("parse fixture.json record: {error}"))
+            })?
+            .get("campaign")
+            .and_then(zeppelin_embed_bench::harness_json::Value::as_str)
+            .ok_or_else(|| "family fixture.json record omitted campaign".to_owned())?
+            .to_owned();
+        let mut bytes = format!(
+            "{{\"campaign\":\"{}\",\"operations\":[",
+            json_escape(&campaign)
+        )
+        .into_bytes();
+        for (index, record) in records.iter().enumerate() {
+            if index != 0 {
+                bytes.push(b',');
+            }
+            bytes.extend_from_slice(record.as_bytes());
+        }
+        bytes.extend_from_slice(b"]}\n");
+        return Ok(bytes);
+    }
+    if name.ends_with(".json") && !name.ends_with(".jsonl") && records.len() != 1 {
+        return Err(format!(
+            "family JSON artifact {name} requires exactly one record, observed {}",
+            records.len()
+        ));
+    }
+    let mut bytes = Vec::new();
+    for record in records {
+        bytes.extend_from_slice(record.as_bytes());
+        bytes.push(b'\n');
+    }
+    Ok(bytes)
 }
 
 fn record_successful_operation_coverage(coverage: &mut CoverageRegistry, op: &Op) {
@@ -2419,24 +2710,511 @@ fn record_successful_operation_coverage(coverage: &mut CoverageRegistry, op: &Op
 
 struct CampaignOperationContext<'a> {
     selected_faults: &'a [super::campaign::FeatureFault],
+    generic_fault: Option<&'a FaultEvent>,
+    storage_episode: Option<&'a storage_adapter::StorageEpisodeFixtures>,
     seed: u64,
     profile: FaultProfile,
     op_index: usize,
     oracle_records: &'a mut Vec<OracleRecord>,
     control_records: &'a mut Vec<String>,
     mutation_records: &'a mut Vec<String>,
+    family_artifact_records: &'a mut BTreeMap<&'static str, Vec<String>>,
     coverage: &'a mut CoverageRegistry,
 }
 
-fn production_receipt_json(receipt: &FeatureFaultReceipt) -> String {
+enum ProductionFeatureReceipt {
+    ValidatedStorage(StorageFaultReceipt),
+    ValidatedIngestRetention(IngestRetentionFaultReceiptV1),
+    ValidatedMetadataFeature(MetadataFeatureReceipt),
+    ValidatedVectorFeature(VectorFaultReceipt),
+    MetadataExecution {
+        operation: &'static str,
+        receipt: MetadataExecutionReceipt,
+    },
+}
+
+impl ProductionFeatureReceipt {
+    fn campaign(&self) -> &str {
+        match self {
+            Self::ValidatedStorage(receipt) => receipt.campaign(),
+            Self::ValidatedIngestRetention(receipt) => receipt.campaign(),
+            Self::ValidatedMetadataFeature(receipt) => receipt.origin.campaign(),
+            Self::ValidatedVectorFeature(receipt) => vector_campaign_key(receipt.campaign()),
+            Self::MetadataExecution { .. } => "metadata-filter-planner",
+        }
+    }
+
+    fn operation(&self) -> &str {
+        match self {
+            Self::ValidatedStorage(receipt) => receipt.operation(),
+            Self::ValidatedIngestRetention(receipt) => match receipt.operation() {
+                ProductIngestRetentionOperation::BatchCommit => "batch-commit",
+                ProductIngestRetentionOperation::Seal => "seal",
+                ProductIngestRetentionOperation::Retention => "retention",
+                ProductIngestRetentionOperation::Purge => "purge",
+            },
+            Self::ValidatedMetadataFeature(receipt) => receipt.origin.operation(),
+            Self::ValidatedVectorFeature(receipt) => vector_operation_key(receipt.operation()),
+            Self::MetadataExecution { operation, .. } => operation,
+        }
+    }
+
+    fn fault(&self) -> Option<&str> {
+        match self {
+            Self::ValidatedStorage(receipt) => Some(receipt.fault()),
+            Self::ValidatedIngestRetention(receipt) => Some(match receipt.fault() {
+                ProductIngestRetentionFaultKind::PostAckRetry => "post-ack-retry",
+                ProductIngestRetentionFaultKind::PartialBatchAppend => "partial-batch-append",
+                ProductIngestRetentionFaultKind::SealCancellation => "seal-cancellation",
+                ProductIngestRetentionFaultKind::RetentionClockBoundary => {
+                    "retention-clock-boundary"
+                }
+                ProductIngestRetentionFaultKind::PurgeUnlinkError => "purge-unlink-error",
+                ProductIngestRetentionFaultKind::PurgeCrashBoundary => "purge-crash-boundary",
+            }),
+            Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.fault()),
+            Self::ValidatedVectorFeature(receipt) => Some(vector_fault_key(receipt.fault())),
+            Self::MetadataExecution { .. } => None,
+        }
+    }
+
+    fn site(&self) -> &str {
+        match self {
+            Self::ValidatedStorage(receipt) => receipt.site(),
+            Self::ValidatedIngestRetention(receipt) => match receipt.checkpoint() {
+                IngestRetentionCheckpoint::IngestReplayNoWalAppend => "ingest.replay.no-wal-append",
+                IngestRetentionCheckpoint::IngestCommitManyAppendError => {
+                    "ingest.commit-many.append-error"
+                }
+                IngestRetentionCheckpoint::SealAfterSegmentWriteBeforeManifestCommit => {
+                    "seal.after-segment-write.before-manifest-commit"
+                }
+                IngestRetentionCheckpoint::RetentionPolicyEvaluated => "retention.policy-evaluated",
+                IngestRetentionCheckpoint::PurgeOldSegmentUnlinkError => {
+                    "purge.old-segment-unlink.error"
+                }
+                IngestRetentionCheckpoint::PurgeAfterDurableIntentBeforeRewrite => {
+                    "purge.after-durable-intent.before-rewrite"
+                }
+            },
+            Self::ValidatedMetadataFeature(receipt) => receipt.origin.site(),
+            Self::ValidatedVectorFeature(receipt) => vector_site_key(receipt.site()),
+            Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
+        }
+    }
+
+    fn cardinality(&self) -> Option<u32> {
+        match self {
+            Self::ValidatedStorage(receipt) => Some(receipt.cardinality()),
+            Self::ValidatedIngestRetention(receipt) => Some(u32::from(receipt.cardinality())),
+            Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.cardinality()),
+            Self::ValidatedVectorFeature(receipt) => Some(u32::from(receipt.cardinality())),
+            Self::MetadataExecution { .. } => None,
+        }
+    }
+}
+
+fn storage_product_receipt_plan_json(plan: &StorageFaultPlan) -> String {
+    let optional_u64 =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_u32 =
+        |value: Option<u32>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_u16 =
+        |value: Option<u16>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let segment = plan.segment().map_or_else(
+        || "null".to_owned(),
+        |segment| format!("\"{}\"", evidence_hex(segment.as_bytes())),
+    );
     format!(
-        "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{},\"effect\":\"{}\"}}",
-        json_escape(receipt.campaign()),
-        json_escape(receipt.operation()),
-        json_escape(receipt.fault()),
-        json_escape(receipt.site()),
-        receipt.cardinality(),
-        json_escape(receipt.effect()),
+        "{{\"op_index\":{},\"artifact\":\"{}\",\"offset\":{},\"segment\":{segment},\"region_kind\":{},\"chunk\":{}}}",
+        plan.op_index(),
+        json_escape(plan.artifact()),
+        optional_u64(plan.offset()),
+        optional_u16(plan.region_kind()),
+        optional_u32(plan.chunk()),
+    )
+}
+
+pub(crate) fn storage_receipt_evidence_digest(
+    record: &zeppelin_embed_bench::harness_json::Value,
+) -> Result<String, String> {
+    let mut payload = record.clone();
+    payload
+        .as_object_mut()
+        .ok_or_else(|| "storage production receipt is not an object".to_owned())?
+        .remove("receipt_digest");
+    let bytes = zeppelin_embed_bench::harness_json::to_vec(&payload)
+        .map_err(|error| format!("serialize storage production receipt evidence: {error}"))?;
+    Ok(super::artifacts::evidence_digest(&[
+        b"storage-production-receipt-v1",
+        &bytes,
+    ]))
+}
+
+fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
+    match receipt {
+        ProductionFeatureReceipt::ValidatedStorage(receipt) => {
+            let converted = storage_adapter::receipt_observed_from_product(receipt)
+                .unwrap_or_else(|error| panic!("validated storage receipt conversion: {error}"));
+            assert_eq!(converted.cardinality, receipt.cardinality());
+            let plan = storage_product_receipt_plan_json(receipt.plan());
+            let observed = storage_receipt_effect_json(&converted.value.effect);
+            let mut record = zeppelin_embed_bench::harness_json::json!({
+                "campaign": receipt.campaign(),
+                "operation": receipt.operation(),
+                "fault": receipt.fault(),
+                "site": receipt.site(),
+                "cardinality": receipt.cardinality(),
+                "plan": zeppelin_embed_bench::harness_json::from_str::<
+                    zeppelin_embed_bench::harness_json::Value,
+                >(&plan)
+                .expect("typed storage receipt plan JSON"),
+                "observed": zeppelin_embed_bench::harness_json::from_str::<
+                    zeppelin_embed_bench::harness_json::Value,
+                >(&observed)
+                .expect("typed storage receipt observation JSON"),
+            });
+            let digest = storage_receipt_evidence_digest(&record)
+                .expect("typed storage receipt evidence digest");
+            record
+                .as_object_mut()
+                .expect("storage receipt object")
+                .insert(
+                    "receipt_digest".to_owned(),
+                    zeppelin_embed_bench::harness_json::Value::String(digest),
+                );
+            record.to_string()
+        }
+        ProductionFeatureReceipt::ValidatedIngestRetention(receipt) => {
+            let base = format!(
+                "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{},\"invocation_id\":{},\"effect\":{}}}",
+                receipt.campaign(),
+                match receipt.operation() {
+                    ProductIngestRetentionOperation::BatchCommit => "batch-commit",
+                    ProductIngestRetentionOperation::Seal => "seal",
+                    ProductIngestRetentionOperation::Retention => "retention",
+                    ProductIngestRetentionOperation::Purge => "purge",
+                },
+                match receipt.fault() {
+                    ProductIngestRetentionFaultKind::PostAckRetry => "post-ack-retry",
+                    ProductIngestRetentionFaultKind::PartialBatchAppend => "partial-batch-append",
+                    ProductIngestRetentionFaultKind::SealCancellation => "seal-cancellation",
+                    ProductIngestRetentionFaultKind::RetentionClockBoundary => {
+                        "retention-clock-boundary"
+                    }
+                    ProductIngestRetentionFaultKind::PurgeUnlinkError => "purge-unlink-error",
+                    ProductIngestRetentionFaultKind::PurgeCrashBoundary => "purge-crash-boundary",
+                },
+                match receipt.checkpoint() {
+                    IngestRetentionCheckpoint::IngestReplayNoWalAppend => {
+                        "ingest.replay.no-wal-append"
+                    }
+                    IngestRetentionCheckpoint::IngestCommitManyAppendError => {
+                        "ingest.commit-many.append-error"
+                    }
+                    IngestRetentionCheckpoint::SealAfterSegmentWriteBeforeManifestCommit => {
+                        "seal.after-segment-write.before-manifest-commit"
+                    }
+                    IngestRetentionCheckpoint::RetentionPolicyEvaluated => {
+                        "retention.policy-evaluated"
+                    }
+                    IngestRetentionCheckpoint::PurgeOldSegmentUnlinkError => {
+                        "purge.old-segment-unlink.error"
+                    }
+                    IngestRetentionCheckpoint::PurgeAfterDurableIntentBeforeRewrite => {
+                        "purge.after-durable-intent.before-rewrite"
+                    }
+                },
+                receipt.cardinality(),
+                receipt.invocation_id(),
+                match receipt.effect() {
+                    IngestRetentionFaultEffect::PostAckRetry {
+                        batch_count,
+                        replay_count,
+                        returned_seq,
+                        returned_generation,
+                        wal_records_appended,
+                        generation_delta,
+                        active_published,
+                    } => format!(
+                        "{{\"kind\":\"post-ack-retry\",\"batch_count\":{batch_count},\"replay_count\":{replay_count},\"returned_seq\":{returned_seq},\"returned_generation\":{returned_generation},\"wal_records_appended\":{wal_records_appended},\"generation_delta\":{generation_delta},\"active_published\":{active_published}}}"
+                    ),
+                    IngestRetentionFaultEffect::PartialBatchAppend {
+                        submitted_count,
+                        changed_records,
+                        encoded_bytes,
+                        prefix_bytes,
+                        io_kind,
+                        detail,
+                        active_published,
+                        generation_delta,
+                    } => format!(
+                        "{{\"kind\":\"partial-batch-append\",\"submitted_count\":{submitted_count},\"changed_records\":{changed_records},\"encoded_bytes\":{encoded_bytes},\"prefix_bytes\":{prefix_bytes},\"io_kind\":\"{}\",\"detail\":\"{}\",\"active_published\":{active_published},\"generation_delta\":{generation_delta}}}",
+                        match io_kind {
+                            IngestRetentionIoKind::Other => "other",
+                        },
+                        json_escape(detail),
+                    ),
+                    IngestRetentionFaultEffect::SealCancellation {
+                        active_rows,
+                        absorbed_wal_end,
+                        candidate_segment,
+                        manifest_committed,
+                        temporary_segment_removed,
+                        generation_delta,
+                    } => format!(
+                        "{{\"kind\":\"seal-cancellation\",\"active_rows\":{active_rows},\"absorbed_wal_end\":{absorbed_wal_end},\"candidate_segment\":\"{}\",\"manifest_committed\":{manifest_committed},\"temporary_segment_removed\":{temporary_segment_removed},\"generation_delta\":{generation_delta}}}",
+                        evidence_hex(candidate_segment),
+                    ),
+                    IngestRetentionFaultEffect::RetentionClockBoundary {
+                        supplied_now,
+                        window,
+                        cutoff,
+                        range_start,
+                        range_end,
+                        report_generation,
+                        dropped_count,
+                        straddler_count,
+                        manifest_committed,
+                    } => format!(
+                        "{{\"kind\":\"retention-clock-boundary\",\"supplied_now\":{supplied_now},\"window\":{window},\"cutoff\":{cutoff},\"range_start\":{range_start},\"range_end\":{range_end},\"report_generation\":{report_generation},\"dropped_count\":{dropped_count},\"straddler_count\":{straddler_count},\"manifest_committed\":{manifest_committed}}}"
+                    ),
+                    IngestRetentionFaultEffect::PurgeUnlinkError {
+                        original_segment,
+                        replacement_segment,
+                        old_file_name,
+                        io_kind,
+                        replacement_manifest_committed,
+                        intent_present,
+                        old_path_linked,
+                    } => format!(
+                        "{{\"kind\":\"purge-unlink-error\",\"original_segment\":\"{}\",\"replacement_segment\":\"{}\",\"old_file_name\":\"{}\",\"io_kind\":\"{}\",\"replacement_manifest_committed\":{replacement_manifest_committed},\"intent_present\":{intent_present},\"old_path_linked\":{old_path_linked}}}",
+                        evidence_hex(original_segment),
+                        evidence_hex(replacement_segment),
+                        json_escape(old_file_name),
+                        match io_kind {
+                            IngestRetentionIoKind::Other => "other",
+                        },
+                    ),
+                    IngestRetentionFaultEffect::PurgeCrashBoundary {
+                        target_ids,
+                        token_id,
+                        intent_file_name,
+                        intent_durable,
+                        artifact_rewrites,
+                        child_aborted,
+                    } => {
+                        let target_ids = target_ids
+                            .iter()
+                            .map(|target_id| format!("\"{target_id}\""))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{{\"kind\":\"purge-crash-boundary\",\"target_ids\":[{target_ids}],\"token_id\":{token_id},\"intent_file_name\":\"{}\",\"intent_durable\":{intent_durable},\"artifact_rewrites\":{artifact_rewrites},\"child_aborted\":{child_aborted}}}",
+                            json_escape(intent_file_name),
+                        )
+                    }
+                },
+            );
+            let mut record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(&base)
+                    .expect("typed ingest-retention receipt JSON");
+            let checksum = ingest_retention_receipt_checksum(&record)
+                .expect("typed ingest-retention receipt checksum");
+            record
+                .as_object_mut()
+                .expect("ingest-retention receipt object")
+                .insert(
+                    "receipt_checksum".to_owned(),
+                    zeppelin_embed_bench::harness_json::Value::String(checksum),
+                );
+            record.to_string()
+        }
+        ProductionFeatureReceipt::ValidatedMetadataFeature(receipt) => format!(
+            "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{},\"query_id\":{},\"effect\":\"{}\",\"detail\":{}}}",
+            json_escape(receipt.origin.campaign()),
+            json_escape(receipt.origin.operation()),
+            json_escape(receipt.origin.fault()),
+            json_escape(receipt.origin.site()),
+            receipt.origin.cardinality(),
+            receipt.query_id,
+            json_escape(receipt.origin.effect()),
+            metadata_product_feature_detail_json(&receipt.detail),
+        ),
+        ProductionFeatureReceipt::ValidatedVectorFeature(receipt) => format!(
+            "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{},\"seed_case_id\":{},\"effect\":{},\"result_published\":{}}}",
+            vector_campaign_key(receipt.campaign()),
+            vector_operation_key(receipt.operation()),
+            vector_fault_key(receipt.fault()),
+            vector_site_key(receipt.site()),
+            receipt.cardinality(),
+            receipt.seed_case_id(),
+            vector_effect_json(receipt.effect()),
+            receipt.result_published(),
+        ),
+        ProductionFeatureReceipt::MetadataExecution { operation, receipt } => format!(
+            "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"site\":\"planner.exec.execution-receipt\",\"query_id\":{},\"receipt\":{}}}",
+            json_escape(operation),
+            receipt.query_id,
+            metadata_product_execution_receipt_json(receipt),
+        ),
+    }
+}
+
+pub(crate) fn ingest_retention_receipt_json(receipt: &IngestRetentionFaultReceiptV1) -> String {
+    production_receipt_json(&ProductionFeatureReceipt::ValidatedIngestRetention(
+        receipt.clone(),
+    ))
+}
+
+pub(crate) fn ingest_retention_receipt_checksum(
+    record: &zeppelin_embed_bench::harness_json::Value,
+) -> Result<String, String> {
+    let mut canonical = record.clone();
+    canonical
+        .as_object_mut()
+        .ok_or_else(|| "ingest-retention receipt is not an object".to_owned())?
+        .remove("receipt_checksum");
+    let bytes = zeppelin_embed_bench::harness_json::to_vec(&canonical)
+        .map_err(|error| format!("serialize ingest-retention receipt checksum input: {error}"))?;
+    Ok(super::artifacts::evidence_digest(&[&bytes]))
+}
+
+fn metadata_product_provenance_json(provenance: &MetadataDecodeProvenance) -> String {
+    match provenance {
+        MetadataDecodeProvenance::ColumnsPresenceTail {
+            column_id,
+            row_count,
+            byte_offset,
+            observed_byte,
+            allowed_mask,
+        } => format!(
+            "{{\"kind\":\"columns-presence-tail\",\"column_id\":{column_id},\"row_count\":{row_count},\"byte_offset\":{byte_offset},\"observed_byte\":{observed_byte},\"allowed_mask\":{allowed_mask}}}"
+        ),
+        MetadataDecodeProvenance::ColumnsDictionaryCode {
+            column_id,
+            row,
+            byte_offset,
+            code,
+            dictionary_cardinality,
+        } => format!(
+            "{{\"kind\":\"columns-dictionary-code\",\"column_id\":{column_id},\"row\":{row},\"byte_offset\":{byte_offset},\"code\":{code},\"dictionary_cardinality\":{dictionary_cardinality}}}"
+        ),
+        MetadataDecodeProvenance::ColumnsRawStringLength {
+            column_id,
+            row,
+            byte_offset,
+            declared_bytes,
+            available_bytes,
+        } => format!(
+            "{{\"kind\":\"columns-raw-string-length\",\"column_id\":{column_id},\"row\":{row},\"byte_offset\":{byte_offset},\"declared_bytes\":{declared_bytes},\"available_bytes\":{available_bytes}}}"
+        ),
+        MetadataDecodeProvenance::AliveBitmapTruncation {
+            row_count,
+            byte_offset,
+            declared_bytes,
+            observed_bytes,
+        } => format!(
+            "{{\"kind\":\"alive-bitmap-truncation\",\"row_count\":{row_count},\"byte_offset\":{byte_offset},\"declared_bytes\":{declared_bytes},\"observed_bytes\":{observed_bytes}}}"
+        ),
+    }
+}
+
+fn metadata_product_feature_detail_json(detail: &MetadataFeatureDetail) -> String {
+    match detail {
+        MetadataFeatureDetail::ColumnDecodeRefused {
+            source,
+            field_class,
+            byte_offset,
+            error_class,
+            provenance,
+        } => format!(
+            "{{\"kind\":\"column-decode-refused\",\"source\":\"{}\",\"field_class\":\"{}\",\"byte_offset\":{byte_offset},\"error_class\":\"{}\",\"provenance\":{}}}",
+            json_escape(&metadata_source_label(*source)),
+            json_escape(field_class),
+            json_escape(error_class),
+            metadata_product_provenance_json(provenance),
+        ),
+        MetadataFeatureDetail::AliveBitmapTruncationRefused {
+            source,
+            declared_rows,
+            declared_bytes,
+            observed_bytes,
+            byte_offset,
+            error_class,
+            provenance,
+        } => format!(
+            "{{\"kind\":\"alive-bitmap-truncation-refused\",\"source\":\"{}\",\"declared_rows\":{declared_rows},\"declared_bytes\":{declared_bytes},\"observed_bytes\":{observed_bytes},\"byte_offset\":{byte_offset},\"error_class\":\"{}\",\"provenance\":{}}}",
+            json_escape(&metadata_source_label(*source)),
+            json_escape(error_class),
+            metadata_product_provenance_json(provenance),
+        ),
+        MetadataFeatureDetail::SelectivityBoundaryChosen {
+            source,
+            cardinality,
+            threshold,
+            branch,
+        } => format!(
+            "{{\"kind\":\"selectivity-boundary-chosen\",\"source\":\"{}\",\"filter_cardinality\":{cardinality},\"threshold\":{threshold},\"branch\":\"{}\"}}",
+            json_escape(&metadata_source_label(*source)),
+            metadata_product_branch_key(*branch),
+        ),
+        MetadataFeatureDetail::VisitedBudgetFallback {
+            source,
+            visited,
+            budget,
+            filter_cardinality,
+            exact_rows_examined,
+            returned,
+            reason,
+        } => format!(
+            "{{\"kind\":\"visited-budget-fallback\",\"source\":\"{}\",\"visited\":{visited},\"budget\":{budget},\"filter_cardinality\":{filter_cardinality},\"exact_rows_examined\":{exact_rows_examined},\"returned\":{returned},\"reason\":\"{}\"}}",
+            json_escape(&metadata_source_label(*source)),
+            metadata_product_fallback_key(*reason),
+        ),
+    }
+}
+
+fn metadata_product_branch_key(branch: SegmentBranch) -> &'static str {
+    match branch {
+        SegmentBranch::Pruned => "pruned",
+        SegmentBranch::ExactAllowList => "exact-allow-list",
+        SegmentBranch::MaskedScan => "masked-scan",
+        SegmentBranch::Graph => "graph",
+        SegmentBranch::FilteredGraph => "filtered-graph",
+        SegmentBranch::GraphExactFallback => "graph-exact-fallback",
+    }
+}
+
+fn metadata_product_fallback_key(fallback: PlanFallback) -> &'static str {
+    match fallback {
+        PlanFallback::None => "none",
+        PlanFallback::EfWidened => "ef-widened",
+        PlanFallback::VisitedBudget => "visited-budget",
+        PlanFallback::CandidateShortfall => "candidate-shortfall",
+    }
+}
+
+fn metadata_product_execution_receipt_json(receipt: &MetadataExecutionReceipt) -> String {
+    let optional =
+        |value: Option<usize>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    format!(
+        "{{\"query_id\":{},\"source\":\"{}\",\"row_count\":{},\"filter_cardinality\":{},\"branch\":\"{}\",\"fallback\":\"{}\",\"rows_examined\":{},\"allowed_rows_examined\":{},\"vectors_scored\":{},\"graph_nodes_visited\":{},\"exact_fallback_rows_examined\":{},\"returned_candidates\":{},\"ef_effective\":{},\"visited_budget\":{},\"sealed\":{}}}",
+        receipt.query_id,
+        json_escape(&metadata_source_label(receipt.source)),
+        receipt.row_count,
+        receipt.filter_cardinality,
+        metadata_product_branch_key(receipt.branch),
+        metadata_product_fallback_key(receipt.fallback),
+        receipt.rows_examined,
+        receipt.allowed_rows_examined,
+        receipt.vectors_scored,
+        receipt.graph_nodes_visited,
+        receipt.exact_fallback_rows_examined,
+        receipt.returned_candidates,
+        optional(receipt.ef_effective),
+        optional(receipt.visited_budget),
+        receipt.sealed,
     )
 }
 
@@ -2445,17 +3223,80 @@ fn run_campaign_operation(
     model: &Model,
     operation: super::campaign::FeatureOperation,
     context: CampaignOperationContext<'_>,
-) -> Result<Vec<FeatureFaultReceipt>, String> {
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let CampaignOperationContext {
         selected_faults,
+        generic_fault,
+        storage_episode,
         seed,
         profile,
         op_index,
         oracle_records,
         control_records,
         mutation_records,
+        family_artifact_records,
         coverage,
     } = context;
+    if let super::campaign::FeatureOperation::Storage(storage_operation) = operation {
+        let episode = storage_episode.ok_or_else(|| {
+            "storage campaign operation omitted its shared episode base".to_owned()
+        })?;
+        return run_storage_campaign_operation(
+            storage_operation,
+            selected_faults,
+            episode,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            mutation_records,
+            family_artifact_records,
+            coverage,
+        );
+    }
+    if let super::campaign::FeatureOperation::Vector(vector_operation) = operation {
+        return run_vector_campaign_operation(
+            vector_operation,
+            selected_faults,
+            generic_fault,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            mutation_records,
+            family_artifact_records,
+            coverage,
+        );
+    }
+    if let super::campaign::FeatureOperation::Metadata(metadata_operation) = operation {
+        return run_metadata_campaign_operation(
+            metadata_operation,
+            selected_faults,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            mutation_records,
+            family_artifact_records,
+            coverage,
+        );
+    }
+    if let super::campaign::FeatureOperation::Ingest(ingest_operation) = operation {
+        return run_ingest_campaign_operation(
+            ingest_operation,
+            selected_faults,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            family_artifact_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -2475,6 +3316,7 @@ fn run_campaign_operation(
         oracle_records,
         control_records,
         mutation_records,
+        family_artifact_records,
         coverage,
     );
     Err(format!(
@@ -2482,6 +3324,9467 @@ fn run_campaign_operation(
         operation.campaign().key(),
         operation.key(),
     ))
+}
+
+fn ingest_operation_kind(
+    operation: super::campaign::IngestOperation,
+) -> ingest_adapter::IngestOperationKind {
+    match operation {
+        super::campaign::IngestOperation::BatchCommit => {
+            ingest_adapter::IngestOperationKind::BatchCommit
+        }
+        super::campaign::IngestOperation::Seal => ingest_adapter::IngestOperationKind::Seal,
+        super::campaign::IngestOperation::Retention => {
+            ingest_adapter::IngestOperationKind::Retention
+        }
+        super::campaign::IngestOperation::Purge => ingest_adapter::IngestOperationKind::Purge,
+    }
+}
+
+fn ingest_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<ingest_adapter::IngestFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::IngestPostAckRetry => {
+            Ok(ingest_adapter::IngestFaultKind::PostAckRetry)
+        }
+        super::campaign::FeatureFault::IngestPartialBatchAppend => {
+            Ok(ingest_adapter::IngestFaultKind::PartialBatchAppend)
+        }
+        super::campaign::FeatureFault::IngestSealCancellation => {
+            Ok(ingest_adapter::IngestFaultKind::SealCancellation)
+        }
+        super::campaign::FeatureFault::IngestRetentionClockBoundary => {
+            Ok(ingest_adapter::IngestFaultKind::RetentionClockBoundary)
+        }
+        super::campaign::FeatureFault::IngestPurgeUnlinkError => {
+            Ok(ingest_adapter::IngestFaultKind::PurgeUnlinkError)
+        }
+        super::campaign::FeatureFault::IngestPurgeCrashBoundary => {
+            Ok(ingest_adapter::IngestFaultKind::PurgeCrashBoundary)
+        }
+        other => Err(format!(
+            "feature fault {} is not an ingest-retention fault",
+            other.key()
+        )),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "family dispatch keeps the shared evidence sinks explicit"
+)]
+fn run_ingest_campaign_operation(
+    operation: super::campaign::IngestOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let matching_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|fault| fault.operation() == super::campaign::FeatureOperation::Ingest(operation))
+        .map(ingest_fault_kind)
+        .map(|fault| fault.map(Some))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if matching_faults.is_empty() {
+        vec![None]
+    } else {
+        matching_faults
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let invocation_id = u64::try_from(op_index)
+            .map_err(|_| "ingest-retention operation index exceeds u64".to_owned())?;
+        let evidence = ingest_adapter::run_ingest_operation_with_invocation(
+            ingest_operation_kind(operation),
+            seed,
+            fault,
+            invocation_id,
+        )?;
+        record_ingest_family_artifacts(
+            operation,
+            fault,
+            invocation_id,
+            &evidence,
+            family_artifact_records,
+        )?;
+        match evidence {
+            ingest_adapter::IngestOperationEvidence::I20(evidence) => {
+                push_ingest_feature_record(
+                    20,
+                    ingest_oracle::I20_CHECKER_ID,
+                    operation.key(),
+                    ingest_adapter::ingest_case_identity(
+                        ingest_operation_kind(operation),
+                        fault,
+                        invocation_id,
+                    ),
+                    &evidence.expected,
+                    &evidence.observed,
+                    format!(
+                        "public Store ingest/seal/search/reopen seed={seed} profile={}",
+                        profile.key()
+                    ),
+                    ingest_oracle::attest_i20(&evidence.expected, &evidence.observed),
+                    ingest_oracle::compare_i20(&evidence.expected, &evidence.observed),
+                    oracle_records,
+                    coverage,
+                );
+                match fault {
+                    None => {
+                        if evidence.control.is_some() || !evidence.receipts.is_empty() {
+                            return Err(
+                                "clean I20 evidence carried fault control or receipts".to_owned()
+                            );
+                        }
+                    }
+                    Some(fault) => {
+                        let control = evidence.control.as_ref().ok_or_else(|| {
+                            format!("I20 fault {fault:?} omitted its same-seed control")
+                        })?;
+                        if !control.isolated_directories
+                            || !control.passed
+                            || control.clean_initial_directory != control.fault_initial_directory
+                            || control.clean_final != control.fault_final
+                        {
+                            return Err(format!(
+                                "I20 fault {fault:?} failed its byte-identical same-seed relation"
+                            ));
+                        }
+                        let [receipt] = evidence.receipts.as_slice() else {
+                            return Err(format!(
+                                "I20 fault {fault:?} produced {} typed Store receipts, expected 1",
+                                evidence.receipts.len()
+                            ));
+                        };
+                        validate_ingest_receipt(fault, operation, invocation_id, receipt)?;
+                        control_records.push(ingest_control_json(seed, operation, fault, control));
+                        receipts.push(ProductionFeatureReceipt::ValidatedIngestRetention(
+                            receipt.clone(),
+                        ));
+                    }
+                }
+            }
+            ingest_adapter::IngestOperationEvidence::I21(evidence) => {
+                push_ingest_feature_record(
+                    21,
+                    ingest_oracle::I21_CHECKER_ID,
+                    operation.key(),
+                    ingest_adapter::ingest_case_identity(
+                        ingest_operation_kind(operation),
+                        fault,
+                        invocation_id,
+                    ),
+                    &evidence.expected,
+                    &evidence.observed,
+                    format!(
+                        "public Store ingest/delete/seal/search/reopen seed={seed} profile={}",
+                        profile.key()
+                    ),
+                    ingest_oracle::attest_i21(&evidence.expected, &evidence.observed),
+                    ingest_oracle::compare_i21(&evidence.expected, &evidence.observed),
+                    oracle_records,
+                    coverage,
+                );
+                match fault {
+                    None => {
+                        if evidence.control.is_some() || !evidence.receipts.is_empty() {
+                            return Err(
+                                "clean I21 evidence carried fault control or receipts".to_owned()
+                            );
+                        }
+                    }
+                    Some(fault) => {
+                        let control = evidence.control.as_ref().ok_or_else(|| {
+                            format!("I21 fault {fault:?} omitted its same-seed control")
+                        })?;
+                        if !control.isolated_directories
+                            || !control.passed
+                            || control.clean_initial_directory != control.fault_initial_directory
+                            || control.clean_final != control.fault_final
+                        {
+                            return Err(format!(
+                                "I21 fault {fault:?} failed its byte-identical same-seed relation"
+                            ));
+                        }
+                        let [receipt] = evidence.receipts.as_slice() else {
+                            return Err(format!(
+                                "I21 fault {fault:?} produced {} typed Store receipts, expected 1",
+                                evidence.receipts.len()
+                            ));
+                        };
+                        validate_ingest_receipt(fault, operation, invocation_id, receipt)?;
+                        control_records
+                            .push(ingest_i21_control_json(seed, operation, fault, control));
+                        receipts.push(ProductionFeatureReceipt::ValidatedIngestRetention(
+                            receipt.clone(),
+                        ));
+                    }
+                }
+            }
+            ingest_adapter::IngestOperationEvidence::I22(evidence) => {
+                push_ingest_feature_record(
+                    22,
+                    ingest_oracle::I22_CHECKER_ID,
+                    operation.key(),
+                    ingest_adapter::ingest_case_identity(
+                        ingest_operation_kind(operation),
+                        fault,
+                        invocation_id,
+                    ),
+                    &evidence.expected,
+                    &evidence.observed,
+                    format!(
+                        "public Store ingest/seal/apply-retention/search/reopen seed={seed} profile={}",
+                        profile.key()
+                    ),
+                    ingest_oracle::attest_i22(&evidence.expected, &evidence.observed),
+                    ingest_oracle::compare_i22(&evidence.expected, &evidence.observed),
+                    oracle_records,
+                    coverage,
+                );
+                match fault {
+                    None => {
+                        if evidence.control.is_some() || !evidence.receipts.is_empty() {
+                            return Err(
+                                "clean I22 evidence carried fault control or receipts".to_owned()
+                            );
+                        }
+                    }
+                    Some(fault) => {
+                        let control = evidence.control.as_ref().ok_or_else(|| {
+                            format!("I22 fault {fault:?} omitted its same-seed control")
+                        })?;
+                        if !control.isolated_directories
+                            || !control.passed
+                            || control.clean_initial_directory != control.fault_initial_directory
+                            || control.clean_final != control.fault_final
+                        {
+                            return Err(format!(
+                                "I22 fault {fault:?} failed its byte-identical same-seed relation"
+                            ));
+                        }
+                        let [receipt] = evidence.receipts.as_slice() else {
+                            return Err(format!(
+                                "I22 fault {fault:?} produced {} typed Store receipts, expected 1",
+                                evidence.receipts.len()
+                            ));
+                        };
+                        validate_ingest_receipt(fault, operation, invocation_id, receipt)?;
+                        control_records
+                            .push(ingest_i22_control_json(seed, operation, fault, control));
+                        receipts.push(ProductionFeatureReceipt::ValidatedIngestRetention(
+                            receipt.clone(),
+                        ));
+                    }
+                }
+            }
+            ingest_adapter::IngestOperationEvidence::I23(evidence) => {
+                push_ingest_feature_record(
+                    23,
+                    ingest_oracle::I23_CHECKER_ID,
+                    operation.key(),
+                    ingest_adapter::ingest_case_identity(
+                        ingest_operation_kind(operation),
+                        fault,
+                        invocation_id,
+                    ),
+                    &evidence.expected,
+                    &evidence.observed,
+                    format!(
+                        "public Store delete/purge/await/byte-scan/search/two-reopens seed={seed} profile={}",
+                        profile.key()
+                    ),
+                    ingest_oracle::attest_i23(&evidence.expected, &evidence.observed),
+                    ingest_oracle::compare_i23(&evidence.expected, &evidence.observed),
+                    oracle_records,
+                    coverage,
+                );
+                match fault {
+                    None => {
+                        if evidence.control.is_some() || !evidence.receipts.is_empty() {
+                            return Err(
+                                "clean I23 evidence carried fault control or receipts".to_owned()
+                            );
+                        }
+                    }
+                    Some(fault) => {
+                        let control = evidence.control.as_ref().ok_or_else(|| {
+                            format!("I23 fault {fault:?} omitted its same-seed control")
+                        })?;
+                        if !control.isolated_directories
+                            || !control.passed
+                            || control.clean_initial_directory != control.fault_initial_directory
+                            || control.clean_final != control.fault_final
+                        {
+                            return Err(format!(
+                                "I23 fault {fault:?} failed its byte-identical same-seed relation"
+                            ));
+                        }
+                        let [receipt] = evidence.receipts.as_slice() else {
+                            return Err(format!(
+                                "I23 fault {fault:?} produced {} typed Store receipts, expected 1",
+                                evidence.receipts.len()
+                            ));
+                        };
+                        validate_ingest_receipt(fault, operation, invocation_id, receipt)?;
+                        control_records
+                            .push(ingest_i23_control_json(seed, operation, fault, control));
+                        receipts.push(ProductionFeatureReceipt::ValidatedIngestRetention(
+                            receipt.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for receipt in &receipts {
+        let ProductionFeatureReceipt::ValidatedIngestRetention(receipt) = receipt else {
+            return Err("ingest-retention dispatch retained a non-ingest receipt".to_owned());
+        };
+        coverage.hit(format!(
+            "ingest.receipt-site.{}",
+            ingest_receipt_site_key(receipt.checkpoint())
+        ));
+    }
+    Ok(receipts)
+}
+
+fn record_ingest_family_artifacts(
+    operation: super::campaign::IngestOperation,
+    fault: Option<ingest_adapter::IngestFaultKind>,
+    invocation_id: u64,
+    evidence: &ingest_adapter::IngestOperationEvidence,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+) -> Result<(), String> {
+    for name in super::artifacts::INGEST_REPLAY_ARTIFACTS {
+        family_artifact_records.entry(name).or_default();
+    }
+    let retained = ingest_adapter::RetainedIngestOperationV1::from_evidence(
+        ingest_operation_kind(operation),
+        fault,
+        invocation_id,
+        evidence,
+    )?;
+    family_artifact_records
+        .entry("fixture.json")
+        .or_default()
+        .push(ingest_adapter::retained_ingest_fixture_record_json(
+            &retained,
+        )?);
+    family_artifact_records
+        .entry("observations.jsonl")
+        .or_default()
+        .push(ingest_adapter::retained_ingest_observation_json(
+            &retained, evidence,
+        )?);
+    Ok(())
+}
+
+fn ingest_receipt_site_key(checkpoint: IngestRetentionCheckpoint) -> &'static str {
+    match checkpoint {
+        IngestRetentionCheckpoint::IngestReplayNoWalAppend => "ingest.replay.no-wal-append",
+        IngestRetentionCheckpoint::IngestCommitManyAppendError => "ingest.commit-many.append-error",
+        IngestRetentionCheckpoint::SealAfterSegmentWriteBeforeManifestCommit => {
+            "seal.after-segment-write.before-manifest-commit"
+        }
+        IngestRetentionCheckpoint::RetentionPolicyEvaluated => "retention.policy-evaluated",
+        IngestRetentionCheckpoint::PurgeOldSegmentUnlinkError => "purge.old-segment-unlink.error",
+        IngestRetentionCheckpoint::PurgeAfterDurableIntentBeforeRewrite => {
+            "purge.after-durable-intent.before-rewrite"
+        }
+    }
+}
+
+fn validate_ingest_receipt(
+    fault: ingest_adapter::IngestFaultKind,
+    operation: super::campaign::IngestOperation,
+    invocation_id: u64,
+    receipt: &IngestRetentionFaultReceiptV1,
+) -> Result<(), String> {
+    let (expected, expected_operation, expected_campaign_operation, expected_checkpoint) =
+        match fault {
+            ingest_adapter::IngestFaultKind::PostAckRetry => (
+                ProductIngestRetentionFaultKind::PostAckRetry,
+                ProductIngestRetentionOperation::BatchCommit,
+                super::campaign::IngestOperation::BatchCommit,
+                IngestRetentionCheckpoint::IngestReplayNoWalAppend,
+            ),
+            ingest_adapter::IngestFaultKind::PartialBatchAppend => (
+                ProductIngestRetentionFaultKind::PartialBatchAppend,
+                ProductIngestRetentionOperation::BatchCommit,
+                super::campaign::IngestOperation::BatchCommit,
+                IngestRetentionCheckpoint::IngestCommitManyAppendError,
+            ),
+            ingest_adapter::IngestFaultKind::SealCancellation => (
+                ProductIngestRetentionFaultKind::SealCancellation,
+                ProductIngestRetentionOperation::Seal,
+                super::campaign::IngestOperation::Seal,
+                IngestRetentionCheckpoint::SealAfterSegmentWriteBeforeManifestCommit,
+            ),
+            ingest_adapter::IngestFaultKind::RetentionClockBoundary => (
+                ProductIngestRetentionFaultKind::RetentionClockBoundary,
+                ProductIngestRetentionOperation::Retention,
+                super::campaign::IngestOperation::Retention,
+                IngestRetentionCheckpoint::RetentionPolicyEvaluated,
+            ),
+            ingest_adapter::IngestFaultKind::PurgeUnlinkError => (
+                ProductIngestRetentionFaultKind::PurgeUnlinkError,
+                ProductIngestRetentionOperation::Purge,
+                super::campaign::IngestOperation::Purge,
+                IngestRetentionCheckpoint::PurgeOldSegmentUnlinkError,
+            ),
+            ingest_adapter::IngestFaultKind::PurgeCrashBoundary => (
+                ProductIngestRetentionFaultKind::PurgeCrashBoundary,
+                ProductIngestRetentionOperation::Purge,
+                super::campaign::IngestOperation::Purge,
+                IngestRetentionCheckpoint::PurgeAfterDurableIntentBeforeRewrite,
+            ),
+        };
+    if receipt.campaign() != "ingest-retention"
+        || receipt.operation() != expected_operation
+        || operation != expected_campaign_operation
+        || receipt.fault() != expected
+        || receipt.checkpoint() != expected_checkpoint
+        || receipt.cardinality() != 1
+        || receipt.invocation_id() != invocation_id
+    {
+        return Err(format!(
+            "ingest-retention receipt header mismatch fault={fault:?} receipt={receipt:?}"
+        ));
+    }
+    match (fault, receipt.effect()) {
+        (
+            ingest_adapter::IngestFaultKind::PostAckRetry,
+            IngestRetentionFaultEffect::PostAckRetry {
+                batch_count,
+                replay_count,
+                returned_seq,
+                returned_generation,
+                wal_records_appended,
+                generation_delta,
+                active_published,
+            },
+        ) if *batch_count > 0
+            && batch_count == replay_count
+            && *returned_seq > 0
+            && *returned_generation > 0
+            && *wal_records_appended == 0
+            && *generation_delta == 0
+            && !*active_published =>
+        {
+            Ok(())
+        }
+        (
+            ingest_adapter::IngestFaultKind::PartialBatchAppend,
+            IngestRetentionFaultEffect::PartialBatchAppend {
+                submitted_count,
+                changed_records,
+                encoded_bytes,
+                prefix_bytes,
+                io_kind,
+                detail,
+                active_published,
+                generation_delta,
+            },
+        ) if *submitted_count > 1
+            && submitted_count == changed_records
+            && *prefix_bytes > 0
+            && prefix_bytes < encoded_bytes
+            && *io_kind == IngestRetentionIoKind::Other
+            && detail
+                == &format!(
+                    "injected partial-batch-append after {prefix_bytes}/{encoded_bytes} bytes"
+                )
+            && !*active_published
+            && *generation_delta == 0 =>
+        {
+            Ok(())
+        }
+        (
+            ingest_adapter::IngestFaultKind::SealCancellation,
+            IngestRetentionFaultEffect::SealCancellation {
+                active_rows,
+                absorbed_wal_end,
+                candidate_segment,
+                manifest_committed,
+                temporary_segment_removed,
+                generation_delta,
+            },
+        ) if *active_rows > 0
+            && *absorbed_wal_end > 0
+            && candidate_segment.iter().any(|byte| *byte != 0)
+            && !*manifest_committed
+            && *temporary_segment_removed
+            && *generation_delta == 0 =>
+        {
+            Ok(())
+        }
+        (
+            ingest_adapter::IngestFaultKind::RetentionClockBoundary,
+            IngestRetentionFaultEffect::RetentionClockBoundary {
+                supplied_now,
+                window,
+                cutoff,
+                range_start,
+                range_end,
+                report_generation,
+                dropped_count,
+                straddler_count,
+                manifest_committed,
+            },
+        ) if *window > 0
+            && *cutoff == supplied_now.saturating_sub(*window)
+            && *range_start == i64::MIN
+            && *range_end == *cutoff
+            && *report_generation > 0
+            && *dropped_count == 1
+            && *straddler_count == 1
+            && *manifest_committed =>
+        {
+            Ok(())
+        }
+        (
+            ingest_adapter::IngestFaultKind::PurgeUnlinkError,
+            IngestRetentionFaultEffect::PurgeUnlinkError {
+                original_segment,
+                replacement_segment,
+                old_file_name,
+                io_kind,
+                replacement_manifest_committed,
+                intent_present,
+                old_path_linked,
+            },
+        ) if original_segment != replacement_segment
+            && original_segment.iter().any(|byte| *byte != 0)
+            && replacement_segment.iter().any(|byte| *byte != 0)
+            && old_file_name
+                == &zeppelin_embed::segment::SegmentId::from_bytes(*original_segment)
+                    .file_name()
+            && *io_kind == IngestRetentionIoKind::Other
+            && *replacement_manifest_committed
+            && *intent_present
+            && *old_path_linked =>
+        {
+            Ok(())
+        }
+        (
+            ingest_adapter::IngestFaultKind::PurgeCrashBoundary,
+            IngestRetentionFaultEffect::PurgeCrashBoundary {
+                target_ids,
+                token_id,
+                intent_file_name,
+                intent_durable,
+                artifact_rewrites,
+                child_aborted,
+            },
+        ) if !target_ids.is_empty()
+            && target_ids
+                .iter()
+                .zip(target_ids.iter().skip(1))
+                .all(|(left, right)| left < right)
+            && *token_id > 0
+            && intent_file_name == "purge.ze"
+            && *intent_durable
+            && *artifact_rewrites == 0
+            && *child_aborted =>
+        {
+            Ok(())
+        }
+        (_, effect) => Err(format!(
+            "ingest-retention {fault:?} receipt carried illegal effect facts: {effect:?}"
+        )),
+    }
+}
+
+fn ingest_i21_control_json(
+    seed: u64,
+    operation: super::campaign::IngestOperation,
+    fault: ingest_adapter::IngestFaultKind,
+    control: &ingest_adapter::I21ControlEvidence,
+) -> String {
+    format!(
+        "{{\"campaign\":\"ingest-retention\",\"seed\":{seed},\"operation\":\"{}\",\"fault\":\"{}\",\"clean_initial_digest\":\"{:016x}\",\"fault_initial_digest\":\"{:016x}\",\"isolated_directories\":{},\"clean_final_count\":{},\"fault_final_count\":{},\"passed\":{}}}",
+        operation.key(),
+        ingest_fault_adapter_key(fault),
+        control.clean_initial_directory.digest,
+        control.fault_initial_directory.digest,
+        control.isolated_directories,
+        control.clean_final.len(),
+        control.fault_final.len(),
+        control.passed,
+    )
+}
+
+pub(crate) fn ingest_retention_control_json_for_evidence(
+    seed: u64,
+    operation: ingest_adapter::IngestOperationKind,
+    fault: Option<ingest_adapter::IngestFaultKind>,
+    evidence: &ingest_adapter::IngestOperationEvidence,
+) -> Result<Option<String>, String> {
+    let Some(fault) = fault else {
+        let clean = match evidence {
+            ingest_adapter::IngestOperationEvidence::I20(evidence) => {
+                evidence.control.is_none() && evidence.receipts.is_empty()
+            }
+            ingest_adapter::IngestOperationEvidence::I21(evidence) => {
+                evidence.control.is_none() && evidence.receipts.is_empty()
+            }
+            ingest_adapter::IngestOperationEvidence::I22(evidence) => {
+                evidence.control.is_none() && evidence.receipts.is_empty()
+            }
+            ingest_adapter::IngestOperationEvidence::I23(evidence) => {
+                evidence.control.is_none() && evidence.receipts.is_empty()
+            }
+        };
+        return clean
+            .then_some(None)
+            .ok_or_else(|| "clean retained ingest evidence carried fault data".to_owned());
+    };
+    let campaign_operation = match operation {
+        ingest_adapter::IngestOperationKind::BatchCommit => {
+            super::campaign::IngestOperation::BatchCommit
+        }
+        ingest_adapter::IngestOperationKind::Seal => super::campaign::IngestOperation::Seal,
+        ingest_adapter::IngestOperationKind::Retention => {
+            super::campaign::IngestOperation::Retention
+        }
+        ingest_adapter::IngestOperationKind::Purge => super::campaign::IngestOperation::Purge,
+    };
+    let record = match (operation, evidence) {
+        (
+            ingest_adapter::IngestOperationKind::BatchCommit,
+            ingest_adapter::IngestOperationEvidence::I20(evidence),
+        ) => ingest_control_json(
+            seed,
+            campaign_operation,
+            fault,
+            evidence
+                .control
+                .as_ref()
+                .ok_or_else(|| "retained I20 fault omitted control".to_owned())?,
+        ),
+        (
+            ingest_adapter::IngestOperationKind::Seal,
+            ingest_adapter::IngestOperationEvidence::I21(evidence),
+        ) => ingest_i21_control_json(
+            seed,
+            campaign_operation,
+            fault,
+            evidence
+                .control
+                .as_ref()
+                .ok_or_else(|| "retained I21 fault omitted control".to_owned())?,
+        ),
+        (
+            ingest_adapter::IngestOperationKind::Retention,
+            ingest_adapter::IngestOperationEvidence::I22(evidence),
+        ) => ingest_i22_control_json(
+            seed,
+            campaign_operation,
+            fault,
+            evidence
+                .control
+                .as_ref()
+                .ok_or_else(|| "retained I22 fault omitted control".to_owned())?,
+        ),
+        (
+            ingest_adapter::IngestOperationKind::Purge,
+            ingest_adapter::IngestOperationEvidence::I23(evidence),
+        ) => ingest_i23_control_json(
+            seed,
+            campaign_operation,
+            fault,
+            evidence
+                .control
+                .as_ref()
+                .ok_or_else(|| "retained I23 fault omitted control".to_owned())?,
+        ),
+        _ => return Err("retained ingest control operation/invariant mismatch".to_owned()),
+    };
+    Ok(Some(record))
+}
+
+fn ingest_i22_control_json(
+    seed: u64,
+    operation: super::campaign::IngestOperation,
+    fault: ingest_adapter::IngestFaultKind,
+    control: &ingest_adapter::I22ControlEvidence,
+) -> String {
+    format!(
+        "{{\"campaign\":\"ingest-retention\",\"seed\":{seed},\"operation\":\"{}\",\"fault\":\"{}\",\"clean_initial_digest\":\"{:016x}\",\"fault_initial_digest\":\"{:016x}\",\"isolated_directories\":{},\"clean_final_count\":{},\"fault_final_count\":{},\"passed\":{}}}",
+        operation.key(),
+        ingest_fault_adapter_key(fault),
+        control.clean_initial_directory.digest,
+        control.fault_initial_directory.digest,
+        control.isolated_directories,
+        control.clean_final.len(),
+        control.fault_final.len(),
+        control.passed,
+    )
+}
+
+fn ingest_i23_control_json(
+    seed: u64,
+    operation: super::campaign::IngestOperation,
+    fault: ingest_adapter::IngestFaultKind,
+    control: &ingest_adapter::I23ControlEvidence,
+) -> String {
+    format!(
+        "{{\"campaign\":\"ingest-retention\",\"seed\":{seed},\"operation\":\"{}\",\"fault\":\"{}\",\"clean_initial_digest\":\"{:016x}\",\"fault_initial_digest\":\"{:016x}\",\"isolated_directories\":{},\"clean_final_count\":{},\"fault_final_count\":{},\"passed\":{}}}",
+        operation.key(),
+        ingest_fault_adapter_key(fault),
+        control.clean_initial_directory.digest,
+        control.fault_initial_directory.digest,
+        control.isolated_directories,
+        control.clean_final.len(),
+        control.fault_final.len(),
+        control.passed,
+    )
+}
+
+fn ingest_control_json(
+    seed: u64,
+    operation: super::campaign::IngestOperation,
+    fault: ingest_adapter::IngestFaultKind,
+    control: &ingest_adapter::I20ControlEvidence,
+) -> String {
+    format!(
+        "{{\"campaign\":\"ingest-retention\",\"seed\":{seed},\"operation\":\"{}\",\"fault\":\"{}\",\"clean_initial_digest\":\"{:016x}\",\"fault_initial_digest\":\"{:016x}\",\"isolated_directories\":{},\"clean_final_count\":{},\"fault_final_count\":{},\"passed\":{}}}",
+        operation.key(),
+        ingest_fault_adapter_key(fault),
+        control.clean_initial_directory.digest,
+        control.fault_initial_directory.digest,
+        control.isolated_directories,
+        control.clean_final.len(),
+        control.fault_final.len(),
+        control.passed,
+    )
+}
+
+fn ingest_fault_adapter_key(fault: ingest_adapter::IngestFaultKind) -> &'static str {
+    match fault {
+        ingest_adapter::IngestFaultKind::PostAckRetry => "post-ack-retry",
+        ingest_adapter::IngestFaultKind::PartialBatchAppend => "partial-batch-append",
+        ingest_adapter::IngestFaultKind::SealCancellation => "seal-cancellation",
+        ingest_adapter::IngestFaultKind::RetentionClockBoundary => "retention-clock-boundary",
+        ingest_adapter::IngestFaultKind::PurgeUnlinkError => "purge-unlink-error",
+        ingest_adapter::IngestFaultKind::PurgeCrashBoundary => "purge-crash-boundary",
+    }
+}
+
+fn storage_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<storage_adapter::StorageFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::StorageTornWalHeader => {
+            Ok(storage_adapter::StorageFaultKind::TornWalHeader)
+        }
+        super::campaign::FeatureFault::StorageTornWalBody => {
+            Ok(storage_adapter::StorageFaultKind::TornWalBody)
+        }
+        super::campaign::FeatureFault::StorageTornWalChecksum => {
+            Ok(storage_adapter::StorageFaultKind::TornWalChecksum)
+        }
+        super::campaign::FeatureFault::StoragePostCommitError => {
+            Ok(storage_adapter::StorageFaultKind::PostCommitError)
+        }
+        super::campaign::FeatureFault::StorageManifestPreRenameCrash => {
+            Ok(storage_adapter::StorageFaultKind::ManifestPreRenameCrash)
+        }
+        super::campaign::FeatureFault::StorageManifestPostRenameCrash => {
+            Ok(storage_adapter::StorageFaultKind::ManifestPostRenameCrash)
+        }
+        super::campaign::FeatureFault::StorageCorruptSegmentRegion => {
+            Ok(storage_adapter::StorageFaultKind::CorruptSegmentRegion)
+        }
+        super::campaign::FeatureFault::StorageWrongManifestObject => {
+            Ok(storage_adapter::StorageFaultKind::WrongManifestObject)
+        }
+        super::campaign::FeatureFault::StorageWrongSegmentObject => {
+            Ok(storage_adapter::StorageFaultKind::WrongSegmentObject)
+        }
+        super::campaign::FeatureFault::StorageListDeleteOmission => {
+            Ok(storage_adapter::StorageFaultKind::ListDeleteOmission)
+        }
+        other => Err(format!(
+            "storage operation received unrelated fault {}",
+            other.key()
+        )),
+    }
+}
+
+fn evidence_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn storage_fixture_column_json(
+    column: u32,
+    value: &storage_oracle::FixtureColumnValueV1,
+) -> String {
+    match value {
+        storage_oracle::FixtureColumnValueV1::I64(value) => {
+            format!("{{\"column\":{column},\"kind\":\"i64\",\"value\":{value}}}")
+        }
+        storage_oracle::FixtureColumnValueV1::F64Bits(value) => {
+            format!("{{\"column\":{column},\"kind\":\"f64-bits\",\"value\":{value}}}")
+        }
+        storage_oracle::FixtureColumnValueV1::Bool(value) => {
+            format!("{{\"column\":{column},\"kind\":\"bool\",\"value\":{value}}}")
+        }
+        storage_oracle::FixtureColumnValueV1::Bytes(value) => format!(
+            "{{\"column\":{column},\"kind\":\"bytes\",\"value\":\"{}\"}}",
+            evidence_hex(value)
+        ),
+    }
+}
+
+fn storage_fixture_document_json(value: &storage_oracle::StorageDocumentV1) -> String {
+    let vector_bits = value
+        .vector_bits
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let timestamp = value
+        .timestamp
+        .map_or_else(|| "null".to_owned(), |timestamp| timestamp.to_string());
+    let metadata = value.metadata.as_ref().map_or_else(
+        || "null".to_owned(),
+        |metadata| format!("\"{}\"", evidence_hex(metadata)),
+    );
+    let text = value.text.as_ref().map_or_else(
+        || "null".to_owned(),
+        |text| format!("\"{}\"", json_escape(text)),
+    );
+    let columns = value
+        .columns
+        .iter()
+        .map(|(column, value)| storage_fixture_column_json(*column, value))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"doc_id\":\"{}\",\"revision\":{},\"vector_bits\":[{vector_bits}],\"timestamp\":{timestamp},\"metadata_hex\":{metadata},\"text\":{text},\"columns\":[{columns}]}}",
+        value.doc_id, value.revision
+    )
+}
+
+fn storage_fixture_mutation_json(value: &storage_oracle::StorageMutationV1) -> String {
+    format!(
+        "{{\"operation_id\":\"{}\",\"document_index\":{},\"canonical_payload_digest\":\"{}\",\"first_seq\":{},\"last_seq\":{},\"acknowledged\":{}}}",
+        evidence_hex(&value.operation_id),
+        value.document_index,
+        evidence_hex(&value.canonical_payload_digest),
+        value.first_seq,
+        value.last_seq,
+        value.acknowledged,
+    )
+}
+
+fn record_storage_family_envelope(
+    operation: &str,
+    seed: u64,
+    envelope: &storage_adapter::StorageEvidenceEnvelope,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+) -> Result<(), String> {
+    let expected_fixture = storage_oracle::StorageFixtureV1::derive(seed);
+    if envelope.fixture != expected_fixture {
+        return Err(format!(
+            "storage {operation} returned a fixture outside the independent seed derivation"
+        ));
+    }
+    if envelope.artifacts.is_empty() {
+        return Err(format!(
+            "storage {operation} retained no raw artifact evidence"
+        ));
+    }
+    for acknowledgment in &envelope.ack_ledger {
+        let mutation = envelope
+            .fixture
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == acknowledgment.operation_id)
+            .ok_or_else(|| {
+                format!("storage {operation} acknowledgement names an unknown operation id")
+            })?;
+        if acknowledgment.canonical_request_digest != mutation.canonical_payload_digest
+            || acknowledgment.planned_first_seq != mutation.first_seq
+            || acknowledgment.planned_last_seq != mutation.last_seq
+            || acknowledgment.durability != envelope.fixture.durability
+            || acknowledgment.commit_tier != envelope.fixture.commit_tier
+            || acknowledgment.acknowledged != acknowledgment.returned_ok
+            || !acknowledgment.returned_ok
+                && (acknowledgment.returned_seq.is_some()
+                    || acknowledgment.returned_generation.is_some())
+            || acknowledgment.returned_ok
+                && (acknowledgment.returned_seq.is_none()
+                    || acknowledgment.returned_generation.is_none())
+        {
+            return Err(format!(
+                "storage {operation} acknowledgement differs from its independent fixture mutation"
+            ));
+        }
+        family_artifact_records
+            .entry("ack-ledger.jsonl")
+            .or_default()
+            .push(format!(
+                "{{\"campaign\":\"storage-durability\",\"operation\":\"{}\",\"seed\":{seed},\"phase\":\"{}\",\"operation_id\":\"{}\",\"canonical_request_digest\":\"{}\",\"planned_first_seq\":{},\"planned_last_seq\":{},\"returned_seq\":{},\"returned_generation\":{},\"returned_ok\":{},\"acknowledged\":{},\"durability\":\"{}\",\"commit_tier\":\"{}\"}}",
+                json_escape(operation),
+                json_escape(acknowledgment.phase),
+                evidence_hex(&acknowledgment.operation_id),
+                evidence_hex(&acknowledgment.canonical_request_digest),
+                acknowledgment.planned_first_seq,
+                acknowledgment.planned_last_seq,
+                acknowledgment.returned_seq.map_or_else(|| "null".to_owned(), |value| value.to_string()),
+                acknowledgment.returned_generation.map_or_else(|| "null".to_owned(), |value| value.to_string()),
+                acknowledgment.returned_ok,
+                acknowledgment.acknowledged,
+                json_escape(acknowledgment.durability),
+                json_escape(acknowledgment.commit_tier),
+            ));
+    }
+    for artifact in &envelope.artifacts {
+        if artifact.fact.length
+            != u64::try_from(artifact.bytes.len())
+                .map_err(|_| "storage artifact byte length exceeds u64".to_owned())?
+        {
+            return Err(format!(
+                "storage artifact {} length fact differs from retained bytes",
+                artifact.fact.path
+            ));
+        }
+        let digest = storage_adapter::digest32(0x4649_4c45_4641_4354, &artifact.bytes);
+        if artifact.fact.digest != digest {
+            return Err(format!(
+                "storage artifact {} digest fact differs from retained bytes",
+                artifact.fact.path
+            ));
+        }
+        family_artifact_records
+            .entry("artifact-index.jsonl")
+            .or_default()
+            .push(format!(
+                "{{\"campaign\":\"storage-durability\",\"operation\":\"{}\",\"seed\":{seed},\"role\":\"{}\",\"path\":\"{}\",\"length\":{},\"digest\":\"{}\",\"bytes_hex\":\"{}\"}}",
+                json_escape(operation),
+                json_escape(artifact.role),
+                json_escape(&artifact.fact.path),
+                artifact.fact.length,
+                evidence_hex(&artifact.fact.digest),
+                evidence_hex(&artifact.bytes),
+            ));
+    }
+    Ok(())
+}
+
+fn storage_file_fact_json(fact: &storage_oracle::FileFact) -> String {
+    format!(
+        "{{\"path\":\"{}\",\"length\":{},\"digest\":\"{}\"}}",
+        json_escape(&fact.path),
+        fact.length,
+        evidence_hex(&fact.digest),
+    )
+}
+
+fn storage_file_facts_json(facts: &[storage_oracle::FileFact]) -> String {
+    facts
+        .iter()
+        .map(storage_file_fact_json)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn storage_versions_json(versions: &[(u128, u64)]) -> String {
+    versions
+        .iter()
+        .map(|(document, revision)| {
+            format!("{{\"document_id\":\"{document}\",\"revision\":{revision}}}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn storage_segment_fact_json(fact: &storage_oracle::SegmentFact) -> String {
+    format!(
+        "{{\"id\":\"{}\",\"rows\":{},\"scheme\":{},\"dims\":{},\"file_length\":{},\"header_checksum\":{},\"whole_file_checksum\":{}}}",
+        evidence_hex(&fact.id),
+        fact.rows,
+        fact.scheme,
+        fact.dims,
+        fact.file_length,
+        fact.header_checksum,
+        fact.whole_file_checksum,
+    )
+}
+
+fn storage_snapshot_json(snapshot: &storage_oracle::SnapshotState) -> String {
+    let segments = snapshot
+        .segments
+        .iter()
+        .map(storage_segment_fact_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"generation\":{},\"manifest_log_seq\":{},\"segments\":[{segments}],\"live_versions\":[{}],\"absorbed_through\":{}}}",
+        snapshot.generation,
+        snapshot.manifest_log_seq,
+        storage_versions_json(&snapshot.live_versions),
+        snapshot.absorbed_through,
+    )
+}
+
+fn storage_publication_model_json(model: &storage_oracle::PublicationModelState) -> String {
+    let segments = model
+        .segments
+        .iter()
+        .map(|segment| {
+            format!(
+                "{{\"id\":\"{}\",\"rows\":{},\"scheme\":{},\"dims\":{},\"file_length\":{},\"header_checksum\":{},\"whole_file_checksum\":{}}}",
+                evidence_hex(&segment.id),
+                segment.rows,
+                segment.scheme,
+                segment.dims,
+                segment.file_length,
+                segment.header_checksum,
+                segment.whole_file_checksum,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"generation\":{},\"manifest_log_seq\":{},\"segments\":[{segments}],\"live_versions\":[{}],\"absorbed_through\":{}}}",
+        model.generation,
+        model.manifest_log_seq,
+        storage_versions_json(&model.live_versions),
+        model.absorbed_through,
+    )
+}
+
+fn storage_published_snapshot_json(snapshot: &storage_oracle::PublishedSnapshotState) -> String {
+    let segments = snapshot
+        .segments
+        .iter()
+        .map(|segment| {
+            format!(
+                "{{\"id\":\"{}\",\"rows\":{},\"scheme\":{},\"dims\":{},\"file_length\":{}}}",
+                evidence_hex(&segment.id),
+                segment.rows,
+                segment.scheme,
+                segment.dims,
+                segment.file_length,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"generation\":{},\"segments\":[{segments}],\"live_versions\":[{}],\"absorbed_through\":{}}}",
+        snapshot.generation,
+        storage_versions_json(&snapshot.live_versions),
+        snapshot.absorbed_through,
+    )
+}
+
+fn storage_publication_class_key(class: storage_oracle::PublicationClass) -> &'static str {
+    match class {
+        storage_oracle::PublicationClass::Old => "old",
+        storage_oracle::PublicationClass::New => "new",
+        storage_oracle::PublicationClass::Hybrid => "hybrid",
+        storage_oracle::PublicationClass::Invalid => "invalid",
+    }
+}
+
+fn storage_publication_expected_json(expected: &storage_oracle::PublicationExpected) -> String {
+    let legal = expected
+        .legal
+        .iter()
+        .map(|class| format!("\"{}\"", storage_publication_class_key(*class)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"old\":{},\"new\":{},\"legal\":[{legal}]}}",
+        storage_publication_model_json(&expected.old),
+        storage_publication_model_json(&expected.new),
+    )
+}
+
+fn storage_publication_observed_json(observed: &storage_oracle::PublicationObserved) -> String {
+    format!(
+        "{{\"class\":\"{}\",\"raw\":{},\"public\":{},\"referenced_segments_complete\":{},\"trusted_wal_end\":{}}}",
+        storage_publication_class_key(observed.class),
+        storage_snapshot_json(&observed.raw),
+        storage_published_snapshot_json(&observed.public),
+        observed.referenced_segments_complete,
+        observed.trusted_wal_end,
+    )
+}
+
+fn storage_wal_header_failure_json(failure: &storage_oracle::WalHeaderFailure) -> String {
+    match failure {
+        storage_oracle::WalHeaderFailure::Missing => "{\"kind\":\"missing\"}".to_owned(),
+        storage_oracle::WalHeaderFailure::Truncated { needed, available } => {
+            format!("{{\"kind\":\"truncated\",\"needed\":{needed},\"available\":{available}}}")
+        }
+        storage_oracle::WalHeaderFailure::WrongMagic { expected, actual } => format!(
+            "{{\"kind\":\"wrong-magic\",\"expected\":\"{}\",\"actual\":\"{}\"}}",
+            evidence_hex(expected),
+            evidence_hex(actual),
+        ),
+        storage_oracle::WalHeaderFailure::WrongFamily { expected, actual } => {
+            format!("{{\"kind\":\"wrong-family\",\"expected\":{expected},\"actual\":{actual}}}")
+        }
+        storage_oracle::WalHeaderFailure::UnsupportedVersion {
+            family,
+            version,
+            minimum,
+            maximum,
+        } => format!(
+            "{{\"kind\":\"unsupported-version\",\"family\":{family},\"version\":{version},\"minimum\":{minimum},\"maximum\":{maximum}}}"
+        ),
+        storage_oracle::WalHeaderFailure::NonZeroFlags { actual } => {
+            format!("{{\"kind\":\"nonzero-flags\",\"actual\":{actual}}}")
+        }
+        storage_oracle::WalHeaderFailure::InvalidHeaderLength { expected, actual } => format!(
+            "{{\"kind\":\"invalid-header-length\",\"expected\":{expected},\"actual\":{actual}}}"
+        ),
+        storage_oracle::WalHeaderFailure::NonZeroFileLength { actual } => {
+            format!("{{\"kind\":\"nonzero-file-length\",\"actual\":{actual}}}")
+        }
+    }
+}
+
+fn storage_wal_record_failure_json(failure: &storage_oracle::WalRecordFailure) -> String {
+    match failure {
+        storage_oracle::WalRecordFailure::HeaderTruncated { needed, available } => format!(
+            "{{\"kind\":\"header-truncated\",\"needed\":{needed},\"available\":{available}}}"
+        ),
+        storage_oracle::WalRecordFailure::BodyTruncated {
+            payload_length,
+            needed,
+            available,
+        } => format!(
+            "{{\"kind\":\"body-truncated\",\"payload_length\":{payload_length},\"needed\":{needed},\"available\":{available}}}"
+        ),
+        storage_oracle::WalRecordFailure::ChecksumMismatch {
+            expected,
+            actual,
+            record_length,
+        } => format!(
+            "{{\"kind\":\"checksum-mismatch\",\"expected\":{expected},\"actual\":{actual},\"record_length\":{record_length}}}"
+        ),
+        storage_oracle::WalRecordFailure::Sequence { expected, actual } => {
+            format!("{{\"kind\":\"sequence\",\"expected\":{expected},\"actual\":{actual}}}")
+        }
+        storage_oracle::WalRecordFailure::SequenceOverflow { previous } => {
+            format!("{{\"kind\":\"sequence-overflow\",\"previous\":{previous}}}")
+        }
+    }
+}
+
+fn storage_corruption_location_key(location: storage_oracle::CorruptionLocation) -> &'static str {
+    match location {
+        storage_oracle::CorruptionLocation::Tail => "tail",
+        storage_oracle::CorruptionLocation::Middle => "middle",
+    }
+}
+
+fn storage_wal_terminator_json(terminator: &storage_oracle::WalTerminator) -> String {
+    match terminator {
+        storage_oracle::WalTerminator::CleanEnd => "{\"kind\":\"clean-end\"}".to_owned(),
+        storage_oracle::WalTerminator::InvalidHeader { artifact, reason } => format!(
+            "{{\"kind\":\"invalid-header\",\"artifact\":\"{}\",\"reason\":{}}}",
+            json_escape(artifact),
+            storage_wal_header_failure_json(reason),
+        ),
+        storage_oracle::WalTerminator::CorruptAt {
+            artifact,
+            offset,
+            location,
+            reason,
+        } => format!(
+            "{{\"kind\":\"corrupt-at\",\"artifact\":\"{}\",\"offset\":{offset},\"location\":\"{}\",\"reason\":{}}}",
+            json_escape(artifact),
+            storage_corruption_location_key(*location),
+            storage_wal_record_failure_json(reason),
+        ),
+    }
+}
+
+fn storage_wal_record_json(record: &storage_oracle::WalRecordFact) -> String {
+    format!(
+        "{{\"seq\":{},\"op\":{},\"payload_hex\":\"{}\"}}",
+        record.seq,
+        record.op,
+        evidence_hex(&record.payload),
+    )
+}
+
+fn storage_wal_records_json(records: &[storage_oracle::WalRecordFact]) -> String {
+    records
+        .iter()
+        .map(storage_wal_record_json)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn storage_wal_ack_boundaries_json(boundaries: &[storage_oracle::WalAckBoundary]) -> String {
+    boundaries
+        .iter()
+        .map(|boundary| {
+            format!(
+                "{{\"records\":[{}],\"live_versions\":[{}]}}",
+                storage_wal_records_json(&boundary.records),
+                storage_versions_json(&boundary.live_versions),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn storage_wal_prefix_expected_json(expected: &storage_oracle::WalPrefixExpected) -> String {
+    format!(
+        "{{\"first_seq\":{},\"acknowledged\":[{}],\"optional_unacknowledged_tail\":[{}],\"terminator\":{},\"live_versions\":[{}],\"ack_boundaries\":[{}]}}",
+        expected.first_seq,
+        storage_wal_records_json(&expected.acknowledged),
+        storage_wal_records_json(&expected.optional_unacknowledged_tail),
+        storage_wal_terminator_json(&expected.terminator),
+        storage_versions_json(&expected.live_versions),
+        storage_wal_ack_boundaries_json(&expected.ack_boundaries),
+    )
+}
+
+fn storage_wal_public_outcome_json(outcome: &storage_oracle::WalPublicOutcome) -> String {
+    match outcome {
+        storage_oracle::WalPublicOutcome::Opened { live_versions } => format!(
+            "{{\"kind\":\"opened\",\"live_versions\":[{}]}}",
+            storage_versions_json(live_versions)
+        ),
+        storage_oracle::WalPublicOutcome::Refused { terminator } => format!(
+            "{{\"kind\":\"refused\",\"terminator\":{}}}",
+            storage_wal_terminator_json(terminator)
+        ),
+    }
+}
+
+fn storage_wal_prefix_observed_json(observed: &storage_oracle::WalPrefixObserved) -> String {
+    format!(
+        "{{\"first_seq\":{},\"records\":[{}],\"terminator\":{},\"clean_public\":{},\"public\":{},\"reopened_ack_boundaries\":[{}]}}",
+        observed.first_seq,
+        storage_wal_records_json(&observed.records),
+        storage_wal_terminator_json(&observed.terminator),
+        storage_wal_public_outcome_json(&observed.clean_public),
+        storage_wal_public_outcome_json(&observed.public),
+        storage_wal_ack_boundaries_json(&observed.reopened_ack_boundaries),
+    )
+}
+
+fn storage_retry_public_result_json(result: storage_oracle::RetryPublicResult) -> String {
+    match result {
+        storage_oracle::RetryPublicResult::Committed { seq, generation } => {
+            format!("{{\"kind\":\"committed\",\"seq\":{seq},\"generation\":{generation}}}")
+        }
+        storage_oracle::RetryPublicResult::ScheduledPostCommitError => {
+            "{\"kind\":\"scheduled-post-commit-error\"}".to_owned()
+        }
+    }
+}
+
+fn storage_retry_expected_json(expected: &storage_oracle::RetryExpected) -> String {
+    format!(
+        "{{\"canonical_request_digest\":\"{}\",\"version\":{{\"document_id\":\"{}\",\"revision\":{}}},\"original_seq\":{},\"generation_after_first\":{},\"canonical_record_occurrences\":{},\"ambiguous_first\":{}}}",
+        evidence_hex(&expected.canonical_request_digest),
+        expected.version.0,
+        expected.version.1,
+        expected.original_seq,
+        expected.generation_after_first,
+        expected.canonical_record_occurrences,
+        storage_retry_public_result_json(expected.ambiguous_first),
+    )
+}
+
+fn storage_active_retry_json(observed: &storage_oracle::ActiveRetryObserved) -> String {
+    format!(
+        "{{\"first\":{},\"retry\":{},\"canonical_record_occurrences\":{},\"live_version_occurrences\":{}}}",
+        storage_retry_public_result_json(observed.first),
+        storage_retry_public_result_json(observed.retry),
+        observed.canonical_record_occurrences,
+        observed.live_version_occurrences,
+    )
+}
+
+fn storage_sealed_retry_json(observed: &storage_oracle::SealedRetryObserved) -> String {
+    format!(
+        "{{\"retry_seq\":{},\"generation_before_retry\":{},\"generation_after_retry\":{},\"wal_length_before_retry\":{},\"wal_length_after_retry\":{},\"wal_digest_before_retry\":\"{}\",\"wal_digest_after_retry\":\"{}\",\"live_version_occurrences\":{}}}",
+        observed.retry_seq,
+        observed.generation_before_retry,
+        observed.generation_after_retry,
+        observed.wal_length_before_retry,
+        observed.wal_length_after_retry,
+        evidence_hex(&observed.wal_digest_before_retry),
+        evidence_hex(&observed.wal_digest_after_retry),
+        observed.live_version_occurrences,
+    )
+}
+
+fn storage_retry_observed_json(observed: &storage_oracle::RetryObserved) -> String {
+    let sealed = observed
+        .sealed_reopened
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), storage_sealed_retry_json);
+    format!(
+        "{{\"canonical_request_digest\":\"{}\",\"version\":{{\"document_id\":\"{}\",\"revision\":{}}},\"first_seq\":{},\"retry_seq\":{},\"generation_before_retry\":{},\"generation_after_retry\":{},\"wal_length_before_retry\":{},\"wal_length_after_retry\":{},\"wal_digest_before_retry\":\"{}\",\"wal_digest_after_retry\":\"{}\",\"canonical_record_occurrences\":{},\"live_version_occurrences\":{},\"ambiguous_first\":{},\"active_same_handle\":{},\"sealed_reopened\":{sealed}}}",
+        evidence_hex(&observed.canonical_request_digest),
+        observed.version.0,
+        observed.version.1,
+        observed.first_seq,
+        observed.retry_seq,
+        observed.generation_before_retry,
+        observed.generation_after_retry,
+        observed.wal_length_before_retry,
+        observed.wal_length_after_retry,
+        evidence_hex(&observed.wal_digest_before_retry),
+        evidence_hex(&observed.wal_digest_after_retry),
+        observed.canonical_record_occurrences,
+        observed.live_version_occurrences,
+        storage_retry_public_result_json(observed.ambiguous_first),
+        storage_active_retry_json(&observed.active_same_handle),
+    )
+}
+
+fn storage_artifact_fact_json(artifact: &storage_oracle::ArtifactFact) -> String {
+    match artifact {
+        storage_oracle::ArtifactFact::Wal { path } => {
+            format!("{{\"kind\":\"wal\",\"path\":\"{}\"}}", json_escape(path))
+        }
+        storage_oracle::ArtifactFact::Manifest { path } => format!(
+            "{{\"kind\":\"manifest\",\"path\":\"{}\"}}",
+            json_escape(path)
+        ),
+        storage_oracle::ArtifactFact::Segment { path, id } => {
+            let id = id.as_ref().map_or_else(
+                || "null".to_owned(),
+                |id| format!("\"{}\"", evidence_hex(id)),
+            );
+            format!(
+                "{{\"kind\":\"segment\",\"path\":\"{}\",\"id\":{id}}}",
+                json_escape(path)
+            )
+        }
+        storage_oracle::ArtifactFact::SegmentRegion {
+            path,
+            id,
+            kind,
+            chunk,
+        } => format!(
+            "{{\"kind\":\"segment-region\",\"path\":\"{}\",\"id\":\"{}\",\"region_kind\":{kind},\"chunk\":{chunk}}}",
+            json_escape(path),
+            evidence_hex(id),
+        ),
+    }
+}
+
+fn storage_format_check_key(check: storage_oracle::FormatCheckFact) -> &'static str {
+    match check {
+        storage_oracle::FormatCheckFact::Length => "length",
+        storage_oracle::FormatCheckFact::Magic => "magic",
+        storage_oracle::FormatCheckFact::Family => "family",
+        storage_oracle::FormatCheckFact::Version => "version",
+        storage_oracle::FormatCheckFact::HeaderLength => "header-length",
+        storage_oracle::FormatCheckFact::FileLength => "file-length",
+        storage_oracle::FormatCheckFact::BlockLength => "block-length",
+        storage_oracle::FormatCheckFact::BlockChecksum => "block-checksum",
+        storage_oracle::FormatCheckFact::FileChecksum => "file-checksum",
+        storage_oracle::FormatCheckFact::ObjectIdentity => "object-identity",
+    }
+}
+
+fn storage_format_call_key(call: storage_oracle::FormatPublicCall) -> &'static str {
+    match call {
+        storage_oracle::FormatPublicCall::Open => "open",
+        storage_oracle::FormatPublicCall::ExactSearch => "exact-search",
+    }
+}
+
+fn storage_format_case_key(case: storage_oracle::FormatCase) -> &'static str {
+    match case {
+        storage_oracle::FormatCase::WalHeader => "wal-header",
+        storage_oracle::FormatCase::WalRecordBody => "wal-record-body",
+        storage_oracle::FormatCase::WalRecordChecksum => "wal-record-checksum",
+        storage_oracle::FormatCase::SegmentRegion => "segment-region",
+        storage_oracle::FormatCase::ManifestWrongFamily => "manifest-wrong-family",
+        storage_oracle::FormatCase::SegmentWrongFamily => "segment-wrong-family",
+        storage_oracle::FormatCase::SegmentWrongIdentity => "segment-wrong-identity",
+    }
+}
+
+fn storage_omission_case_key(
+    evidence: &storage_adapter::ReachabilityOperationEvidence,
+) -> Result<Option<&'static str>, String> {
+    let Some(receipt) = evidence.receipt_observed.as_ref() else {
+        return Ok(None);
+    };
+    if !evidence
+        .expected
+        .eligible_orphans
+        .iter()
+        .any(|file| file.path == evidence.mutation.artifact)
+    {
+        return Err(format!(
+            "storage omission target {} is not independently classified as eligible",
+            evidence.mutation.artifact
+        ));
+    }
+    let orphan = if evidence.mutation.artifact == ".manifest.ze.tmp" {
+        "manifest-temporary"
+    } else if evidence.mutation.artifact.starts_with(".segment-")
+        && evidence.mutation.artifact.ends_with(".zseg.tmp")
+    {
+        "segment-temporary"
+    } else if evidence.mutation.artifact.starts_with("segment-")
+        && evidence.mutation.artifact.ends_with(".zseg")
+    {
+        "final-segment"
+    } else {
+        return Err(format!(
+            "storage omission target {} has no eligible orphan kind",
+            evidence.mutation.artifact
+        ));
+    };
+    let subsite = match receipt.value.site {
+        storage_oracle::ReceiptSite::OrphanCleanupList => "list",
+        storage_oracle::ReceiptSite::OrphanCleanupDelete => "delete",
+        ref site => {
+            return Err(format!(
+                "storage omission receipt used the wrong production site: {site:?}"
+            ));
+        }
+    };
+    match (orphan, subsite) {
+        ("final-segment", "list") => Ok(Some("storage.omission.final-segment.list")),
+        ("final-segment", "delete") => Ok(Some("storage.omission.final-segment.delete")),
+        ("segment-temporary", "list") => Ok(Some("storage.omission.segment-temporary.list")),
+        ("segment-temporary", "delete") => Ok(Some("storage.omission.segment-temporary.delete")),
+        ("manifest-temporary", "list") => Ok(Some("storage.omission.manifest-temporary.list")),
+        ("manifest-temporary", "delete") => Ok(Some("storage.omission.manifest-temporary.delete")),
+        _ => Err("storage omission case was not closed over the catalog".to_owned()),
+    }
+}
+
+fn storage_format_refusal_json(refusal: &storage_oracle::FormatRefusal) -> String {
+    match refusal {
+        storage_oracle::FormatRefusal::WalInvalidHeader { artifact, reason } => format!(
+            "{{\"kind\":\"wal-invalid-header\",\"artifact\":{},\"reason\":{}}}",
+            storage_artifact_fact_json(artifact),
+            storage_wal_header_failure_json(reason),
+        ),
+        storage_oracle::FormatRefusal::WalCorruptAt {
+            artifact,
+            offset,
+            location,
+            reason,
+        } => format!(
+            "{{\"kind\":\"wal-corrupt-at\",\"artifact\":{},\"offset\":{offset},\"location\":\"{}\",\"reason\":{}}}",
+            storage_artifact_fact_json(artifact),
+            storage_corruption_location_key(*location),
+            storage_wal_record_failure_json(reason),
+        ),
+        storage_oracle::FormatRefusal::ManifestFormat {
+            artifact,
+            check,
+            offset,
+            expected,
+            actual,
+        } => format!(
+            "{{\"kind\":\"manifest-format\",\"artifact\":{},\"check\":\"{}\",\"offset\":{offset},\"expected\":{expected},\"actual\":{actual}}}",
+            storage_artifact_fact_json(artifact),
+            storage_format_check_key(*check),
+        ),
+        storage_oracle::FormatRefusal::SegmentFormat {
+            artifact,
+            check,
+            offset,
+            expected,
+            actual,
+        } => format!(
+            "{{\"kind\":\"segment-format\",\"artifact\":{},\"check\":\"{}\",\"offset\":{offset},\"expected\":{expected},\"actual\":{actual}}}",
+            storage_artifact_fact_json(artifact),
+            storage_format_check_key(*check),
+        ),
+        storage_oracle::FormatRefusal::SegmentWrongObject {
+            artifact,
+            expected,
+            actual,
+        } => format!(
+            "{{\"kind\":\"segment-wrong-object\",\"artifact\":{},\"expected\":\"{}\",\"actual\":\"{}\"}}",
+            storage_artifact_fact_json(artifact),
+            evidence_hex(expected),
+            evidence_hex(actual),
+        ),
+    }
+}
+
+fn storage_format_expected_json(expected: &storage_oracle::FormatExpected) -> String {
+    let case = storage_format_case_key(expected.case);
+    format!(
+        "{{\"case\":\"{case}\",\"call\":\"{}\",\"clean\":{},\"refusal\":{}}}",
+        storage_format_call_key(expected.call),
+        storage_format_clean_outcome_json(expected.clean),
+        storage_format_refusal_json(&expected.refusal),
+    )
+}
+
+fn storage_format_clean_outcome_json(outcome: storage_oracle::FormatCleanOutcome) -> String {
+    match outcome {
+        storage_oracle::FormatCleanOutcome::Opened => "{\"kind\":\"opened\"}".to_owned(),
+        storage_oracle::FormatCleanOutcome::ExactSearch { candidates } => {
+            format!("{{\"kind\":\"exact-search\",\"candidates\":{candidates}}}")
+        }
+    }
+}
+
+fn storage_format_observed_json(observed: &storage_oracle::FormatObserved) -> String {
+    let case = storage_format_case_key(observed.case);
+    let refusal = observed
+        .refusal
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), storage_format_refusal_json);
+    format!(
+        "{{\"case\":\"{case}\",\"call\":\"{}\",\"clean\":{},\"refusal\":{refusal},\"partial_candidates\":{}}}",
+        storage_format_call_key(observed.call),
+        storage_format_clean_outcome_json(observed.clean),
+        observed.partial_candidates,
+    )
+}
+
+fn storage_reachability_expected_json(expected: &storage_oracle::ReachabilityExpected) -> String {
+    format!(
+        "{{\"baseline\":[{}],\"manifest_referenced\":[{}],\"control_and_unknown\":[{}],\"preserved\":[{}],\"eligible_orphans\":[{}],\"reclaimed_bytes\":{},\"directory_sync_required\":{},\"expected_directory_syncs\":{},\"committed_purge_read_only_required\":{}}}",
+        storage_file_facts_json(&expected.baseline),
+        storage_file_facts_json(&expected.manifest_referenced),
+        storage_file_facts_json(&expected.control_and_unknown),
+        storage_file_facts_json(&expected.preserved),
+        storage_file_facts_json(&expected.eligible_orphans),
+        expected.reclaimed_bytes,
+        expected.directory_sync_required,
+        expected.expected_directory_syncs,
+        expected.committed_purge_read_only_required,
+    )
+}
+
+fn storage_committed_purge_read_only_json(
+    observed: &storage_oracle::CommittedPurgeReadOnlyObserved,
+) -> String {
+    let outcome = match observed.outcome {
+        storage_oracle::CommittedPurgeReadOnlyOutcome::RefusedPurgeRecoveryReadOnly => {
+            "refused-purge-recovery-read-only"
+        }
+    };
+    format!(
+        "{{\"before\":[{}],\"after\":[{}],\"outcome\":\"{outcome}\"}}",
+        storage_file_facts_json(&observed.before),
+        storage_file_facts_json(&observed.after),
+    )
+}
+
+fn storage_reachability_observed_json(observed: &storage_oracle::ReachabilityObserved) -> String {
+    let committed_purge_read_only = observed
+        .committed_purge_read_only
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), storage_committed_purge_read_only_json);
+    format!(
+        "{{\"after_read_only\":[{}],\"final_inventory\":[{}],\"reclaimed_bytes\":{},\"directory_syncs\":{},\"committed_purge_read_only\":{committed_purge_read_only}}}",
+        storage_file_facts_json(&observed.after_read_only),
+        storage_file_facts_json(&observed.final_inventory),
+        observed.reclaimed_bytes,
+        observed.directory_syncs,
+    )
+}
+
+fn storage_mutation_json(mutation: &storage_adapter::StorageMutationEvidence) -> String {
+    let optional_u64 =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_u32 =
+        |value: Option<u32>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_u16 =
+        |value: Option<u16>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_u8 =
+        |value: Option<u8>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let segment = mutation.segment.as_ref().map_or_else(
+        || "null".to_owned(),
+        |segment| format!("\"{}\"", evidence_hex(segment)),
+    );
+    format!(
+        "{{\"artifact\":\"{}\",\"offset\":{},\"segment\":{segment},\"region_kind\":{},\"chunk\":{},\"before\":{},\"after\":{}}}",
+        json_escape(&mutation.artifact),
+        optional_u64(mutation.offset),
+        optional_u16(mutation.region_kind),
+        optional_u32(mutation.chunk),
+        optional_u8(mutation.before),
+        optional_u8(mutation.after),
+    )
+}
+
+fn storage_artifact_evidence_json(artifact: &storage_adapter::StorageArtifactEvidence) -> String {
+    format!(
+        "{{\"role\":\"{}\",\"fact\":{},\"bytes_hex\":\"{}\"}}",
+        json_escape(artifact.role),
+        storage_file_fact_json(&artifact.fact),
+        evidence_hex(&artifact.bytes),
+    )
+}
+
+fn storage_control_json(control: &storage_adapter::StorageControlEvidence) -> String {
+    let artifacts = |values: &[storage_adapter::StorageArtifactEvidence]| {
+        values
+            .iter()
+            .map(storage_artifact_evidence_json)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"namespace\":\"{}\",\"seed\":{},\"operation_fixture_id\":\"{}\",\"clean_fault_pair_id\":\"{}\",\"pre_clean_inventory\":[{}],\"pre_fault_inventory\":[{}],\"pre_clean_digest\":\"{}\",\"pre_fault_digest\":\"{}\",\"pre_clean_artifacts\":[{}],\"pre_fault_artifacts\":[{}],\"clean_inventory\":[{}],\"fault_inventory\":[{}],\"clean_digest\":\"{}\",\"fault_digest\":\"{}\"}}",
+        json_escape(control.namespace),
+        control.seed,
+        evidence_hex(&control.operation_fixture_id),
+        evidence_hex(&control.clean_fault_pair_id),
+        storage_file_facts_json(&control.pre_clean_inventory),
+        storage_file_facts_json(&control.pre_fault_inventory),
+        evidence_hex(&control.pre_clean_digest),
+        evidence_hex(&control.pre_fault_digest),
+        artifacts(&control.pre_clean_artifacts),
+        artifacts(&control.pre_fault_artifacts),
+        storage_file_facts_json(&control.clean_inventory),
+        storage_file_facts_json(&control.fault_inventory),
+        evidence_hex(&control.clean_digest),
+        evidence_hex(&control.fault_digest),
+    )
+}
+
+fn storage_receipt_operation_key(operation: storage_oracle::ReceiptOperation) -> &'static str {
+    match operation {
+        storage_oracle::ReceiptOperation::WalPrefix => "wal-prefix",
+        storage_oracle::ReceiptOperation::Publication => "publication",
+        storage_oracle::ReceiptOperation::Retry => "retry",
+        storage_oracle::ReceiptOperation::FormatCheck => "format-check",
+        storage_oracle::ReceiptOperation::OrphanCleanup => "orphan-cleanup",
+    }
+}
+
+fn storage_receipt_fault_key(fault: storage_oracle::ReceiptFault) -> &'static str {
+    match fault {
+        storage_oracle::ReceiptFault::TornWalHeader => "torn-wal-header",
+        storage_oracle::ReceiptFault::TornWalBody => "torn-wal-body",
+        storage_oracle::ReceiptFault::TornWalChecksum => "torn-wal-checksum",
+        storage_oracle::ReceiptFault::PostCommitError => "post-commit-error",
+        storage_oracle::ReceiptFault::ManifestPreRenameCrash => "manifest-pre-rename-crash",
+        storage_oracle::ReceiptFault::ManifestPostRenameCrash => "manifest-post-rename-crash",
+        storage_oracle::ReceiptFault::CorruptSegmentRegion => "corrupt-segment-region",
+        storage_oracle::ReceiptFault::WrongManifestObject => "wrong-manifest-object",
+        storage_oracle::ReceiptFault::WrongSegmentObject => "wrong-segment-object",
+        storage_oracle::ReceiptFault::ListDeleteOmission => "list-delete-omission",
+    }
+}
+
+fn storage_receipt_site_key(site: storage_oracle::ReceiptSite) -> &'static str {
+    match site {
+        storage_oracle::ReceiptSite::WalOpenHeaderValidation => "wal-open-header-validation",
+        storage_oracle::ReceiptSite::WalOpenRecordValidation => "wal-open-record-validation",
+        storage_oracle::ReceiptSite::WalOpenRecordChecksum => "wal-open-record-checksum",
+        storage_oracle::ReceiptSite::WalCommitAppendAfterInnerSuccess => {
+            "wal-commit-append-after-inner-success"
+        }
+        storage_oracle::ReceiptSite::ManifestCommitBeforeRename => "manifest-commit-before-rename",
+        storage_oracle::ReceiptSite::ManifestCommitAfterRename => "manifest-commit-after-rename",
+        storage_oracle::ReceiptSite::SegmentReadRegionChecksum => "segment-read-region-checksum",
+        storage_oracle::ReceiptSite::ManifestOpenFamilyValidation => {
+            "manifest-open-family-validation"
+        }
+        storage_oracle::ReceiptSite::SegmentOpenFamilyValidation => {
+            "segment-open-family-validation"
+        }
+        storage_oracle::ReceiptSite::SegmentOpenObjectIdentity => "segment-open-object-identity",
+        storage_oracle::ReceiptSite::OrphanCleanupList => "orphan-cleanup-list",
+        storage_oracle::ReceiptSite::OrphanCleanupDelete => "orphan-cleanup-delete",
+    }
+}
+
+fn storage_receipt_effect_json(effect: &storage_oracle::ReceiptEffectFact) -> String {
+    let optional_u16 =
+        |value: Option<u16>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let optional_id = |value: &Option<[u8; 16]>| {
+        value.as_ref().map_or_else(
+            || "null".to_owned(),
+            |value| format!("\"{}\"", evidence_hex(value)),
+        )
+    };
+    match effect {
+        storage_oracle::ReceiptEffectFact::WalHeader {
+            planned_offset,
+            retained_len,
+            observed,
+        } => format!(
+            "{{\"kind\":\"wal-header\",\"planned_offset\":{planned_offset},\"retained_len\":{retained_len},\"observed\":{}}}",
+            storage_wal_header_failure_json(observed)
+        ),
+        storage_oracle::ReceiptEffectFact::WalRecord {
+            planned_offset,
+            observed_offset,
+            location,
+            observed,
+        } => format!(
+            "{{\"kind\":\"wal-record\",\"planned_offset\":{planned_offset},\"observed_offset\":{observed_offset},\"location\":\"{}\",\"observed\":{}}}",
+            storage_corruption_location_key(*location),
+            storage_wal_record_failure_json(observed),
+        ),
+        storage_oracle::ReceiptEffectFact::WalAppend {
+            encoded_len,
+            first_seq,
+            last_seq,
+            inner_append_completed,
+            caller_saw_error,
+        } => format!(
+            "{{\"kind\":\"wal-append\",\"encoded_len\":{encoded_len},\"first_seq\":{first_seq},\"last_seq\":{last_seq},\"inner_append_completed\":{inner_append_completed},\"caller_saw_error\":{caller_saw_error}}}"
+        ),
+        storage_oracle::ReceiptEffectFact::ManifestRename {
+            temporary,
+            committed,
+            rename_performed,
+            new_segment_final,
+            directory_sync_returned,
+        } => format!(
+            "{{\"kind\":\"manifest-rename\",\"temporary\":\"{}\",\"committed\":\"{}\",\"rename_performed\":{rename_performed},\"new_segment_final\":{new_segment_final},\"directory_sync_returned\":{directory_sync_returned}}}",
+            json_escape(temporary),
+            json_escape(committed),
+        ),
+        storage_oracle::ReceiptEffectFact::SegmentChecksum {
+            segment,
+            region_kind,
+            chunk,
+            expected_checksum,
+            actual_checksum,
+        } => format!(
+            "{{\"kind\":\"segment-checksum\",\"segment\":\"{}\",\"region_kind\":{region_kind},\"chunk\":{chunk},\"expected_checksum\":{expected_checksum},\"actual_checksum\":{actual_checksum}}}",
+            evidence_hex(segment),
+        ),
+        storage_oracle::ReceiptEffectFact::Format {
+            artifact,
+            check,
+            expected_family,
+            actual_family,
+            expected_id,
+            actual_id,
+        } => format!(
+            "{{\"kind\":\"format\",\"artifact\":{},\"check\":\"{}\",\"expected_family\":{},\"actual_family\":{},\"expected_id\":{},\"actual_id\":{}}}",
+            storage_artifact_fact_json(artifact),
+            storage_format_check_key(*check),
+            optional_u16(*expected_family),
+            optional_u16(*actual_family),
+            optional_id(expected_id),
+            optional_id(actual_id),
+        ),
+        storage_oracle::ReceiptEffectFact::Omission {
+            omitted_path,
+            deletion_observed,
+        } => format!(
+            "{{\"kind\":\"omission\",\"omitted_path\":\"{}\",\"deletion_observed\":{deletion_observed}}}",
+            json_escape(omitted_path),
+        ),
+    }
+}
+
+fn storage_receipt_expected_json(expected: &storage_oracle::ReceiptExpected) -> String {
+    format!(
+        "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"op_index\":{},\"artifact\":{},\"effect\":{}}}",
+        json_escape(expected.campaign),
+        storage_receipt_operation_key(expected.operation),
+        storage_receipt_fault_key(expected.fault),
+        storage_receipt_site_key(expected.site),
+        expected.op_index,
+        storage_artifact_fact_json(&expected.artifact),
+        storage_receipt_effect_json(&expected.effect),
+    )
+}
+
+fn storage_optional_receipt_expected_json(
+    expected: Option<&storage_oracle::ReceiptExpected>,
+) -> String {
+    expected.map_or_else(|| "null".to_owned(), storage_receipt_expected_json)
+}
+
+fn storage_optional_receipt_observed_json(
+    observed: Option<&storage_oracle::ReceiptObserved>,
+) -> String {
+    observed.map_or_else(
+        || "null".to_owned(),
+        |observed| {
+            format!(
+                "{{\"value\":{},\"cardinality\":{}}}",
+                storage_receipt_expected_json(&observed.value),
+                observed.cardinality,
+            )
+        },
+    )
+}
+
+fn storage_ack_json(acknowledgment: &storage_adapter::StorageAckEvidence) -> String {
+    let optional =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    format!(
+        "{{\"phase\":\"{}\",\"operation_id\":\"{}\",\"canonical_request_digest\":\"{}\",\"planned_first_seq\":{},\"planned_last_seq\":{},\"returned_seq\":{},\"returned_generation\":{},\"returned_ok\":{},\"acknowledged\":{},\"durability\":\"{}\",\"commit_tier\":\"{}\"}}",
+        json_escape(acknowledgment.phase),
+        evidence_hex(&acknowledgment.operation_id),
+        evidence_hex(&acknowledgment.canonical_request_digest),
+        acknowledgment.planned_first_seq,
+        acknowledgment.planned_last_seq,
+        optional(acknowledgment.returned_seq),
+        optional(acknowledgment.returned_generation),
+        acknowledgment.returned_ok,
+        acknowledgment.acknowledged,
+        json_escape(acknowledgment.durability),
+        json_escape(acknowledgment.commit_tier),
+    )
+}
+
+fn storage_ack_detail_json(acknowledgments: &[storage_adapter::StorageAckEvidence]) -> String {
+    let acknowledgments = acknowledgments
+        .iter()
+        .map(storage_ack_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"kind\":\"ack-ledger\",\"acknowledgments\":[{acknowledgments}]}}")
+}
+
+fn storage_fault_kind_key(fault: storage_adapter::StorageFaultKind) -> &'static str {
+    match fault {
+        storage_adapter::StorageFaultKind::TornWalHeader => "torn-wal-header",
+        storage_adapter::StorageFaultKind::TornWalBody => "torn-wal-body",
+        storage_adapter::StorageFaultKind::TornWalChecksum => "torn-wal-checksum",
+        storage_adapter::StorageFaultKind::PostCommitError => "post-commit-error",
+        storage_adapter::StorageFaultKind::ManifestPreRenameCrash => "manifest-pre-rename-crash",
+        storage_adapter::StorageFaultKind::ManifestPostRenameCrash => "manifest-post-rename-crash",
+        storage_adapter::StorageFaultKind::CorruptSegmentRegion => "corrupt-segment-region",
+        storage_adapter::StorageFaultKind::WrongManifestObject => "wrong-manifest-object",
+        storage_adapter::StorageFaultKind::WrongSegmentObject => "wrong-segment-object",
+        storage_adapter::StorageFaultKind::ListDeleteOmission => "list-delete-omission",
+    }
+}
+
+fn storage_child_detail_json(child: Option<&storage_adapter::ChildAbortEvidence>) -> String {
+    child.map_or_else(
+        || "{\"kind\":\"child-abort\",\"child\":null}".to_owned(),
+        |child| {
+            format!(
+                "{{\"kind\":\"child-abort\",\"child\":{{\"signal\":{},\"acknowledgment\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"op_index\":{},\"artifact\":\"{}\",\"temporary\":\"{}\",\"committed\":\"{}\",\"rename_performed\":{},\"new_segment_final\":{},\"directory_sync_returned\":{}}}}}",
+                child.signal,
+                json_escape(&child.acknowledgment),
+                storage_fault_kind_key(child.fault),
+                json_escape(child.site),
+                child.op_index,
+                json_escape(&child.artifact),
+                json_escape(&child.temporary),
+                json_escape(&child.committed),
+                child.rename_performed,
+                child.new_segment_final,
+                child.directory_sync_returned,
+            )
+        },
+    )
+}
+
+fn storage_cleanup_json(cleanup: &StorageCleanupReport) -> String {
+    let deleted = cleanup
+        .deleted_paths()
+        .iter()
+        .map(|path| format!("\"{}\"", json_escape(path)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let retained = cleanup
+        .retained_eligible_paths()
+        .iter()
+        .map(|path| format!("\"{}\"", json_escape(path)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"reclaimed_bytes\":{},\"deleted_paths\":[{deleted}],\"retained_eligible_paths\":[{retained}],\"directory_synced\":{}}}",
+        cleanup.reclaimed_bytes(),
+        cleanup.directory_synced(),
+    )
+}
+
+fn storage_omission_detail_json(
+    omission: Option<&storage_adapter::OmissionIntermediateEvidence>,
+) -> String {
+    omission.map_or_else(
+        || "{\"kind\":\"omission\",\"omission\":null}".to_owned(),
+        |omission| {
+            format!(
+                "{{\"kind\":\"omission\",\"omission\":{{\"inventory\":[{}],\"cleanup\":{},\"retry_cleanup\":{}}}}}",
+                storage_file_facts_json(&omission.inventory),
+                storage_cleanup_json(&omission.cleanup),
+                storage_cleanup_json(&omission.retry_cleanup),
+            )
+        },
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one storage comparison owns all exact replay evidence streams"
+)]
+fn record_storage_evidence<T: std::fmt::Debug, U: std::fmt::Debug, E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    _expected: &T,
+    _observed: &U,
+    checker_result: Result<(), E>,
+    receipt_expected: Option<&storage_oracle::ReceiptExpected>,
+    receipt_observed: Option<&storage_oracle::ReceiptObserved>,
+    receipt: Option<StorageFaultReceipt>,
+    control: &storage_adapter::StorageControlEvidence,
+    mutation: &storage_adapter::StorageMutationEvidence,
+    evidence: &storage_adapter::StorageEvidenceEnvelope,
+    expected_json: String,
+    observed_json: String,
+    operation_detail_json: String,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+    receipts: &mut Vec<ProductionFeatureReceipt>,
+) -> Result<bool, String> {
+    record_storage_family_envelope(operation, seed, evidence, family_artifact_records)?;
+    if control.pre_clean_inventory != control.pre_fault_inventory
+        || control.pre_clean_digest != control.pre_fault_digest
+    {
+        return Err(format!(
+            "storage {operation} clean/fault fixtures were not byte-identical before the operation"
+        ));
+    }
+    let provenance = format!(
+        "{} seed={seed} profile={} op={op_index} operation={operation}",
+        storage_oracle::ORACLE_CONTRACT_VERSION,
+        profile.key()
+    );
+    let invariant_result = checker_result.map_err(|error| error.to_string());
+    let receipt_result = match receipt_expected {
+        Some(expected_receipt) => match (receipt.as_ref(), receipt_observed) {
+            (Some(raw_receipt), Some(adapter_observed)) => {
+                storage_adapter::receipt_observed_from_product(raw_receipt).and_then(
+                    |raw_observed| {
+                        if &raw_observed != adapter_observed {
+                            Err(format!(
+                                "{checker_id}: adapter receipt DTO differs from exhaustive raw production translation: adapter={adapter_observed:?} raw={raw_observed:?}"
+                            ))
+                        } else {
+                            storage_oracle::check_receipt(
+                                checker_id,
+                                expected_receipt,
+                                Some(&raw_observed),
+                            )
+                            .map_err(|error| error.to_string())
+                        }
+                    },
+                )
+            }
+            (None, _) => Err(format!(
+                "{checker_id}: raw production receipt missing while receipt attestation was required"
+            )),
+            (Some(_), None) => Err(format!(
+                "{checker_id}: adapter receipt DTO missing while a raw production receipt was supplied"
+            )),
+        },
+        None => {
+            if receipt_observed.is_some() || receipt.is_some() {
+                return Err(format!(
+                    "storage {operation} emitted an unscheduled production receipt"
+                ));
+            }
+            Ok(())
+        }
+    };
+    let receipt_valid = receipt_result.is_ok();
+    let combined_result = match (invariant_result, receipt_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(invariant), Ok(())) => Err(invariant),
+        (Ok(()), Err(receipt)) => Err(format!("receipt attestation failed: {receipt}")),
+        (Err(invariant), Err(receipt)) => Err(format!(
+            "invariant comparison failed: {invariant}; receipt attestation failed: {receipt}"
+        )),
+    };
+    let comparison_passed = combined_result.is_ok();
+    let comparison_error = combined_result.as_ref().err().cloned();
+    push_feature_json_record(
+        invariant,
+        checker_id,
+        operation,
+        format!(
+            "{{\"value\":{expected_json},\"receipt\":{}}}",
+            storage_optional_receipt_expected_json(receipt_expected)
+        ),
+        format!(
+            "{{\"value\":{observed_json},\"receipt\":{}}}",
+            storage_optional_receipt_observed_json(receipt_observed)
+        ),
+        provenance,
+        combined_result,
+        oracle_records,
+        coverage,
+    );
+    if comparison_passed
+        && receipt_valid
+        && let Some(observed) = receipt_observed
+    {
+        coverage.hit(format!(
+            "storage.receipt-site.{}",
+            storage_receipt_site_key(observed.value.site)
+        ));
+        let subcase = match observed.value.site {
+            storage_oracle::ReceiptSite::SegmentOpenFamilyValidation => {
+                Some("feature_fault.storage-durability.wrong-segment-object.site.family")
+            }
+            storage_oracle::ReceiptSite::SegmentOpenObjectIdentity => {
+                Some("feature_fault.storage-durability.wrong-segment-object.site.identity")
+            }
+            storage_oracle::ReceiptSite::OrphanCleanupList => {
+                Some("feature_fault.storage-durability.list-delete-omission.site.list")
+            }
+            storage_oracle::ReceiptSite::OrphanCleanupDelete => {
+                Some("feature_fault.storage-durability.list-delete-omission.site.delete")
+            }
+            _ => None,
+        };
+        if let Some(subcase) = subcase {
+            coverage.hit(subcase);
+        }
+    }
+    if comparison_passed
+        && receipt_valid
+        && let Some(receipt) = receipt
+    {
+        family_artifact_records
+            .entry("feature-receipts.jsonl")
+            .or_default()
+            .push(production_receipt_json(
+                &ProductionFeatureReceipt::ValidatedStorage(receipt.clone()),
+            ));
+        receipts.push(ProductionFeatureReceipt::ValidatedStorage(receipt));
+    }
+    family_artifact_records
+        .entry("storage-observations.jsonl")
+        .or_default()
+        .push(format!(
+            "{{\"campaign\":\"storage-durability\",\"operation\":\"{}\",\"seed\":{seed},\"expected\":{expected_json},\"observed\":{observed_json},\"receipt_expected\":{},\"receipt_observed\":{},\"operation_detail\":{operation_detail_json}}}",
+            json_escape(operation),
+            storage_optional_receipt_expected_json(receipt_expected),
+            storage_optional_receipt_observed_json(receipt_observed),
+        ));
+    let control_record = format!(
+        "{{\"campaign\":\"storage-durability\",\"operation\":\"{}\",\"seed\":{seed},\"control\":{}}}",
+        json_escape(operation),
+        storage_control_json(control),
+    );
+    control_records.push(control_record.clone());
+    family_artifact_records
+        .entry("clean-controls.jsonl")
+        .or_default()
+        .push(control_record);
+    let mutation_record = format!(
+        "{{\"campaign\":\"storage-durability\",\"operation\":\"{}\",\"seed\":{seed},\"mutation\":{}}}",
+        json_escape(operation),
+        storage_mutation_json(mutation),
+    );
+    mutation_records.push(mutation_record);
+    match comparison_error {
+        Some(error) => Err(format!(
+            "storage {operation} exact checker/receipt attestation failed: {error}"
+        )),
+        None => Ok(comparison_passed),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the WAL refusal projection binds its exact oracle and replay streams"
+)]
+fn record_storage_wal_i18_projection(
+    evidence: &storage_adapter::WalPrefixOperationEvidence,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    let (expected, observed) = storage_adapter::format_dtos_from_wal_prefix(evidence)?;
+    let invariant_result =
+        storage_oracle::check_i18(&expected, &observed).map_err(|error| error.to_string());
+    let receipt_result = match (
+        evidence.receipt_expected.as_ref(),
+        evidence.receipt_observed.as_ref(),
+        evidence.receipt.as_ref(),
+    ) {
+        (Some(expected_receipt), Some(adapter_observed), Some(raw_receipt)) => {
+            storage_adapter::receipt_observed_from_product(raw_receipt).and_then(|raw_observed| {
+                if &raw_observed != adapter_observed {
+                    Err(format!(
+                        "{}: adapter receipt DTO differs from exhaustive raw production translation: adapter={adapter_observed:?} raw={raw_observed:?}",
+                        storage_oracle::I18_CHECKER_ID,
+                    ))
+                } else {
+                    storage_oracle::check_receipt(
+                        storage_oracle::I18_CHECKER_ID,
+                        expected_receipt,
+                        Some(&raw_observed),
+                    )
+                    .map_err(|error| error.to_string())
+                }
+            })
+        }
+        (None, None, None) => Err(format!(
+            "{}: damaged WAL projection omitted its production receipt",
+            storage_oracle::I18_CHECKER_ID,
+        )),
+        _ => Err(format!(
+            "{}: damaged WAL projection receipt evidence is incomplete",
+            storage_oracle::I18_CHECKER_ID,
+        )),
+    };
+    let combined_result = match (invariant_result, receipt_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(invariant), Ok(())) => Err(invariant),
+        (Ok(()), Err(receipt)) => Err(format!("receipt attestation failed: {receipt}")),
+        (Err(invariant), Err(receipt)) => Err(format!(
+            "invariant comparison failed: {invariant}; receipt attestation failed: {receipt}"
+        )),
+    };
+    let passed = combined_result.is_ok();
+    let comparison_error = combined_result.as_ref().err().cloned();
+    let expected_json = storage_format_expected_json(&expected);
+    let observed_json = storage_format_observed_json(&observed);
+    push_feature_json_record(
+        18,
+        storage_oracle::I18_CHECKER_ID,
+        "wal-prefix",
+        format!(
+            "{{\"value\":{expected_json},\"receipt\":{}}}",
+            storage_optional_receipt_expected_json(evidence.receipt_expected.as_ref())
+        ),
+        format!(
+            "{{\"value\":{observed_json},\"receipt\":{}}}",
+            storage_optional_receipt_observed_json(evidence.receipt_observed.as_ref())
+        ),
+        format!(
+            "{} seed={seed} profile={} op={op_index} operation=wal-prefix projection=I18",
+            storage_oracle::ORACLE_CONTRACT_VERSION,
+            profile.key(),
+        ),
+        combined_result,
+        oracle_records,
+        coverage,
+    );
+    if passed {
+        coverage.hit(format!(
+            "storage.format-case.{}",
+            storage_format_case_key(expected.case)
+        ));
+    }
+    family_artifact_records
+        .entry("storage-observations.jsonl")
+        .or_default()
+        .push(format!(
+            "{{\"campaign\":\"storage-durability\",\"operation\":\"wal-prefix\",\"projection\":\"I18\",\"seed\":{seed},\"expected\":{expected_json},\"observed\":{observed_json},\"receipt_expected\":{},\"receipt_observed\":{}}}",
+            storage_optional_receipt_expected_json(evidence.receipt_expected.as_ref()),
+            storage_optional_receipt_observed_json(evidence.receipt_observed.as_ref()),
+        ));
+    match comparison_error {
+        Some(error) => Err(format!(
+            "storage wal-prefix I18 projection checker/receipt attestation failed: {error}"
+        )),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod storage_receipt_credit_tests {
+    use super::*;
+
+    #[test]
+    fn raw_storage_artifact_bytes_must_match_the_independent_digest_fact() {
+        let mut evidence = storage_adapter::observe_retry(0x51, 2, None)
+            .expect("observe storage artifact evidence");
+        let artifact = evidence
+            .evidence
+            .artifacts
+            .iter_mut()
+            .find(|artifact| !artifact.bytes.is_empty())
+            .expect("nonempty storage artifact");
+        artifact.bytes[0] ^= 1;
+        let mut records = BTreeMap::new();
+        let error = record_storage_family_envelope("retry", 0x51, &evidence.evidence, &mut records)
+            .expect_err("mutated raw storage bytes were accepted");
+        assert!(error.contains("digest"), "{error}");
+    }
+
+    #[test]
+    fn storage_ack_ledger_must_match_the_independent_fixture_mutation() {
+        let mut evidence = storage_adapter::observe_retry(0x52, 2, None)
+            .expect("observe storage acknowledgement evidence");
+        let acknowledgment = evidence
+            .evidence
+            .ack_ledger
+            .first_mut()
+            .expect("storage acknowledgement");
+        acknowledgment.canonical_request_digest[0] ^= 1;
+        let mut records = BTreeMap::new();
+        let error = record_storage_family_envelope("retry", 0x52, &evidence.evidence, &mut records)
+            .expect_err("mutated storage acknowledgement was accepted");
+        assert!(error.contains("acknowledgement"), "{error}");
+    }
+
+    #[test]
+    fn mismatched_storage_receipt_cannot_earn_fault_or_duplicate_invariant_credit() {
+        let evidence = storage_adapter::observe_retry(
+            0x17,
+            3,
+            Some(storage_adapter::StorageFaultKind::PostCommitError),
+        )
+        .expect("observe storage retry fault");
+        let mut receipt_observed = evidence
+            .receipt_observed
+            .clone()
+            .expect("retry fault receipt observation");
+        receipt_observed.cardinality = 2;
+        let mut oracle_records = Vec::new();
+        let mut control_records = Vec::new();
+        let mut mutation_records = Vec::new();
+        let mut family_artifact_records = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+        let mut receipts = Vec::new();
+
+        let error = record_storage_evidence(
+            17,
+            storage_oracle::I17_CHECKER_ID,
+            "retry-idempotence",
+            &evidence.expected,
+            &evidence.observed,
+            storage_oracle::check_i17(&evidence.expected, &evidence.observed),
+            evidence.receipt_expected.as_ref(),
+            Some(&receipt_observed),
+            evidence.receipt,
+            &evidence.control,
+            &evidence.mutation,
+            &evidence.evidence,
+            storage_retry_expected_json(&evidence.expected),
+            storage_retry_observed_json(&evidence.observed),
+            "{\"kind\":\"retry\"}".to_owned(),
+            0x17,
+            FaultProfile::None,
+            3,
+            &mut oracle_records,
+            &mut control_records,
+            &mut mutation_records,
+            &mut family_artifact_records,
+            &mut coverage,
+            &mut receipts,
+        )
+        .expect_err("mismatched storage receipt returned operation success");
+        assert!(error.contains("receipt attestation failed"), "{error}");
+
+        assert_eq!(
+            oracle_records.len(),
+            1,
+            "receipt check duplicated I17 credit"
+        );
+        assert!(
+            !oracle_records[0].passed,
+            "receipt mismatch did not fail I17"
+        );
+        assert!(
+            receipts.is_empty(),
+            "mismatched receipt earned fault credit"
+        );
+    }
+
+    #[test]
+    fn failed_storage_invariant_cannot_earn_receipt_or_site_credit() {
+        let evidence = storage_adapter::observe_retry(
+            0x18,
+            3,
+            Some(storage_adapter::StorageFaultKind::PostCommitError),
+        )
+        .expect("observe storage retry fault");
+        let mut oracle_records = Vec::new();
+        let mut control_records = Vec::new();
+        let mut mutation_records = Vec::new();
+        let mut family_artifact_records = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+        let mut receipts = Vec::new();
+
+        let error = record_storage_evidence(
+            17,
+            storage_oracle::I17_CHECKER_ID,
+            "retry-idempotence",
+            &evidence.expected,
+            &evidence.observed,
+            Err::<(), _>("planted I17 mismatch"),
+            evidence.receipt_expected.as_ref(),
+            evidence.receipt_observed.as_ref(),
+            evidence.receipt,
+            &evidence.control,
+            &evidence.mutation,
+            &evidence.evidence,
+            storage_retry_expected_json(&evidence.expected),
+            storage_retry_observed_json(&evidence.observed),
+            "{\"kind\":\"retry\"}".to_owned(),
+            0x18,
+            FaultProfile::None,
+            3,
+            &mut oracle_records,
+            &mut control_records,
+            &mut mutation_records,
+            &mut family_artifact_records,
+            &mut coverage,
+            &mut receipts,
+        )
+        .expect_err("failed I17 returned operation success");
+
+        assert!(error.contains("planted I17 mismatch"), "{error}");
+        assert!(
+            receipts.is_empty(),
+            "failed I17 earned a production receipt"
+        );
+        assert_eq!(
+            coverage.count("storage.receipt-site.wal-commit-append-after-inner-success"),
+            0,
+            "failed I17 earned receipt-site coverage"
+        );
+    }
+
+    #[test]
+    fn failed_wal_i18_projection_cannot_return_operation_success() {
+        let mut evidence = storage_adapter::observe_wal_prefix(
+            0x19,
+            1,
+            Some(storage_adapter::StorageFaultKind::TornWalHeader),
+        )
+        .expect("observe damaged WAL projection");
+        evidence
+            .receipt_observed
+            .as_mut()
+            .expect("damaged WAL receipt")
+            .cardinality = 2;
+        let mut oracle_records = Vec::new();
+        let mut family_artifact_records = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+
+        let error = record_storage_wal_i18_projection(
+            &evidence,
+            0x19,
+            FaultProfile::None,
+            1,
+            &mut oracle_records,
+            &mut family_artifact_records,
+            &mut coverage,
+        )
+        .expect_err("failed WAL I18 projection returned operation success");
+        assert!(error.contains("receipt attestation failed"), "{error}");
+        assert_eq!(
+            coverage.count("storage.format-case.wal-header"),
+            0,
+            "failed WAL I18 projection earned format coverage"
+        );
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared adapter boundary carries every replay evidence stream"
+)]
+fn storage_episode_fixture_json(episode: &storage_adapter::StorageEpisodeFixtures) -> String {
+    let base = episode.base_evidence();
+    let acknowledgments = base
+        .ack_ledger
+        .iter()
+        .map(storage_ack_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let artifacts = base
+        .artifacts
+        .iter()
+        .map(storage_artifact_evidence_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let base_json = format!(
+        "{{\"bootstrap_document_count\":{},\"ack_ledger\":[{acknowledgments}],\"reopened_ack_boundaries\":[{}],\"snapshot\":{},\"referenced_segments_complete\":{},\"public_versions\":[{}],\"inventory\":[{}],\"inventory_digest\":\"{}\",\"artifacts\":[{artifacts}]}}",
+        base.bootstrap_document_count,
+        storage_wal_ack_boundaries_json(&base.reopened_ack_boundaries),
+        storage_snapshot_json(&base.snapshot),
+        base.referenced_segments_complete,
+        storage_versions_json(&base.public_versions),
+        storage_file_facts_json(&base.inventory),
+        evidence_hex(&base.inventory_digest),
+    );
+    let forks = episode
+        .operation_fixtures()
+        .iter()
+        .map(|fixture| {
+            let traversal = fixture
+                .evidence
+                .traversal
+                .iter()
+                .map(|path| format!("\"{}\"", json_escape(path)))
+                .collect::<Vec<_>>()
+                .join(",");
+            let artifacts = fixture
+                .evidence
+                .destination_artifacts
+                .iter()
+                .map(storage_artifact_evidence_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"operation\":\"{}\",\"traversal\":[{traversal}],\"source_inventory\":[{}],\"destination_inventory\":[{}],\"source_digest\":\"{}\",\"destination_digest\":\"{}\",\"destination_artifacts\":[{artifacts}]}}",
+                fixture.evidence.operation.key(),
+                storage_file_facts_json(&fixture.evidence.source_inventory),
+                storage_file_facts_json(&fixture.evidence.destination_inventory),
+                evidence_hex(&fixture.evidence.source_digest),
+                evidence_hex(&fixture.evidence.destination_digest),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("\"episode_base\":{base_json},\"operation_forks\":[{forks}]")
+}
+
+const fn storage_retained_operation_kind(
+    operation: super::campaign::StorageOperation,
+) -> storage_adapter::StorageOperationKind {
+    match operation {
+        super::campaign::StorageOperation::WalPrefix => {
+            storage_adapter::StorageOperationKind::WalPrefix
+        }
+        super::campaign::StorageOperation::Publication => {
+            storage_adapter::StorageOperationKind::Publication
+        }
+        super::campaign::StorageOperation::Retry => storage_adapter::StorageOperationKind::Retry,
+        super::campaign::StorageOperation::FormatCheck => {
+            storage_adapter::StorageOperationKind::FormatCheck
+        }
+        super::campaign::StorageOperation::OrphanCleanup => {
+            storage_adapter::StorageOperationKind::OrphanCleanup
+        }
+    }
+}
+
+fn storage_retained_format_case(
+    operation: super::campaign::StorageOperation,
+    seed: u64,
+    fault: Option<storage_adapter::StorageFaultKind>,
+) -> Option<storage_oracle::FormatCase> {
+    match operation {
+        super::campaign::StorageOperation::WalPrefix => match fault {
+            Some(storage_adapter::StorageFaultKind::TornWalHeader) => {
+                Some(storage_oracle::FormatCase::WalHeader)
+            }
+            Some(storage_adapter::StorageFaultKind::TornWalBody) => {
+                Some(storage_oracle::FormatCase::WalRecordBody)
+            }
+            Some(storage_adapter::StorageFaultKind::TornWalChecksum) => {
+                Some(storage_oracle::FormatCase::WalRecordChecksum)
+            }
+            _ => None,
+        },
+        super::campaign::StorageOperation::FormatCheck => Some(match fault {
+            Some(storage_adapter::StorageFaultKind::CorruptSegmentRegion) => {
+                storage_oracle::FormatCase::SegmentRegion
+            }
+            Some(storage_adapter::StorageFaultKind::WrongManifestObject) => {
+                storage_oracle::FormatCase::ManifestWrongFamily
+            }
+            Some(storage_adapter::StorageFaultKind::WrongSegmentObject) if seed & 1 == 1 => {
+                storage_oracle::FormatCase::SegmentWrongIdentity
+            }
+            Some(storage_adapter::StorageFaultKind::WrongSegmentObject) => {
+                storage_oracle::FormatCase::SegmentWrongFamily
+            }
+            None => match seed % 4 {
+                0 => storage_oracle::FormatCase::SegmentRegion,
+                1 => storage_oracle::FormatCase::ManifestWrongFamily,
+                2 => storage_oracle::FormatCase::SegmentWrongFamily,
+                _ => storage_oracle::FormatCase::SegmentWrongIdentity,
+            },
+            Some(_) => return None,
+        }),
+        super::campaign::StorageOperation::Publication
+        | super::campaign::StorageOperation::Retry
+        | super::campaign::StorageOperation::OrphanCleanup => None,
+    }
+}
+
+fn storage_retained_omission_case(
+    operation: super::campaign::StorageOperation,
+    seed: u64,
+    profile: FaultProfile,
+    fault: Option<storage_adapter::StorageFaultKind>,
+) -> Result<Option<storage_oracle::OmissionCase>, String> {
+    if operation != super::campaign::StorageOperation::OrphanCleanup
+        || fault != Some(storage_adapter::StorageFaultKind::ListDeleteOmission)
+    {
+        return Ok(None);
+    }
+    let profile_ordinal = FaultProfile::DEFAULTS
+        .iter()
+        .position(|candidate| *candidate == profile)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
+        .ok_or_else(|| "storage profile ordinal is absent".to_owned())?;
+    Ok(Some(storage_adapter::omission_case_for_schedule(
+        seed,
+        profile_ordinal,
+    )))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "retained storage identity includes its exact operation, fault, and subcase"
+)]
+fn record_storage_retained_fixture(
+    fixture: &storage_oracle::StorageFixtureV1,
+    operation: super::campaign::StorageOperation,
+    op_index: u32,
+    fault: Option<storage_adapter::StorageFaultKind>,
+    format_case: Option<storage_oracle::FormatCase>,
+    omission_case: Option<storage_oracle::OmissionCase>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+) -> Result<(), String> {
+    let retained = storage_adapter::RetainedStorageOperationV1::new(
+        fixture.clone(),
+        storage_retained_operation_kind(operation),
+        op_index,
+        fault,
+        format_case,
+        omission_case,
+    )?;
+    let retained = storage_adapter::encode_storage_fixture(&retained)?;
+    let records = family_artifact_records
+        .get_mut("storage-fixture.json")
+        .ok_or_else(|| "storage fixture artifact stream is absent".to_owned())?;
+    let record = records
+        .first_mut()
+        .ok_or_else(|| "storage fixture base record is absent".to_owned())?;
+    let mut fixture_json: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_str(record)
+            .map_err(|error| format!("parse storage fixture artifact: {error}"))?;
+    let operations = fixture_json["retained_operations"]
+        .as_array_mut()
+        .ok_or_else(|| "storage fixture retained_operations is absent".to_owned())?;
+    let retained_hex = evidence_hex(&retained);
+    if operations
+        .iter()
+        .any(|entry| entry["retained_fixture_hex"].as_str() == Some(retained_hex.as_str()))
+    {
+        return Err(format!(
+            "storage fixture retained operation {} with the same fault/subcase was recorded twice",
+            operation.key()
+        ));
+    }
+    operations.push(zeppelin_embed_bench::harness_json::json!({
+        "schema": storage_adapter::STORAGE_RETAINED_FIXTURE_SCHEMA,
+        "operation": operation.key(),
+        "op_index": op_index,
+        "retained_fixture_hex": retained_hex,
+    }));
+    *record = fixture_json.to_string();
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared adapter boundary carries every replay evidence stream"
+)]
+fn run_storage_campaign_operation(
+    operation: super::campaign::StorageOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    episode: &storage_adapter::StorageEpisodeFixtures,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    for name in super::artifacts::STORAGE_REPLAY_ARTIFACTS {
+        family_artifact_records.entry(name).or_default();
+    }
+    let fixture = storage_oracle::StorageFixtureV1::derive(seed);
+    let eligible_orphans = fixture
+        .eligible_orphans
+        .iter()
+        .map(|path| format!("\"{}\"", json_escape(path)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let preserved_files = fixture
+        .preserved_files
+        .iter()
+        .map(|path| format!("\"{}\"", json_escape(path)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let documents = fixture
+        .documents
+        .iter()
+        .map(storage_fixture_document_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mutations = fixture
+        .mutations
+        .iter()
+        .map(storage_fixture_mutation_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let episode_fixture = storage_episode_fixture_json(episode);
+    let fixture_record = format!(
+        "{{\"campaign\":\"storage-durability\",\"namespace\":\"{}\",\"seed\":{seed},\"durability\":\"{}\",\"commit_tier\":\"{}\",\"dimensions\":{},\"scheme\":{},\"documents\":[{documents}],\"mutations\":[{mutations}],\"old_generation\":{},\"planned_new_generation\":{},\"absorbed_through\":{},\"wal_mutation_offset\":{},\"segment_region_kind\":{},\"segment_chunk\":{},\"segment_byte\":{},\"omission_is_delete\":{},\"eligible_orphans\":[{eligible_orphans}],\"preserved_files\":[{preserved_files}],\"clean_fault_pair_id\":\"{}\",\"operation_fixture_id\":\"{}\",\"retained_operations\":[],{episode_fixture}}}",
+        json_escape(fixture.namespace),
+        json_escape(fixture.durability),
+        json_escape(fixture.commit_tier),
+        fixture.dimensions,
+        fixture.scheme,
+        fixture.old_generation,
+        fixture.planned_new_generation,
+        fixture.absorbed_through,
+        fixture.wal_mutation_offset,
+        fixture.segment_region_kind,
+        fixture.segment_chunk,
+        fixture.segment_byte,
+        fixture.omission_is_delete,
+        evidence_hex(&fixture.clean_fault_pair_id),
+        evidence_hex(&fixture.operation_fixture_id),
+    );
+    let fixture_records = family_artifact_records
+        .get_mut("storage-fixture.json")
+        .ok_or_else(|| "storage fixture artifact stream is absent".to_owned())?;
+    match fixture_records.as_slice() {
+        [] => fixture_records.push(fixture_record),
+        [existing] => {
+            let mut existing: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(existing)
+                    .map_err(|error| format!("parse existing storage fixture: {error}"))?;
+            existing["retained_operations"] = zeppelin_embed_bench::harness_json::json!([]);
+            let expected: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(&fixture_record)
+                    .map_err(|error| format!("parse expected storage fixture: {error}"))?;
+            if existing != expected {
+                return Err("storage fixture artifact changed within one episode".to_owned());
+            }
+        }
+        _ => return Err("storage fixture artifact changed within one episode".to_owned()),
+    }
+    let op_index_u32 =
+        u32::try_from(op_index).map_err(|_| "storage operation index exceeds u32".to_owned())?;
+    let matching_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|fault| fault.operation() == super::campaign::FeatureOperation::Storage(operation))
+        .map(storage_fault_kind)
+        .map(|fault| fault.map(Some))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if matching_faults.is_empty() {
+        vec![None]
+    } else {
+        matching_faults
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let format_case = storage_retained_format_case(operation, seed, fault);
+        let omission_case = storage_retained_omission_case(operation, seed, profile, fault)?;
+        record_storage_retained_fixture(
+            &fixture,
+            operation,
+            op_index_u32,
+            fault,
+            format_case,
+            omission_case,
+            family_artifact_records,
+        )?;
+        match operation {
+            super::campaign::StorageOperation::WalPrefix => {
+                let evidence =
+                    storage_adapter::observe_wal_prefix_from_episode(episode, op_index_u32, fault)?;
+                let has_i18_projection = matches!(
+                    fault,
+                    Some(
+                        storage_adapter::StorageFaultKind::TornWalHeader
+                            | storage_adapter::StorageFaultKind::TornWalBody
+                            | storage_adapter::StorageFaultKind::TornWalChecksum
+                    )
+                );
+                record_storage_evidence(
+                    16,
+                    storage_oracle::I16_CHECKER_ID,
+                    operation.key(),
+                    &evidence.expected,
+                    &evidence.observed,
+                    storage_oracle::check_i16(&evidence.expected, &evidence.observed),
+                    evidence.receipt_expected.as_ref(),
+                    evidence.receipt_observed.as_ref(),
+                    evidence.receipt.clone(),
+                    &evidence.control,
+                    &evidence.mutation,
+                    &evidence.evidence,
+                    storage_wal_prefix_expected_json(&evidence.expected),
+                    storage_wal_prefix_observed_json(&evidence.observed),
+                    storage_ack_detail_json(&evidence.ack_ledger),
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records,
+                    control_records,
+                    mutation_records,
+                    family_artifact_records,
+                    coverage,
+                    &mut receipts,
+                )?;
+                if has_i18_projection {
+                    record_storage_wal_i18_projection(
+                        &evidence,
+                        seed,
+                        profile,
+                        op_index,
+                        oracle_records,
+                        family_artifact_records,
+                        coverage,
+                    )?;
+                }
+            }
+            super::campaign::StorageOperation::Publication => {
+                #[cfg(unix)]
+                let evidence = storage_adapter::observe_publication_from_episode(
+                    episode,
+                    op_index_u32,
+                    fault,
+                    storage_adapter::PUBLICATION_CHILD_TEST_NAME,
+                )?;
+                #[cfg(not(unix))]
+                return Err("storage publication crash adapter requires Unix".to_owned());
+                #[cfg(unix)]
+                {
+                    if evidence.child.is_some() {
+                        coverage.hit("op.crash");
+                    }
+                    record_storage_evidence(
+                        15,
+                        storage_oracle::I15_CHECKER_ID,
+                        operation.key(),
+                        &evidence.expected,
+                        &evidence.observed,
+                        storage_oracle::check_i15(&evidence.expected, &evidence.observed),
+                        evidence.receipt_expected.as_ref(),
+                        evidence.receipt_observed.as_ref(),
+                        evidence.receipt,
+                        &evidence.control,
+                        &evidence.mutation,
+                        &evidence.evidence,
+                        storage_publication_expected_json(&evidence.expected),
+                        storage_publication_observed_json(&evidence.observed),
+                        storage_child_detail_json(evidence.child.as_ref()),
+                        seed,
+                        profile,
+                        op_index,
+                        oracle_records,
+                        control_records,
+                        mutation_records,
+                        family_artifact_records,
+                        coverage,
+                        &mut receipts,
+                    )?;
+                }
+            }
+            super::campaign::StorageOperation::Retry => {
+                let evidence =
+                    storage_adapter::observe_retry_from_episode(episode, op_index_u32, fault)?;
+                record_storage_evidence(
+                    17,
+                    storage_oracle::I17_CHECKER_ID,
+                    operation.key(),
+                    &evidence.expected,
+                    &evidence.observed,
+                    storage_oracle::check_i17(&evidence.expected, &evidence.observed),
+                    evidence.receipt_expected.as_ref(),
+                    evidence.receipt_observed.as_ref(),
+                    evidence.receipt,
+                    &evidence.control,
+                    &evidence.mutation,
+                    &evidence.evidence,
+                    storage_retry_expected_json(&evidence.expected),
+                    storage_retry_observed_json(&evidence.observed),
+                    "{\"kind\":\"retry\"}".to_owned(),
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records,
+                    control_records,
+                    mutation_records,
+                    family_artifact_records,
+                    coverage,
+                    &mut receipts,
+                )?;
+            }
+            super::campaign::StorageOperation::FormatCheck => {
+                let evidence =
+                    storage_adapter::observe_format_from_episode(episode, op_index_u32, fault)?;
+                let format_case = evidence.expected.case;
+                let passed = record_storage_evidence(
+                    18,
+                    storage_oracle::I18_CHECKER_ID,
+                    operation.key(),
+                    &evidence.expected,
+                    &evidence.observed,
+                    storage_oracle::check_i18(&evidence.expected, &evidence.observed),
+                    evidence.receipt_expected.as_ref(),
+                    evidence.receipt_observed.as_ref(),
+                    evidence.receipt,
+                    &evidence.control,
+                    &evidence.mutation,
+                    &evidence.evidence,
+                    storage_format_expected_json(&evidence.expected),
+                    storage_format_observed_json(&evidence.observed),
+                    "{\"kind\":\"format-check\"}".to_owned(),
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records,
+                    control_records,
+                    mutation_records,
+                    family_artifact_records,
+                    coverage,
+                    &mut receipts,
+                )?;
+                if passed {
+                    coverage.hit(format!(
+                        "storage.format-case.{}",
+                        storage_format_case_key(format_case)
+                    ));
+                }
+            }
+            super::campaign::StorageOperation::OrphanCleanup => {
+                let evidence =
+                    if fault == Some(storage_adapter::StorageFaultKind::ListDeleteOmission) {
+                        let profile_ordinal = FaultProfile::DEFAULTS
+                            .iter()
+                            .position(|candidate| *candidate == profile)
+                            .and_then(|ordinal| u32::try_from(ordinal).ok())
+                            .ok_or_else(|| "storage profile ordinal is absent".to_owned())?;
+                        let omission_case =
+                            storage_adapter::omission_case_for_schedule(seed, profile_ordinal);
+                        storage_adapter::observe_reachability_case_from_episode(
+                            episode,
+                            op_index_u32,
+                            Some(omission_case),
+                        )?
+                    } else {
+                        storage_adapter::observe_reachability_from_episode(
+                            episode,
+                            op_index_u32,
+                            fault,
+                        )?
+                    };
+                let omission_case = storage_omission_case_key(&evidence)?;
+                let passed = record_storage_evidence(
+                    19,
+                    storage_oracle::I19_CHECKER_ID,
+                    operation.key(),
+                    &evidence.expected,
+                    &evidence.observed,
+                    storage_oracle::check_i19(&evidence.expected, &evidence.observed),
+                    evidence.receipt_expected.as_ref(),
+                    evidence.receipt_observed.as_ref(),
+                    evidence.receipt,
+                    &evidence.control,
+                    &evidence.mutation,
+                    &evidence.evidence,
+                    storage_reachability_expected_json(&evidence.expected),
+                    storage_reachability_observed_json(&evidence.observed),
+                    storage_omission_detail_json(evidence.omission.as_ref()),
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records,
+                    control_records,
+                    mutation_records,
+                    family_artifact_records,
+                    coverage,
+                    &mut receipts,
+                )?;
+                if passed && let Some(case) = omission_case {
+                    coverage.hit(case);
+                }
+            }
+        }
+        coverage.hit("op.ingest");
+    }
+    Ok(receipts)
+}
+
+fn metadata_operation_kind(
+    operation: super::campaign::MetadataOperation,
+) -> metadata_adapter::MetadataOperationKind {
+    match operation {
+        super::campaign::MetadataOperation::Columns => {
+            metadata_adapter::MetadataOperationKind::Columns
+        }
+        super::campaign::MetadataOperation::Bitmap => {
+            metadata_adapter::MetadataOperationKind::Bitmap
+        }
+        super::campaign::MetadataOperation::Planner => {
+            metadata_adapter::MetadataOperationKind::Planner
+        }
+        super::campaign::MetadataOperation::Execution => {
+            metadata_adapter::MetadataOperationKind::Execution
+        }
+    }
+}
+
+fn metadata_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<metadata_adapter::MetadataFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::MetadataColumnCorruption => {
+            Ok(metadata_adapter::MetadataFaultKind::ColumnCorruption)
+        }
+        super::campaign::FeatureFault::MetadataBitmapTruncation => {
+            Ok(metadata_adapter::MetadataFaultKind::BitmapTruncation)
+        }
+        super::campaign::FeatureFault::MetadataSelectivityBoundary => {
+            Ok(metadata_adapter::MetadataFaultKind::SelectivityBoundary)
+        }
+        super::campaign::FeatureFault::MetadataVisitedBudgetFallback => {
+            Ok(metadata_adapter::MetadataFaultKind::VisitedBudgetFallback)
+        }
+        other => Err(format!(
+            "metadata operation received unrelated fault {}",
+            other.key()
+        )),
+    }
+}
+
+fn metadata_source_label(source: RowSource) -> String {
+    match source {
+        RowSource::Active => "active".to_owned(),
+        RowSource::Sealed(id) => format!("sealed-{}", id.file_name()),
+    }
+}
+
+fn metadata_provenance_matches(
+    expected: &metadata_adapter::MetadataProvenanceExpected,
+    observed: &MetadataDecodeProvenance,
+) -> bool {
+    match (expected, observed) {
+        (
+            metadata_adapter::MetadataProvenanceExpected::ColumnsPresenceTail {
+                column_id: expected_column,
+                row_count: expected_rows,
+                byte_offset: expected_offset,
+                observed_byte: expected_byte,
+                allowed_mask: expected_mask,
+            },
+            MetadataDecodeProvenance::ColumnsPresenceTail {
+                column_id,
+                row_count,
+                byte_offset,
+                observed_byte,
+                allowed_mask,
+            },
+        ) => {
+            expected_column == column_id
+                && expected_rows == row_count
+                && expected_offset == byte_offset
+                && expected_byte == observed_byte
+                && expected_mask == allowed_mask
+        }
+        (
+            metadata_adapter::MetadataProvenanceExpected::ColumnsDictionaryCode {
+                column_id: expected_column,
+                row: expected_row,
+                byte_offset: expected_offset,
+                code: expected_code,
+                dictionary_len: expected_len,
+            },
+            MetadataDecodeProvenance::ColumnsDictionaryCode {
+                column_id,
+                row,
+                byte_offset,
+                code,
+                dictionary_cardinality,
+            },
+        ) => {
+            expected_column == column_id
+                && expected_row == row
+                && expected_offset == byte_offset
+                && expected_code == code
+                && expected_len == dictionary_cardinality
+        }
+        (
+            metadata_adapter::MetadataProvenanceExpected::ColumnsRawStringLength {
+                column_id: expected_column,
+                row: expected_row,
+                byte_offset: expected_offset,
+                declared_bytes: expected_declared,
+                available_bytes: expected_available,
+            },
+            MetadataDecodeProvenance::ColumnsRawStringLength {
+                column_id,
+                row,
+                byte_offset,
+                declared_bytes,
+                available_bytes,
+            },
+        ) => {
+            expected_column == column_id
+                && expected_row == row
+                && expected_offset == byte_offset
+                && expected_declared == declared_bytes
+                && expected_available == available_bytes
+        }
+        (
+            metadata_adapter::MetadataProvenanceExpected::AliveBitmapTruncation {
+                row_count: expected_rows,
+                byte_offset: expected_offset,
+                declared_bytes: expected_declared,
+                observed_bytes: expected_observed,
+            },
+            MetadataDecodeProvenance::AliveBitmapTruncation {
+                row_count,
+                byte_offset,
+                declared_bytes,
+                observed_bytes,
+            },
+        ) => {
+            expected_rows == row_count
+                && expected_offset == byte_offset
+                && expected_declared == declared_bytes
+                && expected_observed == observed_bytes
+        }
+        _ => false,
+    }
+}
+
+fn metadata_branch_dto(
+    branch: SegmentBranch,
+) -> Result<metadata_oracle::ExecutionBranchDto, String> {
+    match branch {
+        SegmentBranch::Pruned => Ok(metadata_oracle::ExecutionBranchDto::Pruned),
+        SegmentBranch::ExactAllowList => Ok(metadata_oracle::ExecutionBranchDto::ExactAllowList),
+        SegmentBranch::MaskedScan => Ok(metadata_oracle::ExecutionBranchDto::MaskedScan),
+        SegmentBranch::FilteredGraph => Ok(metadata_oracle::ExecutionBranchDto::FilteredGraph),
+        SegmentBranch::GraphExactFallback => {
+            Ok(metadata_oracle::ExecutionBranchDto::GraphExactFallback)
+        }
+        SegmentBranch::Graph => {
+            Err("unfiltered Graph branch cannot satisfy a metadata feature receipt".to_owned())
+        }
+    }
+}
+
+fn metadata_fallback_dto(fallback: PlanFallback) -> metadata_oracle::FallbackReasonDto {
+    match fallback {
+        PlanFallback::None => metadata_oracle::FallbackReasonDto::None,
+        PlanFallback::VisitedBudget => metadata_oracle::FallbackReasonDto::VisitedBudget,
+        PlanFallback::EfWidened => metadata_oracle::FallbackReasonDto::EfWidened,
+        PlanFallback::CandidateShortfall => metadata_oracle::FallbackReasonDto::CandidateShortfall,
+    }
+}
+
+fn validate_metadata_origin(
+    query_id: u64,
+    operation: &str,
+    fault: &str,
+    site: &str,
+    cardinality: u64,
+    effect: &str,
+    receipt: &MetadataFeatureReceipt,
+) -> Result<(), String> {
+    let origin = &receipt.origin;
+    let matches = receipt.query_id == query_id
+        && origin.campaign() == "metadata-filter-planner"
+        && origin.operation() == operation
+        && origin.fault() == fault
+        && origin.site() == site
+        && u64::from(origin.cardinality()) == cardinality
+        && origin.effect() == effect;
+    if matches {
+        Ok(())
+    } else {
+        Err(format!(
+            "metadata feature receipt origin mismatch: expected query={query_id} campaign=metadata-filter-planner operation={operation} fault={fault} site={site} cardinality={cardinality} effect={effect:?}, observed query={} campaign={} operation={} fault={} site={} cardinality={} effect={:?}",
+            receipt.query_id,
+            origin.campaign(),
+            origin.operation(),
+            origin.fault(),
+            origin.site(),
+            origin.cardinality(),
+            origin.effect(),
+        ))
+    }
+}
+
+fn validate_metadata_feature_receipts(
+    expected: &[metadata_adapter::MetadataFeatureExpected],
+    observed: &[MetadataFeatureReceipt],
+    control: &metadata_adapter::MetadataControlEvidence,
+) -> Result<(), String> {
+    if expected.len() != observed.len() {
+        return Err(format!(
+            "metadata feature receipt cardinality mismatch: expected {}, observed {}",
+            expected.len(),
+            observed.len()
+        ));
+    }
+    let observed_fault_results = u64::try_from(control.fault_results.len())
+        .map_err(|_| "metadata fault result count exceeds u64".to_owned())?;
+    for (index, (expected, observed)) in expected.iter().zip(observed).enumerate() {
+        let detail_matches = match (expected, &observed.detail) {
+            (
+                metadata_adapter::MetadataFeatureExpected::ColumnDecodeRefused {
+                    query_id,
+                    source,
+                    operation,
+                    fault,
+                    site,
+                    cardinality,
+                    field_class,
+                    byte_offset,
+                    error_class,
+                    effect,
+                    provenance,
+                    expected_results,
+                },
+                MetadataFeatureDetail::ColumnDecodeRefused {
+                    source: observed_source,
+                    field_class: observed_class,
+                    byte_offset: observed_offset,
+                    error_class: observed_error,
+                    provenance: observed_provenance,
+                },
+            ) => {
+                validate_metadata_origin(
+                    *query_id,
+                    operation,
+                    fault,
+                    site,
+                    *cardinality,
+                    effect,
+                    observed,
+                )?;
+                source == &metadata_source_label(*observed_source)
+                    && field_class == observed_class
+                    && byte_offset == observed_offset
+                    && error_class == observed_error
+                    && metadata_provenance_matches(provenance, observed_provenance)
+                    && *expected_results == observed_fault_results
+            }
+            (
+                metadata_adapter::MetadataFeatureExpected::AliveBitmapTruncationRefused {
+                    query_id,
+                    source,
+                    operation,
+                    fault,
+                    site,
+                    cardinality,
+                    declared_rows,
+                    byte_offset,
+                    declared_bytes,
+                    observed_bytes,
+                    error_class,
+                    effect,
+                    provenance,
+                    expected_results,
+                },
+                MetadataFeatureDetail::AliveBitmapTruncationRefused {
+                    source: observed_source,
+                    declared_rows: observed_rows,
+                    declared_bytes: observed_declared,
+                    observed_bytes: actual_observed,
+                    byte_offset: observed_offset,
+                    error_class: observed_error,
+                    provenance: observed_provenance,
+                },
+            ) => {
+                validate_metadata_origin(
+                    *query_id,
+                    operation,
+                    fault,
+                    site,
+                    *cardinality,
+                    effect,
+                    observed,
+                )?;
+                source == &metadata_source_label(*observed_source)
+                    && declared_rows == observed_rows
+                    && byte_offset == observed_offset
+                    && declared_bytes == observed_declared
+                    && observed_bytes == actual_observed
+                    && error_class == observed_error
+                    && metadata_provenance_matches(provenance, observed_provenance)
+                    && *expected_results == observed_fault_results
+            }
+            (
+                metadata_adapter::MetadataFeatureExpected::SelectivityBoundaryChosen {
+                    query_id,
+                    source,
+                    operation,
+                    fault,
+                    site,
+                    cardinality,
+                    filter_cardinality,
+                    threshold,
+                    branch,
+                    effect,
+                },
+                MetadataFeatureDetail::SelectivityBoundaryChosen {
+                    source: observed_source,
+                    cardinality: observed_cardinality,
+                    threshold: observed_threshold,
+                    branch: observed_branch,
+                },
+            ) => {
+                validate_metadata_origin(
+                    *query_id,
+                    operation,
+                    fault,
+                    site,
+                    *cardinality,
+                    effect,
+                    observed,
+                )?;
+                source == &metadata_source_label(*observed_source)
+                    && filter_cardinality == observed_cardinality
+                    && threshold == observed_threshold
+                    && *branch == metadata_branch_dto(*observed_branch)?
+            }
+            (
+                metadata_adapter::MetadataFeatureExpected::VisitedBudgetFallback {
+                    query_id,
+                    source,
+                    operation,
+                    fault,
+                    site,
+                    cardinality,
+                    visited,
+                    budget,
+                    filter_cardinality,
+                    exact_rows_examined,
+                    returned,
+                    reason,
+                    effect,
+                },
+                MetadataFeatureDetail::VisitedBudgetFallback {
+                    source: observed_source,
+                    visited: observed_visited,
+                    budget: observed_budget,
+                    filter_cardinality: observed_filter,
+                    exact_rows_examined: observed_exact,
+                    returned: observed_returned,
+                    reason: observed_reason,
+                },
+            ) => {
+                validate_metadata_origin(
+                    *query_id,
+                    operation,
+                    fault,
+                    site,
+                    *cardinality,
+                    effect,
+                    observed,
+                )?;
+                source == &metadata_source_label(*observed_source)
+                    && *visited
+                        == u64::try_from(*observed_visited)
+                            .map_err(|_| "metadata visited count exceeds u64".to_owned())?
+                    && *budget
+                        == u64::try_from(*observed_budget)
+                            .map_err(|_| "metadata visited budget exceeds u64".to_owned())?
+                    && filter_cardinality == observed_filter
+                    && exact_rows_examined == observed_exact
+                    && returned == observed_returned
+                    && *reason == metadata_fallback_dto(*observed_reason)
+            }
+            _ => false,
+        };
+        if !detail_matches {
+            return Err(format!(
+                "metadata feature receipt {index} guard/effect mismatch: expected {expected:?}, observed {observed:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one metadata comparison owns all exact replay evidence streams"
+)]
+fn record_metadata_predicate_coverage(
+    predicate: &metadata_oracle::PredicateDto,
+    coverage: &mut CoverageRegistry,
+) {
+    match predicate {
+        metadata_oracle::PredicateDto::Eq { .. } => coverage.hit("metadata.predicate.eq"),
+        metadata_oracle::PredicateDto::In { .. } => coverage.hit("metadata.predicate.in"),
+        metadata_oracle::PredicateDto::Range { .. } => coverage.hit("metadata.predicate.range"),
+        metadata_oracle::PredicateDto::Exists(_) => coverage.hit("metadata.predicate.exists"),
+        metadata_oracle::PredicateDto::IsNull(_) => coverage.hit("metadata.predicate.is-null"),
+        metadata_oracle::PredicateDto::And(children) => {
+            coverage.hit("metadata.predicate.and");
+            for child in children {
+                record_metadata_predicate_coverage(child, coverage);
+            }
+        }
+        metadata_oracle::PredicateDto::Or(children) => {
+            coverage.hit("metadata.predicate.or");
+            for child in children {
+                record_metadata_predicate_coverage(child, coverage);
+            }
+        }
+        metadata_oracle::PredicateDto::Not(child) => {
+            coverage.hit("metadata.predicate.not");
+            record_metadata_predicate_coverage(child, coverage);
+        }
+    }
+}
+
+fn record_metadata_i39_coverage(
+    receipts: &[MetadataExecutionReceipt],
+    coverage: &mut CoverageRegistry,
+) {
+    for receipt in receipts {
+        let branch = match receipt.branch {
+            SegmentBranch::Pruned => "pruned",
+            SegmentBranch::ExactAllowList => "exact-allow-list",
+            SegmentBranch::MaskedScan => "masked-scan",
+            SegmentBranch::FilteredGraph => "filtered-graph",
+            SegmentBranch::GraphExactFallback => "graph-exact-fallback",
+            SegmentBranch::Graph => continue,
+        };
+        coverage.hit(format!("metadata.i39.branch.{branch}"));
+        let fallback = match receipt.fallback {
+            PlanFallback::None => Some("none"),
+            PlanFallback::VisitedBudget => Some("visited-budget"),
+            PlanFallback::CandidateShortfall => Some("candidate-shortfall"),
+            PlanFallback::EfWidened => None,
+        };
+        if let Some(fallback) = fallback {
+            coverage.hit(format!("metadata.i39.fallback.{fallback}"));
+        }
+    }
+}
+
+fn record_metadata_family_coverage(
+    evidence: &metadata_adapter::MetadataOperationEvidence,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    if evidence.control.clean_initial_directory != evidence.control.fault_initial_directory {
+        return Err("metadata same-seed fixture directories are not byte-identical".to_owned());
+    }
+    coverage.hit("metadata.control.byte-identical");
+    for query in &evidence.queries {
+        record_metadata_predicate_coverage(&query.predicate, coverage);
+    }
+
+    let mut column_receipts = 0_usize;
+    let mut bitmap_receipts = 0_usize;
+    let mut selectivity_receipts = 0_usize;
+    let mut visited_receipts = 0_usize;
+    for receipt in &evidence.feature_receipts {
+        match &receipt.detail {
+            MetadataFeatureDetail::ColumnDecodeRefused { provenance, .. } => {
+                column_receipts = column_receipts.saturating_add(1);
+                let class = match provenance {
+                    zeppelin_embed::segment::MetadataDecodeProvenance::ColumnsPresenceTail {
+                        ..
+                    } => "presence-tail",
+                    zeppelin_embed::segment::MetadataDecodeProvenance::ColumnsDictionaryCode {
+                        ..
+                    } => "dictionary-code",
+                    zeppelin_embed::segment::MetadataDecodeProvenance::ColumnsRawStringLength {
+                        ..
+                    } => "raw-string-length",
+                    zeppelin_embed::segment::MetadataDecodeProvenance::AliveBitmapTruncation {
+                        ..
+                    } => {
+                        return Err(
+                            "metadata column refusal used Alive bitmap provenance".to_owned()
+                        );
+                    }
+                };
+                coverage.hit(format!("metadata.mutation.columns.{class}"));
+            }
+            MetadataFeatureDetail::AliveBitmapTruncationRefused { .. } => {
+                bitmap_receipts = bitmap_receipts.saturating_add(1);
+            }
+            MetadataFeatureDetail::SelectivityBoundaryChosen { .. } => {
+                selectivity_receipts = selectivity_receipts.saturating_add(1);
+            }
+            MetadataFeatureDetail::VisitedBudgetFallback { .. } => {
+                visited_receipts = visited_receipts.saturating_add(1);
+            }
+        }
+    }
+    if column_receipts == 1 {
+        coverage.hit("metadata.receipt.column-corruption.cardinality-one");
+    }
+    if bitmap_receipts == 1 {
+        coverage.hit("metadata.receipt.bitmap-truncation.cardinality-one");
+    }
+    if selectivity_receipts == 2 {
+        coverage.hit("metadata.receipt.selectivity-boundary.cardinality-two");
+    }
+    if visited_receipts == 1 {
+        coverage.hit("metadata.receipt.visited-budget.cardinality-one");
+    }
+
+    match &evidence.invariant {
+        metadata_adapter::MetadataInvariantEvidence::I38 { input, observed } => {
+            match &input.predicate {
+                metadata_oracle::PredicateDto::Eq { .. } => {
+                    coverage.hit("metadata.i38.predicate.eq");
+                }
+                metadata_oracle::PredicateDto::Range {
+                    lower: Some(lower), ..
+                } if lower.inclusive => {
+                    coverage.hit("metadata.i38.predicate.range-inclusive");
+                }
+                metadata_oracle::PredicateDto::Range { lower: Some(_), .. } => {
+                    coverage.hit("metadata.i38.predicate.range-exclusive-lower");
+                }
+                _ => {}
+            }
+            if input.sources.iter().any(|source| !source.sealed) {
+                coverage.hit("metadata.i38.source.active");
+            }
+            if input.sources.iter().filter(|source| source.sealed).count() >= 3 {
+                coverage.hit("metadata.i38.source.sealed-three-plus");
+            }
+            if input.sources.iter().any(|source| {
+                source.sealed && source.range == metadata_oracle::SourceRangeDto::Empty
+            }) {
+                coverage.hit("metadata.i38.source.empty");
+            }
+            if input.sources.iter().any(|source| {
+                source.sealed && source.range == metadata_oracle::SourceRangeDto::Unstamped
+            }) {
+                coverage.hit("metadata.i38.source.missing-bounds");
+            }
+            if input.expected_delete_records > 0
+                && input.expected_delete_records == observed.wal_delete_records
+            {
+                coverage.hit("metadata.i38.source.public-delete-wal");
+            }
+            let sources = input
+                .rows
+                .iter()
+                .map(|row| row.source.as_str())
+                .collect::<BTreeSet<_>>();
+            if sources.iter().any(|source| {
+                source.starts_with("sealed-")
+                    && !input
+                        .live
+                        .iter()
+                        .any(|(live_source, _)| live_source == source)
+            }) {
+                coverage.hit("metadata.i38.source.all-tombstoned");
+            }
+        }
+        metadata_adapter::MetadataInvariantEvidence::I39 { .. } => {
+            record_metadata_i39_coverage(&evidence.execution_receipts, coverage);
+        }
+        metadata_adapter::MetadataInvariantEvidence::I37 { .. } => {
+            coverage.hit(format!(
+                "metadata.i37.matrix.{}",
+                metadata_adapter::i37_predicate_case_key(evidence.control.seed)
+            ));
+        }
+        metadata_adapter::MetadataInvariantEvidence::I36 { .. } => {}
+    }
+    Ok(())
+}
+
+fn metadata_region_key(region: zeppelin_embed::segment::layout::RegionKind) -> &'static str {
+    use zeppelin_embed::segment::layout::RegionKind;
+    match region {
+        RegionKind::Columns => "columns",
+        RegionKind::Alive => "alive",
+        RegionKind::VectorCodes => "vector-codes",
+        RegionKind::VectorFactors => "vector-factors",
+        RegionKind::VectorRescore => "vector-rescore",
+        RegionKind::Postings => "postings",
+        RegionKind::GraphNodeBlocks => "graph-node-blocks",
+        RegionKind::GraphColocatedCodes => "graph-colocated-codes",
+        RegionKind::SignPlane => "sign-plane",
+        RegionKind::PdxClusteredBlocks => "pdx-clustered-blocks",
+        RegionKind::ChecksumTable => "checksum-table",
+        RegionKind::DocumentVersions => "document-versions",
+        RegionKind::StoredMetadata => "stored-metadata",
+        RegionKind::StoredText => "stored-text",
+        RegionKind::VectorSpaceN => "vector-space-n",
+    }
+}
+
+fn metadata_checksum_field_json(field: &metadata_adapter::MetadataChecksumField) -> String {
+    match field {
+        metadata_adapter::MetadataChecksumField::TargetRegion { region } => format!(
+            "{{\"kind\":\"target-region\",\"region\":{{\"code\":{},\"name\":\"{}\"}}}}",
+            region.id(),
+            metadata_region_key(*region),
+        ),
+        metadata_adapter::MetadataChecksumField::TargetRegionChunk {
+            region,
+            chunk_index,
+        } => format!(
+            "{{\"kind\":\"target-region-chunk\",\"region\":{{\"code\":{},\"name\":\"{}\"}},\"chunk_index\":{chunk_index}}}",
+            region.id(),
+            metadata_region_key(*region),
+        ),
+        metadata_adapter::MetadataChecksumField::ChecksumTableRegion => {
+            "{\"kind\":\"checksum-table-region\"}".to_owned()
+        }
+        metadata_adapter::MetadataChecksumField::SegmentHeader => {
+            "{\"kind\":\"segment-header\"}".to_owned()
+        }
+        metadata_adapter::MetadataChecksumField::SegmentWholeFile => {
+            "{\"kind\":\"segment-whole-file\"}".to_owned()
+        }
+        metadata_adapter::MetadataChecksumField::GraphInternal => {
+            "{\"kind\":\"graph-internal\"}".to_owned()
+        }
+    }
+}
+
+fn metadata_mutation_json(mutation: &metadata_adapter::MetadataMutationEvidence) -> String {
+    let optional_byte =
+        |value: Option<u8>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let checksum_rewrites = mutation
+        .checksum_rewrites
+        .iter()
+        .map(|rewrite| {
+            format!(
+                "{{\"field\":{},\"absolute_offset\":{},\"before\":{},\"after\":{}}}",
+                metadata_checksum_field_json(&rewrite.field),
+                rewrite.absolute_offset,
+                rewrite.before,
+                rewrite.after,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"source\":\"{}\",\"region\":{{\"code\":{},\"name\":\"{}\"}},\"region_offset\":{},\"field_offset\":{},\"absolute_offset\":{},\"before_hex\":\"{}\",\"after_hex\":\"{}\",\"left_neighbor_before\":{},\"left_neighbor_after\":{},\"right_neighbor_before\":{},\"right_neighbor_after\":{},\"declared_bytes_before\":{},\"declared_bytes_after\":{},\"observed_bytes_after\":{},\"checksum_rewrites\":[{checksum_rewrites}],\"post_mutation_artifact_digest\":{}}}",
+        json_escape(&mutation.source),
+        mutation.region.id(),
+        metadata_region_key(mutation.region),
+        mutation.region_offset,
+        mutation.field_offset,
+        mutation.absolute_offset,
+        evidence_hex(&mutation.before),
+        evidence_hex(&mutation.after),
+        optional_byte(mutation.left_neighbor_before),
+        optional_byte(mutation.left_neighbor_after),
+        optional_byte(mutation.right_neighbor_before),
+        optional_byte(mutation.right_neighbor_after),
+        mutation.declared_bytes_before,
+        mutation.declared_bytes_after,
+        mutation.observed_bytes_after,
+        mutation.post_mutation_artifact_digest,
+    )
+}
+
+fn metadata_scalar_json(value: &metadata_oracle::ScalarCell) -> String {
+    match value {
+        metadata_oracle::ScalarCell::Null => "{\"kind\":\"null\"}".to_owned(),
+        metadata_oracle::ScalarCell::U64(value) => {
+            format!("{{\"kind\":\"u64\",\"value\":{value}}}")
+        }
+        metadata_oracle::ScalarCell::I64(value) => {
+            format!("{{\"kind\":\"i64\",\"value\":{value}}}")
+        }
+        metadata_oracle::ScalarCell::F64Bits(value) => {
+            format!("{{\"kind\":\"f64-bits\",\"value\":{value}}}")
+        }
+        metadata_oracle::ScalarCell::Bool(value) => {
+            format!("{{\"kind\":\"bool\",\"value\":{value}}}")
+        }
+        metadata_oracle::ScalarCell::Utf8(value) => format!(
+            "{{\"kind\":\"utf8\",\"bytes_hex\":\"{}\"}}",
+            evidence_hex(value)
+        ),
+    }
+}
+
+fn metadata_cells_json(cells: &BTreeMap<u32, metadata_oracle::ScalarCell>) -> String {
+    cells
+        .iter()
+        .map(|(column, value)| {
+            format!(
+                "{{\"column\":{column},\"value\":{}}}",
+                metadata_scalar_json(value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn metadata_column_kind_key(kind: metadata_oracle::ColumnKind) -> &'static str {
+    match kind {
+        metadata_oracle::ColumnKind::U64 => "u64",
+        metadata_oracle::ColumnKind::I64 => "i64",
+        metadata_oracle::ColumnKind::F64 => "f64",
+        metadata_oracle::ColumnKind::Bool => "bool",
+        metadata_oracle::ColumnKind::DictionaryString => "dictionary-string",
+        metadata_oracle::ColumnKind::RawString => "raw-string",
+    }
+}
+
+fn metadata_i36_input_json(input: &metadata_oracle::I36Input) -> String {
+    let definitions = input
+        .definitions
+        .iter()
+        .map(|definition| {
+            format!(
+                "{{\"id\":{},\"name_hex\":\"{}\",\"kind\":\"{}\",\"nullable\":{}}}",
+                definition.id,
+                evidence_hex(&definition.name),
+                metadata_column_kind_key(definition.kind),
+                definition.nullable,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let rows = input
+        .rows
+        .iter()
+        .map(|cells| format!("[{}]", metadata_cells_json(cells)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"source\":\"{}\",\"definitions\":[{definitions}],\"rows\":[{rows}]}}",
+        json_escape(&input.source),
+    )
+}
+
+fn metadata_predicate_json(predicate: &metadata_oracle::PredicateDto) -> String {
+    match predicate {
+        metadata_oracle::PredicateDto::Eq { column, value } => format!(
+            "{{\"kind\":\"eq\",\"column\":{column},\"value\":{}}}",
+            metadata_scalar_json(value)
+        ),
+        metadata_oracle::PredicateDto::In { column, values } => {
+            let values = values
+                .iter()
+                .map(metadata_scalar_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"kind\":\"in\",\"column\":{column},\"values\":[{values}]}}")
+        }
+        metadata_oracle::PredicateDto::Range {
+            column,
+            lower,
+            upper,
+        } => {
+            let bound = |bound: &Option<metadata_oracle::RangeBoundDto>| {
+                bound.as_ref().map_or_else(
+                    || "null".to_owned(),
+                    |bound| {
+                        format!(
+                            "{{\"value\":{},\"inclusive\":{}}}",
+                            metadata_scalar_json(&bound.value),
+                            bound.inclusive,
+                        )
+                    },
+                )
+            };
+            format!(
+                "{{\"kind\":\"range\",\"column\":{column},\"lower\":{},\"upper\":{}}}",
+                bound(lower),
+                bound(upper),
+            )
+        }
+        metadata_oracle::PredicateDto::Exists(column) => {
+            format!("{{\"kind\":\"exists\",\"column\":{column}}}")
+        }
+        metadata_oracle::PredicateDto::IsNull(column) => {
+            format!("{{\"kind\":\"is-null\",\"column\":{column}}}")
+        }
+        metadata_oracle::PredicateDto::And(children) => {
+            let children = children
+                .iter()
+                .map(metadata_predicate_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"kind\":\"and\",\"children\":[{children}]}}")
+        }
+        metadata_oracle::PredicateDto::Or(children) => {
+            let children = children
+                .iter()
+                .map(metadata_predicate_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"kind\":\"or\",\"children\":[{children}]}}")
+        }
+        metadata_oracle::PredicateDto::Not(child) => format!(
+            "{{\"kind\":\"not\",\"child\":{}}}",
+            metadata_predicate_json(child)
+        ),
+    }
+}
+
+fn metadata_row_json(row: &metadata_oracle::MetadataRowDto) -> String {
+    format!(
+        "{{\"row_id\":{},\"cells\":[{}]}}",
+        row.row_id,
+        metadata_cells_json(&row.cells),
+    )
+}
+
+fn metadata_i37_input_json(input: &metadata_oracle::I37Input) -> String {
+    let rows = input
+        .rows
+        .iter()
+        .map(metadata_row_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let live = input
+        .live
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let sources = input
+        .sources
+        .iter()
+        .map(|source| {
+            let rows = source
+                .rows
+                .iter()
+                .map(metadata_row_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            let live = source
+                .live
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"source\":\"{}\",\"sealed\":{},\"rows\":[{rows}],\"live\":[{live}]}}",
+                json_escape(&source.source),
+                source.sealed,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"rows\":[{rows}],\"live\":[{live}],\"predicate\":{},\"sources\":[{sources}]}}",
+        metadata_predicate_json(&input.predicate),
+    )
+}
+
+fn metadata_source_range_json(range: metadata_oracle::SourceRangeDto) -> String {
+    match range {
+        metadata_oracle::SourceRangeDto::Unstamped => "{\"kind\":\"unstamped\"}".to_owned(),
+        metadata_oracle::SourceRangeDto::Empty => "{\"kind\":\"empty\"}".to_owned(),
+        metadata_oracle::SourceRangeDto::Bounded { min, max } => {
+            format!("{{\"kind\":\"bounded\",\"min\":{min},\"max\":{max}}}")
+        }
+    }
+}
+
+fn metadata_exact_hit_json(hit: &metadata_oracle::ExactHitDto) -> String {
+    format!(
+        "{{\"source\":\"{}\",\"row_id\":{},\"document_id\":\"{}\",\"distance_bits\":{}}}",
+        json_escape(&hit.source),
+        hit.row_id,
+        hit.document_id,
+        hit.distance_bits,
+    )
+}
+
+fn metadata_i38_input_json(input: &metadata_oracle::I38Input) -> String {
+    let sources = input
+        .sources
+        .iter()
+        .map(|source| {
+            format!(
+                "{{\"source\":\"{}\",\"sealed\":{},\"range\":{}}}",
+                json_escape(&source.source),
+                source.sealed,
+                metadata_source_range_json(source.range),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let rows = input
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"source\":\"{}\",\"row_id\":{},\"document_id\":\"{}\",\"cells\":[{}]}}",
+                json_escape(&row.source),
+                row.row_id,
+                row.document_id,
+                metadata_cells_json(&row.cells),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let live = input
+        .live
+        .iter()
+        .map(|(source, row)| {
+            format!(
+                "{{\"source\":\"{}\",\"row_id\":{row}}}",
+                json_escape(source)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let hits = input
+        .unfiltered_exact
+        .iter()
+        .map(metadata_exact_hit_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"sources\":[{sources}],\"rows\":[{rows}],\"live\":[{live}],\"predicate\":{},\"unfiltered_exact\":[{hits}],\"expected_delete_records\":{}}}",
+        metadata_predicate_json(&input.predicate),
+        input.expected_delete_records,
+    )
+}
+
+fn metadata_fallback_key(reason: metadata_oracle::FallbackReasonDto) -> &'static str {
+    match reason {
+        metadata_oracle::FallbackReasonDto::None => "none",
+        metadata_oracle::FallbackReasonDto::VisitedBudget => "visited-budget",
+        metadata_oracle::FallbackReasonDto::CandidateShortfall => "candidate-shortfall",
+        metadata_oracle::FallbackReasonDto::EfWidened => "ef-widened",
+    }
+}
+
+fn metadata_i39_case_json(case: &metadata_oracle::I39ExpectedCase) -> String {
+    let mode = match case.mode {
+        metadata_oracle::I39ExecutionModeDto::ExactScan { source_may_match } => {
+            format!("{{\"kind\":\"exact-scan\",\"source_may_match\":{source_may_match}}}")
+        }
+        metadata_oracle::I39ExecutionModeDto::FilteredGraph { required_fallback } => format!(
+            "{{\"kind\":\"filtered-graph\",\"required_fallback\":\"{}\"}}",
+            metadata_fallback_key(required_fallback),
+        ),
+    };
+    let optional =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    format!(
+        "{{\"key\":{{\"query_id\":{},\"source\":\"{}\"}},\"mode\":{mode},\"row_count\":{},\"filter_cardinality\":{},\"allow_list_threshold\":{},\"rows_examined\":{},\"allowed_rows_examined\":{},\"vectors_scored\":{},\"graph_nodes_visited\":{},\"exact_fallback_rows_examined\":{},\"returned_candidates\":{},\"ef_effective\":{},\"visited_budget\":{},\"sealed\":{}}}",
+        case.key.query_id,
+        json_escape(&case.key.source),
+        case.row_count,
+        case.filter_cardinality,
+        case.allow_list_threshold,
+        case.rows_examined,
+        case.allowed_rows_examined,
+        case.vectors_scored,
+        case.graph_nodes_visited,
+        case.exact_fallback_rows_examined,
+        case.returned_candidates,
+        optional(case.ef_effective),
+        optional(case.visited_budget),
+        case.sealed,
+    )
+}
+
+fn metadata_fixture_json(fixture: &metadata_adapter::MetadataFixtureEvidence) -> String {
+    match fixture {
+        metadata_adapter::MetadataFixtureEvidence::Columns(input) => format!(
+            "{{\"kind\":\"columns\",\"payload\":{}}}",
+            metadata_i36_input_json(input)
+        ),
+        metadata_adapter::MetadataFixtureEvidence::Bitmap(input) => format!(
+            "{{\"kind\":\"bitmap\",\"payload\":{}}}",
+            metadata_i37_input_json(input)
+        ),
+        metadata_adapter::MetadataFixtureEvidence::Planner(input) => format!(
+            "{{\"kind\":\"planner\",\"payload\":{}}}",
+            metadata_i38_input_json(input)
+        ),
+        metadata_adapter::MetadataFixtureEvidence::Execution(cases) => {
+            let cases = cases
+                .iter()
+                .map(metadata_i39_case_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"kind\":\"execution\",\"payload\":[{cases}]}}")
+        }
+    }
+}
+
+fn metadata_span_json(span: metadata_oracle::ByteSpan) -> String {
+    format!("{{\"start\":{},\"end\":{}}}", span.start, span.end)
+}
+
+fn metadata_string_spans_json(spans: metadata_oracle::StringByteSpans) -> String {
+    format!(
+        "{{\"full\":{},\"length\":{},\"payload\":{}}}",
+        metadata_span_json(spans.full),
+        metadata_span_json(spans.length),
+        metadata_span_json(spans.payload),
+    )
+}
+
+fn metadata_definition_json(definition: &metadata_oracle::ColumnDefinitionDto) -> String {
+    format!(
+        "{{\"id\":{},\"name_hex\":\"{}\",\"kind\":\"{}\",\"nullable\":{}}}",
+        definition.id,
+        evidence_hex(&definition.name),
+        metadata_column_kind_key(definition.kind),
+        definition.nullable,
+    )
+}
+
+fn metadata_physical_cell_json(cell: &metadata_oracle::PhysicalCell) -> String {
+    match cell {
+        metadata_oracle::PhysicalCell::U64(value) => {
+            format!("{{\"kind\":\"u64\",\"value\":{value}}}")
+        }
+        metadata_oracle::PhysicalCell::I64(value) => {
+            format!("{{\"kind\":\"i64\",\"value\":{value}}}")
+        }
+        metadata_oracle::PhysicalCell::F64Bits(value) => {
+            format!("{{\"kind\":\"f64-bits\",\"value\":{value}}}")
+        }
+        metadata_oracle::PhysicalCell::BoolByte(value) => {
+            format!("{{\"kind\":\"bool-byte\",\"value\":{value}}}")
+        }
+        metadata_oracle::PhysicalCell::DictionaryCode { code, decoded } => {
+            let decoded = decoded.as_ref().map_or_else(
+                || "null".to_owned(),
+                |decoded| format!("\"{}\"", evidence_hex(decoded)),
+            );
+            format!("{{\"kind\":\"dictionary-code\",\"code\":{code},\"decoded_hex\":{decoded}}}")
+        }
+        metadata_oracle::PhysicalCell::RawUtf8(value) => format!(
+            "{{\"kind\":\"raw-utf8\",\"bytes_hex\":\"{}\"}}",
+            evidence_hex(value)
+        ),
+    }
+}
+
+fn metadata_parsed_columns_json(columns: &metadata_oracle::ParsedColumns) -> String {
+    let definitions = columns
+        .definitions
+        .iter()
+        .map(metadata_definition_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let definition_spans = columns
+        .definition_spans
+        .iter()
+        .map(|(column, spans)| {
+            format!(
+                "{{\"column\":{column},\"full\":{},\"id\":{},\"kind\":{},\"nullable\":{},\"name\":{}}}",
+                metadata_span_json(spans.full),
+                metadata_span_json(spans.id),
+                metadata_span_json(spans.kind),
+                metadata_span_json(spans.nullable),
+                metadata_string_spans_json(spans.name),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let presence_spans = columns
+        .presence_spans
+        .iter()
+        .map(|(column, spans)| {
+            format!(
+                "{{\"column\":{column},\"length\":{},\"bitmap\":{}}}",
+                metadata_span_json(spans.length),
+                metadata_span_json(spans.bitmap),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let dictionary_spans = columns
+        .dictionary_spans
+        .iter()
+        .map(|(column, spans)| {
+            let entries = spans
+                .entries
+                .iter()
+                .map(|entry| metadata_string_spans_json(*entry))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"column\":{column},\"count\":{},\"entries\":[{entries}],\"width\":{},\"reserved\":{}}}",
+                metadata_span_json(spans.count),
+                metadata_span_json(spans.width),
+                metadata_span_json(spans.reserved),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let cells = columns
+        .cells
+        .iter()
+        .map(|((row, column), cell)| {
+            let length_span = cell.length_span.map_or_else(
+                || "null".to_owned(),
+                metadata_span_json,
+            );
+            format!(
+                "{{\"row\":{row},\"column\":{column},\"present\":{},\"logical\":{},\"physical\":{},\"span\":{},\"length_span\":{length_span},\"payload_span\":{}}}",
+                cell.present,
+                metadata_scalar_json(&cell.logical),
+                metadata_physical_cell_json(&cell.physical),
+                metadata_span_json(cell.span),
+                metadata_span_json(cell.payload_span),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"row_count\":{},\"definitions\":[{definitions}],\"row_count_span\":{},\"column_count_span\":{},\"definition_spans\":[{definition_spans}],\"presence_spans\":[{presence_spans}],\"dictionary_spans\":[{dictionary_spans}],\"cells\":[{cells}]}}",
+        columns.row_count,
+        metadata_span_json(columns.row_count_span),
+        metadata_span_json(columns.column_count_span),
+    )
+}
+
+fn metadata_logical_rows_json(rows: &[BTreeMap<u32, metadata_oracle::ScalarCell>]) -> String {
+    rows.iter()
+        .map(|cells| format!("[{}]", metadata_cells_json(cells)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn metadata_i36_observed_json(observed: &metadata_oracle::I36Observed) -> String {
+    format!(
+        "{{\"active_rows\":[{}],\"raw\":{},\"reader_rows\":[{}],\"public_rows\":[{}]}}",
+        metadata_logical_rows_json(&observed.active_rows),
+        metadata_parsed_columns_json(&observed.raw),
+        metadata_logical_rows_json(&observed.reader_rows),
+        metadata_logical_rows_json(&observed.public_rows),
+    )
+}
+
+fn metadata_branch_key(branch: metadata_oracle::ExecutionBranchDto) -> &'static str {
+    match branch {
+        metadata_oracle::ExecutionBranchDto::Pruned => "pruned",
+        metadata_oracle::ExecutionBranchDto::ExactAllowList => "exact-allow-list",
+        metadata_oracle::ExecutionBranchDto::MaskedScan => "masked-scan",
+        metadata_oracle::ExecutionBranchDto::FilteredGraph => "filtered-graph",
+        metadata_oracle::ExecutionBranchDto::GraphExactFallback => "graph-exact-fallback",
+    }
+}
+
+fn metadata_branch_report_json(report: &metadata_oracle::BranchReportDto) -> String {
+    format!(
+        "{{\"key\":{{\"query_id\":{},\"source\":\"{}\"}},\"branch\":\"{}\",\"fallback\":\"{}\",\"filter_cardinality\":{}}}",
+        report.key.query_id,
+        json_escape(&report.key.source),
+        metadata_branch_key(report.branch),
+        metadata_fallback_key(report.fallback),
+        report.filter_cardinality,
+    )
+}
+
+fn metadata_execution_receipt_json(receipt: &metadata_oracle::ExecutionReceiptDto) -> String {
+    let optional =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
+    format!(
+        "{{\"key\":{{\"query_id\":{},\"source\":\"{}\"}},\"branch\":\"{}\",\"fallback\":\"{}\",\"row_count\":{},\"filter_cardinality\":{},\"rows_examined\":{},\"allowed_rows_examined\":{},\"vectors_scored\":{},\"graph_nodes_visited\":{},\"exact_fallback_rows_examined\":{},\"returned_candidates\":{},\"ef_effective\":{},\"visited_budget\":{},\"sealed\":{}}}",
+        receipt.key.query_id,
+        json_escape(&receipt.key.source),
+        metadata_branch_key(receipt.branch),
+        metadata_fallback_key(receipt.fallback),
+        receipt.row_count,
+        receipt.filter_cardinality,
+        receipt.rows_examined,
+        receipt.allowed_rows_examined,
+        receipt.vectors_scored,
+        receipt.graph_nodes_visited,
+        receipt.exact_fallback_rows_examined,
+        receipt.returned_candidates,
+        optional(receipt.ef_effective),
+        optional(receipt.visited_budget),
+        receipt.sealed,
+    )
+}
+
+fn metadata_i37_observed_json(observed: &metadata_oracle::I37Observed) -> String {
+    let set = |values: &BTreeSet<u32>| {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let sources = observed
+        .sources
+        .iter()
+        .map(|source| {
+            format!(
+                "{{\"source\":\"{}\",\"sealed\":{},\"row_count\":{},\"live\":[{}],\"evaluator\":[{}],\"public_results\":[{}],\"report\":{},\"receipt\":{}}}",
+                json_escape(&source.source),
+                source.sealed,
+                source.row_count,
+                set(&source.live),
+                set(&source.evaluator),
+                source
+                    .public_results
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                metadata_branch_report_json(&source.report),
+                metadata_execution_receipt_json(&source.receipt),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"evaluator\":[{}],\"public_results\":[{}],\"sources\":[{sources}],\"allow_list_threshold\":{}}}",
+        set(&observed.evaluator),
+        observed
+            .public_results
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        observed.allow_list_threshold,
+    )
+}
+
+fn metadata_i38_observed_json(observed: &metadata_oracle::I38Observed) -> String {
+    let hits = observed
+        .filtered_exact
+        .iter()
+        .map(metadata_exact_hit_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let pruned = observed
+        .pruned_sources
+        .iter()
+        .map(|source| format!("\"{}\"", json_escape(source)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let reports = observed
+        .reports
+        .iter()
+        .map(metadata_branch_report_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let receipts = observed
+        .execution_receipts
+        .iter()
+        .map(metadata_execution_receipt_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"filtered_exact\":[{hits}],\"pruned_sources\":[{pruned}],\"reports\":[{reports}],\"execution_receipts\":[{receipts}],\"allow_list_threshold\":{},\"wal_delete_records\":{}}}",
+        observed.allow_list_threshold, observed.wal_delete_records,
+    )
+}
+
+fn metadata_i39_observed_json(observed: &metadata_oracle::I39Observed) -> String {
+    let reports = |values: &[metadata_oracle::BranchReportDto]| {
+        values
+            .iter()
+            .map(metadata_branch_report_json)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let receipts = observed
+        .receipts
+        .iter()
+        .map(metadata_execution_receipt_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"reports\":[{}],\"diagnostics_reports\":[{}],\"receipts\":[{receipts}],\"allow_list_threshold\":{}}}",
+        reports(&observed.reports),
+        reports(&observed.diagnostics_reports),
+        observed.allow_list_threshold,
+    )
+}
+
+fn metadata_result_json(result: &metadata_adapter::MetadataResultFact) -> String {
+    let document_id = result.document_id.map_or_else(
+        || "null".to_owned(),
+        |document_id| format!("\"{document_id}\""),
+    );
+    format!(
+        "{{\"source\":\"{}\",\"row_id\":{},\"document_id\":{document_id},\"score_bits\":{}}}",
+        json_escape(&result.source),
+        result.row_id,
+        result.score_bits,
+    )
+}
+
+fn metadata_results_json(results: &[metadata_adapter::MetadataResultFact]) -> String {
+    results
+        .iter()
+        .map(metadata_result_json)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn metadata_directory_json(
+    directory: &metadata_adapter::MetadataDirectoryDigestEvidence,
+) -> String {
+    let files = directory
+        .files
+        .iter()
+        .map(|file| {
+            format!(
+                "{{\"relative_path\":\"{}\",\"byte_length\":{},\"digest\":{}}}",
+                json_escape(&file.relative_path),
+                file.byte_length,
+                file.digest,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"digest\":{},\"files\":[{files}]}}", directory.digest)
+}
+
+fn metadata_control_json(control: &metadata_adapter::MetadataControlEvidence) -> String {
+    let directory_relation = match control.directory_relation {
+        metadata_adapter::MetadataDirectoryRelation::UnpairedSingleDirectory => {
+            "unpaired-single-directory"
+        }
+        metadata_adapter::MetadataDirectoryRelation::DistinctByteIdentical => {
+            "distinct-byte-identical"
+        }
+    };
+    let outcome = match control.outcome {
+        metadata_adapter::MetadataControlOutcome::Only => "clean-only",
+        metadata_adapter::MetadataControlOutcome::FilteredSucceeded => {
+            "clean-and-filtered-succeeded"
+        }
+        metadata_adapter::MetadataControlOutcome::FaultAndRetryEquivalent => {
+            "clean-fault-and-retry-equivalent"
+        }
+        metadata_adapter::MetadataControlOutcome::FaultRefusedRetryEquivalent => {
+            "clean-succeeded-fault-refused-retry-equivalent"
+        }
+        metadata_adapter::MetadataControlOutcome::GraphFaultFallbackRetryEquivalent => {
+            "clean-graph-fault-fallback-retry-equivalent"
+        }
+    };
+    let fault_error = control.fault_error.as_ref().map_or_else(
+        || "null".to_owned(),
+        |error| format!("\"{}\"", json_escape(error)),
+    );
+    format!(
+        "{{\"namespace\":\"{}\",\"seed\":{},\"query_id_base\":{},\"normalized_schedule_digest\":{},\"directory_relation\":\"{directory_relation}\",\"outcome\":\"{outcome}\",\"clean_results\":[{}],\"fault_results\":[{}],\"retry_results\":[{}],\"independent_expected_results\":[{}],\"fault_error\":{fault_error},\"clean_generation\":{},\"fault_generation\":{},\"retry_generation\":{},\"clean_wal_digest\":{},\"fault_wal_digest\":{},\"retry_wal_digest\":{},\"clean_source_digest\":{},\"fault_source_digest\":{},\"retry_source_digest\":{},\"clean_initial_directory\":{},\"fault_initial_directory\":{}}}",
+        json_escape(control.namespace),
+        control.seed,
+        control.query_id_base,
+        control.normalized_schedule_digest,
+        metadata_results_json(&control.clean_results),
+        metadata_results_json(&control.fault_results),
+        metadata_results_json(&control.retry_results),
+        metadata_results_json(&control.independent_expected_results),
+        control.clean_generation,
+        control.fault_generation,
+        control.retry_generation,
+        control.clean_wal_digest,
+        control.fault_wal_digest,
+        control.retry_wal_digest,
+        control.clean_source_digest,
+        control.fault_source_digest,
+        control.retry_source_digest,
+        metadata_directory_json(&control.clean_initial_directory),
+        metadata_directory_json(&control.fault_initial_directory),
+    )
+}
+
+fn metadata_adapter_fault_key(fault: metadata_adapter::MetadataFaultKind) -> &'static str {
+    match fault {
+        metadata_adapter::MetadataFaultKind::ColumnCorruption => "column-corruption",
+        metadata_adapter::MetadataFaultKind::BitmapTruncation => "bitmap-truncation",
+        metadata_adapter::MetadataFaultKind::SelectivityBoundary => "selectivity-boundary",
+        metadata_adapter::MetadataFaultKind::VisitedBudgetFallback => "visited-budget-fallback",
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one metadata comparison owns all exact replay evidence streams"
+)]
+fn record_metadata_evidence(
+    operation: super::campaign::MetadataOperation,
+    evidence: metadata_adapter::MetadataOperationEvidence,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+    receipts: &mut Vec<ProductionFeatureReceipt>,
+) -> Result<(), String> {
+    let expected_operation = metadata_operation_kind(operation);
+    if evidence.operation != expected_operation {
+        return Err(format!(
+            "metadata adapter returned {:?} evidence for {:?}",
+            evidence.operation, expected_operation
+        ));
+    }
+    validate_metadata_feature_receipts(
+        &evidence.feature_expected,
+        &evidence.feature_receipts,
+        &evidence.control,
+    )?;
+    let retained_fixture = metadata_adapter::encode_metadata_fixture(&evidence)?;
+    family_artifact_records
+        .entry("metadata-fixture.json")
+        .or_default()
+        .push(format!(
+            "{{\"operation\":\"{}\",\"seed\":{seed},\"fixture\":{},\"retained_fixture_schema\":\"{}\",\"retained_fixture_bytes\":{},\"retained_fixture_hex\":\"{}\"}}",
+            json_escape(operation.key()),
+            metadata_fixture_json(&evidence.fixture),
+            metadata_adapter::METADATA_RETAINED_FIXTURE_SCHEMA,
+            retained_fixture.len(),
+            evidence_hex(&retained_fixture),
+        ));
+    for query in &evidence.queries {
+        let vector_bits = query
+            .query_vector_bits
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let sources = query
+            .expected_sources
+            .iter()
+            .map(|source| format!("\"{}\"", json_escape(source)))
+            .collect::<Vec<_>>()
+            .join(",");
+        family_artifact_records
+            .entry("queries.jsonl")
+            .or_default()
+            .push(format!(
+                "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"seed\":{seed},\"query_id\":{},\"phase\":\"{}\",\"predicate\":{},\"query_vector_bits\":[{vector_bits}],\"k\":{},\"tier\":\"{}\",\"expected_sources\":[{sources}]}}",
+                json_escape(operation.key()),
+                query.query_id,
+                json_escape(query.phase),
+                metadata_predicate_json(&query.predicate),
+                query.k,
+                json_escape(query.tier),
+            ));
+    }
+    for (ordinal, mutation) in evidence.fixture_mutations.iter().enumerate() {
+        let mutation = metadata_mutation_json(mutation);
+        let record = format!(
+            "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"seed\":{seed},\"role\":\"fixture-preparation\",\"ordinal\":{ordinal},\"mutation\":{mutation}}}",
+            json_escape(operation.key()),
+        );
+        family_artifact_records
+            .entry("fixture-mutations.jsonl")
+            .or_default()
+            .push(record.clone());
+        mutation_records.push(record);
+    }
+    let provenance = format!(
+        "metadata-filter-planner-oracle-v2 seed={seed} profile={} op={op_index} operation={}",
+        profile.key(),
+        operation.key()
+    );
+    let comparison_passed = match &evidence.invariant {
+        metadata_adapter::MetadataInvariantEvidence::I36 { input, observed } => {
+            if operation != super::campaign::MetadataOperation::Columns {
+                return Err("metadata I36 evidence escaped the Columns operation".to_owned());
+            }
+            let result = metadata_oracle::compare_i36(input, observed);
+            let passed = result.is_ok();
+            push_metadata_feature_json_record(
+                36,
+                metadata_oracle::I36_CHECKER_ID,
+                operation.key(),
+                metadata_i36_input_json(input),
+                metadata_i36_observed_json(observed),
+                provenance.clone(),
+                metadata_oracle::attest_i36(input, observed),
+                result,
+                oracle_records,
+                coverage,
+            );
+            passed
+        }
+        metadata_adapter::MetadataInvariantEvidence::I37 { input, observed } => {
+            if operation != super::campaign::MetadataOperation::Bitmap {
+                return Err("metadata I37 evidence escaped the Bitmap operation".to_owned());
+            }
+            let result = metadata_oracle::compare_i37(input, observed);
+            let passed = result.is_ok();
+            push_metadata_feature_json_record(
+                37,
+                metadata_oracle::I37_CHECKER_ID,
+                operation.key(),
+                metadata_i37_input_json(input),
+                metadata_i37_observed_json(observed),
+                provenance.clone(),
+                metadata_oracle::attest_i37(input, observed),
+                result,
+                oracle_records,
+                coverage,
+            );
+            oracle_records
+                .last_mut()
+                .expect("metadata I37 comparison appended one oracle record")
+                .case_identity =
+                Some(metadata_adapter::i37_predicate_case_key(evidence.control.seed).to_owned());
+            passed
+        }
+        metadata_adapter::MetadataInvariantEvidence::I38 { input, observed } => {
+            if operation != super::campaign::MetadataOperation::Planner {
+                return Err("metadata I38 evidence escaped the Planner operation".to_owned());
+            }
+            let result = metadata_oracle::compare_i38(input, observed);
+            let passed = result.is_ok();
+            push_metadata_feature_json_record(
+                38,
+                metadata_oracle::I38_CHECKER_ID,
+                operation.key(),
+                metadata_i38_input_json(input),
+                metadata_i38_observed_json(observed),
+                provenance.clone(),
+                metadata_oracle::attest_i38(input, observed),
+                result,
+                oracle_records,
+                coverage,
+            );
+            passed
+        }
+        metadata_adapter::MetadataInvariantEvidence::I39 { expected, observed } => {
+            if operation != super::campaign::MetadataOperation::Execution {
+                return Err("metadata I39 evidence escaped the Execution operation".to_owned());
+            }
+            let result = metadata_oracle::compare_i39_expected(expected, observed);
+            let passed = result.is_ok();
+            push_metadata_feature_json_record(
+                39,
+                metadata_oracle::I39_CHECKER_ID,
+                operation.key(),
+                format!(
+                    "[{}]",
+                    expected
+                        .iter()
+                        .map(metadata_i39_case_json)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                metadata_i39_observed_json(observed),
+                provenance,
+                metadata_oracle::attest_i39(expected, observed),
+                result,
+                oracle_records,
+                coverage,
+            );
+            passed
+        }
+    };
+    if comparison_passed {
+        record_metadata_family_coverage(&evidence, coverage)?;
+    }
+    let selected_fault = evidence.fault.map_or_else(
+        || "null".to_owned(),
+        |fault| format!("\"{}\"", metadata_adapter_fault_key(fault)),
+    );
+    control_records.push(format!(
+        "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"seed\":{seed},\"fault\":{selected_fault},\"control\":{}}}",
+        json_escape(operation.key()),
+        metadata_control_json(&evidence.control),
+    ));
+    let mutation = evidence
+        .mutation
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), metadata_mutation_json);
+    mutation_records.push(format!(
+        "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"seed\":{seed},\"role\":\"selected-fault\",\"mutation\":{mutation}}}",
+        json_escape(operation.key()),
+    ));
+    if comparison_passed {
+        for receipt in evidence.execution_receipts {
+            coverage.hit(format!("metadata.branch.{:?}", receipt.branch));
+            receipts.push(ProductionFeatureReceipt::MetadataExecution {
+                operation: operation.key(),
+                receipt,
+            });
+        }
+        receipts.extend(
+            evidence
+                .feature_receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedMetadataFeature),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod metadata_receipt_credit_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_execution_receipt_serializes_typed_branch_and_work_facts() {
+        let evidence = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Execution,
+            0,
+            None,
+        )
+        .expect("observe metadata execution receipt");
+        let receipt = evidence
+            .execution_receipts
+            .first()
+            .expect("execution fixture emitted no receipt")
+            .clone();
+        let line = production_receipt_json(&ProductionFeatureReceipt::MetadataExecution {
+            operation: "metadata_execution_truth",
+            receipt,
+        });
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_str(&line)
+                .expect("parse production receipt evidence");
+
+        assert!(
+            record["receipt"].is_object(),
+            "metadata execution receipt retained opaque Debug text"
+        );
+        assert!(record["receipt"]["branch"].is_string());
+        assert!(record["receipt"]["rows_examined"].is_u64());
+        assert!(record["receipt"]["vectors_scored"].is_u64());
+        assert!(record["receipt"]["returned_candidates"].is_u64());
+    }
+
+    #[test]
+    fn oracle_record_attests_canonical_value_digests_and_first_difference() {
+        let mut records = Vec::new();
+        let mut coverage = CoverageRegistry::default();
+        push_feature_json_record(
+            36,
+            metadata_oracle::I36_CHECKER_ID,
+            "columns",
+            "{\"b\":1,\"a\":2}".to_owned(),
+            "{\"b\":1,\"a\":2}".to_owned(),
+            "schema-plant".to_owned(),
+            Ok::<(), &'static str>(()),
+            &mut records,
+            &mut coverage,
+        );
+        let line = records.first().expect("one oracle record").json_line();
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_str(&line).expect("parse oracle record");
+        let expected = zeppelin_embed_bench::harness_json::to_vec(&record["expected"])
+            .expect("canonical expected JSON");
+        let observed = zeppelin_embed_bench::harness_json::to_vec(&record["observed"])
+            .expect("canonical observed JSON");
+
+        assert_eq!(
+            record["input_digest"].as_str(),
+            Some(super::super::artifacts::evidence_digest(&[&expected]).as_str()),
+            "oracle input digest is absent or does not bind the canonical primitive"
+        );
+        assert_eq!(
+            record["observed_digest"].as_str(),
+            Some(super::super::artifacts::evidence_digest(&[&observed]).as_str()),
+            "oracle observation digest is absent or does not bind the canonical primitive"
+        );
+        assert!(
+            record["first_difference"].is_null(),
+            "a passing oracle record invented a first difference"
+        );
+        assert_eq!(record["canonical_version"], 1);
+        assert!(record["oracle_input_digest"].is_string());
+        assert!(record["oracle_observed_digest"].is_string());
+
+        push_feature_json_record(
+            36,
+            metadata_oracle::I36_CHECKER_ID,
+            "columns",
+            "{\"row\":1}".to_owned(),
+            "{\"row\":2}".to_owned(),
+            "schema-plant".to_owned(),
+            Err::<(), &'static str>("expected row=1 observed row=2"),
+            &mut records,
+            &mut coverage,
+        );
+        let planted: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_str(&records[1].json_line())
+                .expect("parse planted oracle record");
+        assert!(
+            planted["first_difference"].is_object(),
+            "oracle first difference remained an opaque string"
+        );
+        assert!(planted["first_difference"]["path"].is_string());
+        assert!(planted["first_difference"]["kind"].is_string());
+    }
+
+    #[test]
+    fn metadata_i39_coverage_requires_production_execution_receipts() {
+        let mut evidence = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Execution,
+            0,
+            None,
+        )
+        .expect("observe metadata execution evidence");
+        assert!(
+            !evidence.execution_receipts.is_empty(),
+            "fixture did not exercise a production execution site"
+        );
+        evidence.execution_receipts.clear();
+
+        let mut coverage = CoverageRegistry::default();
+        record_metadata_family_coverage(&evidence, &mut coverage)
+            .expect("missing receipts should not manufacture coverage");
+
+        for key in super::super::campaign::CampaignSpec::for_kind(
+            super::super::campaign::CampaignKind::MetadataFilterPlanner,
+        )
+        .required_coverage
+        .iter()
+        .copied()
+        .filter(|key| {
+            key.starts_with("metadata.i39.branch.") || key.starts_with("metadata.i39.fallback.")
+        }) {
+            assert_eq!(
+                coverage.count(key),
+                0,
+                "expected cases earned I39 coverage without production receipts: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_i37_comparison_cannot_earn_matrix_coverage() {
+        let evidence = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Bitmap,
+            0,
+            None,
+        )
+        .expect("observe metadata bitmap evidence");
+        let evidence = metadata_adapter::apply_metadata_replay_mutation(
+            &evidence,
+            metadata_adapter::MetadataReplayMutation::OracleObserved,
+        )
+        .expect("plant one observed bitmap mismatch");
+        let mut oracle_records = Vec::new();
+        let mut controls = Vec::new();
+        let mut mutations = Vec::new();
+        let mut family = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+        let mut receipts = Vec::new();
+
+        record_metadata_evidence(
+            super::super::campaign::MetadataOperation::Bitmap,
+            evidence,
+            0,
+            FaultProfile::None,
+            0,
+            &mut oracle_records,
+            &mut controls,
+            &mut mutations,
+            &mut family,
+            &mut coverage,
+            &mut receipts,
+        )
+        .expect("record planted I37 comparison");
+
+        assert_eq!(oracle_records.len(), 1);
+        assert!(!oracle_records[0].passed);
+        assert_eq!(
+            coverage.count("metadata.i37.matrix.eq-u64"),
+            0,
+            "a failed I37 comparison earned matrix coverage"
+        );
+    }
+
+    #[test]
+    fn metadata_record_consumes_the_family_canonical_attestation() {
+        let evidence = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Columns,
+            0,
+            None,
+        )
+        .expect("observe metadata columns evidence");
+        let metadata_adapter::MetadataInvariantEvidence::I36 { input, observed } =
+            &evidence.invariant
+        else {
+            panic!("columns operation did not return I36 evidence");
+        };
+        let attestation = metadata_oracle::attest_i36(input, observed);
+        let mut oracle_records = Vec::new();
+        let mut controls = Vec::new();
+        let mut mutations = Vec::new();
+        let mut family = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+        let mut receipts = Vec::new();
+
+        record_metadata_evidence(
+            super::super::campaign::MetadataOperation::Columns,
+            evidence,
+            0,
+            FaultProfile::None,
+            0,
+            &mut oracle_records,
+            &mut controls,
+            &mut mutations,
+            &mut family,
+            &mut coverage,
+            &mut receipts,
+        )
+        .expect("record I36 family attestation");
+
+        let record = oracle_records.first().expect("one I36 oracle record");
+        assert_eq!(record.canonical_version, attestation.canonical_version);
+        assert_eq!(
+            record.oracle_input_digest,
+            format!(
+                "metadata-v{}:{:016x}",
+                attestation.canonical_version, attestation.input_digest
+            )
+        );
+        assert_eq!(
+            record.oracle_observed_digest,
+            format!(
+                "metadata-v{}:{:016x}",
+                attestation.canonical_version, attestation.observed_digest
+            )
+        );
+        assert_eq!(record.first_difference.is_none(), record.passed);
+    }
+
+    fn collect_typed_coverage(
+        evidence: &metadata_adapter::MetadataOperationEvidence,
+        coverage: &mut CoverageRegistry,
+    ) {
+        validate_metadata_feature_receipts(
+            &evidence.feature_expected,
+            &evidence.feature_receipts,
+            &evidence.control,
+        )
+        .expect("metadata receipt facts must validate before coverage");
+        record_metadata_family_coverage(evidence, coverage)
+            .expect("metadata typed evidence must earn coverage");
+    }
+
+    #[test]
+    fn typed_metadata_evidence_reaches_every_required_family_coverage_key() {
+        let mut coverage = CoverageRegistry::default();
+        for seed in 0..metadata_adapter::I37_PREDICATE_CASE_COUNT {
+            let evidence = metadata_adapter::run_metadata_operation(
+                metadata_adapter::MetadataOperationKind::Bitmap,
+                seed,
+                None,
+            )
+            .expect("observe metadata predicate grammar");
+            collect_typed_coverage(&evidence, &mut coverage);
+        }
+        for seed in 0..3 {
+            let evidence = metadata_adapter::run_metadata_operation(
+                metadata_adapter::MetadataOperationKind::Planner,
+                seed,
+                None,
+            )
+            .expect("observe metadata pruning topology");
+            collect_typed_coverage(&evidence, &mut coverage);
+        }
+        for seed in 0..3 {
+            let evidence = metadata_adapter::run_metadata_operation(
+                metadata_adapter::MetadataOperationKind::Columns,
+                seed,
+                Some(metadata_adapter::MetadataFaultKind::ColumnCorruption),
+            )
+            .expect("observe metadata column corruption class");
+            collect_typed_coverage(&evidence, &mut coverage);
+        }
+        for fault in [
+            metadata_adapter::MetadataFaultKind::BitmapTruncation,
+            metadata_adapter::MetadataFaultKind::SelectivityBoundary,
+            metadata_adapter::MetadataFaultKind::VisitedBudgetFallback,
+        ] {
+            let operation = match fault {
+                metadata_adapter::MetadataFaultKind::BitmapTruncation => {
+                    metadata_adapter::MetadataOperationKind::Bitmap
+                }
+                metadata_adapter::MetadataFaultKind::SelectivityBoundary
+                | metadata_adapter::MetadataFaultKind::VisitedBudgetFallback => {
+                    metadata_adapter::MetadataOperationKind::Execution
+                }
+                metadata_adapter::MetadataFaultKind::ColumnCorruption => {
+                    unreachable!("column corruption is covered by the seed loop")
+                }
+            };
+            let evidence = metadata_adapter::run_metadata_operation(operation, 0, Some(fault))
+                .expect("observe metadata fault coverage");
+            collect_typed_coverage(&evidence, &mut coverage);
+        }
+        let execution = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Execution,
+            0,
+            None,
+        )
+        .expect("observe metadata branch and fallback catalog");
+        collect_typed_coverage(&execution, &mut coverage);
+
+        let missing = super::super::campaign::CampaignSpec::for_kind(
+            super::super::campaign::CampaignKind::MetadataFilterPlanner,
+        )
+        .required_coverage
+        .iter()
+        .copied()
+        .filter(|key| coverage.count(key) == 0)
+        .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "missing typed metadata coverage: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn mismatched_metadata_guard_facts_cannot_earn_fault_credit() {
+        let mut evidence = metadata_adapter::run_metadata_operation(
+            metadata_adapter::MetadataOperationKind::Execution,
+            0x39,
+            Some(metadata_adapter::MetadataFaultKind::SelectivityBoundary),
+        )
+        .expect("observe metadata selectivity fault");
+        let Some(metadata_adapter::MetadataFeatureExpected::SelectivityBoundaryChosen {
+            cardinality,
+            ..
+        }) = evidence.feature_expected.first_mut()
+        else {
+            panic!("selectivity evidence omitted its first expected receipt");
+        };
+        *cardinality = 2;
+
+        let mut oracle_records = Vec::new();
+        let mut control_records = Vec::new();
+        let mut mutation_records = Vec::new();
+        let mut family_artifact_records = BTreeMap::new();
+        let mut coverage = CoverageRegistry::default();
+        let mut receipts = Vec::new();
+
+        let error = record_metadata_evidence(
+            super::super::campaign::MetadataOperation::Execution,
+            evidence,
+            0x39,
+            FaultProfile::None,
+            0,
+            &mut oracle_records,
+            &mut control_records,
+            &mut mutation_records,
+            &mut family_artifact_records,
+            &mut coverage,
+            &mut receipts,
+        )
+        .expect_err("mismatched metadata receipt facts were accepted");
+
+        assert!(error.contains("metadata feature receipt"), "{error}");
+        assert!(
+            receipts.is_empty(),
+            "mismatched receipt earned fault credit"
+        );
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared adapter boundary carries every replay evidence stream"
+)]
+fn run_metadata_campaign_operation(
+    operation: super::campaign::MetadataOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    for name in super::artifacts::METADATA_REPLAY_ARTIFACTS {
+        family_artifact_records.entry(name).or_default();
+    }
+    let matching_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|fault| fault.operation() == super::campaign::FeatureOperation::Metadata(operation))
+        .map(metadata_fault_kind)
+        .map(|fault| fault.map(Some))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if matching_faults.is_empty() {
+        vec![None]
+    } else {
+        matching_faults
+    };
+    let mut receipts = Vec::new();
+    if operation == super::campaign::MetadataOperation::Bitmap {
+        for case in metadata_adapter::run_i37_complete_public_matrix(seed)? {
+            let case_seed = case.evidence.control.seed;
+            record_metadata_evidence(
+                operation,
+                case.evidence,
+                case_seed,
+                profile,
+                op_index,
+                oracle_records,
+                control_records,
+                mutation_records,
+                family_artifact_records,
+                coverage,
+                &mut receipts,
+            )?;
+        }
+    }
+    for fault in cases {
+        if operation == super::campaign::MetadataOperation::Bitmap && fault.is_none() {
+            continue;
+        }
+        let evidence = metadata_adapter::run_metadata_operation(
+            metadata_operation_kind(operation),
+            seed,
+            fault,
+        )?;
+        record_metadata_evidence(
+            operation,
+            evidence,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            mutation_records,
+            family_artifact_records,
+            coverage,
+            &mut receipts,
+        )?;
+    }
+    Ok(receipts)
+}
+
+#[cfg(test)]
+fn metadata_replay_self_test_streams(
+    evidence: metadata_adapter::MetadataOperationEvidence,
+) -> Result<BTreeMap<&'static str, Vec<u8>>, String> {
+    let mut oracle_records = Vec::new();
+    let mut control_records = Vec::new();
+    let mut mutation_records = Vec::new();
+    let mut family_records = BTreeMap::new();
+    let mut coverage = CoverageRegistry::default();
+    let mut receipts = Vec::new();
+    record_metadata_evidence(
+        super::campaign::MetadataOperation::Execution,
+        evidence,
+        0,
+        FaultProfile::None,
+        0,
+        &mut oracle_records,
+        &mut control_records,
+        &mut mutation_records,
+        &mut family_records,
+        &mut coverage,
+        &mut receipts,
+    )?;
+
+    let line_stream = |lines: Vec<String>| {
+        let mut bytes = Vec::new();
+        for line in lines {
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        bytes
+    };
+    let mut streams = BTreeMap::from([
+        (
+            "oracle.jsonl",
+            line_stream(oracle_records.iter().map(OracleRecord::json_line).collect()),
+        ),
+        ("controls.jsonl", line_stream(control_records)),
+        (
+            "receipts.jsonl",
+            line_stream(receipts.iter().map(production_receipt_json).collect()),
+        ),
+        ("mutations.jsonl", line_stream(mutation_records)),
+    ]);
+    for (name, records) in family_records {
+        streams.insert(name, render_family_artifact(name, &records)?);
+    }
+    Ok(streams)
+}
+
+#[cfg(test)]
+fn compare_metadata_replay_stream(
+    expected: &BTreeMap<&'static str, Vec<u8>>,
+    observed: &BTreeMap<&'static str, Vec<u8>>,
+    artifact: &'static str,
+) -> Result<(), String> {
+    let expected = expected
+        .get(artifact)
+        .ok_or_else(|| format!("metadata replay expected artifact {artifact} is absent"))?;
+    let observed = observed
+        .get(artifact)
+        .ok_or_else(|| format!("metadata replay observed artifact {artifact} is absent"))?;
+    if expected == observed {
+        return Ok(());
+    }
+    let byte_offset = expected
+        .iter()
+        .zip(observed)
+        .position(|(left, right)| left != right)
+        .unwrap_or_else(|| expected.len().min(observed.len()));
+    Err(format!(
+        "metadata replay mismatch artifact={artifact} byte_offset={byte_offset}"
+    ))
+}
+
+/// Exercises every family-provided metadata replay mutation through the shared
+/// canonical serializers and the same fail-closed artifact comparison used by
+/// replay. Every plant must be rejected with its exact artifact identity.
+#[cfg(test)]
+pub fn metadata_replay_mutation_self_test() -> Result<Vec<&'static str>, String> {
+    let evidence = metadata_adapter::run_metadata_operation(
+        metadata_adapter::MetadataOperationKind::Execution,
+        0,
+        None,
+    )?;
+    let baseline = metadata_replay_self_test_streams(evidence.clone())?;
+    let mut mismatches = Vec::new();
+    for (mutation, stream) in [
+        (
+            metadata_adapter::MetadataReplayMutation::OracleObserved,
+            "oracle.jsonl",
+        ),
+        (
+            metadata_adapter::MetadataReplayMutation::ExecutionReceipt,
+            "receipts.jsonl",
+        ),
+        (
+            metadata_adapter::MetadataReplayMutation::MutationByte,
+            "fixture-mutations.jsonl",
+        ),
+        (
+            metadata_adapter::MetadataReplayMutation::SameSeedDigest,
+            "controls.jsonl",
+        ),
+    ] {
+        let mutated = metadata_adapter::apply_metadata_replay_mutation(&evidence, mutation)?;
+        let mutated = match metadata_replay_self_test_streams(mutated) {
+            Ok(streams) => streams,
+            Err(error)
+                if mutation == metadata_adapter::MetadataReplayMutation::SameSeedDigest
+                    && error.contains("same-seed fixture directories are not byte-identical") =>
+            {
+                mismatches.push(stream);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let error = compare_metadata_replay_stream(&baseline, &mutated, stream)
+            .expect_err("metadata replay accepted a family-owned mutation");
+        if !error.contains(&format!("artifact={stream}")) {
+            return Err(format!(
+                "metadata replay mutation {mutation:?} returned an unnamed mismatch: {error}"
+            ));
+        }
+        mismatches.push(stream);
+    }
+    Ok(mismatches)
+}
+
+fn vector_operation_kind(
+    operation: super::campaign::VectorOperation,
+) -> vector_adapter::VectorOperationKind {
+    match operation {
+        super::campaign::VectorOperation::KernelParity => {
+            vector_adapter::VectorOperationKind::KernelParity
+        }
+        super::campaign::VectorOperation::Quantization => {
+            vector_adapter::VectorOperationKind::Quantization
+        }
+        super::campaign::VectorOperation::Rescore => vector_adapter::VectorOperationKind::Rescore,
+        super::campaign::VectorOperation::RowIdentity => {
+            vector_adapter::VectorOperationKind::RowIdentity
+        }
+    }
+}
+
+fn vector_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<vector_adapter::VectorFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::VectorForcedDispatchBackend => {
+            Ok(vector_adapter::VectorFaultKind::ForcedDispatchBackend)
+        }
+        super::campaign::FeatureFault::VectorCorruptCodesFactors => {
+            Ok(vector_adapter::VectorFaultKind::CorruptCodesFactors)
+        }
+        super::campaign::FeatureFault::VectorMissingRescoreRows => {
+            Ok(vector_adapter::VectorFaultKind::MissingRescoreRows)
+        }
+        super::campaign::FeatureFault::VectorRowCountCancellation => {
+            Ok(vector_adapter::VectorFaultKind::RowCountCancellation)
+        }
+        super::campaign::FeatureFault::VectorAllocationDenial => {
+            Ok(vector_adapter::VectorFaultKind::AllocationDenial)
+        }
+        other => Err(format!(
+            "vector operation received unrelated fault {}",
+            other.key()
+        )),
+    }
+}
+
+fn vector_backend_key(backend: vector_oracle::BackendId) -> &'static str {
+    match backend {
+        vector_oracle::BackendId::Scalar => "scalar",
+        vector_oracle::BackendId::NeonWiden => "neon-widen",
+        vector_oracle::BackendId::NeonDotprodU4 => "neon-dotprod-u4",
+        vector_oracle::BackendId::NeonI8mm => "neon-i8mm",
+        vector_oracle::BackendId::NeonDotprodU2 => "neon-dotprod-u2",
+        vector_oracle::BackendId::NeonDotprodU6 => "neon-dotprod-u6",
+        vector_oracle::BackendId::NeonDotprodU8 => "neon-dotprod-u8",
+        vector_oracle::BackendId::NeonDotprodU4Prefetch => "neon-dotprod-u4-prefetch",
+        vector_oracle::BackendId::Avx2 => "avx2",
+    }
+}
+
+fn product_vector_backend(backend: vector_oracle::BackendId) -> KernelBackendId {
+    match backend {
+        vector_oracle::BackendId::Scalar => KernelBackendId::Scalar,
+        vector_oracle::BackendId::NeonWiden => KernelBackendId::NeonWiden,
+        vector_oracle::BackendId::NeonDotprodU4 => KernelBackendId::NeonDotprodU4,
+        vector_oracle::BackendId::NeonI8mm => KernelBackendId::NeonI8mm,
+        vector_oracle::BackendId::NeonDotprodU2 => KernelBackendId::NeonDotprodU2,
+        vector_oracle::BackendId::NeonDotprodU6 => KernelBackendId::NeonDotprodU6,
+        vector_oracle::BackendId::NeonDotprodU8 => KernelBackendId::NeonDotprodU8,
+        vector_oracle::BackendId::NeonDotprodU4Prefetch => KernelBackendId::NeonDotprodU4Prefetch,
+        vector_oracle::BackendId::Avx2 => KernelBackendId::Avx2,
+    }
+}
+
+fn product_vector_kernel(
+    kernel: vector_oracle::KernelId,
+) -> zeppelin_embed::kernels::vector_fault::KernelOperationId {
+    use zeppelin_embed::kernels::vector_fault::KernelOperationId as Product;
+    match kernel {
+        vector_oracle::KernelId::DotI8 => Product::DotI8,
+        vector_oracle::KernelId::HammingU1 => Product::HammingU1,
+        vector_oracle::KernelId::DotF32 => Product::DotF32,
+        vector_oracle::KernelId::DotF16 => Product::DotF16,
+        vector_oracle::KernelId::DotI8Batch => Product::DotI8Batch,
+        vector_oracle::KernelId::HammingU1Batch => Product::HammingU1Batch,
+        vector_oracle::KernelId::DotBit4 => Product::DotBit4,
+        vector_oracle::KernelId::DotBit4Prepared => Product::DotBit4Prepared,
+        vector_oracle::KernelId::DotBit4Batch => Product::DotBit4Batch,
+        vector_oracle::KernelId::ScoreBit4PreparedBatch => Product::ScoreBit4PreparedBatch,
+        vector_oracle::KernelId::ScoreBit4Ptrs => Product::ScoreBit4Ptrs,
+    }
+}
+
+fn product_vector_source(source: vector_oracle::PrimitiveSource) -> ProductVectorRowSource {
+    match source {
+        vector_oracle::PrimitiveSource::Active => ProductVectorRowSource::Active,
+        vector_oracle::PrimitiveSource::Sealed(segment) => ProductVectorRowSource::Sealed(segment),
+    }
+}
+
+fn product_vector_tier(tier: u8) -> Result<ProductVectorSearchTier, String> {
+    match tier {
+        0 => Ok(ProductVectorSearchTier::Auto),
+        1 => Ok(ProductVectorSearchTier::Exact),
+        2 => Ok(ProductVectorSearchTier::Scan),
+        3 => Ok(ProductVectorSearchTier::Graph),
+        other => Err(format!("unknown vector tier id {other}")),
+    }
+}
+
+fn vector_campaign_key(campaign: ProductVectorCampaign) -> &'static str {
+    match campaign {
+        ProductVectorCampaign::VectorExecution => "vector-execution",
+    }
+}
+
+fn vector_operation_key(operation: ProductVectorOperation) -> &'static str {
+    match operation {
+        ProductVectorOperation::KernelParity => "kernel-parity",
+        ProductVectorOperation::Quantization => "quantization",
+        ProductVectorOperation::Rescore => "rescore",
+        ProductVectorOperation::RowIdentity => "row-identity",
+    }
+}
+
+fn vector_fault_key(fault: ProductVectorFaultKind) -> &'static str {
+    match fault {
+        ProductVectorFaultKind::ForcedDispatchBackend => "forced-dispatch-backend",
+        ProductVectorFaultKind::CorruptCodesFactors => "corrupt-codes-factors",
+        ProductVectorFaultKind::MissingRescoreRows => "missing-rescore-rows",
+        ProductVectorFaultKind::RowCountCancellation => "row-count-cancellation",
+        ProductVectorFaultKind::AllocationDenial => "allocation-denial",
+    }
+}
+
+fn vector_site_key(site: ProductVectorFaultSite) -> &'static str {
+    match site {
+        ProductVectorFaultSite::KernelDispatchSelectedScoringTable => {
+            "KernelDispatchSelectedScoringTable"
+        }
+        ProductVectorFaultSite::ScanBit4CodeView => "ScanBit4CodeView",
+        ProductVectorFaultSite::ScanBit4FactorView => "ScanBit4FactorView",
+        ProductVectorFaultSite::ScanInt8FactorView => "ScanInt8FactorView",
+        ProductVectorFaultSite::ExactRescoreRows => "ExactRescoreRows",
+        ProductVectorFaultSite::QueryRescoreRows => "QueryRescoreRows",
+        ProductVectorFaultSite::ScoredVectorRow => "ScoredVectorRow",
+        ProductVectorFaultSite::SearchGlobalCandidates => "SearchGlobalCandidates",
+    }
+}
+
+fn product_vector_tier_key(tier: ProductVectorSearchTier) -> &'static str {
+    match tier {
+        ProductVectorSearchTier::Auto => "auto",
+        ProductVectorSearchTier::Exact => "exact",
+        ProductVectorSearchTier::Scan => "scan",
+        ProductVectorSearchTier::Graph => "graph",
+    }
+}
+
+fn product_vector_source_json(source: ProductVectorRowSource) -> String {
+    match source {
+        ProductVectorRowSource::Active => "{\"kind\":\"active\"}".to_owned(),
+        ProductVectorRowSource::Sealed(segment) => format!(
+            "{{\"kind\":\"sealed\",\"segment\":\"{}\"}}",
+            evidence_hex(&segment)
+        ),
+    }
+}
+
+fn vector_effect_json(effect: &ProductVectorFaultEffect) -> String {
+    match effect {
+        ProductVectorFaultEffect::ForcedBackend {
+            requested,
+            selected,
+            kernel,
+            work_items,
+        } => format!(
+            "{{\"kind\":\"forced-backend\",\"requested\":\"{}\",\"selected\":\"{}\",\"kernel\":\"{:?}\",\"work_items\":{work_items}}}",
+            requested.as_str(),
+            selected.as_str(),
+            kernel,
+        ),
+        ProductVectorFaultEffect::CorruptedPayload {
+            scheme,
+            source,
+            tier,
+            local_row,
+            field,
+            byte_offset,
+            before_bits,
+            after_bits,
+        } => format!(
+            "{{\"kind\":\"corrupted-payload\",\"scheme\":\"{:?}\",\"source\":{},\"tier\":\"{}\",\"local_row\":{local_row},\"field\":\"{:?}\",\"byte_offset\":{byte_offset},\"before_bits\":{before_bits},\"after_bits\":{after_bits}}}",
+            scheme,
+            product_vector_source_json(*source),
+            product_vector_tier_key(*tier),
+            field,
+        ),
+        ProductVectorFaultEffect::MissingRescoreRows {
+            segment,
+            expected_rows,
+            available_rows,
+            requested_tier,
+        } => format!(
+            "{{\"kind\":\"missing-rescore-rows\",\"segment\":\"{}\",\"expected_rows\":{expected_rows},\"available_rows\":{available_rows},\"requested_tier\":\"{}\"}}",
+            evidence_hex(segment),
+            product_vector_tier_key(*requested_tier),
+        ),
+        ProductVectorFaultEffect::CancelledAfterRows {
+            source,
+            requested_tier,
+            local_row,
+            requested_rows,
+            observed_rows,
+        } => format!(
+            "{{\"kind\":\"cancelled-after-rows\",\"source\":{},\"requested_tier\":\"{}\",\"local_row\":{local_row},\"requested_rows\":{requested_rows},\"observed_rows\":{observed_rows}}}",
+            product_vector_source_json(*source),
+            product_vector_tier_key(*requested_tier),
+        ),
+        ProductVectorFaultEffect::AllocationDenied {
+            component,
+            requested_tier,
+            items,
+            bytes,
+        } => format!(
+            "{{\"kind\":\"allocation-denied\",\"component\":\"{:?}\",\"requested_tier\":\"{}\",\"items\":{items},\"bytes\":{bytes}}}",
+            component,
+            product_vector_tier_key(*requested_tier),
+        ),
+    }
+}
+
+fn vector_quant_success(
+    fixture: &vector_adapter::VectorPrimitiveFixture,
+    scheme: vector_oracle::QuantScheme,
+) -> Result<vector_oracle::I25Expected, String> {
+    let vector_adapter::VectorPrimitiveInputs::I25(inputs) = &fixture.inputs else {
+        return Err("quantization mutation is not backed by I25 primitive inputs".to_owned());
+    };
+    let mut input = inputs
+        .iter()
+        .find(|input| {
+            input.scheme == vector_oracle::QuantScheme::Bit4
+                && input.store.schedule == [vector_oracle::PublicStoreStep::IngestAccepted]
+        })
+        .cloned()
+        .ok_or_else(|| {
+            "quantization fixture omitted its planned local-row-zero input".to_owned()
+        })?;
+    input.scheme = scheme;
+    let encoded_len = match scheme {
+        vector_oracle::QuantScheme::Bit4 => input.row.len().div_ceil(2),
+        vector_oracle::QuantScheme::Int8 => input.row.len(),
+    } as u64;
+    input.output_len = encoded_len;
+    input.code_len = encoded_len;
+    let expected = vector_oracle::expected_quantization(&input);
+    if expected.result.success.is_none() {
+        return Err(format!(
+            "quantization mutation selected unsuccessful primitive input {}",
+            input.case_id
+        ));
+    }
+    Ok(expected)
+}
+
+fn expected_vector_quant_effect(
+    fixture: &vector_adapter::VectorPrimitiveFixture,
+    case_id: u64,
+    scheme: vector_oracle::QuantScheme,
+    source: vector_oracle::PrimitiveSource,
+    tier: u8,
+    local_row: u32,
+    field: vector_adapter::VectorQuantMutationField,
+) -> Result<(ProductVectorFaultSite, ProductVectorFaultEffect), String> {
+    let expected = vector_quant_success(fixture, scheme)?;
+    let success = expected
+        .result
+        .success
+        .as_ref()
+        .ok_or_else(|| "successful quantization facts disappeared".to_owned())?;
+    let product_tier = product_vector_tier(tier)?;
+    let product_source = product_vector_source(source);
+    match field {
+        vector_adapter::VectorQuantMutationField::Bit4OddPadding => {
+            if scheme != vector_oracle::QuantScheme::Bit4 {
+                return Err("Bit4 padding mutation named another quantization scheme".to_owned());
+            }
+            let byte_offset = success
+                .code_bytes
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| "Bit4 padding mutation has no code byte".to_owned())?;
+            let before = success.code_bytes[byte_offset];
+            let after = before | 0x0f;
+            let _ = case_id;
+            Ok((
+                ProductVectorFaultSite::ScanBit4CodeView,
+                ProductVectorFaultEffect::CorruptedPayload {
+                    scheme: ProductVectorQuantScheme::Bit4,
+                    source: product_source,
+                    tier: product_tier,
+                    local_row,
+                    field: ProductVectorQuantField::OddPadding,
+                    byte_offset: byte_offset as u64,
+                    before_bits: u64::from(before),
+                    after_bits: u64::from(after),
+                },
+            ))
+        }
+        vector_adapter::VectorQuantMutationField::Bit4Correction => {
+            if scheme != vector_oracle::QuantScheme::Bit4 {
+                return Err("Bit4 correction mutation named another quantization scheme".to_owned());
+            }
+            let before = success
+                .factor_bits
+                .get(2)
+                .ok_or_else(|| "Bit4 correction mutation omitted the correction factor".to_owned())?
+                .0;
+            let after = f32::NAN.to_bits();
+            Ok((
+                ProductVectorFaultSite::ScanBit4FactorView,
+                ProductVectorFaultEffect::CorruptedPayload {
+                    scheme: ProductVectorQuantScheme::Bit4,
+                    source: product_source,
+                    tier: product_tier,
+                    local_row,
+                    field: ProductVectorQuantField::Correction,
+                    byte_offset: 8,
+                    before_bits: u64::from(before),
+                    after_bits: u64::from(after),
+                },
+            ))
+        }
+        vector_adapter::VectorQuantMutationField::Int8Scale => {
+            if scheme != vector_oracle::QuantScheme::Int8 {
+                return Err("Int8 scale mutation named another quantization scheme".to_owned());
+            }
+            let before = success
+                .factor_bits
+                .first()
+                .ok_or_else(|| "Int8 scale mutation omitted its scale".to_owned())?
+                .0;
+            let after = f32::NAN.to_bits();
+            Ok((
+                ProductVectorFaultSite::ScanInt8FactorView,
+                ProductVectorFaultEffect::CorruptedPayload {
+                    scheme: ProductVectorQuantScheme::Int8,
+                    source: product_source,
+                    tier: product_tier,
+                    local_row,
+                    field: ProductVectorQuantField::Scale,
+                    byte_offset: 0,
+                    before_bits: u64::from(before),
+                    after_bits: u64::from(after),
+                },
+            ))
+        }
+    }
+}
+
+fn validate_vector_receipt_header(
+    receipt: &VectorFaultReceipt,
+    operation: ProductVectorOperation,
+    fault: ProductVectorFaultKind,
+    site: ProductVectorFaultSite,
+    case_id: u64,
+    result_published: bool,
+) -> Result<(), String> {
+    if receipt.campaign() == ProductVectorCampaign::VectorExecution
+        && receipt.operation() == operation
+        && receipt.fault() == fault
+        && receipt.site() == site
+        && receipt.cardinality() == 1
+        && receipt.seed_case_id() == case_id
+        && receipt.result_published() == result_published
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "typed vector receipt header mismatch: expected operation={operation:?} fault={fault:?} site={site:?} case={case_id} cardinality=1 result_published={result_published}, observed={receipt:?}"
+        ))
+    }
+}
+
+fn vector_paired_sources_match(
+    operation_source: vector_oracle::PrimitiveSource,
+    paired_source: vector_oracle::PrimitiveSource,
+) -> bool {
+    matches!(
+        (operation_source, paired_source),
+        (
+            vector_oracle::PrimitiveSource::Active,
+            vector_oracle::PrimitiveSource::Active
+        ) | (
+            vector_oracle::PrimitiveSource::Sealed(_),
+            vector_oracle::PrimitiveSource::Sealed(_)
+        )
+    )
+}
+
+fn validate_vector_paired_mutation(
+    operation: &vector_adapter::VectorMutationEvidence,
+    paired: &vector_adapter::VectorMutationEvidence,
+) -> Result<(), String> {
+    let aligned = match (operation, paired) {
+        (
+            vector_adapter::VectorMutationEvidence::None,
+            vector_adapter::VectorMutationEvidence::None,
+        ) => true,
+        (
+            vector_adapter::VectorMutationEvidence::ForcedDispatch {
+                case_id: operation_case,
+                requested: operation_requested,
+            },
+            vector_adapter::VectorMutationEvidence::ForcedDispatch {
+                case_id: paired_case,
+                requested: paired_requested,
+            },
+        ) => operation_case == paired_case && operation_requested == paired_requested,
+        (
+            vector_adapter::VectorMutationEvidence::QuantCorruption {
+                case_id: operation_case,
+                scheme: operation_scheme,
+                source: operation_source,
+                tier: operation_tier,
+                local_row: operation_row,
+                field: operation_field,
+            },
+            vector_adapter::VectorMutationEvidence::QuantCorruption {
+                case_id: paired_case,
+                scheme: paired_scheme,
+                source: paired_source,
+                tier: paired_tier,
+                local_row: paired_row,
+                field: paired_field,
+            },
+        ) => {
+            operation_case == paired_case
+                && operation_scheme == paired_scheme
+                && vector_paired_sources_match(*operation_source, *paired_source)
+                && operation_tier == paired_tier
+                && operation_row == paired_row
+                && operation_field == paired_field
+        }
+        (
+            vector_adapter::VectorMutationEvidence::MissingRescoreRows {
+                case_id: operation_case,
+                source: operation_source,
+                tier: operation_tier,
+                site: operation_site,
+                expected_rows: operation_expected,
+                available_rows: operation_available,
+            },
+            vector_adapter::VectorMutationEvidence::MissingRescoreRows {
+                case_id: paired_case,
+                source: paired_source,
+                tier: paired_tier,
+                site: paired_site,
+                expected_rows: paired_expected,
+                available_rows: paired_available,
+            },
+        ) => {
+            operation_case == paired_case
+                && vector_paired_sources_match(*operation_source, *paired_source)
+                && operation_tier == paired_tier
+                && operation_site == paired_site
+                && operation_expected == paired_expected
+                && operation_available == paired_available
+        }
+        (
+            vector_adapter::VectorMutationEvidence::RowCancellation {
+                case_id: operation_case,
+                source: operation_source,
+                tier: operation_tier,
+                requested_rows: operation_rows,
+            },
+            vector_adapter::VectorMutationEvidence::RowCancellation {
+                case_id: paired_case,
+                source: paired_source,
+                tier: paired_tier,
+                requested_rows: paired_rows,
+            },
+        ) => {
+            operation_case == paired_case
+                && vector_paired_sources_match(*operation_source, *paired_source)
+                && operation_tier == paired_tier
+                && operation_rows == paired_rows
+        }
+        (
+            vector_adapter::VectorMutationEvidence::AllocationDenial {
+                case_id: operation_case,
+                component: operation_component,
+                items: operation_items,
+                bytes: operation_bytes,
+            },
+            vector_adapter::VectorMutationEvidence::AllocationDenial {
+                case_id: paired_case,
+                component: paired_component,
+                items: paired_items,
+                bytes: paired_bytes,
+            },
+        ) => {
+            operation_case == paired_case
+                && operation_component == paired_component
+                && operation_items == paired_items
+                && operation_bytes == paired_bytes
+        }
+        _ => false,
+    };
+    if aligned {
+        Ok(())
+    } else {
+        Err(format!(
+            "vector paired fault/mutation mismatch: operation={operation:?} paired={paired:?}"
+        ))
+    }
+}
+
+fn validate_vector_receipts(
+    evidence: &vector_adapter::VectorOperationEvidence,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    if evidence.control.operation != evidence.operation
+        || evidence.control.seed != evidence.fixture.seed
+        || evidence.fixture.operation != evidence.operation.key()
+        || evidence.control.namespace
+            != format!("vector-execution/{}", evidence.operation.key()).as_str()
+    {
+        return Err(format!(
+            "vector fixture/control identity mismatch: fixture={:?} control={:?}",
+            evidence.fixture, evidence.control
+        ));
+    }
+    if !evidence.control.isolated_directories {
+        return Err("vector same-seed control did not use isolated directories".to_owned());
+    }
+    if evidence.control.clean_initial_directory.files.is_empty()
+        || evidence.control.fault_initial_directory.files.is_empty()
+    {
+        return Err("vector same-seed fixture directory inventory is empty".to_owned());
+    }
+    if evidence.control.clean_initial_directory != evidence.control.fault_initial_directory {
+        return Err(format!(
+            "vector same-seed fixture directories are not byte-identical: clean={:?} fault={:?}",
+            evidence.control.clean_initial_directory, evidence.control.fault_initial_directory
+        ));
+    }
+    if evidence.control.clean != evidence.control.retry {
+        return Err(format!(
+            "vector same-seed clear retry diverged from clean control: clean={:?} retry={:?}",
+            evidence.control.clean, evidence.control.retry
+        ));
+    }
+    let (receipts, clean_result, fault_result) = if let Some(generic) = &evidence.generic_fault {
+        if generic.operation != evidence.operation
+            || generic.feature_fault != evidence.fault
+            || generic.program_op_index != generic.clean.event.op_index
+            || generic.program_op_index != generic.fault.event.op_index
+            || generic.clean.event.id != generic.schedule.id
+            || generic.fault.event.id != generic.schedule.id
+            || generic.clean.event.site != generic.schedule.site
+            || generic.fault.event.site != generic.schedule.site
+            || generic.clean.event.mode != generic.schedule.mode
+            || generic.fault.event.mode != generic.schedule.mode
+            || generic.clean.event.nth_match != generic.schedule.nth_match
+            || generic.fault.event.nth_match != generic.schedule.nth_match
+            || generic.clean.event.path_contains != generic.schedule.path_contains
+            || generic.fault.event.path_contains != generic.schedule.path_contains
+        {
+            return Err(format!(
+                "vector generic fault schedule/evidence mismatch: {generic:?}"
+            ));
+        }
+        if !generic.isolated_directories
+            || !generic.isolated_runtimes
+            || generic.clean_initial_directory.files.is_empty()
+            || generic.fault_initial_directory.files.is_empty()
+            || generic.clean_initial_directory != generic.fault_initial_directory
+        {
+            return Err(format!(
+                "vector generic fault pair was not isolated and byte-identical: {generic:?}"
+            ));
+        }
+        if !generic.clean.event.fired
+            || !generic.fault.event.fired
+            || generic.clean.event.path != generic.fault.event.path
+        {
+            return Err(format!(
+                "vector generic fault did not fire identically in both legs: clean={:?} fault={:?}",
+                generic.clean.event, generic.fault.event
+            ));
+        }
+        if !generic.clean.feature_receipts.is_empty() {
+            return Err("vector generic clean leg emitted a typed feature receipt".to_owned());
+        }
+        if evidence.fault.is_some() && generic.fault.feature_receipts.is_empty() {
+            return Err(
+                "generic fault blocked the vector feature site before its typed receipt".to_owned(),
+            );
+        }
+        if evidence.fault.is_none() && !generic.fault.feature_receipts.is_empty() {
+            return Err("unarmed vector generic fault leg emitted a feature receipt".to_owned());
+        }
+        let vector_adapter::VectorGenericFaultStatus::StoreResult(clean) = &generic.clean.status
+        else {
+            return Err(format!(
+                "vector generic clean leg did not reach its public query: {:?}",
+                generic.clean.status
+            ));
+        };
+        let vector_adapter::VectorGenericFaultStatus::StoreResult(fault) = &generic.fault.status
+        else {
+            return Err(format!(
+                "vector generic fault leg emitted feature credit without a public query result: {:?}",
+                generic.fault.status
+            ));
+        };
+        (generic.fault.feature_receipts.as_slice(), clean, fault)
+    } else {
+        (
+            evidence.receipts.as_slice(),
+            &evidence.control.clean,
+            &evidence.control.fault,
+        )
+    };
+    let mutation = if let Some(generic) = &evidence.generic_fault {
+        validate_vector_paired_mutation(&evidence.mutation, &generic.feature_mutation)?;
+        &generic.feature_mutation
+    } else {
+        &evidence.mutation
+    };
+    let mut validated = Vec::new();
+    match (&evidence.fault, mutation) {
+        (None, vector_adapter::VectorMutationEvidence::None) => {
+            if !receipts.is_empty() || evidence.forced_child.is_some() {
+                return Err("clean vector operation emitted a production fault receipt".to_owned());
+            }
+            if evidence.control.clean != evidence.control.fault {
+                return Err("clean vector operation changed its fault-leg control".to_owned());
+            }
+        }
+        (
+            Some(vector_adapter::VectorFaultKind::ForcedDispatchBackend),
+            vector_adapter::VectorMutationEvidence::ForcedDispatch { case_id, requested },
+        ) => {
+            if evidence.generic_fault.is_none() && !receipts.is_empty() {
+                return Err("forced backend child leaked an in-process receipt".to_owned());
+            }
+            let child = evidence
+                .forced_child
+                .as_ref()
+                .ok_or_else(|| "forced backend fault omitted fresh-child evidence".to_owned())?;
+            let expected_effect = ProductVectorFaultEffect::ForcedBackend {
+                requested: product_vector_backend(*requested),
+                selected: product_vector_backend(child.pair.observed.backend),
+                kernel: product_vector_kernel(child.pair.observed.kernel),
+                work_items: child.pair.observed.work_items,
+            };
+            if child.requested != *requested
+                || child.transport != vector_adapter::ForcedBackendTransportFormat::TypedBinaryV1
+                || child.pair.input.case_id != *case_id
+                || child.pair.input.backend != *requested
+                || child.pair.observed.case_id != *case_id
+                || child.pair.observed.backend != *requested
+                || !child.pair.input.selected_for_store
+                || !child.pair.observed.selected_for_store
+                || child.fault_result != evidence.control.fault
+                || child.retry_result != evidence.control.retry
+                || evidence.control.clean != evidence.control.fault
+                || child.receipt.campaign() != ProductVectorCampaign::VectorExecution
+                || child.receipt.operation() != ProductVectorOperation::KernelParity
+                || child.receipt.fault() != ProductVectorFaultKind::ForcedDispatchBackend
+                || child.receipt.site()
+                    != ProductVectorFaultSite::KernelDispatchSelectedScoringTable
+                || child.receipt.cardinality() != 1
+                || child.receipt.seed_case_id() != *case_id
+                || child.receipt.effect() != &expected_effect
+                || !child.receipt.result_published()
+            {
+                return Err(format!(
+                    "forced backend child receipt/facts mismatch: mutation={:?} child={child:?}",
+                    mutation
+                ));
+            }
+            if evidence.generic_fault.is_some() {
+                let [receipt] = receipts else {
+                    return Err(format!(
+                        "paired forced-backend fault emitted {} production receipts, expected one",
+                        receipts.len()
+                    ));
+                };
+                validate_vector_receipt_header(
+                    receipt,
+                    ProductVectorOperation::KernelParity,
+                    ProductVectorFaultKind::ForcedDispatchBackend,
+                    ProductVectorFaultSite::KernelDispatchSelectedScoringTable,
+                    *case_id,
+                    true,
+                )?;
+                let expected_effect = ProductVectorFaultEffect::ForcedBackend {
+                    requested: product_vector_backend(*requested),
+                    selected: product_vector_backend(*requested),
+                    kernel: zeppelin_embed::kernels::vector_fault::KernelOperationId::ScoreBit4PreparedBatch,
+                    // The paired fixture scores two persisted rows across three dimensions.
+                    work_items: 6,
+                };
+                if receipt.effect() != &expected_effect
+                    || fault_result.status != vector_oracle::PrimitiveStatus::Ok
+                {
+                    return Err(format!(
+                        "paired forced-backend receipt/public result mismatch: expected_effect={expected_effect:?} receipt={receipt:?} result={fault_result:?}"
+                    ));
+                }
+                validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                    receipt.clone(),
+                ));
+            } else {
+                validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                    child.receipt.clone(),
+                ));
+            }
+        }
+        (
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+            vector_adapter::VectorMutationEvidence::QuantCorruption {
+                case_id,
+                scheme,
+                source,
+                tier,
+                local_row,
+                field,
+            },
+        ) => {
+            let [receipt] = receipts else {
+                return Err(format!(
+                    "quantization fault emitted {} production receipts, expected one",
+                    receipts.len()
+                ));
+            };
+            let (site, effect) = expected_vector_quant_effect(
+                &evidence.fixture,
+                *case_id,
+                *scheme,
+                *source,
+                *tier,
+                *local_row,
+                *field,
+            )?;
+            validate_vector_receipt_header(
+                receipt,
+                ProductVectorOperation::Quantization,
+                ProductVectorFaultKind::CorruptCodesFactors,
+                site,
+                *case_id,
+                false,
+            )?;
+            if receipt.effect() != &effect {
+                return Err(format!(
+                    "typed vector corruption effect mismatch: expected={effect:?} observed={:?}",
+                    receipt.effect()
+                ));
+            }
+            let expected_status = match &effect {
+                ProductVectorFaultEffect::CorruptedPayload {
+                    field: ProductVectorQuantField::OddPadding,
+                    after_bits,
+                    ..
+                } => vector_oracle::PrimitiveStatus::NonZeroPadding {
+                    byte: u8::try_from(*after_bits).map_err(|_| {
+                        format!("Bit4 padding receipt byte does not fit u8: {after_bits}")
+                    })?,
+                    mask: 0x0f,
+                },
+                ProductVectorFaultEffect::CorruptedPayload { local_row, .. } => {
+                    vector_oracle::PrimitiveStatus::NonFiniteScore {
+                        row: u64::from(*local_row),
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "quantization corruption carried a non-corruption effect: {other:?}"
+                    ));
+                }
+            };
+            if fault_result.status != expected_status
+                || !fault_result.candidates.is_empty()
+                || fault_result.returned != 0
+            {
+                return Err(format!(
+                    "quantization corruption returned the wrong public status/result exposure: expected_status={expected_status:?} observed={:?}",
+                    fault_result
+                ));
+            }
+            validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                receipt.clone(),
+            ));
+        }
+        (
+            Some(vector_adapter::VectorFaultKind::MissingRescoreRows),
+            vector_adapter::VectorMutationEvidence::MissingRescoreRows {
+                case_id,
+                source,
+                tier,
+                site,
+                expected_rows,
+                available_rows,
+            },
+        ) => {
+            let [receipt] = receipts else {
+                return Err(format!(
+                    "missing-rescore fault emitted {} production receipts, expected one",
+                    receipts.len()
+                ));
+            };
+            let product_site = match site {
+                vector_adapter::VectorRescoreMutationSite::ExactRescoreRows => {
+                    ProductVectorFaultSite::ExactRescoreRows
+                }
+                vector_adapter::VectorRescoreMutationSite::QueryRescoreRows => {
+                    ProductVectorFaultSite::QueryRescoreRows
+                }
+            };
+            validate_vector_receipt_header(
+                receipt,
+                ProductVectorOperation::Rescore,
+                ProductVectorFaultKind::MissingRescoreRows,
+                product_site,
+                *case_id,
+                false,
+            )?;
+            let vector_oracle::PrimitiveSource::Sealed(segment) = source else {
+                return Err("missing rescore fault named an active source".to_owned());
+            };
+            let effect = ProductVectorFaultEffect::MissingRescoreRows {
+                segment: *segment,
+                expected_rows: *expected_rows,
+                available_rows: *available_rows,
+                requested_tier: product_vector_tier(*tier)?,
+            };
+            if receipt.effect() != &effect {
+                return Err(format!(
+                    "typed missing-rescore effect mismatch: expected={effect:?} observed={:?}",
+                    receipt.effect()
+                ));
+            }
+            let expected_status = vector_oracle::PrimitiveStatus::SegmentGeometry {
+                detail: format!(
+                    "exact scores unavailable for segment {}: expected {expected_rows} rows, got {available_rows}",
+                    evidence_hex(segment)
+                ),
+            };
+            if fault_result.status != expected_status
+                || !fault_result.candidates.is_empty()
+                || fault_result.returned != 0
+            {
+                return Err(format!(
+                    "missing-rescore fault returned the wrong public status/result exposure: expected_status={expected_status:?} observed={:?}",
+                    fault_result
+                ));
+            }
+            validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                receipt.clone(),
+            ));
+        }
+        (
+            Some(vector_adapter::VectorFaultKind::RowCountCancellation),
+            vector_adapter::VectorMutationEvidence::RowCancellation {
+                case_id,
+                source,
+                tier,
+                requested_rows,
+            },
+        ) => {
+            let [receipt] = receipts else {
+                return Err(format!(
+                    "row cancellation emitted {} production receipts, expected one",
+                    receipts.len()
+                ));
+            };
+            validate_vector_receipt_header(
+                receipt,
+                ProductVectorOperation::RowIdentity,
+                ProductVectorFaultKind::RowCountCancellation,
+                ProductVectorFaultSite::ScoredVectorRow,
+                *case_id,
+                false,
+            )?;
+            let ProductVectorFaultEffect::CancelledAfterRows {
+                source: observed_source,
+                requested_tier,
+                local_row,
+                requested_rows: observed_requested,
+                observed_rows,
+            } = receipt.effect()
+            else {
+                return Err(format!(
+                    "typed cancellation receipt carried another effect: {:?}",
+                    receipt.effect()
+                ));
+            };
+            if *observed_source != product_vector_source(*source)
+                || *requested_tier != product_vector_tier(*tier)?
+                || *observed_requested != *requested_rows
+                || *observed_rows != *requested_rows
+                || usize::try_from(*local_row)
+                    .map_or(true, |row| row >= evidence.fixture.documents.len().max(1))
+            {
+                return Err(format!(
+                    "typed cancellation effect differs from the planned source/tier/count: {:?}",
+                    receipt.effect()
+                ));
+            }
+            if fault_result.status != (vector_oracle::PrimitiveStatus::Cancelled { partial: false })
+            {
+                return Err(format!(
+                    "vector cancellation returned the wrong public status: {:?}",
+                    fault_result.status
+                ));
+            }
+            validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                receipt.clone(),
+            ));
+        }
+        (
+            Some(vector_adapter::VectorFaultKind::AllocationDenial),
+            vector_adapter::VectorMutationEvidence::AllocationDenial {
+                case_id,
+                component,
+                items,
+                bytes,
+            },
+        ) => {
+            let [receipt] = receipts else {
+                return Err(format!(
+                    "allocation denial emitted {} production receipts, expected one",
+                    receipts.len()
+                ));
+            };
+            validate_vector_receipt_header(
+                receipt,
+                ProductVectorOperation::RowIdentity,
+                ProductVectorFaultKind::AllocationDenial,
+                ProductVectorFaultSite::SearchGlobalCandidates,
+                *case_id,
+                false,
+            )?;
+            let expected_effect = ProductVectorFaultEffect::AllocationDenied {
+                component: ProductVectorAllocationSite::SearchGlobalCandidates,
+                requested_tier: ProductVectorSearchTier::Exact,
+                items: *items,
+                bytes: *bytes,
+            };
+            if receipt.effect() != &expected_effect {
+                return Err(format!(
+                    "typed allocation-denial effect mismatch: expected={expected_effect:?} observed={:?}",
+                    receipt.effect()
+                ));
+            }
+            let expected_status = vector_oracle::PrimitiveStatus::AllocationFailed {
+                component: (*component).to_owned(),
+                needed: *bytes,
+            };
+            if fault_result.status != expected_status {
+                return Err(format!(
+                    "allocation denial returned the wrong public status: expected {expected_status:?}, observed {:?}",
+                    fault_result.status
+                ));
+            }
+            validated.push(ProductionFeatureReceipt::ValidatedVectorFeature(
+                receipt.clone(),
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "vector fault/mutation mismatch: fault={:?} mutation={:?}",
+                evidence.fault, mutation
+            ));
+        }
+    }
+    if evidence.fault.is_some() && fault_result.generation != clean_result.generation {
+        return Err(format!(
+            "vector fault changed public generation: clean={} fault={}",
+            clean_result.generation, fault_result.generation
+        ));
+    }
+    Ok(validated)
+}
+
+#[cfg(test)]
+mod vector_receipt_credit_tests {
+    use super::*;
+
+    #[test]
+    fn vector_generic_fault_that_blocks_the_feature_site_cannot_earn_feature_credit() {
+        let evidence = vector_adapter::run_vector_operation_with_context(
+            vector_adapter::VectorOperationKind::Quantization,
+            0x5646_5041,
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+            vector_adapter::VectorExecutionContext {
+                program_op_index: 17,
+                generic_fault: Some(vector_adapter::VectorGenericFaultSchedule {
+                    id: "vector-generic-blocks-feature".to_owned(),
+                    site: vector_adapter::VectorGenericFaultSite::Append,
+                    mode: vector_adapter::VectorGenericFaultMode::Eio,
+                    nth_match: 1,
+                    path_contains: Some("wal.ze".to_owned()),
+                }),
+            },
+        )
+        .expect("observe paired generic and vector faults");
+
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("a generic fault that blocked the vector site earned feature credit");
+        };
+        assert!(error.contains("blocked the vector feature site"), "{error}");
+    }
+
+    #[test]
+    fn vector_generic_feature_credit_uses_the_exact_paired_mutation() {
+        let mut evidence = vector_adapter::run_vector_operation_with_context(
+            vector_adapter::VectorOperationKind::Quantization,
+            26,
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+            vector_adapter::VectorExecutionContext {
+                program_op_index: 18,
+                generic_fault: Some(vector_adapter::VectorGenericFaultSchedule {
+                    id: "vector-generic-read-latency".to_owned(),
+                    site: vector_adapter::VectorGenericFaultSite::Read,
+                    mode: vector_adapter::VectorGenericFaultMode::Latency,
+                    nth_match: 1,
+                    path_contains: Some("manifest.ze".to_owned()),
+                }),
+            },
+        )
+        .expect("observe non-blocking paired vector fault");
+
+        let receipts = validate_vector_receipts(&evidence)
+            .expect("exact paired feature mutation should earn one receipt");
+        assert_eq!(receipts.len(), 1);
+
+        evidence
+            .generic_fault
+            .as_mut()
+            .expect("paired generic evidence")
+            .feature_mutation = vector_adapter::VectorMutationEvidence::None;
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("a receipt detached from its paired mutation earned feature credit");
+        };
+        assert!(error.contains("fault/mutation mismatch"), "{error}");
+    }
+
+    #[test]
+    fn vector_generic_forced_backend_credit_uses_the_paired_receipt() {
+        let evidence = vector_adapter::run_vector_operation_with_context(
+            vector_adapter::VectorOperationKind::KernelParity,
+            0,
+            Some(vector_adapter::VectorFaultKind::ForcedDispatchBackend),
+            vector_adapter::VectorExecutionContext {
+                program_op_index: 19,
+                generic_fault: Some(vector_adapter::VectorGenericFaultSchedule {
+                    id: "vector-generic-kernel-read-latency".to_owned(),
+                    site: vector_adapter::VectorGenericFaultSite::Read,
+                    mode: vector_adapter::VectorGenericFaultMode::Latency,
+                    nth_match: 1,
+                    path_contains: Some("manifest.ze".to_owned()),
+                }),
+            },
+        )
+        .expect("observe paired forced backend fault");
+
+        let generic = evidence.generic_fault.as_ref().expect("generic evidence");
+        let [paired_receipt] = generic.fault.feature_receipts.as_slice() else {
+            panic!("paired forced backend leg did not emit one receipt");
+        };
+        let validated_receipts = validate_vector_receipts(&evidence)
+            .expect("paired forced backend receipt should earn credit");
+        let [ProductionFeatureReceipt::ValidatedVectorFeature(validated)] =
+            validated_receipts.as_slice()
+        else {
+            panic!("paired forced backend credit returned another receipt shape");
+        };
+        assert_eq!(validated, paired_receipt);
+        assert_ne!(
+            validated,
+            &evidence.forced_child.expect("child evidence").receipt
+        );
+    }
+
+    #[test]
+    fn vector_generic_evidence_serialization_binds_the_fault_pair() {
+        let evidence = vector_adapter::run_vector_operation_with_context(
+            vector_adapter::VectorOperationKind::Quantization,
+            26,
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+            vector_adapter::VectorExecutionContext {
+                program_op_index: 18,
+                generic_fault: Some(vector_adapter::VectorGenericFaultSchedule {
+                    id: "vector-generic-read-latency".to_owned(),
+                    site: vector_adapter::VectorGenericFaultSite::Read,
+                    mode: vector_adapter::VectorGenericFaultMode::Latency,
+                    nth_match: 1,
+                    path_contains: Some("manifest.ze".to_owned()),
+                }),
+            },
+        )
+        .expect("observe serializable vector fault pair");
+        let serialized = vector_generic_fault_json(evidence.generic_fault.as_ref());
+        let value: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_str(&serialized)
+                .expect("parse vector generic evidence JSON");
+        assert_eq!(value["schedule"]["id"], "vector-generic-read-latency");
+        assert_eq!(value["program_op_index"].as_u64(), Some(18));
+        assert_eq!(
+            value["clean"]["feature_receipts"].as_array().map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            value["fault"]["feature_receipts"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(value["feature_mutation"]["kind"], "quant-corruption");
+        assert_eq!(value["isolated_directories"].as_bool(), Some(true));
+        assert_eq!(value["isolated_runtimes"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn vector_control_credit_requires_isolated_byte_identical_fixture_directories() {
+        let mut evidence = vector_adapter::run_vector_operation(
+            vector_adapter::VectorOperationKind::Quantization,
+            0,
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+        )
+        .expect("observe isolated vector control fixtures");
+        evidence.control.isolated_directories = false;
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("one-directory vector control earned fault credit");
+        };
+        assert!(error.contains("isolated"), "{error}");
+
+        evidence.control.isolated_directories = true;
+        evidence.control.fault_initial_directory.digest ^= 1;
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("non-identical vector fixture directories earned fault credit");
+        };
+        assert!(error.contains("byte-identical"), "{error}");
+    }
+
+    #[test]
+    fn quant_corruption_cannot_earn_fault_credit_with_a_success_status() {
+        let mut evidence = vector_adapter::run_vector_operation(
+            vector_adapter::VectorOperationKind::Quantization,
+            0,
+            Some(vector_adapter::VectorFaultKind::CorruptCodesFactors),
+        )
+        .expect("observe real quantization corruption receipt");
+        evidence.control.fault.status = vector_oracle::PrimitiveStatus::Ok;
+
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("quant corruption receipt earned credit despite public success");
+        };
+        assert!(error.contains("wrong public status"), "{error}");
+    }
+
+    #[test]
+    fn missing_rescore_rows_cannot_earn_fault_credit_with_a_success_status() {
+        let mut evidence = vector_adapter::run_vector_operation(
+            vector_adapter::VectorOperationKind::Rescore,
+            0,
+            Some(vector_adapter::VectorFaultKind::MissingRescoreRows),
+        )
+        .expect("observe real missing-rescore receipt");
+        evidence.control.fault.status = vector_oracle::PrimitiveStatus::Ok;
+
+        let Err(error) = validate_vector_receipts(&evidence) else {
+            panic!("missing-rescore receipt earned credit despite public success");
+        };
+        assert!(error.contains("wrong public status"), "{error}");
+    }
+}
+
+fn vector_json_string_array(values: impl IntoIterator<Item = String>) -> String {
+    values
+        .into_iter()
+        .map(|value| format!("\"{}\"", json_escape(&value)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn vector_json_values<T>(values: &[T], render: impl Fn(&T) -> String) -> String {
+    values.iter().map(render).collect::<Vec<_>>().join(",")
+}
+
+fn vector_json_numbers<T: std::fmt::Display>(values: &[T]) -> String {
+    vector_json_values(values, ToString::to_string)
+}
+
+fn vector_f32_bits_json(values: &[vector_oracle::F32]) -> String {
+    vector_json_values(values, |value| value.0.to_string())
+}
+
+fn vector_document_json(document: vector_oracle::PrimitiveDocument) -> String {
+    format!(
+        "{{\"doc_id_be\":\"{}\",\"revision\":{}}}",
+        evidence_hex(&document.doc_id_be),
+        document.revision
+    )
+}
+
+fn vector_source_json(source: vector_oracle::PrimitiveSource) -> String {
+    match source {
+        vector_oracle::PrimitiveSource::Active => "{\"kind\":\"active\"}".to_owned(),
+        vector_oracle::PrimitiveSource::Sealed(segment) => format!(
+            "{{\"kind\":\"sealed\",\"segment\":\"{}\"}}",
+            evidence_hex(&segment)
+        ),
+    }
+}
+
+fn vector_row_json(row: vector_oracle::PrimitiveRow) -> String {
+    format!(
+        "{{\"source\":{},\"local_row\":{}}}",
+        vector_source_json(row.source),
+        row.local_row
+    )
+}
+
+fn vector_status_json(status: &vector_oracle::PrimitiveStatus) -> String {
+    match status {
+        vector_oracle::PrimitiveStatus::Ok => "{\"kind\":\"ok\"}".to_owned(),
+        vector_oracle::PrimitiveStatus::EmptyVector => "{\"kind\":\"empty-vector\"}".to_owned(),
+        vector_oracle::PrimitiveStatus::DimensionTooLarge { actual, maximum } => format!(
+            "{{\"kind\":\"dimension-too-large\",\"actual\":{actual},\"maximum\":{maximum}}}"
+        ),
+        vector_oracle::PrimitiveStatus::NonFinite { index } => {
+            format!("{{\"kind\":\"non-finite\",\"index\":{index}}}")
+        }
+        vector_oracle::PrimitiveStatus::OutputLength { expected, actual } => {
+            format!("{{\"kind\":\"output-length\",\"expected\":{expected},\"actual\":{actual}}}")
+        }
+        vector_oracle::PrimitiveStatus::CodeLength { expected, actual } => {
+            format!("{{\"kind\":\"code-length\",\"expected\":{expected},\"actual\":{actual}}}")
+        }
+        vector_oracle::PrimitiveStatus::NonZeroPadding { byte, mask } => {
+            format!("{{\"kind\":\"non-zero-padding\",\"byte\":{byte},\"mask\":{mask}}}")
+        }
+        vector_oracle::PrimitiveStatus::CandidateRowCount { expected, actual } => format!(
+            "{{\"kind\":\"candidate-row-count\",\"expected\":{expected},\"actual\":{actual}}}"
+        ),
+        vector_oracle::PrimitiveStatus::CandidateRowOutOfRange { row, rows } => {
+            format!("{{\"kind\":\"candidate-row-out-of-range\",\"row\":{row},\"rows\":{rows}}}")
+        }
+        vector_oracle::PrimitiveStatus::NonFiniteScore { row } => {
+            format!("{{\"kind\":\"non-finite-score\",\"row\":{row}}}")
+        }
+        vector_oracle::PrimitiveStatus::Cancelled { partial } => {
+            format!("{{\"kind\":\"cancelled\",\"partial\":{partial}}}")
+        }
+        vector_oracle::PrimitiveStatus::AllocationFailed { component, needed } => format!(
+            "{{\"kind\":\"allocation-failed\",\"component\":\"{}\",\"needed\":{needed}}}",
+            json_escape(component)
+        ),
+        vector_oracle::PrimitiveStatus::SegmentGeometry { detail } => format!(
+            "{{\"kind\":\"segment-geometry\",\"detail\":\"{}\"}}",
+            json_escape(detail)
+        ),
+    }
+}
+
+fn vector_schedule_key(step: vector_oracle::PublicStoreStep) -> &'static str {
+    match step {
+        vector_oracle::PublicStoreStep::IngestAccepted => "ingest-accepted",
+        vector_oracle::PublicStoreStep::IngestRejected => "ingest-rejected",
+        vector_oracle::PublicStoreStep::Seal => "seal",
+        vector_oracle::PublicStoreStep::PublishPreparedSegment => "publish-prepared-segment",
+        vector_oracle::PublicStoreStep::DeleteAccepted => "delete-accepted",
+        vector_oracle::PublicStoreStep::Reopen => "reopen",
+        vector_oracle::PublicStoreStep::Search => "search",
+    }
+}
+
+fn vector_schedule_json(steps: &[vector_oracle::PublicStoreStep]) -> String {
+    vector_json_string_array(
+        steps
+            .iter()
+            .map(|step| vector_schedule_key(*step).to_owned()),
+    )
+}
+
+fn vector_kernel_key(kernel: vector_oracle::KernelId) -> &'static str {
+    match kernel {
+        vector_oracle::KernelId::DotI8 => "dot-i8",
+        vector_oracle::KernelId::HammingU1 => "hamming-u1",
+        vector_oracle::KernelId::DotF32 => "dot-f32",
+        vector_oracle::KernelId::DotF16 => "dot-f16",
+        vector_oracle::KernelId::DotI8Batch => "dot-i8-batch",
+        vector_oracle::KernelId::HammingU1Batch => "hamming-u1-batch",
+        vector_oracle::KernelId::DotBit4 => "dot-bit4",
+        vector_oracle::KernelId::DotBit4Prepared => "dot-bit4-prepared",
+        vector_oracle::KernelId::DotBit4Batch => "dot-bit4-batch",
+        vector_oracle::KernelId::ScoreBit4PreparedBatch => "score-bit4-prepared-batch",
+        vector_oracle::KernelId::ScoreBit4Ptrs => "score-bit4-ptrs",
+    }
+}
+
+fn vector_kernel_input_json(input: &vector_oracle::KernelInput) -> String {
+    let factors = vector_json_values(&input.bit4_factors, |factor| {
+        format!("[{},{},{}]", factor[0].0, factor[1].0, factor[2].0)
+    });
+    format!(
+        "{{\"case_id\":{},\"backend\":\"{}\",\"selected_for_store\":{},\"work_items\":{},\"kernel\":\"{}\",\"dimension\":{},\"input_offset\":{},\"signed_a\":[{}],\"signed_b\":[{}],\"bytes_a\":[{}],\"bytes_b\":[{}],\"f32_a_bits\":[{}],\"f32_b_bits\":[{}],\"f16_a_bits\":[{}],\"f16_b_bits\":[{}],\"row_bytes\":{},\"batch_rows\":{},\"pointer_order\":[{}],\"query_sum\":{},\"query_scale_half_bits\":{},\"bit4_factor_bits\":[{}]}}",
+        input.case_id,
+        vector_backend_key(input.backend),
+        input.selected_for_store,
+        input.work_items,
+        vector_kernel_key(input.kernel),
+        input.dimension,
+        input.input_offset(),
+        vector_json_numbers(&input.signed_a),
+        vector_json_numbers(&input.signed_b),
+        vector_json_numbers(&input.bytes_a),
+        vector_json_numbers(&input.bytes_b),
+        vector_f32_bits_json(&input.f32_a),
+        vector_f32_bits_json(&input.f32_b),
+        vector_json_numbers(&input.f16_a),
+        vector_json_numbers(&input.f16_b),
+        input.row_bytes,
+        input.batch_rows,
+        vector_json_numbers(&input.pointer_order),
+        input.query_sum,
+        input.query_scale_half.0,
+        factors,
+    )
+}
+
+fn vector_kernel_value_json(value: &vector_oracle::KernelValue) -> String {
+    match value {
+        vector_oracle::KernelValue::S32(value) => {
+            format!("{{\"kind\":\"s32\",\"value\":{value}}}")
+        }
+        vector_oracle::KernelValue::U32(value) => {
+            format!("{{\"kind\":\"u32\",\"value\":{value}}}")
+        }
+        vector_oracle::KernelValue::F32(value) => {
+            format!("{{\"kind\":\"f32\",\"bits\":{}}}", value.0)
+        }
+        vector_oracle::KernelValue::S32s(values) => format!(
+            "{{\"kind\":\"s32s\",\"values\":[{}]}}",
+            vector_json_numbers(values)
+        ),
+        vector_oracle::KernelValue::U32s(values) => format!(
+            "{{\"kind\":\"u32s\",\"values\":[{}]}}",
+            vector_json_numbers(values)
+        ),
+        vector_oracle::KernelValue::F32s(values) => format!(
+            "{{\"kind\":\"f32s\",\"bits\":[{}]}}",
+            vector_f32_bits_json(values)
+        ),
+    }
+}
+
+fn vector_optional_f64_json(value: Option<vector_oracle::F64>) -> String {
+    value.map_or_else(|| "null".to_owned(), |value| value.0.to_string())
+}
+
+fn vector_i24_expected_json(expected: &vector_oracle::I24Expected) -> String {
+    format!(
+        "{{\"case_id\":{},\"backend\":\"{}\",\"kernel\":\"{}\",\"selected_for_store\":{},\"work_items\":{},\"exact\":{},\"reference_bits\":{},\"magnitude_bits\":{},\"tolerance_bits\":{}}}",
+        expected.case_id,
+        vector_backend_key(expected.backend),
+        vector_kernel_key(expected.kernel),
+        expected.selected_for_store,
+        expected.work_items,
+        vector_kernel_value_json(&expected.exact),
+        vector_optional_f64_json(expected.reference),
+        vector_optional_f64_json(expected.magnitude),
+        vector_optional_f64_json(expected.tolerance),
+    )
+}
+
+fn vector_i24_observed_json(observed: &vector_oracle::I24Observed) -> String {
+    format!(
+        "{{\"case_id\":{},\"backend\":\"{}\",\"kernel\":\"{}\",\"value\":{},\"selected_for_store\":{},\"work_items\":{}}}",
+        observed.case_id,
+        vector_backend_key(observed.backend),
+        vector_kernel_key(observed.kernel),
+        vector_kernel_value_json(&observed.value),
+        observed.selected_for_store,
+        observed.work_items,
+    )
+}
+
+fn vector_quant_scheme_key(scheme: vector_oracle::QuantScheme) -> &'static str {
+    match scheme {
+        vector_oracle::QuantScheme::Bit4 => "bit4",
+        vector_oracle::QuantScheme::Int8 => "int8",
+    }
+}
+
+fn vector_quant_input_json(input: &vector_oracle::QuantInput) -> String {
+    let document = input
+        .store
+        .document
+        .map_or_else(|| "null".to_owned(), vector_document_json);
+    format!(
+        "{{\"case_id\":{},\"scheme\":\"{}\",\"row_bits\":[{}],\"query_bits\":[{}],\"query_seed\":{},\"output_len\":{},\"code_len\":{},\"sentinel\":{},\"store\":{{\"generation_before\":{},\"schedule\":[{}],\"document\":{},\"document_visible\":{}}}}}",
+        input.case_id,
+        vector_quant_scheme_key(input.scheme),
+        vector_f32_bits_json(&input.row),
+        vector_f32_bits_json(&input.query),
+        input.query_seed,
+        input.output_len,
+        input.code_len,
+        input.sentinel,
+        input.store.generation_before,
+        vector_schedule_json(&input.store.schedule),
+        document,
+        input.store.document_visible,
+    )
+}
+
+fn vector_quant_success_json(success: &vector_oracle::QuantSuccess) -> String {
+    format!(
+        "{{\"code_bytes\":[{}],\"factor_bits\":[{}],\"query_code_bytes\":[{}],\"query_code_sum\":{},\"query_scale_bits\":{},\"reconstruction_bits\":[{}],\"estimate_bits\":{}}}",
+        vector_json_numbers(&success.code_bytes),
+        vector_f32_bits_json(&success.factor_bits),
+        vector_json_numbers(&success.query_code_bytes),
+        success.query_code_sum,
+        success.query_scale.0,
+        vector_f32_bits_json(&success.reconstruction),
+        success.estimate.0,
+    )
+}
+
+fn vector_quant_result_json(result: &vector_oracle::QuantResult) -> String {
+    let success = result
+        .success
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), vector_quant_success_json);
+    format!(
+        "{{\"status\":{},\"output_after\":[{}],\"success\":{success}}}",
+        vector_status_json(&result.status),
+        vector_json_numbers(&result.output_after),
+    )
+}
+
+fn vector_quant_store_facts_json(facts: &vector_oracle::QuantStoreFacts) -> String {
+    format!(
+        "{{\"ingest_status\":{},\"scan_status\":{},\"generation_before\":{},\"generation_after\":{},\"document_visible\":{},\"persisted_code_bytes\":[{}],\"persisted_factor_bits\":[{}]}}",
+        vector_status_json(&facts.ingest_status),
+        vector_status_json(&facts.scan_status),
+        facts.generation_before,
+        facts.generation_after,
+        facts.document_visible,
+        vector_json_numbers(&facts.persisted_code_bytes),
+        vector_f32_bits_json(&facts.persisted_factor_bits),
+    )
+}
+
+fn vector_i25_observed_json(observed: &vector_oracle::I25Observed) -> String {
+    format!(
+        "{{\"case_id\":{},\"result\":{},\"store\":{}}}",
+        observed.case_id,
+        vector_quant_result_json(&observed.result),
+        vector_quant_store_facts_json(&observed.store),
+    )
+}
+
+fn vector_i25_expected_json(expected: &vector_oracle::I25Expected) -> String {
+    format!(
+        "{{\"input\":{},\"result\":{},\"l2_error_bits\":{},\"l2_bound_bits\":{},\"estimate_reference_bits\":{},\"estimate_error_bits\":{},\"estimate_bound_bits\":{}}}",
+        vector_quant_input_json(&expected.input),
+        vector_quant_result_json(&expected.result),
+        expected.l2_error.0,
+        expected.l2_bound.0,
+        expected.estimate_reference.0,
+        expected.estimate_error.0,
+        expected.estimate_bound.0,
+    )
+}
+
+fn vector_rescore_metric_key(metric: vector_oracle::RescoreMetric) -> &'static str {
+    match metric {
+        vector_oracle::RescoreMetric::InnerProduct => "inner-product",
+        vector_oracle::RescoreMetric::SquaredL2 => "squared-l2",
+    }
+}
+
+fn vector_candidate_mode_json(mode: &vector_oracle::CandidateMode) -> String {
+    match mode {
+        vector_oracle::CandidateMode::Dense { coarse, oversample } => format!(
+            "{{\"kind\":\"dense\",\"coarse_bits\":[{}],\"oversample\":{oversample}}}",
+            vector_f32_bits_json(coarse)
+        ),
+        vector_oracle::CandidateMode::Retained { rows, coarse } => format!(
+            "{{\"kind\":\"retained\",\"rows\":[{}],\"coarse_bits\":[{}]}}",
+            vector_json_numbers(rows),
+            vector_f32_bits_json(coarse),
+        ),
+    }
+}
+
+fn vector_optional_document_json(document: &Option<vector_oracle::PrimitiveDocument>) -> String {
+    document.map_or_else(|| "null".to_owned(), vector_document_json)
+}
+
+fn vector_rescore_input_json(input: &vector_oracle::RescoreInput) -> String {
+    let store = input.store.as_ref().map_or_else(
+        || "null".to_owned(),
+        |store| {
+            let documents = vector_json_values(&store.documents_by_row, vector_optional_document_json);
+            format!(
+                "{{\"source\":{},\"documents_by_row\":[{documents}],\"tier\":{},\"exact_rescore\":{}}}",
+                vector_source_json(store.source),
+                store.tier,
+                store.exact_rescore,
+            )
+        },
+    );
+    format!(
+        "{{\"case_id\":{},\"metric\":\"{}\",\"query_bits\":[{}],\"rows_row_major_bits\":[{}],\"dimension\":{},\"k\":{},\"candidates\":{},\"coarse_rows_touched\":{},\"coarse_bytes_per_row\":{},\"store\":{store}}}",
+        input.case_id,
+        vector_rescore_metric_key(input.metric),
+        vector_f32_bits_json(&input.query),
+        vector_f32_bits_json(&input.rows_row_major),
+        input.dimension,
+        input.k,
+        vector_candidate_mode_json(&input.candidates),
+        input.coarse_rows_touched,
+        input.coarse_bytes_per_row,
+    )
+}
+
+fn vector_rescore_hit_json(hit: &vector_oracle::PrimitiveRescoreHit) -> String {
+    format!("{{\"row\":{},\"score_bits\":{}}}", hit.row, hit.score.0)
+}
+
+fn vector_store_rescore_hit_json(hit: &vector_oracle::StoreRescoreHit) -> String {
+    format!(
+        "{{\"row\":{},\"document\":{},\"score_bits\":{},\"exact_score\":{}}}",
+        vector_row_json(hit.row),
+        vector_optional_document_json(&hit.document),
+        hit.score.0,
+        hit.exact_score,
+    )
+}
+
+fn vector_i26_observed_json(observed: &vector_oracle::I26Observed) -> String {
+    format!(
+        "{{\"case_id\":{},\"primitive_status\":{},\"primitive_hits\":[{}],\"primitive_counts\":[{}],\"tier\":{},\"store_hits\":[{}],\"exact_rescore\":{}}}",
+        observed.case_id,
+        vector_status_json(&observed.primitive_status),
+        vector_json_values(&observed.primitive_hits, vector_rescore_hit_json),
+        vector_json_numbers(&observed.primitive_counts),
+        observed.tier,
+        vector_json_values(&observed.store_hits, vector_store_rescore_hit_json),
+        observed.exact_rescore,
+    )
+}
+
+fn vector_i26_expected_json(expected: &vector_oracle::I26Expected) -> String {
+    let store_tier = expected
+        .store_tier
+        .map_or_else(|| "null".to_owned(), |tier| tier.to_string());
+    format!(
+        "{{\"case_id\":{},\"metric\":\"{}\",\"status\":{},\"hits\":[{}],\"score_tolerance_bits\":[{}],\"candidates_rescored\":{},\"coarse_bytes\":{},\"rescore_bytes\":{},\"total_bytes\":{},\"store_hits\":[{}],\"store_tier\":{store_tier},\"store_exact_rescore\":{}}}",
+        expected.case_id,
+        vector_rescore_metric_key(expected.metric),
+        vector_status_json(&expected.status),
+        vector_json_values(&expected.hits, vector_rescore_hit_json),
+        vector_json_numbers(
+            &expected
+                .score_tolerances
+                .iter()
+                .map(|value| value.0)
+                .collect::<Vec<_>>()
+        ),
+        expected.candidates_rescored,
+        expected.coarse_bytes,
+        expected.rescore_bytes,
+        expected.total_bytes,
+        vector_json_values(&expected.store_hits, vector_store_rescore_hit_json),
+        expected.store_exact_rescore,
+    )
+}
+
+fn vector_identity_mutation_json(mutation: &vector_oracle::IdentityMutation) -> String {
+    match mutation {
+        vector_oracle::IdentityMutation::Ingest(document) => format!(
+            "{{\"kind\":\"ingest\",\"document\":{}}}",
+            vector_document_json(*document)
+        ),
+        vector_oracle::IdentityMutation::Seal(segment) => format!(
+            "{{\"kind\":\"seal\",\"segment\":\"{}\"}}",
+            evidence_hex(segment)
+        ),
+        vector_oracle::IdentityMutation::Reopen => "{\"kind\":\"reopen\"}".to_owned(),
+        vector_oracle::IdentityMutation::Replace(document) => format!(
+            "{{\"kind\":\"replace\",\"document\":{}}}",
+            vector_document_json(*document)
+        ),
+        vector_oracle::IdentityMutation::Delete {
+            doc_id_be,
+            revision,
+        } => format!(
+            "{{\"kind\":\"delete\",\"doc_id_be\":\"{}\",\"revision\":{revision}}}",
+            evidence_hex(doc_id_be)
+        ),
+    }
+}
+
+fn vector_identity_input_json(input: &vector_oracle::IdentityInput) -> String {
+    format!(
+        "{{\"case_id\":{},\"mutations\":[{}],\"query_bits\":[{}],\"k\":{},\"tier\":{},\"observation_phase\":{},\"public_schedule\":[{}]}}",
+        input.case_id,
+        vector_json_values(&input.mutations, vector_identity_mutation_json),
+        vector_f32_bits_json(&input.query),
+        input.k,
+        input.tier,
+        input.observation_phase,
+        vector_schedule_json(&input.public_schedule),
+    )
+}
+
+fn vector_identity_observed_row_json(row: &vector_oracle::IdentityObservedRow) -> String {
+    format!(
+        "{{\"row\":{},\"document\":{},\"score_bits\":{}}}",
+        vector_row_json(row.row),
+        vector_optional_document_json(&row.document),
+        row.score.0,
+    )
+}
+
+fn vector_i27_observed_json(observed: &vector_oracle::I27Observed) -> String {
+    format!(
+        "{{\"case_id\":{},\"rows\":[{}],\"generation\":{},\"phase\":{},\"tier\":{},\"control_rows\":[{}],\"control_generation\":{},\"retry_rows\":[{}],\"retry_generation\":{},\"fault_status\":{},\"retry_status\":{}}}",
+        observed.case_id,
+        vector_json_values(&observed.rows, vector_identity_observed_row_json),
+        observed.generation,
+        observed.phase,
+        observed.tier,
+        vector_json_values(&observed.control_rows, vector_identity_observed_row_json),
+        observed.control_generation,
+        vector_json_values(&observed.retry_rows, vector_identity_observed_row_json),
+        observed.retry_generation,
+        vector_status_json(&observed.fault_status),
+        vector_status_json(&observed.retry_status),
+    )
+}
+
+fn vector_i27_expected_row_json(row: &vector_oracle::IdentityExpectedRow) -> String {
+    format!(
+        "{{\"document\":{},\"row\":{},\"phase\":{}}}",
+        vector_document_json(row.document),
+        vector_row_json(row.row),
+        row.phase,
+    )
+}
+
+fn vector_i27_expected_json(expected: &vector_oracle::I27Expected) -> String {
+    format!(
+        "{{\"case_id\":{},\"visible\":[{}],\"forbidden\":[{}],\"generation\":{},\"phase\":{},\"tier\":{}}}",
+        expected.case_id,
+        vector_json_values(&expected.visible, vector_i27_expected_row_json),
+        vector_json_values(&expected.forbidden, |document| vector_document_json(
+            *document
+        )),
+        expected.generation,
+        expected.phase,
+        expected.tier,
+    )
+}
+
+fn vector_store_result_json(result: &vector_adapter::VectorStoreResultFact) -> String {
+    format!(
+        "{{\"status\":{},\"generation\":{},\"candidates\":[{}],\"dims_touched\":{},\"bytes_read\":{},\"exact_rescore\":{},\"approximate\":{},\"returned\":{}}}",
+        vector_status_json(&result.status),
+        result.generation,
+        vector_json_values(&result.candidates, vector_identity_observed_row_json),
+        result.dims_touched,
+        result.bytes_read,
+        result.exact_rescore,
+        result.approximate,
+        result.returned,
+    )
+}
+
+fn vector_fixture_directory_json(
+    directory: &vector_adapter::VectorFixtureDirectoryEvidence,
+) -> String {
+    let files = directory
+        .files
+        .iter()
+        .map(|file| {
+            format!(
+                "{{\"relative_path\":\"{}\",\"byte_length\":{},\"digest\":{}}}",
+                json_escape(&file.relative_path),
+                file.byte_length,
+                file.digest,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"digest\":{},\"files\":[{files}]}}", directory.digest,)
+}
+
+fn vector_control_json(control: &vector_adapter::VectorControlEvidence) -> String {
+    format!(
+        "{{\"namespace\":\"{}\",\"operation\":\"{}\",\"seed\":{},\"clean\":{},\"fault\":{},\"retry\":{},\"clean_initial_directory\":{},\"fault_initial_directory\":{},\"isolated_directories\":{}}}",
+        json_escape(control.namespace),
+        control.operation.key(),
+        control.seed,
+        vector_store_result_json(&control.clean),
+        vector_store_result_json(&control.fault),
+        vector_store_result_json(&control.retry),
+        vector_fixture_directory_json(&control.clean_initial_directory),
+        vector_fixture_directory_json(&control.fault_initial_directory),
+        control.isolated_directories,
+    )
+}
+
+fn vector_mutation_json(mutation: &vector_adapter::VectorMutationEvidence) -> String {
+    match mutation {
+        vector_adapter::VectorMutationEvidence::None => "{\"kind\":\"none\"}".to_owned(),
+        vector_adapter::VectorMutationEvidence::ForcedDispatch { case_id, requested } => format!(
+            "{{\"kind\":\"forced-dispatch\",\"case_id\":{case_id},\"requested\":\"{}\"}}",
+            vector_backend_key(*requested)
+        ),
+        vector_adapter::VectorMutationEvidence::QuantCorruption {
+            case_id,
+            scheme,
+            source,
+            tier,
+            local_row,
+            field,
+        } => format!(
+            "{{\"kind\":\"quant-corruption\",\"case_id\":{case_id},\"scheme\":\"{}\",\"source\":{},\"tier\":{tier},\"local_row\":{local_row},\"field\":\"{:?}\"}}",
+            vector_quant_scheme_key(*scheme),
+            vector_source_json(*source),
+            field,
+        ),
+        vector_adapter::VectorMutationEvidence::MissingRescoreRows {
+            case_id,
+            source,
+            tier,
+            site,
+            expected_rows,
+            available_rows,
+        } => format!(
+            "{{\"kind\":\"missing-rescore-rows\",\"case_id\":{case_id},\"source\":{},\"tier\":{tier},\"site\":\"{:?}\",\"expected_rows\":{expected_rows},\"available_rows\":{available_rows}}}",
+            vector_source_json(*source),
+            site,
+        ),
+        vector_adapter::VectorMutationEvidence::RowCancellation {
+            case_id,
+            source,
+            tier,
+            requested_rows,
+        } => format!(
+            "{{\"kind\":\"row-cancellation\",\"case_id\":{case_id},\"source\":{},\"tier\":{tier},\"requested_rows\":{requested_rows}}}",
+            vector_source_json(*source),
+        ),
+        vector_adapter::VectorMutationEvidence::AllocationDenial {
+            case_id,
+            component,
+            items,
+            bytes,
+        } => format!(
+            "{{\"kind\":\"allocation-denial\",\"case_id\":{case_id},\"component\":\"{}\",\"items\":{items},\"bytes\":{bytes}}}",
+            json_escape(component),
+        ),
+    }
+}
+
+fn vector_generic_fault_site_key(site: vector_adapter::VectorGenericFaultSite) -> &'static str {
+    match site {
+        vector_adapter::VectorGenericFaultSite::Open => "open",
+        vector_adapter::VectorGenericFaultSite::Read => "read",
+        vector_adapter::VectorGenericFaultSite::ReadRange => "read-range",
+        vector_adapter::VectorGenericFaultSite::Write => "write",
+        vector_adapter::VectorGenericFaultSite::Append => "append",
+        vector_adapter::VectorGenericFaultSite::Sync => "sync",
+        vector_adapter::VectorGenericFaultSite::Rename => "rename",
+        vector_adapter::VectorGenericFaultSite::List => "list",
+        vector_adapter::VectorGenericFaultSite::Delete => "delete",
+        vector_adapter::VectorGenericFaultSite::Clock => "clock",
+    }
+}
+
+fn vector_generic_fault_mode_key(mode: vector_adapter::VectorGenericFaultMode) -> &'static str {
+    match mode {
+        vector_adapter::VectorGenericFaultMode::Eio => "eio",
+        vector_adapter::VectorGenericFaultMode::Eacces => "eacces",
+        vector_adapter::VectorGenericFaultMode::Enospc => "enospc",
+        vector_adapter::VectorGenericFaultMode::BitFlip => "bit-flip",
+        vector_adapter::VectorGenericFaultMode::TornWrite => "torn-write",
+        vector_adapter::VectorGenericFaultMode::Truncate => "truncate",
+        vector_adapter::VectorGenericFaultMode::WrongObject => "wrong-object",
+        vector_adapter::VectorGenericFaultMode::MisdirectedWrite => "misdirected-write",
+        vector_adapter::VectorGenericFaultMode::ZeroFill => "zero-fill",
+        vector_adapter::VectorGenericFaultMode::Latency => "latency",
+        vector_adapter::VectorGenericFaultMode::SilentDrop => "silent-drop",
+        vector_adapter::VectorGenericFaultMode::PostCommitError => "post-commit-error",
+    }
+}
+
+fn vector_generic_fault_stage_key(stage: vector_adapter::VectorGenericFaultStage) -> &'static str {
+    match stage {
+        vector_adapter::VectorGenericFaultStage::Open => "open",
+        vector_adapter::VectorGenericFaultStage::Ingest => "ingest",
+        vector_adapter::VectorGenericFaultStage::Seal => "seal",
+        vector_adapter::VectorGenericFaultStage::Close => "close",
+        vector_adapter::VectorGenericFaultStage::Reopen => "reopen",
+        vector_adapter::VectorGenericFaultStage::Query => "query",
+    }
+}
+
+fn vector_store_error_kind_key(kind: zeppelin_embed::lifecycle::StoreErrorKind) -> &'static str {
+    use zeppelin_embed::lifecycle::StoreErrorKind;
+    match kind {
+        StoreErrorKind::Io => "io",
+        StoreErrorKind::InvalidArgument => "invalid-argument",
+        StoreErrorKind::StoreBusy => "store-busy",
+        StoreErrorKind::Unsupported => "unsupported",
+        StoreErrorKind::Corrupt => "corrupt",
+        StoreErrorKind::BudgetExceeded => "budget-exceeded",
+        StoreErrorKind::OutOfMemory => "out-of-memory",
+        StoreErrorKind::DimensionMismatch => "dimension-mismatch",
+        StoreErrorKind::EpochMismatch => "epoch-mismatch",
+        StoreErrorKind::EpochUndeclared => "epoch-undeclared",
+        StoreErrorKind::EpochUnstamped => "epoch-unstamped",
+        StoreErrorKind::Internal => "internal",
+        StoreErrorKind::EmptyBatch => "empty-batch",
+        StoreErrorKind::Cancelled => "cancelled",
+        StoreErrorKind::ReadOnly => "read-only",
+        StoreErrorKind::Closing => "closing",
+        StoreErrorKind::Closed => "closed",
+        StoreErrorKind::Panic => "panic",
+        StoreErrorKind::Synchronization => "synchronization",
+    }
+}
+
+fn vector_generic_status_json(status: &vector_adapter::VectorGenericFaultStatus) -> String {
+    match status {
+        vector_adapter::VectorGenericFaultStatus::StoreResult(result) => format!(
+            "{{\"kind\":\"store-result\",\"result\":{}}}",
+            vector_store_result_json(result)
+        ),
+        vector_adapter::VectorGenericFaultStatus::StoreFailure { kind } => format!(
+            "{{\"kind\":\"store-failure\",\"error_kind\":\"{}\"}}",
+            vector_store_error_kind_key(*kind)
+        ),
+        vector_adapter::VectorGenericFaultStatus::IngestFailure { status } => format!(
+            "{{\"kind\":\"ingest-failure\",\"status\":{}}}",
+            vector_status_json(status)
+        ),
+    }
+}
+
+fn vector_generic_event_json(event: &vector_adapter::VectorGenericFaultEvent) -> String {
+    let path_contains = event.path_contains.as_ref().map_or_else(
+        || "null".to_owned(),
+        |path| format!("\"{}\"", json_escape(path)),
+    );
+    let path = event.path.as_ref().map_or_else(
+        || "null".to_owned(),
+        |path| format!("\"{}\"", json_escape(path)),
+    );
+    format!(
+        "{{\"id\":\"{}\",\"op_index\":{},\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{},\"path_contains\":{path_contains},\"fired\":{},\"path\":{path}}}",
+        json_escape(&event.id),
+        event.op_index,
+        vector_generic_fault_site_key(event.site),
+        vector_generic_fault_mode_key(event.mode),
+        event.nth_match,
+        event.fired,
+    )
+}
+
+fn vector_generic_leg_json(leg: &vector_adapter::VectorGenericFaultLeg) -> String {
+    let receipts = leg
+        .feature_receipts
+        .iter()
+        .map(|receipt| {
+            production_receipt_json(&ProductionFeatureReceipt::ValidatedVectorFeature(
+                receipt.clone(),
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"stage\":\"{}\",\"status\":{},\"event\":{},\"feature_receipts\":[{receipts}]}}",
+        vector_generic_fault_stage_key(leg.stage),
+        vector_generic_status_json(&leg.status),
+        vector_generic_event_json(&leg.event),
+    )
+}
+
+fn vector_adapter_fault_key(fault: vector_adapter::VectorFaultKind) -> &'static str {
+    match fault {
+        vector_adapter::VectorFaultKind::ForcedDispatchBackend => "forced-dispatch-backend",
+        vector_adapter::VectorFaultKind::CorruptCodesFactors => "corrupt-codes-factors",
+        vector_adapter::VectorFaultKind::MissingRescoreRows => "missing-rescore-rows",
+        vector_adapter::VectorFaultKind::RowCountCancellation => "row-count-cancellation",
+        vector_adapter::VectorFaultKind::AllocationDenial => "allocation-denial",
+    }
+}
+
+fn vector_generic_fault_json(
+    generic: Option<&vector_adapter::VectorGenericFaultEvidence>,
+) -> String {
+    generic.map_or_else(
+        || "null".to_owned(),
+        |generic| {
+            let feature_fault = generic.feature_fault.map_or_else(
+                || "null".to_owned(),
+                |fault| format!("\"{}\"", vector_adapter_fault_key(fault)),
+            );
+            let path_contains = generic.schedule.path_contains.as_ref().map_or_else(
+                || "null".to_owned(),
+                |path| format!("\"{}\"", json_escape(path)),
+            );
+            format!(
+                "{{\"operation\":\"{}\",\"feature_fault\":{feature_fault},\"feature_mutation\":{},\"program_op_index\":{},\"schedule\":{{\"id\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{},\"path_contains\":{path_contains}}},\"clean\":{},\"fault\":{},\"clean_initial_directory\":{},\"fault_initial_directory\":{},\"isolated_directories\":{},\"isolated_runtimes\":{}}}",
+                generic.operation.key(),
+                vector_mutation_json(&generic.feature_mutation),
+                generic.program_op_index,
+                json_escape(&generic.schedule.id),
+                vector_generic_fault_site_key(generic.schedule.site),
+                vector_generic_fault_mode_key(generic.schedule.mode),
+                generic.schedule.nth_match,
+                vector_generic_leg_json(&generic.clean),
+                vector_generic_leg_json(&generic.fault),
+                vector_fixture_directory_json(&generic.clean_initial_directory),
+                vector_fixture_directory_json(&generic.fault_initial_directory),
+                generic.isolated_directories,
+                generic.isolated_runtimes,
+            )
+        },
+    )
+}
+
+fn vector_fixture_inputs_json(inputs: &vector_adapter::VectorPrimitiveInputs) -> String {
+    match inputs {
+        vector_adapter::VectorPrimitiveInputs::I24(inputs) => {
+            vector_json_values(inputs, vector_kernel_input_json)
+        }
+        vector_adapter::VectorPrimitiveInputs::I25(inputs) => {
+            vector_json_values(inputs, vector_quant_input_json)
+        }
+        vector_adapter::VectorPrimitiveInputs::I26(inputs) => {
+            vector_json_values(inputs, vector_rescore_input_json)
+        }
+        vector_adapter::VectorPrimitiveInputs::I27(inputs) => {
+            vector_json_values(inputs, vector_identity_input_json)
+        }
+    }
+}
+
+fn vector_forced_child_json(child: Option<&vector_adapter::ForcedBackendChildEvidence>) -> String {
+    child.map_or_else(
+        || "null".to_owned(),
+        |child| {
+            let transport = match child.transport {
+                vector_adapter::ForcedBackendTransportFormat::TypedBinaryV1 => {
+                    "typed-binary-v1"
+                }
+            };
+            let receipt = production_receipt_json(
+                &ProductionFeatureReceipt::ValidatedVectorFeature(child.receipt.clone()),
+            );
+            format!(
+                "{{\"transport\":\"{transport}\",\"requested\":\"{}\",\"pair\":{{\"input\":{},\"observed\":{}}},\"fault_result\":{},\"retry_result\":{},\"receipt\":{receipt}}}",
+                vector_backend_key(child.requested),
+                vector_kernel_input_json(&child.pair.input),
+                vector_i24_observed_json(&child.pair.observed),
+                vector_store_result_json(&child.fault_result),
+                vector_store_result_json(&child.retry_result),
+            )
+        },
+    )
+}
+
+fn record_vector_family_artifacts(
+    operation: super::campaign::VectorOperation,
+    evidence: &vector_adapter::VectorOperationEvidence,
+    seed: u64,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+) -> Result<(), String> {
+    let input_count = match &evidence.fixture.inputs {
+        vector_adapter::VectorPrimitiveInputs::I24(inputs) => inputs.len(),
+        vector_adapter::VectorPrimitiveInputs::I25(inputs) => inputs.len(),
+        vector_adapter::VectorPrimitiveInputs::I26(inputs) => inputs.len(),
+        vector_adapter::VectorPrimitiveInputs::I27(inputs) => inputs.len(),
+    };
+    let backends = vector_json_string_array(
+        evidence
+            .fixture
+            .backend_inventory
+            .iter()
+            .map(|backend| vector_backend_key(*backend).to_owned()),
+    );
+    let tiers = evidence
+        .fixture
+        .tier_inventory
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let sources = vector_json_values(&evidence.fixture.source_inventory, |source| {
+        vector_source_json(*source)
+    });
+    let documents = vector_json_values(&evidence.fixture.documents, |document| {
+        vector_document_json(*document)
+    });
+    let public_schedule = vector_schedule_json(&evidence.fixture.public_schedule);
+    let inputs = vector_fixture_inputs_json(&evidence.fixture.inputs);
+    let forced_child = vector_forced_child_json(evidence.forced_child.as_ref());
+    let generic_fault = vector_generic_fault_json(evidence.generic_fault.as_ref());
+    let retained_fixture = vector_adapter::encode_vector_fixture(evidence)?;
+    let retained_fixture_hex = evidence_hex(&retained_fixture);
+    let retained_fixture_digest = retained_fixture
+        .get(retained_fixture.len().saturating_sub(32)..)
+        .ok_or_else(|| "vector retained fixture omitted its SHA-256".to_owned())?;
+    family_artifact_records
+        .entry("fixture.json")
+        .or_default()
+        .push(format!(
+            "{{\"campaign\":\"vector-execution\",\"namespace\":\"{}\",\"operation\":\"{}\",\"seed\":{seed},\"input_count\":{input_count},\"inputs\":[{inputs}],\"backend_inventory\":[{backends}],\"tier_inventory\":[{tiers}],\"source_inventory\":[{sources}],\"documents\":[{documents}],\"public_schedule\":[{public_schedule}],\"forced_child\":{forced_child},\"generic_fault\":{generic_fault},\"retained_fixture_version\":\"{}\",\"retained_fixture_bytes\":{},\"retained_fixture_sha256\":\"{}\",\"retained_fixture_hex\":\"{retained_fixture_hex}\"}}",
+            json_escape(evidence.fixture.namespace),
+            json_escape(operation.key()),
+            vector_adapter::VECTOR_FIXTURE_CODEC_VERSION,
+            retained_fixture.len(),
+            evidence_hex(retained_fixture_digest),
+        ));
+
+    match &evidence.invariant {
+        vector_adapter::VectorInvariantEvidence::I24(pairs) => {
+            let all_backends = [
+                vector_oracle::BackendId::Scalar,
+                vector_oracle::BackendId::NeonWiden,
+                vector_oracle::BackendId::NeonDotprodU4,
+                vector_oracle::BackendId::NeonI8mm,
+                vector_oracle::BackendId::NeonDotprodU2,
+                vector_oracle::BackendId::NeonDotprodU6,
+                vector_oracle::BackendId::NeonDotprodU8,
+                vector_oracle::BackendId::NeonDotprodU4Prefetch,
+                vector_oracle::BackendId::Avx2,
+            ];
+            let available = evidence
+                .fixture
+                .backend_inventory
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let unavailable = vector_json_string_array(
+                all_backends
+                    .into_iter()
+                    .filter(|backend| !available.contains(backend))
+                    .map(|backend| vector_backend_key(backend).to_owned()),
+            );
+            let selected = vector_json_string_array(
+                pairs
+                    .iter()
+                    .filter(|pair| pair.observed.selected_for_store)
+                    .map(|pair| vector_backend_key(pair.observed.backend).to_owned())
+                    .collect::<BTreeSet<_>>(),
+            );
+            let mut invocations = BTreeMap::<vector_oracle::BackendId, u64>::new();
+            for pair in pairs {
+                let count = invocations.entry(pair.observed.backend).or_default();
+                *count = count.saturating_add(1);
+            }
+            let invocation_counts = invocations
+                .into_iter()
+                .map(|(backend, count)| format!("\"{}\":{count}", vector_backend_key(backend)))
+                .collect::<Vec<_>>()
+                .join(",");
+            family_artifact_records
+                .entry("backend-inventory.json")
+                .or_default()
+                .push(format!(
+                    "{{\"campaign\":\"vector-execution\",\"operation\":\"kernel-parity\",\"seed\":{seed},\"host\":{{\"os\":\"{}\",\"arch\":\"{}\"}},\"available\":[{backends}],\"unavailable\":[{unavailable}],\"selected\":[{selected}],\"invocation_counts\":{{{invocation_counts}}}}}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                ));
+        }
+        vector_adapter::VectorInvariantEvidence::I25(pairs) => {
+            let records = family_artifact_records
+                .entry("quantization.jsonl")
+                .or_default();
+            for pair in pairs {
+                records.push(format!(
+                    "{{\"campaign\":\"vector-execution\",\"operation\":\"quantization\",\"checker_id\":\"{}\",\"seed\":{seed},\"case_id\":{},\"scheme\":\"{}\",\"input\":{},\"observed\":{}}}",
+                    vector_oracle::I25_CHECKER_ID,
+                    pair.input.case_id,
+                    vector_quant_scheme_key(pair.input.scheme),
+                    vector_quant_input_json(&pair.input),
+                    vector_i25_observed_json(&pair.observed),
+                ));
+            }
+        }
+        vector_adapter::VectorInvariantEvidence::I26(pairs) => {
+            let records = family_artifact_records.entry("rescore.jsonl").or_default();
+            for pair in pairs {
+                records.push(format!(
+                    "{{\"campaign\":\"vector-execution\",\"operation\":\"rescore\",\"checker_id\":\"{}\",\"seed\":{seed},\"case_id\":{},\"metric\":\"{}\",\"tier\":{},\"input\":{},\"observed\":{}}}",
+                    vector_oracle::I26_CHECKER_ID,
+                    pair.input.case_id,
+                    vector_rescore_metric_key(pair.input.metric),
+                    pair.observed.tier,
+                    vector_rescore_input_json(&pair.input),
+                    vector_i26_observed_json(&pair.observed),
+                ));
+            }
+        }
+        vector_adapter::VectorInvariantEvidence::I27(pairs) => {
+            let records = family_artifact_records.entry("identity.jsonl").or_default();
+            for pair in pairs {
+                records.push(format!(
+                    "{{\"campaign\":\"vector-execution\",\"operation\":\"row-identity\",\"checker_id\":\"{}\",\"seed\":{seed},\"case_id\":{},\"phase\":{},\"tier\":{},\"input\":{},\"observed\":{}}}",
+                    vector_oracle::I27_CHECKER_ID,
+                    pair.input.case_id,
+                    pair.input.observation_phase,
+                    pair.input.tier,
+                    vector_identity_input_json(&pair.input),
+                    vector_i27_observed_json(&pair.observed),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn vector_tier_key(tier: u8) -> Result<&'static str, String> {
+    match tier {
+        0 => Ok("auto"),
+        1 => Ok("exact"),
+        2 => Ok("scan"),
+        3 => Ok("graph"),
+        other => Err(format!("unknown vector tier id {other}")),
+    }
+}
+
+fn record_i24_coverage(pair: &vector_adapter::I24EvidencePair, coverage: &mut CoverageRegistry) {
+    let backend = vector_backend_key(pair.input.backend);
+    if pair.input.selected_for_store {
+        coverage.hit(format!("I24.store-selected.{backend}"));
+        return;
+    }
+    coverage.hit(format!(
+        "I24.kernel.{}.backend.{backend}.dimension.{}.offset.{}",
+        vector_kernel_key(pair.input.kernel),
+        pair.input.dimension,
+        pair.input.input_offset(),
+    ));
+    coverage.hit(format!("kernel.backend.{backend}"));
+    match pair.input.kernel {
+        vector_oracle::KernelId::DotF32 => {
+            let cancellation = [1.0e20_f32, 1.0, -1.0e20, -1.0].map(f32::to_bits);
+            let cancellation_present = pair.input.f32_a.len() >= cancellation.len()
+                && pair.input.f32_b.len() >= cancellation.len()
+                && pair.input.f32_a[..cancellation.len()]
+                    .iter()
+                    .map(|value| value.0)
+                    .eq(cancellation)
+                && pair.input.f32_b[..cancellation.len()]
+                    .iter()
+                    .all(|value| value.0 == 1.0_f32.to_bits());
+            if cancellation_present {
+                coverage.hit("I24.f32.cancellation-heavy-alternating-magnitude");
+            }
+            let seeded_layout_present = pair.input.f32_a.len() > 11
+                && pair.input.f32_a[4].0 == 0x8000_0000
+                && pair.input.f32_a[5].0 == 0x0000_0001
+                && pair.input.f32_a[8].0 == f32::INFINITY.to_bits()
+                && pair.input.f32_a[9].0 == f32::NEG_INFINITY.to_bits()
+                && f32::from_bits(pair.input.f32_a[10].0).is_nan()
+                && [6_usize, 7, 11]
+                    .into_iter()
+                    .all(|index| f32::from_bits(pair.input.f32_a[index].0).is_finite());
+            if seeded_layout_present {
+                coverage.hit("I24.f32.seeded-raw-finite");
+            }
+            for (label, present) in [
+                (
+                    "neg-zero",
+                    pair.input.f32_a.iter().any(|value| value.0 == 0x8000_0000),
+                ),
+                (
+                    "subnormal",
+                    pair.input
+                        .f32_a
+                        .iter()
+                        .any(|value| value.0 & 0x7f80_0000 == 0 && value.0 & 0x007f_ffff != 0),
+                ),
+                (
+                    "pos-inf",
+                    pair.input.f32_a.iter().any(|value| value.0 == 0x7f80_0000),
+                ),
+                (
+                    "neg-inf",
+                    pair.input.f32_a.iter().any(|value| value.0 == 0xff80_0000),
+                ),
+                (
+                    "nan",
+                    pair.input
+                        .f32_a
+                        .iter()
+                        .any(|value| f32::from_bits(value.0).is_nan()),
+                ),
+            ] {
+                if present {
+                    coverage.hit(format!("I24.special.f32.{label}"));
+                }
+            }
+        }
+        vector_oracle::KernelId::DotF16 => {
+            for (label, present) in [
+                ("neg-zero", pair.input.f16_a.contains(&0x8000)),
+                (
+                    "subnormal",
+                    pair.input
+                        .f16_a
+                        .iter()
+                        .any(|value| value & 0x7c00 == 0 && value & 0x03ff != 0),
+                ),
+                ("pos-inf", pair.input.f16_a.contains(&0x7c00)),
+                ("neg-inf", pair.input.f16_a.contains(&0xfc00)),
+                (
+                    "nan",
+                    pair.input
+                        .f16_a
+                        .iter()
+                        .any(|value| value & 0x7c00 == 0x7c00 && value & 0x03ff != 0),
+                ),
+            ] {
+                if present {
+                    coverage.hit(format!("I24.special.f16.{label}"));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn vector_nonfinite_label(value: vector_oracle::F32) -> Option<&'static str> {
+    let value = value.to_float();
+    if value.is_nan() {
+        Some("nan")
+    } else if value == f32::INFINITY {
+        Some("pos-inf")
+    } else if value == f32::NEG_INFINITY {
+        Some("neg-inf")
+    } else {
+        None
+    }
+}
+
+fn vector_position_label(index: usize, len: usize) -> &'static str {
+    if index == 0 {
+        "first"
+    } else if index + 1 == len {
+        "last"
+    } else {
+        "middle"
+    }
+}
+
+fn record_i25_coverage(pair: &vector_adapter::I25EvidencePair, coverage: &mut CoverageRegistry) {
+    let scheme = vector_quant_scheme_key(pair.input.scheme);
+    let expected_len = match pair.input.scheme {
+        vector_oracle::QuantScheme::Bit4 => pair.input.row.len().div_ceil(2),
+        vector_oracle::QuantScheme::Int8 => pair.input.row.len(),
+    } as u64;
+    if pair.input.row.is_empty() {
+        coverage.hit(format!("I25.{scheme}.empty"));
+    }
+    if pair.input.row.len() == 65_537 {
+        coverage.hit(format!("I25.{scheme}.dimension-65537"));
+    }
+    if pair.input.output_len < expected_len {
+        coverage.hit(format!("I25.{scheme}.output-short"));
+    } else if pair.input.output_len > expected_len {
+        coverage.hit(format!("I25.{scheme}.output-long"));
+    }
+    if pair.input.code_len < expected_len {
+        coverage.hit(format!("I25.{scheme}.code-short"));
+    } else if pair.input.code_len > expected_len {
+        coverage.hit(format!("I25.{scheme}.code-long"));
+    }
+    for (side, values) in [("row", &pair.input.row), ("query", &pair.input.query)] {
+        for (index, value) in values.iter().copied().enumerate() {
+            if let Some(class) = vector_nonfinite_label(value) {
+                coverage.hit(format!(
+                    "I25.{scheme}.{side}.{class}.{}",
+                    vector_position_label(index, values.len())
+                ));
+            }
+        }
+    }
+    if matches!(
+        pair.observed.result.status,
+        vector_oracle::PrimitiveStatus::Ok
+    ) && pair.observed.result.success.is_some()
+    {
+        let dimension_class = if pair.input.row.len().is_multiple_of(2) {
+            "even"
+        } else {
+            "odd"
+        };
+        coverage.hit(format!("I25.{scheme}.positive.{dimension_class}"));
+        let row_bits = pair
+            .input
+            .row
+            .iter()
+            .map(|value| value.0)
+            .collect::<Vec<_>>();
+        if !row_bits.is_empty() && row_bits.iter().all(|value| *value == row_bits[0]) {
+            coverage.hit(format!("I25.{scheme}.positive.constant"));
+        }
+        if row_bits.contains(&0) && row_bits.contains(&0x8000_0000) {
+            coverage.hit(format!("I25.{scheme}.positive.signed-zero"));
+        }
+        if row_bits
+            .iter()
+            .any(|bits| bits & 0x7f80_0000 == 0 && bits & 0x007f_ffff != 0)
+        {
+            coverage.hit(format!("I25.{scheme}.positive.subnormal"));
+        }
+        if row_bits
+            .iter()
+            .any(|bits| bits & 0x7fff_ffff == f32::MAX.to_bits())
+        {
+            coverage.hit(format!("I25.{scheme}.positive.extreme-finite"));
+        }
+        if row_bits
+            == [
+                (-127.0_f32).to_bits(),
+                0.5_f32.to_bits(),
+                127.0_f32.to_bits(),
+            ]
+        {
+            coverage.hit(format!("I25.{scheme}.positive.halfway"));
+        }
+        if row_bits
+            == [
+                1.0_f32.to_bits(),
+                1.0_f32.to_bits(),
+                0.5_f32.to_bits(),
+                (-0.5_f32).to_bits(),
+            ]
+        {
+            coverage.hit(format!("I25.{scheme}.positive.threshold-tie"));
+        }
+    }
+    match pair.input.store.schedule.as_slice() {
+        [vector_oracle::PublicStoreStep::IngestAccepted]
+            if pair.input.scheme == vector_oracle::QuantScheme::Bit4
+                && pair.observed.store.document_visible =>
+        {
+            coverage.hit("I25.bit4.store-accepted-visible");
+        }
+        [
+            vector_oracle::PublicStoreStep::IngestAccepted,
+            vector_oracle::PublicStoreStep::Seal,
+            vector_oracle::PublicStoreStep::Reopen,
+            vector_oracle::PublicStoreStep::Search,
+        ] if pair.input.scheme == vector_oracle::QuantScheme::Int8
+            && pair.observed.store.generation_after
+                == pair.observed.store.generation_before.saturating_add(2)
+            && pair.observed.store.document_visible
+            && pair.observed.store.scan_status == vector_oracle::PrimitiveStatus::Ok
+            && !pair.observed.store.persisted_code_bytes.is_empty()
+            && !pair.observed.store.persisted_factor_bits.is_empty() =>
+        {
+            coverage.hit("I25.int8.store-published");
+        }
+        [vector_oracle::PublicStoreStep::IngestRejected]
+            if pair.input.scheme == vector_oracle::QuantScheme::Bit4
+                && matches!(
+                    pair.observed.store.ingest_status,
+                    vector_oracle::PrimitiveStatus::NonFinite { .. }
+                ) =>
+        {
+            coverage.hit("I25.bit4.store-rejected-nonfinite");
+        }
+        _ => {}
+    }
+}
+
+fn record_i26_coverage(
+    pair: &vector_adapter::I26EvidencePair,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    match &pair.input.candidates {
+        vector_oracle::CandidateMode::Dense { .. } => coverage.hit("I26.mode.dense"),
+        vector_oracle::CandidateMode::Retained { rows, coarse } => {
+            coverage.hit("I26.mode.retained");
+            if rows.len() != coarse.len() {
+                coverage.hit("I26.reject.candidate-count");
+            } else if rows.iter().any(|row| {
+                u64::from(*row)
+                    >= pair.input.rows_row_major.len() as u64 / pair.input.dimension.max(1)
+            }) {
+                coverage.hit("I26.reject.candidate-out-of-range");
+            } else if coarse.iter().any(|score| !score.to_float().is_finite()) {
+                coverage.hit("I26.reject.nonfinite-coarse");
+            }
+        }
+    }
+    if let Some(store) = &pair.input.store {
+        let source = match store.source {
+            vector_oracle::PrimitiveSource::Active => "active",
+            vector_oracle::PrimitiveSource::Sealed(_) => "sealed",
+        };
+        let tier = match (source, store.tier, store.exact_rescore) {
+            ("active", 0, false) => "auto-estimated",
+            ("active", 1, true) => "exact",
+            ("active", 2, false) => "scan",
+            ("sealed", 0, true) => "auto-graph",
+            ("sealed", 1, true) => "exact",
+            ("sealed", 3, true) => "graph",
+            _ => {
+                return Err(format!(
+                    "unclassified passing I26 Store cell source={source} tier={} exact_rescore={}",
+                    store.tier, store.exact_rescore
+                ));
+            }
+        };
+        coverage.hit(format!("I26.store.{source}.{tier}"));
+        if source == "active" && tier == "exact" {
+            let physical_documents = store
+                .documents_by_row
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            let observed_documents = pair
+                .observed
+                .store_hits
+                .iter()
+                .filter_map(|hit| hit.document)
+                .collect::<Vec<_>>();
+            let observed_rows = pair
+                .observed
+                .store_hits
+                .iter()
+                .map(|hit| hit.row.local_row)
+                .collect::<Vec<_>>();
+            let equal_scores = pair.observed.store_hits.first().is_some_and(|first| {
+                pair.observed
+                    .store_hits
+                    .iter()
+                    .all(|hit| hit.score == first.score)
+            });
+            let physical_descending = physical_documents.windows(2).all(|pair| pair[0] > pair[1]);
+            let observed_ascending = observed_documents.windows(2).all(|pair| pair[0] < pair[1]);
+            let rows_descending = observed_rows.windows(2).all(|pair| pair[0] > pair[1]);
+            if physical_documents.len() >= 3
+                && physical_documents.len() == observed_documents.len()
+                && physical_descending
+                && observed_ascending
+                && rows_descending
+                && equal_scores
+            {
+                coverage.hit("I26.store.active.exact.anti-correlated-document-tie");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_i27_coverage(
+    pair: &vector_adapter::I27EvidencePair,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    coverage.hit(format!(
+        "I27.phase.{}.tier.{}",
+        pair.input.observation_phase,
+        vector_tier_key(pair.input.tier)?
+    ));
+    let sealed = pair
+        .input
+        .mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            vector_oracle::IdentityMutation::Seal(segment) => Some(*segment),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for row in &pair.observed.rows {
+        if row.row.local_row != 0 {
+            continue;
+        }
+        match row.row.source {
+            vector_oracle::PrimitiveSource::Active => {
+                coverage.hit("I27.physical.active-row-zero");
+            }
+            vector_oracle::PrimitiveSource::Sealed(segment) if sealed.first() == Some(&segment) => {
+                coverage.hit("I27.physical.first-sealed-row-zero");
+            }
+            vector_oracle::PrimitiveSource::Sealed(segment) if sealed.get(1) == Some(&segment) => {
+                coverage.hit("I27.physical.second-sealed-row-zero");
+            }
+            vector_oracle::PrimitiveSource::Sealed(_) => {}
+        }
+    }
+    for mutation in &pair.input.mutations {
+        match mutation {
+            vector_oracle::IdentityMutation::Replace(_) => {
+                coverage.hit("I27.transition.replace");
+            }
+            vector_oracle::IdentityMutation::Delete { .. } => {
+                coverage.hit("I27.transition.delete");
+            }
+            vector_oracle::IdentityMutation::Reopen => {
+                coverage.hit("I27.transition.reopen");
+            }
+            vector_oracle::IdentityMutation::Ingest(_)
+            | vector_oracle::IdentityMutation::Seal(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn record_vector_inventory_coverage(coverage: &mut CoverageRegistry) {
+    const ALL_BACKENDS: [&str; 9] = [
+        "scalar",
+        "neon-widen",
+        "neon-dotprod-u4",
+        "neon-i8mm",
+        "neon-dotprod-u2",
+        "neon-dotprod-u6",
+        "neon-dotprod-u8",
+        "neon-dotprod-u4-prefetch",
+        "avx2",
+    ];
+    let available = KernelVariant::available()
+        .map(|variant| variant.backend_id().as_str())
+        .collect::<BTreeSet<_>>();
+    for backend in ALL_BACKENDS {
+        let state = if available.contains(backend) {
+            "available"
+        } else {
+            "unavailable"
+        };
+        coverage.hit(format!("I24.backend.{state}.{backend}"));
+    }
+}
+
+fn record_vector_fault_coverage(
+    evidence: &vector_adapter::VectorOperationEvidence,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    let mutation = evidence
+        .generic_fault
+        .as_ref()
+        .map_or(&evidence.mutation, |generic| &generic.feature_mutation);
+    let key = match *mutation {
+        vector_adapter::VectorMutationEvidence::None => return Ok(()),
+        vector_adapter::VectorMutationEvidence::ForcedDispatch { .. } => {
+            "fault.forced-backend.kernel-dispatch-selected-scoring-table"
+        }
+        vector_adapter::VectorMutationEvidence::QuantCorruption { field, .. } => match field {
+            vector_adapter::VectorQuantMutationField::Bit4OddPadding => {
+                "fault.quant.bit4-odd-padding.scan-bit4-code-view"
+            }
+            vector_adapter::VectorQuantMutationField::Bit4Correction => {
+                "fault.quant.bit4-correction.scan-bit4-factor-view"
+            }
+            vector_adapter::VectorQuantMutationField::Int8Scale => {
+                "fault.quant.int8-scale.scan-int8-factor-view"
+            }
+        },
+        vector_adapter::VectorMutationEvidence::MissingRescoreRows { tier, site, .. } => {
+            match (tier, site) {
+                (1, vector_adapter::VectorRescoreMutationSite::ExactRescoreRows) => {
+                    "fault.rescore.exact.exact-rescore-rows"
+                }
+                (3, vector_adapter::VectorRescoreMutationSite::QueryRescoreRows) => {
+                    "fault.rescore.graph.query-rescore-rows"
+                }
+                _ => return Err("unclassified passing vector rescore fault".to_owned()),
+            }
+        }
+        vector_adapter::VectorMutationEvidence::RowCancellation { source, tier, .. } => {
+            match ((evidence.fixture.seed / 6) % 4, source, tier) {
+                (0, vector_oracle::PrimitiveSource::Active, 1) => "fault.cancel.active-exact",
+                (1, vector_oracle::PrimitiveSource::Sealed(_), 2) => {
+                    "fault.cancel.sealed-bit4-scan"
+                }
+                (2, vector_oracle::PrimitiveSource::Sealed(_), 2) => {
+                    "fault.cancel.sealed-int8-scan"
+                }
+                (3, vector_oracle::PrimitiveSource::Sealed(_), 3) => "fault.cancel.sealed-graph",
+                _ => return Err("unclassified passing vector cancellation fault".to_owned()),
+            }
+        }
+        vector_adapter::VectorMutationEvidence::AllocationDenial { .. } => {
+            "fault.allocation.exact.search-global-candidates"
+        }
+    };
+    coverage.hit(key);
+    Ok(())
+}
+
+fn storage_episode_oracle_attestation(
+    outcome: &RunOutcome,
+    oracle_records: &[OracleRecord],
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
+    let fixture = outcome
+        .family_artifact_bytes
+        .get("storage-fixture.json")
+        .ok_or_else(|| "storage episode omitted storage-fixture.json".to_owned())?;
+    let invariant_record = |invariant: u8,
+                            checker_id: &'static str,
+                            required_operation: &'static str,
+                            allowed_operations: &[&'static str]| {
+        let records = oracle_records
+            .iter()
+            .filter(|record| record.invariant == invariant)
+            .collect::<Vec<_>>();
+        if records.is_empty() {
+            return Err(format!("storage I{invariant} episode comparison is absent"));
+        }
+        if records.iter().any(|record| {
+            record.checker_id != checker_id
+                || !allowed_operations.contains(&record.operation)
+                || record.canonical_version
+                    != zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION
+        }) {
+            return Err(format!(
+                "storage I{invariant} episode records do not use the exact checker/operation/canonical contract"
+            ));
+        }
+        let mut operations = BTreeMap::<&'static str, u64>::new();
+        for record in &records {
+            *operations.entry(record.operation).or_default() += 1;
+        }
+        if operations.get(required_operation).copied().unwrap_or(0) == 0 {
+            return Err(format!(
+                "storage I{invariant} episode omitted required operation {required_operation}"
+            ));
+        }
+        let comparisons = u64::try_from(records.len())
+            .map_err(|_| format!("storage I{invariant} comparison count exceeds u64"))?;
+        let passes = u64::try_from(records.iter().filter(|record| record.passed).count())
+            .map_err(|_| format!("storage I{invariant} pass count exceeds u64"))?;
+        if comparisons != passes
+            || records
+                .iter()
+                .any(|record| record.first_difference.is_some())
+        {
+            return Err(format!(
+                "storage I{invariant} episode contains a failed comparison"
+            ));
+        }
+        Ok(zeppelin_embed_bench::harness_json::json!({
+            "checker_id": checker_id,
+            "operations": operations,
+            "canonical_version": zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+            "comparisons": comparisons,
+            "passes": passes,
+            "input_digest": super::artifacts::evidence_digest(
+                &records.iter().map(|record| record.input_digest.as_bytes()).collect::<Vec<_>>()
+            ),
+            "observed_digest": super::artifacts::evidence_digest(
+                &records.iter().map(|record| record.observed_digest.as_bytes()).collect::<Vec<_>>()
+            ),
+            "first_differences": comparisons.saturating_sub(passes),
+        }))
+    };
+    let per_invariant_comparisons = BTreeMap::from([
+        (
+            "I15".to_owned(),
+            invariant_record(
+                15,
+                storage_oracle::I15_CHECKER_ID,
+                "publication",
+                &["publication"],
+            )?,
+        ),
+        (
+            "I16".to_owned(),
+            invariant_record(
+                16,
+                storage_oracle::I16_CHECKER_ID,
+                "wal-prefix",
+                &["wal-prefix"],
+            )?,
+        ),
+        (
+            "I17".to_owned(),
+            invariant_record(17, storage_oracle::I17_CHECKER_ID, "retry", &["retry"])?,
+        ),
+        (
+            "I18".to_owned(),
+            invariant_record(
+                18,
+                storage_oracle::I18_CHECKER_ID,
+                "format-check",
+                &["format-check", "wal-prefix"],
+            )?,
+        ),
+        (
+            "I19".to_owned(),
+            invariant_record(
+                19,
+                storage_oracle::I19_CHECKER_ID,
+                "orphan-cleanup",
+                &["orphan-cleanup"],
+            )?,
+        ),
+    ]);
+
+    let mut control_operations = BTreeMap::<String, u64>::new();
+    for line in outcome
+        .controls_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse storage control evidence: {error}"))?;
+        if record["campaign"].as_str() != Some("storage-durability") {
+            return Err("storage control stream contained another campaign".to_owned());
+        }
+        let operation = record["operation"]
+            .as_str()
+            .ok_or_else(|| "storage control omitted operation".to_owned())?;
+        *control_operations.entry(operation.to_owned()).or_default() += 1;
+    }
+
+    let mut receipt_faults = BTreeMap::<String, u64>::new();
+    let mut receipt_sites = BTreeMap::<String, u64>::new();
+    let mut receipt_records = 0_u64;
+    for line in outcome
+        .receipts_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse storage receipt evidence: {error}"))?;
+        if record["campaign"].as_str() != Some("storage-durability") {
+            return Err("storage receipt stream contained another campaign".to_owned());
+        }
+        let fault = record["fault"]
+            .as_str()
+            .ok_or_else(|| "storage receipt omitted fault".to_owned())?;
+        let site = record["site"]
+            .as_str()
+            .ok_or_else(|| "storage receipt omitted site".to_owned())?;
+        let cardinality = record["cardinality"]
+            .as_u64()
+            .ok_or_else(|| "storage receipt omitted cardinality".to_owned())?;
+        *receipt_faults.entry(fault.to_owned()).or_default() += cardinality;
+        *receipt_sites.entry(site.to_owned()).or_default() += cardinality;
+        receipt_records = receipt_records.saturating_add(cardinality);
+    }
+
+    let operation_counts = [
+        "wal-prefix",
+        "publication",
+        "retry",
+        "format-check",
+        "orphan-cleanup",
+    ]
+    .into_iter()
+    .map(|operation| {
+        (
+            operation.to_owned(),
+            outcome
+                .coverage
+                .count(&format!("campaign.op.storage-durability.{operation}")),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let format_cases = [
+        "wal-header",
+        "wal-record-body",
+        "wal-record-checksum",
+        "segment-region",
+        "manifest-wrong-family",
+        "segment-wrong-family",
+        "segment-wrong-identity",
+    ]
+    .into_iter()
+    .map(|case| {
+        (
+            case.to_owned(),
+            outcome
+                .coverage
+                .count(&format!("storage.format-case.{case}")),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let omission_cases = [
+        "final-segment.list",
+        "final-segment.delete",
+        "segment-temporary.list",
+        "segment-temporary.delete",
+        "manifest-temporary.list",
+        "manifest-temporary.delete",
+    ]
+    .into_iter()
+    .map(|case| {
+        (
+            case.to_owned(),
+            outcome.coverage.count(&format!("storage.omission.{case}")),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let artifact_index_records = outcome
+        .family_artifact_bytes
+        .get("artifact-index.jsonl")
+        .ok_or_else(|| "storage episode omitted artifact-index.jsonl".to_owned())?
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .count();
+
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "version": 1,
+        "oracle_contract_version": storage_oracle::ORACLE_CONTRACT_VERSION,
+        "oracle_source_digest": super::artifacts::evidence_digest(&[
+            include_bytes!("../adversarial-oracle/src/storage_durability.rs")
+        ]),
+        "fixture_digest": super::artifacts::evidence_digest(&[fixture]),
+        "per_invariant_comparisons": per_invariant_comparisons,
+        "operations": operation_counts,
+        "format_cases": format_cases,
+        "omission_cases": omission_cases,
+        "same_seed_controls": {
+            "operations": control_operations,
+            "qualifying_pairs": outcome.same_seed_clean_controls,
+        },
+        "integrated_receipts": {
+            "expected": outcome.expected_feature_fault_receipts,
+            "observed": outcome.integrated_feature_fault_receipts,
+            "records": receipt_records,
+            "faults": receipt_faults,
+            "sites": receipt_sites,
+        },
+        "retained_artifacts": {
+            "index_records": artifact_index_records,
+        },
+        "host": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+    }))
+}
+
+fn ingest_episode_oracle_attestation(
+    outcome: &RunOutcome,
+    oracle_records: &[OracleRecord],
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
+    let invariant_record = |invariant: u8,
+                            checker_id: &'static str,
+                            required_operation: &'static str| {
+        let records = oracle_records
+            .iter()
+            .filter(|record| record.invariant == invariant)
+            .collect::<Vec<_>>();
+        if records.is_empty() {
+            return Err(format!(
+                "ingest-retention I{invariant} episode comparison is absent"
+            ));
+        }
+        if records.iter().any(|record| {
+            record.checker_id != checker_id
+                || record.operation != required_operation
+                || !record.passed
+                || record.first_difference.is_some()
+                || record.canonical_version != ingest_oracle::INGEST_CANONICAL_VERSION
+                || !record.oracle_input_digest.starts_with("ingest-v1:")
+                || !record.oracle_observed_digest.starts_with("ingest-v1:")
+                || record.oracle_input_bytes.is_empty()
+                || record.oracle_observed_bytes.is_empty()
+        }) {
+            return Err(format!(
+                "ingest-retention I{invariant} episode record differs from its exact checker/operation contract"
+            ));
+        }
+        let comparisons = u64::try_from(records.len())
+            .map_err(|_| format!("ingest-retention I{invariant} comparison count exceeds u64"))?;
+        Ok(zeppelin_embed_bench::harness_json::json!({
+            "checker_id": checker_id,
+            "operation": required_operation,
+            "canonical_version": ingest_oracle::INGEST_CANONICAL_VERSION,
+            "comparisons": comparisons,
+            "passes": comparisons,
+            "input_digest": super::artifacts::evidence_digest(
+                &records.iter().map(|record| record.oracle_input_digest.as_bytes()).collect::<Vec<_>>()
+            ),
+            "observed_digest": super::artifacts::evidence_digest(
+                &records.iter().map(|record| record.oracle_observed_digest.as_bytes()).collect::<Vec<_>>()
+            ),
+            "first_differences": 0,
+        }))
+    };
+    let per_invariant_comparisons = BTreeMap::from([
+        (
+            "I20".to_owned(),
+            invariant_record(20, ingest_oracle::I20_CHECKER_ID, "batch-commit")?,
+        ),
+        (
+            "I21".to_owned(),
+            invariant_record(21, ingest_oracle::I21_CHECKER_ID, "seal")?,
+        ),
+        (
+            "I22".to_owned(),
+            invariant_record(22, ingest_oracle::I22_CHECKER_ID, "retention")?,
+        ),
+        (
+            "I23".to_owned(),
+            invariant_record(23, ingest_oracle::I23_CHECKER_ID, "purge")?,
+        ),
+    ]);
+    let operations = ["batch-commit", "seal", "retention", "purge"]
+        .into_iter()
+        .map(|operation| {
+            (
+                operation.to_owned(),
+                outcome
+                    .coverage
+                    .count(&format!("campaign.op.ingest-retention.{operation}")),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut control_faults = BTreeMap::<String, u64>::new();
+    for line in outcome
+        .controls_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse ingest-retention control evidence: {error}"))?;
+        if record["campaign"].as_str() != Some("ingest-retention") {
+            return Err("ingest-retention control stream contained another campaign".to_owned());
+        }
+        let fault = record["fault"]
+            .as_str()
+            .ok_or_else(|| "ingest-retention control omitted fault".to_owned())?;
+        *control_faults.entry(fault.to_owned()).or_default() += 1;
+    }
+    let mut receipt_faults = BTreeMap::<String, u64>::new();
+    let mut receipt_sites = BTreeMap::<String, u64>::new();
+    let mut receipt_records = 0_u64;
+    for line in outcome
+        .receipts_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse ingest-retention receipt evidence: {error}"))?;
+        if record["campaign"].as_str() != Some("ingest-retention") {
+            return Err("ingest-retention receipt stream contained another campaign".to_owned());
+        }
+        let fault = record["fault"]
+            .as_str()
+            .ok_or_else(|| "ingest-retention receipt omitted fault".to_owned())?;
+        let site = record["site"]
+            .as_str()
+            .ok_or_else(|| "ingest-retention receipt omitted site".to_owned())?;
+        let cardinality = record["cardinality"]
+            .as_u64()
+            .ok_or_else(|| "ingest-retention receipt omitted cardinality".to_owned())?;
+        *receipt_faults.entry(fault.to_owned()).or_default() += cardinality;
+        *receipt_sites.entry(site.to_owned()).or_default() += cardinality;
+        receipt_records = receipt_records.saturating_add(cardinality);
+    }
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "version": 1,
+        "oracle_contract_version": ingest_oracle::ORACLE_CONTRACT_VERSION,
+        "oracle_source_digest": super::artifacts::evidence_digest(&[
+            include_bytes!("../adversarial-oracle/src/ingest_retention.rs")
+        ]),
+        "per_invariant_comparisons": per_invariant_comparisons,
+        "operations": operations,
+        "same_seed_controls": {
+            "faults": control_faults,
+            "qualifying_pairs": outcome.same_seed_clean_controls,
+        },
+        "integrated_receipts": {
+            "expected": outcome.expected_feature_fault_receipts,
+            "observed": outcome.integrated_feature_fault_receipts,
+            "records": receipt_records,
+            "faults": receipt_faults,
+            "sites": receipt_sites,
+        },
+        "host": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+    }))
+}
+
+fn vector_episode_oracle_attestation(
+    outcome: &RunOutcome,
+    oracle_records: &[OracleRecord],
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
+    let fixture = outcome
+        .family_artifact_bytes
+        .get("fixture.json")
+        .ok_or_else(|| "vector episode omitted fixture.json".to_owned())?;
+    let invariant_record = |invariant: u8, checker_id: &'static str| {
+        let records = oracle_records
+            .iter()
+            .filter(|record| record.invariant == invariant)
+            .collect::<Vec<_>>();
+        if records.iter().any(|record| {
+            record.checker_id != checker_id
+                || record.canonical_version != 1
+                || !record
+                    .oracle_input_digest
+                    .starts_with(vector_oracle::VECTOR_CANONICAL_VERSION)
+                || !record
+                    .oracle_observed_digest
+                    .starts_with(vector_oracle::VECTOR_CANONICAL_VERSION)
+        }) {
+            return Err(format!(
+                "vector I{invariant} episode records do not use the family canonical contract"
+            ));
+        }
+        let comparisons = u64::try_from(records.len())
+            .map_err(|_| format!("vector I{invariant} comparison count exceeds u64"))?;
+        let passes = u64::try_from(records.iter().filter(|record| record.passed).count())
+            .map_err(|_| format!("vector I{invariant} pass count exceeds u64"))?;
+        let input_digest = super::artifacts::evidence_digest(
+            &records
+                .iter()
+                .map(|record| record.oracle_input_digest.as_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let observed_digest = super::artifacts::evidence_digest(
+            &records
+                .iter()
+                .map(|record| record.oracle_observed_digest.as_bytes())
+                .collect::<Vec<_>>(),
+        );
+        Ok(zeppelin_embed_bench::harness_json::json!({
+            "checker_id": checker_id,
+            "canonical_version": vector_oracle::VECTOR_CANONICAL_VERSION,
+            "comparisons": comparisons,
+            "passes": passes,
+            "input_digest": input_digest,
+            "observed_digest": observed_digest,
+            "first_differences": comparisons.saturating_sub(passes),
+        }))
+    };
+    let per_invariant_comparisons = BTreeMap::from([
+        (
+            "I24".to_owned(),
+            invariant_record(24, vector_oracle::I24_CHECKER_ID)?,
+        ),
+        (
+            "I25".to_owned(),
+            invariant_record(25, vector_oracle::I25_CHECKER_ID)?,
+        ),
+        (
+            "I26".to_owned(),
+            invariant_record(26, vector_oracle::I26_CHECKER_ID)?,
+        ),
+        (
+            "I27".to_owned(),
+            invariant_record(27, vector_oracle::I27_CHECKER_ID)?,
+        ),
+    ]);
+
+    let mut operations = BTreeMap::<String, u64>::new();
+    let mut generic_scheduled = 0_u64;
+    let mut generic_clean_fired = 0_u64;
+    let mut generic_fault_fired = 0_u64;
+    let mut generic_same_path = 0_u64;
+    let mut generic_isolated_directories = 0_u64;
+    let mut generic_isolated_runtimes = 0_u64;
+    let mut generic_feature_receipts = 0_u64;
+    for line in outcome
+        .controls_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse vector control evidence: {error}"))?;
+        let operation = record["operation"]
+            .as_str()
+            .ok_or_else(|| "vector control omitted operation".to_owned())?;
+        let count = operations.entry(operation.to_owned()).or_default();
+        *count = count.saturating_add(1);
+        let generic = &record["generic_fault"];
+        if !generic.is_null() {
+            generic_scheduled = generic_scheduled.saturating_add(1);
+            let clean_event = &generic["clean"]["event"];
+            let fault_event = &generic["fault"]["event"];
+            if clean_event["fired"].as_bool() == Some(true) {
+                generic_clean_fired = generic_clean_fired.saturating_add(1);
+            }
+            if fault_event["fired"].as_bool() == Some(true) {
+                generic_fault_fired = generic_fault_fired.saturating_add(1);
+            }
+            if clean_event["path"].as_str().is_some() && clean_event["path"] == fault_event["path"]
+            {
+                generic_same_path = generic_same_path.saturating_add(1);
+            }
+            if generic["isolated_directories"].as_bool() == Some(true)
+                && generic["clean_initial_directory"] == generic["fault_initial_directory"]
+            {
+                generic_isolated_directories = generic_isolated_directories.saturating_add(1);
+            }
+            if generic["isolated_runtimes"].as_bool() == Some(true) {
+                generic_isolated_runtimes = generic_isolated_runtimes.saturating_add(1);
+            }
+            let receipts = generic["fault"]["feature_receipts"]
+                .as_array()
+                .ok_or_else(|| "vector generic fault receipt ledger is absent".to_owned())?;
+            generic_feature_receipts = generic_feature_receipts.saturating_add(
+                u64::try_from(receipts.len())
+                    .map_err(|_| "vector generic receipt count exceeds u64".to_owned())?,
+            );
+        }
+    }
+    let mut receipt_faults = BTreeMap::<String, u64>::new();
+    let mut receipt_sites = BTreeMap::<String, u64>::new();
+    let mut receipt_records = 0_u64;
+    for line in outcome
+        .receipts_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse vector receipt evidence: {error}"))?;
+        if record["campaign"].as_str() != Some("vector-execution") {
+            return Err("vector receipt stream contained another campaign".to_owned());
+        }
+        let fault = record["fault"]
+            .as_str()
+            .ok_or_else(|| "vector receipt omitted fault".to_owned())?;
+        let site = record["site"]
+            .as_str()
+            .ok_or_else(|| "vector receipt omitted site".to_owned())?;
+        let cardinality = record["cardinality"]
+            .as_u64()
+            .ok_or_else(|| "vector receipt omitted cardinality".to_owned())?;
+        *receipt_faults.entry(fault.to_owned()).or_default() = receipt_faults
+            .get(fault)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(cardinality);
+        *receipt_sites.entry(site.to_owned()).or_default() = receipt_sites
+            .get(site)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(cardinality);
+        receipt_records = receipt_records.saturating_add(cardinality);
+    }
+
+    let all_backends = [
+        "scalar",
+        "neon-widen",
+        "neon-dotprod-u4",
+        "neon-i8mm",
+        "neon-dotprod-u2",
+        "neon-dotprod-u6",
+        "neon-dotprod-u8",
+        "neon-dotprod-u4-prefetch",
+        "avx2",
+    ];
+    let available = zeppelin_embed::kernels::KernelVariant::available()
+        .map(|variant| variant.backend_id().as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+    let unavailable = all_backends
+        .into_iter()
+        .filter(|backend| !available.contains(*backend))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let selected = available
+        .iter()
+        .filter(|backend| {
+            outcome
+                .coverage
+                .count(&format!("I24.store-selected.{backend}"))
+                > 0
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let observed = available
+        .iter()
+        .filter(|backend| outcome.coverage.count(&format!("kernel.backend.{backend}")) > 0)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let features = zeppelin_embed::kernels::detected_features();
+
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "version": 1,
+        "oracle_contract": vector_oracle::VECTOR_ORACLE_CONTRACT,
+        "canonical_contract": vector_oracle::VECTOR_CANONICAL_VERSION,
+        "fixture_digest": super::artifacts::evidence_digest(&[fixture]),
+        "per_invariant_comparisons": per_invariant_comparisons,
+        "same_seed_controls": {
+            "operations": operations,
+            "pairs": outcome.same_seed_clean_controls,
+            "isolated_directories": outcome.coverage.count("vector.control.isolated-directories"),
+            "byte_identical": outcome.coverage.count("vector.control.byte-identical"),
+        },
+        "integrated_receipts": {
+            "expected": outcome.expected_feature_fault_receipts,
+            "observed": outcome.integrated_feature_fault_receipts,
+            "records": receipt_records,
+            "faults": receipt_faults,
+            "sites": receipt_sites,
+        },
+        "generic_fault_pairs": {
+            "scheduled": generic_scheduled,
+            "clean_fired": generic_clean_fired,
+            "fault_fired": generic_fault_fired,
+            "same_path": generic_same_path,
+            "isolated_directories": generic_isolated_directories,
+            "isolated_runtimes": generic_isolated_runtimes,
+            "typed_feature_receipts": generic_feature_receipts,
+        },
+        "backend_inventory": {
+            "host": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+            "features": {
+                "neon": features.neon,
+                "dotprod": features.dotprod,
+                "fp16": features.fp16,
+                "i8mm": features.i8mm,
+                "sme2": features.sme2,
+                "avx2": features.avx2,
+                "popcnt": features.popcnt,
+            },
+            "available": available,
+            "unavailable": unavailable,
+            "selected": selected,
+            "observed": observed,
+        },
+    }))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one vector comparison owns all exact replay evidence streams"
+)]
+fn record_vector_evidence(
+    operation: super::campaign::VectorOperation,
+    evidence: vector_adapter::VectorOperationEvidence,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let expected_operation = vector_operation_kind(operation);
+    if evidence.operation != expected_operation
+        || evidence.fixture.seed != seed
+        || evidence.fixture.namespace != "vector-execution-v1"
+    {
+        return Err(format!(
+            "vector adapter identity mismatch: expected operation={expected_operation:?} seed={seed}, observed operation={:?} fixture={:?}",
+            evidence.operation, evidence.fixture
+        ));
+    }
+    let receipts = validate_vector_receipts(&evidence)?;
+    let mut canonical_attestations = BTreeMap::new();
+    for attestation in evidence.canonical_attestations()? {
+        let key = (attestation.checker_id, attestation.case_id);
+        if canonical_attestations.insert(key, attestation).is_some() {
+            return Err(format!(
+                "vector family emitted duplicate canonical attestation checker={} case={}",
+                key.0, key.1
+            ));
+        }
+    }
+    record_vector_family_artifacts(operation, &evidence, seed, family_artifact_records)?;
+    let provenance = format!(
+        "vector-execution-oracle-v1 seed={seed} profile={} op={op_index} operation={}",
+        profile.key(),
+        operation.key()
+    );
+    let mut all_checks_passed = true;
+    match &evidence.invariant {
+        vector_adapter::VectorInvariantEvidence::I24(pairs) => {
+            if operation != super::campaign::VectorOperation::KernelParity {
+                return Err("vector I24 evidence escaped kernel-parity".to_owned());
+            }
+            for pair in pairs {
+                let expected = vector_oracle::expected_kernel(&pair.input)?;
+                let case_provenance = format!("{provenance} case={}", pair.input.case_id);
+                let result = vector_oracle::check_i24(&expected, &pair.observed);
+                let passed = result.is_ok();
+                let attestation = canonical_attestations
+                    .remove(&(vector_oracle::I24_CHECKER_ID, pair.input.case_id))
+                    .ok_or_else(|| {
+                        format!(
+                            "vector I24 case {} omitted its canonical attestation",
+                            pair.input.case_id
+                        )
+                    })?;
+                push_vector_feature_json_record(
+                    24,
+                    vector_oracle::I24_CHECKER_ID,
+                    operation.key(),
+                    vector_i24_expected_json(&expected),
+                    vector_i24_observed_json(&pair.observed),
+                    case_provenance,
+                    attestation,
+                    result,
+                    oracle_records,
+                    coverage,
+                );
+                if passed {
+                    record_i24_coverage(pair, coverage);
+                } else {
+                    all_checks_passed = false;
+                }
+            }
+            if all_checks_passed {
+                record_vector_inventory_coverage(coverage);
+            }
+        }
+        vector_adapter::VectorInvariantEvidence::I25(pairs) => {
+            if operation != super::campaign::VectorOperation::Quantization {
+                return Err("vector I25 evidence escaped quantization".to_owned());
+            }
+            for pair in pairs {
+                let expected = vector_oracle::expected_quantization(&pair.input);
+                let case_provenance = format!("{provenance} case={}", pair.input.case_id);
+                let result = vector_oracle::check_i25(&expected, &pair.observed);
+                let passed = result.is_ok();
+                let attestation = canonical_attestations
+                    .remove(&(vector_oracle::I25_CHECKER_ID, pair.input.case_id))
+                    .ok_or_else(|| {
+                        format!(
+                            "vector I25 case {} omitted its canonical attestation",
+                            pair.input.case_id
+                        )
+                    })?;
+                push_vector_feature_json_record(
+                    25,
+                    vector_oracle::I25_CHECKER_ID,
+                    operation.key(),
+                    vector_i25_expected_json(&expected),
+                    vector_i25_observed_json(&pair.observed),
+                    case_provenance,
+                    attestation,
+                    result,
+                    oracle_records,
+                    coverage,
+                );
+                if passed {
+                    record_i25_coverage(pair, coverage);
+                } else {
+                    all_checks_passed = false;
+                }
+            }
+            if all_checks_passed {
+                let stochastic = pairs
+                    .iter()
+                    .filter(|pair| {
+                        pair.input.scheme == vector_oracle::QuantScheme::Bit4
+                            && pair.input.row.len() == 7
+                            && matches!(
+                                pair.observed.result.status,
+                                vector_oracle::PrimitiveStatus::Ok
+                            )
+                    })
+                    .filter_map(|pair| {
+                        pair.observed.result.success.as_ref().map(|success| {
+                            (pair.input.query_seed, success.query_code_bytes.clone())
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let seeds = stochastic
+                    .iter()
+                    .map(|(seed, _)| *seed)
+                    .collect::<BTreeSet<_>>();
+                let query_bytes = stochastic
+                    .iter()
+                    .map(|(_, bytes)| bytes.clone())
+                    .collect::<BTreeSet<_>>();
+                if stochastic.len() == 4 && seeds.len() == 4 && query_bytes.len() == 4 {
+                    coverage.hit("I25.bit4.stochastic-query.distinct-four");
+                }
+            }
+        }
+        vector_adapter::VectorInvariantEvidence::I26(pairs) => {
+            if operation != super::campaign::VectorOperation::Rescore {
+                return Err("vector I26 evidence escaped rescore".to_owned());
+            }
+            for pair in pairs {
+                let expected = vector_oracle::expected_rescore(&pair.input);
+                let case_provenance = format!("{provenance} case={}", pair.input.case_id);
+                let result = vector_oracle::check_i26(&expected, &pair.observed);
+                let passed = result.is_ok();
+                let attestation = canonical_attestations
+                    .remove(&(vector_oracle::I26_CHECKER_ID, pair.input.case_id))
+                    .ok_or_else(|| {
+                        format!(
+                            "vector I26 case {} omitted its canonical attestation",
+                            pair.input.case_id
+                        )
+                    })?;
+                push_vector_feature_json_record(
+                    26,
+                    vector_oracle::I26_CHECKER_ID,
+                    operation.key(),
+                    vector_i26_expected_json(&expected),
+                    vector_i26_observed_json(&pair.observed),
+                    case_provenance,
+                    attestation,
+                    result,
+                    oracle_records,
+                    coverage,
+                );
+                if passed {
+                    record_i26_coverage(pair, coverage)?;
+                } else {
+                    all_checks_passed = false;
+                }
+            }
+        }
+        vector_adapter::VectorInvariantEvidence::I27(pairs) => {
+            if operation != super::campaign::VectorOperation::RowIdentity {
+                return Err("vector I27 evidence escaped row-identity".to_owned());
+            }
+            for pair in pairs {
+                let expected = vector_oracle::expected_identity(&pair.input)?;
+                let case_provenance = format!("{provenance} case={}", pair.input.case_id);
+                let result = vector_oracle::check_i27(&expected, &pair.observed);
+                let passed = result.is_ok();
+                let attestation = canonical_attestations
+                    .remove(&(vector_oracle::I27_CHECKER_ID, pair.input.case_id))
+                    .ok_or_else(|| {
+                        format!(
+                            "vector I27 case {} omitted its canonical attestation",
+                            pair.input.case_id
+                        )
+                    })?;
+                push_vector_feature_json_record(
+                    27,
+                    vector_oracle::I27_CHECKER_ID,
+                    operation.key(),
+                    vector_i27_expected_json(&expected),
+                    vector_i27_observed_json(&pair.observed),
+                    case_provenance,
+                    attestation,
+                    result,
+                    oracle_records,
+                    coverage,
+                );
+                if passed {
+                    record_i27_coverage(pair, coverage)?;
+                } else {
+                    all_checks_passed = false;
+                }
+            }
+        }
+    }
+    if !canonical_attestations.is_empty() {
+        return Err(format!(
+            "vector family emitted unconsumed canonical attestations: {:?}",
+            canonical_attestations.keys().collect::<Vec<_>>()
+        ));
+    }
+    if all_checks_passed {
+        coverage.hit("vector.control.isolated-directories");
+        coverage.hit("vector.control.byte-identical");
+        if let Some(generic) = &evidence.generic_fault {
+            coverage.hit("vector.generic-pair.scheduled");
+            if generic.clean.event.fired {
+                coverage.hit("vector.generic-pair.clean-fired");
+            }
+            if generic.fault.event.fired {
+                coverage.hit("vector.generic-pair.fault-fired");
+            }
+            if generic.clean.event.path.is_some()
+                && generic.clean.event.path == generic.fault.event.path
+            {
+                coverage.hit("vector.generic-pair.same-path");
+            }
+            if generic.isolated_directories
+                && generic.clean_initial_directory == generic.fault_initial_directory
+            {
+                coverage.hit("vector.generic-pair.isolated-directories");
+            }
+            if generic.isolated_runtimes {
+                coverage.hit("vector.generic-pair.isolated-runtimes");
+            }
+            for _ in &generic.fault.feature_receipts {
+                coverage.hit("vector.generic-pair.typed-feature-receipt");
+            }
+        }
+        record_vector_fault_coverage(&evidence, coverage)?;
+    }
+    control_records.push(format!(
+        "{{\"campaign\":\"vector-execution\",\"operation\":\"{}\",\"seed\":{seed},\"control\":{},\"generic_fault\":{}}}",
+        json_escape(operation.key()),
+        vector_control_json(&evidence.control),
+        vector_generic_fault_json(evidence.generic_fault.as_ref()),
+    ));
+    mutation_records.push(format!(
+        "{{\"campaign\":\"vector-execution\",\"operation\":\"{}\",\"seed\":{seed},\"mutation\":{},\"paired_mutation\":{}}}",
+        json_escape(operation.key()),
+        vector_mutation_json(&evidence.mutation),
+        evidence.generic_fault.as_ref().map_or_else(
+            || "null".to_owned(),
+            |generic| vector_mutation_json(&generic.feature_mutation),
+        ),
+    ));
+    Ok(receipts)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared adapter boundary carries every replay evidence stream"
+)]
+fn run_vector_campaign_operation(
+    operation: super::campaign::VectorOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    generic_fault: Option<&FaultEvent>,
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    for name in super::artifacts::VECTOR_REPLAY_ARTIFACTS {
+        if matches!(
+            name,
+            "coverage.jsonl" | "violations.jsonl" | "episode-summary.json"
+        ) {
+            continue;
+        }
+        family_artifact_records.entry(name).or_default();
+    }
+    let matching_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|fault| fault.operation() == super::campaign::FeatureOperation::Vector(operation))
+        .map(vector_fault_kind)
+        .map(|fault| fault.map(Some))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if matching_faults.is_empty() {
+        vec![None]
+    } else {
+        matching_faults
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let context = vector_adapter::VectorExecutionContext {
+            program_op_index: op_index,
+            generic_fault: fault
+                .and(generic_fault)
+                .map(vector_generic_fault_schedule)
+                .transpose()?,
+        };
+        let evidence = vector_adapter::run_vector_operation_with_context(
+            vector_operation_kind(operation),
+            seed,
+            fault,
+            context,
+        )?;
+        receipts.extend(record_vector_evidence(
+            operation,
+            evidence,
+            seed,
+            profile,
+            op_index,
+            oracle_records,
+            control_records,
+            mutation_records,
+            family_artifact_records,
+            coverage,
+        )?);
+    }
+    Ok(receipts)
+}
+
+fn vector_backend_id(backend: KernelBackendId) -> vector_oracle::BackendId {
+    match backend {
+        KernelBackendId::Scalar => vector_oracle::BackendId::Scalar,
+        KernelBackendId::NeonWiden => vector_oracle::BackendId::NeonWiden,
+        KernelBackendId::NeonDotprodU4 => vector_oracle::BackendId::NeonDotprodU4,
+        KernelBackendId::NeonI8mm => vector_oracle::BackendId::NeonI8mm,
+        KernelBackendId::NeonDotprodU2 => vector_oracle::BackendId::NeonDotprodU2,
+        KernelBackendId::NeonDotprodU6 => vector_oracle::BackendId::NeonDotprodU6,
+        KernelBackendId::NeonDotprodU8 => vector_oracle::BackendId::NeonDotprodU8,
+        KernelBackendId::NeonDotprodU4Prefetch => vector_oracle::BackendId::NeonDotprodU4Prefetch,
+        KernelBackendId::Avx2 => vector_oracle::BackendId::Avx2,
+    }
+}
+
+fn vector_generic_fault_schedule(
+    event: &FaultEvent,
+) -> Result<vector_adapter::VectorGenericFaultSchedule, String> {
+    let site = match event.site {
+        fault_vfs::FaultSite::Open => vector_adapter::VectorGenericFaultSite::Open,
+        fault_vfs::FaultSite::Read => vector_adapter::VectorGenericFaultSite::Read,
+        fault_vfs::FaultSite::ReadRange => vector_adapter::VectorGenericFaultSite::ReadRange,
+        fault_vfs::FaultSite::Write => vector_adapter::VectorGenericFaultSite::Write,
+        fault_vfs::FaultSite::Append => vector_adapter::VectorGenericFaultSite::Append,
+        fault_vfs::FaultSite::Sync => vector_adapter::VectorGenericFaultSite::Sync,
+        fault_vfs::FaultSite::Rename => vector_adapter::VectorGenericFaultSite::Rename,
+        fault_vfs::FaultSite::List => vector_adapter::VectorGenericFaultSite::List,
+        fault_vfs::FaultSite::Delete => vector_adapter::VectorGenericFaultSite::Delete,
+        fault_vfs::FaultSite::Clock => vector_adapter::VectorGenericFaultSite::Clock,
+    };
+    let mode = match event.mode {
+        fault_vfs::FaultMode::Eio => vector_adapter::VectorGenericFaultMode::Eio,
+        fault_vfs::FaultMode::Eacces => vector_adapter::VectorGenericFaultMode::Eacces,
+        fault_vfs::FaultMode::Enospc => vector_adapter::VectorGenericFaultMode::Enospc,
+        fault_vfs::FaultMode::BitFlip => vector_adapter::VectorGenericFaultMode::BitFlip,
+        fault_vfs::FaultMode::TornWrite => vector_adapter::VectorGenericFaultMode::TornWrite,
+        fault_vfs::FaultMode::Truncate => vector_adapter::VectorGenericFaultMode::Truncate,
+        fault_vfs::FaultMode::WrongObject => vector_adapter::VectorGenericFaultMode::WrongObject,
+        fault_vfs::FaultMode::MisdirectedWrite => {
+            vector_adapter::VectorGenericFaultMode::MisdirectedWrite
+        }
+        fault_vfs::FaultMode::ZeroFill => vector_adapter::VectorGenericFaultMode::ZeroFill,
+        fault_vfs::FaultMode::Latency => vector_adapter::VectorGenericFaultMode::Latency,
+        fault_vfs::FaultMode::SilentDrop => vector_adapter::VectorGenericFaultMode::SilentDrop,
+        fault_vfs::FaultMode::PostCommitError => {
+            vector_adapter::VectorGenericFaultMode::PostCommitError
+        }
+    };
+    if event.nth_match == 0 {
+        return Err(format!(
+            "generic fault {} has an invalid zero match index",
+            event.id
+        ));
+    }
+    Ok(vector_adapter::VectorGenericFaultSchedule {
+        id: event.id.clone(),
+        site,
+        mode,
+        nth_match: event.nth_match,
+        path_contains: event.path_contains.clone(),
+    })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an oracle record binds the complete replay identity and exact comparison"
+)]
+fn push_feature_record<T: std::fmt::Debug, U: std::fmt::Debug, E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    expected: &T,
+    observed: &U,
+    provenance: String,
+    result: Result<(), E>,
+    records: &mut Vec<OracleRecord>,
+    coverage: &mut CoverageRegistry,
+) {
+    push_feature_json_record(
+        invariant,
+        checker_id,
+        operation,
+        format!("\"{}\"", json_escape(&format!("{expected:?}"))),
+        format!("\"{}\"", json_escape(&format!("{observed:?}"))),
+        provenance,
+        result,
+        records,
+        coverage,
+    );
+}
+
+fn ingest_first_difference(
+    difference: ingest_oracle::IngestFirstDifference,
+) -> OracleFirstDifference {
+    OracleFirstDifference {
+        checker_id: difference.checker_id,
+        path: difference.path,
+        kind: "contract-mismatch".to_owned(),
+        row: None,
+        expected: difference.expected,
+        observed: difference.observed,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ingest records bind the complete exact DTOs and family canonical bytes"
+)]
+fn push_ingest_feature_record<T: std::fmt::Debug, U: std::fmt::Debug, E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    case_identity: String,
+    expected: &T,
+    observed: &U,
+    provenance: String,
+    attestation: ingest_oracle::OracleAttestation,
+    result: Result<(), E>,
+    records: &mut Vec<OracleRecord>,
+    coverage: &mut CoverageRegistry,
+) {
+    let comparison_passed = result.is_ok();
+    assert_eq!(
+        attestation.checker_id, checker_id,
+        "ingest family attestation used a different checker"
+    );
+    assert_eq!(
+        attestation.first_difference.is_none(),
+        comparison_passed,
+        "ingest family first difference disagreed with comparator status"
+    );
+    let position = records.len();
+    push_feature_record(
+        invariant, checker_id, operation, expected, observed, provenance, result, records, coverage,
+    );
+    let record = records
+        .get_mut(position)
+        .expect("push_feature_record appends exactly one ingest record");
+    record.canonical_version = attestation.canonical_version;
+    record.oracle_input_digest = format!(
+        "ingest-v{}:{:016x}",
+        attestation.canonical_version, attestation.input_digest
+    );
+    record.oracle_observed_digest = format!(
+        "ingest-v{}:{:016x}",
+        attestation.canonical_version, attestation.observed_digest
+    );
+    record.oracle_input_bytes = evidence_hex(&attestation.input_bytes);
+    record.oracle_observed_bytes = evidence_hex(&attestation.observed_bytes);
+    record.case_identity = Some(case_identity);
+    record.first_difference = attestation.first_difference.map(ingest_first_difference);
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an oracle record binds the complete replay identity and exact comparison"
+)]
+fn push_feature_json_record<E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    expected: String,
+    observed: String,
+    provenance: String,
+    result: Result<(), E>,
+    records: &mut Vec<OracleRecord>,
+    coverage: &mut CoverageRegistry,
+) {
+    let canonicalize = |label: &str, value: String| {
+        let parsed: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_str(&value)
+                .unwrap_or_else(|error| panic!("{label} is not valid JSON: {error}"));
+        String::from_utf8(
+            zeppelin_embed_bench::harness_json::to_vec(&parsed)
+                .unwrap_or_else(|error| panic!("canonicalize {label}: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("canonical {label} is not UTF-8: {error}"))
+    };
+    let expected = canonicalize("oracle expected value", expected);
+    let observed = canonicalize("oracle observed value", observed);
+    let input_digest = super::artifacts::evidence_digest(&[expected.as_bytes()]);
+    let observed_digest = super::artifacts::evidence_digest(&[observed.as_bytes()]);
+    let difference_detail = result.as_ref().err().map(ToString::to_string);
+    let detail = difference_detail
+        .clone()
+        .unwrap_or_else(|| "exact comparison succeeded".to_owned());
+    let first_difference = difference_detail.map(|observed| OracleFirstDifference {
+        checker_id,
+        path: "comparison".to_owned(),
+        kind: "contract-mismatch".to_owned(),
+        row: None,
+        expected: "exact comparison succeeded".to_owned(),
+        observed,
+    });
+    let passed = result.is_ok();
+    records.push(OracleRecord {
+        invariant,
+        checker_id,
+        operation,
+        case_identity: None,
+        expected,
+        observed,
+        oracle_input_digest: input_digest.clone(),
+        oracle_observed_digest: observed_digest.clone(),
+        oracle_input_bytes: String::new(),
+        oracle_observed_bytes: String::new(),
+        input_digest,
+        observed_digest,
+        canonical_version: zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+        provenance,
+        passed,
+        first_difference,
+        detail: detail.clone(),
+    });
+    if passed {
+        coverage.hit(format!("invariant.I{invariant}.checked"));
+    }
+}
+
+fn metadata_difference_kind_key(kind: metadata_oracle::DifferenceKind) -> &'static str {
+    match kind {
+        metadata_oracle::DifferenceKind::ExtraRow => "extra-row",
+        metadata_oracle::DifferenceKind::MissingRow => "missing-row",
+        metadata_oracle::DifferenceKind::DuplicateRow => "duplicate-row",
+        metadata_oracle::DifferenceKind::DeadRow => "dead-row",
+        metadata_oracle::DifferenceKind::PrimitiveMismatch => "primitive-mismatch",
+        metadata_oracle::DifferenceKind::UnsoundPrune => "unsound-prune",
+        metadata_oracle::DifferenceKind::ReportReceiptMismatch => "report-receipt-mismatch",
+        metadata_oracle::DifferenceKind::ContractMismatch => "contract-mismatch",
+    }
+}
+
+fn metadata_first_difference(
+    difference: metadata_oracle::FirstDifference,
+) -> OracleFirstDifference {
+    OracleFirstDifference {
+        checker_id: difference.checker_id,
+        path: difference.path,
+        kind: metadata_difference_kind_key(difference.kind).to_owned(),
+        row: difference.row.map(u64::from),
+        expected: difference.expected,
+        observed: difference.observed,
+    }
+}
+
+fn vector_first_difference(
+    difference: vector_oracle::VectorFirstDifference,
+) -> OracleFirstDifference {
+    OracleFirstDifference {
+        checker_id: difference.checker_id,
+        path: difference.path.to_owned(),
+        kind: "primitive-mismatch".to_owned(),
+        row: None,
+        expected: difference.expected,
+        observed: difference.observed,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "vector records bind JSON replay values and family-owned canonical bytes"
+)]
+fn push_vector_feature_json_record<E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    expected: String,
+    observed: String,
+    provenance: String,
+    attestation: vector_adapter::VectorCanonicalEvidence,
+    result: Result<(), E>,
+    records: &mut Vec<OracleRecord>,
+    coverage: &mut CoverageRegistry,
+) {
+    let comparison_passed = result.is_ok();
+    assert_eq!(
+        attestation.checker_id, checker_id,
+        "vector family attestation used a different checker"
+    );
+    assert_eq!(
+        attestation.first_difference.is_none(),
+        comparison_passed,
+        "vector family first difference disagreed with comparator status"
+    );
+    assert_eq!(
+        attestation.input.version,
+        vector_oracle::VECTOR_CANONICAL_VERSION,
+        "vector input canonical version differs"
+    );
+    assert_eq!(
+        attestation.observed.version,
+        vector_oracle::VECTOR_CANONICAL_VERSION,
+        "vector observation canonical version differs"
+    );
+    let position = records.len();
+    push_feature_json_record(
+        invariant, checker_id, operation, expected, observed, provenance, result, records, coverage,
+    );
+    let record = records
+        .get_mut(position)
+        .expect("push_feature_json_record appends exactly one record");
+    record.canonical_version = 1;
+    record.oracle_input_digest = format!(
+        "{}:{}",
+        attestation.input.version,
+        attestation.input.sha256_hex()
+    );
+    record.oracle_observed_digest = format!(
+        "{}:{}",
+        attestation.observed.version,
+        attestation.observed.sha256_hex()
+    );
+    record.oracle_input_bytes = evidence_hex(&attestation.input.bytes);
+    record.oracle_observed_bytes = evidence_hex(&attestation.observed.bytes);
+    record.first_difference = attestation.first_difference.map(vector_first_difference);
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "metadata records bind JSON replay values and the independent primitive attestation"
+)]
+fn push_metadata_feature_json_record<E: std::fmt::Display>(
+    invariant: u8,
+    checker_id: &'static str,
+    operation: &'static str,
+    expected: String,
+    observed: String,
+    provenance: String,
+    attestation: metadata_oracle::OracleAttestation,
+    result: Result<(), E>,
+    records: &mut Vec<OracleRecord>,
+    coverage: &mut CoverageRegistry,
+) {
+    let comparison_passed = result.is_ok();
+    assert_eq!(
+        attestation.checker_id, checker_id,
+        "metadata family attestation used a different checker"
+    );
+    assert_eq!(
+        attestation.first_difference.is_none(),
+        comparison_passed,
+        "metadata family first difference disagreed with comparator status"
+    );
+    let position = records.len();
+    push_feature_json_record(
+        invariant, checker_id, operation, expected, observed, provenance, result, records, coverage,
+    );
+    let record = records
+        .get_mut(position)
+        .expect("push_feature_json_record appends exactly one record");
+    record.canonical_version = attestation.canonical_version;
+    record.oracle_input_digest = format!(
+        "metadata-v{}:{:016x}",
+        attestation.canonical_version, attestation.input_digest
+    );
+    record.oracle_observed_digest = format!(
+        "metadata-v{}:{:016x}",
+        attestation.canonical_version, attestation.observed_digest
+    );
+    record.oracle_input_bytes = evidence_hex(&attestation.input_bytes);
+    record.oracle_observed_bytes = evidence_hex(&attestation.observed_bytes);
+    record.first_difference = attestation.first_difference.map(metadata_first_difference);
+}
+
+const VECTOR_KERNELS: [vector_oracle::KernelId; 11] = [
+    vector_oracle::KernelId::DotI8,
+    vector_oracle::KernelId::HammingU1,
+    vector_oracle::KernelId::DotF32,
+    vector_oracle::KernelId::DotF16,
+    vector_oracle::KernelId::DotI8Batch,
+    vector_oracle::KernelId::HammingU1Batch,
+    vector_oracle::KernelId::DotBit4,
+    vector_oracle::KernelId::DotBit4Prepared,
+    vector_oracle::KernelId::DotBit4Batch,
+    vector_oracle::KernelId::ScoreBit4PreparedBatch,
+    vector_oracle::KernelId::ScoreBit4Ptrs,
+];
+
+fn pack_vector_kernel_rows(dimension: usize, rows: usize, seed: u64) -> Vec<u8> {
+    let row_bytes = dimension.div_ceil(2);
+    let mut packed = vec![0_u8; row_bytes.saturating_mul(rows)];
+    for row in 0..rows {
+        for coordinate in 0..dimension {
+            let nibble = ((seed as usize + row * 5 + coordinate * 3) % 16) as u8;
+            let byte = &mut packed[row * row_bytes + coordinate / 2];
+            if coordinate.is_multiple_of(2) {
+                *byte |= nibble << 4;
+            } else {
+                *byte |= nibble;
+            }
+        }
+    }
+    packed
+}
+
+fn prepare_vector_kernel_query(query: &[i8]) -> Vec<i8> {
+    let mut prepared = Vec::with_capacity(query.len());
+    for block in query.chunks(32) {
+        prepared.extend(block.iter().step_by(2).copied());
+        prepared.extend(block.iter().skip(1).step_by(2).copied());
+    }
+    prepared
+}
+
+fn vector_kernel_input(
+    case_id: u64,
+    backend: vector_oracle::BackendId,
+    kernel: vector_oracle::KernelId,
+    dimension: usize,
+    seed: u64,
+) -> vector_oracle::KernelInput {
+    let coordinate_query = (0..dimension)
+        .map(|index| ((index as i32 * 17 + seed as i32) % 127 - 63) as i8)
+        .collect::<Vec<_>>();
+    let signed_row = (0..dimension)
+        .map(|index| ((index as i32 * 29 - seed as i32) % 127 - 63) as i8)
+        .collect::<Vec<_>>();
+    let batch_rows = match kernel {
+        vector_oracle::KernelId::ScoreBit4Ptrs => 4_usize,
+        vector_oracle::KernelId::DotI8Batch
+        | vector_oracle::KernelId::HammingU1Batch
+        | vector_oracle::KernelId::DotBit4Batch
+        | vector_oracle::KernelId::ScoreBit4PreparedBatch => 3_usize,
+        _ => 0,
+    };
+    let bytes_a = (0..dimension)
+        .map(|index| (seed as u8).wrapping_add((index * 37) as u8))
+        .collect::<Vec<_>>();
+    let hamming_rows = (0..dimension.saturating_mul(batch_rows.max(1)))
+        .map(|index| (seed as u8).wrapping_add((index * 19) as u8))
+        .collect::<Vec<_>>();
+    let bit4_rows = pack_vector_kernel_rows(dimension, batch_rows.max(1), seed);
+    let f32_a = (0..dimension)
+        .map(|index| {
+            let sign = if index.is_multiple_of(2) { 1.0 } else { -1.0 };
+            vector_oracle::F32::from_float(sign * (1.0 + index as f32 / 31.0))
+        })
+        .collect::<Vec<_>>();
+    let f32_b = (0..dimension)
+        .map(|index| {
+            let scale = if index % 3 == 0 { 1.0e-3 } else { 1.0 };
+            vector_oracle::F32::from_float(scale * (0.5 - index as f32 / 63.0))
+        })
+        .collect::<Vec<_>>();
+    let f16_pattern = [0x0000_u16, 0x3c00, 0xbc00, 0x3555, 0x0400, 0x7bff];
+    let f16_a = (0..dimension)
+        .map(|index| f16_pattern[index % f16_pattern.len()])
+        .collect::<Vec<_>>();
+    let f16_b = (0..dimension)
+        .map(|index| f16_pattern[(index + 2) % f16_pattern.len()])
+        .collect::<Vec<_>>();
+    let factors = (0..batch_rows.max(1))
+        .map(|row| {
+            [
+                vector_oracle::F32::from_float(0.5 + row as f32 / 8.0),
+                vector_oracle::F32::from_float(1.0 + row as f32 / 4.0),
+                vector_oracle::F32::from_float(0.25 + row as f32 / 16.0),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let prepared = prepare_vector_kernel_query(&coordinate_query);
+    let query_sum = coordinate_query.iter().map(|value| i32::from(*value)).sum();
+    let signed_a = match kernel {
+        vector_oracle::KernelId::DotBit4Prepared
+        | vector_oracle::KernelId::ScoreBit4PreparedBatch
+        | vector_oracle::KernelId::ScoreBit4Ptrs => prepared,
+        _ => coordinate_query,
+    };
+    let signed_b = if kernel == vector_oracle::KernelId::DotI8Batch {
+        (0..batch_rows)
+            .flat_map(|row| {
+                signed_row
+                    .iter()
+                    .map(move |value| value.wrapping_add(row as i8))
+            })
+            .collect()
+    } else {
+        signed_row
+    };
+    let bytes_b = match kernel {
+        vector_oracle::KernelId::HammingU1 => hamming_rows[..dimension].to_vec(),
+        vector_oracle::KernelId::HammingU1Batch => hamming_rows,
+        _ => bit4_rows,
+    };
+    vector_oracle::KernelInput {
+        case_id,
+        backend,
+        selected_for_store: false,
+        work_items: match kernel {
+            vector_oracle::KernelId::DotI8Batch
+            | vector_oracle::KernelId::HammingU1Batch
+            | vector_oracle::KernelId::DotBit4Batch
+            | vector_oracle::KernelId::ScoreBit4PreparedBatch
+            | vector_oracle::KernelId::ScoreBit4Ptrs => dimension.saturating_mul(batch_rows) as u64,
+            _ => dimension as u64,
+        },
+        kernel,
+        dimension: dimension as u64,
+        signed_a,
+        signed_b,
+        bytes_a,
+        bytes_b,
+        f32_a,
+        f32_b,
+        f16_a,
+        f16_b,
+        row_bytes: dimension.div_ceil(2) as u64,
+        batch_rows: batch_rows as u64,
+        pointer_order: if kernel == vector_oracle::KernelId::ScoreBit4Ptrs {
+            vec![2, 0, 3, 1]
+        } else {
+            Vec::new()
+        },
+        query_sum,
+        query_scale_half: vector_oracle::F64::from_float(0.5),
+        bit4_factors: factors,
+    }
+}
+
+fn observe_vector_kernel(
+    variant: KernelVariant,
+    input: &vector_oracle::KernelInput,
+) -> Result<vector_oracle::KernelValue, String> {
+    let dimension = usize::try_from(input.dimension).map_err(|_| "kernel dimension overflow")?;
+    let rows = usize::try_from(input.batch_rows).map_err(|_| "kernel row count overflow")?;
+    match input.kernel {
+        vector_oracle::KernelId::DotI8 => Ok(vector_oracle::KernelValue::S32(
+            variant.dot_i8(&input.signed_a, &input.signed_b),
+        )),
+        vector_oracle::KernelId::HammingU1 => Ok(vector_oracle::KernelValue::U32(
+            variant.hamming_u1(&input.bytes_a, &input.bytes_b),
+        )),
+        vector_oracle::KernelId::DotF32 => Ok(vector_oracle::KernelValue::F32(
+            vector_oracle::F32::from_float(
+                variant.dot_f32(
+                    &input
+                        .f32_a
+                        .iter()
+                        .map(|value| value.to_float())
+                        .collect::<Vec<_>>(),
+                    &input
+                        .f32_b
+                        .iter()
+                        .map(|value| value.to_float())
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        )),
+        vector_oracle::KernelId::DotF16 => Ok(vector_oracle::KernelValue::F32(
+            vector_oracle::F32::from_float(variant.dot_f16(&input.f16_a, &input.f16_b)),
+        )),
+        vector_oracle::KernelId::DotI8Batch => {
+            let mut out = vec![0_i32; rows];
+            variant.dot_i8_batch(&input.signed_a, &input.signed_b, dimension, &mut out);
+            Ok(vector_oracle::KernelValue::S32s(out))
+        }
+        vector_oracle::KernelId::HammingU1Batch => {
+            let mut out = vec![0_u32; rows];
+            variant.hamming_u1_batch(&input.bytes_a, &input.bytes_b, dimension, &mut out);
+            Ok(vector_oracle::KernelValue::U32s(out))
+        }
+        vector_oracle::KernelId::DotBit4 => Ok(vector_oracle::KernelValue::S32(
+            variant.dot_bit4(&input.signed_a, &input.bytes_b),
+        )),
+        vector_oracle::KernelId::DotBit4Prepared => Ok(vector_oracle::KernelValue::S32(
+            variant.dot_bit4_prepared(&input.signed_a, input.query_sum, &input.bytes_b),
+        )),
+        vector_oracle::KernelId::DotBit4Batch => {
+            let mut out = vec![0_i32; rows];
+            variant.dot_bit4_batch(&input.signed_a, &input.bytes_b, dimension, &mut out);
+            Ok(vector_oracle::KernelValue::S32s(out))
+        }
+        vector_oracle::KernelId::ScoreBit4PreparedBatch => {
+            let factors = input
+                .bit4_factors
+                .iter()
+                .map(|fields| {
+                    Bit4Factors::from_persisted(
+                        fields[0].to_float(),
+                        fields[1].to_float(),
+                        fields[2].to_float(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut out = vec![0.0_f32; rows];
+            variant.score_bit4_prepared_batch(
+                (
+                    &input.signed_a,
+                    input.query_sum,
+                    input.query_scale_half.to_float(),
+                ),
+                &input.bytes_b,
+                dimension,
+                &factors,
+                &mut out,
+            );
+            Ok(vector_oracle::KernelValue::F32s(
+                out.into_iter()
+                    .map(vector_oracle::F32::from_float)
+                    .collect(),
+            ))
+        }
+        vector_oracle::KernelId::ScoreBit4Ptrs => {
+            let row_bytes = dimension.div_ceil(2);
+            let order = input
+                .pointer_order
+                .iter()
+                .map(|row| usize::from(*row))
+                .collect::<Vec<_>>();
+            let row_handles = std::array::from_fn(|slot| {
+                zeppelin_embed::kernels::Bit4Row::from_mapped_region(
+                    &input.bytes_b,
+                    order[slot] * row_bytes,
+                    row_bytes,
+                )
+                .expect("oracle-validated pointer row")
+            });
+            let rows4 = zeppelin_embed::kernels::Bit4Rows4::from_rows(row_handles, row_bytes)
+                .map_err(|error| error.to_string())?;
+            let factors = std::array::from_fn(|slot| {
+                let fields = input.bit4_factors[order[slot]];
+                Bit4Factors::from_persisted(
+                    fields[0].to_float(),
+                    fields[1].to_float(),
+                    fields[2].to_float(),
+                )
+            });
+            let mut out = [0.0_f32; 4];
+            variant
+                .score_bit4_ptrs(
+                    (
+                        &input.signed_a,
+                        input.query_sum,
+                        input.query_scale_half.to_float(),
+                    ),
+                    &rows4,
+                    &factors,
+                    &mut out,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(vector_oracle::KernelValue::F32s(
+                out.into_iter()
+                    .map(vector_oracle::F32::from_float)
+                    .collect(),
+            ))
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one operation owns exact replay evidence and receipt streams"
+)]
+fn run_vector_kernel_parity(
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    profile: FaultProfile,
+    op_index: usize,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    mutation_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    for fault in selected_faults {
+        if *fault != super::campaign::FeatureFault::VectorForcedDispatchBackend {
+            return Err(format!(
+                "vector kernel operation received unrelated fault {}",
+                fault.key()
+            ));
+        }
+    }
+
+    let dimensions = [
+        1_usize, 2, 3, 7, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129, 768,
+    ];
+    let dimension = dimensions[(seed as usize) % dimensions.len()];
+    let mut available = Vec::new();
+    for (backend_index, variant) in KernelVariant::available().enumerate() {
+        let backend = vector_backend_id(variant.backend_id());
+        for (kernel_index, kernel) in VECTOR_KERNELS.into_iter().enumerate() {
+            let case_id = seed
+                .checked_mul(100_000)
+                .and_then(|value| value.checked_add((backend_index * VECTOR_KERNELS.len()) as u64))
+                .and_then(|value| value.checked_add(kernel_index as u64))
+                .ok_or_else(|| "vector kernel case id overflowed".to_owned())?;
+            let input = vector_kernel_input(case_id, backend, kernel, dimension, seed);
+            let expected = vector_oracle::expected_kernel(&input)?;
+            let observed = vector_oracle::I24Observed {
+                case_id,
+                backend,
+                kernel,
+                value: observe_vector_kernel(variant, &input)?,
+                selected_for_store: false,
+                work_items: input.work_items,
+            };
+            push_feature_record(
+                24,
+                vector_oracle::I24_CHECKER_ID,
+                "kernel-parity",
+                &expected,
+                &observed,
+                format!(
+                    "{} seed={seed} profile={} op={op_index} backend={} kernel={kernel:?}",
+                    vector_oracle::VECTOR_ORACLE_CONTRACT,
+                    profile.key(),
+                    variant.backend_id().as_str()
+                ),
+                vector_oracle::check_i24(&expected, &observed),
+                oracle_records,
+                coverage,
+            );
+        }
+        coverage.hit(format!("kernel.backend.{}", variant.backend_id().as_str()));
+        coverage.hit(format!(
+            "kernel.backend.{}",
+            format!("{:?}", variant.arm()).to_ascii_lowercase()
+        ));
+        available.push(variant.backend_id());
+    }
+    if available.is_empty() {
+        return Err("vector kernel inventory was empty".to_owned());
+    }
+
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let controller = KernelFaultController::observing_store(seed);
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_kernel_fault_controller(controller.clone());
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .map_err(|error| error.to_string())?;
+    let documents = [
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(100), Revision::new(1)),
+            vec![1.0, -1.0, 0.5],
+        ),
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(200), Revision::new(1)),
+            vec![0.5, -0.5, 0.25],
+        ),
+    ];
+    store
+        .ingest(IngestBatch::new(documents.to_vec()))
+        .map_err(|error| error.to_string())?;
+    store.seal().map_err(|error| error.to_string())?;
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, -1.0, 0.5]),
+            documents.len(),
+            SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Scan),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| error.to_string())?;
+    let observations = controller.take_observations();
+    if observations.len() != 1 {
+        return Err(format!(
+            "I24 default Store selection emitted {} observations, expected 1",
+            observations.len()
+        ));
+    }
+    let selected = &observations[0];
+    if !available.contains(&selected.backend())
+        || !selected.result_published()
+        || selected.work_items() == 0
+        || outcome.candidates.is_empty()
+    {
+        return Err(format!(
+            "I24 Store selection was not a published available-table score: {selected:?}"
+        ));
+    }
+    if !controller.take_typed_receipts().is_empty() {
+        return Err("neutral I24 Store observation emitted a fault receipt".to_owned());
+    }
+    control_records.push(format!(
+        "{{\"campaign\":\"vector-execution\",\"operation\":\"kernel-parity\",\"seed\":{seed},\"backend\":\"{}\",\"kernel\":\"{:?}\",\"work_items\":{},\"result\":\"{:?}\",\"returned\":{}}}",
+        selected.backend().as_str(),
+        selected.kernel(),
+        selected.work_items(),
+        selected.value(),
+        outcome.candidates.len()
+    ));
+    mutation_records.push(format!(
+        "{{\"campaign\":\"vector-execution\",\"operation\":\"kernel-parity\",\"seed\":{seed},\"dimension\":{dimension},\"backend_count\":{}}}",
+        available.len()
+    ));
+    coverage.hit("op.search");
+    coverage.hit("search.scan");
+
+    if selected_faults.is_empty() {
+        return Ok(Vec::new());
+    }
+    Err("forced-dispatch-backend requires the fresh-child adapter".to_owned())
 }
 
 fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
@@ -2513,14 +12816,10 @@ fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), Stri
     }
     std::fs::write(&segment, bytes).map_err(|e| e.to_string())?;
     let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
-    if reopened.open().is_err() {
-        return Ok(());
-    }
-    let result = reopened.lexical_search(0, 8);
+    reopened.open()?;
+    let _result = reopened.lexical_search(0, 8)?;
     let _ = reopened.close();
-    match result {
-        Err(_) | Ok(_) => Ok(()),
-    }
+    Err("legacy FTS fault probe cannot earn feature credit".to_owned())
 }
 
 fn run_fts_cancellation_probe() -> Result<(), String> {
@@ -2717,79 +13016,6 @@ fn run_ffi_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), Strin
         return Err("FFI error code name returned null".to_owned());
     }
     Ok(())
-}
-
-fn run_metadata_region_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
-    engine.open()?;
-    engine.ingest(&[DocMutation {
-        doc_id: 1,
-        revision: 1,
-        timestamp: 10,
-    }])?;
-    engine.seal()?;
-    engine.close()?;
-    let segment = first_segment_path(directory.path())?;
-    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
-    let kind = if fault == super::campaign::FeatureFault::MetadataBitmapTruncation {
-        2
-    } else {
-        1
-    };
-    let offset = literal_segment_region_offset(&bytes, kind)?;
-    let byte = bytes
-        .get_mut(offset)
-        .ok_or_else(|| "metadata mutation escaped the segment".to_owned())?;
-    *byte ^= 0x01;
-    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
-    let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
-    reopened.open()?;
-    let result = reopened.filtered_search(&program::query(0), 8, 10);
-    match result {
-        Err(_) => {
-            let _ = reopened.close();
-            Ok(())
-        }
-        Ok(observed) => {
-            let _ = reopened.close();
-            if observed.hits.iter().any(|hit| hit.doc_id == 0) {
-                Err(format!(
-                    "metadata fault {} returned an invalid row",
-                    fault.key()
-                ))
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
-fn run_metadata_selectivity_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
-    engine.open()?;
-    engine.ingest(&[
-        DocMutation {
-            doc_id: 1,
-            revision: 1,
-            timestamp: 9,
-        },
-        DocMutation {
-            doc_id: 2,
-            revision: 1,
-            timestamp: 10,
-        },
-        DocMutation {
-            doc_id: 3,
-            revision: 1,
-            timestamp: 11,
-        },
-    ])?;
-    for cutoff in [9, 10, 11] {
-        let _ = engine.filtered_search(&program::query(0), 8, cutoff)?;
-    }
-    engine.close()
 }
 
 fn run_graph_checkpoint_corruption_probe() -> Result<(), String> {
@@ -3123,220 +13349,6 @@ fn ingest_probe_batch() -> [DocMutation; 3] {
             timestamp: 11,
         },
     ]
-}
-
-fn run_ingest_retry_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
-    engine.open()?;
-    let batch = ingest_probe_batch();
-    engine.ingest(&batch)?;
-    let _retry = engine.ingest(&batch);
-    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    let identities = observed
-        .hits
-        .iter()
-        .map(|hit| (hit.doc_id, hit.revision))
-        .collect::<BTreeSet<_>>();
-    let expected = batch
-        .iter()
-        .map(|doc| (doc.doc_id, doc.revision))
-        .collect::<BTreeSet<_>>();
-    if identities != expected || observed.hits.len() != expected.len() {
-        return Err(format!(
-            "post-ack retry expected {expected:?}, observed {identities:?}"
-        ));
-    }
-    engine.close()
-}
-
-fn run_partial_batch_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let event = FaultEvent {
-        id: "feature-ingest-partial-batch".to_owned(),
-        op_index: 1,
-        site: fault_vfs::FaultSite::Append,
-        mode: fault_vfs::FaultMode::TornWrite,
-        nth_match: 1,
-        path_contains: Some("wal.ze".to_owned()),
-        fired: false,
-        path: None,
-    };
-    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
-    let mut engine = RealEngine::new(
-        directory.path().to_path_buf(),
-        Arc::clone(&scheduled),
-        Arc::new(ManualMonotonicClock::new()),
-    );
-    scheduled.set_operation(0);
-    engine.open()?;
-    scheduled.set_operation(1);
-    let batch = ingest_probe_batch();
-    let _faulted = engine.ingest(&batch);
-    if !scheduled.event().is_some_and(|event| event.fired) {
-        return Err("partial batch fault did not reach the WAL append".to_owned());
-    }
-    if engine.reopen().is_err() {
-        return Ok(());
-    }
-    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    let surviving = observed
-        .hits
-        .iter()
-        .filter(|hit| batch.iter().any(|doc| doc.doc_id == hit.doc_id))
-        .count();
-    if surviving != 0 && surviving != batch.len() {
-        return Err(format!(
-            "failed batch exposed a partial subset of {surviving}/{} rows",
-            batch.len()
-        ));
-    }
-    let _retry = engine.ingest(&batch);
-    let final_observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    let final_ids = final_observed
-        .hits
-        .iter()
-        .filter(|hit| batch.iter().any(|doc| doc.doc_id == hit.doc_id))
-        .map(|hit| hit.doc_id)
-        .collect::<BTreeSet<_>>();
-    if final_ids.len() != batch.len() {
-        return Err(format!(
-            "batch retry did not publish the whole batch: {final_ids:?}"
-        ));
-    }
-    engine.close()
-}
-
-fn run_seal_cancellation_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let store = Store::open(directory.path(), RealEngine::options(ModelEpoch::A))
-        .map_err(|error| error.to_string())?;
-    let batch = ingest_probe_batch()
-        .into_iter()
-        .map(|document| {
-            IngestDocument::new(
-                DocumentVersion::new(
-                    DocId::new(u128::from(document.doc_id)),
-                    Revision::new(document.revision),
-                ),
-                program::vector(document.doc_id, document.revision).to_vec(),
-            )
-            .with_timestamp(document.timestamp)
-            .with_text(program::lexical_text(document.doc_id, document.revision))
-            .with_columns(adversarial_columns(document.doc_id))
-        })
-        .collect::<Vec<_>>();
-    store
-        .ingest(IngestBatch::new(batch).with_epoch(declared_identity()))
-        .map_err(|error| error.to_string())?;
-    let cancel = CancelToken::new();
-    cancel.cancel();
-    let error = store
-        .seal_with_cancel(&cancel)
-        .expect_err("cancelled seal unexpectedly committed");
-    if !matches!(error, zeppelin_embed::lifecycle::StoreError::SealCancelled) {
-        return Err(format!("seal cancellation returned wrong error: {error}"));
-    }
-    let stats = store.stats().map_err(|error| error.to_string())?;
-    if stats.active_row_count != 3 {
-        return Err(format!(
-            "cancelled seal retained {} active rows, expected 3",
-            stats.active_row_count
-        ));
-    }
-    store.seal().map_err(|error| error.to_string())?;
-    store.close().map_err(|error| error.to_string())
-}
-
-fn run_retention_boundary_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
-    engine.open()?;
-    for document in ingest_probe_batch() {
-        engine.ingest(&[document])?;
-        engine.seal()?;
-    }
-    let policy =
-        zeppelin_embed::ingest::RetentionPolicy::new(10).map_err(|error| error.to_string())?;
-    let range = policy.partition_to_drop(20);
-    if range.end != 10 {
-        return Err(format!("retention cutoff was {}, expected 10", range.end));
-    }
-    engine.drop_partition(range.start, range.end)?;
-    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    let ids = observed
-        .hits
-        .iter()
-        .map(|hit| hit.doc_id)
-        .collect::<BTreeSet<_>>();
-    if ids != BTreeSet::from([2, 3]) {
-        return Err(format!(
-            "half-open retention boundary expected ids {{2, 3}}, observed {ids:?}"
-        ));
-    }
-    engine.close()
-}
-
-fn run_purge_unlink_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let event = FaultEvent {
-        id: "feature-ingest-purge-unlink".to_owned(),
-        op_index: 1,
-        site: fault_vfs::FaultSite::Delete,
-        mode: fault_vfs::FaultMode::Eio,
-        nth_match: 1,
-        path_contains: Some(".zseg".to_owned()),
-        fired: false,
-        path: None,
-    };
-    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
-    let mut engine = RealEngine::new(
-        directory.path().to_path_buf(),
-        Arc::clone(&scheduled),
-        Arc::new(ManualMonotonicClock::new()),
-    );
-    scheduled.set_operation(0);
-    engine.open()?;
-    engine.ingest(&[ingest_probe_batch()[0]])?;
-    engine.seal()?;
-    scheduled.set_operation(1);
-    let _faulted = engine.purge(1);
-    if !scheduled.event().is_some_and(|event| event.fired) {
-        return Err("purge unlink fault did not reach a replaced segment".to_owned());
-    }
-    engine.reopen()?;
-    let _retry = engine.purge(1);
-    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    if observed.hits.iter().any(|hit| hit.doc_id == 1) {
-        return Err("purged row resurrected after unlink retry".to_owned());
-    }
-    engine.close()
-}
-
-fn run_purge_crash_fault_probe() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
-    engine.open()?;
-    engine.ingest(&[ingest_probe_batch()[0]])?;
-    let recovery = engine.crash_at_boundary(
-        DocMutation {
-            doc_id: 2,
-            revision: 1,
-            timestamp: 11,
-        },
-        program::CrashBoundary::MidPurge,
-    )?;
-    if recovery.disposition != CrashDisposition::Gone {
-        return Err(format!(
-            "mid-purge crash recovered with {:?}, expected Gone",
-            recovery.disposition
-        ));
-    }
-    let observed = engine.search(&program::query(3), 8, SearchKind::Scan, 0)?;
-    if observed.hits.iter().any(|hit| hit.doc_id == 2) {
-        return Err("mid-purge crash resurrected the purged row".to_owned());
-    }
-    engine.close()
 }
 
 fn run_wal_damage_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
@@ -4529,7 +14541,7 @@ fn json_escape(value: &str) -> String {
 }
 
 pub fn planted_counterexample(invariant: Invariant) -> Violation {
-    let seed = 91_000 + invariant as u64;
+    let seed = 91_000 + u64::from(invariant.number());
     let query = program::query(0);
     let observation = |hits: Vec<Hit>, graph_available, graph_segments, graph_rescored| {
         let returned = hits.len();
@@ -4776,6 +14788,9 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
             1,
             "deadline was evaluated against a different monotonic clock".to_owned(),
         ),
+        Invariant::Feature(_) => {
+            panic!("feature invariant plants live in the independent family oracle")
+        }
     }
 }
 

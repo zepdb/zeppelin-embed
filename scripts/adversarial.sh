@@ -270,9 +270,11 @@ export ZE_ADV_ARTIFACTS="$artifacts"
 if [[ -n "$replay_dir" ]]; then
   export ZE_ADV_REPLAY_DIR="$replay_dir"
 fi
+infer_replay_campaign=0
 if [[ "$subcommand" == "replay" ]] \
   && (( campaign_environment_set == 0 && campaign_option == 0 )); then
   unset ZE_ADV_CAMPAIGN
+  infer_replay_campaign=1
 fi
 
 if [[ "${ZE_ADV_CLI_TEST:-0}" == "1" ]]; then
@@ -287,7 +289,11 @@ fi
 cd "$repo_root"
 base_artifacts="$artifacts"
 for selected_campaign in "${campaigns[@]}"; do
-  export ZE_ADV_CAMPAIGN="$selected_campaign"
+  if (( infer_replay_campaign == 0 )); then
+    export ZE_ADV_CAMPAIGN="$selected_campaign"
+  else
+    unset ZE_ADV_CAMPAIGN
+  fi
   if (( ${#campaigns[@]} > 1 )); then
     export ZE_ADV_ARTIFACTS="$base_artifacts/$selected_campaign"
   else

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -145,10 +146,10 @@ operation_enum!(GraphOperation {
     FilteredSearch => "filtered-search",
 });
 operation_enum!(MetadataOperation {
-    Columns => "columns",
-    Bitmap => "bitmap",
-    Planner => "planner",
-    Execution => "execution",
+    Columns => "metadata_columns_roundtrip",
+    Bitmap => "metadata_bitmap_algebra",
+    Planner => "metadata_pruning_soundness",
+    Execution => "metadata_execution_truth",
 });
 operation_enum!(FtsOperation {
     Tokenizer => "tokenizer",
@@ -356,7 +357,7 @@ pub fn campaign_from_replay_metadata(directory: &Path) -> Result<CampaignKind, S
         .ok_or_else(|| format!("{} has no campaign key", metadata_path.display()))?;
     let campaign = CampaignKind::from_key(key)?;
     if campaign != CampaignKind::Overall {
-        validate_feature_replay_attestation(&metadata, &metadata_path)?;
+        validate_feature_replay_attestation(&metadata, &metadata_path, campaign)?;
     }
     Ok(campaign)
 }
@@ -364,6 +365,7 @@ pub fn campaign_from_replay_metadata(directory: &Path) -> Result<CampaignKind, S
 fn validate_feature_replay_attestation(
     metadata: &zeppelin_embed_bench::harness_json::Value,
     metadata_path: &Path,
+    campaign: CampaignKind,
 ) -> Result<(), String> {
     let attestation = &metadata["attestation"];
     let malformed = || {
@@ -379,12 +381,17 @@ fn validate_feature_replay_attestation(
     {
         return Err(malformed());
     }
+    if attestation["oracle_contract"].as_str() != Some(super::artifacts::oracle_contract(campaign))
+    {
+        return Err(malformed());
+    }
     if !attestation["harness_git_revision"]
         .as_str()
         .is_some_and(|revision| !revision.is_empty() && revision != "unknown")
         || !attestation["comparison_counts"].is_object()
         || !attestation["same_seed_clean_controls"].is_u64()
         || !attestation["integrated_feature_fault_receipts"].is_u64()
+        || !attestation["expected_feature_fault_receipts"].is_u64()
     {
         return Err(malformed());
     }
@@ -402,13 +409,567 @@ fn validate_feature_replay_attestation(
     let replay_artifacts = attestation["replay_artifacts"]
         .as_array()
         .ok_or_else(malformed)?;
-    if replay_artifacts.len() != super::artifacts::REPLAY_ARTIFACTS.len()
+    let expected_artifacts = super::artifacts::replay_artifacts_for(campaign);
+    if replay_artifacts.len() != expected_artifacts.len()
         || replay_artifacts
             .iter()
-            .zip(super::artifacts::REPLAY_ARTIFACTS)
-            .any(|(observed, expected)| observed.as_str() != Some(expected))
+            .zip(&expected_artifacts)
+            .any(|(observed, expected)| observed.as_str() != Some(*expected))
     {
         return Err(malformed());
+    }
+    let directory = metadata_path.parent().ok_or_else(malformed)?;
+    if expected_artifacts
+        .iter()
+        .any(|artifact| !directory.join(artifact).is_file())
+    {
+        return Err(malformed());
+    }
+    match campaign {
+        CampaignKind::StorageDurability => {
+            validate_storage_episode_attestation(attestation, directory)
+                .map_err(|_| malformed())?;
+        }
+        CampaignKind::VectorExecution => {
+            validate_vector_episode_attestation(attestation, directory).map_err(|_| malformed())?;
+        }
+        CampaignKind::IngestRetention => {
+            validate_ingest_retention_episode_attestation(attestation).map_err(|_| malformed())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_ingest_retention_episode_attestation(
+    attestation: &zeppelin_embed_bench::harness_json::Value,
+) -> Result<(), String> {
+    let ingest = &attestation["ingest_retention_oracle_attestation"];
+    if ingest["version"].as_u64() != Some(1)
+        || ingest["oracle_contract_version"].as_str()
+            != Some(zeppelin_embed_adversarial_oracle::ingest_retention::ORACLE_CONTRACT_VERSION)
+    {
+        return Err("ingest-retention episode oracle contract differs".to_owned());
+    }
+    let exact_keys = |label: &str,
+                      value: &zeppelin_embed_bench::harness_json::Value,
+                      expected: &[&str]|
+     -> Result<(), String> {
+        let observed = value
+            .as_object()
+            .ok_or_else(|| format!("ingest-retention episode {label} is not an object"))?
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = expected
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        if observed != expected {
+            return Err(format!(
+                "ingest-retention episode {label} keys differ expected={expected:?} observed={observed:?}"
+            ));
+        }
+        Ok(())
+    };
+    exact_keys(
+        "invariants",
+        &ingest["per_invariant_comparisons"],
+        &["I20", "I21", "I22", "I23"],
+    )?;
+    for (invariant, checker, operation) in [
+        (
+            "I20",
+            zeppelin_embed_adversarial_oracle::ingest_retention::I20_CHECKER_ID,
+            "batch-commit",
+        ),
+        (
+            "I21",
+            zeppelin_embed_adversarial_oracle::ingest_retention::I21_CHECKER_ID,
+            "seal",
+        ),
+        (
+            "I22",
+            zeppelin_embed_adversarial_oracle::ingest_retention::I22_CHECKER_ID,
+            "retention",
+        ),
+        (
+            "I23",
+            zeppelin_embed_adversarial_oracle::ingest_retention::I23_CHECKER_ID,
+            "purge",
+        ),
+    ] {
+        let record = &ingest["per_invariant_comparisons"][invariant];
+        let comparisons = record["comparisons"]
+            .as_u64()
+            .ok_or_else(|| format!("ingest-retention episode {invariant} count is absent"))?;
+        if comparisons == 0
+            || record["passes"].as_u64() != Some(comparisons)
+            || record["checker_id"].as_str() != Some(checker)
+            || record["operation"].as_str() != Some(operation)
+            || record["first_differences"].as_u64() != Some(0)
+        {
+            return Err(format!(
+                "ingest-retention episode {invariant} checker ledger differs"
+            ));
+        }
+    }
+    exact_keys(
+        "operations",
+        &ingest["operations"],
+        &["batch-commit", "seal", "retention", "purge"],
+    )?;
+    if ingest["operations"]
+        .as_object()
+        .expect("validated ingest operation object")
+        .values()
+        .any(|count| count.as_u64().is_none_or(|count| count == 0))
+    {
+        return Err("ingest-retention episode operation ledger differs".to_owned());
+    }
+    let controls = &ingest["same_seed_controls"];
+    if !controls["faults"].is_object()
+        || controls["qualifying_pairs"].as_u64() != attestation["same_seed_clean_controls"].as_u64()
+    {
+        return Err("ingest-retention episode same-seed ledger differs".to_owned());
+    }
+    let receipts = &ingest["integrated_receipts"];
+    let expected = receipts["expected"]
+        .as_u64()
+        .ok_or_else(|| "ingest-retention episode expected receipts are absent".to_owned())?;
+    if receipts["observed"].as_u64() != Some(expected)
+        || receipts["records"].as_u64() != Some(expected)
+        || !receipts["faults"].is_object()
+        || !receipts["sites"].is_object()
+    {
+        return Err("ingest-retention episode receipt ledger differs".to_owned());
+    }
+    if ingest["host"]["os"].as_str() != Some(std::env::consts::OS)
+        || ingest["host"]["arch"].as_str() != Some(std::env::consts::ARCH)
+    {
+        return Err("ingest-retention episode host ledger differs".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_storage_episode_attestation(
+    attestation: &zeppelin_embed_bench::harness_json::Value,
+    directory: &Path,
+) -> Result<(), String> {
+    let storage = &attestation["storage_oracle_attestation"];
+    let exact_keys = |label: &str,
+                      value: &zeppelin_embed_bench::harness_json::Value,
+                      expected: &[&str]|
+     -> Result<(), String> {
+        let observed = value
+            .as_object()
+            .ok_or_else(|| format!("storage episode {label} is not an object"))?
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = expected
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        if observed != expected {
+            return Err(format!(
+                "storage episode {label} keys differ expected={expected:?} observed={observed:?}"
+            ));
+        }
+        Ok(())
+    };
+    exact_keys(
+        "oracle attestation",
+        storage,
+        &[
+            "version",
+            "oracle_contract_version",
+            "oracle_source_digest",
+            "fixture_digest",
+            "per_invariant_comparisons",
+            "operations",
+            "format_cases",
+            "omission_cases",
+            "same_seed_controls",
+            "integrated_receipts",
+            "retained_artifacts",
+            "host",
+        ],
+    )?;
+    if storage["version"].as_u64() != Some(1)
+        || storage["oracle_contract_version"].as_str()
+            != Some(zeppelin_embed_adversarial_oracle::storage_durability::ORACLE_CONTRACT_VERSION)
+    {
+        return Err("storage episode oracle contract differs".to_owned());
+    }
+    let expected_source_digest = super::artifacts::evidence_digest(&[include_bytes!(
+        "../adversarial-oracle/src/storage_durability.rs"
+    )]);
+    if storage["oracle_source_digest"].as_str() != Some(expected_source_digest.as_str()) {
+        return Err("storage episode oracle source digest differs".to_owned());
+    }
+    let fixture = std::fs::read(directory.join("storage-fixture.json"))
+        .map_err(|error| format!("read storage fixture for episode attestation: {error}"))?;
+    let fixture_digest = super::artifacts::evidence_digest(&[&fixture]);
+    if storage["fixture_digest"].as_str() != Some(fixture_digest.as_str()) {
+        return Err("storage episode fixture digest differs".to_owned());
+    }
+    let valid_digest = |value: &zeppelin_embed_bench::harness_json::Value| {
+        value.as_str().is_some_and(|digest| {
+            digest.strip_prefix("fnv1a64:").is_some_and(|hex| {
+                hex.len() == 16 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        })
+    };
+    let invariants = storage["per_invariant_comparisons"]
+        .as_object()
+        .ok_or_else(|| "storage episode invariant ledger is absent".to_owned())?;
+    let expected_invariants = [
+        (
+            "I15",
+            zeppelin_embed_adversarial_oracle::storage_durability::I15_CHECKER_ID,
+            &["publication"][..],
+        ),
+        (
+            "I16",
+            zeppelin_embed_adversarial_oracle::storage_durability::I16_CHECKER_ID,
+            &["wal-prefix"][..],
+        ),
+        (
+            "I17",
+            zeppelin_embed_adversarial_oracle::storage_durability::I17_CHECKER_ID,
+            &["retry"][..],
+        ),
+        (
+            "I18",
+            zeppelin_embed_adversarial_oracle::storage_durability::I18_CHECKER_ID,
+            &["format-check", "wal-prefix"][..],
+        ),
+        (
+            "I19",
+            zeppelin_embed_adversarial_oracle::storage_durability::I19_CHECKER_ID,
+            &["orphan-cleanup"][..],
+        ),
+    ];
+    if invariants.len() != expected_invariants.len() {
+        return Err("storage episode invariant ledger size differs".to_owned());
+    }
+    for (invariant, checker_id, allowed_operations) in expected_invariants {
+        let record = &storage["per_invariant_comparisons"][invariant];
+        exact_keys(
+            &format!("{invariant} comparison"),
+            record,
+            &[
+                "checker_id",
+                "operations",
+                "canonical_version",
+                "comparisons",
+                "passes",
+                "input_digest",
+                "observed_digest",
+                "first_differences",
+            ],
+        )?;
+        let comparisons = record["comparisons"]
+            .as_u64()
+            .ok_or_else(|| format!("storage episode {invariant} comparison count is absent"))?;
+        let operations = record["operations"]
+            .as_object()
+            .ok_or_else(|| format!("storage episode {invariant} operation ledger is absent"))?;
+        let observed_operations = operations
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let allowed_operations = allowed_operations
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let operation_comparisons = operations
+            .values()
+            .map(|count| count.as_u64().unwrap_or(0))
+            .sum::<u64>();
+        let required_operation = if invariant == "I18" {
+            "format-check"
+        } else {
+            *allowed_operations
+                .iter()
+                .next()
+                .ok_or_else(|| format!("storage episode {invariant} has no allowed operation"))?
+        };
+        if comparisons == 0
+            || record["passes"].as_u64() != Some(comparisons)
+            || record["first_differences"].as_u64() != Some(0)
+            || record["checker_id"].as_str() != Some(checker_id)
+            || observed_operations.is_empty()
+            || !observed_operations.is_subset(&allowed_operations)
+            || operations[required_operation].as_u64().unwrap_or(0) == 0
+            || operation_comparisons != comparisons
+            || record["canonical_version"].as_u64()
+                != Some(u64::from(
+                    zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+                ))
+            || !valid_digest(&record["input_digest"])
+            || !valid_digest(&record["observed_digest"])
+        {
+            return Err(format!(
+                "storage episode {invariant} canonical comparison ledger differs"
+            ));
+        }
+    }
+    let operations = storage["operations"]
+        .as_object()
+        .ok_or_else(|| "storage episode operation ledger is absent".to_owned())?;
+    let expected_operations = [
+        "wal-prefix",
+        "publication",
+        "retry",
+        "format-check",
+        "orphan-cleanup",
+    ];
+    if operations.len() != expected_operations.len()
+        || expected_operations
+            .into_iter()
+            .any(|operation| operations[operation].as_u64().unwrap_or(0) == 0)
+    {
+        return Err("storage episode operation ledger differs".to_owned());
+    }
+    exact_keys(
+        "format-case ledger",
+        &storage["format_cases"],
+        &[
+            "wal-header",
+            "wal-record-body",
+            "wal-record-checksum",
+            "segment-region",
+            "manifest-wrong-family",
+            "segment-wrong-family",
+            "segment-wrong-identity",
+        ],
+    )?;
+    exact_keys(
+        "omission-case ledger",
+        &storage["omission_cases"],
+        &[
+            "final-segment.list",
+            "final-segment.delete",
+            "segment-temporary.list",
+            "segment-temporary.delete",
+            "manifest-temporary.list",
+            "manifest-temporary.delete",
+        ],
+    )?;
+    let controls = &storage["same_seed_controls"];
+    exact_keys(
+        "same-seed controls",
+        controls,
+        &["operations", "qualifying_pairs"],
+    )?;
+    if !controls["operations"].is_object()
+        || controls["qualifying_pairs"].as_u64() != attestation["same_seed_clean_controls"].as_u64()
+    {
+        return Err("storage episode same-seed control ledger differs".to_owned());
+    }
+    let receipts = &storage["integrated_receipts"];
+    exact_keys(
+        "integrated receipts",
+        receipts,
+        &["expected", "observed", "records", "faults", "sites"],
+    )?;
+    let expected_receipts = receipts["expected"]
+        .as_u64()
+        .ok_or_else(|| "storage episode expected receipt count is absent".to_owned())?;
+    if receipts["observed"].as_u64() != Some(expected_receipts)
+        || receipts["records"].as_u64() != Some(expected_receipts)
+        || !receipts["faults"].is_object()
+        || !receipts["sites"].is_object()
+    {
+        return Err("storage episode receipt ledger differs".to_owned());
+    }
+    if storage["retained_artifacts"]["index_records"]
+        .as_u64()
+        .unwrap_or(0)
+        == 0
+        || storage["host"]["os"].as_str() != Some(std::env::consts::OS)
+        || storage["host"]["arch"].as_str() != Some(std::env::consts::ARCH)
+    {
+        return Err("storage episode retained-artifact or host ledger differs".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_vector_episode_attestation(
+    attestation: &zeppelin_embed_bench::harness_json::Value,
+    directory: &Path,
+) -> Result<(), String> {
+    let vector = &attestation["vector_oracle_attestation"];
+    if vector["version"].as_u64() != Some(1)
+        || vector["oracle_contract"].as_str()
+            != Some(zeppelin_embed_adversarial_oracle::vector_execution::VECTOR_ORACLE_CONTRACT)
+        || vector["canonical_contract"].as_str()
+            != Some(zeppelin_embed_adversarial_oracle::vector_execution::VECTOR_CANONICAL_VERSION)
+    {
+        return Err("vector episode oracle/canonical contract differs".to_owned());
+    }
+    let valid_digest = |value: &zeppelin_embed_bench::harness_json::Value| {
+        value.as_str().is_some_and(|digest| {
+            digest.strip_prefix("fnv1a64:").is_some_and(|hex| {
+                hex.len() == 16 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        })
+    };
+    let fixture = std::fs::read(directory.join("fixture.json"))
+        .map_err(|error| format!("read vector fixture for episode attestation: {error}"))?;
+    let fixture_digest = super::artifacts::evidence_digest(&[&fixture]);
+    if vector["fixture_digest"].as_str() != Some(fixture_digest.as_str()) {
+        return Err("vector episode fixture digest differs".to_owned());
+    }
+    let invariants = vector["per_invariant_comparisons"]
+        .as_object()
+        .ok_or_else(|| "vector episode invariant ledger is absent".to_owned())?;
+    let expected = [
+        (
+            "I24",
+            zeppelin_embed_adversarial_oracle::vector_execution::I24_CHECKER_ID,
+        ),
+        (
+            "I25",
+            zeppelin_embed_adversarial_oracle::vector_execution::I25_CHECKER_ID,
+        ),
+        (
+            "I26",
+            zeppelin_embed_adversarial_oracle::vector_execution::I26_CHECKER_ID,
+        ),
+        (
+            "I27",
+            zeppelin_embed_adversarial_oracle::vector_execution::I27_CHECKER_ID,
+        ),
+    ];
+    if invariants.len() != expected.len() {
+        return Err("vector episode invariant ledger size differs".to_owned());
+    }
+    for (invariant, checker_id) in expected {
+        let record = &vector["per_invariant_comparisons"][invariant];
+        let comparisons = record["comparisons"]
+            .as_u64()
+            .ok_or_else(|| format!("vector episode {invariant} comparison count is absent"))?;
+        if comparisons == 0
+            || record["passes"].as_u64() != Some(comparisons)
+            || record["first_differences"].as_u64() != Some(0)
+            || record["checker_id"].as_str() != Some(checker_id)
+            || record["canonical_version"].as_str()
+                != Some(
+                    zeppelin_embed_adversarial_oracle::vector_execution::VECTOR_CANONICAL_VERSION,
+                )
+            || !valid_digest(&record["input_digest"])
+            || !valid_digest(&record["observed_digest"])
+        {
+            return Err(format!(
+                "vector episode {invariant} canonical comparison ledger differs"
+            ));
+        }
+    }
+    let controls = &vector["same_seed_controls"];
+    if !controls["operations"].is_object()
+        || controls["pairs"].as_u64().is_none()
+        || controls["isolated_directories"].as_u64().unwrap_or(0) == 0
+        || controls["byte_identical"].as_u64().unwrap_or(0) == 0
+    {
+        return Err("vector episode same-seed control ledger differs".to_owned());
+    }
+    let receipts = &vector["integrated_receipts"];
+    let expected_receipts = receipts["expected"]
+        .as_u64()
+        .ok_or_else(|| "vector episode expected receipt count is absent".to_owned())?;
+    if receipts["observed"].as_u64() != Some(expected_receipts)
+        || receipts["records"].as_u64() != Some(expected_receipts)
+        || !receipts["faults"].is_object()
+        || !receipts["sites"].is_object()
+    {
+        return Err("vector episode receipt ledger differs".to_owned());
+    }
+    let control_bytes = std::fs::read(directory.join("controls.jsonl"))
+        .map_err(|error| format!("read vector controls for episode attestation: {error}"))?;
+    let mut generic_counts = BTreeMap::<&'static str, u64>::from([
+        ("scheduled", 0),
+        ("clean_fired", 0),
+        ("fault_fired", 0),
+        ("same_path", 0),
+        ("isolated_directories", 0),
+        ("isolated_runtimes", 0),
+        ("typed_feature_receipts", 0),
+    ]);
+    for line in control_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: zeppelin_embed_bench::harness_json::Value =
+            zeppelin_embed_bench::harness_json::from_slice(line)
+                .map_err(|error| format!("parse vector episode control: {error}"))?;
+        let generic = &record["generic_fault"];
+        if generic.is_null() {
+            continue;
+        }
+        *generic_counts.get_mut("scheduled").expect("fixed key") += 1;
+        let clean_event = &generic["clean"]["event"];
+        let fault_event = &generic["fault"]["event"];
+        if clean_event["fired"].as_bool() == Some(true) {
+            *generic_counts.get_mut("clean_fired").expect("fixed key") += 1;
+        }
+        if fault_event["fired"].as_bool() == Some(true) {
+            *generic_counts.get_mut("fault_fired").expect("fixed key") += 1;
+        }
+        if clean_event["path"].as_str().is_some() && clean_event["path"] == fault_event["path"] {
+            *generic_counts.get_mut("same_path").expect("fixed key") += 1;
+        }
+        if generic["isolated_directories"].as_bool() == Some(true)
+            && generic["clean_initial_directory"] == generic["fault_initial_directory"]
+        {
+            *generic_counts
+                .get_mut("isolated_directories")
+                .expect("fixed key") += 1;
+        }
+        if generic["isolated_runtimes"].as_bool() == Some(true) {
+            *generic_counts
+                .get_mut("isolated_runtimes")
+                .expect("fixed key") += 1;
+        }
+        let feature_receipts = generic["fault"]["feature_receipts"]
+            .as_array()
+            .ok_or_else(|| "vector episode generic fault receipts are absent".to_owned())?;
+        *generic_counts
+            .get_mut("typed_feature_receipts")
+            .expect("fixed key") += u64::try_from(feature_receipts.len())
+            .map_err(|_| "vector episode generic receipt count exceeds u64".to_owned())?;
+    }
+    let attested_generic = vector["generic_fault_pairs"]
+        .as_object()
+        .ok_or_else(|| "vector episode generic fault-pair ledger is absent".to_owned())?;
+    if attested_generic.len() != generic_counts.len()
+        || generic_counts
+            .iter()
+            .any(|(key, observed)| attested_generic[*key].as_u64() != Some(*observed))
+    {
+        return Err("vector episode generic fault-pair ledger differs".to_owned());
+    }
+    let features = vector["backend_inventory"]["features"]
+        .as_object()
+        .ok_or_else(|| "vector episode backend feature ledger is absent".to_owned())?;
+    let detected = zeppelin_embed::kernels::detected_features();
+    let expected_features = [
+        ("neon", detected.neon),
+        ("dotprod", detected.dotprod),
+        ("fp16", detected.fp16),
+        ("i8mm", detected.i8mm),
+        ("sme2", detected.sme2),
+        ("avx2", detected.avx2),
+        ("popcnt", detected.popcnt),
+    ];
+    if features.len() != expected_features.len()
+        || expected_features
+            .into_iter()
+            .any(|(name, expected)| features[name].as_bool() != Some(expected))
+    {
+        return Err("vector episode runtime feature ledger differs".to_owned());
     }
     Ok(())
 }
@@ -683,6 +1244,15 @@ macro_rules! feature_fault_catalog {
             pub fn coverage_key(self) -> String {
                 format!("feature_fault.{}.{}", self.campaign().key(), self.key())
             }
+
+            /// Exact number of production-origin receipts required to credit one fault.
+            #[must_use]
+            pub const fn required_receipt_cardinality(self) -> usize {
+                match self {
+                    Self::MetadataSelectivityBoundary => 2,
+                    _ => 1,
+                }
+            }
         }
     };
 }
@@ -903,7 +1473,7 @@ feature_fault_catalog![
         MetadataFilterPlanner,
         "selectivity-boundary",
         "selectivity boundary input",
-        FeatureOperation::Metadata(MetadataOperation::Planner)
+        FeatureOperation::Metadata(MetadataOperation::Execution)
     ),
     (
         MetadataVisitedBudgetFallback,
@@ -1301,6 +1871,22 @@ impl CampaignSpec {
             .iter()
             .map(|key| (*key).to_owned())
             .collect::<Vec<_>>();
+        if self.kind == CampaignKind::StorageDurability {
+            keys.extend(storage_family_required_coverage().map(str::to_owned));
+        }
+        if self.kind == CampaignKind::VectorExecution {
+            keys.extend(vector_family_required_coverage());
+        }
+        if self.kind == CampaignKind::MetadataFilterPlanner {
+            keys.extend(
+                (0..super::metadata_filter_planner::I37_PREDICATE_CASE_COUNT).map(|seed| {
+                    format!(
+                        "metadata.i37.matrix.{}",
+                        super::metadata_filter_planner::i37_predicate_case_key(seed)
+                    )
+                }),
+            );
+        }
         keys.extend(
             self.required_invariants()
                 .into_iter()
@@ -1485,7 +2071,12 @@ const GRAPH_OPS: [&str; 7] = [
     "publication",
     "filtered-search",
 ];
-const FILTER_OPS: [&str; 4] = ["columns", "bitmap", "planner", "execution"];
+const FILTER_OPS: [&str; 4] = [
+    "metadata_columns_roundtrip",
+    "metadata_bitmap_algebra",
+    "metadata_pruning_soundness",
+    "metadata_execution_truth",
+];
 const FTS_OPS: [&str; 5] = ["tokenizer", "regions", "bm25", "pruning", "extras"];
 const HYBRID_OPS: [&str; 5] = [
     "provenance",
@@ -1512,11 +2103,234 @@ const FFI_OPS: [&str; 5] = [
 ];
 
 const OVERALL_COVERAGE: [&str; 1] = ["op.open"];
-const STORAGE_COVERAGE: [&str; 2] = ["op.ingest", "op.crash"];
+const STORAGE_COVERAGE: [&str; 4] = [
+    "feature_fault.storage-durability.list-delete-omission.site.delete",
+    "feature_fault.storage-durability.list-delete-omission.site.list",
+    "feature_fault.storage-durability.wrong-segment-object.site.family",
+    "feature_fault.storage-durability.wrong-segment-object.site.identity",
+];
+
+fn storage_family_required_coverage() -> impl Iterator<Item = &'static str> {
+    [
+        "storage.format-case.wal-header",
+        "storage.format-case.wal-record-body",
+        "storage.format-case.wal-record-checksum",
+        "storage.format-case.segment-region",
+        "storage.format-case.manifest-wrong-family",
+        "storage.format-case.segment-wrong-family",
+        "storage.format-case.segment-wrong-identity",
+        "storage.omission.final-segment.list",
+        "storage.omission.final-segment.delete",
+        "storage.omission.segment-temporary.list",
+        "storage.omission.segment-temporary.delete",
+        "storage.omission.manifest-temporary.list",
+        "storage.omission.manifest-temporary.delete",
+        "storage.receipt-site.wal-open-header-validation",
+        "storage.receipt-site.wal-open-record-validation",
+        "storage.receipt-site.wal-open-record-checksum",
+        "storage.receipt-site.wal-commit-append-after-inner-success",
+        "storage.receipt-site.manifest-commit-before-rename",
+        "storage.receipt-site.manifest-commit-after-rename",
+        "storage.receipt-site.segment-read-region-checksum",
+        "storage.receipt-site.manifest-open-family-validation",
+        "storage.receipt-site.segment-open-family-validation",
+        "storage.receipt-site.segment-open-object-identity",
+        "storage.receipt-site.orphan-cleanup-list",
+        "storage.receipt-site.orphan-cleanup-delete",
+    ]
+    .into_iter()
+}
 const INGEST_COVERAGE: [&str; 3] = ["op.ingest", "op.seal", "op.purge"];
-const VECTOR_COVERAGE: [&str; 2] = ["op.search", "search.scan"];
+const VECTOR_COVERAGE: [&str; 0] = [];
+
+pub(crate) fn vector_family_required_coverage() -> Vec<String> {
+    const KERNELS: [&str; 11] = [
+        "dot-i8",
+        "hamming-u1",
+        "dot-f32",
+        "dot-f16",
+        "dot-i8-batch",
+        "hamming-u1-batch",
+        "dot-bit4",
+        "dot-bit4-prepared",
+        "dot-bit4-batch",
+        "score-bit4-prepared-batch",
+        "score-bit4-ptrs",
+    ];
+    const DIMENSIONS: [u64; 17] = [
+        0, 1, 2, 3, 7, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129, 768,
+    ];
+    const ALL_BACKENDS: [&str; 9] = [
+        "scalar",
+        "neon-widen",
+        "neon-dotprod-u4",
+        "neon-i8mm",
+        "neon-dotprod-u2",
+        "neon-dotprod-u6",
+        "neon-dotprod-u8",
+        "neon-dotprod-u4-prefetch",
+        "avx2",
+    ];
+    let available = zeppelin_embed::kernels::KernelVariant::available()
+        .map(|variant| variant.backend_id().as_str())
+        .collect::<Vec<_>>();
+    let mut keys = vec![
+        "vector.control.byte-identical".to_owned(),
+        "vector.control.isolated-directories".to_owned(),
+    ];
+    for backend in &available {
+        for kernel in KERNELS {
+            for (dimension_index, dimension) in DIMENSIONS.into_iter().enumerate() {
+                keys.push(format!(
+                    "I24.kernel.{kernel}.backend.{backend}.dimension.{dimension}.offset.{}",
+                    dimension_index % 2
+                ));
+            }
+        }
+    }
+    for backend in ALL_BACKENDS {
+        let availability = if available.contains(&backend) {
+            "available"
+        } else {
+            "unavailable"
+        };
+        keys.push(format!("I24.backend.{availability}.{backend}"));
+    }
+    for precision in ["f32", "f16"] {
+        for class in ["neg-zero", "subnormal", "pos-inf", "neg-inf", "nan"] {
+            keys.push(format!("I24.special.{precision}.{class}"));
+        }
+    }
+    keys.push("I24.f32.seeded-raw-finite".to_owned());
+    keys.push("I24.f32.cancellation-heavy-alternating-magnitude".to_owned());
+    keys.push(format!(
+        "I24.store-selected.{}",
+        zeppelin_embed::kernels::KernelVariant::selected()
+            .backend_id()
+            .as_str()
+    ));
+
+    for scheme in ["bit4", "int8"] {
+        for boundary in [
+            "empty",
+            "dimension-65537",
+            "output-short",
+            "output-long",
+            "code-short",
+            "code-long",
+        ] {
+            keys.push(format!("I25.{scheme}.{boundary}"));
+        }
+        for side in ["row", "query"] {
+            for class in ["nan", "pos-inf", "neg-inf"] {
+                for position in ["first", "middle", "last"] {
+                    keys.push(format!("I25.{scheme}.{side}.{class}.{position}"));
+                }
+            }
+        }
+        for cell in [
+            "even",
+            "odd",
+            "constant",
+            "signed-zero",
+            "subnormal",
+            "extreme-finite",
+            "halfway",
+            "threshold-tie",
+        ] {
+            keys.push(format!("I25.{scheme}.positive.{cell}"));
+        }
+    }
+    keys.extend(
+        [
+            "I25.bit4.store-accepted-visible",
+            "I25.int8.store-published",
+            "I25.bit4.store-rejected-nonfinite",
+            "I25.bit4.stochastic-query.distinct-four",
+            "I26.mode.dense",
+            "I26.mode.retained",
+            "I26.reject.candidate-count",
+            "I26.reject.candidate-out-of-range",
+            "I26.reject.nonfinite-coarse",
+            "I26.store.active.exact",
+            "I26.store.active.scan",
+            "I26.store.active.auto-estimated",
+            "I26.store.sealed.exact",
+            "I26.store.sealed.graph",
+            "I26.store.sealed.auto-graph",
+            "I26.store.active.exact.anti-correlated-document-tie",
+            "I27.physical.active-row-zero",
+            "I27.physical.first-sealed-row-zero",
+            "I27.physical.second-sealed-row-zero",
+            "I27.transition.replace",
+            "I27.transition.delete",
+            "I27.transition.reopen",
+            "fault.forced-backend.kernel-dispatch-selected-scoring-table",
+            "fault.quant.bit4-odd-padding.scan-bit4-code-view",
+            "fault.quant.bit4-correction.scan-bit4-factor-view",
+            "fault.quant.int8-scale.scan-int8-factor-view",
+            "fault.rescore.exact.exact-rescore-rows",
+            "fault.rescore.graph.query-rescore-rows",
+            "fault.cancel.active-exact",
+            "fault.cancel.sealed-bit4-scan",
+            "fault.cancel.sealed-int8-scan",
+            "fault.cancel.sealed-graph",
+            "fault.allocation.exact.search-global-candidates",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    for (phase, tiers) in [
+        (0, &["auto", "exact", "scan"][..]),
+        (1, &["auto", "exact", "scan"][..]),
+        (2, &["auto", "exact", "scan", "graph"][..]),
+        (3, &["auto", "exact", "scan"][..]),
+        (4, &["auto", "exact", "scan", "graph"][..]),
+    ] {
+        for tier in tiers {
+            keys.push(format!("I27.phase.{phase}.tier.{tier}"));
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
 const GRAPH_COVERAGE: [&str; 2] = ["search.graph", "search.filtered_graph"];
-const FILTER_COVERAGE: [&str; 2] = ["op.predicate_search", "op.filtered_search"];
+const FILTER_COVERAGE: [&str; 33] = [
+    "metadata.control.byte-identical",
+    "metadata.mutation.columns.dictionary-code",
+    "metadata.mutation.columns.presence-tail",
+    "metadata.mutation.columns.raw-string-length",
+    "metadata.predicate.and",
+    "metadata.predicate.eq",
+    "metadata.predicate.exists",
+    "metadata.predicate.in",
+    "metadata.predicate.is-null",
+    "metadata.predicate.not",
+    "metadata.predicate.or",
+    "metadata.predicate.range",
+    "metadata.i38.predicate.eq",
+    "metadata.i38.predicate.range-exclusive-lower",
+    "metadata.i38.predicate.range-inclusive",
+    "metadata.i38.source.active",
+    "metadata.i38.source.all-tombstoned",
+    "metadata.i38.source.empty",
+    "metadata.i38.source.missing-bounds",
+    "metadata.i38.source.public-delete-wal",
+    "metadata.i38.source.sealed-three-plus",
+    "metadata.i39.branch.exact-allow-list",
+    "metadata.i39.branch.filtered-graph",
+    "metadata.i39.branch.graph-exact-fallback",
+    "metadata.i39.branch.masked-scan",
+    "metadata.i39.branch.pruned",
+    "metadata.i39.fallback.candidate-shortfall",
+    "metadata.i39.fallback.none",
+    "metadata.i39.fallback.visited-budget",
+    "metadata.receipt.bitmap-truncation.cardinality-one",
+    "metadata.receipt.column-corruption.cardinality-one",
+    "metadata.receipt.selectivity-boundary.cardinality-two",
+    "metadata.receipt.visited-budget.cardinality-one",
+];
 const FTS_COVERAGE: [&str; 2] = ["store.lexical_search", "op.fts_extras_probe"];
 const HYBRID_COVERAGE: [&str; 2] = ["store.hybrid_search", "op.hybrid_search"];
 const TIER_COVERAGE: [&str; 2] = ["op.maintain", "search.auto"];
@@ -1572,7 +2386,7 @@ const INGEST_INVARIANT_SPECS: [InvariantSpec; 4] = invariant_specs![
         20,
         FeatureOperation::Ingest(IngestOperation::BatchCommit),
         ExactSet,
-        "I20.batch-atomicity"
+        "I20.batch-atomicity.v1"
     ),
     (
         21,

@@ -16,7 +16,10 @@ pub struct FeatureFaultReceipt {
 }
 
 impl FeatureFaultReceipt {
-    #[allow(dead_code, reason = "family production controllers land in later vertical slices")]
+    #[allow(
+        dead_code,
+        reason = "family production controllers land in later vertical slices"
+    )]
     pub(crate) fn new(
         campaign: &'static str,
         operation: &'static str,

@@ -5,4 +5,4 @@
 //! module only re-exports the stable evidence record; it deliberately has no
 //! reusable comparison or planted-observation path.
 
-pub use zeppelin_embed_adversarial_oracle::OracleRecord;
+pub use zeppelin_embed_adversarial_oracle::{OracleFirstDifference, OracleRecord};

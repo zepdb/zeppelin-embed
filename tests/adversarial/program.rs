@@ -364,15 +364,59 @@ impl Program {
                     )
                 });
                 let operations = super::campaign::feature_operations(campaign).to_vec();
-                let insertion = program
+                let active = program
                     .ops
                     .iter()
-                    .position(|operation| matches!(operation, Op::Ingest { .. }))
-                    .map_or(1, |index| index.saturating_add(1));
-                program.ops.splice(
-                    insertion..insertion,
-                    operations.into_iter().map(Op::Feature),
-                );
+                    .enumerate()
+                    .skip(1)
+                    .take_while(|(_, operation)| matches!(operation, Op::Ingest { .. }))
+                    .map(|(index, _)| index)
+                    .last()
+                    .expect("feature program starts with active ingestion");
+                let first_seal = program
+                    .ops
+                    .iter()
+                    .position(|operation| matches!(operation, Op::Seal))
+                    .expect("feature program has a first seal");
+                let first_maintenance = program
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .skip(first_seal.saturating_add(1))
+                    .find_map(|(index, operation)| {
+                        matches!(operation, Op::Maintain { .. }).then_some(index)
+                    })
+                    .expect("feature program has post-seal maintenance");
+                let reopened = program
+                    .ops
+                    .iter()
+                    .position(|operation| matches!(operation, Op::Reopen))
+                    .expect("feature program has a reopen phase");
+                let final_seal = program
+                    .ops
+                    .iter()
+                    .rposition(|operation| matches!(operation, Op::Seal))
+                    .expect("feature program has a final seal");
+                let anchors = [active, first_seal, first_maintenance, reopened, final_seal];
+                debug_assert!(anchors.windows(2).all(|pair| pair[0] < pair[1]));
+                let operation_count = operations.len();
+                let mut scheduled = vec![Vec::new(); program.ops.len()];
+                for (ordinal, operation) in operations.into_iter().enumerate() {
+                    let phase = if operation_count <= 1 {
+                        0
+                    } else {
+                        ordinal.saturating_mul(anchors.len().saturating_sub(1))
+                            / operation_count.saturating_sub(1)
+                    };
+                    scheduled[anchors[phase]].push(operation);
+                }
+                let mut phased =
+                    Vec::with_capacity(program.ops.len().saturating_add(operation_count));
+                for (index, operation) in program.ops.into_iter().enumerate() {
+                    phased.push(operation);
+                    phased.extend(scheduled[index].drain(..).map(Op::Feature));
+                }
+                program.ops = phased;
                 program
             }
         }

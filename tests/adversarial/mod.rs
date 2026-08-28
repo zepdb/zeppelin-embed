@@ -10,11 +10,15 @@ pub mod artifacts;
 pub mod campaign;
 pub mod coverage;
 pub mod fault_vfs;
+pub mod ingest_retention;
+pub mod metadata_filter_planner;
 pub mod model;
 pub mod oracle;
 pub mod profiles;
 pub mod program;
 pub mod runner;
+pub mod storage_durability;
+pub mod vector_execution;
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;

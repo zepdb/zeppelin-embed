@@ -25,6 +25,9 @@ pub use snapshot::{
 pub use stats::Stats;
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
+#[cfg(any(test, feature = "test-support"))]
+use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -42,6 +45,14 @@ pub struct StoreTestDependencies {
     vfs: Arc<dyn crate::vfs::Vfs>,
     clock: Arc<dyn MonotonicClock>,
     hybrid_leg_fault: Option<HybridLegTestFault>,
+    storage_fault_controller: Option<StorageFaultController>,
+    ingest_retention_fault_controller: Option<
+        crate::ingest::IngestRetentionFaultController,
+    >,
+    metadata_test_controller: Option<Arc<crate::planner::MetadataTestController>>,
+    pub(crate) vector_fault_controller: Option<crate::scan::vector_fault::VectorFaultController>,
+    pub(crate) kernel_fault_controller: Option<crate::kernels::vector_fault::KernelFaultController>,
+    vector_seal_scheme: Option<crate::quant::QuantScheme>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -54,6 +65,12 @@ impl StoreTestDependencies {
             vfs,
             clock,
             hybrid_leg_fault: None,
+            storage_fault_controller: None,
+            ingest_retention_fault_controller: None,
+            metadata_test_controller: None,
+            vector_fault_controller: None,
+            kernel_fault_controller: None,
+            vector_seal_scheme: None,
         }
     }
 
@@ -63,6 +80,1256 @@ impl StoreTestDependencies {
         self.hybrid_leg_fault = Some(fault);
         self
     }
+
+    /// Arms one storage-family fault controller at Store-owned production seams.
+    #[must_use]
+    pub fn with_storage_fault_controller(mut self, controller: StorageFaultController) -> Self {
+        self.storage_fault_controller = Some(controller);
+        self
+    }
+
+    /// Arms one ingest-retention fault at a Store-owned mutation checkpoint.
+    #[must_use]
+    pub fn with_ingest_retention_fault_controller(
+        mut self,
+        controller: crate::ingest::IngestRetentionFaultController,
+    ) -> Self {
+        self.ingest_retention_fault_controller = Some(controller);
+        self
+    }
+
+    /// Binds one metadata/planner observation and fault controller to the
+    /// public Store query path.
+    #[must_use]
+    pub fn with_metadata_test_controller(
+        mut self,
+        controller: Arc<crate::planner::MetadataTestController>,
+    ) -> Self {
+        self.metadata_test_controller = Some(controller);
+        self
+    }
+
+    /// Arms one vector execution fault at the Store-owned query path.
+    #[must_use]
+    pub fn with_vector_fault_controller(
+        mut self,
+        controller: crate::scan::vector_fault::VectorFaultController,
+    ) -> Self {
+        self.vector_fault_controller = Some(controller);
+        self
+    }
+
+    /// Forces and observes one concrete kernel backend through Store search.
+    #[must_use]
+    pub fn with_kernel_fault_controller(
+        mut self,
+        controller: crate::kernels::vector_fault::KernelFaultController,
+    ) -> Self {
+        self.kernel_fault_controller = Some(controller);
+        self
+    }
+
+    /// Selects the immutable vector codec used by the next public Store seal.
+    ///
+    /// This test-support-only seam leaves public ingest and shipping defaults
+    /// unchanged while exercising document-preserving Int8 publication.
+    #[must_use]
+    pub const fn with_vector_seal_scheme(mut self, scheme: crate::quant::QuantScheme) -> Self {
+        self.vector_seal_scheme = Some(scheme);
+        self
+    }
+}
+
+/// Narrow storage-family faults available only through hidden test dependencies.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum StorageTestFault {
+    TornWalHeader,
+    TornWalBody,
+    TornWalChecksum,
+    PostCommitError,
+    ManifestPreRename,
+    ManifestPostRename,
+    CorruptSegmentRegion,
+    WrongManifestObject,
+    WrongSegmentObject,
+    ListOmission { file_name: String },
+    DeleteOmission { file_name: String },
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageTestFault {
+    const fn operation(&self) -> &'static str {
+        match self {
+            Self::TornWalHeader | Self::TornWalBody | Self::TornWalChecksum => "wal-prefix",
+            Self::PostCommitError => "retry",
+            Self::ManifestPreRename | Self::ManifestPostRename => "publication",
+            Self::CorruptSegmentRegion | Self::WrongManifestObject | Self::WrongSegmentObject => {
+                "format-check"
+            }
+            Self::ListOmission { .. } | Self::DeleteOmission { .. } => "orphan-cleanup",
+        }
+    }
+
+    const fn key(&self) -> &'static str {
+        match self {
+            Self::TornWalHeader => "torn-wal-header",
+            Self::TornWalBody => "torn-wal-body",
+            Self::TornWalChecksum => "torn-wal-checksum",
+            Self::PostCommitError => "post-commit-error",
+            Self::ManifestPreRename => "manifest-pre-rename-crash",
+            Self::ManifestPostRename => "manifest-post-rename-crash",
+            Self::CorruptSegmentRegion => "corrupt-segment-region",
+            Self::WrongManifestObject => "wrong-manifest-object",
+            Self::WrongSegmentObject => "wrong-segment-object",
+            Self::ListOmission { .. } | Self::DeleteOmission { .. } => "list-delete-omission",
+        }
+    }
+}
+
+/// Exact seed-derived target facts supplied before one storage operation runs.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct StorageFaultPlan {
+    op_index: u32,
+    artifact: String,
+    offset: Option<u64>,
+    segment: Option<crate::segment::SegmentId>,
+    region_kind: Option<u16>,
+    chunk: Option<u32>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageFaultPlan {
+    /// Creates an exact artifact plan for one operation index.
+    #[must_use]
+    pub fn new(op_index: u32, artifact: impl Into<String>) -> Self {
+        Self {
+            op_index,
+            artifact: artifact.into(),
+            offset: None,
+            segment: None,
+            region_kind: None,
+            chunk: None,
+        }
+    }
+
+    /// Pins the exact byte offset selected by the primitive fixture.
+    #[must_use]
+    pub const fn with_offset(mut self, offset: u64) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    /// Pins the exact segment, region kind, and checksum chunk.
+    #[must_use]
+    pub const fn with_segment_region(
+        mut self,
+        segment: crate::segment::SegmentId,
+        region_kind: u16,
+        chunk: u32,
+    ) -> Self {
+        self.segment = Some(segment);
+        self.region_kind = Some(region_kind);
+        self.chunk = Some(chunk);
+        self
+    }
+
+    /// Pins the exact newly published segment for a manifest checkpoint.
+    #[must_use]
+    pub const fn with_segment(mut self, segment: crate::segment::SegmentId) -> Self {
+        self.segment = Some(segment);
+        self
+    }
+
+    /// Exact operation index in the generated program.
+    #[must_use]
+    pub const fn op_index(&self) -> u32 {
+        self.op_index
+    }
+
+    /// Normalized planned artifact.
+    #[must_use]
+    pub fn artifact(&self) -> &str {
+        &self.artifact
+    }
+
+    /// Planned mutation/checkpoint byte offset when applicable.
+    #[must_use]
+    pub const fn offset(&self) -> Option<u64> {
+        self.offset
+    }
+
+    /// Planned segment identity when applicable.
+    #[must_use]
+    pub const fn segment(&self) -> Option<crate::segment::SegmentId> {
+        self.segment
+    }
+
+    /// Planned region kind when applicable.
+    #[must_use]
+    pub const fn region_kind(&self) -> Option<u16> {
+        self.region_kind
+    }
+
+    /// Planned checksum chunk when applicable.
+    #[must_use]
+    pub const fn chunk(&self) -> Option<u32> {
+        self.chunk
+    }
+}
+
+/// Typed production checkpoint that consumed a storage fault.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum StorageReceiptSite {
+    WalOpenHeaderValidation,
+    WalOpenRecordValidation,
+    WalOpenRecordChecksum,
+    WalCommitAppendAfterInnerSuccess,
+    ManifestCommitBeforeRename,
+    ManifestCommitAfterRename,
+    SegmentReadRegionChecksum,
+    ManifestOpenFamilyValidation,
+    SegmentOpenFamilyValidation,
+    SegmentOpenObjectIdentity,
+    OrphanCleanupList,
+    OrphanCleanupDelete,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageReceiptSite {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::WalOpenHeaderValidation => "WalOpen.HeaderValidation",
+            Self::WalOpenRecordValidation => "WalOpen.RecordValidation",
+            Self::WalOpenRecordChecksum => "WalOpen.RecordChecksum",
+            Self::WalCommitAppendAfterInnerSuccess => "WalCommit.AppendAfterInnerSuccess",
+            Self::ManifestCommitBeforeRename => "ManifestCommit.BeforeRename",
+            Self::ManifestCommitAfterRename => "ManifestCommit.AfterRename",
+            Self::SegmentReadRegionChecksum => "SegmentRead.RegionChecksum",
+            Self::ManifestOpenFamilyValidation => "ManifestOpen.FamilyValidation",
+            Self::SegmentOpenFamilyValidation => "SegmentOpen.FamilyValidation",
+            Self::SegmentOpenObjectIdentity => "SegmentOpen.ObjectIdentity",
+            Self::OrphanCleanupList => "OrphanCleanup.List",
+            Self::OrphanCleanupDelete => "OrphanCleanup.Delete",
+        }
+    }
+}
+
+/// Exact facts observed at the production checkpoint.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum StorageReceiptObserved {
+    WalHeader {
+        artifact: String,
+        reason: crate::wal::header::WalHeaderError,
+    },
+    WalRecord {
+        artifact: String,
+        offset: u64,
+        reason: crate::wal::replay::CorruptionReason,
+    },
+    WalAppend {
+        artifact: String,
+        encoded_len: u64,
+        first_seq: u64,
+        last_seq: u64,
+        inner_append_completed: bool,
+        caller_saw_error: bool,
+    },
+    ManifestRename {
+        temporary: String,
+        committed: String,
+        rename_performed: bool,
+        new_segment_final: bool,
+        directory_sync_returned: bool,
+    },
+    SegmentChecksum {
+        artifact: String,
+        segment: crate::segment::SegmentId,
+        region_kind: u16,
+        chunk: u32,
+        expected_checksum: u64,
+        actual_checksum: u64,
+    },
+    Format {
+        artifact: String,
+        check: crate::format::frame::FormatCheck,
+        expected_family: Option<u16>,
+        actual_family: Option<u16>,
+        expected_id: Option<crate::segment::SegmentId>,
+        actual_id: Option<crate::segment::SegmentId>,
+    },
+    Omission {
+        artifact: String,
+        deletion_observed: bool,
+    },
+}
+
+/// One fact-only typed storage receipt emitted by product code.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct StorageFaultReceipt {
+    operation: &'static str,
+    fault: &'static str,
+    site: StorageReceiptSite,
+    plan: StorageFaultPlan,
+    observed: StorageReceiptObserved,
+    cardinality: u32,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageFaultReceipt {
+    #[must_use]
+    pub const fn campaign(&self) -> &'static str {
+        "storage-durability"
+    }
+
+    #[must_use]
+    pub const fn operation(&self) -> &'static str {
+        self.operation
+    }
+
+    #[must_use]
+    pub const fn fault(&self) -> &'static str {
+        self.fault
+    }
+
+    #[must_use]
+    pub const fn site(&self) -> &'static str {
+        self.site.key()
+    }
+
+    #[must_use]
+    pub const fn typed_site(&self) -> StorageReceiptSite {
+        self.site
+    }
+
+    #[must_use]
+    pub const fn cardinality(&self) -> u32 {
+        self.cardinality
+    }
+
+    #[must_use]
+    pub const fn plan(&self) -> &StorageFaultPlan {
+        &self.plan
+    }
+
+    #[must_use]
+    pub const fn observed(&self) -> &StorageReceiptObserved {
+        &self.observed
+    }
+
+    /// Decodes the exact receipt acknowledged by an aborting publication child.
+    ///
+    /// The child writes this only after `emit` has stored the typed production
+    /// receipt. Parsing remains in product test support so an external harness
+    /// cannot manufacture a generic receipt from partial fields.
+    pub fn from_manifest_abort_acknowledgment(acknowledgment: &str) -> Result<Self, String> {
+        let body = acknowledgment
+            .strip_suffix('\n')
+            .filter(|body| !body.contains('\n'))
+            .ok_or_else(|| {
+                "manifest abort acknowledgment must end in exactly one newline".to_owned()
+            })?;
+        let fields = body
+            .split('|')
+            .map(|field| {
+                field.split_once('=').ok_or_else(|| {
+                    format!("manifest abort acknowledgment field lacks '=': {field}")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_keys = [
+            "campaign",
+            "operation",
+            "fault",
+            "site",
+            "op_index",
+            "cardinality",
+            "artifact",
+            "temporary",
+            "committed",
+            "rename_performed",
+            "new_segment_final",
+            "directory_sync_returned",
+        ];
+        if fields.len() != expected_keys.len()
+            || fields
+                .iter()
+                .map(|(key, _)| *key)
+                .ne(expected_keys.iter().copied())
+        {
+            return Err("manifest abort acknowledgment field inventory differs".to_owned());
+        }
+        let mut values = fields.into_iter().map(|(_, value)| value);
+        let campaign = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks campaign".to_owned())?;
+        let operation = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks operation".to_owned())?;
+        let fault = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks fault".to_owned())?;
+        let site = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks site".to_owned())?;
+        let op_index = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks op index".to_owned())?
+            .parse::<u32>()
+            .map_err(|error| format!("manifest abort op index is invalid: {error}"))?;
+        let cardinality = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks cardinality".to_owned())?
+            .parse::<u32>()
+            .map_err(|error| format!("manifest abort cardinality is invalid: {error}"))?;
+        let artifact = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks artifact".to_owned())?;
+        let temporary = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks temporary path".to_owned())?;
+        let committed = values
+            .next()
+            .ok_or_else(|| "manifest abort acknowledgment lacks committed path".to_owned())?;
+        let parse_bool = |field: &str, value: &str| match value {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(format!("manifest abort {field} is not a bool: {value}")),
+        };
+        let rename_performed = parse_bool(
+            "rename_performed",
+            values
+                .next()
+                .ok_or_else(|| "manifest abort acknowledgment lacks rename result".to_owned())?,
+        )?;
+        let new_segment_final = parse_bool(
+            "new_segment_final",
+            values.next().ok_or_else(|| {
+                "manifest abort acknowledgment lacks final-segment result".to_owned()
+            })?,
+        )?;
+        let directory_sync_returned = parse_bool(
+            "directory_sync_returned",
+            values.next().ok_or_else(|| {
+                "manifest abort acknowledgment lacks directory-sync result".to_owned()
+            })?,
+        )?;
+        if campaign != "storage-durability"
+            || operation != "publication"
+            || cardinality != 1
+            || artifact != crate::manifest::io::MANIFEST_FILE
+            || temporary != crate::manifest::io::MANIFEST_TEMP_FILE
+            || committed != crate::manifest::io::MANIFEST_FILE
+            || !new_segment_final
+            || directory_sync_returned
+        {
+            return Err("manifest abort acknowledgment fixed facts differ".to_owned());
+        }
+        let (fault, site, expected_rename) = match (fault, site) {
+            ("manifest-pre-rename-crash", "ManifestCommit.BeforeRename") => (
+                "manifest-pre-rename-crash",
+                StorageReceiptSite::ManifestCommitBeforeRename,
+                false,
+            ),
+            ("manifest-post-rename-crash", "ManifestCommit.AfterRename") => (
+                "manifest-post-rename-crash",
+                StorageReceiptSite::ManifestCommitAfterRename,
+                true,
+            ),
+            _ => return Err("manifest abort fault and production site differ".to_owned()),
+        };
+        if rename_performed != expected_rename {
+            return Err("manifest abort rename result differs from production site".to_owned());
+        }
+        Ok(Self {
+            operation: "publication",
+            fault,
+            site,
+            plan: StorageFaultPlan::new(op_index, artifact),
+            observed: StorageReceiptObserved::ManifestRename {
+                temporary: temporary.to_owned(),
+                committed: committed.to_owned(),
+                rename_performed,
+                new_segment_final,
+                directory_sync_returned,
+            },
+            cardinality,
+        })
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+struct StorageFaultState {
+    fault: StorageTestFault,
+    plan: StorageFaultPlan,
+    consumed: bool,
+    receipt: Option<StorageFaultReceipt>,
+    cleanup_report: Option<StorageCleanupReport>,
+    #[cfg(unix)]
+    child_abort_ack: Option<std::os::unix::net::UnixStream>,
+}
+
+/// Truthful internal result of Store-owned orphan cleanup.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct StorageCleanupReport {
+    reclaimed_bytes: u64,
+    deleted_paths: Vec<String>,
+    retained_eligible_paths: Vec<String>,
+    directory_synced: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageCleanupReport {
+    /// Exact bytes removed from the filesystem.
+    #[must_use]
+    pub const fn reclaimed_bytes(&self) -> u64 {
+        self.reclaimed_bytes
+    }
+
+    /// Normalized relative paths confirmed absent after deletion.
+    #[must_use]
+    pub fn deleted_paths(&self) -> &[String] {
+        &self.deleted_paths
+    }
+
+    /// Eligible paths whose deletion was omitted by an armed test fault.
+    #[must_use]
+    pub fn retained_eligible_paths(&self) -> &[String] {
+        &self.retained_eligible_paths
+    }
+
+    /// Whether the cleanup issued its required directory synchronization.
+    #[must_use]
+    pub const fn directory_synced(&self) -> bool {
+        self.directory_synced
+    }
+}
+
+/// Shared handle that arms one storage fault and receives its production receipt.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct StorageFaultController {
+    state: Arc<Mutex<StorageFaultState>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageFaultController {
+    /// Arms one controller. A clone observes the same one-shot receipt.
+    #[must_use]
+    pub fn new(fault: StorageTestFault, plan: StorageFaultPlan) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(StorageFaultState {
+                fault,
+                plan,
+                consumed: false,
+                receipt: None,
+                cleanup_report: None,
+                #[cfg(unix)]
+                child_abort_ack: None,
+            })),
+        }
+    }
+
+    /// Supplies the inherited descriptor used to acknowledge a child abort.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn with_child_abort_ack(self, acknowledgment: std::os::unix::net::UnixStream) -> Self {
+        if let Ok(mut state) = self.state.lock() {
+            state.child_abort_ack = Some(acknowledgment);
+        }
+        self
+    }
+
+    /// Takes the single receipt emitted by the intended production operation.
+    pub fn take_receipt(&self) -> Option<StorageFaultReceipt> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.receipt.take())
+    }
+
+    /// Takes the exact result of the most recent public-open cleanup pass.
+    pub fn take_cleanup_report(&self) -> Option<StorageCleanupReport> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.cleanup_report.take())
+    }
+
+    fn record_cleanup_report(&self, report: crate::manifest::io::OrphanCleanupReport) {
+        let normalize = |paths: Vec<PathBuf>| {
+            paths
+                .into_iter()
+                .filter_map(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>()
+        };
+        if let Ok(mut state) = self.state.lock() {
+            state.cleanup_report = Some(StorageCleanupReport {
+                reclaimed_bytes: report.reclaimed_bytes,
+                deleted_paths: normalize(report.deleted_paths),
+                retained_eligible_paths: normalize(report.retained_eligible_paths),
+                directory_synced: report.directory_synced,
+            });
+        }
+    }
+
+    fn armed_fault(&self) -> Option<StorageTestFault> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| (!state.consumed).then(|| state.fault.clone()))
+    }
+
+    fn planned_segment(&self) -> Option<crate::segment::SegmentId> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.plan.segment())
+    }
+
+    fn emit(&self, site: StorageReceiptSite, observed: StorageReceiptObserved) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.consumed {
+            return false;
+        }
+        state.consumed = true;
+        state.receipt = Some(StorageFaultReceipt {
+            operation: state.fault.operation(),
+            fault: state.fault.key(),
+            site,
+            plan: state.plan.clone(),
+            observed,
+            cardinality: 1,
+        });
+        true
+    }
+
+    fn abort_after_manifest_receipt(&self) -> ! {
+        #[cfg(unix)]
+        if let Ok(mut state) = self.state.lock() {
+            let wire_receipt = state
+                .receipt
+                .as_ref()
+                .and_then(storage_manifest_abort_wire_receipt);
+            if let (Some(wire_receipt), Some(acknowledgment)) =
+                (wire_receipt, state.child_abort_ack.as_mut())
+            {
+                use std::io::Write as _;
+                let _ = acknowledgment.write_all(wire_receipt.as_bytes());
+                let _ = acknowledgment.flush();
+            }
+        }
+        std::process::abort()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static STORAGE_OPEN_CONTROLLER: std::cell::RefCell<
+        Option<std::sync::Weak<Mutex<StorageFaultState>>>
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn with_storage_open_controller<R>(
+    controller: Option<&StorageFaultController>,
+    operation: impl FnOnce() -> R,
+) -> R {
+    STORAGE_OPEN_CONTROLLER.with(|slot| {
+        let previous = slot.replace(controller.map(|controller| Arc::downgrade(&controller.state)));
+        let result = operation();
+        let _ = slot.replace(previous);
+        result
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn storage_open_controller() -> Option<StorageFaultController> {
+    STORAGE_OPEN_CONTROLLER.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map(|state| StorageFaultController { state })
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn record_storage_wal_recovery_fault(error: &crate::wal::WalRecoveryError) {
+    let Some(controller) = storage_open_controller() else {
+        return;
+    };
+    match (controller.armed_fault(), error) {
+        (
+            Some(StorageTestFault::TornWalHeader),
+            crate::wal::WalRecoveryError::InvalidHeader(reason),
+        ) => {
+            let _ = controller.emit(
+                StorageReceiptSite::WalOpenHeaderValidation,
+                StorageReceiptObserved::WalHeader {
+                    artifact: "wal.ze".to_owned(),
+                    reason: *reason,
+                },
+            );
+        }
+        (
+            Some(StorageTestFault::TornWalBody),
+            crate::wal::WalRecoveryError::CorruptAt {
+                offset,
+                reason:
+                    reason @ crate::wal::replay::CorruptionReason::Record {
+                        error:
+                            crate::wal::record::RecordError::HeaderTruncated { .. }
+                            | crate::wal::record::RecordError::BodyTruncated { .. }
+                            | crate::wal::record::RecordError::LengthOverflow { .. },
+                        ..
+                    },
+            },
+        ) => record_storage_wal_record_fault(
+            &controller,
+            StorageReceiptSite::WalOpenRecordValidation,
+            *offset,
+            *reason,
+        ),
+        (
+            Some(StorageTestFault::TornWalChecksum),
+            crate::wal::WalRecoveryError::CorruptAt {
+                offset,
+                reason:
+                    reason @ crate::wal::replay::CorruptionReason::Record {
+                        error: crate::wal::record::RecordError::ChecksumMismatch { .. },
+                        ..
+                    },
+            },
+        ) => record_storage_wal_record_fault(
+            &controller,
+            StorageReceiptSite::WalOpenRecordChecksum,
+            *offset,
+            *reason,
+        ),
+        _ => {}
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn record_storage_wal_record_fault(
+    controller: &StorageFaultController,
+    site: StorageReceiptSite,
+    offset: usize,
+    reason: crate::wal::replay::CorruptionReason,
+) {
+    let Ok(offset) = u64::try_from(offset) else {
+        return;
+    };
+    let _ = controller.emit(
+        site,
+        StorageReceiptObserved::WalRecord {
+            artifact: "wal.ze".to_owned(),
+            offset,
+            reason,
+        },
+    );
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn record_storage_manifest_format_fault(
+    error: &crate::format::frame::FormatError,
+    actual_family: Option<u16>,
+) {
+    let Some(controller) = storage_open_controller() else {
+        return;
+    };
+    if matches!(
+        controller.armed_fault(),
+        Some(StorageTestFault::WrongManifestObject)
+    ) && error.check() == crate::format::frame::FormatCheck::Family
+    {
+        let _ = controller.emit(
+            StorageReceiptSite::ManifestOpenFamilyValidation,
+            StorageReceiptObserved::Format {
+                artifact: storage_artifact_name(error.artifact()).to_owned(),
+                check: error.check(),
+                expected_family: Some(crate::format::FormatFamily::Manifest.id()),
+                actual_family,
+                expected_id: None,
+                actual_id: None,
+            },
+        );
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn record_storage_segment_format_fault(
+    error: &crate::format::frame::FormatError,
+    actual_family: Option<u16>,
+    expected_id: crate::segment::SegmentId,
+) {
+    let Some(controller) = storage_open_controller() else {
+        return;
+    };
+    if matches!(
+        controller.armed_fault(),
+        Some(StorageTestFault::WrongSegmentObject)
+    ) && error.check() == crate::format::frame::FormatCheck::Family
+    {
+        let _ = controller.emit(
+            StorageReceiptSite::SegmentOpenFamilyValidation,
+            StorageReceiptObserved::Format {
+                artifact: storage_artifact_name(error.artifact()).to_owned(),
+                check: error.check(),
+                expected_family: Some(crate::format::FormatFamily::Segment.id()),
+                actual_family,
+                expected_id: Some(expected_id),
+                actual_id: None,
+            },
+        );
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn record_storage_segment_identity_fault(
+    artifact: &str,
+    expected: crate::segment::SegmentId,
+    actual: crate::segment::SegmentId,
+) {
+    let Some(controller) = storage_open_controller() else {
+        return;
+    };
+    if matches!(
+        controller.armed_fault(),
+        Some(StorageTestFault::WrongSegmentObject)
+    ) {
+        let _ = controller.emit(
+            StorageReceiptSite::SegmentOpenObjectIdentity,
+            StorageReceiptObserved::Format {
+                artifact: storage_artifact_name(artifact).to_owned(),
+                check: crate::format::frame::FormatCheck::ObjectIdentity,
+                expected_family: None,
+                actual_family: None,
+                expected_id: Some(expected),
+                actual_id: Some(actual),
+            },
+        );
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn storage_manifest_abort_wire_receipt(receipt: &StorageFaultReceipt) -> Option<String> {
+    let StorageReceiptObserved::ManifestRename {
+        temporary,
+        committed,
+        rename_performed,
+        new_segment_final,
+        directory_sync_returned,
+    } = &receipt.observed
+    else {
+        return None;
+    };
+    Some(format!(
+        "campaign={}|operation={}|fault={}|site={}|op_index={}|cardinality={}|artifact={}|temporary={temporary}|committed={committed}|rename_performed={rename_performed}|new_segment_final={new_segment_final}|directory_sync_returned={directory_sync_returned}\n",
+        receipt.campaign(),
+        receipt.operation,
+        receipt.fault,
+        receipt.site.key(),
+        receipt.plan.op_index,
+        receipt.cardinality,
+        receipt.plan.artifact,
+    ))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn storage_artifact_name(artifact: &str) -> &str {
+    Path::new(artifact)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(artifact)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type StorageSegmentControllerRegistry = Mutex<
+    Vec<(
+        PathBuf,
+        crate::segment::SegmentId,
+        std::sync::Weak<Mutex<StorageFaultState>>,
+    )>,
+>;
+
+#[cfg(any(test, feature = "test-support"))]
+static STORAGE_SEGMENT_CONTROLLERS: std::sync::OnceLock<StorageSegmentControllerRegistry> =
+    std::sync::OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+fn register_storage_segment_controller(
+    store_directory: &Path,
+    segment: crate::segment::SegmentId,
+    controller: &StorageFaultController,
+) {
+    let registry = STORAGE_SEGMENT_CONTROLLERS.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut entries) = registry.lock() {
+        entries.retain(|(_, _, state)| state.strong_count() != 0);
+        entries.push((
+            store_directory.to_path_buf(),
+            segment,
+            Arc::downgrade(&controller.state),
+        ));
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn record_storage_segment_checksum_fault(
+    store_directory: &Path,
+    segment: crate::segment::SegmentId,
+    kind: crate::segment::layout::RegionKind,
+    chunk: u32,
+    expected: u64,
+    actual: u64,
+) {
+    let Some(registry) = STORAGE_SEGMENT_CONTROLLERS.get() else {
+        return;
+    };
+    let states = match registry.lock() {
+        Ok(mut entries) => {
+            entries.retain(|(_, _, state)| state.strong_count() != 0);
+            entries
+                .iter()
+                .filter(|(directory, registered, _)| {
+                    directory == store_directory && *registered == segment
+                })
+                .filter_map(|(_, _, state)| state.upgrade())
+                .collect::<Vec<_>>()
+        }
+        Err(_) => return,
+    };
+    for state in states {
+        let controller = StorageFaultController { state };
+        if matches!(
+            controller.armed_fault(),
+            Some(StorageTestFault::CorruptSegmentRegion)
+        ) {
+            let _ = controller.emit(
+                StorageReceiptSite::SegmentReadRegionChecksum,
+                StorageReceiptObserved::SegmentChecksum {
+                    artifact: segment.file_name(),
+                    segment,
+                    region_kind: kind.id(),
+                    chunk,
+                    expected_checksum: expected,
+                    actual_checksum: actual,
+                },
+            );
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct StorageFaultVfs {
+    inner: Arc<dyn crate::vfs::Vfs>,
+    controller: StorageFaultController,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct StorageFaultFile {
+    inner: Box<dyn crate::vfs::VfsFile>,
+    path: PathBuf,
+    controller: StorageFaultController,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl StorageFaultFile {
+    fn after_append(&self, encoded_len: u64, first_seq: u64, last_seq: u64) -> std::io::Result<()> {
+        if matches!(
+            self.controller.armed_fault(),
+            Some(StorageTestFault::PostCommitError)
+        ) && self.path.file_name().is_some_and(|name| name == "wal.ze")
+            && self.controller.emit(
+                StorageReceiptSite::WalCommitAppendAfterInnerSuccess,
+                StorageReceiptObserved::WalAppend {
+                    artifact: "wal.ze".to_owned(),
+                    encoded_len,
+                    first_seq,
+                    last_seq,
+                    inner_append_completed: true,
+                    caller_saw_error: true,
+                },
+            )
+        {
+            return Err(std::io::Error::other(
+                "scheduled post-commit error after inner append",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl crate::vfs::VfsFile for StorageFaultFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let record_facts = storage_wal_append_facts(bytes)?;
+        self.inner.append(bytes)?;
+        record_facts.map_or(Ok(()), |(encoded_len, first_seq, last_seq)| {
+            self.after_append(encoded_len, first_seq, last_seq)
+        })
+    }
+
+    fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        let mut aggregate = None::<(u64, u64, u64)>;
+        for bytes in buffers.iter() {
+            if let Some((encoded_len, first_seq, last_seq)) = storage_wal_append_facts(bytes)? {
+                aggregate = Some(match aggregate {
+                    None => (encoded_len, first_seq, last_seq),
+                    Some((total, first, _)) => (
+                        total.checked_add(encoded_len).ok_or_else(|| {
+                            std::io::Error::other("WAL record append length overflow")
+                        })?,
+                        first,
+                        last_seq,
+                    ),
+                });
+            }
+        }
+        self.inner.append_vectored(buffers)?;
+        aggregate.map_or(Ok(()), |(encoded_len, first_seq, last_seq)| {
+            self.after_append(encoded_len, first_seq, last_seq)
+        })
+    }
+
+    fn sync(&self, kind: crate::vfs::SyncKind) -> std::io::Result<()> {
+        self.inner.sync(kind)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl crate::vfs::Vfs for StorageFaultVfs {
+    fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
+        self.inner.segment_data_read_counter()
+    }
+
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn crate::vfs::VfsFile>> {
+        Ok(Box::new(StorageFaultFile {
+            inner: self.inner.open_append(path)?,
+            path: path.to_path_buf(),
+            controller: self.controller.clone(),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let is_manifest = from
+            .file_name()
+            .is_some_and(|name| name == crate::manifest::io::MANIFEST_TEMP_FILE)
+            && to
+                .file_name()
+                .is_some_and(|name| name == crate::manifest::io::MANIFEST_FILE);
+        if is_manifest
+            && matches!(
+                self.controller.armed_fault(),
+                Some(StorageTestFault::ManifestPreRename)
+            )
+            && self.controller.emit(
+                StorageReceiptSite::ManifestCommitBeforeRename,
+                StorageReceiptObserved::ManifestRename {
+                    temporary: crate::manifest::io::MANIFEST_TEMP_FILE.to_owned(),
+                    committed: crate::manifest::io::MANIFEST_FILE.to_owned(),
+                    rename_performed: false,
+                    new_segment_final: storage_planned_segment_is_final(
+                        &*self.inner,
+                        from,
+                        self.controller.planned_segment(),
+                    ),
+                    directory_sync_returned: false,
+                },
+            )
+        {
+            self.controller.abort_after_manifest_receipt();
+        }
+        self.inner.rename(from, to)?;
+        if is_manifest
+            && matches!(
+                self.controller.armed_fault(),
+                Some(StorageTestFault::ManifestPostRename)
+            )
+            && self.controller.emit(
+                StorageReceiptSite::ManifestCommitAfterRename,
+                StorageReceiptObserved::ManifestRename {
+                    temporary: crate::manifest::io::MANIFEST_TEMP_FILE.to_owned(),
+                    committed: crate::manifest::io::MANIFEST_FILE.to_owned(),
+                    rename_performed: true,
+                    new_segment_final: storage_planned_segment_is_final(
+                        &*self.inner,
+                        to,
+                        self.controller.planned_segment(),
+                    ),
+                    directory_sync_returned: false,
+                },
+            )
+        {
+            self.controller.abort_after_manifest_receipt();
+        }
+        Ok(())
+    }
+
+    fn sync(&self, path: &Path, kind: crate::vfs::SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        let mut paths = self.inner.list(directory)?;
+        if let Some(StorageTestFault::ListOmission { file_name }) = self.controller.armed_fault()
+            && let Some(position) = paths.iter().position(|path| {
+                path.file_name()
+                    .is_some_and(|name| name == file_name.as_str())
+            })
+        {
+            let _ = paths.remove(position);
+            let _ = self.controller.emit(
+                StorageReceiptSite::OrphanCleanupList,
+                StorageReceiptObserved::Omission {
+                    artifact: file_name,
+                    deletion_observed: false,
+                },
+            );
+        }
+        Ok(paths)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(StorageTestFault::DeleteOmission { file_name }) = self.controller.armed_fault()
+            && path
+                .file_name()
+                .is_some_and(|name| name == file_name.as_str())
+            && self.controller.emit(
+                StorageReceiptSite::OrphanCleanupDelete,
+                StorageReceiptObserved::Omission {
+                    artifact: file_name,
+                    deletion_observed: false,
+                },
+            )
+        {
+            return Ok(());
+        }
+        self.inner.delete(path)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn storage_wal_append_facts(bytes: &[u8]) -> std::io::Result<Option<(u64, u64, u64)>> {
+    const RECORD_HEADER_LEN: usize = 14;
+    const RECORD_CHECKSUM_LEN: usize = 8;
+    let has_wal_header = bytes
+        .get(..8)
+        .is_some_and(|magic| magic == crate::format::frame::FILE_MAGIC)
+        && bytes
+            .get(8..10)
+            .is_some_and(|family| family == crate::format::FormatFamily::Wal.id().to_le_bytes());
+    let mut offset = if has_wal_header {
+        crate::wal::header::WAL_HEADER_LEN
+    } else {
+        0
+    };
+    if offset == bytes.len() {
+        return Ok(None);
+    }
+    let mut encoded_len = 0_u64;
+    let mut first_seq = None;
+    let mut last_seq = None;
+    while offset < bytes.len() {
+        let header_end = offset
+            .checked_add(RECORD_HEADER_LEN)
+            .ok_or_else(|| std::io::Error::other("WAL record header offset overflow"))?;
+        let header = bytes
+            .get(offset..header_end)
+            .ok_or_else(|| std::io::Error::other("WAL append has a torn record header"))?;
+        let payload_len = usize::try_from(u32::from_le_bytes(
+            header
+                .get(..4)
+                .ok_or_else(|| std::io::Error::other("WAL payload length is absent"))?
+                .try_into()
+                .map_err(|_| std::io::Error::other("WAL payload length width changed"))?,
+        ))
+        .map_err(|_| std::io::Error::other("WAL payload length does not fit usize"))?;
+        let seq = u64::from_le_bytes(
+            header
+                .get(4..12)
+                .ok_or_else(|| std::io::Error::other("WAL sequence is absent"))?
+                .try_into()
+                .map_err(|_| std::io::Error::other("WAL sequence width changed"))?,
+        );
+        let record_len = RECORD_HEADER_LEN
+            .checked_add(payload_len)
+            .and_then(|length| length.checked_add(RECORD_CHECKSUM_LEN))
+            .ok_or_else(|| std::io::Error::other("WAL record length overflow"))?;
+        offset = offset
+            .checked_add(record_len)
+            .ok_or_else(|| std::io::Error::other("WAL record end overflow"))?;
+        if offset > bytes.len() {
+            return Err(std::io::Error::other("WAL append has a torn record body"));
+        }
+        encoded_len = encoded_len
+            .checked_add(
+                u64::try_from(record_len)
+                    .map_err(|_| std::io::Error::other("WAL record length does not fit u64"))?,
+            )
+            .ok_or_else(|| std::io::Error::other("WAL record append length overflow"))?;
+        first_seq.get_or_insert(seq);
+        last_seq = Some(seq);
+    }
+    match (first_seq, last_seq) {
+        (Some(first), Some(last)) => Ok(Some((encoded_len, first, last))),
+        _ => Ok(None),
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn storage_planned_segment_is_final(
+    vfs: &dyn crate::vfs::Vfs,
+    artifact: &Path,
+    planned: Option<crate::segment::SegmentId>,
+) -> bool {
+    let Some(file_name) = planned.map(crate::segment::SegmentId::file_name) else {
+        return false;
+    };
+    artifact.parent().is_some_and(|directory| {
+        vfs.list(directory).is_ok_and(|paths| {
+            paths.iter().any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == file_name)
+            })
+        })
+    })
 }
 
 /// Narrow test-only fault at a Store-owned hybrid leg seam.
@@ -373,6 +1640,8 @@ pub enum StoreError {
     Lock(StoreLockError),
     /// The selected durability mode/tier is unsupported.
     Durability(DurabilityPolicyError),
+    /// Runtime kernel selection or an explicit override was invalid.
+    Kernel(crate::kernels::KernelInitError),
     /// The committed manifest could not be loaded or validated.
     Manifest(crate::manifest::ManifestError),
     /// The caller's declared interpretation differs from the persisted one.
@@ -547,6 +1816,7 @@ impl std::fmt::Display for StoreError {
             }
             Self::Lock(error) => error.fmt(formatter),
             Self::Durability(error) => error.fmt(formatter),
+            Self::Kernel(error) => error.fmt(formatter),
             Self::Manifest(error) => error.fmt(formatter),
             Self::EpochMismatch(error) => error.fmt(formatter),
             Self::EpochUndeclared => {
@@ -735,6 +2005,7 @@ impl StoreError {
             }
             Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
             Self::Durability(_)
+            | Self::Kernel(_)
             | Self::GraphUnavailable { .. }
             | Self::UnsupportedWalMutation { .. } => StoreErrorKind::Unsupported,
             Self::Manifest(_)
@@ -776,6 +2047,7 @@ impl std::error::Error for StoreError {
             Self::Io { source, .. } => Some(source),
             Self::Lock(error) => Some(error),
             Self::Durability(error) => Some(error),
+            Self::Kernel(error) => Some(error),
             Self::Manifest(error) => Some(error),
             Self::EpochMismatch(error) => Some(error),
             Self::Segment(error) => Some(error),
@@ -846,9 +2118,21 @@ pub struct Store {
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) schema: crate::meta::Schema,
     #[cfg(any(test, feature = "test-support"))]
+    pub(crate) ingest_retention_fault_controller: Option<
+        crate::ingest::IngestRetentionFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))]
     hybrid_leg_fault: Mutex<Option<HybridLegTestFault>>,
     #[cfg(any(test, feature = "test-support"))]
     hybrid_execution_receipt: Mutex<Option<HybridExecutionReceipt>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) metadata_test_controller: Option<Arc<crate::planner::MetadataTestController>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) vector_fault_controller: Option<crate::scan::vector_fault::VectorFaultController>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) kernel_fault_controller: Option<crate::kernels::vector_fault::KernelFaultController>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) vector_seal_scheme: Option<crate::quant::QuantScheme>,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
@@ -863,17 +2147,72 @@ impl Store {
             Arc::new(SystemMonotonicClock),
             #[cfg(any(test, feature = "test-support"))]
             None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "test-support controllers are explicit optional infrastructure dependencies"
+    )]
     fn open_with_infrastructure(
         path: impl AsRef<Path>,
         options: OpenOptions,
         vfs: Arc<dyn crate::vfs::Vfs>,
         clock: Arc<dyn MonotonicClock>,
         #[cfg(any(test, feature = "test-support"))] hybrid_leg_fault: Option<HybridLegTestFault>,
+        #[cfg(any(test, feature = "test-support"))] storage_fault_controller: Option<
+            StorageFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))] ingest_retention_fault_controller: Option<
+            crate::ingest::IngestRetentionFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))] metadata_test_controller: Option<
+            Arc<crate::planner::MetadataTestController>,
+        >,
+        #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+            crate::scan::vector_fault::VectorFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))] kernel_fault_controller: Option<
+            crate::kernels::vector_fault::KernelFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))] vector_seal_scheme: Option<
+            crate::quant::QuantScheme,
+        >,
     ) -> Result<Self, StoreError> {
         let path = path.as_ref();
+        #[cfg(any(test, feature = "test-support"))]
+        match kernel_fault_controller.as_ref() {
+            Some(controller) => {
+                controller
+                    .initialize_for_store()
+                    .map_err(StoreError::Kernel)?;
+            }
+            None => {
+                crate::kernels::initialize().map_err(StoreError::Kernel)?;
+            }
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        crate::kernels::initialize().map_err(StoreError::Kernel)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let vfs = match storage_fault_controller.as_ref() {
+            Some(controller) => Arc::new(StorageFaultVfs {
+                inner: vfs,
+                controller: controller.clone(),
+            }) as Arc<dyn crate::vfs::Vfs>,
+            None => vfs,
+        };
         let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
             .map_err(StoreError::Durability)?;
         let accounting = Arc::new(stats::Accounting::new(
@@ -1058,9 +2397,19 @@ impl Store {
             epoch: options.epoch,
             schema,
             #[cfg(any(test, feature = "test-support"))]
+            ingest_retention_fault_controller,
+            #[cfg(any(test, feature = "test-support"))]
             hybrid_leg_fault: Mutex::new(hybrid_leg_fault),
             #[cfg(any(test, feature = "test-support"))]
             hybrid_execution_receipt: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            metadata_test_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            kernel_fault_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_seal_scheme,
             #[cfg(test)]
             teardown_probe,
         };
@@ -1070,6 +2419,53 @@ impl Store {
             .map_err(|error| StoreError::PurgeRecovery {
                 detail: error.to_string(),
             })?;
+        if options.access_mode == AccessMode::ReadWrite {
+            let reachable_segments = store
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .all_segments()
+                        .iter()
+                        .map(|segment| store.directory.join(segment.meta().id.file_name()))
+                        .collect::<HashSet<_>>()
+                })
+                .ok_or(StoreError::Closed)?;
+            let cleanup_report = crate::manifest::io::cleanup_store_orphans(
+                store.vfs.as_ref(),
+                &store.directory,
+                &reachable_segments,
+                store.durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(controller) = storage_fault_controller.as_ref() {
+                controller.record_cleanup_report(cleanup_report);
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            let _ = cleanup_report;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controller) = storage_fault_controller.as_ref() {
+            let published = store
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let snapshot = published.as_ref().ok_or(StoreError::Closed)?;
+            for segment in snapshot.all_segments() {
+                register_storage_segment_controller(
+                    &store.directory,
+                    segment.meta().id,
+                    controller,
+                );
+            }
+        }
         Ok(store)
     }
 
@@ -1081,13 +2477,22 @@ impl Store {
         options: OpenOptions,
         dependencies: StoreTestDependencies,
     ) -> Result<Self, StoreError> {
-        Self::open_with_infrastructure(
-            path,
-            options,
-            dependencies.vfs,
-            dependencies.clock,
-            dependencies.hybrid_leg_fault,
-        )
+        let controller = dependencies.storage_fault_controller.clone();
+        with_storage_open_controller(controller.as_ref(), || {
+            Self::open_with_infrastructure(
+                path,
+                options,
+                dependencies.vfs,
+                dependencies.clock,
+                dependencies.hybrid_leg_fault,
+                dependencies.storage_fault_controller,
+                dependencies.ingest_retention_fault_controller,
+                dependencies.metadata_test_controller,
+                dependencies.vector_fault_controller,
+                dependencies.kernel_fault_controller,
+                dependencies.vector_seal_scheme,
+            )
+        })
     }
 
     /// Takes the most recent Store-owned hybrid execution receipt.
@@ -1167,6 +2572,175 @@ impl Store {
         drop(active);
         drop(state);
         Ok(SnapshotLease::new_at(snapshot, generation))
+    }
+
+    /// Reads one public result row's typed metadata through the owning Store boundary.
+    ///
+    /// This hidden test-support adapter lets independent persistence tests pair
+    /// row identities returned by a public query with the values the reopened
+    /// Store actually exposes. It is not compiled into the shipping API.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn test_metadata_row_values(
+        &self,
+        row_id: crate::ingest::GlobalRowId,
+    ) -> Result<Vec<(crate::meta::ColumnId, Option<crate::meta::PredicateValue>)>, StoreError> {
+        match row_id.source() {
+            crate::ingest::RowSource::Active => {
+                let row = usize::try_from(row_id.local_row())
+                    .map_err(|_| StoreError::ActiveRowOverflow)?;
+                let active = self
+                    .active
+                    .lock()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "active segment",
+                    })?;
+                let segment = &active.as_ref().ok_or(StoreError::Closed)?.segment;
+                let timestamp = segment
+                    .timestamps()
+                    .get(row)
+                    .copied()
+                    .ok_or(StoreError::ActiveRowOverflow)?;
+                let mut values = segment.column_values(row)?;
+                values.push((
+                    crate::meta::TIMESTAMP_COLUMN,
+                    crate::meta::PredicateValue::I64(timestamp),
+                ));
+                self.schema
+                    .columns()
+                    .iter()
+                    .map(|definition| {
+                        let value = values
+                            .iter()
+                            .find(|(column, _)| *column == definition.id())
+                            .map(|(_, value)| value.clone());
+                        Ok((definition.id(), value))
+                    })
+                    .collect()
+            }
+            crate::ingest::RowSource::Sealed(segment_id) => {
+                let snapshot = self.snapshot()?;
+                let segment = snapshot
+                    .segments()
+                    .iter()
+                    .find(|segment| segment.meta().id == segment_id)
+                    .ok_or_else(|| {
+                        StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                            "public metadata row names absent segment {segment_id}"
+                        )))
+                    })?;
+                let columns = segment.columns().map_err(StoreError::Segment)?;
+                if row_id.local_row() >= columns.row_count() {
+                    return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                        format!(
+                            "public metadata row {} is outside {} rows",
+                            row_id.local_row(),
+                            columns.row_count()
+                        ),
+                    )));
+                }
+                columns
+                    .schema()
+                    .columns()
+                    .iter()
+                    .map(|definition| {
+                        let column = columns.column(definition.id()).ok_or_else(|| {
+                            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                                "public metadata row is missing column {}",
+                                definition.id().get()
+                            )))
+                        })?;
+                        let value = match column {
+                            crate::meta::Column::U64(column) => column
+                                .get(row_id.local_row())
+                                .map(crate::meta::PredicateValue::U64),
+                            crate::meta::Column::I64(column) => column
+                                .get(row_id.local_row())
+                                .map(crate::meta::PredicateValue::I64),
+                            crate::meta::Column::F64(column) => column
+                                .get(row_id.local_row())
+                                .map(crate::meta::PredicateValue::F64),
+                            crate::meta::Column::Bool(column) => column
+                                .get(row_id.local_row())
+                                .map(crate::meta::PredicateValue::Bool),
+                            crate::meta::Column::DictionaryString(column) => column
+                                .get(row_id.local_row())
+                                .map(|value| crate::meta::PredicateValue::String(value.to_owned())),
+                            crate::meta::Column::RawString(column) => column
+                                .get(row_id.local_row())
+                                .map(|value| crate::meta::PredicateValue::String(value.to_owned())),
+                        };
+                        Ok((definition.id(), value))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Evaluates one source's actual typed metadata state for independent tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn test_metadata_evaluate_source(
+        &self,
+        source: crate::ingest::RowSource,
+        predicate: &crate::meta::Predicate,
+    ) -> Result<(u32, Vec<u32>, Vec<u32>), StoreError> {
+        let evaluate = |columns: &crate::meta::ColumnStore,
+                        alive: &crate::meta::AliveSet|
+         -> Result<(u32, Vec<u32>, Vec<u32>), StoreError> {
+            let matches = crate::meta::evaluate(predicate, columns, alive).map_err(|error| {
+                StoreError::Segment(crate::segment::SegmentError::Columns(format!(
+                    "test metadata source evaluation: {error}"
+                )))
+            })?;
+            Ok((
+                columns.row_count(),
+                alive.iter_alive().collect(),
+                matches.iter().collect(),
+            ))
+        };
+        match source {
+            crate::ingest::RowSource::Active => {
+                let active = self
+                    .active
+                    .lock()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "active segment",
+                    })?;
+                let segment = &active.as_ref().ok_or(StoreError::Closed)?.segment;
+                let mut builder = crate::meta::ColumnStoreBuilder::new(self.schema.clone());
+                for (row, timestamp) in segment.timestamps().iter().copied().enumerate() {
+                    let values = segment.column_values(row)?;
+                    builder
+                        .push_row(timestamp, &crate::ingest::column_inputs(&values))
+                        .map_err(|error| {
+                            StoreError::Segment(crate::segment::SegmentError::Columns(
+                                error.to_string(),
+                            ))
+                        })?;
+                }
+                let columns = builder.finish().map_err(|error| {
+                    StoreError::Segment(crate::segment::SegmentError::Columns(error.to_string()))
+                })?;
+                let alive = segment.alive()?;
+                evaluate(&columns, &alive)
+            }
+            crate::ingest::RowSource::Sealed(segment_id) => {
+                let snapshot = self.snapshot()?;
+                let segment = snapshot
+                    .segments()
+                    .iter()
+                    .find(|segment| segment.meta().id == segment_id)
+                    .ok_or_else(|| {
+                        StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                            "metadata source evaluation names absent segment {segment_id}"
+                        )))
+                    })?;
+                let columns = segment.columns().map_err(StoreError::Segment)?;
+                let alive = segment.alive().map_err(StoreError::Segment)?;
+                evaluate(&columns, &alive)
+            }
+        }
     }
 
     pub(crate) fn publish_snapshot(&self, snapshot: PublishedSnapshot) -> Result<(), StoreError> {
@@ -1774,6 +3348,8 @@ impl Store {
                     control.clone(),
                     GraphBoundMode::Shared,
                     started,
+                    #[cfg(any(test, feature = "test-support"))]
+                    None,
                 )
                 .map_err(crate::fusion::FusionError::from)
             }))
@@ -1888,7 +3464,11 @@ impl Store {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let admitted = self.admit_vector_search(options)?;
-        search_pinned(
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controller) = self.kernel_fault_controller.as_ref() {
+            controller.begin_store_scoring();
+        }
+        let result = search_pinned(
             admitted.pool.as_deref(),
             &admitted.snapshot,
             &admitted.active_segment,
@@ -1901,7 +3481,19 @@ impl Store {
             control,
             graph_bound_mode,
             started,
-        )
+            #[cfg(any(test, feature = "test-support"))]
+            self.vector_fault_controller.as_ref(),
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            if let Some(controller) = self.kernel_fault_controller.as_ref() {
+                controller.finish_store_scoring(result.is_ok());
+            }
+            if let Some(controller) = self.vector_fault_controller.as_ref() {
+                controller.finalize_search(result.is_ok());
+            }
+        }
+        result
     }
 
     fn admit_vector_search(
@@ -2474,6 +4066,9 @@ fn search_pinned(
     control: QueryControl,
     graph_bound_mode: GraphBoundMode,
     started: std::time::Instant,
+    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
     use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
     use crate::quant::{prepare_bit4_query, prepare_int8_query};
@@ -2528,13 +4123,24 @@ fn search_pinned(
             SearchTier::Auto if full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 let cancellation = QueryCancellation::new(&control, &lease);
-                scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
+                scan_active_squared_l2(
+                    active,
+                    &alive,
+                    request.vector(),
+                    k,
+                    &cancellation,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_controller,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_tier(options.tier()),
+                )?
             }
             SearchTier::Auto | SearchTier::Scan => {
                 let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
                     component: "active scan-tier query pool",
                 }))?;
-                query_pool.execute(
+                execute_store_scan(
+                    query_pool,
                     ScanRequest {
                         query: ScanQuery::Bit4(&bit4_query),
                         rows: ScanRows::Bit4RowMajor {
@@ -2547,12 +4153,28 @@ fn search_pinned(
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_controller,
+                    #[cfg(any(test, feature = "test-support"))]
+                    crate::scan::vector_fault::VectorRowSource::Active,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_tier(options.tier()),
                 )?
             }
             SearchTier::Exact | SearchTier::Graph(_) => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 let cancellation = QueryCancellation::new(&control, &lease);
-                scan_active_squared_l2(active, &alive, request.vector(), k, &cancellation)?
+                scan_active_squared_l2(
+                    active,
+                    &alive,
+                    request.vector(),
+                    k,
+                    &cancellation,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_controller,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_tier(options.tier()),
+                )?
             }
         };
         merge_store_outcome(
@@ -2564,6 +4186,10 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
             exact_score,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_tier(options.tier()),
         )?;
         plans.push(crate::planner::SegmentPlan::unfiltered_scan(
             RowSource::Active,
@@ -2634,7 +4260,13 @@ fn search_pinned(
                         (graph, graph_validated, false, None)
                     }
                 };
-            let rescore = query_rescore_rows(segment)?;
+            let rescore = query_rescore_rows_for_search(
+                segment,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_controller,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_tier(options.tier()),
+            )?;
             let node_count = graph.node_count() as usize;
             let segment_k = k.min(node_count);
             let has_tombstones = alive.tombstone_count() != 0;
@@ -2735,6 +4367,14 @@ fn search_pinned(
             )
             .map_err(map_graph_error)?
             .with_rescore_validator(segment);
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(controller) = vector_fault_controller {
+                searcher = searcher.with_vector_fault_controller(
+                    controller,
+                    vector_fault_source(source),
+                    crate::scan::vector_fault::VectorSearchTier::Graph,
+                );
+            }
             let mut traversal_dims_touched = 0_u64;
             let mut traversal_bytes_read = 0_u64;
             let mut traversal_epoch_clears = 0_usize;
@@ -2827,6 +4467,18 @@ fn search_pinned(
                 .candidates_rescored
                 .checked_add(traversal_candidates_rescored)
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            reserve_global_candidates(
+                &mut candidates,
+                result
+                    .candidates()
+                    .iter()
+                    .filter(|candidate| alive.is_alive(candidate.row_id()))
+                    .count(),
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_controller,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_tier(options.tier()),
+            )?;
             for candidate in result.candidates() {
                 if !alive.is_alive(candidate.row_id()) {
                     continue;
@@ -2866,7 +4518,13 @@ fn search_pinned(
         let outcome = if full_precision {
             let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
             let cancellation = QueryCancellation::new(&control, &lease);
-            let vectors = exact_rescore_rows(segment)?;
+            let vectors = exact_rescore_rows_for_search(
+                segment,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_controller,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_tier(options.tier()),
+            )?;
             scan_squared_l2(
                 vectors,
                 segment.meta().row_count as usize,
@@ -2874,13 +4532,20 @@ fn search_pinned(
                 request.vector(),
                 k,
                 &cancellation,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_controller,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_source(source),
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_tier(options.tier()),
             )?
         } else {
             let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
                 component: "sealed scan-tier query pool",
             }))?;
             match segment.meta().scheme {
-                0 => query_pool.execute(
+                0 => execute_store_scan(
+                    query_pool,
                     ScanRequest {
                         query: ScanQuery::F32(request.vector()),
                         rows: ScanRows::F32BorrowedRowMajor(
@@ -2895,8 +4560,15 @@ fn search_pinned(
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_controller,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_source(source),
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_tier(options.tier()),
                 )?,
-                4 => query_pool.execute(
+                4 => execute_store_scan(
+                    query_pool,
                     ScanRequest {
                         query: ScanQuery::Bit4(&bit4_query),
                         rows: ScanRows::Bit4RowMajor {
@@ -2915,6 +4587,12 @@ fn search_pinned(
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_controller,
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_source(source),
+                    #[cfg(any(test, feature = "test-support"))]
+                    vector_fault_tier(options.tier()),
                 )?,
                 2 => {
                     let factors = segment
@@ -2931,7 +4609,8 @@ fn search_pinned(
                                 ),
                             ))
                         })?;
-                    query_pool.execute(
+                    execute_store_scan(
+                        query_pool,
                         ScanRequest {
                             query: ScanQuery::Int8(&int8_query),
                             rows: ScanRows::Int8RowMajor {
@@ -2947,6 +4626,12 @@ fn search_pinned(
                         scan_options,
                         control.clone(),
                         SnapshotLease::new_at(Arc::clone(snapshot), generation),
+                        #[cfg(any(test, feature = "test-support"))]
+                        vector_fault_controller,
+                        #[cfg(any(test, feature = "test-support"))]
+                        vector_fault_source(source),
+                        #[cfg(any(test, feature = "test-support"))]
+                        vector_fault_tier(options.tier()),
                     )?
                 }
                 scheme => {
@@ -2973,6 +4658,10 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
             exact_score,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_tier(options.tier()),
         )?;
         let tier = if segment
             .directory()
@@ -3026,6 +4715,69 @@ fn search_pinned(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn execute_store_scan(
+    pool: &pool::QueryPool,
+    request: crate::scan::ScanRequest<'_>,
+    k: usize,
+    options: crate::scan::ScanOptions,
+    control: QueryControl,
+    lease: SnapshotLease,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<crate::scan::ScanOutcome, QueryError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(controller) = controller {
+        let geometry = crate::scan::scan_geometry(request).map_err(QueryError::Scan)?;
+        let cancellation = QueryCancellation::new(&control, &lease);
+        let partition = crate::scan::scan_partition_with_vector_faults(
+            request,
+            k,
+            0..geometry.row_count,
+            Some(&cancellation),
+            controller,
+            source,
+            tier,
+        )
+        .map_err(map_scan_error)?;
+        return Ok(crate::scan::ScanOutcome {
+            candidates: partition.candidates,
+            stats: crate::scan::ScanStats {
+                dims_touched: partition.dims_touched,
+                bytes_read: partition.bytes_read,
+                threads_used: 1,
+                worker_thread_ids: vec![partition.worker_thread_id],
+            },
+        });
+    }
+    pool.execute(request, k, options, control, lease)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn vector_fault_tier(tier: SearchTier) -> crate::scan::vector_fault::VectorSearchTier {
+    match tier {
+        SearchTier::Exact => crate::scan::vector_fault::VectorSearchTier::Exact,
+        SearchTier::Scan => crate::scan::vector_fault::VectorSearchTier::Scan,
+        SearchTier::Graph(_) => crate::scan::vector_fault::VectorSearchTier::Graph,
+        SearchTier::Auto => crate::scan::vector_fault::VectorSearchTier::Auto,
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn vector_fault_source(
+    source: crate::ingest::RowSource,
+) -> crate::scan::vector_fault::VectorRowSource {
+    match source {
+        crate::ingest::RowSource::Active => crate::scan::vector_fault::VectorRowSource::Active,
+        crate::ingest::RowSource::Sealed(segment) => {
+            crate::scan::vector_fault::VectorRowSource::Sealed(*segment.as_bytes())
+        }
+    }
+}
+
 pub(crate) fn auto_uses_full_precision(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
@@ -3055,36 +4807,77 @@ pub(crate) fn auto_uses_full_precision(
 pub(crate) fn exact_rescore_rows(
     segment: &crate::segment::reader::SegmentReader,
 ) -> Result<&[f32], QueryError> {
-    segment.rescore_f32().map_err(|source| {
-        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
-            format!(
-                "exact scores unavailable for segment {}: {source}",
-                segment.meta().id
-            ),
-        )))
-    })
+    segment
+        .rescore_f32()
+        .map_err(|source| QueryError::Store(StoreError::Segment(source)))
+}
+
+fn exact_rescore_rows_for_search<'a>(
+    segment: &'a crate::segment::reader::SegmentReader,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<&'a [f32], QueryError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(available_rows) = controller.and_then(|controller| {
+        controller.missing_rescore_rows(
+            crate::scan::vector_fault::VectorRowSource::Sealed(*segment.meta().id.as_bytes()),
+            tier,
+            crate::scan::vector_fault::MissingRescoreSite::ExactRescoreRows,
+            segment.meta().row_count,
+        )
+    }) {
+        return Err(missing_rescore_rows_error(segment, available_rows));
+    }
+    exact_rescore_rows(segment)
 }
 
 pub(crate) fn query_rescore_rows(
     segment: &crate::segment::reader::SegmentReader,
 ) -> Result<&[f32], QueryError> {
-    segment.query_rescore_f32().map_err(|source| {
-        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
-            format!(
-                "exact scores unavailable for segment {}: {source}",
-                segment.meta().id
-            ),
-        )))
-    })
+    segment
+        .query_rescore_f32()
+        .map_err(|source| QueryError::Store(StoreError::Segment(source)))
+}
+
+fn query_rescore_rows_for_search<'a>(
+    segment: &'a crate::segment::reader::SegmentReader,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<&'a [f32], QueryError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(available_rows) = controller.and_then(|controller| {
+        controller.missing_rescore_rows(
+            crate::scan::vector_fault::VectorRowSource::Sealed(*segment.meta().id.as_bytes()),
+            tier,
+            crate::scan::vector_fault::MissingRescoreSite::QueryRescoreRows,
+            segment.meta().row_count,
+        )
+    }) {
+        return Err(missing_rescore_rows_error(segment, available_rows));
+    }
+    query_rescore_rows(segment)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn missing_rescore_rows_error(
+    segment: &crate::segment::reader::SegmentReader,
+    available_rows: u32,
+) -> QueryError {
+    QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+        format!(
+            "exact scores unavailable for segment {}: expected {} rows, got {available_rows}",
+            segment.meta().id,
+            segment.meta().row_count,
+        ),
+    )))
 }
 
 fn retain_global_top_k(candidates: &mut Vec<crate::ingest::SearchCandidate>, k: usize) {
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .score()
-            .total_cmp(&left.score())
-            .then_with(|| left.row_id().cmp(&right.row_id()))
-    });
+    candidates.sort_unstable_by(crate::ingest::compare_search_candidates);
     candidates.truncate(k);
 }
 
@@ -3135,6 +4928,10 @@ fn scan_active_squared_l2(
     query: &[f32],
     k: usize,
     cancellation: &QueryCancellation<'_>,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
     scan_squared_l2(
         active.vectors(),
@@ -3143,9 +4940,19 @@ fn scan_active_squared_l2(
         query,
         k,
         cancellation,
+        #[cfg(any(test, feature = "test-support"))]
+        controller,
+        #[cfg(any(test, feature = "test-support"))]
+        crate::scan::vector_fault::VectorRowSource::Active,
+        #[cfg(any(test, feature = "test-support"))]
+        tier,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test-support vector faults require the actual source and tier at the scoring boundary"
+)]
 fn scan_squared_l2(
     vectors: &[f32],
     row_count: usize,
@@ -3153,6 +4960,11 @@ fn scan_squared_l2(
     query: &[f32],
     k: usize,
     cancellation: &QueryCancellation<'_>,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
     if query.is_empty() {
         return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension));
@@ -3202,6 +5014,10 @@ fn scan_squared_l2(
             return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
                 row_id: row,
             }));
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if controller.is_some_and(|controller| controller.after_eligible_row(source, tier, row)) {
+            return Err(QueryError::Cancelled { partial: false });
         }
         candidates.push(crate::scan::ScanCandidate { row_id: row, score });
         scored_rows = scored_rows
@@ -3254,6 +5070,11 @@ fn merge_store_outcome(
     bytes_read: &mut u64,
     worker_thread_ids: &mut Vec<std::thread::ThreadId>,
     exact_score: bool,
+    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault_tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<(), QueryError> {
     *dims_touched = dims_touched
         .checked_add(outcome.stats.dims_touched)
@@ -3266,6 +5087,14 @@ fn merge_store_outcome(
             worker_thread_ids.push(worker);
         }
     }
+    reserve_global_candidates(
+        candidates,
+        outcome.candidates.len(),
+        #[cfg(any(test, feature = "test-support"))]
+        vector_fault_controller,
+        #[cfg(any(test, feature = "test-support"))]
+        vector_fault_tier,
+    )?;
     for candidate in outcome.candidates {
         let local_row = u32::try_from(candidate.row_id)
             .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
@@ -3277,6 +5106,42 @@ fn merge_store_outcome(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn reserve_global_candidates(
+    candidates: &mut Vec<crate::ingest::SearchCandidate>,
+    additional: usize,
+    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault_tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<(), QueryError> {
+    if additional == 0 {
+        return Ok(());
+    }
+    let items = u64::try_from(additional)
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let candidate_bytes = u64::try_from(std::mem::size_of::<crate::ingest::SearchCandidate>())
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let needed = items
+        .checked_mul(candidate_bytes)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    #[cfg(any(test, feature = "test-support"))]
+    if vector_fault_controller.is_some_and(|controller| {
+        controller.deny_global_candidate_allocation(vector_fault_tier, items, needed)
+    }) {
+        return Err(QueryError::Store(StoreError::AllocationFailed {
+            needed,
+            component: "vector search global candidates",
+        }));
+    }
+    candidates.try_reserve_exact(additional).map_err(|_| {
+        QueryError::Store(StoreError::AllocationFailed {
+            needed,
+            component: "vector search global candidates",
+        })
+    })
 }
 
 struct AdmittedVectorSearch<'a> {
