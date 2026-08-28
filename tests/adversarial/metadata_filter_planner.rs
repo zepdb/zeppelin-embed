@@ -4813,7 +4813,7 @@ fn run_bitmap(
         store
             .close()
             .map_err(|error| format!("close metadata Alive fault Store: {error}"))?;
-        retained_fault_leg = Some(capture_metadata_retained_product_leg(
+        let mut retained_fault = capture_metadata_retained_product_leg(
             fault_directory.path(),
             MetadataRetainedPhase::Fault,
             vec![0.0_f32.to_bits(); 2],
@@ -4824,7 +4824,9 @@ fn run_bitmap(
                 message: retained_fault_message,
                 provenance: provenance.clone(),
             },
-        )?);
+        )?;
+        retained_fault.predicate = Some(independent::PredicateDto::And(Vec::new()));
+        retained_fault_leg = Some(retained_fault);
         std::fs::write(&fault_segment_path, &fixture.clean_segment)
             .map_err(|error| format!("restore metadata Alive segment: {error}"))?;
         let retry_arm = MetadataTestArm::ObserveExecution {
@@ -7751,7 +7753,7 @@ pub mod tests {
     fn metadata_retained_bitmap_fault_executes_the_selected_fault_leg() {
         let evidence = run_metadata_operation(
             MetadataOperationKind::Bitmap,
-            0x37ef,
+            41,
             Some(MetadataFaultKind::BitmapTruncation),
         )
         .expect("observe selected metadata Bitmap fault fixture");
