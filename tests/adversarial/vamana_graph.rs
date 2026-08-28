@@ -205,7 +205,7 @@ fn documents(seed: u64) -> Vec<IngestDocument> {
                 })
                 .collect();
             IngestDocument::new(
-                DocumentVersion::new(DocId::new(base | row as u128 + 1), Revision::new(1)),
+                DocumentVersion::new(DocId::new(base | (row as u128 + 1)), Revision::new(1)),
                 vector,
             )
             .with_timestamp(row as i64)

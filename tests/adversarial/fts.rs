@@ -306,7 +306,7 @@ fn corruption_refused(seed: u64, region: u16) -> Result<(), String> {
         .map(|(row, text)| {
             IngestDocument::new(
                 DocumentVersion::new(
-                    DocId::new((u128::from(seed) << 64) | row as u128 + 1),
+                    DocId::new((u128::from(seed) << 64) | (row as u128 + 1)),
                     Revision::new(1),
                 ),
                 vec![row as f32, 0.0, 1.0],

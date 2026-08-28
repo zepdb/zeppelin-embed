@@ -95,7 +95,9 @@ impl QueryPool {
                             WorkerMessage::Stop => return,
                             #[cfg(any(test, feature = "test-support"))]
                             WorkerMessage::PanicForTest => {
-                                panic!("injected query worker panic");
+                                std::panic::resume_unwind(Box::new(
+                                    "injected query worker panic".to_owned(),
+                                ));
                             }
                         }
                     }

@@ -171,7 +171,7 @@ fn documents(seed: u64) -> Vec<IngestDocument> {
         .map(|row| {
             let amplitude = row as f32 + 1.0;
             IngestDocument::new(
-                DocumentVersion::new(DocId::new(base | row as u128 + 1), Revision::new(1)),
+                DocumentVersion::new(DocId::new(base | (row as u128 + 1)), Revision::new(1)),
                 (0..DIMS)
                     .map(|dimension| {
                         if dimension.is_multiple_of(2) {

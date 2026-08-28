@@ -317,6 +317,10 @@ impl IngestRetentionFaultReceiptV1 {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the typed receipt constructor names every retained clock-boundary fact"
+    )]
     pub(crate) const fn retention_clock_boundary(
         invocation_id: u64,
         supplied_now: i64,
@@ -490,10 +494,22 @@ impl IngestRetentionFaultReceiptV1 {
         if version != PURGE_CRASH_RECEIPT_VERSION {
             return Err(format!("unsupported purge-crash receipt version {version}"));
         }
-        let operation = take(1)?[0];
-        let fault = take(1)?[0];
-        let checkpoint = take(1)?[0];
-        let cardinality = take(1)?[0];
+        let operation = take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "purge-crash operation tag is truncated".to_owned())?;
+        let fault = take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "purge-crash fault tag is truncated".to_owned())?;
+        let checkpoint = take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "purge-crash checkpoint tag is truncated".to_owned())?;
+        let cardinality = take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "purge-crash cardinality is truncated".to_owned())?;
         let reserved = u16::from_le_bytes(
             take(2)?
                 .try_into()
@@ -519,7 +535,10 @@ impl IngestRetentionFaultReceiptV1 {
                 .try_into()
                 .map_err(|_| "purge-crash rewrite count is truncated".to_owned())?,
         );
-        let flags = take(1)?[0];
+        let flags = take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "purge-crash flags are truncated".to_owned())?;
         if flags & !0b11 != 0 {
             return Err(format!(
                 "purge-crash receipt flags are invalid: {flags:#04x}"

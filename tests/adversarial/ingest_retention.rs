@@ -349,10 +349,7 @@ pub fn encode_ingest_fixture(fixture: &RetainedIngestOperationV1) -> Result<Vec<
     validate_retained_fixture(fixture.operation, &fixture.fixture)?;
     let mut payload = Vec::new();
     put_u8(&mut payload, ingest_operation_tag(fixture.operation));
-    put_u8(
-        &mut payload,
-        fixture.fault.map_or(0, |fault| ingest_fault_tag(fault)),
-    );
+    put_u8(&mut payload, fixture.fault.map_or(0, ingest_fault_tag));
     put_u64(&mut payload, fixture.invocation_id);
     match &fixture.fixture {
         RetainedIngestFixtureV1::I20(value) => {
@@ -2033,7 +2030,7 @@ fn scan_i23_sentinels(
     patterns: &[Vec<u8>],
 ) -> Result<Vec<independent::I23SentinelHit>, String> {
     let mut files = Vec::new();
-    collect_i23_regular_files(root, root, &mut files)?;
+    collect_i23_regular_files(root, &mut files)?;
     files.sort();
     let mut hits = Vec::new();
     for path in files {
@@ -2065,11 +2062,7 @@ fn scan_i23_sentinels(
     Ok(hits)
 }
 
-fn collect_i23_regular_files(
-    root: &Path,
-    directory: &Path,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), String> {
+fn collect_i23_regular_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|error| {
             format!(
@@ -2086,7 +2079,7 @@ fn collect_i23_regular_files(
             .file_type()
             .map_err(|error| format!("stat I23 artifact {}: {error}", path.display()))?;
         if file_type.is_dir() {
-            collect_i23_regular_files(root, &path, files)?;
+            collect_i23_regular_files(&path, files)?;
         } else if file_type.is_file() {
             files.push(path);
         }
