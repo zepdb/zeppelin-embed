@@ -68,6 +68,7 @@ use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
+use zeppelin_embed_adversarial_oracle::hybrid_fusion as hybrid_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
 use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
 use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
@@ -79,6 +80,7 @@ use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::fault_vfs::{self, FaultEvent};
 use super::fts as fts_adapter;
+use super::hybrid_fusion as hybrid_adapter;
 use super::ingest_retention as ingest_adapter;
 use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
@@ -2733,6 +2735,7 @@ enum ProductionFeatureReceipt {
     ValidatedVectorFeature(VectorFaultReceipt),
     ValidatedGraph(graph_adapter::GraphFaultReceipt),
     ValidatedFts(fts_adapter::FtsFaultReceipt),
+    ValidatedHybrid(hybrid_adapter::HybridFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2748,6 +2751,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedVectorFeature(receipt) => vector_campaign_key(receipt.campaign()),
             Self::ValidatedGraph(_) => "vamana-graph",
             Self::ValidatedFts(_) => "fts",
+            Self::ValidatedHybrid(_) => "hybrid-fusion",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2765,6 +2769,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedVectorFeature(receipt) => vector_operation_key(receipt.operation()),
             Self::ValidatedGraph(receipt) => receipt.operation.key(),
             Self::ValidatedFts(receipt) => receipt.operation.key(),
+            Self::ValidatedHybrid(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2786,6 +2791,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedVectorFeature(receipt) => Some(vector_fault_key(receipt.fault())),
             Self::ValidatedGraph(receipt) => Some(receipt.fault.key()),
             Self::ValidatedFts(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedHybrid(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2813,6 +2819,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedVectorFeature(receipt) => vector_site_key(receipt.site()),
             Self::ValidatedGraph(receipt) => receipt.site,
             Self::ValidatedFts(receipt) => receipt.site,
+            Self::ValidatedHybrid(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2825,6 +2832,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedVectorFeature(receipt) => Some(u32::from(receipt.cardinality())),
             Self::ValidatedGraph(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedFts(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedHybrid(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3077,6 +3085,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedFts(receipt) => format!(
             "{{\"campaign\":\"fts\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedHybrid(receipt) => format!(
+            "{{\"campaign\":\"hybrid-fusion\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3347,6 +3362,16 @@ fn run_campaign_operation(
             coverage,
         );
     }
+    if let super::campaign::FeatureOperation::Hybrid(hybrid_operation) = operation {
+        return run_hybrid_campaign_operation(
+            hybrid_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -3374,6 +3399,161 @@ fn run_campaign_operation(
         operation.campaign().key(),
         operation.key(),
     ))
+}
+
+fn hybrid_operation_kind(
+    operation: super::campaign::HybridOperation,
+) -> hybrid_adapter::HybridOperationKind {
+    match operation {
+        super::campaign::HybridOperation::Provenance => {
+            hybrid_adapter::HybridOperationKind::Provenance
+        }
+        super::campaign::HybridOperation::Normalization => {
+            hybrid_adapter::HybridOperationKind::Normalization
+        }
+        super::campaign::HybridOperation::BoundedFusion => {
+            hybrid_adapter::HybridOperationKind::BoundedFusion
+        }
+        super::campaign::HybridOperation::Rrf => hybrid_adapter::HybridOperationKind::Rrf,
+        super::campaign::HybridOperation::Legs => hybrid_adapter::HybridOperationKind::Legs,
+    }
+}
+
+fn hybrid_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<hybrid_adapter::HybridFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::HybridVectorLegError => {
+            Ok(hybrid_adapter::HybridFaultKind::VectorLegError)
+        }
+        super::campaign::FeatureFault::HybridLexicalLegError => {
+            Ok(hybrid_adapter::HybridFaultKind::LexicalLegError)
+        }
+        super::campaign::FeatureFault::HybridDualFailureOrder => {
+            Ok(hybrid_adapter::HybridFaultKind::DualFailureOrder)
+        }
+        super::campaign::FeatureFault::HybridLegPanic => {
+            Ok(hybrid_adapter::HybridFaultKind::LegPanic)
+        }
+        super::campaign::FeatureFault::HybridEstimatedScore => {
+            Ok(hybrid_adapter::HybridFaultKind::EstimatedScore)
+        }
+        super::campaign::FeatureFault::HybridNonfiniteScore => {
+            Ok(hybrid_adapter::HybridFaultKind::NonfiniteScore)
+        }
+        super::campaign::FeatureFault::HybridCancelClose => {
+            Ok(hybrid_adapter::HybridFaultKind::CancelClose)
+        }
+        other => Err(format!("{} is not a hybrid fault", other.key())),
+    }
+}
+
+fn hybrid_input_json(input: &hybrid_oracle::HybridInput) -> String {
+    let list = |values: &[u32]| {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"k\":{},\"expected_ids\":[{}],\"expected_rrf_ids\":[{}]}}",
+        input.k,
+        list(&input.expected_ids),
+        list(&input.expected_rrf_ids)
+    )
+}
+
+fn hybrid_observed_json(observed: &hybrid_oracle::HybridObserved) -> String {
+    let list = |values: &[u32]| {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"ids\":[{}],\"rrf_ids\":[{}],\"raw_scores_preserved\":{},\"finite_scores\":{},\"used_rrf\":{},\"no_partial\":{}}}",
+        list(&observed.ids),
+        list(&observed.rrf_ids),
+        observed.raw_scores_preserved,
+        observed.finite_scores,
+        observed.used_rrf,
+        observed.no_partial,
+    )
+}
+
+fn run_hybrid_campaign_operation(
+    operation: super::campaign::HybridOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(hybrid_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence =
+            hybrid_adapter::run_hybrid_operation(hybrid_operation_kind(operation), fault)?;
+        for invariant in evidence.invariants {
+            let (id, checker, input, observed, result) = match invariant {
+                hybrid_adapter::HybridInvariantEvidence::I45 { input, observed } => {
+                    let result = hybrid_oracle::compare_i45(&input, &observed);
+                    (45, hybrid_oracle::I45_CHECKER_ID, input, observed, result)
+                }
+                hybrid_adapter::HybridInvariantEvidence::I46 { input, observed } => {
+                    let result = hybrid_oracle::compare_i46(&input, &observed);
+                    (46, hybrid_oracle::I46_CHECKER_ID, input, observed, result)
+                }
+                hybrid_adapter::HybridInvariantEvidence::I47 { input, observed } => {
+                    let result = hybrid_oracle::compare_i47(&input, &observed);
+                    (47, hybrid_oracle::I47_CHECKER_ID, input, observed, result)
+                }
+                hybrid_adapter::HybridInvariantEvidence::I48 { input, observed } => {
+                    let result = hybrid_oracle::compare_i48(&input, &observed);
+                    (48, hybrid_oracle::I48_CHECKER_ID, input, observed, result)
+                }
+                hybrid_adapter::HybridInvariantEvidence::I49 { input, observed } => {
+                    let result = hybrid_oracle::compare_i49(&input, &observed);
+                    (49, hybrid_oracle::I49_CHECKER_ID, input, observed, result)
+                }
+            };
+            push_feature_json_record(
+                id,
+                checker,
+                operation.key(),
+                hybrid_input_json(&input),
+                hybrid_observed_json(&observed),
+                format!("public hybrid operation seed={seed}"),
+                result,
+                oracle_records,
+                coverage,
+            );
+        }
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"hybrid-fusion\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedHybrid),
+        );
+    }
+    Ok(receipts)
 }
 
 fn fts_operation_kind(operation: super::campaign::FtsOperation) -> fts_adapter::FtsOperationKind {

@@ -7,6 +7,7 @@
 #![deny(warnings)]
 
 pub mod fts;
+pub mod hybrid_fusion;
 pub mod ingest_retention;
 pub mod metadata_filter_planner;
 pub mod storage_durability;
