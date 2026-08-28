@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(warnings)]
 
+pub mod fts;
 pub mod ingest_retention;
 pub mod metadata_filter_planner;
 pub mod storage_durability;

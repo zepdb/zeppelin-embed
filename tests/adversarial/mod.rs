@@ -10,6 +10,7 @@ pub mod artifacts;
 pub mod campaign;
 pub mod coverage;
 pub mod fault_vfs;
+pub mod fts;
 pub mod ingest_retention;
 pub mod metadata_filter_planner;
 pub mod model;

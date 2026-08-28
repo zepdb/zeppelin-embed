@@ -67,6 +67,7 @@ use zeppelin_embed::segment::writer::{
 use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
 use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
 use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
@@ -77,6 +78,7 @@ use super::artifacts::RunArtifacts;
 use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::fault_vfs::{self, FaultEvent};
+use super::fts as fts_adapter;
 use super::ingest_retention as ingest_adapter;
 use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
@@ -2730,6 +2732,7 @@ enum ProductionFeatureReceipt {
     ValidatedMetadataFeature(MetadataFeatureReceipt),
     ValidatedVectorFeature(VectorFaultReceipt),
     ValidatedGraph(graph_adapter::GraphFaultReceipt),
+    ValidatedFts(fts_adapter::FtsFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2744,6 +2747,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.campaign(),
             Self::ValidatedVectorFeature(receipt) => vector_campaign_key(receipt.campaign()),
             Self::ValidatedGraph(_) => "vamana-graph",
+            Self::ValidatedFts(_) => "fts",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2760,6 +2764,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.operation(),
             Self::ValidatedVectorFeature(receipt) => vector_operation_key(receipt.operation()),
             Self::ValidatedGraph(receipt) => receipt.operation.key(),
+            Self::ValidatedFts(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2780,6 +2785,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.fault()),
             Self::ValidatedVectorFeature(receipt) => Some(vector_fault_key(receipt.fault())),
             Self::ValidatedGraph(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedFts(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2806,6 +2812,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.site(),
             Self::ValidatedVectorFeature(receipt) => vector_site_key(receipt.site()),
             Self::ValidatedGraph(receipt) => receipt.site,
+            Self::ValidatedFts(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2817,6 +2824,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.cardinality()),
             Self::ValidatedVectorFeature(receipt) => Some(u32::from(receipt.cardinality())),
             Self::ValidatedGraph(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedFts(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3062,6 +3070,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedGraph(receipt) => format!(
             "{{\"campaign\":\"vamana-graph\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedFts(receipt) => format!(
+            "{{\"campaign\":\"fts\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3322,6 +3337,16 @@ fn run_campaign_operation(
             coverage,
         );
     }
+    if let super::campaign::FeatureOperation::Fts(fts_operation) = operation {
+        return run_fts_campaign_operation(
+            fts_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -3349,6 +3374,171 @@ fn run_campaign_operation(
         operation.campaign().key(),
         operation.key(),
     ))
+}
+
+fn fts_operation_kind(operation: super::campaign::FtsOperation) -> fts_adapter::FtsOperationKind {
+    match operation {
+        super::campaign::FtsOperation::Tokenizer => fts_adapter::FtsOperationKind::Tokenizer,
+        super::campaign::FtsOperation::Regions => fts_adapter::FtsOperationKind::Regions,
+        super::campaign::FtsOperation::Bm25 => fts_adapter::FtsOperationKind::Bm25,
+        super::campaign::FtsOperation::Pruning => fts_adapter::FtsOperationKind::Pruning,
+        super::campaign::FtsOperation::Extras => fts_adapter::FtsOperationKind::Extras,
+    }
+}
+
+fn fts_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<fts_adapter::FtsFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::FtsPostingsCorruption => {
+            Ok(fts_adapter::FtsFaultKind::PostingsCorruption)
+        }
+        super::campaign::FeatureFault::FtsDictionaryCorruption => {
+            Ok(fts_adapter::FtsFaultKind::DictionaryCorruption)
+        }
+        super::campaign::FeatureFault::FtsNormCorruption => {
+            Ok(fts_adapter::FtsFaultKind::NormCorruption)
+        }
+        super::campaign::FeatureFault::FtsBlockMaxCorruption => {
+            Ok(fts_adapter::FtsFaultKind::BlockMaxCorruption)
+        }
+        super::campaign::FeatureFault::FtsStoredTextCorruption => {
+            Ok(fts_adapter::FtsFaultKind::StoredTextCorruption)
+        }
+        super::campaign::FeatureFault::FtsStoredTextAbsence => {
+            Ok(fts_adapter::FtsFaultKind::StoredTextAbsence)
+        }
+        super::campaign::FeatureFault::FtsLexicalCancellation => {
+            Ok(fts_adapter::FtsFaultKind::LexicalCancellation)
+        }
+        other => Err(format!("{} is not an FTS fault", other.key())),
+    }
+}
+
+fn fts_tokens_json(tokens: &[fts_oracle::TokenFact]) -> String {
+    tokens
+        .iter()
+        .map(|token| {
+            format!(
+                "{{\"term\":\"{}\",\"position\":{},\"start\":{},\"end\":{}}}",
+                json_escape(&token.term),
+                token.position,
+                token.start,
+                token.end
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn fts_input_json(input: &fts_oracle::FtsInput) -> String {
+    let rows = input
+        .expected_rows
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"tokens\":[{}],\"row_count\":{},\"expected_rows\":[{rows}]}}",
+        fts_tokens_json(&input.tokens),
+        input.row_count
+    )
+}
+
+fn fts_observed_json(observed: &fts_oracle::FtsObserved) -> String {
+    let rows = |values: &[u32]| {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"tokens\":[{}],\"row_count\":{},\"term_count\":{},\"exhaustive_rows\":[{}],\"pruned_rows\":[{}],\"finite_scores\":{},\"phrase_ok\":{},\"prefix_ok\":{},\"fuzzy_ok\":{},\"phonetic_ok\":{},\"snippet_ok\":{}}}",
+        fts_tokens_json(&observed.tokens),
+        observed.row_count,
+        observed.term_count,
+        rows(&observed.exhaustive_rows),
+        rows(&observed.pruned_rows),
+        observed.finite_scores,
+        observed.phrase_ok,
+        observed.prefix_ok,
+        observed.fuzzy_ok,
+        observed.phonetic_ok,
+        observed.snippet_ok,
+    )
+}
+
+fn run_fts_campaign_operation(
+    operation: super::campaign::FtsOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(fts_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence = fts_adapter::run_fts_operation(fts_operation_kind(operation), seed, fault)?;
+        for invariant in evidence.invariants {
+            let (id, checker, input, observed, result) = match invariant {
+                fts_adapter::FtsInvariantEvidence::I40 { input, observed } => {
+                    let result = fts_oracle::compare_i40(&input, &observed);
+                    (40, fts_oracle::I40_CHECKER_ID, input, observed, result)
+                }
+                fts_adapter::FtsInvariantEvidence::I41 { input, observed } => {
+                    let result = fts_oracle::compare_i41(&input, &observed);
+                    (41, fts_oracle::I41_CHECKER_ID, input, observed, result)
+                }
+                fts_adapter::FtsInvariantEvidence::I42 { input, observed } => {
+                    let result = fts_oracle::compare_i42(&input, &observed);
+                    (42, fts_oracle::I42_CHECKER_ID, input, observed, result)
+                }
+                fts_adapter::FtsInvariantEvidence::I43 { input, observed } => {
+                    let result = fts_oracle::compare_i43(&input, &observed);
+                    (43, fts_oracle::I43_CHECKER_ID, input, observed, result)
+                }
+                fts_adapter::FtsInvariantEvidence::I44 { input, observed } => {
+                    let result = fts_oracle::compare_i44(&input, &observed);
+                    (44, fts_oracle::I44_CHECKER_ID, input, observed, result)
+                }
+            };
+            push_feature_json_record(
+                id,
+                checker,
+                operation.key(),
+                fts_input_json(&input),
+                fts_observed_json(&observed),
+                format!("public FTS operation seed={seed}"),
+                result,
+                oracle_records,
+                coverage,
+            );
+        }
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"fts\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedFts),
+        );
+    }
+    Ok(receipts)
 }
 
 fn graph_operation_kind(
