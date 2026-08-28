@@ -7485,6 +7485,198 @@ fn graph_campaign_oracle_rows_bind_all_eight_exact_checkers() {
 }
 
 #[test]
+fn remaining_direct_family_oracle_rows_bind_their_exact_checkers() {
+    let empty = zeppelin_embed_bench::harness_json::json!({});
+    let canonical =
+        zeppelin_embed_bench::harness_json::to_vec(&empty).expect("canonical empty evidence");
+    let digest = adversarial::artifacts::evidence_digest(&[&canonical]);
+    let bindings = [
+        (
+            CampaignKind::Fts,
+            "I40",
+            zeppelin_embed_adversarial_oracle::fts::I40_CHECKER_ID,
+            "tokenizer",
+        ),
+        (
+            CampaignKind::Fts,
+            "I41",
+            zeppelin_embed_adversarial_oracle::fts::I41_CHECKER_ID,
+            "regions",
+        ),
+        (
+            CampaignKind::Fts,
+            "I42",
+            zeppelin_embed_adversarial_oracle::fts::I42_CHECKER_ID,
+            "bm25",
+        ),
+        (
+            CampaignKind::Fts,
+            "I43",
+            zeppelin_embed_adversarial_oracle::fts::I43_CHECKER_ID,
+            "pruning",
+        ),
+        (
+            CampaignKind::Fts,
+            "I44",
+            zeppelin_embed_adversarial_oracle::fts::I44_CHECKER_ID,
+            "extras",
+        ),
+        (
+            CampaignKind::HybridFusion,
+            "I45",
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I45_CHECKER_ID,
+            "provenance",
+        ),
+        (
+            CampaignKind::HybridFusion,
+            "I46",
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I46_CHECKER_ID,
+            "normalization",
+        ),
+        (
+            CampaignKind::HybridFusion,
+            "I47",
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I47_CHECKER_ID,
+            "bounded-fusion",
+        ),
+        (
+            CampaignKind::HybridFusion,
+            "I48",
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I48_CHECKER_ID,
+            "rrf-fallback",
+        ),
+        (
+            CampaignKind::HybridFusion,
+            "I49",
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I49_CHECKER_ID,
+            "legs",
+        ),
+        (
+            CampaignKind::TieringMaintenance,
+            "I50",
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I50_CHECKER_ID,
+            "policy",
+        ),
+        (
+            CampaignKind::TieringMaintenance,
+            "I51",
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I51_CHECKER_ID,
+            "transition",
+        ),
+        (
+            CampaignKind::TieringMaintenance,
+            "I52",
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I52_CHECKER_ID,
+            "budget",
+        ),
+        (
+            CampaignKind::TieringMaintenance,
+            "I53",
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I53_CHECKER_ID,
+            "publication",
+        ),
+        (
+            CampaignKind::LifecycleAccounting,
+            "I54",
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I54_CHECKER_ID,
+            "deadline",
+        ),
+        (
+            CampaignKind::LifecycleAccounting,
+            "I55",
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I55_CHECKER_ID,
+            "cancellation",
+        ),
+        (
+            CampaignKind::LifecycleAccounting,
+            "I56",
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I56_CHECKER_ID,
+            "close-drain",
+        ),
+        (
+            CampaignKind::LifecycleAccounting,
+            "I57",
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I57_CHECKER_ID,
+            "locking",
+        ),
+        (
+            CampaignKind::LifecycleAccounting,
+            "I58",
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I58_CHECKER_ID,
+            "accounting",
+        ),
+        (
+            CampaignKind::DiagnosticsHealth,
+            "I63",
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I63_CHECKER_ID,
+            "health",
+        ),
+        (
+            CampaignKind::DiagnosticsHealth,
+            "I64",
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I64_CHECKER_ID,
+            "self-check",
+        ),
+        (
+            CampaignKind::DiagnosticsHealth,
+            "I65",
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I65_CHECKER_ID,
+            "recovery",
+        ),
+        (
+            CampaignKind::FfiBindings,
+            "I66",
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I66_CHECKER_ID,
+            "validation",
+        ),
+        (
+            CampaignKind::FfiBindings,
+            "I67",
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I67_CHECKER_ID,
+            "ownership",
+        ),
+        (
+            CampaignKind::FfiBindings,
+            "I68",
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I68_CHECKER_ID,
+            "containment",
+        ),
+        (
+            CampaignKind::FfiBindings,
+            "I69",
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I69_CHECKER_ID,
+            "deadline",
+        ),
+        (
+            CampaignKind::FfiBindings,
+            "I70",
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I70_CHECKER_ID,
+            "parity",
+        ),
+    ];
+    for (campaign, invariant, checker_id, operation) in bindings {
+        let record = zeppelin_embed_bench::harness_json::json!({
+            "invariant": invariant,
+            "checker_id": checker_id,
+            "operation": operation,
+            "expected": {},
+            "observed": {},
+            "input_digest": digest,
+            "observed_digest": digest,
+            "canonical_version": zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+            "oracle_input_digest": digest,
+            "oracle_observed_digest": digest,
+            "passed": true,
+            "first_difference": null,
+        });
+        assert_eq!(
+            validate_feature_oracle_record(campaign, &record),
+            Ok(invariant.to_owned())
+        );
+    }
+}
+
+#[test]
 fn storage_campaign_comparison_counts_include_damaged_wal_i18_projections() {
     let campaign = CampaignKind::StorageDurability;
     let seed = (0..128)
@@ -12757,6 +12949,114 @@ fn validate_feature_oracle_record(
         (CampaignKind::VamanaGraph, "I35") => Some((
             zeppelin_embed_adversarial_oracle::vamana_graph::I35_CHECKER_ID,
             "filtered-search",
+        )),
+        (CampaignKind::Fts, "I40") => Some((
+            zeppelin_embed_adversarial_oracle::fts::I40_CHECKER_ID,
+            "tokenizer",
+        )),
+        (CampaignKind::Fts, "I41") => Some((
+            zeppelin_embed_adversarial_oracle::fts::I41_CHECKER_ID,
+            "regions",
+        )),
+        (CampaignKind::Fts, "I42") => Some((
+            zeppelin_embed_adversarial_oracle::fts::I42_CHECKER_ID,
+            "bm25",
+        )),
+        (CampaignKind::Fts, "I43") => Some((
+            zeppelin_embed_adversarial_oracle::fts::I43_CHECKER_ID,
+            "pruning",
+        )),
+        (CampaignKind::Fts, "I44") => Some((
+            zeppelin_embed_adversarial_oracle::fts::I44_CHECKER_ID,
+            "extras",
+        )),
+        (CampaignKind::HybridFusion, "I45") => Some((
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I45_CHECKER_ID,
+            "provenance",
+        )),
+        (CampaignKind::HybridFusion, "I46") => Some((
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I46_CHECKER_ID,
+            "normalization",
+        )),
+        (CampaignKind::HybridFusion, "I47") => Some((
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I47_CHECKER_ID,
+            "bounded-fusion",
+        )),
+        (CampaignKind::HybridFusion, "I48") => Some((
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I48_CHECKER_ID,
+            "rrf-fallback",
+        )),
+        (CampaignKind::HybridFusion, "I49") => Some((
+            zeppelin_embed_adversarial_oracle::hybrid_fusion::I49_CHECKER_ID,
+            "legs",
+        )),
+        (CampaignKind::TieringMaintenance, "I50") => Some((
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I50_CHECKER_ID,
+            "policy",
+        )),
+        (CampaignKind::TieringMaintenance, "I51") => Some((
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I51_CHECKER_ID,
+            "transition",
+        )),
+        (CampaignKind::TieringMaintenance, "I52") => Some((
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I52_CHECKER_ID,
+            "budget",
+        )),
+        (CampaignKind::TieringMaintenance, "I53") => Some((
+            zeppelin_embed_adversarial_oracle::tiering_maintenance::I53_CHECKER_ID,
+            "publication",
+        )),
+        (CampaignKind::LifecycleAccounting, "I54") => Some((
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I54_CHECKER_ID,
+            "deadline",
+        )),
+        (CampaignKind::LifecycleAccounting, "I55") => Some((
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I55_CHECKER_ID,
+            "cancellation",
+        )),
+        (CampaignKind::LifecycleAccounting, "I56") => Some((
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I56_CHECKER_ID,
+            "close-drain",
+        )),
+        (CampaignKind::LifecycleAccounting, "I57") => Some((
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I57_CHECKER_ID,
+            "locking",
+        )),
+        (CampaignKind::LifecycleAccounting, "I58") => Some((
+            zeppelin_embed_adversarial_oracle::lifecycle_accounting::I58_CHECKER_ID,
+            "accounting",
+        )),
+        (CampaignKind::DiagnosticsHealth, "I63") => Some((
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I63_CHECKER_ID,
+            "health",
+        )),
+        (CampaignKind::DiagnosticsHealth, "I64") => Some((
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I64_CHECKER_ID,
+            "self-check",
+        )),
+        (CampaignKind::DiagnosticsHealth, "I65") => Some((
+            zeppelin_embed_adversarial_oracle::diagnostics_health::I65_CHECKER_ID,
+            "recovery",
+        )),
+        (CampaignKind::FfiBindings, "I66") => Some((
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I66_CHECKER_ID,
+            "validation",
+        )),
+        (CampaignKind::FfiBindings, "I67") => Some((
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I67_CHECKER_ID,
+            "ownership",
+        )),
+        (CampaignKind::FfiBindings, "I68") => Some((
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I68_CHECKER_ID,
+            "containment",
+        )),
+        (CampaignKind::FfiBindings, "I69") => Some((
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I69_CHECKER_ID,
+            "deadline",
+        )),
+        (CampaignKind::FfiBindings, "I70") => Some((
+            zeppelin_embed_adversarial_oracle::ffi_bindings::I70_CHECKER_ID,
+            "parity",
         )),
         (CampaignKind::MetadataFilterPlanner, "I36") => Some((
             zeppelin_embed_adversarial_oracle::metadata_filter_planner::I36_CHECKER_ID,
