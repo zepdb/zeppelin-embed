@@ -56,11 +56,33 @@ pub enum FormatCheck {
     ObjectIdentity,
 }
 
+/// Typed value-bearing facts carried by persisted-format failures.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FormatValues {
+    /// The check has no stable pair of numeric values.
+    None,
+    /// Expected and observed registered artifact families.
+    Family {
+        /// Required family id.
+        expected: u16,
+        /// Persisted family id.
+        actual: u16,
+    },
+    /// Expected and computed checksum words.
+    Checksum {
+        /// Persisted checksum word.
+        expected: u64,
+        /// Independently computed checksum word.
+        actual: u64,
+    },
+}
+
 /// Typed, artifact-naming persisted-format validation failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormatError {
     artifact: String,
     check: FormatCheck,
+    values: FormatValues,
     detail: String,
 }
 
@@ -71,7 +93,35 @@ impl FormatError {
         Self {
             artifact: artifact.into(),
             check,
+            values: FormatValues::None,
             detail: detail.into(),
+        }
+    }
+
+    /// Creates an exact wrong-family refusal without relying on display text.
+    #[must_use]
+    pub(crate) fn wrong_family(artifact: impl Into<String>, expected: u16, actual: u16) -> Self {
+        Self {
+            artifact: artifact.into(),
+            check: FormatCheck::Family,
+            values: FormatValues::Family { expected, actual },
+            detail: format!("expected {expected}, got {actual}"),
+        }
+    }
+
+    /// Creates an exact checksum refusal without relying on display text.
+    #[must_use]
+    pub(crate) fn checksum_mismatch(
+        artifact: impl Into<String>,
+        check: FormatCheck,
+        expected: u64,
+        actual: u64,
+    ) -> Self {
+        Self {
+            artifact: artifact.into(),
+            check,
+            values: FormatValues::Checksum { expected, actual },
+            detail: format!("expected {expected:#018x}, computed {actual:#018x}"),
         }
     }
 
@@ -85,6 +135,12 @@ impl FormatError {
     #[must_use]
     pub const fn check(&self) -> FormatCheck {
         self.check
+    }
+
+    /// Returns stable typed value-bearing facts for this validation failure.
+    #[must_use]
+    pub const fn values(&self) -> &FormatValues {
+        &self.values
     }
 
     /// Returns the value-bearing failure detail.
@@ -178,10 +234,10 @@ pub fn decode_header(
     }
     let family = read_u16(artifact, fixed, 8)?;
     if family != expected_family.id() {
-        return Err(FormatError::new(
+        return Err(FormatError::wrong_family(
             artifact,
-            FormatCheck::Family,
-            format!("expected {}, got {family}", expected_family.id()),
+            expected_family.id(),
+            family,
         ));
     }
     let version = read_u16(artifact, fixed, 10)?;
@@ -246,12 +302,11 @@ pub fn decode_artifact<'a>(
     let expected_file_checksum = read_u64(artifact, bytes, trailer_start)?;
     let actual_file_checksum = xxh3_64(checksummed);
     if actual_file_checksum != expected_file_checksum {
-        return Err(FormatError::new(
+        return Err(FormatError::checksum_mismatch(
             artifact,
             FormatCheck::FileChecksum,
-            format!(
-                "expected {expected_file_checksum:#018x}, computed {actual_file_checksum:#018x}"
-            ),
+            expected_file_checksum,
+            actual_file_checksum,
         ));
     }
 
@@ -283,12 +338,11 @@ pub fn decode_artifact<'a>(
     let expected_block_checksum = read_u64(artifact, bytes, payload_end)?;
     let actual_block_checksum = xxh3_64(payload);
     if actual_block_checksum != expected_block_checksum {
-        return Err(FormatError::new(
+        return Err(FormatError::checksum_mismatch(
             artifact,
             FormatCheck::BlockChecksum,
-            format!(
-                "expected {expected_block_checksum:#018x}, computed {actual_block_checksum:#018x}"
-            ),
+            expected_block_checksum,
+            actual_block_checksum,
         ));
     }
     Ok(DecodedArtifact { header, payload })

@@ -221,7 +221,16 @@ fn append_clustering_ranges(
 
 /// Decodes a complete manifest only after both xxh3-64 checksums validate.
 pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, ManifestError> {
-    let framed = decode_artifact(artifact, FormatFamily::Manifest, bytes)?;
+    #[cfg(any(test, feature = "test-support"))]
+    let actual_family = bytes
+        .get(8..10)
+        .and_then(|family| <[u8; 2]>::try_from(family).ok())
+        .map(u16::from_le_bytes);
+    let framed = decode_artifact(artifact, FormatFamily::Manifest, bytes).map_err(|error| {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::lifecycle::record_storage_manifest_format_fault(&error, actual_family);
+        ManifestError::Format(error)
+    })?;
     let mut cursor = ManifestCursor::new(framed.payload);
     let generation = cursor.u64()?;
     let log_seq = cursor.u64()?;

@@ -136,6 +136,83 @@ fn sweep_orphans(
     Ok(reclaimed)
 }
 
+/// Removes only store-owned publication artifacts that cannot be reached from
+/// the committed snapshot.
+///
+/// Store open calls this only after snapshot/WAL validation and pending-purge
+/// recovery, while it owns the exclusive writer lock. Purge control artifacts
+/// and unknown files are deliberately outside the eligible name set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OrphanCleanupReport {
+    pub(crate) reclaimed_bytes: u64,
+    pub(crate) deleted_paths: Vec<PathBuf>,
+    pub(crate) retained_eligible_paths: Vec<PathBuf>,
+    pub(crate) directory_synced: bool,
+}
+
+pub(crate) fn cleanup_store_orphans(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    reachable_segments: &HashSet<PathBuf>,
+    policy: DurabilityPolicy,
+) -> Result<OrphanCleanupReport, ManifestError> {
+    let mut paths = vfs
+        .list(directory)
+        .map_err(|error| ManifestError::io(directory, error))?;
+    paths.sort_unstable();
+    let mut reclaimed = 0_u64;
+    let mut deleted_paths = Vec::new();
+    let mut retained_eligible_paths = Vec::new();
+    for path in paths {
+        if !is_eligible_store_orphan(&path, reachable_segments) {
+            continue;
+        }
+        let length = vfs
+            .open(&path)
+            .map_err(|error| ManifestError::io(&path, error))?;
+        vfs.delete(&path)
+            .map_err(|error| ManifestError::io(&path, error))?;
+        match vfs.open(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                reclaimed = reclaimed.checked_add(length).ok_or_else(|| {
+                    ManifestError::io(
+                        directory,
+                        std::io::Error::other("orphan reclaimed-byte count overflow"),
+                    )
+                })?;
+                deleted_paths.push(path);
+            }
+            Ok(_) => retained_eligible_paths.push(path),
+            Err(error) => return Err(ManifestError::io(&path, error)),
+        }
+    }
+    let mut directory_synced = false;
+    if !deleted_paths.is_empty()
+        && let SyncRequirement::Sync(kind) = policy.directory_sync()
+    {
+        vfs.sync(directory, kind)
+            .map_err(|error| ManifestError::io(directory, error))?;
+        directory_synced = true;
+    }
+    Ok(OrphanCleanupReport {
+        reclaimed_bytes: reclaimed,
+        deleted_paths,
+        retained_eligible_paths,
+        directory_synced,
+    })
+}
+
+fn is_eligible_store_orphan(path: &Path, reachable_segments: &HashSet<PathBuf>) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let unreferenced_final = name.starts_with("segment-")
+        && name.ends_with(".zseg")
+        && !reachable_segments.contains(path);
+    let segment_temporary = name.starts_with(".segment-") && name.ends_with(".zseg.tmp");
+    unreferenced_final || segment_temporary || name == MANIFEST_TEMP_FILE
+}
+
 fn is_segment_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())

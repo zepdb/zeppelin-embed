@@ -1339,10 +1339,16 @@ impl WalReader {
                 })
             }
             Some(ReplayTerminator::InvalidHeader(error)) => {
-                Err(WalRecoveryError::InvalidHeader(error))
+                let error = WalRecoveryError::InvalidHeader(error);
+                #[cfg(any(test, feature = "test-support"))]
+                crate::lifecycle::record_storage_wal_recovery_fault(&error);
+                Err(error)
             }
             Some(ReplayTerminator::CorruptAt { offset, reason }) => {
-                Err(WalRecoveryError::CorruptAt { offset, reason })
+                let error = WalRecoveryError::CorruptAt { offset, reason };
+                #[cfg(any(test, feature = "test-support"))]
+                crate::lifecycle::record_storage_wal_recovery_fault(&error);
+                Err(error)
             }
             None => Err(WalRecoveryError::MissingFile),
         }

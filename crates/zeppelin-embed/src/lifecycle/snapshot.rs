@@ -366,8 +366,17 @@ impl PublishedSnapshot {
             }
         }
         let wal = WalReader::open(vfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
+        let durable_end = wal.durable_end();
+        if !matches!(
+            wal.terminator(),
+            None | Some(crate::wal::replay::ReplayTerminator::InvalidHeader(
+                crate::wal::header::WalHeaderError::Missing
+            ))
+        ) {
+            wal.into_clean().map_err(StoreError::WalRecovery)?;
+        }
         let manifest =
-            load_manifest(vfs, &manifest_path, wal.durable_end()).map_err(StoreError::Manifest)?;
+            load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
         if probe_segment_headers {
             for expected in &manifest.segments {
                 let path = directory.join(expected.id.file_name());
@@ -484,6 +493,14 @@ impl PublishedSnapshot {
     }
 
     pub(crate) const fn absorbed_through(&self) -> u64 {
+        self.absorbed_through
+    }
+
+    /// Returns the manifest sequence for independent storage durability tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn storage_absorbed_through(&self) -> u64 {
         self.absorbed_through
     }
 

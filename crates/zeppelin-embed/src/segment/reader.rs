@@ -3,6 +3,8 @@
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
+#[cfg(any(test, feature = "test-support"))]
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -310,6 +312,8 @@ struct ParsedHeader {
 pub struct SegmentReader {
     mapping: MappedFile,
     meta: SegmentMeta,
+    #[cfg(any(test, feature = "test-support"))]
+    storage_store_directory: PathBuf,
     header_length: usize,
     entries: Vec<RegionEntry>,
     document_versions_validation: OnceLock<Result<(), DocumentVersionValidationError>>,
@@ -455,6 +459,8 @@ impl SegmentReader {
         Ok(Self {
             mapping,
             meta: parsed.meta,
+            #[cfg(any(test, feature = "test-support"))]
+            storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
             header_length: parsed.header_length,
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
@@ -514,6 +520,8 @@ impl SegmentReader {
         Ok(Self {
             mapping,
             meta: expected.clone(),
+            #[cfg(any(test, feature = "test-support"))]
+            storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
             header_length: parsed.header_length,
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
@@ -612,10 +620,20 @@ impl SegmentReader {
         let bytes = self.region_slice(entry)?;
         let actual = region_hash(kind, bytes);
         if actual != entry.checksum {
-            return Err(FormatError::new(
+            #[cfg(any(test, feature = "test-support"))]
+            crate::lifecycle::record_storage_segment_checksum_fault(
+                &self.storage_store_directory,
+                self.meta.id,
+                kind,
+                0,
+                entry.checksum,
+                actual,
+            );
+            return Err(FormatError::checksum_mismatch(
                 format!("segment:{}:{kind:?}", self.meta.id),
                 FormatCheck::BlockChecksum,
-                format!("expected {:#018x}, computed {actual:#018x}", entry.checksum),
+                entry.checksum,
+                actual,
             )
             .into());
         }
@@ -634,10 +652,11 @@ impl SegmentReader {
         let bytes = self.region_slice(entry)?;
         let actual = xxh3_64(bytes);
         if actual != entry.checksum {
-            return Err(FormatError::new(
+            return Err(FormatError::checksum_mismatch(
                 format!("segment:{}:region-{kind}", self.meta.id),
                 FormatCheck::BlockChecksum,
-                format!("expected {:#018x}, computed {actual:#018x}", entry.checksum),
+                entry.checksum,
+                actual,
             )
             .into());
         }
@@ -663,10 +682,20 @@ impl SegmentReader {
         let expected = self.chunk_checksum(kind, chunk_index)?;
         let actual = region_hash(kind, chunk);
         if actual != expected {
-            return Err(FormatError::new(
+            #[cfg(any(test, feature = "test-support"))]
+            crate::lifecycle::record_storage_segment_checksum_fault(
+                &self.storage_store_directory,
+                self.meta.id,
+                kind,
+                chunk_index,
+                expected,
+                actual,
+            );
+            return Err(FormatError::checksum_mismatch(
                 format!("segment:{}:{kind:?}:chunk-{chunk_index}", self.meta.id),
                 FormatCheck::BlockChecksum,
-                format!("expected {expected:#018x}, computed {actual:#018x}"),
+                expected,
+                actual,
             )
             .into());
         }
@@ -1569,7 +1598,21 @@ pub fn validate_header_with_vfs(
         .read_range(path, 0, FILE_HEADER_LEN)
         .map_err(|error| SegmentError::io(path, error))?;
     let artifact = path.display().to_string();
-    let fixed = decode_header(&artifact, FormatFamily::Segment, &header_bytes)?;
+    #[cfg(any(test, feature = "test-support"))]
+    let actual_family = header_bytes
+        .get(8..10)
+        .and_then(|family| <[u8; 2]>::try_from(family).ok())
+        .map(u16::from_le_bytes);
+    let fixed =
+        decode_header(&artifact, FormatFamily::Segment, &header_bytes).map_err(|error| {
+            #[cfg(any(test, feature = "test-support"))]
+            crate::lifecycle::record_storage_segment_format_fault(
+                &error,
+                actual_family,
+                expected.id,
+            );
+            SegmentError::from(error)
+        })?;
     let header_length = usize::try_from(fixed.header_length)
         .map_err(|_| SegmentError::Geometry("segment header length exceeds usize".to_owned()))?;
     validate_bounded_header_length(&artifact, header_length, actual_length)?;
@@ -1697,7 +1740,16 @@ fn parse_segment_header(
     actual_file_length: u64,
     expected_id: SegmentId,
 ) -> Result<ParsedHeader, SegmentError> {
-    let fixed = decode_header(artifact, FormatFamily::Segment, bytes)?;
+    #[cfg(any(test, feature = "test-support"))]
+    let actual_family = bytes
+        .get(8..10)
+        .and_then(|family| <[u8; 2]>::try_from(family).ok())
+        .map(u16::from_le_bytes);
+    let fixed = decode_header(artifact, FormatFamily::Segment, bytes).map_err(|error| {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::lifecycle::record_storage_segment_format_fault(&error, actual_family, expected_id);
+        SegmentError::from(error)
+    })?;
     if fixed.file_length != actual_file_length {
         return Err(FormatError::new(
             artifact,
@@ -1726,6 +1778,8 @@ fn parse_segment_header(
         .map_err(|_| FormatError::new(artifact, FormatCheck::Length, "invalid segment id"))?;
     let actual_id = SegmentId::from_bytes(id_bytes);
     if actual_id != expected_id {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::lifecycle::record_storage_segment_identity_fault(artifact, expected_id, actual_id);
         return Err(SegmentError::WrongObject {
             artifact: artifact.to_owned(),
             expected: expected_id,
