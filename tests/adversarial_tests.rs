@@ -7416,6 +7416,75 @@ fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity()
 }
 
 #[test]
+fn graph_campaign_oracle_rows_bind_all_eight_exact_checkers() {
+    let empty = zeppelin_embed_bench::harness_json::json!({});
+    let canonical =
+        zeppelin_embed_bench::harness_json::to_vec(&empty).expect("canonical empty graph evidence");
+    let digest = adversarial::artifacts::evidence_digest(&[&canonical]);
+    for (invariant, checker_id, operation) in [
+        (
+            "I28",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I28_CHECKER_ID,
+            "shape",
+        ),
+        (
+            "I29",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I29_CHECKER_ID,
+            "entry-points",
+        ),
+        (
+            "I30",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I30_CHECKER_ID,
+            "search",
+        ),
+        (
+            "I31",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I31_CHECKER_ID,
+            "search",
+        ),
+        (
+            "I32",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I32_CHECKER_ID,
+            "bounded-build",
+        ),
+        (
+            "I33",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I33_CHECKER_ID,
+            "publication",
+        ),
+        (
+            "I34",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I34_CHECKER_ID,
+            "checkpoint",
+        ),
+        (
+            "I35",
+            zeppelin_embed_adversarial_oracle::vamana_graph::I35_CHECKER_ID,
+            "filtered-search",
+        ),
+    ] {
+        let record = zeppelin_embed_bench::harness_json::json!({
+            "invariant": invariant,
+            "checker_id": checker_id,
+            "operation": operation,
+            "expected": {},
+            "observed": {},
+            "input_digest": digest,
+            "observed_digest": digest,
+            "canonical_version": zeppelin_embed_adversarial_oracle::ORACLE_CONTRACT_VERSION,
+            "oracle_input_digest": digest,
+            "oracle_observed_digest": digest,
+            "passed": true,
+            "first_difference": null,
+        });
+        assert_eq!(
+            validate_feature_oracle_record(CampaignKind::VamanaGraph, &record),
+            Ok(invariant.to_owned())
+        );
+    }
+}
+
+#[test]
 fn storage_campaign_comparison_counts_include_damaged_wal_i18_projections() {
     let campaign = CampaignKind::StorageDurability;
     let seed = (0..128)
@@ -12656,6 +12725,38 @@ fn validate_feature_oracle_record(
         (CampaignKind::VectorExecution, "I27") => Some((
             zeppelin_embed_adversarial_oracle::vector_execution::I27_CHECKER_ID,
             "row-identity",
+        )),
+        (CampaignKind::VamanaGraph, "I28") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I28_CHECKER_ID,
+            "shape",
+        )),
+        (CampaignKind::VamanaGraph, "I29") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I29_CHECKER_ID,
+            "entry-points",
+        )),
+        (CampaignKind::VamanaGraph, "I30") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I30_CHECKER_ID,
+            "search",
+        )),
+        (CampaignKind::VamanaGraph, "I31") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I31_CHECKER_ID,
+            "search",
+        )),
+        (CampaignKind::VamanaGraph, "I32") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I32_CHECKER_ID,
+            "bounded-build",
+        )),
+        (CampaignKind::VamanaGraph, "I33") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I33_CHECKER_ID,
+            "publication",
+        )),
+        (CampaignKind::VamanaGraph, "I34") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I34_CHECKER_ID,
+            "checkpoint",
+        )),
+        (CampaignKind::VamanaGraph, "I35") => Some((
+            zeppelin_embed_adversarial_oracle::vamana_graph::I35_CHECKER_ID,
+            "filtered-search",
         )),
         (CampaignKind::MetadataFilterPlanner, "I36") => Some((
             zeppelin_embed_adversarial_oracle::metadata_filter_planner::I36_CHECKER_ID,
