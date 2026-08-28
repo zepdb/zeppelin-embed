@@ -67,6 +67,7 @@ use zeppelin_embed::segment::writer::{
 use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed_adversarial_oracle::diagnostics_health as diagnostics_oracle;
 use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
 use zeppelin_embed_adversarial_oracle::hybrid_fusion as hybrid_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
@@ -80,6 +81,7 @@ use zeppelin_embed_adversarial_oracle::vector_execution as vector_oracle;
 use super::artifacts::RunArtifacts;
 use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
+use super::diagnostics_health as diagnostics_adapter;
 use super::fault_vfs::{self, FaultEvent};
 use super::fts as fts_adapter;
 use super::hybrid_fusion as hybrid_adapter;
@@ -2742,6 +2744,7 @@ enum ProductionFeatureReceipt {
     ValidatedHybrid(hybrid_adapter::HybridFaultReceipt),
     ValidatedTier(tier_adapter::TierFaultReceipt),
     ValidatedLifecycle(lifecycle_adapter::LifecycleFaultReceipt),
+    ValidatedDiagnostics(diagnostics_adapter::DiagnosticsFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2760,6 +2763,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedHybrid(_) => "hybrid-fusion",
             Self::ValidatedTier(_) => "tiering-maintenance",
             Self::ValidatedLifecycle(_) => "lifecycle-accounting",
+            Self::ValidatedDiagnostics(_) => "diagnostics-health",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2780,6 +2784,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedHybrid(receipt) => receipt.operation.key(),
             Self::ValidatedTier(receipt) => receipt.operation.key(),
             Self::ValidatedLifecycle(receipt) => receipt.operation.key(),
+            Self::ValidatedDiagnostics(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2804,6 +2809,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedHybrid(receipt) => Some(receipt.fault.key()),
             Self::ValidatedTier(receipt) => Some(receipt.fault.key()),
             Self::ValidatedLifecycle(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedDiagnostics(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2834,6 +2840,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedHybrid(receipt) => receipt.site,
             Self::ValidatedTier(receipt) => receipt.site,
             Self::ValidatedLifecycle(receipt) => receipt.site,
+            Self::ValidatedDiagnostics(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2849,6 +2856,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedHybrid(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedTier(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedLifecycle(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedDiagnostics(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3122,6 +3130,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedLifecycle(receipt) => format!(
             "{{\"campaign\":\"lifecycle-accounting\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedDiagnostics(receipt) => format!(
+            "{{\"campaign\":\"diagnostics-health\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3415,6 +3430,16 @@ fn run_campaign_operation(
     if let super::campaign::FeatureOperation::Lifecycle(lifecycle_operation) = operation {
         return run_lifecycle_campaign_operation(
             lifecycle_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
+    if let super::campaign::FeatureOperation::Diagnostics(diagnostics_operation) = operation {
+        return run_diagnostics_campaign_operation(
+            diagnostics_operation,
             selected_faults,
             seed,
             oracle_records,
@@ -3757,6 +3782,142 @@ fn run_lifecycle_campaign_operation(
                 .receipts
                 .into_iter()
                 .map(ProductionFeatureReceipt::ValidatedLifecycle),
+        );
+    }
+    Ok(receipts)
+}
+
+fn diagnostics_operation_kind(
+    operation: super::campaign::DiagnosticsOperation,
+) -> diagnostics_adapter::DiagnosticsOperationKind {
+    match operation {
+        super::campaign::DiagnosticsOperation::Health => {
+            diagnostics_adapter::DiagnosticsOperationKind::Health
+        }
+        super::campaign::DiagnosticsOperation::SelfCheck => {
+            diagnostics_adapter::DiagnosticsOperationKind::SelfCheck
+        }
+        super::campaign::DiagnosticsOperation::Recovery => {
+            diagnostics_adapter::DiagnosticsOperationKind::Recovery
+        }
+    }
+}
+
+fn diagnostics_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<diagnostics_adapter::DiagnosticsFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::DiagnosticsCounterPlanMutation => {
+            Ok(diagnostics_adapter::DiagnosticsFaultKind::CounterPlanMutation)
+        }
+        super::campaign::FeatureFault::DiagnosticsCorruptArtifact => {
+            Ok(diagnostics_adapter::DiagnosticsFaultKind::CorruptArtifact)
+        }
+        super::campaign::FeatureFault::DiagnosticsStaleHealth => {
+            Ok(diagnostics_adapter::DiagnosticsFaultKind::StaleHealth)
+        }
+        other => Err(format!("{} is not a diagnostics fault", other.key())),
+    }
+}
+
+fn diagnostics_input_json(input: &diagnostics_oracle::DiagnosticsInput) -> String {
+    format!(
+        "{{\"expected_documents\":{},\"expect_corruption\":{}}}",
+        input.expected_documents, input.expect_corruption
+    )
+}
+
+fn diagnostics_observed_json(observed: &diagnostics_oracle::DiagnosticsObserved) -> String {
+    format!(
+        "{{\"pending_documents\":{},\"returned_matches_candidates\":{},\"counter_delta_matches_one_row\":{},\"self_check_healthy\":{},\"corruption_attributed\":{},\"recovery_cleared_fault\":{}}}",
+        observed.pending_documents,
+        observed.returned_matches_candidates,
+        observed.counter_delta_matches_one_row,
+        observed.self_check_healthy,
+        observed.corruption_attributed,
+        observed.recovery_cleared_fault,
+    )
+}
+
+fn run_diagnostics_campaign_operation(
+    operation: super::campaign::DiagnosticsOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(diagnostics_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence = diagnostics_adapter::run_diagnostics_operation(
+            diagnostics_operation_kind(operation),
+            seed,
+            fault,
+        )?;
+        let (id, checker, input, observed, result) = match evidence.invariant {
+            diagnostics_adapter::DiagnosticsInvariantEvidence::I63 { input, observed } => {
+                let result = diagnostics_oracle::compare_i63(&input, &observed);
+                (
+                    63,
+                    diagnostics_oracle::I63_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            diagnostics_adapter::DiagnosticsInvariantEvidence::I64 { input, observed } => {
+                let result = diagnostics_oracle::compare_i64(&input, &observed);
+                (
+                    64,
+                    diagnostics_oracle::I64_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            diagnostics_adapter::DiagnosticsInvariantEvidence::I65 { input, observed } => {
+                let result = diagnostics_oracle::compare_i65(&input, &observed);
+                (
+                    65,
+                    diagnostics_oracle::I65_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+        };
+        push_feature_json_record(
+            id,
+            checker,
+            operation.key(),
+            diagnostics_input_json(&input),
+            diagnostics_observed_json(&observed),
+            format!("public diagnostics operation seed={seed}"),
+            result,
+            oracle_records,
+            coverage,
+        );
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"diagnostics-health\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedDiagnostics),
         );
     }
     Ok(receipts)

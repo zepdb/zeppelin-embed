@@ -9,6 +9,7 @@
 pub mod artifacts;
 pub mod campaign;
 pub mod coverage;
+pub mod diagnostics_health;
 pub mod fault_vfs;
 pub mod fts;
 pub mod hybrid_fusion;
