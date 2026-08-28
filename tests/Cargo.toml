@@ -24,4 +24,4 @@ tempfile.workspace = true
 zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.1.0" }
 zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.1.0", features = ["test-support"] }
 zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.1.0" }
-zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.1.0" }
+zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.1.0", features = ["abi-panic-probe"] }

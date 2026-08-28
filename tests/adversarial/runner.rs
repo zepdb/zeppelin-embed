@@ -68,6 +68,7 @@ use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::diagnostics_health as diagnostics_oracle;
+use zeppelin_embed_adversarial_oracle::ffi_bindings as ffi_oracle;
 use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
 use zeppelin_embed_adversarial_oracle::hybrid_fusion as hybrid_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
@@ -83,6 +84,7 @@ use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::diagnostics_health as diagnostics_adapter;
 use super::fault_vfs::{self, FaultEvent};
+use super::ffi_bindings as ffi_adapter;
 use super::fts as fts_adapter;
 use super::hybrid_fusion as hybrid_adapter;
 use super::ingest_retention as ingest_adapter;
@@ -2745,6 +2747,7 @@ enum ProductionFeatureReceipt {
     ValidatedTier(tier_adapter::TierFaultReceipt),
     ValidatedLifecycle(lifecycle_adapter::LifecycleFaultReceipt),
     ValidatedDiagnostics(diagnostics_adapter::DiagnosticsFaultReceipt),
+    ValidatedFfi(ffi_adapter::FfiFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2764,6 +2767,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedTier(_) => "tiering-maintenance",
             Self::ValidatedLifecycle(_) => "lifecycle-accounting",
             Self::ValidatedDiagnostics(_) => "diagnostics-health",
+            Self::ValidatedFfi(_) => "ffi-bindings",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2785,6 +2789,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedTier(receipt) => receipt.operation.key(),
             Self::ValidatedLifecycle(receipt) => receipt.operation.key(),
             Self::ValidatedDiagnostics(receipt) => receipt.operation.key(),
+            Self::ValidatedFfi(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2810,6 +2815,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedTier(receipt) => Some(receipt.fault.key()),
             Self::ValidatedLifecycle(receipt) => Some(receipt.fault.key()),
             Self::ValidatedDiagnostics(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedFfi(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2841,6 +2847,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedTier(receipt) => receipt.site,
             Self::ValidatedLifecycle(receipt) => receipt.site,
             Self::ValidatedDiagnostics(receipt) => receipt.site,
+            Self::ValidatedFfi(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2857,6 +2864,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedTier(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedLifecycle(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedDiagnostics(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedFfi(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3137,6 +3145,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedDiagnostics(receipt) => format!(
             "{{\"campaign\":\"diagnostics-health\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedFfi(receipt) => format!(
+            "{{\"campaign\":\"ffi-bindings\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3440,6 +3455,16 @@ fn run_campaign_operation(
     if let super::campaign::FeatureOperation::Diagnostics(diagnostics_operation) = operation {
         return run_diagnostics_campaign_operation(
             diagnostics_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
+    if let super::campaign::FeatureOperation::Ffi(ffi_operation) = operation {
+        return run_ffi_campaign_operation(
+            ffi_operation,
             selected_faults,
             seed,
             oracle_records,
@@ -3918,6 +3943,131 @@ fn run_diagnostics_campaign_operation(
                 .receipts
                 .into_iter()
                 .map(ProductionFeatureReceipt::ValidatedDiagnostics),
+        );
+    }
+    Ok(receipts)
+}
+
+fn ffi_operation_kind(operation: super::campaign::FfiOperation) -> ffi_adapter::FfiOperationKind {
+    match operation {
+        super::campaign::FfiOperation::Validation => ffi_adapter::FfiOperationKind::Validation,
+        super::campaign::FfiOperation::Ownership => ffi_adapter::FfiOperationKind::Ownership,
+        super::campaign::FfiOperation::Containment => ffi_adapter::FfiOperationKind::Containment,
+        super::campaign::FfiOperation::Deadline => ffi_adapter::FfiOperationKind::Deadline,
+        super::campaign::FfiOperation::Parity => ffi_adapter::FfiOperationKind::Parity,
+    }
+}
+
+fn ffi_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<ffi_adapter::FfiFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::FfiInvalidPointerShape => {
+            Ok(ffi_adapter::FfiFaultKind::InvalidPointerShape)
+        }
+        super::campaign::FeatureFault::FfiInvalidEnum => Ok(ffi_adapter::FfiFaultKind::InvalidEnum),
+        super::campaign::FeatureFault::FfiStaleHandle => Ok(ffi_adapter::FfiFaultKind::StaleHandle),
+        super::campaign::FeatureFault::FfiDoubleDestroy => {
+            Ok(ffi_adapter::FfiFaultKind::DoubleDestroy)
+        }
+        super::campaign::FeatureFault::FfiPanicBoundary => {
+            Ok(ffi_adapter::FfiFaultKind::PanicBoundary)
+        }
+        super::campaign::FeatureFault::FfiMalformedSequence => {
+            Ok(ffi_adapter::FfiFaultKind::MalformedSequence)
+        }
+        other => Err(format!("{} is not an FFI fault", other.key())),
+    }
+}
+
+fn ffi_input_json(input: &ffi_oracle::FfiInput) -> String {
+    format!(
+        "{{\"expected_abi_version\":{}}}",
+        input.expected_abi_version
+    )
+}
+
+fn ffi_observed_json(observed: &ffi_oracle::FfiObserved) -> String {
+    format!(
+        "{{\"null_pointer_rejected\":{},\"invalid_enum_rejected\":{},\"stale_handle_rejected\":{},\"double_destroy_rejected\":{},\"panic_caught\":{},\"poisoned_after_panic\":{},\"control_cancelled_without_hits\":{},\"abi_version\":{},\"error_name_matches\":{},\"malformed_sequence_rejected\":{}}}",
+        observed.null_pointer_rejected,
+        observed.invalid_enum_rejected,
+        observed.stale_handle_rejected,
+        observed.double_destroy_rejected,
+        observed.panic_caught,
+        observed.poisoned_after_panic,
+        observed.control_cancelled_without_hits,
+        observed.abi_version,
+        observed.error_name_matches,
+        observed.malformed_sequence_rejected,
+    )
+}
+
+fn run_ffi_campaign_operation(
+    operation: super::campaign::FfiOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(ffi_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence = ffi_adapter::run_ffi_operation(ffi_operation_kind(operation), fault)?;
+        let (id, checker, input, observed, result) = match evidence.invariant {
+            ffi_adapter::FfiInvariantEvidence::I66 { input, observed } => {
+                let result = ffi_oracle::compare_i66(&input, &observed);
+                (66, ffi_oracle::I66_CHECKER_ID, input, observed, result)
+            }
+            ffi_adapter::FfiInvariantEvidence::I67 { input, observed } => {
+                let result = ffi_oracle::compare_i67(&input, &observed);
+                (67, ffi_oracle::I67_CHECKER_ID, input, observed, result)
+            }
+            ffi_adapter::FfiInvariantEvidence::I68 { input, observed } => {
+                let result = ffi_oracle::compare_i68(&input, &observed);
+                (68, ffi_oracle::I68_CHECKER_ID, input, observed, result)
+            }
+            ffi_adapter::FfiInvariantEvidence::I69 { input, observed } => {
+                let result = ffi_oracle::compare_i69(&input, &observed);
+                (69, ffi_oracle::I69_CHECKER_ID, input, observed, result)
+            }
+            ffi_adapter::FfiInvariantEvidence::I70 { input, observed } => {
+                let result = ffi_oracle::compare_i70(&input, &observed);
+                (70, ffi_oracle::I70_CHECKER_ID, input, observed, result)
+            }
+        };
+        push_feature_json_record(
+            id,
+            checker,
+            operation.key(),
+            ffi_input_json(&input),
+            ffi_observed_json(&observed),
+            format!("public FFI operation seed={seed}"),
+            result,
+            oracle_records,
+            coverage,
+        );
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"ffi-bindings\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedFfi),
         );
     }
     Ok(receipts)
