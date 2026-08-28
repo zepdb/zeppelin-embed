@@ -8614,6 +8614,40 @@ fn vector_attestation_rejects_a_site_count_not_present_in_merged_coverage() {
 }
 
 #[test]
+fn vector_attestation_accepts_repeated_backend_coverage() {
+    let vector = zeppelin_embed_bench::harness_json::json!({
+        "same_seed_controls": {
+            "operations": {},
+            "faults": {},
+        },
+        "integrated_receipts": {
+            "faults": {},
+            "sites": {},
+        },
+        "generic_fault_pairs": {
+            "scheduled": 0,
+            "clean_fired": 0,
+            "fault_fired": 0,
+            "same_path": 0,
+            "isolated_directories": 0,
+            "isolated_runtimes": 0,
+            "typed_feature_receipts": 0,
+        },
+        "backend_inventory": {
+            "selected": ["neon-dotprod-u4"],
+            "observed": ["neon-dotprod-u4"],
+        },
+    });
+    let observed = BTreeMap::from([
+        ("I24.store-selected.neon-dotprod-u4".to_owned(), 1_199),
+        ("kernel.backend.neon-dotprod-u4".to_owned(), 1_497),
+    ]);
+
+    validate_vector_attested_coverage(&vector, &observed)
+        .expect("repeated backend coverage should attest backend presence");
+}
+
+#[test]
 fn vector_attestation_rejects_a_comparison_count_not_present_in_merged_oracle() {
     let vector = zeppelin_embed_bench::harness_json::json!({
         "per_invariant_comparisons": {
@@ -11306,11 +11340,12 @@ fn validate_vector_attested_coverage(
             let backend = backend
                 .as_str()
                 .ok_or_else(|| format!("vector-execution backend {field} is not a string"))?;
-            compare(
-                &format!("backend {field} {backend}"),
-                1,
-                format!("{prefix}{backend}"),
-            )?;
+            let coverage_key = format!("{prefix}{backend}");
+            if observed.get(&coverage_key).copied().unwrap_or(0) == 0 {
+                return Err(format!(
+                    "vector-execution backend {field} {backend} is absent from merged coverage key={coverage_key}"
+                ));
+            }
         }
     }
     Ok(())
