@@ -10049,7 +10049,7 @@ fn read_storage_merged_ledgers(root: &Path) -> Result<StorageMergedLedgers, Stri
     .into_iter()
     .map(|site| (site.to_owned(), 0_u64))
     .collect::<BTreeMap<_, _>>();
-    let mut selected = BTreeMap::<(u64, String, String), String>::new();
+    let mut selected = BTreeMap::<(u64, String, String), Vec<String>>::new();
 
     let fault_bytes = std::fs::read(root.join("merged-faults.jsonl"))
         .map_err(|error| format!("read merged storage faults: {error}"))?;
@@ -10090,19 +10090,16 @@ fn read_storage_merged_ledgers(root: &Path) -> Result<StorageMergedLedgers, Stri
             ));
         }
         let operation = fault.operation().key().to_owned();
-        if selected
-            .insert((seed, profile, operation), key.to_owned())
-            .is_some()
-        {
-            return Err(format!(
-                "merged storage fault {key} duplicated its same-seed pair"
-            ));
-        }
+        selected
+            .entry((seed, profile, operation))
+            .or_default()
+            .push(key.to_owned());
         *fault_pairs
             .get_mut(key)
             .expect("storage fault map came from the same catalog") += 1;
     }
 
+    let mut control_offsets = BTreeMap::<(u64, String, String), usize>::new();
     let control_bytes = std::fs::read(root.join("merged-controls.jsonl"))
         .map_err(|error| format!("read merged storage controls: {error}"))?;
     for line in control_bytes
@@ -10147,13 +10144,20 @@ fn read_storage_merged_ledgers(root: &Path) -> Result<StorageMergedLedgers, Stri
                 "merged storage control is not a byte-identical same-seed pair: seed={seed} operation={operation}"
             ));
         }
-        if let Some(fault) = selected.get(&(seed, profile, operation)) {
+        let selected_key = (seed, profile, operation);
+        if let Some(faults) = selected.get(&selected_key) {
+            let offset = control_offsets.entry(selected_key).or_default();
+            let fault = faults.get(*offset).ok_or_else(|| {
+                "merged storage control has no matching selected fault".to_owned()
+            })?;
+            *offset = offset.saturating_add(1);
             *same_seed_controls
                 .get_mut(fault)
                 .expect("selected storage fault came from the catalog") += 1;
         }
     }
 
+    let mut receipt_offsets = BTreeMap::<(u64, String, String), usize>::new();
     let receipt_bytes = std::fs::read(root.join("merged-receipts.jsonl"))
         .map_err(|error| format!("read merged storage receipts: {error}"))?;
     for line in receipt_bytes
@@ -10181,11 +10185,14 @@ fn read_storage_merged_ledgers(root: &Path) -> Result<StorageMergedLedgers, Stri
         let fault = record["fault"]
             .as_str()
             .ok_or_else(|| "merged storage receipt omitted fault".to_owned())?;
-        if selected
-            .get(&(seed, profile, operation))
-            .map(String::as_str)
-            != Some(fault)
-        {
+        let selected_key = (seed, profile, operation);
+        let offset = receipt_offsets.entry(selected_key.clone()).or_default();
+        let selected_fault = selected
+            .get(&selected_key)
+            .and_then(|faults| faults.get(*offset))
+            .map(String::as_str);
+        *offset = offset.saturating_add(1);
+        if selected_fault != Some(fault) {
             return Err(format!(
                 "merged storage receipt does not match its selected same-seed fault: seed={seed} fault={fault}"
             ));
