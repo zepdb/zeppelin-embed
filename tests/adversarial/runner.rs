@@ -4175,6 +4175,11 @@ fn run_hybrid_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", hybrid_adapter::HybridFaultKind::key)
+        );
         let evidence =
             hybrid_adapter::run_hybrid_operation(hybrid_operation_kind(operation), fault)?;
         for invariant in evidence.invariants {
@@ -4211,6 +4216,10 @@ fn run_hybrid_campaign_operation(
                 oracle_records,
                 coverage,
             );
+            oracle_records
+                .last_mut()
+                .expect("hybrid comparison appended one oracle record")
+                .case_identity = Some(case_identity.clone());
         }
         if fault.is_some() {
             control_records.push(format!(
