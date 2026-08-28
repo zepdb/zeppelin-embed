@@ -4341,6 +4341,11 @@ fn run_fts_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", fts_adapter::FtsFaultKind::key)
+        );
         let evidence = fts_adapter::run_fts_operation(fts_operation_kind(operation), seed, fault)?;
         for invariant in evidence.invariants {
             let (id, checker, input, observed, result) = match invariant {
@@ -4376,6 +4381,10 @@ fn run_fts_campaign_operation(
                 oracle_records,
                 coverage,
             );
+            oracle_records
+                .last_mut()
+                .expect("FTS comparison appended one oracle record")
+                .case_identity = Some(case_identity.clone());
         }
         if fault.is_some() {
             control_records.push(format!(
