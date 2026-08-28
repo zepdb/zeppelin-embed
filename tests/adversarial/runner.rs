@@ -13289,6 +13289,7 @@ fn run_vector_campaign_operation(
             program_op_index: op_index,
             generic_fault: fault
                 .and(generic_fault)
+                .filter(|event| event.op_index == op_index)
                 .map(vector_generic_fault_schedule)
                 .transpose()?,
         };
