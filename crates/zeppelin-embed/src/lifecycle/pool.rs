@@ -313,6 +313,12 @@ impl<'a> QueryExecution<'a> {
                 component: "query completion",
             })
         })?;
+        if let Some(deadline) = self.control.deadline()
+            && self.control.error().is_none()
+            && self.control.now().is_some_and(|now| now >= deadline)
+        {
+            self.control.mark_timed_out();
+        }
         while completion.remaining > 0 {
             if let Some(deadline) = self.control.deadline()
                 && self.control.error().is_none()

@@ -4041,6 +4041,11 @@ fn run_ffi_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", ffi_adapter::FfiFaultKind::key)
+        );
         let evidence = ffi_adapter::run_ffi_operation(ffi_operation_kind(operation), fault)?;
         let (id, checker, input, observed, result) = match evidence.invariant {
             ffi_adapter::FfiInvariantEvidence::I66 { input, observed } => {
@@ -4075,6 +4080,10 @@ fn run_ffi_campaign_operation(
             oracle_records,
             coverage,
         );
+        oracle_records
+            .last_mut()
+            .expect("FFI comparison appended one oracle record")
+            .case_identity = Some(case_identity);
         if fault.is_some() {
             control_records.push(format!(
                 "{{\"campaign\":\"ffi-bindings\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
