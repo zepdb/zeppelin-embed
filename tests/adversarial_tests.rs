@@ -7054,6 +7054,45 @@ fn expected_campaign_comparison_counts(
         }
         return counts;
     }
+    if campaign == CampaignKind::IngestRetention {
+        let mut counts = CampaignSpec::for_kind(campaign)
+            .owned_invariants
+            .iter()
+            .map(|invariant| (invariant.key(), 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        for episode in 0..episodes {
+            let seed = start_seed
+                .checked_add(episode)
+                .expect("ingest campaign seed fits u64");
+            let profile = campaign_profile(episode);
+            let program = Program::generate_for(campaign, seed);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            for (operation, invariant) in [
+                (adversarial::campaign::IngestOperation::BatchCommit, "I20"),
+                (adversarial::campaign::IngestOperation::Seal, "I21"),
+                (adversarial::campaign::IngestOperation::Retention, "I22"),
+                (adversarial::campaign::IngestOperation::Purge, "I23"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Ingest(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("ingest operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("ingest count contract includes operation invariant");
+                *count = (*count)
+                    .checked_add(comparisons)
+                    .expect("ingest operation comparison count fits u64");
+            }
+        }
+        return counts;
+    }
     if campaign == CampaignKind::VectorExecution {
         let mut counts = adversarial::vector_execution::expected_comparison_counts()
             .expect("vector family comparison-count contract")
@@ -7367,6 +7406,19 @@ fn storage_campaign_comparison_counts_include_same_operation_fault_multiplicity(
             ("I17".to_owned(), 1_000),
             ("I18".to_owned(), 1_321),
             ("I19".to_owned(), 1_000),
+        ])
+    );
+}
+
+#[test]
+fn ingest_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    assert_eq!(
+        expected_campaign_comparison_counts(CampaignKind::IngestRetention, 0, 1_000),
+        BTreeMap::from([
+            ("I20".to_owned(), 1_010),
+            ("I21".to_owned(), 1_000),
+            ("I22".to_owned(), 1_000),
+            ("I23".to_owned(), 1_009),
         ])
     );
 }
