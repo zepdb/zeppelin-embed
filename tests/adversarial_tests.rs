@@ -7096,17 +7096,11 @@ fn expected_campaign_comparison_counts(
         return counts;
     }
     if campaign == CampaignKind::VectorExecution {
-        let mut counts = adversarial::vector_execution::expected_comparison_counts()
-            .expect("vector family comparison-count contract")
-            .into_iter()
-            .map(|(invariant, count)| {
-                (
-                    invariant.to_owned(),
-                    count
-                        .checked_mul(episodes)
-                        .expect("vector campaign comparison count fits u64"),
-                )
-            })
+        let clean = adversarial::vector_execution::expected_comparison_counts()
+            .expect("vector family comparison-count contract");
+        let mut counts = clean
+            .keys()
+            .map(|invariant| ((*invariant).to_owned(), 0_u64))
             .collect::<BTreeMap<_, _>>();
         for episode in 0..episodes {
             let seed = start_seed
@@ -7115,14 +7109,47 @@ fn expected_campaign_comparison_counts(
             let profile = campaign_profile(episode);
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
-            if plan.feature.iter().any(|event| {
-                event.fault == adversarial::campaign::FeatureFault::VectorForcedDispatchBackend
-            }) {
+            for (operation, invariant) in [
+                (adversarial::campaign::VectorOperation::KernelParity, "I24"),
+                (adversarial::campaign::VectorOperation::Quantization, "I25"),
+                (adversarial::campaign::VectorOperation::Rescore, "I26"),
+                (adversarial::campaign::VectorOperation::RowIdentity, "I27"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Vector(operation)
+                    })
+                    .count();
+                let invocations = u64::try_from(selected.max(1))
+                    .expect("vector operation invocation count fits u64");
+                let comparisons = clean[invariant]
+                    .checked_mul(invocations)
+                    .expect("vector operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("vector count contract includes operation invariant");
+                *count = count
+                    .checked_add(comparisons)
+                    .expect("vector campaign comparison count fits u64");
+            }
+            let forced_dispatches = plan
+                .feature
+                .iter()
+                .filter(|event| {
+                    event.fault == adversarial::campaign::FeatureFault::VectorForcedDispatchBackend
+                })
+                .count();
+            if forced_dispatches > 0 {
                 let count = counts
                     .get_mut("I24")
                     .expect("vector count contract includes I24");
                 *count = count
-                    .checked_add(1)
+                    .checked_add(
+                        u64::try_from(forced_dispatches).expect("forced-dispatch count fits u64"),
+                    )
                     .expect("forced-dispatch comparison count fits u64");
             }
         }
@@ -7377,6 +7404,15 @@ fn vector_campaign_comparison_counts_follow_the_family_contract() {
     assert_eq!(shared["I25"], family["I25"]);
     assert_eq!(shared["I26"], family["I26"]);
     assert_eq!(shared["I27"], family["I27"]);
+}
+
+#[test]
+fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::VectorExecution, 0, 1_000);
+    assert_eq!(counts["I24"], 1_497_199);
+    assert_eq!(counts["I25"], 69_000);
+    assert_eq!(counts["I26"], 12_000);
+    assert_eq!(counts["I27"], 17_238);
 }
 
 #[test]
