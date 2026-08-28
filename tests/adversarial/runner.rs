@@ -4507,6 +4507,11 @@ fn run_graph_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", graph_adapter::GraphFaultKind::key)
+        );
         let evidence =
             graph_adapter::run_graph_operation(graph_operation_kind(operation), seed, fault)?;
         for invariant in evidence.invariants {
@@ -4555,6 +4560,10 @@ fn run_graph_campaign_operation(
                 oracle_records,
                 coverage,
             );
+            oracle_records
+                .last_mut()
+                .expect("graph comparison appended one oracle record")
+                .case_identity = Some(case_identity.clone());
         }
         if fault.is_some() {
             control_records.push(format!(
@@ -4642,6 +4651,30 @@ mod graph_campaign_tests {
             assert_eq!(receipts[0].fault(), Some(fault.key()));
             assert_eq!(receipts[0].cardinality(), Some(1));
         }
+
+        let start = records.len();
+        run_graph_campaign_operation(
+            super::super::campaign::GraphOperation::Search,
+            &[
+                super::super::campaign::FeatureFault::GraphMissingRescore,
+                super::super::campaign::FeatureFault::GraphSearchCancellation,
+            ],
+            83,
+            &mut records,
+            &mut controls,
+            &mut coverage,
+        )
+        .expect("two graph search faults at one operation");
+        let identities = records[start..]
+            .iter()
+            .map(|record| {
+                (
+                    record.checker_id,
+                    record.case_identity.as_deref().expect("graph case identity"),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(identities.len(), records.len() - start);
     }
 }
 
