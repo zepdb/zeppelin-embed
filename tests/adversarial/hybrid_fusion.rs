@@ -23,7 +23,7 @@ impl HybridOperationKind {
             Self::Normalization => "normalization",
             Self::BoundedFusion => "bounded-fusion",
             Self::Rrf => "rrf-fallback",
-            Self::Legs => "leg-atomicity",
+            Self::Legs => "legs",
         }
     }
 }
