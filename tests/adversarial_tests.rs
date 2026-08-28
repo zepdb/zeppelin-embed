@@ -181,30 +181,26 @@ fn feature_campaign_registry_owns_exact_ranges_without_generic_credit() {
 }
 
 #[test]
-fn generic_oracle_checker_kinds_have_planted_counterexamples() {
-    for spec in CampaignSpec::catalog() {
-        for binding in spec.invariant_specs {
-            let clean = adversarial::oracle::PrimitiveObservation::clean(
-                vec![1, 2, 3],
-                vec![1.0_f64.to_bits()],
-                3,
-            );
-            let planted = adversarial::oracle::planted(clean, binding.checker);
-            let record = adversarial::oracle::compare(
-                binding.invariant.number(),
-                binding.checker_id,
-                binding.operation.key(),
-                binding.checker,
-                &planted,
-                "deterministic CAN-FIRE plant",
-            );
+fn feature_credit_has_no_generic_or_harness_fabricated_path() {
+    let sources = [
+        ("campaign registry", include_str!("adversarial/campaign.rs")),
+        ("oracle dispatch", include_str!("adversarial/oracle.rs")),
+        ("runner", include_str!("adversarial/runner.rs")),
+    ];
+    for (name, source) in sources {
+        for forbidden in [
+            "CheckerKind",
+            "PrimitiveObservation",
+            "campaign_search_facts",
+            "record_campaign_invariant_checks",
+            "run_feature_fault_probe",
+            "pub struct FeatureFaultReceipt",
+            "FeatureFaultReceipt {",
+        ] {
             assert!(
-                !record.passed,
-                "generic {} checker plant did not fire",
-                binding.checker_id
+                !source.contains(forbidden),
+                "{name} can still earn feature credit through `{forbidden}`"
             );
-            assert_eq!(record.invariant, binding.invariant.number());
-            assert!(record.detail.contains(&binding.invariant.key()));
         }
     }
 }
@@ -298,6 +294,32 @@ fn feature_programs_are_namespaced_and_emit_the_declared_operations() {
             "{} reused overall bytes instead of its RNG namespace",
             campaign.key()
         );
+    }
+}
+
+#[test]
+fn feature_programs_preserve_declared_dependency_order() {
+    for campaign in CampaignKind::FEATURES {
+        let spec = CampaignSpec::for_kind(campaign);
+        for seed in 0..12 {
+            let program = Program::generate_for(campaign, seed);
+            let observed = program
+                .ops
+                .iter()
+                .filter_map(|operation| match operation {
+                    Op::Feature(operation) if operation.campaign() == campaign => {
+                        Some(operation.key())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                observed,
+                spec.required_operations,
+                "{} seed={seed} shuffled an operation ahead of its prerequisite",
+                campaign.key()
+            );
+        }
     }
 }
 

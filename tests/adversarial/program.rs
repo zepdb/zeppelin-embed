@@ -1,5 +1,4 @@
 use rand::Rng;
-use rand::seq::SliceRandom;
 
 use super::campaign::{CampaignKind, FeatureOperation};
 use super::test_support;
@@ -364,12 +363,7 @@ impl Program {
                             | Op::RollbackDroppedAProbe
                     )
                 });
-                let mut operations = super::campaign::feature_operations(campaign).to_vec();
-                let mut rng = test_support::seeded_rng(
-                    &format!("adversarial::program::{}", campaign.key()),
-                    seed,
-                );
-                operations.shuffle(&mut rng);
+                let operations = super::campaign::feature_operations(campaign).to_vec();
                 let insertion = program
                     .ops
                     .iter()

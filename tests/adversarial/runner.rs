@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use zeppelin_embed::adversarial_test_support::FeatureFaultReceipt;
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, EpochId, EpochIdentity,
     EpochTransitionError, Normalization, StoreEpoch,
@@ -19,19 +20,19 @@ use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::snippet;
 use zeppelin_embed::fts::tokenizer::{Analyzer, Profile, TokenizerConfig};
 use zeppelin_embed::fusion::{
-    execute_hybrid, FusionError, FusionLeg, HybridQuery, LexicalCandidate, VectorCandidate,
+    FusionError, FusionLeg, HybridQuery, LexicalCandidate, VectorCandidate, execute_hybrid,
 };
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, GraphSearchStats, IngestBatch, IngestDocument,
     IngestError, Revision, RowSource, SearchRequest,
 };
+use zeppelin_embed::lifecycle::HybridLegTestFault;
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl,
     SearchOptions, SearchTier, Store, StoreTestDependencies, SystemMonotonicClock,
 };
-use zeppelin_embed::lifecycle::HybridLegTestFault;
 use zeppelin_embed::manifest::EpochMeta;
 use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
@@ -54,11 +55,11 @@ use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds}
 use zeppelin_embed::vfs::StdVfs;
 
 use super::artifacts::RunArtifacts;
-use super::campaign::{CampaignKind, CampaignSpec, FaultPlan};
+use super::campaign::{CampaignKind, FaultPlan};
 use super::coverage::CoverageRegistry;
 use super::fault_vfs::{self, FaultEvent};
 use super::model::{ExpectedHit, Model, ModelEpoch};
-use super::oracle::{self, OracleRecord, PrimitiveObservation};
+use super::oracle::OracleRecord;
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
 
@@ -1674,9 +1675,9 @@ fn run_program_for_with_clock(
     let mut faults = Vec::<FaultEvent>::new();
     let mut coverage = CoverageRegistry::default();
     let mut oracle_records = Vec::<OracleRecord>::new();
-    let control_records = Vec::<String>::new();
+    let mut control_records = Vec::<String>::new();
     let mut receipt_records = Vec::<String>::new();
-    let mutation_records = Vec::<String>::new();
+    let mut mutation_records = Vec::<String>::new();
     coverage.hit(format!("fault.profile.{}", profile.key()));
     let mut executed_operations = 0_usize;
     let mut last_generation = 0_u64;
@@ -2011,6 +2012,8 @@ fn run_program_for_with_clock(
                     profile,
                     op_index,
                     oracle_records: &mut oracle_records,
+                    control_records: &mut control_records,
+                    mutation_records: &mut mutation_records,
                     coverage: &mut coverage,
                 },
             )
@@ -2019,14 +2022,18 @@ fn run_program_for_with_clock(
                     let event = fault_plan
                         .feature
                         .iter_mut()
-                        .find(|event| event.fault == receipt.fault && event.op_index == op_index)
+                        .find(|event| {
+                            event.fault.key() == receipt.fault() && event.op_index == op_index
+                        })
                         .ok_or_else(|| {
                             format!(
                                 "unplanned feature-fault receipt {} at op {op_index}",
-                                receipt.fault.key()
+                                receipt.fault()
                             )
                         })?;
-                    event.fire_count = event.fire_count.saturating_add(receipt.cardinality);
+                    let cardinality = usize::try_from(receipt.cardinality())
+                        .map_err(|_| "feature receipt cardinality does not fit usize".to_owned())?;
+                    event.fire_count = event.fire_count.saturating_add(cardinality);
                     event.fired = event.fire_count == 1;
                     if event.fire_count != 1 {
                         return Err(format!(
@@ -2035,8 +2042,8 @@ fn run_program_for_with_clock(
                             event.fire_count
                         ));
                     }
-                    receipt_records.push(receipt.json_line());
-                    coverage.hit(receipt.fault.coverage_key());
+                    receipt_records.push(production_receipt_json(&receipt));
+                    coverage.hit(event.fault.coverage_key());
                 }
                 Ok(None)
             }),
@@ -2198,38 +2205,6 @@ fn run_program_for_with_clock(
                         )),
                     }
                 } else {
-                    if matches!(op, Op::Feature(_))
-                        && (error.contains("BlockChecksum") || error.contains("corrupt") || error.contains("StoredText"))
-                    {
-                        if let Op::Feature(feature_operation) = op {
-                            for fault in &selected_feature_faults {
-                                let receipt = run_feature_fault_probe(*fault, *feature_operation)
-                                    .map_err(|probe_error| {
-                                        format!("fault refusal probe failed: {probe_error}")
-                                    });
-                                match receipt {
-                                    Ok(receipt) => {
-                                        if let Some(event) = fault_plan.feature.iter_mut().find(
-                                            |event| event.fault == receipt.fault && event.op_index == op_index,
-                                        ) {
-                                            event.fire_count = event.fire_count.saturating_add(receipt.cardinality);
-                                            event.fired = event.fire_count == 1;
-                                            receipt_records.push(receipt.json_line());
-                                            coverage.hit(receipt.fault.coverage_key());
-                                        }
-                                    }
-                                    Err(probe_error) => violations.push(violation(
-                                        Invariant::I7,
-                                        seed,
-                                        profile,
-                                        op_index,
-                                        probe_error,
-                                    )),
-                                }
-                            }
-                        }
-                        continue;
-                    }
                     let invariant = match op {
                         Op::Open | Op::Close | Op::Reopen => Invariant::I8,
                         Op::EpochMismatchProbe { .. } => Invariant::I12,
@@ -2258,7 +2233,6 @@ fn run_program_for_with_clock(
         }
         if operation_succeeded {
             record_successful_operation_coverage(&mut coverage, op);
-            record_campaign_invariant_checks(&mut coverage, campaign, op);
         }
     }
 
@@ -2443,56 +2417,27 @@ fn record_successful_operation_coverage(coverage: &mut CoverageRegistry, op: &Op
     }
 }
 
-fn record_campaign_invariant_checks(
-    coverage: &mut CoverageRegistry,
-    campaign: CampaignKind,
-    op: &Op,
-) {
-    if campaign == CampaignKind::Overall {
-        return;
-    }
-    let spec = CampaignSpec::for_kind(campaign);
-    let candidates: &[u8] = match op {
-        Op::Search { .. } | Op::HybridSearch { .. } | Op::FtsExtrasProbe { .. } => {
-            &[1, 2, 3, 11, 12, 13]
-        }
-        Op::FilteredSearch { .. } | Op::PredicateSearch { .. } => &[1, 2, 3, 5, 11, 12, 13],
-        Op::Crash { .. } => &[4, 12],
-        Op::Stats => &[6],
-        Op::Reopen => &[8],
-        Op::Ingest { .. }
-        | Op::Upsert { .. }
-        | Op::Revise { .. }
-        | Op::Delete { .. }
-        | Op::DropPartition { .. }
-        | Op::Seal
-        | Op::Maintain { .. } => &[9],
-        Op::Purge { .. } => &[9, 10],
-        Op::EpochMismatchProbe { .. } => &[12],
-        Op::PrepareEpochB
-        | Op::SwitchAliasToB
-        | Op::RollbackToA
-        | Op::DropEpochA
-        | Op::RollbackDroppedAProbe => &[9, 12, 14],
-        Op::Feature(operation) if operation.key() == "format-check" => &[7],
-        _ => &[],
-    };
-    let required = spec.required_invariants();
-    for number in candidates {
-        let invariant = super::campaign::InvariantId::new(*number);
-        if required.contains(&invariant) {
-            coverage.hit(invariant.checked_coverage_key());
-        }
-    }
-}
-
 struct CampaignOperationContext<'a> {
     selected_faults: &'a [super::campaign::FeatureFault],
     seed: u64,
     profile: FaultProfile,
     op_index: usize,
     oracle_records: &'a mut Vec<OracleRecord>,
+    control_records: &'a mut Vec<String>,
+    mutation_records: &'a mut Vec<String>,
     coverage: &'a mut CoverageRegistry,
+}
+
+fn production_receipt_json(receipt: &FeatureFaultReceipt) -> String {
+    format!(
+        "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{},\"effect\":\"{}\"}}",
+        json_escape(receipt.campaign()),
+        json_escape(receipt.operation()),
+        json_escape(receipt.fault()),
+        json_escape(receipt.site()),
+        receipt.cardinality(),
+        json_escape(receipt.effect()),
+    )
 }
 
 fn run_campaign_operation(
@@ -2500,289 +2445,54 @@ fn run_campaign_operation(
     model: &Model,
     operation: super::campaign::FeatureOperation,
     context: CampaignOperationContext<'_>,
-) -> Result<Vec<super::campaign::FeatureFaultReceipt>, String> {
+) -> Result<Vec<FeatureFaultReceipt>, String> {
     let CampaignOperationContext {
         selected_faults,
         seed,
         profile,
         op_index,
         oracle_records,
+        control_records,
+        mutation_records,
         coverage,
     } = context;
-    let typed_operation = operation;
-    let campaign = typed_operation.campaign();
-    let operation = typed_operation.key();
-    let observed = match full_scan(engine, model, seed) {
-        Ok(observed) => observed,
-        Err(error)
-            if !selected_faults.is_empty()
-                && selected_faults.iter().all(|fault| {
-                    matches!(fault,
-                        super::campaign::FeatureFault::FtsPostingsCorruption
-                        | super::campaign::FeatureFault::FtsDictionaryCorruption
-                        | super::campaign::FeatureFault::FtsNormCorruption
-                        | super::campaign::FeatureFault::FtsBlockMaxCorruption
-                        | super::campaign::FeatureFault::FtsStoredTextCorruption
-                        | super::campaign::FeatureFault::FtsStoredTextAbsence
-                        | super::campaign::FeatureFault::StorageCorruptSegmentRegion
-                        | super::campaign::FeatureFault::StorageWrongManifestObject
-                        | super::campaign::FeatureFault::StorageWrongSegmentObject)
-                }) => {
-            let mut receipts = Vec::new();
-            for fault in selected_faults {
-                receipts.push(run_feature_fault_probe(*fault, typed_operation)?);
-            }
-            return Ok(receipts);
-        }
-        Err(error) => return Err(error),
-    };
-    let exact_violation = durability_prefix_violation(seed, profile, op_index, model, &observed);
-    if let Some(violation) = &exact_violation {
-        return Err(format!(
-            "{} {operation} model oracle failed: {}",
-            campaign.key(),
-            violation.detail
-        ));
-    }
-    let stats = engine.stats()?;
-    let accounting_violation = stats_violation(seed, profile, op_index, stats);
-    if let Some(violation) = &accounting_violation {
-        return Err(format!(
-            "{} {operation} accounting oracle failed: {}",
-            campaign.key(),
-            violation.detail
-        ));
-    }
-    if campaign == CampaignKind::Fts && operation == "extras" {
-        run_fts_extras_probe((seed % 2) as u8)?;
-    }
-    if matches!(
-        typed_operation,
-        super::campaign::FeatureOperation::Vector(super::campaign::VectorOperation::KernelParity)
-    ) {
-        run_kernel_parity_probe(coverage)?;
-    }
-    let mut receipts = Vec::with_capacity(selected_faults.len());
     for fault in selected_faults {
-        receipts.push(run_feature_fault_probe(*fault, typed_operation)?);
-    }
-    let spec = CampaignSpec::for_kind(campaign);
-    let facts = campaign_search_facts(model, &observed, typed_operation);
-    for binding in spec
-        .invariant_specs
-        .iter()
-        .filter(|binding| binding.operation == typed_operation)
-    {
-        let record = oracle::compare(
-            binding.invariant.number(),
-            binding.checker_id,
-            operation,
-            binding.checker,
-            &facts,
-            format!(
-                "independent model and public Store observation for {}/{}",
-                campaign.key(),
-                operation,
-            ),
-        );
-        let passed = record.passed;
-        let detail = record.detail.clone();
-        oracle_records.push(record);
-        if !passed {
-            return Err(detail);
-        }
-        coverage.hit(binding.invariant.checked_coverage_key());
-    }
-    Ok(receipts)
-}
-
-fn run_feature_fault_probe(
-    fault: super::campaign::FeatureFault,
-    operation: super::campaign::FeatureOperation,
-) -> Result<super::campaign::FeatureFaultReceipt, String> {
-    if fault.operation() != operation {
-        return Err(format!(
-            "feature fault {} targeted {}, but executed at {}",
-            fault.key(),
-            fault.operation().key(),
-            operation.key(),
-        ));
-    }
-    match fault {
-        super::campaign::FeatureFault::StorageTornWalHeader
-        | super::campaign::FeatureFault::StorageTornWalBody
-        | super::campaign::FeatureFault::StorageTornWalChecksum => {
-            run_wal_damage_fault_probe(fault)?;
-        }
-        super::campaign::FeatureFault::StoragePostCommitError => {
-            run_post_commit_retry_fault_probe()?;
-        }
-        super::campaign::FeatureFault::StorageManifestPreRenameCrash => {
-            run_publication_crash_fault_probe(program::CrashBoundary::PreManifestRename)?;
-        }
-        super::campaign::FeatureFault::StorageManifestPostRenameCrash => {
-            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
-        }
-        super::campaign::FeatureFault::StorageCorruptSegmentRegion
-        | super::campaign::FeatureFault::StorageWrongManifestObject
-        | super::campaign::FeatureFault::StorageWrongSegmentObject => {
-            run_persisted_object_fault_probe(fault)?;
-        }
-        super::campaign::FeatureFault::StorageListDeleteOmission => {
-            run_orphan_omission_fault_probe()?;
-        }
-        super::campaign::FeatureFault::GraphBuildBudgetCancel => {
-            run_graph_budget_cancel_probe()?;
-        }
-        super::campaign::FeatureFault::GraphCheckpointCorruption => {
-            run_graph_checkpoint_corruption_probe()?;
-        }
-        super::campaign::FeatureFault::GraphCorruptNode
-        | super::campaign::FeatureFault::GraphCorruptEntry => {
-            run_graph_corruption_probe(fault)?;
-        }
-        super::campaign::FeatureFault::GraphMissingRescore => {
-            run_graph_missing_rescore_probe()?;
-        }
-        super::campaign::FeatureFault::GraphSearchCancellation => {
-            run_graph_search_cancellation_probe()?;
-        }
-        super::campaign::FeatureFault::GraphPublicationCrash => {
-            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
-        }
-        super::campaign::FeatureFault::MetadataColumnCorruption
-        | super::campaign::FeatureFault::MetadataBitmapTruncation => {
-            run_metadata_region_probe(fault)?;
-        }
-        super::campaign::FeatureFault::MetadataSelectivityBoundary => {
-            run_metadata_selectivity_probe()?;
-        }
-        super::campaign::FeatureFault::MetadataVisitedBudgetFallback => {
-            run_graph_budget_cancel_probe()?;
-        }
-        super::campaign::FeatureFault::FtsPostingsCorruption
-        | super::campaign::FeatureFault::FtsDictionaryCorruption
-        | super::campaign::FeatureFault::FtsNormCorruption
-        | super::campaign::FeatureFault::FtsBlockMaxCorruption
-        | super::campaign::FeatureFault::FtsStoredTextCorruption
-        | super::campaign::FeatureFault::FtsStoredTextAbsence => {
-            run_fts_region_probe(fault)?;
-        }
-        super::campaign::FeatureFault::FtsLexicalCancellation => {
-            run_fts_cancellation_probe()?;
-        }
-        super::campaign::FeatureFault::HybridLegPanic => {
-            run_hybrid_leg_panic_probe()?;
-        }
-        super::campaign::FeatureFault::HybridVectorLegError
-        | super::campaign::FeatureFault::HybridLexicalLegError
-        | super::campaign::FeatureFault::HybridDualFailureOrder
-        | super::campaign::FeatureFault::HybridEstimatedScore
-        | super::campaign::FeatureFault::HybridNonfiniteScore => {
-            run_hybrid_fault_probe(fault)?;
-        }
-        super::campaign::FeatureFault::HybridCancelClose => {
-            run_hybrid_cancellation_probe()?;
-        }
-        super::campaign::FeatureFault::TierBudgetExhaustion => {
-            run_graph_budget_cancel_probe()?;
-        }
-        super::campaign::FeatureFault::TierCheckpointCorruption => {
-            run_graph_checkpoint_corruption_probe()?;
-        }
-        super::campaign::FeatureFault::TierStaleSource => {
-            run_persisted_object_fault_probe(fault)?;
-        }
-        super::campaign::FeatureFault::TierEnospc => {
-            run_purge_unlink_fault_probe()?;
-        }
-        super::campaign::FeatureFault::TierProfileMismatch => {
-            run_graph_budget_cancel_probe()?;
-        }
-        super::campaign::FeatureFault::TierPublicationCrash => {
-            run_publication_crash_fault_probe(program::CrashBoundary::PostManifestRename)?;
-        }
-        super::campaign::FeatureFault::LifecycleClockFreezeJump => {
-            run_hybrid_cancellation_probe()?;
-        }
-        super::campaign::FeatureFault::LifecycleCancelAdmissionQuery => {
-            run_vector_cancellation_fault_probe()?;
-        }
-        super::campaign::FeatureFault::LifecycleCloseActiveQuery => {
-            run_hybrid_cancellation_probe()?;
-        }
-        super::campaign::FeatureFault::LifecycleWorkerPanic => {
-            run_hybrid_leg_panic_probe()?;
-        }
-        super::campaign::FeatureFault::LifecycleLockContention => {
-            run_lock_contention_probe()?;
-        }
-        super::campaign::FeatureFault::LifecycleAllocationDenial => {
-            run_vector_allocation_denial_fault_probe()?;
-        }
-        super::campaign::FeatureFault::DiagnosticsCounterPlanMutation => {
-            run_metadata_selectivity_probe()?;
-        }
-        super::campaign::FeatureFault::DiagnosticsCorruptArtifact => {
-            run_persisted_object_fault_probe(super::campaign::FeatureFault::StorageCorruptSegmentRegion)?;
-        }
-        super::campaign::FeatureFault::DiagnosticsStaleHealth => {
-            run_health_reopen_probe()?;
-        }
-        super::campaign::FeatureFault::FfiInvalidPointerShape
-        | super::campaign::FeatureFault::FfiInvalidEnum
-        | super::campaign::FeatureFault::FfiStaleHandle
-        | super::campaign::FeatureFault::FfiDoubleDestroy
-        | super::campaign::FeatureFault::FfiPanicBoundary
-        | super::campaign::FeatureFault::FfiMalformedSequence => {
-            run_ffi_fault_probe(fault)?;
-        }
-        super::campaign::FeatureFault::IngestPostAckRetry => {
-            run_ingest_retry_fault_probe()?;
-        }
-        super::campaign::FeatureFault::IngestPartialBatchAppend => {
-            run_partial_batch_fault_probe()?;
-        }
-        super::campaign::FeatureFault::IngestSealCancellation => {
-            run_seal_cancellation_fault_probe()?;
-        }
-        super::campaign::FeatureFault::IngestRetentionClockBoundary => {
-            run_retention_boundary_fault_probe()?;
-        }
-        super::campaign::FeatureFault::IngestPurgeUnlinkError => {
-            run_purge_unlink_fault_probe()?;
-        }
-        super::campaign::FeatureFault::IngestPurgeCrashBoundary => {
-            run_purge_crash_fault_probe()?;
-        }
-        super::campaign::FeatureFault::VectorForcedDispatchBackend => {
-            run_forced_backend_fault_probe()?;
-        }
-        super::campaign::FeatureFault::VectorCorruptCodesFactors => {
-            run_corrupt_codes_factors_fault_probe()?;
-        }
-        super::campaign::FeatureFault::VectorMissingRescoreRows => {
-            run_missing_rescore_rows_fault_probe()?;
-        }
-        super::campaign::FeatureFault::VectorRowCountCancellation => {
-            run_vector_cancellation_fault_probe()?;
-        }
-        super::campaign::FeatureFault::VectorAllocationDenial => {
-            run_vector_allocation_denial_fault_probe()?;
+        if fault.operation() != operation {
+            return Err(format!(
+                "feature fault {} targeted {}, but executed at {}",
+                fault.key(),
+                fault.operation().key(),
+                operation.key(),
+            ));
         }
     }
-    Ok(super::campaign::FeatureFaultReceipt {
-        fault,
-        operation,
-        cardinality: 1,
-    })
+    let _ = (
+        engine,
+        model,
+        seed,
+        profile,
+        op_index,
+        oracle_records,
+        control_records,
+        mutation_records,
+        coverage,
+    );
+    Err(format!(
+        "{}/{} has no exact family observation adapter; no invariant or fault receipt credit is allowed",
+        operation.campaign().key(),
+        operation.key(),
+    ))
 }
 
 fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
-    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 1,
+    }])?;
     engine.seal()?;
     engine.close()?;
     let segment = first_segment_path(directory.path())?;
@@ -2796,7 +2506,11 @@ fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), Stri
         _ => 6,
     };
     let offset = literal_segment_region_offset(&bytes, kind)?;
-    if let Some(byte) = bytes.get_mut(offset) { *byte ^= 0x5a; } else { return Err("fts mutation escaped segment".into()); }
+    if let Some(byte) = bytes.get_mut(offset) {
+        *byte ^= 0x5a;
+    } else {
+        return Err("fts mutation escaped segment".into());
+    }
     std::fs::write(&segment, bytes).map_err(|e| e.to_string())?;
     let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
     if reopened.open().is_err() {
@@ -2804,17 +2518,24 @@ fn run_fts_region_probe(fault: super::campaign::FeatureFault) -> Result<(), Stri
     }
     let result = reopened.lexical_search(0, 8);
     let _ = reopened.close();
-    match result { Err(_) | Ok(_) => Ok(()) }
+    match result {
+        Err(_) | Ok(_) => Ok(()),
+    }
 }
 
 fn run_fts_cancellation_probe() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
-    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 1,
+    }])?;
     let store = engine.store()?;
     let query = TermQuery::flat(vec![program::lexical_query(0).to_vec()], &[DEFAULT_FIELD]);
-    let cancel = CancelToken::new(); cancel.cancel();
+    let cancel = CancelToken::new();
+    cancel.cancel();
     let result = store.search_lexical(&query, 8, QueryControl::Cancel(cancel));
     let _ = engine.close();
     match result {
@@ -2825,17 +2546,11 @@ fn run_fts_cancellation_probe() -> Result<(), String> {
 
 fn run_hybrid_leg_panic_probe() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let dependencies = StoreTestDependencies::new(
-        Arc::new(StdVfs),
-        Arc::new(SystemMonotonicClock),
-    )
-    .with_hybrid_leg_fault(HybridLegTestFault::Panic(FusionLeg::Lexical));
-    let store = Store::open_with_test_dependencies(
-        directory.path(),
-        OpenOptions::default(),
-        dependencies,
-    )
-    .map_err(|e| e.to_string())?;
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_hybrid_leg_fault(HybridLegTestFault::Panic(FusionLeg::Lexical));
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .map_err(|e| e.to_string())?;
     let document = IngestDocument::new(
         DocumentVersion::new(DocId::new(1), Revision::new(1)),
         program::vector(1, 1).to_vec(),
@@ -2865,11 +2580,13 @@ fn run_hybrid_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), St
     let result = match fault {
         super::campaign::FeatureFault::HybridVectorLegError => execute_hybrid(
             &query,
-            || Err(FusionError::Leg {
-                leg: FusionLeg::Vector,
-                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
-                detail: "injected vector leg failure".to_owned(),
-            }),
+            || {
+                Err(FusionError::Leg {
+                    leg: FusionLeg::Vector,
+                    kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                    detail: "injected vector leg failure".to_owned(),
+                })
+            },
             || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
             |value| Some(*value),
             |value| Some(*value),
@@ -2877,26 +2594,32 @@ fn run_hybrid_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), St
         super::campaign::FeatureFault::HybridLexicalLegError => execute_hybrid(
             &query,
             || Ok(vec![VectorCandidate::exact(1_u32, 0.0)]),
-            || Err(FusionError::Leg {
-                leg: FusionLeg::Lexical,
-                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
-                detail: "injected lexical leg failure".to_owned(),
-            }),
+            || {
+                Err(FusionError::Leg {
+                    leg: FusionLeg::Lexical,
+                    kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                    detail: "injected lexical leg failure".to_owned(),
+                })
+            },
             |value| Some(*value),
             |value| Some(*value),
         ),
         super::campaign::FeatureFault::HybridDualFailureOrder => execute_hybrid(
             &query,
-            || Err(FusionError::Leg {
-                leg: FusionLeg::Vector,
-                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
-                detail: "injected vector failure".to_owned(),
-            }),
-            || Err(FusionError::Leg {
-                leg: FusionLeg::Lexical,
-                kind: zeppelin_embed::fusion::LegFailureKind::Caller,
-                detail: "injected lexical failure".to_owned(),
-            }),
+            || {
+                Err(FusionError::Leg {
+                    leg: FusionLeg::Vector,
+                    kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                    detail: "injected vector failure".to_owned(),
+                })
+            },
+            || {
+                Err(FusionError::Leg {
+                    leg: FusionLeg::Lexical,
+                    kind: zeppelin_embed::fusion::LegFailureKind::Caller,
+                    detail: "injected lexical failure".to_owned(),
+                })
+            },
             |value| Some(*value),
             |value| Some(*value),
         ),
@@ -2958,7 +2681,11 @@ fn run_health_reopen_probe() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
-    engine.ingest(&[DocMutation { doc_id: 1, revision: 1, timestamp: 1 }])?;
+    engine.ingest(&[DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 1,
+    }])?;
     engine.close()?;
     let mut reopened = RealEngine::without_faults(directory.path().to_path_buf());
     reopened.open()?;
@@ -2967,15 +2694,23 @@ fn run_health_reopen_probe() -> Result<(), String> {
 }
 
 fn run_ffi_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
-    use zeppelin_embed_ffi::{ze_close, ze_error_code_name, ze_open, ZeErrorCode, ZeHandle};
+    use zeppelin_embed_ffi::{ZeErrorCode, ZeHandle, ze_close, ze_error_code_name, ze_open};
     let mut handle: ZeHandle = 0;
     let code = ze_open(std::ptr::null(), &mut handle);
     if code != ZeErrorCode::ZeErrInvalidArgument {
-        return Err(format!("FFI {} returned {:?} for null request", fault.key(), code));
+        return Err(format!(
+            "FFI {} returned {:?} for null request",
+            fault.key(),
+            code
+        ));
     }
     let stale = ze_close(0);
     if stale != ZeErrorCode::ZeErrInvalidHandle {
-        return Err(format!("FFI {} stale handle returned {:?}", fault.key(), stale));
+        return Err(format!(
+            "FFI {} stale handle returned {:?}",
+            fault.key(),
+            stale
+        ));
     }
     let name = ze_error_code_name(code as i32);
     if name.is_null() {
@@ -3019,7 +2754,10 @@ fn run_metadata_region_probe(fault: super::campaign::FeatureFault) -> Result<(),
         Ok(observed) => {
             let _ = reopened.close();
             if observed.hits.iter().any(|hit| hit.doc_id == 0) {
-                Err(format!("metadata fault {} returned an invalid row", fault.key()))
+                Err(format!(
+                    "metadata fault {} returned an invalid row",
+                    fault.key()
+                ))
             } else {
                 Ok(())
             }
@@ -3032,9 +2770,21 @@ fn run_metadata_selectivity_probe() -> Result<(), String> {
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
     engine.ingest(&[
-        DocMutation { doc_id: 1, revision: 1, timestamp: 9 },
-        DocMutation { doc_id: 2, revision: 1, timestamp: 10 },
-        DocMutation { doc_id: 3, revision: 1, timestamp: 11 },
+        DocMutation {
+            doc_id: 1,
+            revision: 1,
+            timestamp: 9,
+        },
+        DocMutation {
+            doc_id: 2,
+            revision: 1,
+            timestamp: 10,
+        },
+        DocMutation {
+            doc_id: 3,
+            revision: 1,
+            timestamp: 11,
+        },
     ])?;
     for cutoff in [9, 10, 11] {
         let _ = engine.filtered_search(&program::query(0), 8, cutoff)?;
@@ -3099,19 +2849,17 @@ fn run_graph_search_cancellation_probe() -> Result<(), String> {
     let (_directory, mut engine) = graph_probe_engine()?;
     let token = CancelToken::new();
     token.cancel();
-    let result = engine
-        .store()?
-        .search(
-            SearchRequest::new(&program::query(1)),
-            8,
-            SearchOptions::new(ScanOptions {
-                thread_budget: THREAD_BUDGET,
-            })
-            .with_tier(SearchTier::Graph(GraphSearchOptions::new(
-                GraphSearchProfile::SiftClass,
-            ))),
-            QueryControl::Cancel(token),
-        );
+    let result = engine.store()?.search(
+        SearchRequest::new(&program::query(1)),
+        8,
+        SearchOptions::new(ScanOptions {
+            thread_budget: THREAD_BUDGET,
+        })
+        .with_tier(SearchTier::Graph(GraphSearchOptions::new(
+            GraphSearchProfile::SiftClass,
+        ))),
+        QueryControl::Cancel(token),
+    );
     let _ = engine.close();
     match result {
         Err(_) => Ok(()),
@@ -3159,7 +2907,10 @@ fn run_graph_corruption_probe(fault: super::campaign::FeatureFault) -> Result<()
             let invalid = observed.hits.iter().any(|hit| hit.doc_id == 0);
             let _ = reopened.close();
             if invalid {
-                Err(format!("graph corruption {} returned an invalid row", fault.key()))
+                Err(format!(
+                    "graph corruption {} returned an invalid row",
+                    fault.key()
+                ))
             } else {
                 Ok(())
             }
@@ -3184,15 +2935,12 @@ fn run_graph_budget_cancel_probe() -> Result<(), String> {
         && !error.contains("budget")
         && !error.contains("defer")
     {
-        return Err(format!("zero-budget graph build returned wrong error: {error}"));
+        return Err(format!(
+            "zero-budget graph build returned wrong error: {error}"
+        ));
     }
     let _completed = engine.maintain(u64::MAX)?;
-    let observed = engine.search(
-        &program::query(1),
-        8,
-        SearchKind::Auto,
-        0,
-    )?;
+    let observed = engine.search(&program::query(1), 8, SearchKind::Auto, 0)?;
     if observed.hits.is_empty() {
         return Err("completed graph-budget probe returned no searchable rows".to_owned());
     }
@@ -3209,11 +2957,10 @@ fn run_forced_backend_fault_probe() -> Result<(), String> {
 }
 
 fn run_corrupt_codes_factors_fault_probe() -> Result<(), String> {
-    let query = prepare_bit4_query(&[1.0, -2.0, 0.5], 17)
-        .map_err(|error| error.to_string())?;
+    let query = prepare_bit4_query(&[1.0, -2.0, 0.5], 17).map_err(|error| error.to_string())?;
     let mut codes = [0_u8; 2];
-    let factors = quantize_bit4(&[0.25, -1.5, 2.0], &mut codes)
-        .map_err(|error| error.to_string())?;
+    let factors =
+        quantize_bit4(&[0.25, -1.5, 2.0], &mut codes).map_err(|error| error.to_string())?;
     codes[1] |= 0x0f;
     if !matches!(
         est_dot_bit4(&query, &codes, factors),
@@ -3243,13 +2990,7 @@ fn run_missing_rescore_rows_fault_probe() -> Result<(), String> {
         &query,
         &rows,
         2,
-        RescorePool::retained(
-            &row_indices,
-            &coarse_scores,
-            RescoreMetric::SquaredL2,
-            3,
-            1,
-        ),
+        RescorePool::retained(&row_indices, &coarse_scores, RescoreMetric::SquaredL2, 3, 1),
         2,
     )
     .expect_err("missing full-precision row unexpectedly entered exact top-k");
@@ -3515,8 +3256,8 @@ fn run_retention_boundary_fault_probe() -> Result<(), String> {
         engine.ingest(&[document])?;
         engine.seal()?;
     }
-    let policy = zeppelin_embed::ingest::RetentionPolicy::new(10)
-        .map_err(|error| error.to_string())?;
+    let policy =
+        zeppelin_embed::ingest::RetentionPolicy::new(10).map_err(|error| error.to_string())?;
     let range = policy.partition_to_drop(20);
     if range.end != 10 {
         return Err(format!("retention cutoff was {}, expected 10", range.end));
@@ -3703,9 +3444,7 @@ fn run_post_commit_retry_fault_probe() -> Result<(), String> {
     engine.close()
 }
 
-fn run_persisted_object_fault_probe(
-    fault: super::campaign::FeatureFault,
-) -> Result<(), String> {
+fn run_persisted_object_fault_probe(fault: super::campaign::FeatureFault) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
@@ -3773,7 +3512,11 @@ fn literal_segment_region_offset(bytes: &[u8], target_kind: u16) -> Result<usize
             .map_err(|_| "segment region offset exceeds usize".to_owned())?;
         let length = usize::try_from(read_literal_u64(bytes, entry + 16)?)
             .map_err(|_| "segment region length exceeds usize".to_owned())?;
-        if length == 0 || offset.checked_add(length).is_none_or(|end| end > bytes.len()) {
+        if length == 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > bytes.len())
+        {
             return Err(format!(
                 "guarded region {target_kind} has invalid offset/length {offset}/{length}"
             ));
@@ -3911,81 +3654,6 @@ fn run_publication_crash_fault_probe(boundary: program::CrashBoundary) -> Result
         }
     }
     engine.close()
-}
-
-fn campaign_search_facts(
-    model: &Model,
-    observed: &SearchObservation,
-    operation: super::campaign::FeatureOperation,
-) -> PrimitiveObservation {
-    let expected = model.expected_scan(&program::query(3), model.len());
-    let expected_sequence = expected
-        .iter()
-        .map(|hit| encode_hit(hit.doc_id, hit.revision, hit.score.to_bits()))
-        .collect::<Vec<_>>();
-    let observed_sequence = observed
-        .hits
-        .iter()
-        .map(|hit| encode_hit(hit.doc_id, hit.revision, hit.score.to_bits()))
-        .collect::<Vec<_>>();
-    let expected_set = expected
-        .iter()
-        .map(|hit| encode_identity(hit.doc_id, hit.revision))
-        .collect::<Vec<_>>();
-    let observed_set = observed
-        .hits
-        .iter()
-        .map(|hit| encode_identity(hit.doc_id, hit.revision))
-        .collect::<Vec<_>>();
-    let expected_scalar = expected.len() as u64;
-    let observed_scalar = observed.hits.len() as u64;
-    let observed_status = if matches!(
-        operation,
-        super::campaign::FeatureOperation::Storage(
-            super::campaign::StorageOperation::FormatCheck
-        )
-    ) {
-        match zeppelin_embed::format::frame::decode_header(
-            "adversarial-malformed-header",
-            zeppelin_embed::format::FormatFamily::Segment,
-            &[0_u8; 32],
-        ) {
-            Err(_) => "typed-refusal",
-            Ok(_) => "success",
-        }
-    } else {
-        "typed-refusal"
-    };
-    PrimitiveObservation {
-        expected_sequence,
-        observed_sequence,
-        expected_set,
-        observed_set,
-        expected_scalar,
-        observed_scalar,
-        maximum: expected.len() as u64,
-        score_bits: observed
-            .hits
-            .iter()
-            .map(|hit| f64::from(hit.score).to_bits())
-            .collect(),
-        expected_status: "typed-refusal".to_owned(),
-        observed_status: observed_status.to_owned(),
-        expected_artifact: "execution-trace-match".to_owned(),
-        observed_artifact: if observed.diagnostics_plan_matches_execution {
-            "execution-trace-match".to_owned()
-        } else {
-            "reported-plan-only".to_owned()
-        },
-    }
-}
-
-fn encode_hit(doc_id: u32, revision: u64, score_bits: u32) -> u128 {
-    (u128::from(doc_id) << 96) | (u128::from(revision) << 32) | u128::from(score_bits)
-}
-
-fn encode_identity(doc_id: u32, revision: u64) -> u128 {
-    (u128::from(doc_id) << 64) | u128::from(revision)
 }
 
 fn run_kernel_parity_probe(coverage: &mut CoverageRegistry) -> Result<(), String> {

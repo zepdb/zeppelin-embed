@@ -3,7 +3,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::fault_vfs::FaultEvent;
-use super::oracle::CheckerKind;
 use super::profiles::FaultProfile;
 use super::program::{Op, Program};
 
@@ -390,17 +389,14 @@ fn validate_feature_replay_attestation(
         return Err(malformed());
     }
     let digests = &attestation["evidence_digests"];
-    if [
-        "operation_evidence",
-        "checker_evidence",
-        "fault_evidence",
-    ]
-    .into_iter()
-    .any(|key| {
-        !digests[key]
-            .as_str()
-            .is_some_and(|digest| digest.starts_with("fnv1a64:") && digest.len() == 24)
-    }) {
+    if ["operation_evidence", "checker_evidence", "fault_evidence"]
+        .into_iter()
+        .any(|key| {
+            !digests[key]
+                .as_str()
+                .is_some_and(|digest| digest.starts_with("fnv1a64:") && digest.len() == 24)
+        })
+    {
         return Err(malformed());
     }
     let replay_artifacts = attestation["replay_artifacts"]
@@ -638,7 +634,6 @@ pub struct InvariantSpec {
     pub invariant: InvariantId,
     pub operation: FeatureOperation,
     pub checker_id: &'static str,
-    pub checker: CheckerKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1172,28 +1167,6 @@ pub struct FeatureFaultEvent {
     pub fire_count: usize,
 }
 
-/// Typed proof returned by the declared production operation when a selected
-/// feature fault reaches its injection boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FeatureFaultReceipt {
-    pub fault: FeatureFault,
-    pub operation: FeatureOperation,
-    pub cardinality: usize,
-}
-
-impl FeatureFaultReceipt {
-    #[must_use]
-    pub fn json_line(self) -> String {
-        format!(
-            "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"fault\":\"{}\",\"cardinality\":{}}}",
-            self.operation.campaign().key(),
-            self.operation.key(),
-            self.fault.key(),
-            self.cardinality,
-        )
-    }
-}
-
 impl FeatureFaultEvent {
     #[must_use]
     pub fn json_line(&self) -> String {
@@ -1552,12 +1525,11 @@ const DIAGNOSTIC_COVERAGE: [&str; 2] = ["op.stats", "op.search"];
 const FFI_COVERAGE: [&str; 1] = ["op.ffi_probe"];
 
 macro_rules! invariant_specs {
-    ($(($id:literal, $operation:expr, $checker:ident, $checker_id:literal)),+ $(,)?) => {
+    ($(($id:literal, $operation:expr, $_legacy_checker:ident, $checker_id:literal)),+ $(,)?) => {
         [$(InvariantSpec {
             invariant: InvariantId::new($id),
             operation: $operation,
             checker_id: $checker_id,
-            checker: CheckerKind::$checker,
         }),+]
     };
 }
@@ -1568,31 +1540,31 @@ const STORAGE_INVARIANT_SPECS: [InvariantSpec; 5] = invariant_specs![
         15,
         FeatureOperation::Storage(StorageOperation::Publication),
         ExactSet,
-        "I15.publication-atomicity"
+        "I15.storage-publication-v1"
     ),
     (
         16,
         FeatureOperation::Storage(StorageOperation::WalPrefix),
         Prefix,
-        "I16.wal-prefix"
+        "I16.storage-wal-prefix-v1"
     ),
     (
         17,
         FeatureOperation::Storage(StorageOperation::Retry),
         ExactSet,
-        "I17.retry-idempotence"
+        "I17.storage-retry-idempotence-v1"
     ),
     (
         18,
         FeatureOperation::Storage(StorageOperation::FormatCheck),
         TypedRefusal,
-        "I18.format-refusal"
+        "I18.storage-typed-artifact-refusal-v1"
     ),
     (
         19,
         FeatureOperation::Storage(StorageOperation::OrphanCleanup),
         ExactSet,
-        "I19.reachability"
+        "I19.storage-reachability-v1"
     ),
 ];
 const INGEST_INVARIANT_SPECS: [InvariantSpec; 4] = invariant_specs![
@@ -1626,25 +1598,25 @@ const VECTOR_INVARIANT_SPECS: [InvariantSpec; 4] = invariant_specs![
         24,
         FeatureOperation::Vector(VectorOperation::KernelParity),
         StableBits,
-        "I24.kernel-parity"
+        "I24.kernel-contract-parity.v1"
     ),
     (
         25,
         FeatureOperation::Vector(VectorOperation::Quantization),
         Finite,
-        "I25.quantization-finite"
+        "I25.quantization-contract.v1"
     ),
     (
         26,
         FeatureOperation::Vector(VectorOperation::Rescore),
         ExactSequence,
-        "I26.rescore-order"
+        "I26.exact-rescore-contract.v1"
     ),
     (
         27,
         FeatureOperation::Vector(VectorOperation::RowIdentity),
         ExactSet,
-        "I27.row-identity"
+        "I27.row-identity-lifecycle.v1"
     ),
 ];
 const GRAPH_INVARIANT_SPECS: [InvariantSpec; 8] = invariant_specs![
@@ -1702,25 +1674,25 @@ const METADATA_INVARIANT_SPECS: [InvariantSpec; 4] = invariant_specs![
         36,
         FeatureOperation::Metadata(MetadataOperation::Columns),
         ExactSequence,
-        "I36.column-roundtrip"
+        "I36.column-roundtrip.v2"
     ),
     (
         37,
         FeatureOperation::Metadata(MetadataOperation::Bitmap),
         ExactSet,
-        "I37.bitmap-algebra"
+        "I37.bitmap-algebra.v2"
     ),
     (
         38,
         FeatureOperation::Metadata(MetadataOperation::Planner),
         ExactSet,
-        "I38.pruning-soundness"
+        "I38.pruning-soundness.v2"
     ),
     (
         39,
         FeatureOperation::Metadata(MetadataOperation::Execution),
         Attribution,
-        "I39.executed-branch"
+        "I39.executed-branch.v2"
     ),
 ];
 const FTS_INVARIANT_SPECS: [InvariantSpec; 5] = invariant_specs![
