@@ -11,6 +11,7 @@ pub mod hybrid_fusion;
 pub mod ingest_retention;
 pub mod metadata_filter_planner;
 pub mod storage_durability;
+pub mod tiering_maintenance;
 pub mod vamana_graph;
 pub mod vector_execution;
 

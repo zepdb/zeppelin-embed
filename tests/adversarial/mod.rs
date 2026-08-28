@@ -20,6 +20,7 @@ pub mod profiles;
 pub mod program;
 pub mod runner;
 pub mod storage_durability;
+pub mod tiering_maintenance;
 pub mod vamana_graph;
 pub mod vector_execution;
 

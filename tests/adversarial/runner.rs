@@ -72,6 +72,7 @@ use zeppelin_embed_adversarial_oracle::hybrid_fusion as hybrid_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
 use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
 use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
+use zeppelin_embed_adversarial_oracle::tiering_maintenance as tier_oracle;
 use zeppelin_embed_adversarial_oracle::vamana_graph as graph_oracle;
 use zeppelin_embed_adversarial_oracle::vector_execution as vector_oracle;
 
@@ -88,6 +89,7 @@ use super::oracle::{OracleFirstDifference, OracleRecord};
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
 use super::storage_durability as storage_adapter;
+use super::tiering_maintenance as tier_adapter;
 use super::vamana_graph as graph_adapter;
 use super::vector_execution as vector_adapter;
 
@@ -2736,6 +2738,7 @@ enum ProductionFeatureReceipt {
     ValidatedGraph(graph_adapter::GraphFaultReceipt),
     ValidatedFts(fts_adapter::FtsFaultReceipt),
     ValidatedHybrid(hybrid_adapter::HybridFaultReceipt),
+    ValidatedTier(tier_adapter::TierFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2752,6 +2755,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedGraph(_) => "vamana-graph",
             Self::ValidatedFts(_) => "fts",
             Self::ValidatedHybrid(_) => "hybrid-fusion",
+            Self::ValidatedTier(_) => "tiering-maintenance",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2770,6 +2774,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedGraph(receipt) => receipt.operation.key(),
             Self::ValidatedFts(receipt) => receipt.operation.key(),
             Self::ValidatedHybrid(receipt) => receipt.operation.key(),
+            Self::ValidatedTier(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2792,6 +2797,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedGraph(receipt) => Some(receipt.fault.key()),
             Self::ValidatedFts(receipt) => Some(receipt.fault.key()),
             Self::ValidatedHybrid(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedTier(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2820,6 +2826,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedGraph(receipt) => receipt.site,
             Self::ValidatedFts(receipt) => receipt.site,
             Self::ValidatedHybrid(receipt) => receipt.site,
+            Self::ValidatedTier(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2833,6 +2840,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedGraph(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedFts(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedHybrid(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedTier(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3092,6 +3100,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedHybrid(receipt) => format!(
             "{{\"campaign\":\"hybrid-fusion\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedTier(receipt) => format!(
+            "{{\"campaign\":\"tiering-maintenance\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3372,6 +3387,16 @@ fn run_campaign_operation(
             coverage,
         );
     }
+    if let super::campaign::FeatureOperation::Tiering(tier_operation) = operation {
+        return run_tier_campaign_operation(
+            tier_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -3399,6 +3424,147 @@ fn run_campaign_operation(
         operation.campaign().key(),
         operation.key(),
     ))
+}
+
+fn tier_operation_kind(
+    operation: super::campaign::TieringOperation,
+) -> tier_adapter::TierOperationKind {
+    match operation {
+        super::campaign::TieringOperation::Policy => tier_adapter::TierOperationKind::Policy,
+        super::campaign::TieringOperation::Transition => {
+            tier_adapter::TierOperationKind::Transition
+        }
+        super::campaign::TieringOperation::Budget => tier_adapter::TierOperationKind::Budget,
+        super::campaign::TieringOperation::Publication => {
+            tier_adapter::TierOperationKind::Publication
+        }
+    }
+}
+
+fn tier_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<tier_adapter::TierFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::TierBudgetExhaustion => {
+            Ok(tier_adapter::TierFaultKind::BudgetExhaustion)
+        }
+        super::campaign::FeatureFault::TierCheckpointCorruption => {
+            Ok(tier_adapter::TierFaultKind::CheckpointCorruption)
+        }
+        super::campaign::FeatureFault::TierStaleSource => {
+            Ok(tier_adapter::TierFaultKind::StaleSource)
+        }
+        super::campaign::FeatureFault::TierEnospc => Ok(tier_adapter::TierFaultKind::Enospc),
+        super::campaign::FeatureFault::TierProfileMismatch => {
+            Ok(tier_adapter::TierFaultKind::ProfileMismatch)
+        }
+        super::campaign::FeatureFault::TierPublicationCrash => {
+            Ok(tier_adapter::TierFaultKind::PublicationCrash)
+        }
+        other => Err(format!("{} is not a tiering fault", other.key())),
+    }
+}
+
+fn tier_input_json(input: &tier_oracle::TierInput) -> String {
+    let documents = input
+        .expected_documents
+        .iter()
+        .map(u128::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"threshold\":{},\"expected_documents\":[{documents}]}}",
+        input.threshold
+    )
+}
+
+fn tier_observed_json(observed: &tier_oracle::TierObserved) -> String {
+    let list = |values: &[u128]| {
+        values
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"below_stays_scan\":{},\"at_threshold_transitions\":{},\"before_documents\":[{}],\"after_documents\":[{}],\"reopened_documents\":[{}],\"budget_exhausted\":{},\"graphs_built\":{}}}",
+        observed.below_stays_scan,
+        observed.at_threshold_transitions,
+        list(&observed.before_documents),
+        list(&observed.after_documents),
+        list(&observed.reopened_documents),
+        observed.budget_exhausted,
+        observed.graphs_built,
+    )
+}
+
+fn run_tier_campaign_operation(
+    operation: super::campaign::TieringOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(tier_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence =
+            tier_adapter::run_tier_operation(tier_operation_kind(operation), seed, fault)?;
+        for invariant in evidence.invariants {
+            let (id, checker, input, observed, result) = match invariant {
+                tier_adapter::TierInvariantEvidence::I50 { input, observed } => {
+                    let result = tier_oracle::compare_i50(&input, &observed);
+                    (50, tier_oracle::I50_CHECKER_ID, input, observed, result)
+                }
+                tier_adapter::TierInvariantEvidence::I51 { input, observed } => {
+                    let result = tier_oracle::compare_i51(&input, &observed);
+                    (51, tier_oracle::I51_CHECKER_ID, input, observed, result)
+                }
+                tier_adapter::TierInvariantEvidence::I52 { input, observed } => {
+                    let result = tier_oracle::compare_i52(&input, &observed);
+                    (52, tier_oracle::I52_CHECKER_ID, input, observed, result)
+                }
+                tier_adapter::TierInvariantEvidence::I53 { input, observed } => {
+                    let result = tier_oracle::compare_i53(&input, &observed);
+                    (53, tier_oracle::I53_CHECKER_ID, input, observed, result)
+                }
+            };
+            push_feature_json_record(
+                id,
+                checker,
+                operation.key(),
+                tier_input_json(&input),
+                tier_observed_json(&observed),
+                format!("public tier operation seed={seed}"),
+                result,
+                oracle_records,
+                coverage,
+            );
+        }
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"tiering-maintenance\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedTier),
+        );
+    }
+    Ok(receipts)
 }
 
 fn hybrid_operation_kind(
