@@ -4,6 +4,8 @@ mod choose;
 mod exec;
 mod lexical;
 mod prune;
+#[cfg(any(test, feature = "test-support"))]
+mod receipt;
 
 pub use choose::{ALLOW_LIST_ROWS_THRESHOLD, choose_scan_branch};
 pub use exec::{FilteredSearchError, FilteredSearchOutcome};
@@ -13,6 +15,14 @@ pub use lexical::{
     search_lexical_filtered,
 };
 pub use prune::{PlanError, segment_may_match, validate_predicate};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use receipt::MetadataQueryContext;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use receipt::{
+    MetadataControllerError, MetadataExecutionReceipt, MetadataFeatureDetail,
+    MetadataFeatureReceipt, MetadataTestArm, MetadataTestController,
+};
 
 use crate::ingest::RowSource;
 use crate::meta::Predicate;

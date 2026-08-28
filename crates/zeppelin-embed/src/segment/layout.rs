@@ -7,7 +7,7 @@ use crate::meta::{
 };
 use crate::quant::Bit4Factors;
 
-use super::SegmentError;
+use super::{MetadataDecodeProvenance, SegmentError};
 
 /// Darwin-friendly region alignment; no row is padded.
 pub const REGION_ALIGNMENT: usize = 16 * 1024;
@@ -250,15 +250,36 @@ pub(crate) fn encode_alive(alive: &AliveSet) -> Vec<u8> {
 
 pub(crate) fn decode_alive(bytes: &[u8]) -> Result<AliveSet, SegmentError> {
     let mut cursor = Cursor::new("alive", bytes);
-    let row_count = cursor.u32()?;
-    let byte_len = cursor.usize_from_u32()?;
+    let row_count = cursor.u32().map_err(alive_cursor_error)?;
+    let declared_bytes = cursor.u32().map_err(alive_cursor_error)?;
+    let byte_len = usize::try_from(declared_bytes)
+        .map_err(|_| SegmentError::Alive("bitmap length exceeds usize".to_owned()))?;
     let expected = (row_count as usize).div_ceil(8);
     if byte_len != expected {
         return Err(SegmentError::Alive(format!(
             "bitmap length {byte_len}, expected {expected}"
         )));
     }
-    let bits = cursor.take(byte_len)?;
+    let byte_offset = cursor.position_u64().map_err(alive_cursor_error)?;
+    if cursor.remaining() < byte_len {
+        let observed_bytes = u32::try_from(cursor.remaining()).map_err(|_| {
+            SegmentError::Alive("truncated bitmap remainder exceeds u32".to_owned())
+        })?;
+        return Err(SegmentError::MetadataSemantic {
+            detail: format!(
+                "alive truncated at {}, need {byte_len}, total {}",
+                cursor.position,
+                bytes.len()
+            ),
+            provenance: MetadataDecodeProvenance::AliveBitmapTruncation {
+                row_count,
+                byte_offset,
+                declared_bytes,
+                observed_bytes,
+            },
+        });
+    }
+    let bits = cursor.take(byte_len).map_err(alive_cursor_error)?;
     cursor.finish().map_err(SegmentError::Alive)?;
     if !row_count.is_multiple_of(8) {
         let used = row_count % 8;
@@ -284,6 +305,13 @@ pub(crate) fn decode_alive(bytes: &[u8]) -> Result<AliveSet, SegmentError> {
         }
     }
     Ok(alive)
+}
+
+fn alive_cursor_error(error: SegmentError) -> SegmentError {
+    match error {
+        SegmentError::Columns(detail) => SegmentError::Alive(detail),
+        other => other,
+    }
 }
 
 fn column_type_id(column_type: ColumnType) -> u16 {
@@ -482,9 +510,16 @@ pub(crate) fn decode_columns(bytes: &[u8]) -> Result<ColumnStore, SegmentError> 
                 definition.id().get()
             )));
         }
+        let presence_offset = cursor.position_u64()?;
         let present = cursor.take(presence_length)?.to_vec();
-        validate_presence_tail(row_count, &present)?;
-        let values = decode_column_values(definition.column_type(), row_count, &mut cursor)?;
+        validate_presence_tail(definition.id(), row_count, presence_offset, &present)?;
+        let values = decode_column_values(
+            definition.id(),
+            definition.column_type(),
+            row_count,
+            &present,
+            &mut cursor,
+        )?;
         decoded.push(DecodedColumn {
             definition,
             present,
@@ -530,8 +565,10 @@ pub(crate) fn decode_columns(bytes: &[u8]) -> Result<ColumnStore, SegmentError> 
 }
 
 fn decode_column_values(
+    column_id: ColumnId,
     column_type: ColumnType,
     row_count: u32,
+    present: &[u8],
     cursor: &mut Cursor<'_>,
 ) -> Result<DecodedValues, SegmentError> {
     match column_type {
@@ -558,10 +595,37 @@ fn decode_column_values(
             .collect::<Result<Vec<_>, _>>()
             .map(DecodedValues::Bool),
         ColumnType::DictionaryString => {
-            let dictionary_length = cursor.usize_from_u32()?;
-            let dictionary = (0..dictionary_length)
-                .map(|_| cursor.string())
-                .collect::<Result<Vec<_>, _>>()?;
+            let dictionary_cardinality = cursor.u32()?;
+            let dictionary_length = usize::try_from(dictionary_cardinality).map_err(|_| {
+                SegmentError::Columns("dictionary cardinality exceeds usize".to_owned())
+            })?;
+            let remaining_entry_capacity = cursor.remaining() / std::mem::size_of::<u32>();
+            if cursor.remaining() >= std::mem::size_of::<u32>()
+                && dictionary_length > remaining_entry_capacity
+            {
+                return Err(SegmentError::Columns(format!(
+                    "dictionary cardinality exceeds remaining entry capacity: declared {dictionary_cardinality}, capacity {remaining_entry_capacity}"
+                )));
+            }
+            let mut dictionary = Vec::with_capacity(dictionary_length);
+            for entry in 0..dictionary_length {
+                let declared_bytes = cursor.u32()?;
+                let length = usize::try_from(declared_bytes).map_err(|_| {
+                    SegmentError::Columns(
+                        "dictionary string storage length exceeds usize".to_owned(),
+                    )
+                })?;
+                if cursor.remaining() < length && length > cursor.bytes.len() {
+                    return Err(SegmentError::Columns(format!(
+                        "dictionary string storage exceeds remaining Columns bytes at entry {entry}: declared {declared_bytes}, available {}",
+                        cursor.remaining()
+                    )));
+                }
+                let value = std::str::from_utf8(cursor.take(length)?)
+                    .map(str::to_owned)
+                    .map_err(|error| SegmentError::Columns(format!("columns UTF-8: {error}")))?;
+                dictionary.push(value);
+            }
             let width = cursor.u16()?;
             if cursor.u16()? != 0 {
                 return Err(SegmentError::Columns(
@@ -569,7 +633,8 @@ fn decode_column_values(
                 ));
             }
             let mut values = Vec::with_capacity(row_count as usize);
-            for _ in 0..row_count {
+            for row in 0..row_count {
+                let byte_offset = cursor.position_u64()?;
                 let code = match width {
                     2 => u32::from(cursor.u16()?),
                     4 => cursor.u32()?,
@@ -579,15 +644,33 @@ fn decode_column_values(
                         )));
                     }
                 };
-                let value = dictionary.get(code as usize).ok_or_else(|| {
-                    SegmentError::Columns(format!("dictionary code {code} out of range"))
-                })?;
-                values.push(value.clone());
+                if presence_contains(present, row) {
+                    let value = dictionary.get(code as usize).ok_or_else(|| {
+                        SegmentError::MetadataSemantic {
+                            detail: format!("dictionary code {code} out of range"),
+                            provenance: MetadataDecodeProvenance::ColumnsDictionaryCode {
+                                column_id: column_id.get(),
+                                row,
+                                byte_offset,
+                                code,
+                                dictionary_cardinality,
+                            },
+                        }
+                    })?;
+                    values.push(value.clone());
+                } else {
+                    if code != 0 {
+                        return Err(SegmentError::Columns(format!(
+                            "dictionary null row {row} has non-zero code {code}"
+                        )));
+                    }
+                    values.push(String::new());
+                }
             }
             Ok(DecodedValues::String(values))
         }
         ColumnType::RawString => (0..row_count)
-            .map(|_| cursor.string())
+            .map(|row| decode_raw_string(column_id, row, cursor))
             .collect::<Result<Vec<_>, _>>()
             .map(DecodedValues::String),
     }
@@ -607,16 +690,64 @@ fn decoded_value(values: &DecodedValues, row: u32) -> Result<ColumnValue<'_>, Se
     .ok_or_else(|| SegmentError::Columns(format!("missing row {row}")))
 }
 
-fn validate_presence_tail(row_count: u32, bytes: &[u8]) -> Result<(), SegmentError> {
+fn decode_raw_string(
+    column_id: ColumnId,
+    row: u32,
+    cursor: &mut Cursor<'_>,
+) -> Result<String, SegmentError> {
+    let byte_offset = cursor.position_u64()?;
+    let declared_bytes = cursor.u32()?;
+    let length = usize::try_from(declared_bytes)
+        .map_err(|_| SegmentError::Columns("raw string length exceeds usize".to_owned()))?;
+    if cursor.remaining() < length {
+        let available_bytes = u64::try_from(cursor.remaining())
+            .map_err(|_| SegmentError::Columns("raw string remainder exceeds u64".to_owned()))?;
+        return Err(SegmentError::MetadataSemantic {
+            detail: format!(
+                "columns truncated at {}, need {length}, total {}",
+                cursor.position,
+                cursor.bytes.len()
+            ),
+            provenance: MetadataDecodeProvenance::ColumnsRawStringLength {
+                column_id: column_id.get(),
+                row,
+                byte_offset,
+                declared_bytes,
+                available_bytes,
+            },
+        });
+    }
+    std::str::from_utf8(cursor.take(length)?)
+        .map(str::to_owned)
+        .map_err(|error| SegmentError::Columns(format!("columns UTF-8: {error}")))
+}
+
+fn validate_presence_tail(
+    column_id: ColumnId,
+    row_count: u32,
+    byte_offset: u64,
+    bytes: &[u8],
+) -> Result<(), SegmentError> {
     if !row_count.is_multiple_of(8) {
         let used = row_count % 8;
-        if bytes
-            .last()
-            .is_some_and(|last| last & !((1_u8 << used) - 1) != 0)
+        let allowed_mask = (1_u8 << used) - 1;
+        if let Some(observed_byte) = bytes.last().copied()
+            && observed_byte & !allowed_mask != 0
         {
-            return Err(SegmentError::Columns(
-                "non-zero presence tail padding".to_owned(),
-            ));
+            let last_offset = u64::try_from(bytes.len().saturating_sub(1))
+                .ok()
+                .and_then(|delta| byte_offset.checked_add(delta))
+                .ok_or_else(|| SegmentError::Columns("presence offset overflow".to_owned()))?;
+            return Err(SegmentError::MetadataSemantic {
+                detail: "non-zero presence tail padding".to_owned(),
+                provenance: MetadataDecodeProvenance::ColumnsPresenceTail {
+                    column_id: column_id.get(),
+                    row_count,
+                    byte_offset: last_offset,
+                    observed_byte,
+                    allowed_mask,
+                },
+            });
         }
     }
     Ok(())
@@ -661,6 +792,15 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 
+    pub(crate) fn position_u64(&self) -> Result<u64, SegmentError> {
+        u64::try_from(self.position)
+            .map_err(|_| SegmentError::Columns(format!("{} offset exceeds u64", self.artifact)))
+    }
+
+    pub(crate) fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.position)
+    }
+
     pub(crate) fn u8(&mut self) -> Result<u8, SegmentError> {
         self.take(1)?
             .first()
@@ -703,13 +843,6 @@ impl<'a> Cursor<'a> {
     pub(crate) fn usize_from_u32(&mut self) -> Result<usize, SegmentError> {
         usize::try_from(self.u32()?)
             .map_err(|_| SegmentError::Columns(format!("{} u32 exceeds usize", self.artifact)))
-    }
-
-    pub(crate) fn string(&mut self) -> Result<String, SegmentError> {
-        let length = self.usize_from_u32()?;
-        std::str::from_utf8(self.take(length)?)
-            .map(str::to_owned)
-            .map_err(|error| SegmentError::Columns(format!("{} UTF-8: {error}", self.artifact)))
     }
 
     pub(crate) fn finish(&self) -> Result<(), String> {

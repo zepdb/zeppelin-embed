@@ -12,6 +12,9 @@ mod predicate;
 
 pub use alive::{AliveError, AliveSet};
 pub use bitmap::DocBitmap;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use columns::MetadataBuildTestLimits;
 pub use columns::{
     BoolColumn, BuildError, Column, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnValue,
     DictionaryColumn, NumericColumn, RawStringColumn,

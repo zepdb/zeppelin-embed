@@ -82,6 +82,28 @@ pub enum BuildError {
     Dictionary(DictionaryError),
 }
 
+/// Narrow limits used only to prove naturally huge metadata builder guards.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct MetadataBuildTestLimits {
+    pub max_rows: u32,
+    pub max_dictionary_entries: u64,
+    pub max_string_bytes: u64,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MetadataBuildTestLimits {
+    #[must_use]
+    pub const fn new(max_rows: u32, max_dictionary_entries: u64, max_string_bytes: u64) -> Self {
+        Self {
+            max_rows,
+            max_dictionary_entries,
+            max_string_bytes,
+        }
+    }
+}
+
 impl std::fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -509,6 +531,50 @@ impl BuilderColumn {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn check_test_limits(
+        &self,
+        value: Option<ColumnValue<'_>>,
+        limits: MetadataBuildTestLimits,
+    ) -> Result<(), DictionaryError> {
+        match (self, value) {
+            (Self::Dictionary { dictionary, .. }, Some(ColumnValue::String(value))) => {
+                if !dictionary.contains(value)
+                    && dictionary.cardinality() >= limits.max_dictionary_entries
+                {
+                    return Err(DictionaryError::CardinalityOverflow);
+                }
+                let bytes = u64::try_from(dictionary.string_bytes())
+                    .unwrap_or(u64::MAX)
+                    .checked_add(u64::try_from(value.len()).unwrap_or(u64::MAX))
+                    .ok_or(DictionaryError::StringStorageOverflow)?;
+                if !dictionary.contains(value) && bytes > limits.max_string_bytes {
+                    return Err(DictionaryError::StringStorageOverflow);
+                }
+                Ok(())
+            }
+            (Self::RawString(values, _), Some(ColumnValue::String(value))) => {
+                let bytes = u64::try_from(values.byte_len())
+                    .unwrap_or(u64::MAX)
+                    .checked_add(u64::try_from(value.len()).unwrap_or(u64::MAX))
+                    .ok_or(DictionaryError::StringStorageOverflow)?;
+                if bytes > limits.max_string_bytes {
+                    Err(DictionaryError::StringStorageOverflow)
+                } else {
+                    Ok(())
+                }
+            }
+            (Self::RawString(values, _), None) => {
+                if u64::try_from(values.byte_len()).unwrap_or(u64::MAX) > limits.max_string_bytes {
+                    Err(DictionaryError::StringStorageOverflow)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn push(
         &mut self,
         row: u32,
@@ -606,6 +672,8 @@ pub struct ColumnStoreBuilder {
     schema: Schema,
     columns: Vec<BuilderColumn>,
     row_count: u32,
+    #[cfg(any(test, feature = "test-support"))]
+    test_limits: Option<MetadataBuildTestLimits>,
 }
 
 impl ColumnStoreBuilder {
@@ -621,7 +689,19 @@ impl ColumnStoreBuilder {
             schema,
             columns,
             row_count: 0,
+            #[cfg(any(test, feature = "test-support"))]
+            test_limits: None,
         }
+    }
+
+    /// Creates a builder with lower limits at the production guard sites.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_test_limits(schema: Schema, limits: MetadataBuildTestLimits) -> Self {
+        let mut builder = Self::new(schema);
+        builder.test_limits = Some(limits);
+        builder
     }
 
     /// Appends one timestamp and its typed user-column values atomically.
@@ -633,6 +713,13 @@ impl ColumnStoreBuilder {
         if self.row_count == u32::MAX {
             return Err(BuildError::TooManyRows);
         }
+        #[cfg(any(test, feature = "test-support"))]
+        if self
+            .test_limits
+            .is_some_and(|limits| self.row_count >= limits.max_rows)
+        {
+            return Err(BuildError::TooManyRows);
+        }
         self.validate_inputs(inputs)?;
 
         for (definition, builder) in self.schema.columns().iter().zip(&self.columns) {
@@ -641,6 +728,10 @@ impl ColumnStoreBuilder {
             } else {
                 find_input(inputs, definition.id()).map(|input| input.value)
             };
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(limits) = self.test_limits {
+                builder.check_test_limits(value, limits)?;
+            }
             builder.preflight(value)?;
         }
 

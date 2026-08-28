@@ -174,6 +174,11 @@ impl StringStorage {
         self.offsets.len().saturating_sub(1)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
     pub(crate) fn get(&self, position: usize) -> Option<&str> {
         let start = self
             .offsets
@@ -274,6 +279,16 @@ impl DictionaryBuilder {
 
     pub(crate) fn cardinality(&self) -> u64 {
         u64::try_from(self.lookup.len()).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn contains(&self, value: &str) -> bool {
+        self.lookup.contains_key(value)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn string_bytes(&self) -> usize {
+        self.values.byte_len()
     }
 
     pub(crate) fn finish(self) -> StringDictionary {

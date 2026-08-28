@@ -137,6 +137,13 @@ pub enum SegmentError {
     Columns(String),
     /// Alive-set bytes were invalid.
     Alive(String),
+    /// A catalogued metadata semantic guard rejected bytes with exact provenance.
+    MetadataSemantic {
+        /// Human-readable decoder refusal.
+        detail: String,
+        /// Exact persisted field and values observed by the decoder.
+        provenance: MetadataDecodeProvenance,
+    },
     /// Fixed-stride graph node-block bytes were invalid.
     Graph(crate::graph::block::GraphNodeError),
     /// Whole-segment lexical bytes were invalid.
@@ -173,12 +180,70 @@ impl std::fmt::Display for SegmentError {
             Self::Geometry(detail) => write!(formatter, "segment geometry is invalid: {detail}"),
             Self::Columns(detail) => write!(formatter, "segment columns are invalid: {detail}"),
             Self::Alive(detail) => write!(formatter, "segment alive set is invalid: {detail}"),
+            Self::MetadataSemantic { detail, .. } => {
+                write!(formatter, "segment metadata is invalid: {detail}")
+            }
             Self::Graph(error) => write!(formatter, "segment graph region is invalid: {error}"),
             Self::Postings(error) => {
                 write!(formatter, "segment postings region is invalid: {error}")
             }
         }
     }
+}
+
+/// Exact persisted metadata facts captured at a semantic decoder refusal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MetadataDecodeProvenance {
+    /// Unused bits in the last nullable-presence byte were non-zero.
+    ColumnsPresenceTail {
+        /// Column whose presence map was rejected.
+        column_id: u32,
+        /// Declared segment row count.
+        row_count: u32,
+        /// Offset of the rejected byte within the Columns region.
+        byte_offset: u64,
+        /// Byte read from persistence.
+        observed_byte: u8,
+        /// Mask of bits allowed for the final partial byte.
+        allowed_mask: u8,
+    },
+    /// A present dictionary row named a code outside the persisted dictionary.
+    ColumnsDictionaryCode {
+        /// Column whose code was rejected.
+        column_id: u32,
+        /// Row whose code was rejected.
+        row: u32,
+        /// Offset of the code within the Columns region.
+        byte_offset: u64,
+        /// Code read from persistence.
+        code: u32,
+        /// Number of persisted dictionary entries.
+        dictionary_cardinality: u32,
+    },
+    /// A raw-string length exceeded the remaining Columns-region bytes.
+    ColumnsRawStringLength {
+        /// Column whose value was rejected.
+        column_id: u32,
+        /// Row whose value was rejected.
+        row: u32,
+        /// Offset of the length field within the Columns region.
+        byte_offset: u64,
+        /// Payload length read from persistence.
+        declared_bytes: u32,
+        /// Bytes available after the length field.
+        available_bytes: u64,
+    },
+    /// The Alive bitmap ended before its declared byte length.
+    AliveBitmapTruncation {
+        /// Declared segment row count.
+        row_count: u32,
+        /// Offset where bitmap bytes begin within the Alive region.
+        byte_offset: u64,
+        /// Persisted bitmap byte length.
+        declared_bytes: u32,
+        /// Bytes actually available after the length field.
+        observed_bytes: u32,
+    },
 }
 
 impl std::error::Error for SegmentError {
@@ -192,7 +257,8 @@ impl std::error::Error for SegmentError {
             | Self::MissingRegion(_)
             | Self::Geometry(_)
             | Self::Columns(_)
-            | Self::Alive(_) => None,
+            | Self::Alive(_)
+            | Self::MetadataSemantic { .. } => None,
         }
     }
 }
