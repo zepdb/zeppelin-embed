@@ -3740,6 +3740,11 @@ fn run_lifecycle_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", lifecycle_adapter::LifecycleFaultKind::key)
+        );
         let evidence =
             lifecycle_adapter::run_lifecycle_operation(lifecycle_operation_kind(operation), fault)?;
         let (id, checker, input, observed, result) = match evidence.invariant {
@@ -3805,6 +3810,10 @@ fn run_lifecycle_campaign_operation(
             oracle_records,
             coverage,
         );
+        oracle_records
+            .last_mut()
+            .expect("lifecycle comparison appended one oracle record")
+            .case_identity = Some(case_identity);
         if fault.is_some() {
             control_records.push(format!(
                 "{{\"campaign\":\"lifecycle-accounting\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
