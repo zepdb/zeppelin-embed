@@ -7185,140 +7185,36 @@ fn expected_campaign_comparison_counts(
         }
         return counts;
     }
-    if campaign == CampaignKind::HybridFusion {
-        let mut counts = CampaignSpec::for_kind(campaign)
-            .owned_invariants
-            .iter()
-            .map(|invariant| (invariant.key(), 0_u64))
-            .collect::<BTreeMap<_, _>>();
-        for episode in 0..episodes {
-            let seed = start_seed
-                .checked_add(episode)
-                .expect("hybrid campaign seed fits u64");
-            let profile = campaign_profile(episode);
-            let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
-            for (operation, invariant) in [
-                (adversarial::campaign::HybridOperation::Provenance, "I45"),
-                (adversarial::campaign::HybridOperation::Normalization, "I46"),
-                (adversarial::campaign::HybridOperation::BoundedFusion, "I47"),
-                (adversarial::campaign::HybridOperation::Rrf, "I48"),
-                (adversarial::campaign::HybridOperation::Legs, "I49"),
-            ] {
-                let selected = plan
-                    .feature
-                    .iter()
-                    .filter(|event| {
-                        event.fault.operation()
-                            == adversarial::campaign::FeatureOperation::Hybrid(operation)
-                    })
-                    .count();
-                let comparisons = u64::try_from(selected.max(1))
-                    .expect("hybrid operation comparison count fits u64");
-                let count = counts
-                    .get_mut(invariant)
-                    .expect("hybrid count contract includes operation invariant");
-                *count = count
-                    .checked_add(comparisons)
-                    .expect("hybrid campaign comparison count fits u64");
-            }
-        }
-        return counts;
-    }
-    if campaign == CampaignKind::TieringMaintenance {
-        let mut counts = CampaignSpec::for_kind(campaign)
-            .owned_invariants
-            .iter()
-            .map(|invariant| (invariant.key(), 0_u64))
-            .collect::<BTreeMap<_, _>>();
-        for episode in 0..episodes {
-            let seed = start_seed
-                .checked_add(episode)
-                .expect("tiering campaign seed fits u64");
-            let profile = campaign_profile(episode);
-            let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
-            for (operation, invariant) in [
-                (adversarial::campaign::TieringOperation::Policy, "I50"),
-                (adversarial::campaign::TieringOperation::Transition, "I51"),
-                (adversarial::campaign::TieringOperation::Budget, "I52"),
-                (adversarial::campaign::TieringOperation::Publication, "I53"),
-            ] {
-                let selected = plan
-                    .feature
-                    .iter()
-                    .filter(|event| {
-                        event.fault.operation()
-                            == adversarial::campaign::FeatureOperation::Tiering(operation)
-                    })
-                    .count();
-                let comparisons = u64::try_from(selected.max(1))
-                    .expect("tiering operation comparison count fits u64");
-                let count = counts
-                    .get_mut(invariant)
-                    .expect("tiering count contract includes operation invariant");
-                *count = count
-                    .checked_add(comparisons)
-                    .expect("tiering campaign comparison count fits u64");
-            }
-        }
-        return counts;
-    }
-    if campaign == CampaignKind::LifecycleAccounting {
-        let mut counts = CampaignSpec::for_kind(campaign)
-            .owned_invariants
-            .iter()
-            .map(|invariant| (invariant.key(), 0_u64))
-            .collect::<BTreeMap<_, _>>();
-        for episode in 0..episodes {
-            let seed = start_seed
-                .checked_add(episode)
-                .expect("lifecycle campaign seed fits u64");
-            let profile = campaign_profile(episode);
-            let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
-            for (operation, invariant) in [
-                (adversarial::campaign::LifecycleOperation::Deadline, "I54"),
-                (
-                    adversarial::campaign::LifecycleOperation::Cancellation,
-                    "I55",
-                ),
-                (adversarial::campaign::LifecycleOperation::CloseDrain, "I56"),
-                (adversarial::campaign::LifecycleOperation::Locking, "I57"),
-                (adversarial::campaign::LifecycleOperation::Accounting, "I58"),
-            ] {
-                let selected = plan
-                    .feature
-                    .iter()
-                    .filter(|event| {
-                        event.fault.operation()
-                            == adversarial::campaign::FeatureOperation::Lifecycle(operation)
-                    })
-                    .count();
-                let comparisons = u64::try_from(selected.max(1))
-                    .expect("lifecycle operation comparison count fits u64");
-                let count = counts
-                    .get_mut(invariant)
-                    .expect("lifecycle count contract includes operation invariant");
-                *count = count
-                    .checked_add(comparisons)
-                    .expect("lifecycle campaign comparison count fits u64");
-            }
-        }
-        return counts;
-    }
-    CampaignSpec::for_kind(campaign)
+    let spec = CampaignSpec::for_kind(campaign);
+    let mut counts = spec
         .owned_invariants
         .iter()
-        .map(|invariant| {
-            (
-                invariant.key(),
-                1_u64
-                    .checked_mul(episodes)
-                    .expect("campaign comparison count fits u64"),
-            )
-        })
-        .collect()
+        .map(|invariant| (invariant.key(), 0_u64))
+        .collect::<BTreeMap<_, _>>();
+    for episode in 0..episodes {
+        let seed = start_seed
+            .checked_add(episode)
+            .expect("feature campaign seed fits u64");
+        let profile = campaign_profile(episode);
+        let program = Program::generate_for(campaign, seed);
+        let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+        for invariant in spec.invariant_specs {
+            let selected = plan
+                .feature
+                .iter()
+                .filter(|event| event.fault.operation() == invariant.operation)
+                .count();
+            let comparisons = u64::try_from(selected.max(1))
+                .expect("feature operation comparison count fits u64");
+            let count = counts
+                .get_mut(&invariant.invariant.key())
+                .expect("feature count contract includes operation invariant");
+            *count = count
+                .checked_add(comparisons)
+                .expect("feature campaign comparison count fits u64");
+        }
+    }
+    counts
 }
 
 #[test]
@@ -7538,6 +7434,29 @@ fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity()
 }
 
 #[test]
+fn graph_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::VamanaGraph, 0, 1_000);
+    assert_eq!(counts["I28"], 1_000);
+    assert_eq!(counts["I29"], 1_000);
+    assert_eq!(counts["I30"], 1_011);
+    assert_eq!(counts["I31"], 1_011);
+    assert_eq!(counts["I32"], 1_000);
+    assert_eq!(counts["I33"], 1_000);
+    assert_eq!(counts["I34"], 1_000);
+    assert_eq!(counts["I35"], 1_000);
+}
+
+#[test]
+fn fts_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::Fts, 0, 1_000);
+    assert_eq!(counts["I40"], 1_000);
+    assert_eq!(counts["I41"], 1_035);
+    assert_eq!(counts["I42"], 1_000);
+    assert_eq!(counts["I43"], 1_000);
+    assert_eq!(counts["I44"], 1_011);
+}
+
+#[test]
 fn hybrid_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     let counts = expected_campaign_comparison_counts(CampaignKind::HybridFusion, 0, 1_000);
     assert_eq!(counts["I45"], 1_000);
@@ -7564,6 +7483,16 @@ fn lifecycle_campaign_comparison_counts_include_same_operation_fault_multiplicit
     assert!(counts["I56"] > 1_000);
     assert_eq!(counts["I57"], 1_000);
     assert_eq!(counts["I58"], 1_000);
+}
+
+#[test]
+fn ffi_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::FfiBindings, 0, 1_000);
+    assert_eq!(counts["I66"], 1_009);
+    assert_eq!(counts["I67"], 1_009);
+    assert_eq!(counts["I68"], 1_000);
+    assert_eq!(counts["I69"], 1_000);
+    assert_eq!(counts["I70"], 1_000);
 }
 
 #[test]
