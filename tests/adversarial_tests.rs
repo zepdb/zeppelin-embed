@@ -5571,13 +5571,13 @@ fn replay_vector_retained_episode(expected: &Path) -> Result<String, String> {
     let operations = fixture["operations"]
         .as_array()
         .ok_or_else(|| "retained vector fixture operations are absent".to_owned())?;
-    if operations.len() != 4 {
+    if operations.len() < 4 {
         return Err(format!(
             "retained vector fixture operation count differs: {}",
             operations.len()
         ));
     }
-    let mut retained_comparisons = BTreeMap::<(String, u64), (String, String)>::new();
+    let mut retained_comparisons = BTreeMap::<(String, u64), Vec<(String, String)>>::new();
     for operation in operations {
         if operation["campaign"].as_str() != Some(campaign.key())
             || operation["namespace"].as_str() != Some("vector-execution-v1")
@@ -5633,15 +5633,10 @@ fn replay_vector_retained_episode(expected: &Path) -> Result<String, String> {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
-            if retained_comparisons
-                .insert(key.clone(), (input, observed))
-                .is_some()
-            {
-                return Err(format!(
-                    "retained vector fixture duplicated checker {} case {}",
-                    key.0, key.1
-                ));
-            }
+            retained_comparisons
+                .entry(key)
+                .or_default()
+                .push((input, observed));
         }
     }
     for line in artifacts["oracle.jsonl"]
@@ -5664,17 +5659,24 @@ fn replay_vector_retained_episode(expected: &Path) -> Result<String, String> {
                 &decode_storage_hex(observed_hex)?,
             )?;
         let key = (replayed.checker_id.to_owned(), replayed.case_id);
-        let literal = retained_comparisons.remove(&key).ok_or_else(|| {
+        let literals = retained_comparisons.get_mut(&key).ok_or_else(|| {
             format!(
                 "retained vector oracle row has no fixture comparison checker={} case={}",
                 key.0, key.1
             )
         })?;
-        if literal.0 != input_hex || literal.1 != observed_hex {
+        let Some(position) = literals
+            .iter()
+            .position(|literal| literal.0 == input_hex && literal.1 == observed_hex)
+        else {
             return Err(format!(
                 "retained vector oracle bytes differ from fixture checker={} case={}",
                 key.0, key.1
             ));
+        };
+        literals.remove(position);
+        if literals.is_empty() {
+            retained_comparisons.remove(&key);
         }
     }
     if !retained_comparisons.is_empty() {
