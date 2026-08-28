@@ -2,7 +2,9 @@
 
 use std::arch::x86_64::*;
 
-use super::{InstructionTier, KernelArm, KernelTable, MAX_DOT_I8_DIMENSION, scalar};
+use super::{
+    InstructionTier, KernelArm, KernelBackendTag, KernelTable, MAX_DOT_I8_DIMENSION, scalar,
+};
 
 const I8_LANES: usize = 32;
 const I8_UNROLL: usize = 4; // baseline — pending frontier campaign B1
@@ -12,6 +14,7 @@ const HAMMING_UNROLL: usize = 4; // baseline — pending frontier campaign B1
 
 pub(super) fn table() -> KernelTable {
     KernelTable {
+        backend: KernelBackendTag::Avx2,
         arm: KernelArm::Avx2,
         tier: InstructionTier::Avx2,
         dot_i8,

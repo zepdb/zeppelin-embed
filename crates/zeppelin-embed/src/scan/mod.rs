@@ -2,11 +2,16 @@
 
 pub mod parallel;
 pub(crate) mod topk;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod vector_fault;
 
 pub use parallel::{ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity};
 
 use crate::kernels;
 use crate::lifecycle::QueryCancellation;
+#[cfg(any(test, feature = "test-support"))]
+use crate::quant::est_dot_bit4;
 use crate::quant::{
     Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
     est_dot_bit4_batch,
@@ -282,6 +287,158 @@ impl From<QuantError> for ScanError {
 /// scores.
 pub fn top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, ScanError> {
     scan_top_k(request, k)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn scan_partition_with_vector_faults(
+    request: ScanRequest<'_>,
+    k: usize,
+    range: std::ops::Range<usize>,
+    cancellation: Option<&QueryCancellation<'_>>,
+    controller: &vector_fault::VectorFaultController,
+    source: vector_fault::VectorRowSource,
+    tier: vector_fault::VectorSearchTier,
+) -> Result<PartitionScan, ScanError> {
+    check_cancellation(cancellation)?;
+    let geometry = scan_geometry(request)?;
+    if range.start > range.end || range.end > geometry.row_count {
+        return Err(ScanError::ArithmeticOverflow);
+    }
+    let (candidates, scored_rows) =
+        scan_faulted_range(request, k, range, controller, source, tier)?;
+    let dimensions = request_dimension(request)?;
+    let dims_touched = u64::try_from(scored_rows)
+        .map_err(|_| ScanError::ArithmeticOverflow)?
+        .checked_mul(u64::try_from(dimensions).map_err(|_| ScanError::ArithmeticOverflow)?)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let bytes_read = scored_rows
+        .checked_mul(request_bytes_per_row(request)?)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    Ok(PartitionScan {
+        candidates,
+        dims_touched,
+        bytes_read,
+        worker_thread_id: std::thread::current().id(),
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn scan_faulted_range(
+    request: ScanRequest<'_>,
+    k: usize,
+    range: std::ops::Range<usize>,
+    controller: &vector_fault::VectorFaultController,
+    source: vector_fault::VectorRowSource,
+    tier: vector_fault::VectorSearchTier,
+) -> Result<(Vec<ScanCandidate>, usize), ScanError> {
+    let geometry = scan_geometry(request)?;
+    if range.start > range.end || range.end > geometry.row_count {
+        return Err(ScanError::ArithmeticOverflow);
+    }
+    let mut selected = BoundedTopK::new(k.min(geometry.row_count));
+    let mut scored_rows = 0_usize;
+    for row in range {
+        if !row_is_allowed(request.row_mask, row) {
+            continue;
+        }
+        let candidate = score_faulted_row(request, row, controller, source, tier)?;
+        scored_rows = scored_rows
+            .checked_add(1)
+            .ok_or(ScanError::ArithmeticOverflow)?;
+        if controller.after_eligible_row(source, tier, row) {
+            return Err(ScanError::Cancelled { partial: false });
+        }
+        selected.push(candidate);
+    }
+    Ok((selected.into_sorted(), scored_rows))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn score_faulted_row(
+    request: ScanRequest<'_>,
+    row: usize,
+    controller: &vector_fault::VectorFaultController,
+    source: vector_fault::VectorRowSource,
+    tier: vector_fault::VectorSearchTier,
+) -> Result<ScanCandidate, ScanError> {
+    let score = match (request.query, request.rows) {
+        (ScanQuery::F32(query), ScanRows::F32RowMajor(rows)) => {
+            let values = scalar_row_range(rows.values(), query.len(), row..row + 1)?;
+            kernels::dot_f32(query, values)
+        }
+        (ScanQuery::F32(query), ScanRows::F32BorrowedRowMajor(rows)) => {
+            let values = scalar_row_range(rows, query.len(), row..row + 1)?;
+            kernels::dot_f32(query, values)
+        }
+        (ScanQuery::F16(query), ScanRows::F16RowMajor(rows)) => {
+            let values = scalar_row_range(rows, query.len(), row..row + 1)?;
+            kernels::dot_f16(query, values)
+        }
+        (ScanQuery::Int8(query), ScanRows::Int8RowMajor { codes, factors }) => {
+            let values = scalar_row_range(codes, query.len(), row..row + 1)?;
+            let factor = factors.get(row).ok_or(ScanError::ArithmeticOverflow)?;
+            let mut scale = factor.scale;
+            let mut offset = factor.offset;
+            controller.corrupt_int8(source, tier, row, &mut scale, &mut offset);
+            dot_int8_query(
+                query,
+                Int8Vec {
+                    codes: values,
+                    scale,
+                    offset,
+                },
+            )?
+        }
+        (ScanQuery::Bit4(query), ScanRows::Bit4RowMajor { codes, factors }) => {
+            let values = scalar_row_range(codes, query.len().div_ceil(2), row..row + 1)?;
+            let mut owned_codes = values.to_vec();
+            let mut factor = *factors.get(row).ok_or(ScanError::ArithmeticOverflow)?;
+            controller.corrupt_bit4(source, tier, row, &mut owned_codes, &mut factor);
+            est_dot_bit4(query, &owned_codes, factor)?
+        }
+        (query, rows) => {
+            return Err(ScanError::SchemeMismatch {
+                query: query.scheme(),
+                rows: rows.scheme(),
+            });
+        }
+    };
+    if !score.is_finite() {
+        return Err(ScanError::NonFiniteScore { row_id: row });
+    }
+    Ok(ScanCandidate { row_id: row, score })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn request_dimension(request: ScanRequest<'_>) -> Result<usize, ScanError> {
+    let dimension = match request.query {
+        ScanQuery::F32(query) => query.len(),
+        ScanQuery::F16(query) => query.len(),
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len(),
+    };
+    if dimension == 0 {
+        Err(ScanError::ZeroDimension)
+    } else {
+        Ok(dimension)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn request_bytes_per_row(request: ScanRequest<'_>) -> Result<usize, ScanError> {
+    match request.query {
+        ScanQuery::F32(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(ScanError::ArithmeticOverflow),
+        ScanQuery::F16(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or(ScanError::ArithmeticOverflow),
+        ScanQuery::Int8(query) => Ok(query.len()),
+        ScanQuery::Bit4(query) => Ok(query.len().div_ceil(2)),
+    }
 }
 
 /// Forces the planner's gather executor for threshold calibration.

@@ -645,6 +645,15 @@ pub enum GraphSearchError {
     AdaptiveEf(AdaptiveEfError),
     /// The canonical f32 pool-rescore path rejected its inputs.
     Rescore(RescoreError),
+    /// A filtered traversal retained fewer allowed rows than the requested result count.
+    FilteredCandidateShortfall {
+        /// Requested result count.
+        k: usize,
+        /// Allowed candidates retained by the original traversal.
+        candidates: usize,
+        /// Exact work performed by that original traversal before refusal.
+        counters: GraphSearchCounters,
+    },
     /// Chunk-local integrity validation rejected exact-rescore bytes.
     ExactRescoreUnavailable(String),
     /// Unfiltered traversal crossed the Task-16 collapse guard; M6 owns fallback.
@@ -685,6 +694,10 @@ impl std::fmt::Display for GraphSearchError {
             Self::Gather(error) => error.fmt(formatter),
             Self::AdaptiveEf(error) => error.fmt(formatter),
             Self::Rescore(error) => error.fmt(formatter),
+            Self::FilteredCandidateShortfall { k, candidates, .. } => write!(
+                formatter,
+                "filtered graph search retained {candidates} candidates for requested k={k}"
+            ),
             Self::ExactRescoreUnavailable(detail) => formatter.write_str(detail),
             Self::VisitedCapExceeded { visited, cap } => write!(
                 formatter,
@@ -720,6 +733,7 @@ impl std::error::Error for GraphSearchError {
             Self::Scan(error) => Some(error),
             Self::Geometry(_)
             | Self::ExactRescoreUnavailable(_)
+            | Self::FilteredCandidateShortfall { .. }
             | Self::VisitedCapExceeded { .. }
             | Self::Cancelled { .. }
             | Self::Timeout { .. }
@@ -1040,6 +1054,12 @@ pub struct GraphSearcher<'a> {
     rescore_validator: Option<&'a dyn RescoreValidator>,
     entries: [CheckedNodeId; 4],
     scratch: &'a mut GraphSearchScratch,
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault: Option<(
+        &'a crate::scan::vector_fault::VectorFaultController,
+        crate::scan::vector_fault::VectorRowSource,
+        crate::scan::vector_fault::VectorSearchTier,
+    )>,
     #[cfg(test)]
     hop_cancellation: Option<TestHopCancellation>,
 }
@@ -1136,6 +1156,8 @@ impl<'a> GraphSearcher<'a> {
             rescore_validator: None,
             entries: [first?, second?, third?, fourth?],
             scratch,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault: None,
             #[cfg(test)]
             hop_cancellation: None,
         })
@@ -1143,6 +1165,17 @@ impl<'a> GraphSearcher<'a> {
 
     pub(crate) fn with_rescore_validator(mut self, validator: &'a dyn RescoreValidator) -> Self {
         self.rescore_validator = Some(validator);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_vector_fault_controller(
+        mut self,
+        controller: &'a crate::scan::vector_fault::VectorFaultController,
+        source: crate::scan::vector_fault::VectorRowSource,
+        tier: crate::scan::vector_fault::VectorSearchTier,
+    ) -> Self {
+        self.vector_fault = Some((controller, source, tier));
         self
     }
 
@@ -1428,13 +1461,37 @@ impl<'a> GraphSearcher<'a> {
             coarse_bytes_per_row,
         )
         .with_prefetch(request.prefetch.is_enabled());
-        let rescored = rescore_top_k(
+        let rescored = match rescore_top_k(
             request.query,
             self.rescore,
             self.graph.layout().dims() as usize,
             pool,
             request.k,
-        )?;
+        ) {
+            Ok(rescored) => rescored,
+            Err(RescoreError::InsufficientCandidates { k, candidates }) if allow_list.is_some() => {
+                counters.candidates_rescored = 0;
+                counters.dims_touched = u64::try_from(counters.candidates_scored)
+                    .ok()
+                    .and_then(|rows| rows.checked_mul(u64::from(self.graph.layout().dims())))
+                    .ok_or_else(|| {
+                        GraphSearchError::Geometry("dimension counter overflow".to_owned())
+                    })?;
+                counters.bytes_read = counters
+                    .candidates_scored
+                    .checked_mul(coarse_bytes_per_row)
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or_else(|| {
+                        GraphSearchError::Geometry("byte counter exceeds u64".to_owned())
+                    })?;
+                return Err(GraphSearchError::FilteredCandidateShortfall {
+                    k,
+                    candidates,
+                    counters,
+                });
+            }
+            Err(error) => return Err(GraphSearchError::Rescore(error)),
+        };
         check_cancellation(cancellation)?;
         counters.candidates_rescored = rescored.candidates_rescored;
         let touched_rows = counters
@@ -1541,10 +1598,19 @@ impl<'a> GraphSearcher<'a> {
             .checked_add(row_count)
             .ok_or_else(|| GraphSearchError::Geometry("candidate counter overflow".to_owned()))?;
         for candidate in scored.into_iter().flatten() {
+            let allowed = allow_list.is_none_or(|mask| mask.contains(candidate.row_id.raw()));
+            #[cfg(any(test, feature = "test-support"))]
+            if allowed && let Some((controller, source, tier)) = self.vector_fault {
+                let local_row = usize::try_from(candidate.row_id.raw()).map_err(|_| {
+                    GraphSearchError::Geometry("graph row id exceeds usize".to_owned())
+                })?;
+                if controller.after_eligible_row(source, tier, local_row) {
+                    return Err(GraphSearchError::Cancelled { partial: false });
+                }
+            }
             if let Some(sequence) = candidate_sequence.as_mut() {
                 sequence.push(candidate.row_id.raw());
             }
-            let allowed = allow_list.is_none_or(|mask| mask.contains(candidate.row_id.raw()));
             let mut pushed = false;
             if allowed && max_heap_would_keep(&self.scratch.pool, candidate, ef) {
                 max_heap_insert_bounded(&mut self.scratch.pool, candidate, ef)?;
@@ -2306,6 +2372,66 @@ mod tests {
             },
         );
         assert!(property.is_ok(), "property result: {property:?}");
+    }
+
+    #[test]
+    fn vector_row_checkpoint_counts_only_filter_accepted_graph_rows() {
+        let (encoded, rescore) = complete_graph_fixture(12);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("fixture graph is valid");
+        let query = vector(4.0);
+        let request = GraphSearchRequest::new(&query, 1, 0x27_24)
+            .with_ef(12)
+            .with_candidate_trace();
+        let mut trace_scratch =
+            GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+                .expect("trace scratch");
+        let mut trace =
+            GraphSearcher::new(graph, &rescore, &mut trace_scratch).expect("trace searcher");
+        let trace_result = trace.search(request, None).expect("trace traversal");
+        let sequence = trace_result.candidate_sequence().expect("candidate trace");
+        let first = *sequence.first().expect("first scored row");
+        let accepted = *sequence
+            .iter()
+            .find(|&&row| row != first)
+            .expect("later filter-accepted row");
+        let allow_list = DocBitmap::from_ids([accepted]);
+        let controller = crate::scan::vector_fault::VectorFaultController::armed(
+            crate::scan::vector_fault::VectorFault::CancelAfterRows {
+                source: crate::scan::vector_fault::VectorRowSource::Sealed([0x27; 16]),
+                requested_rows: 1,
+                tier: crate::scan::vector_fault::VectorSearchTier::Graph,
+            },
+            27_240,
+        );
+        let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())
+            .expect("fault scratch");
+        let mut searcher = GraphSearcher::new(graph, &rescore, &mut scratch)
+            .expect("fault searcher")
+            .with_vector_fault_controller(
+                &controller,
+                crate::scan::vector_fault::VectorRowSource::Sealed([0x27; 16]),
+                crate::scan::vector_fault::VectorSearchTier::Graph,
+            );
+        let error = searcher
+            .search_filtered(request, &allow_list, usize::MAX, None)
+            .expect_err("first filter-accepted row must cancel");
+        assert_eq!(error, GraphSearchError::Cancelled { partial: false });
+        controller.finalize_search(false);
+        let receipts = controller.take_typed_receipts();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(
+                receipts[0].effect(),
+                crate::scan::vector_fault::VectorFaultEffect::CancelledAfterRows {
+                    local_row,
+                    requested_rows: 1,
+                    observed_rows: 1,
+                    ..
+                } if *local_row == accepted
+            ),
+            "filtered-out row {first} incorrectly consumed the eligible-row checkpoint: {:?}",
+            receipts[0].effect()
+        );
     }
 
     #[test]

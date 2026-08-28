@@ -118,6 +118,15 @@ impl Bit4Query {
         self.codes.is_empty()
     }
 
+    /// Returns the prepared code bytes, pre-interleave sum, and half-scale
+    /// exactly as consumed by the scoring kernel.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn observation_parts(&self) -> (&[i8], i32, f64) {
+        (&self.codes, self.code_sum, self.scale_half)
+    }
+
     pub(crate) fn kernel_parts(&self) -> (&[i8], i32, f64) {
         (&self.codes, self.code_sum, self.scale_half)
     }

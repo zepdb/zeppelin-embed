@@ -45,6 +45,37 @@ pub(super) fn initialize() -> Result<KernelArm, KernelInitError> {
         None => best_runtime_table(),
     };
 
+    initialize_table(table)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn initialize_forced(
+    backend: super::KernelBackendId,
+) -> Result<super::KernelBackendId, KernelInitError> {
+    let requested = backend.arm();
+    let table = variant_tables()
+        .into_iter()
+        .flatten()
+        .find(|table| super::KernelBackendId::from_tag(table.backend) == backend)
+        .ok_or(KernelInitError::UnsupportedArm { requested })?;
+    if let Some(selected) = ACTIVE_TABLE.get() {
+        let selected_backend = super::KernelBackendId::from_tag(selected.backend);
+        if selected_backend == backend {
+            return Ok(selected_backend);
+        }
+        return Err(KernelInitError::AlreadyInitialized {
+            selected: selected.arm,
+            requested,
+        });
+    }
+
+    let _set_result = ACTIVE_TABLE.set(table);
+    Ok(ACTIVE_TABLE.get().map_or(backend, |selected| {
+        super::KernelBackendId::from_tag(selected.backend)
+    }))
+}
+
+fn initialize_table(table: KernelTable) -> Result<KernelArm, KernelInitError> {
     if let Some(selected) = ACTIVE_TABLE.get() {
         if selected.arm == table.arm {
             return Ok(selected.arm);

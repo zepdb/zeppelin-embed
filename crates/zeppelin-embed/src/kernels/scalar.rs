@@ -1,9 +1,10 @@
 //! Scalar reference kernels: the oracle for every dispatched variant.
 
-use super::{InstructionTier, KernelArm, KernelTable, MAX_DOT_I8_DIMENSION};
+use super::{InstructionTier, KernelArm, KernelBackendTag, KernelTable, MAX_DOT_I8_DIMENSION};
 
 pub(super) fn table() -> KernelTable {
     KernelTable {
+        backend: KernelBackendTag::Scalar,
         arm: KernelArm::Scalar,
         tier: InstructionTier::Scalar,
         dot_i8,

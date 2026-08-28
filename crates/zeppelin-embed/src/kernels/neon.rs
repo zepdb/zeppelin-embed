@@ -4,7 +4,8 @@ use std::arch::aarch64::*;
 use std::arch::asm;
 
 use super::{
-    InstructionTier, KernelArm, KernelFeatures, KernelTable, MAX_DOT_I8_DIMENSION, scalar,
+    InstructionTier, KernelArm, KernelBackendTag, KernelFeatures, KernelTable,
+    MAX_DOT_I8_DIMENSION, scalar,
 };
 
 const I8_LANES: usize = 16;
@@ -38,6 +39,7 @@ pub(super) fn table(features: KernelFeatures) -> KernelTable {
 
 pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
     KernelTable {
+        backend: KernelBackendTag::NeonDotprodU4,
         arm: KernelArm::Neon,
         tier: InstructionTier::NeonDotprod,
         dot_i8: dot_i8_dotprod,
@@ -57,6 +59,7 @@ pub(super) fn dotprod_table(features: KernelFeatures) -> KernelTable {
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
     KernelTable {
+        backend: KernelBackendTag::NeonI8mm,
         arm: KernelArm::Neon,
         tier: InstructionTier::NeonI8mmReserved,
         dot_i8: dot_i8_dotprod,
@@ -75,31 +78,53 @@ pub(super) fn i8mm_table(features: KernelFeatures) -> KernelTable {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u2_table(features: KernelFeatures) -> KernelTable {
-    dotprod_shape_table(features, dot_i8_dotprod_u2, dot_i8_batch_dotprod_u2)
+    dotprod_shape_table(
+        features,
+        KernelBackendTag::NeonDotprodU2,
+        dot_i8_dotprod_u2,
+        dot_i8_batch_dotprod_u2,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u6_table(features: KernelFeatures) -> KernelTable {
-    dotprod_shape_table(features, dot_i8_dotprod_u6, dot_i8_batch_dotprod_u6)
+    dotprod_shape_table(
+        features,
+        KernelBackendTag::NeonDotprodU6,
+        dot_i8_dotprod_u6,
+        dot_i8_batch_dotprod_u6,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_u8_table(features: KernelFeatures) -> KernelTable {
-    dotprod_shape_table(features, dot_i8_dotprod_u8, dot_i8_batch_dotprod_u8)
+    dotprod_shape_table(
+        features,
+        KernelBackendTag::NeonDotprodU8,
+        dot_i8_dotprod_u8,
+        dot_i8_batch_dotprod_u8,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn dotprod_prefetch_table(features: KernelFeatures) -> KernelTable {
-    dotprod_shape_table(features, dot_i8_dotprod, dot_i8_batch_dotprod_prefetch)
+    dotprod_shape_table(
+        features,
+        KernelBackendTag::NeonDotprodU4Prefetch,
+        dot_i8_dotprod,
+        dot_i8_batch_dotprod_prefetch,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
 fn dotprod_shape_table(
     features: KernelFeatures,
+    backend: KernelBackendTag,
     dot_i8: super::DotI8Fn,
     dot_i8_batch: super::DotI8BatchFn,
 ) -> KernelTable {
     KernelTable {
+        backend,
         arm: KernelArm::Neon,
         tier: InstructionTier::NeonDotprod,
         dot_i8,
@@ -118,6 +143,7 @@ fn dotprod_shape_table(
 
 pub(super) fn widen_table(features: KernelFeatures) -> KernelTable {
     KernelTable {
+        backend: KernelBackendTag::NeonWiden,
         arm: KernelArm::Neon,
         tier: InstructionTier::NeonWiden,
         dot_i8: dot_i8_widen,

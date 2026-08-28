@@ -16,6 +16,9 @@ mod dispatch;
 /// Posting-block decode kernels: bit-unpack and delta prefix sum.
 pub mod postings;
 mod scalar;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod vector_fault;
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
@@ -57,6 +60,112 @@ pub enum InstructionTier {
     NeonI8mmReserved,
     /// Reserved, unimplemented FEAT_SME2 campaign tier.
     Sme2Reserved,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+enum KernelBackendTag {
+    Scalar,
+    #[cfg(target_arch = "aarch64")]
+    NeonWiden,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprodU4,
+    #[cfg(target_arch = "aarch64")]
+    NeonI8mm,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprodU2,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprodU6,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprodU8,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprodU4Prefetch,
+    #[cfg(target_arch = "x86_64")]
+    Avx2,
+}
+
+/// Stable identity of one concrete runtime kernel table.
+///
+/// This is test-support evidence rather than a user-selectable production
+/// arm. In particular, the experimental DotProd shapes are enumerable for
+/// parity campaigns but cannot be selected through `ZE_KERNEL`.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[doc(hidden)]
+pub enum KernelBackendId {
+    /// Portable scalar table.
+    Scalar,
+    /// Baseline AArch64 widening table.
+    NeonWiden,
+    /// Shipped four-accumulator AArch64 DotProd table.
+    NeonDotprodU4,
+    /// AArch64 I8MM batch table.
+    NeonI8mm,
+    /// Two-accumulator AArch64 DotProd experiment.
+    NeonDotprodU2,
+    /// Six-accumulator AArch64 DotProd experiment.
+    NeonDotprodU6,
+    /// Eight-accumulator AArch64 DotProd experiment.
+    NeonDotprodU8,
+    /// Four-accumulator AArch64 DotProd table with batch prefetch.
+    NeonDotprodU4Prefetch,
+    /// x86-64 AVX2 table.
+    Avx2,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl KernelBackendId {
+    const fn from_tag(tag: KernelBackendTag) -> Self {
+        match tag {
+            KernelBackendTag::Scalar => Self::Scalar,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonWiden => Self::NeonWiden,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonDotprodU4 => Self::NeonDotprodU4,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonI8mm => Self::NeonI8mm,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonDotprodU2 => Self::NeonDotprodU2,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonDotprodU6 => Self::NeonDotprodU6,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonDotprodU8 => Self::NeonDotprodU8,
+            #[cfg(target_arch = "aarch64")]
+            KernelBackendTag::NeonDotprodU4Prefetch => Self::NeonDotprodU4Prefetch,
+            #[cfg(target_arch = "x86_64")]
+            KernelBackendTag::Avx2 => Self::Avx2,
+        }
+    }
+
+    /// Returns the permanent canonical evidence label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::NeonWiden => "neon-widen",
+            Self::NeonDotprodU4 => "neon-dotprod-u4",
+            Self::NeonI8mm => "neon-i8mm",
+            Self::NeonDotprodU2 => "neon-dotprod-u2",
+            Self::NeonDotprodU6 => "neon-dotprod-u6",
+            Self::NeonDotprodU8 => "neon-dotprod-u8",
+            Self::NeonDotprodU4Prefetch => "neon-dotprod-u4-prefetch",
+            Self::Avx2 => "avx2",
+        }
+    }
+
+    const fn arm(self) -> KernelArm {
+        match self {
+            Self::Scalar => KernelArm::Scalar,
+            Self::NeonWiden
+            | Self::NeonDotprodU4
+            | Self::NeonI8mm
+            | Self::NeonDotprodU2
+            | Self::NeonDotprodU6
+            | Self::NeonDotprodU8
+            | Self::NeonDotprodU4Prefetch => KernelArm::Neon,
+            Self::Avx2 => KernelArm::Avx2,
+        }
+    }
 }
 
 /// Runtime CPU capabilities relevant to current and reserved kernel tiers.
@@ -214,6 +323,8 @@ type ScoreBit4PtrsFn = unsafe fn(
 );
 #[derive(Clone, Copy)]
 struct KernelTable {
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    backend: KernelBackendTag,
     arm: KernelArm,
     tier: InstructionTier,
     dot_i8: DotI8Fn,
@@ -480,6 +591,14 @@ impl KernelVariant {
         self.table.tier
     }
 
+    /// Returns this concrete table's stable evidence identity.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn backend_id(self) -> KernelBackendId {
+        KernelBackendId::from_tag(self.table.backend)
+    }
+
     /// Computes an i8 dot product through this concrete table.
     #[must_use]
     pub fn dot_i8(self, a: &[i8], b: &[i8]) -> i32 {
@@ -669,7 +788,12 @@ pub fn platform_wide_stream_checksum(bytes: &[u8]) -> Option<u64> {
 /// MAX_DOT_I8_DIMENSION`; the hot path performs `debug_assert!` checks only.
 #[must_use]
 pub fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
-    (dispatch::active_table().dot_i8)(a, b)
+    let table = dispatch::active_table();
+    let result = (table.dot_i8)(a, b);
+    observe_selected_score(table, vector_fault_kernel_id_dot_i8(), a.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
+    result
 }
 
 /// Computes the dot product of equal-length f32 vectors.
@@ -678,7 +802,12 @@ pub fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
 /// `debug_assert!` check only. SIMD accumulation may reassociate additions.
 #[must_use]
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
-    (dispatch::active_table().dot_f32)(a, b)
+    let table = dispatch::active_table();
+    let result = (table.dot_f32)(a, b);
+    observe_selected_score(table, vector_fault_kernel_id_dot_f32(), a.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32(result.to_bits()));
+    result
 }
 
 /// Computes an f32 dot product from equal-length IEEE f16 bit vectors.
@@ -688,7 +817,12 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
 /// conversion and f32 arithmetic behavior.
 #[must_use]
 pub fn dot_f16(a: &[u16], b: &[u16]) -> f32 {
-    (dispatch::active_table().dot_f16)(a, b)
+    let table = dispatch::active_table();
+    let result = (table.dot_f16)(a, b);
+    observe_selected_score(table, vector_fault_kernel_id_dot_f16(), a.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32(result.to_bits()));
+    result
 }
 
 /// Computes Hamming distance over equal-length packed-byte vectors.
@@ -698,7 +832,12 @@ pub fn dot_f16(a: &[u16], b: &[u16]) -> f32 {
 /// including unused high bits in a caller's final partial logical byte.
 #[must_use]
 pub fn hamming_u1(a: &[u8], b: &[u8]) -> u32 {
-    (dispatch::active_table().hamming_u1)(a, b)
+    let table = dispatch::active_table();
+    let result = (table.hamming_u1)(a, b);
+    observe_selected_score(table, vector_fault_kernel_id_hamming(), a.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::U32(result));
+    result
 }
 
 /// Scores one i8 query against contiguous row-major vectors.
@@ -707,7 +846,15 @@ pub fn hamming_u1(a: &[u8], b: &[u8]) -> u32 {
 /// and `d <= MAX_DOT_I8_DIMENSION`; the hot path uses `debug_assert!` only.
 /// A zero dimension deterministically fills `out` with zero.
 pub fn dot_i8_batch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
-    (dispatch::active_table().dot_i8_batch)(q, rows, d, out);
+    let table = dispatch::active_table();
+    (table.dot_i8_batch)(q, rows, d, out);
+    observe_selected_score(
+        table,
+        vector_fault_kernel_id_dot_i8_batch(),
+        d.saturating_mul(out.len()),
+    );
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32s(out.to_vec()));
 }
 
 /// Scores one packed-bit query against contiguous row-major byte vectors.
@@ -716,7 +863,15 @@ pub fn dot_i8_batch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
 /// d_bytes * out.len()`; the hot path uses `debug_assert!` only. Every bit in
 /// the final byte is significant. A zero byte dimension fills `out` with zero.
 pub fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) {
-    (dispatch::active_table().hamming_u1_batch)(q, rows, d_bytes, out);
+    let table = dispatch::active_table();
+    (table.hamming_u1_batch)(q, rows, d_bytes, out);
+    observe_selected_score(
+        table,
+        vector_fault_kernel_id_hamming_batch(),
+        d_bytes.saturating_mul(out.len()),
+    );
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::U32s(out.to_vec()));
 }
 
 /// Scores a signed-byte query against one packed four-bit row.
@@ -728,11 +883,21 @@ pub fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) 
 /// allocates no memory.
 #[must_use]
 pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
-    (dispatch::active_table().dot_bit4)(q, codes)
+    let table = dispatch::active_table();
+    let result = (table.dot_bit4)(q, codes);
+    observe_selected_score(table, vector_fault_kernel_id_dot_bit4(), q.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
+    result
 }
 
 pub(crate) fn dot_bit4_prepared(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
-    (dispatch::active_table().dot_bit4_prepared)(q, query_sum, codes)
+    let table = dispatch::active_table();
+    let result = (table.dot_bit4_prepared)(q, query_sum, codes);
+    observe_selected_score(table, vector_fault_kernel_id_dot_bit4_prepared(), q.len());
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
+    result
 }
 
 pub(crate) fn score_bit4_prepared_batch(
@@ -744,16 +909,59 @@ pub(crate) fn score_bit4_prepared_batch(
     factors: &[crate::quant::Bit4Factors],
     out: &mut [f32],
 ) {
-    (dispatch::active_table().score_bit4_prepared_batch)(
-        q,
-        query_sum,
-        query_scale_half,
-        rows,
-        d,
-        factors,
-        out,
+    let table = dispatch::active_table();
+    (table.score_bit4_prepared_batch)(q, query_sum, query_scale_half, rows, d, factors, out);
+    observe_selected_score(
+        table,
+        vector_fault_kernel_id_score_bit4_batch(),
+        d.saturating_mul(out.len()),
     );
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32s(
+        out.iter().map(|value| value.to_bits()).collect(),
+    ));
 }
+
+#[cfg(any(test, feature = "test-support"))]
+fn observe_selected_score(
+    table: &KernelTable,
+    kernel: vector_fault::KernelOperationId,
+    work_items: usize,
+) {
+    vector_fault::observe_selected_score(table.backend, kernel, work_items);
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn observe_selected_score(table: &KernelTable, kernel: (), work_items: usize) {
+    let _ = (table, kernel, work_items);
+}
+
+macro_rules! vector_fault_kernel_id {
+    ($name:ident, $variant:ident) => {
+        #[cfg(any(test, feature = "test-support"))]
+        const fn $name() -> vector_fault::KernelOperationId {
+            vector_fault::KernelOperationId::$variant
+        }
+
+        #[cfg(not(any(test, feature = "test-support")))]
+        const fn $name() {}
+    };
+}
+
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_i8, DotI8);
+vector_fault_kernel_id!(vector_fault_kernel_id_hamming, HammingU1);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_f32, DotF32);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_f16, DotF16);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_i8_batch, DotI8Batch);
+vector_fault_kernel_id!(vector_fault_kernel_id_hamming_batch, HammingU1Batch);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_bit4, DotBit4);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_bit4_prepared, DotBit4Prepared);
+vector_fault_kernel_id!(vector_fault_kernel_id_dot_bit4_batch, DotBit4Batch);
+vector_fault_kernel_id!(
+    vector_fault_kernel_id_score_bit4_batch,
+    ScoreBit4PreparedBatch
+);
+vector_fault_kernel_id!(vector_fault_kernel_id_score_bit4_ptrs, ScoreBit4Ptrs);
 
 /// Scores four arbitrary validated packed four-bit rows through runtime dispatch.
 ///
@@ -771,13 +979,21 @@ pub fn score_bit4_ptrs(
     factors: &[crate::quant::Bit4Factors; 4],
     out: &mut [f32; 4],
 ) -> Result<(), GatherShapeError> {
-    score_bit4_ptrs_with_table(
-        dispatch::active_table(),
-        (q, query_sum, query_scale_half),
-        rows,
-        factors,
-        out,
-    )
+    let table = dispatch::active_table();
+    let result =
+        score_bit4_ptrs_with_table(table, (q, query_sum, query_scale_half), rows, factors, out);
+    if result.is_ok() {
+        observe_selected_score(
+            table,
+            vector_fault_kernel_id_score_bit4_ptrs(),
+            q.len().saturating_mul(out.len()),
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32s(
+            out.iter().map(|value| value.to_bits()).collect(),
+        ));
+    }
+    result
 }
 
 /// Scores one signed-byte query against contiguous packed four-bit rows.
@@ -786,5 +1002,13 @@ pub fn score_bit4_ptrs(
 /// d.div_ceil(2) * out.len()` and `d <= MAX_DOT_I8_DIMENSION`. A zero dimension
 /// fills `out` with zero. No scratch storage is allocated.
 pub fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
-    (dispatch::active_table().dot_bit4_batch)(q, rows, d, out);
+    let table = dispatch::active_table();
+    (table.dot_bit4_batch)(q, rows, d, out);
+    observe_selected_score(
+        table,
+        vector_fault_kernel_id_dot_bit4_batch(),
+        d.saturating_mul(out.len()),
+    );
+    #[cfg(any(test, feature = "test-support"))]
+    vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32s(out.to_vec()));
 }

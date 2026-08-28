@@ -52,6 +52,15 @@ impl Int8Query {
         self.codes.is_empty()
     }
 
+    /// Returns the prepared code bytes, scale, and code sum exactly as
+    /// consumed by the affine dot-product scorer.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn observation_parts(&self) -> (&[i8], f64, i32) {
+        (&self.codes, self.scale, self.code_sum)
+    }
+
     #[cfg(test)]
     pub(crate) fn codes(&self) -> &[i8] {
         &self.codes
