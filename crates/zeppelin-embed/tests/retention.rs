@@ -302,12 +302,9 @@ fn explicit_clock_cutoff_emits_receipt_and_keeps_timestamp_equal_to_cutoff() {
     let controller = IngestRetentionFaultController::new(22);
     let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
         .with_ingest_retention_fault_controller(controller.clone());
-    let store = Store::open_with_test_dependencies(
-        directory.path(),
-        OpenOptions::default(),
-        dependencies,
-    )
-    .expect("open retention receipt store");
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open retention receipt store");
     seal_partition(&store, 2_200, &[9]);
     seal_partition(&store, 2_300, &[10]);
     seal_partition(&store, 2_400, &[11]);
