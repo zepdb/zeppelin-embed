@@ -7264,6 +7264,49 @@ fn expected_campaign_comparison_counts(
         }
         return counts;
     }
+    if campaign == CampaignKind::LifecycleAccounting {
+        let mut counts = CampaignSpec::for_kind(campaign)
+            .owned_invariants
+            .iter()
+            .map(|invariant| (invariant.key(), 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        for episode in 0..episodes {
+            let seed = start_seed
+                .checked_add(episode)
+                .expect("lifecycle campaign seed fits u64");
+            let profile = campaign_profile(episode);
+            let program = Program::generate_for(campaign, seed);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            for (operation, invariant) in [
+                (adversarial::campaign::LifecycleOperation::Deadline, "I54"),
+                (
+                    adversarial::campaign::LifecycleOperation::Cancellation,
+                    "I55",
+                ),
+                (adversarial::campaign::LifecycleOperation::CloseDrain, "I56"),
+                (adversarial::campaign::LifecycleOperation::Locking, "I57"),
+                (adversarial::campaign::LifecycleOperation::Accounting, "I58"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Lifecycle(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("lifecycle operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("lifecycle count contract includes operation invariant");
+                *count = count
+                    .checked_add(comparisons)
+                    .expect("lifecycle campaign comparison count fits u64");
+            }
+        }
+        return counts;
+    }
     CampaignSpec::for_kind(campaign)
         .owned_invariants
         .iter()
@@ -7511,6 +7554,16 @@ fn tiering_campaign_comparison_counts_include_same_operation_fault_multiplicity(
     assert_eq!(counts["I51"], 1_000);
     assert!(counts["I52"] > 1_000);
     assert!(counts["I53"] > 1_000);
+}
+
+#[test]
+fn lifecycle_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::LifecycleAccounting, 0, 1_000);
+    assert_eq!(counts["I54"], 1_000);
+    assert_eq!(counts["I55"], 1_000);
+    assert!(counts["I56"] > 1_000);
+    assert_eq!(counts["I57"], 1_000);
+    assert_eq!(counts["I58"], 1_000);
 }
 
 #[test]
