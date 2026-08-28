@@ -3593,6 +3593,11 @@ fn run_tier_campaign_operation(
     };
     let mut receipts = Vec::new();
     for fault in cases {
+        let case_identity = format!(
+            "seed-{seed}-operation-{}-fault-{}",
+            operation.key(),
+            fault.map_or("none", tier_adapter::TierFaultKind::key)
+        );
         let evidence =
             tier_adapter::run_tier_operation(tier_operation_kind(operation), seed, fault)?;
         for invariant in evidence.invariants {
@@ -3625,6 +3630,10 @@ fn run_tier_campaign_operation(
                 oracle_records,
                 coverage,
             );
+            oracle_records
+                .last_mut()
+                .expect("tiering comparison appended one oracle record")
+                .case_identity = Some(case_identity.clone());
         }
         if fault.is_some() {
             control_records.push(format!(
