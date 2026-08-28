@@ -1661,6 +1661,38 @@ impl StoreWal {
         result
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn restore_after_failed_append(
+        &mut self,
+        vfs: &dyn Vfs,
+        path: &Path,
+        policy: DurabilityPolicy,
+        clean_bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        vfs.write(path, clean_bytes)
+            .map_err(|source| StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if let SyncRequirement::Sync(kind) = policy.data_file_sync() {
+            vfs.sync(path, kind).map_err(|source| StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+        let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
+        let recovered = reader.into_clean().map_err(StoreError::WalRecovery)?;
+        let replacement =
+            WalWriter::resume(vfs, path, recovered, policy).map_err(StoreError::WalWrite)?;
+        let retained = replacement
+            .stats()
+            .map_err(StoreError::WalWrite)?
+            .retained_bytes;
+        self.retained.set(retained)?;
+        self.writer = replacement;
+        Ok(())
+    }
+
     pub(crate) fn rewrite(
         &mut self,
         vfs: &dyn Vfs,

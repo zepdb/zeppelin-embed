@@ -3,16 +3,26 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
+
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 use tempfile::tempdir;
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, PurgeError, Revision,
-    SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument,
+    IngestRetentionFaultController, IngestRetentionFaultEffect, IngestRetentionFaultReceiptV1,
+    IngestRetentionPurgeCrashCheckpoint, IngestRetentionTestFault, PurgeError, PurgeUnlinkErrorVfs,
+    Revision, SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreTestDependencies,
+    SystemMonotonicClock,
+};
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
 use zeppelin_embed::meta::{
@@ -130,6 +140,194 @@ fn purge_token_resolves_only_after_the_bytes_are_gone() {
             .expect("scan after token resolution")
             .is_empty()
     );
+}
+
+#[test]
+fn unlink_error_receipt_precedes_reopen_completion_and_sentinel_erasure() {
+    let directory = tempdir().expect("purge unlink receipt directory");
+    let target = DocumentVersion::new(DocId::new(0x23_7f4a), Revision::new(3));
+    let survivor = DocumentVersion::new(DocId::new(0x23_7f4b), Revision::new(1));
+    let controller = IngestRetentionFaultController::new(23);
+    let vfs = Arc::new(PurgeUnlinkErrorVfs::new(
+        Arc::new(StdVfs),
+        controller.clone(),
+    ));
+    let dependencies = StoreTestDependencies::new(vfs, Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller.clone());
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open purge unlink receipt store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(target, VECTOR_SENTINEL_BITS.map(f32::from_bits).to_vec())
+                .with_metadata(METADATA_SENTINEL.to_vec()),
+            IngestDocument::new(survivor, vec![0.0, 1.0, 0.0, 0.0])
+                .with_metadata(b"retained-control".to_vec()),
+        ]))
+        .expect("ingest purge unlink receipt fixture");
+    store.seal().expect("seal purge unlink receipt fixture");
+    let original = store
+        .snapshot()
+        .expect("unlink receipt snapshot")
+        .segments()[0]
+        .meta()
+        .id;
+    let old_path = directory.path().join(original.file_name());
+    controller
+        .arm(IngestRetentionTestFault::PurgeUnlinkError {
+            target_segment: *original.as_bytes(),
+        })
+        .expect("arm purge unlink error");
+    let token = store
+        .purge(&[target.doc_id()])
+        .expect("schedule purge unlink receipt");
+    let error = store
+        .await_physical_purge(token)
+        .expect_err("injected old-segment unlink unexpectedly completed");
+    assert!(
+        matches!(
+            &error,
+            PurgeError::Store(StoreError::Io { path, source })
+                if path == &old_path && source.kind() == std::io::ErrorKind::Other
+        ),
+        "wrong purge unlink error: {error:?}"
+    );
+    assert!(old_path.exists(), "failed unlink removed the original path");
+    assert!(
+        directory.path().join("purge.ze").exists(),
+        "failed unlink removed the durable intent"
+    );
+    let receipts = controller
+        .take_receipts()
+        .expect("take purge unlink receipts");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "selected feature fault purge-unlink-error produced {} Store receipts, expected 1",
+        receipts.len()
+    );
+    store.close().expect("close failed purge Store");
+    let reopened = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen completes failed unlink purge");
+    assert!(
+        sentinel_hits(directory.path())
+            .expect("scan recovered purge")
+            .is_empty()
+    );
+    assert_eq!(
+        search_one(&reopened, &[0.0, 1.0, 0.0, 0.0]).document(),
+        Some(survivor)
+    );
+    assert!(!directory.path().join("purge.ze").exists());
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "subprocess-only helper selected by the parent purge crash test"]
+fn purge_crash_receipt_child_helper() {
+    let directory = std::env::var_os("ZE_PURGE_CRASH_DIRECTORY")
+        .map(PathBuf::from)
+        .expect("purge crash child directory");
+    let receipt_sink = std::env::var_os("ZE_PURGE_CRASH_RECEIPT")
+        .map(PathBuf::from)
+        .expect("purge crash receipt sink");
+    let target = std::env::var("ZE_PURGE_CRASH_TARGET")
+        .expect("purge crash target")
+        .parse::<u128>()
+        .expect("numeric purge crash target");
+    let invocation_id = std::env::var("ZE_PURGE_CRASH_INVOCATION")
+        .expect("purge crash invocation")
+        .parse::<u64>()
+        .expect("numeric purge crash invocation");
+    let controller = IngestRetentionFaultController::new(invocation_id);
+    controller
+        .arm(IngestRetentionTestFault::PurgeCrashBoundary {
+            checkpoint: IngestRetentionPurgeCrashCheckpoint::AfterDurableIntentBeforeRewrite,
+            receipt_sink,
+        })
+        .expect("arm purge crash boundary");
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller);
+    let store =
+        Store::open_with_test_dependencies(&directory, OpenOptions::default(), dependencies)
+            .expect("open purge crash child Store");
+    store
+        .purge(&[DocId::new(target)])
+        .expect("purge crash boundary must abort before returning a token");
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_intent_crash_receipt_reopens_to_complete_physical_purge() {
+    let directory = tempdir().expect("purge crash receipt directory");
+    let receipt_path = directory.path().join("purge-crash-receipt.bin");
+    let target = DocumentVersion::new(DocId::new(0x23_c4a5), Revision::new(3));
+    let survivor = DocumentVersion::new(DocId::new(0x23_c4a6), Revision::new(1));
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open crash fixture");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(target, VECTOR_SENTINEL_BITS.map(f32::from_bits).to_vec())
+                .with_metadata(METADATA_SENTINEL.to_vec()),
+            IngestDocument::new(survivor, vec![0.0, 1.0, 0.0, 0.0])
+                .with_metadata(b"purge-crash-survivor".to_vec()),
+        ]))
+        .expect("ingest purge crash fixture");
+    store.seal().expect("seal purge crash fixture");
+    store
+        .delete(DeleteBatch::new(vec![target.doc_id()]))
+        .expect("logically delete purge crash target");
+    store.close().expect("close purge crash parent fixture");
+
+    let status = Command::new(std::env::current_exe().expect("purge test executable"))
+        .arg("--exact")
+        .arg("purge_crash_receipt_child_helper")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env("ZE_PURGE_CRASH_DIRECTORY", directory.path())
+        .env("ZE_PURGE_CRASH_RECEIPT", &receipt_path)
+        .env("ZE_PURGE_CRASH_TARGET", target.doc_id().get().to_string())
+        .env("ZE_PURGE_CRASH_INVOCATION", "23")
+        .status()
+        .expect("spawn purge crash child");
+    assert_eq!(status.signal(), Some(libc::SIGABRT));
+
+    let receipt_bytes = fs::read(&receipt_path).expect("read durable purge crash receipt");
+    let receipt = IngestRetentionFaultReceiptV1::decode_purge_crash_test_evidence(&receipt_bytes)
+        .expect("decode typed purge crash receipt");
+    assert_eq!(receipt.invocation_id(), 23);
+    match receipt.effect() {
+        IngestRetentionFaultEffect::PurgeCrashBoundary {
+            target_ids,
+            token_id,
+            intent_file_name,
+            intent_durable,
+            artifact_rewrites,
+            child_aborted,
+        } => {
+            assert_eq!(target_ids, &[target.doc_id().get()]);
+            assert_ne!(*token_id, 0);
+            assert_eq!(intent_file_name, "purge.ze");
+            assert!(*intent_durable);
+            assert_eq!(*artifact_rewrites, 0);
+            assert!(*child_aborted);
+        }
+        effect => panic!("wrong purge crash receipt effect: {effect:?}"),
+    }
+    assert!(directory.path().join("purge.ze").exists());
+
+    let reopened = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen completes durable-intent purge");
+    assert!(
+        sentinel_hits(directory.path())
+            .expect("scan recovered purge crash")
+            .is_empty()
+    );
+    assert_eq!(
+        search_one(&reopened, &[0.0, 1.0, 0.0, 0.0]).document(),
+        Some(survivor)
+    );
+    assert!(!directory.path().join("purge.ze").exists());
 }
 
 #[test]

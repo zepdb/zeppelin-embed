@@ -480,6 +480,8 @@ impl Store {
         if no_op {
             return Ok(token);
         }
+        #[cfg(any(test, feature = "test-support"))]
+        let crash_target_ids = known.iter().map(|id| id.get()).collect::<Vec<_>>();
         write_intent(
             vfs,
             &self.directory,
@@ -489,6 +491,28 @@ impl Store {
             },
             self.durability_policy,
         )?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+            let plan = controller.take_purge_crash_boundary_plan().map_err(|_| {
+                StoreError::Synchronization {
+                    component: "ingest-retention controller",
+                }
+            })?;
+            if let Some((invocation_id, receipt_sink)) = plan {
+                let receipt = super::IngestRetentionFaultReceiptV1::purge_crash_boundary(
+                    invocation_id,
+                    crash_target_ids,
+                    token_id,
+                );
+                receipt
+                    .write_purge_crash_test_evidence(&receipt_sink)
+                    .map_err(|source| StoreError::Io {
+                        path: receipt_sink,
+                        source,
+                    })?;
+                std::process::abort();
+            }
+        }
         drop(snapshot);
         drop(active);
         drop(writer_lock);
@@ -633,10 +657,41 @@ impl Store {
             active_state.generation = generation;
             drop(published);
             drop(previous);
-            vfs.delete(&path).map_err(|source| StoreError::Io {
-                path: path.clone(),
-                source,
-            })?;
+            if let Err(source) = vfs.delete(&path) {
+                #[cfg(any(test, feature = "test-support"))]
+                if source.kind() == std::io::ErrorKind::Other
+                    && let Some(controller) = self.ingest_retention_fault_controller.as_ref()
+                {
+                    let invocation_id = controller
+                        .purge_unlink_error_plan(*original.id.as_bytes())
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?;
+                    if let Some(invocation_id) = invocation_id {
+                        let intent_present =
+                            vfs.open(&self.directory.join(PURGE_INTENT_FILE)).is_ok();
+                        let old_path_linked = vfs.open(&path).is_ok();
+                        controller
+                            .push_receipt(super::IngestRetentionFaultReceiptV1::purge_unlink_error(
+                                invocation_id,
+                                *original.id.as_bytes(),
+                                *replacement_id.as_bytes(),
+                                original.id.file_name(),
+                                true,
+                                intent_present,
+                                old_path_linked,
+                            ))
+                            .map_err(|_| StoreError::Synchronization {
+                                component: "ingest-retention controller",
+                            })?;
+                    }
+                }
+                return Err(StoreError::Io {
+                    path: path.clone(),
+                    source,
+                }
+                .into());
+            }
             sync_directory(vfs, &self.directory, self.durability_policy)?;
             rewritten = rewritten.saturating_add(1);
         }

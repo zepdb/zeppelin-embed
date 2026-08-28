@@ -98,12 +98,71 @@ impl Store {
             .ok_or(StoreError::ActiveRowOverflow)?;
         let dims = u32::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
         let id = seal_id(generation, absorbed_through);
+        #[cfg(any(test, feature = "test-support"))]
+        let int8_storage = match self.vector_seal_scheme {
+            Some(crate::quant::QuantScheme::Int8) => {
+                let dimension = usize::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
+                let vectors = current.segment.vectors();
+                if dimension == 0 || !vectors.len().is_multiple_of(dimension) {
+                    return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                        format!(
+                            "Int8 seal vector length {} is not divisible by dimension {dimension}",
+                            vectors.len()
+                        ),
+                    )));
+                }
+                let mut signed_codes = vec![0_i8; vectors.len()];
+                let mut factors = Vec::with_capacity(vectors.len() / dimension);
+                for (row, codes) in vectors
+                    .chunks_exact(dimension)
+                    .zip(signed_codes.chunks_exact_mut(dimension))
+                {
+                    let (scale, offset) =
+                        crate::quant::quantize_int8(row, codes).map_err(|error| {
+                            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                                "Int8 seal quantization failed: {error}"
+                            )))
+                        })?;
+                    factors.push(crate::segment::layout::Int8Factors { scale, offset });
+                }
+                let codes = signed_codes
+                    .into_iter()
+                    .map(|code| code as u8)
+                    .collect::<Vec<_>>();
+                Some((codes, factors))
+            }
+            Some(crate::quant::QuantScheme::Bit4) | None => None,
+            Some(scheme) => {
+                return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                    format!("unsupported test vector seal scheme {scheme:?}"),
+                )));
+            }
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        let (scheme, codes, factors) = match int8_storage.as_ref() {
+            Some((codes, factors)) => (
+                u16::from(crate::quant::QuantScheme::Int8.id()),
+                codes.as_slice(),
+                SegmentFactors::Int8(factors.as_slice()),
+            ),
+            None => (
+                u16::from(crate::quant::QuantScheme::Bit4.id()),
+                current.segment.codes(),
+                SegmentFactors::Bit4(current.segment.factors()),
+            ),
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let (scheme, codes, factors) = (
+            u16::from(crate::quant::QuantScheme::Bit4.id()),
+            current.segment.codes(),
+            SegmentFactors::Bit4(current.segment.factors()),
+        );
         let build = SegmentBuild {
             id,
-            scheme: 4,
+            scheme,
             dims,
-            codes: current.segment.codes(),
-            factors: SegmentFactors::Bit4(current.segment.factors()),
+            codes,
+            factors,
             rescore: current.segment.vectors(),
             columns: &columns,
             alive: &alive,
@@ -157,9 +216,38 @@ impl Store {
         };
         meta.clustering_key_range = clustering_key_range;
         meta.epoch_id = manifest.epoch_alias.map(|identity| identity.embedding);
-        if let Err(error) = check_cancelled(cancel) {
+        #[cfg(any(test, feature = "test-support"))]
+        let forced_late_cancellation =
+            match self.ingest_retention_fault_controller.as_ref() {
+                Some(controller) => controller.seal_cancellation_plan().map_err(|_| {
+                    StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    }
+                })?,
+                None => None,
+            };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let forced_late_cancellation: Option<u64> = None;
+        if forced_late_cancellation.is_some() || check_cancelled(cancel).is_err() {
             cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
-            return Err(error);
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(invocation_id) = forced_late_cancellation {
+                let active_rows = u64::try_from(current.segment.row_count())
+                    .map_err(|_| StoreError::ActiveRowOverflow)?;
+                if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+                    controller
+                        .push_receipt(super::IngestRetentionFaultReceiptV1::seal_cancellation(
+                            invocation_id,
+                            active_rows,
+                            absorbed_through,
+                            *id.as_bytes(),
+                        ))
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?;
+                }
+            }
+            return Err(StoreError::SealCancelled);
         }
         let mut segments = manifest.segments;
         segments.push(meta);

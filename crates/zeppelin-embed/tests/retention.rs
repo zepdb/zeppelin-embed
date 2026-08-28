@@ -4,10 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use tempfile::tempdir;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, RetentionPolicy, Revision,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument,
+    IngestRetentionFaultController, IngestRetentionTestFault, RetentionPolicy, Revision,
     SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, Store, StoreTestDependencies, SystemMonotonicClock,
+};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::ClusteringKeyRange;
 use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
@@ -291,6 +294,71 @@ fn retention_hook_drops_only_partitions_outside_the_window() {
         .map(|segment| segment.meta().id)
         .collect::<Vec<_>>();
     assert_eq!(remaining, vec![crossing, retained]);
+}
+
+#[test]
+fn explicit_clock_cutoff_emits_receipt_and_keeps_timestamp_equal_to_cutoff() {
+    let directory = tempdir().expect("retention receipt store directory");
+    let controller = IngestRetentionFaultController::new(22);
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller.clone());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        dependencies,
+    )
+    .expect("open retention receipt store");
+    seal_partition(&store, 2_200, &[9]);
+    seal_partition(&store, 2_300, &[10]);
+    seal_partition(&store, 2_400, &[11]);
+    seal_partition(&store, 2_500, &[9, 10]);
+    let before = store.snapshot().expect("snapshot receipt fixture");
+    let old = before.segments()[0].meta().id;
+    let at = before.segments()[1].meta().id;
+    let after = before.segments()[2].meta().id;
+    let straddler = before.segments()[3].meta().id;
+    drop(before);
+    controller
+        .arm(IngestRetentionTestFault::RetentionClockBoundary {
+            now: 20,
+            window: 10,
+            expected_cutoff: 10,
+        })
+        .expect("arm explicit retention boundary");
+    let report = store
+        .apply_retention(RetentionPolicy::new(10).expect("positive window"), 20)
+        .expect("apply explicit retention boundary");
+
+    assert_eq!(report.segments_dropped(), &[old]);
+    assert_eq!(report.straddlers_skipped(), &[straddler]);
+    let remaining = store
+        .snapshot()
+        .expect("snapshot after explicit retention")
+        .segments()
+        .iter()
+        .map(|segment| segment.meta().id)
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, vec![at, after, straddler]);
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            10,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query exact retention boundary");
+    assert!(outcome.candidates.iter().any(|candidate| {
+        candidate
+            .document()
+            .is_some_and(|document| document.doc_id() == DocId::new(2_300))
+    }));
+    let receipts = controller.take_receipts().expect("take retention receipts");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "selected feature fault retention-clock-boundary produced {} Store receipts, expected 1",
+        receipts.len()
+    );
 }
 
 #[test]

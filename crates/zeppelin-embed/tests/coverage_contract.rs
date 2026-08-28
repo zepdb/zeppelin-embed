@@ -1,24 +1,32 @@
 #![allow(clippy::expect_used)]
 
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::tempdir;
 use zeppelin_embed::format::frame::{FormatCheck, FormatError};
 use zeppelin_embed::graph::block::GraphNodeError;
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, PurgeError, RetentionPolicy, Revision,
+    DocId, DocumentVersion, IngestBatch, IngestDocument, IngestRetentionCheckpoint,
+    IngestRetentionFaultController, IngestRetentionFaultEffect, IngestRetentionFaultKind,
+    IngestRetentionOperation, IngestRetentionTestFault, PurgeError, RetentionPolicy, Revision,
+    SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryError, Store, StoreError};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, QueryError, Store, StoreError, StoreTestDependencies,
+    SystemMonotonicClock,
+};
 use zeppelin_embed::meta::{
     AliveSet, BuildError, ColumnDefinition, ColumnId, ColumnType, DictionaryError, DocBitmap,
     Schema, SchemaError, TIMESTAMP_COLUMN,
 };
 use zeppelin_embed::quant::QuantError;
-use zeppelin_embed::scan::ScanError;
+use zeppelin_embed::scan::{ScanError, ScanOptions};
 use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed::segment::{SegmentError, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceError, MaintenanceStatus};
+use zeppelin_embed::vfs::StdVfs;
 
 #[test]
 fn public_error_contracts_keep_values_messages_and_sources() {
@@ -320,4 +328,121 @@ fn public_seal_cancellation_preserves_the_uncommitted_active_rows() {
         store.snapshot().expect("sealed snapshot").segments().len(),
         1
     );
+}
+
+#[test]
+fn late_seal_cancellation_preserves_exact_active_multiset_and_emits_receipt() {
+    let directory = tempdir().expect("late seal cancellation directory");
+    let controller = IngestRetentionFaultController::new(21);
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller.clone());
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open late seal cancellation Store");
+    let versions = [
+        DocumentVersion::new(DocId::new(211), Revision::new(2)),
+        DocumentVersion::new(DocId::new(212), Revision::new(3)),
+    ];
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(versions[0], vec![1.0, 0.0]).with_timestamp(21),
+            IngestDocument::new(versions[1], vec![0.0, 1.0]).with_timestamp(22),
+        ]))
+        .expect("ingest late seal rows");
+    let generation_before = store
+        .snapshot()
+        .expect("snapshot before late seal")
+        .generation();
+    controller
+        .arm(IngestRetentionTestFault::SealCancellation)
+        .expect("arm late seal cancellation");
+
+    let error = store
+        .seal_with_cancel(&CancelToken::new())
+        .expect_err("late seal cancellation must refuse publication");
+    assert!(matches!(error, StoreError::SealCancelled));
+    let receipts = controller.take_receipts().expect("take late seal receipts");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "selected feature fault seal-cancellation produced {} Store receipts, expected 1",
+        receipts.len()
+    );
+
+    let snapshot = store.snapshot().expect("snapshot after late cancellation");
+    assert_eq!(snapshot.generation(), generation_before);
+    assert!(snapshot.segments().is_empty());
+    assert_eq!(
+        store
+            .stats()
+            .expect("stats after late cancellation")
+            .active_row_count,
+        2
+    );
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            versions.len(),
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after late cancellation");
+    let mut observed = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    observed.sort_unstable();
+    assert_eq!(observed, versions);
+    assert!(
+        std::fs::read_dir(directory.path())
+            .expect("list late seal directory")
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".zseg")),
+        "late cancellation left an uncommitted segment"
+    );
+
+    let receipt = &receipts[0];
+    assert_eq!(receipt.campaign(), "ingest-retention");
+    assert_eq!(receipt.operation(), IngestRetentionOperation::Seal);
+    assert_eq!(receipt.fault(), IngestRetentionFaultKind::SealCancellation);
+    assert_eq!(
+        receipt.checkpoint(),
+        IngestRetentionCheckpoint::SealAfterSegmentWriteBeforeManifestCommit
+    );
+    assert_eq!(receipt.cardinality(), 1);
+    assert_eq!(receipt.invocation_id(), 21);
+    let mut candidate_segment = [0_u8; 16];
+    candidate_segment[..8].copy_from_slice(&(generation_before + 1).to_be_bytes());
+    candidate_segment[8..].copy_from_slice(&2_u64.to_be_bytes());
+    assert_eq!(
+        receipt.effect(),
+        &IngestRetentionFaultEffect::SealCancellation {
+            active_rows: 2,
+            absorbed_wal_end: 2,
+            candidate_segment,
+            manifest_committed: false,
+            temporary_segment_removed: true,
+            generation_delta: 0,
+        }
+    );
+    store.seal().expect("clean seal after late cancellation");
+    store.close().expect("close late seal Store");
+    let reopened =
+        Store::open(directory.path(), OpenOptions::default()).expect("reopen after clean seal");
+    let reopened_outcome = reopened
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            versions.len(),
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after clean seal reopen");
+    let mut reopened_versions = reopened_outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    reopened_versions.sort_unstable();
+    assert_eq!(reopened_versions, versions);
 }

@@ -107,7 +107,43 @@ impl Store {
         policy: RetentionPolicy,
         now_ts: i64,
     ) -> Result<DropPartitionReport, StoreError> {
-        self.drop_partition(policy.partition_to_drop(now_ts))
+        let range = policy.partition_to_drop(now_ts);
+        #[cfg(any(test, feature = "test-support"))]
+        let receipt_plan = match self.ingest_retention_fault_controller.as_ref() {
+            Some(controller) => controller
+                .retention_clock_boundary_plan(now_ts, policy.window, range.end)
+                .map_err(|_| StoreError::Synchronization {
+                    component: "ingest-retention controller",
+                })?,
+            None => None,
+        };
+        let report = self.drop_partition(range)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(invocation_id) = receipt_plan
+            && let Some(controller) = self.ingest_retention_fault_controller.as_ref()
+        {
+            let dropped_count = u64::try_from(report.segments_dropped.len())
+                .map_err(|_| StoreError::PartitionBytesOverflow)?;
+            let straddler_count = u64::try_from(report.straddlers_skipped.len())
+                .map_err(|_| StoreError::PartitionBytesOverflow)?;
+            controller
+                .push_receipt(
+                    super::IngestRetentionFaultReceiptV1::retention_clock_boundary(
+                        invocation_id,
+                        now_ts,
+                        policy.window,
+                        policy.partition_to_drop(now_ts).end,
+                        report.generation,
+                        dropped_count,
+                        straddler_count,
+                        report.manifest_committed,
+                    ),
+                )
+                .map_err(|_| StoreError::Synchronization {
+                    component: "ingest-retention controller",
+                })?;
+        }
+        Ok(report)
     }
 
     /// Test-support seam for counting filesystem work during partition drop.

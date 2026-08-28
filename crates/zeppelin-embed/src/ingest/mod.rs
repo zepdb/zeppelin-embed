@@ -3,6 +3,8 @@
 mod active;
 mod purge;
 mod retention;
+#[cfg(any(test, feature = "test-support"))]
+mod retention_fault;
 mod revise;
 mod seal;
 pub mod wal_payload;
@@ -17,6 +19,13 @@ use crate::wal::{LogSeq, WalWriteError};
 
 pub use purge::{PurgeError, PurgeReport, PurgeToken};
 pub use retention::{DropPartitionReport, RetentionPolicy, RetentionPolicyError};
+#[cfg(any(test, feature = "test-support"))]
+pub use retention_fault::{
+    IngestRetentionCheckpoint, IngestRetentionFaultController, IngestRetentionFaultEffect,
+    IngestRetentionFaultKind, IngestRetentionFaultReceiptV1, IngestRetentionIoKind,
+    IngestRetentionOperation, IngestRetentionPurgeCrashCheckpoint, IngestRetentionTestFault,
+    PartialBatchAppendVfs, PurgeUnlinkErrorVfs,
+};
 
 pub(crate) use active::{ActiveSegment, ActiveState, StoreWal};
 
@@ -478,6 +487,29 @@ impl SearchCandidate {
     }
 }
 
+/// Permanent public ordering for globally merged vector candidates.
+///
+/// Score is descending; documented rows then use document ID ascending and
+/// revision descending before the physical row identity. Legacy rows without
+/// a document-version region fall back directly to physical identity.
+pub(crate) fn compare_search_candidates(
+    left: &SearchCandidate,
+    right: &SearchCandidate,
+) -> std::cmp::Ordering {
+    right.score().total_cmp(&left.score()).then_with(|| {
+        match (left.document(), right.document()) {
+            (Some(left_document), Some(right_document)) => left_document
+                .doc_id()
+                .cmp(&right_document.doc_id())
+                .then_with(|| right_document.revision().cmp(&left_document.revision())),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| left.row_id().cmp(&right.row_id()))
+    })
+}
+
 /// Global top-k results and aggregate deterministic scan counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GraphSearchStats {
@@ -833,6 +865,8 @@ impl Store {
         let mut working = None;
         let mut records = Vec::new();
         let mut replay_seq = None;
+        #[cfg(any(test, feature = "test-support"))]
+        let mut replay_count = 0_usize;
         let mut sealed_tombstones = Vec::new();
         for document in &batch.documents {
             let segment = working.as_ref().unwrap_or(current.segment.as_ref());
@@ -871,6 +905,10 @@ impl Store {
                 }
                 revise::RevisionDecision::Replay { seq } => {
                     replay_seq = Some(replay_seq.map_or(seq, |current: LogSeq| current.max(seq)));
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        replay_count = replay_count.saturating_add(1);
+                    }
                 }
                 revise::RevisionDecision::Reject { current } => {
                     return Err(IngestError::StaleRevision {
@@ -885,6 +923,35 @@ impl Store {
             let seq = replay_seq.ok_or(StoreError::Synchronization {
                 component: "nonempty ingest replay sequence",
             })?;
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+                let plan =
+                    controller
+                        .post_ack_retry_plan()
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?;
+                if let Some((invocation_id, first_ack_seq, first_ack_generation)) = plan
+                    && first_ack_seq == seq.get()
+                    && first_ack_generation == current.generation
+                {
+                    let batch_count = u64::try_from(batch.documents.len())
+                        .map_err(|_| StoreError::ActiveRowOverflow)?;
+                    let replay_count =
+                        u64::try_from(replay_count).map_err(|_| StoreError::ActiveRowOverflow)?;
+                    controller
+                        .push_receipt(IngestRetentionFaultReceiptV1::post_ack_retry(
+                            invocation_id,
+                            batch_count,
+                            replay_count,
+                            seq.get(),
+                            current.generation,
+                        ))
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?;
+                }
+            }
             return Ok(IngestAck {
                 seq,
                 generation: current.generation,
@@ -910,11 +977,84 @@ impl Store {
             .iter()
             .map(|(_, op, payload)| (*op, payload.as_slice()))
             .collect::<Vec<_>>();
+        #[cfg(any(test, feature = "test-support"))]
+        let partial_append_clean_wal = match self.ingest_retention_fault_controller.as_ref() {
+            Some(controller)
+                if controller
+                    .partial_batch_append_plan()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    })?
+                    .is_some() =>
+            {
+                let path = self.directory.join("wal.ze");
+                Some(
+                    self.vfs
+                        .read(&path)
+                        .map_err(|source| StoreError::Io { path, source })?,
+                )
+            }
+            Some(_) | None => None,
+        };
         let sequences = match writer.commit_many(&record_refs) {
             Ok(sequences) => sequences,
             Err(error) => {
                 if let Some(prepared) = prepared {
                     prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(controller) = self.ingest_retention_fault_controller.as_ref()
+                    && let Some(observation) = controller
+                        .take_partial_batch_append_observation()
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?
+                {
+                    let expected_detail = observation.detail.as_str();
+                    match &error {
+                        StoreError::WalWrite(WalWriteError::Failed { kind, detail })
+                            if *kind == std::io::ErrorKind::Other
+                                && detail.as_ref() == expected_detail => {}
+                        _ => {
+                            return Err(StoreError::Synchronization {
+                                component: "partial-batch-append typed WAL error",
+                            }
+                            .into());
+                        }
+                    }
+                    let clean_wal =
+                        partial_append_clean_wal
+                            .as_deref()
+                            .ok_or(StoreError::Synchronization {
+                                component: "partial-batch-append clean WAL image",
+                            })?;
+                    let wal_path = self.directory.join("wal.ze");
+                    writer.restore_after_failed_append(
+                        self.vfs.as_ref(),
+                        &wal_path,
+                        self.durability_policy,
+                        clean_wal,
+                    )?;
+                    let submitted_count = u64::try_from(batch.documents.len())
+                        .map_err(|_| StoreError::ActiveRowOverflow)?;
+                    let changed_records =
+                        u64::try_from(records.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
+                    let encoded_bytes = u64::try_from(observation.encoded_bytes)
+                        .map_err(|_| StoreError::ActiveRowOverflow)?;
+                    let prefix_bytes = u64::try_from(observation.prefix_bytes)
+                        .map_err(|_| StoreError::ActiveRowOverflow)?;
+                    controller
+                        .push_receipt(IngestRetentionFaultReceiptV1::partial_batch_append(
+                            observation.invocation_id,
+                            submitted_count,
+                            changed_records,
+                            encoded_bytes,
+                            prefix_bytes,
+                            observation.detail,
+                        ))
+                        .map_err(|_| StoreError::Synchronization {
+                            component: "ingest-retention controller",
+                        })?;
                 }
                 return Err(error.into());
             }
@@ -1102,5 +1242,33 @@ pub(crate) fn validate_document_columns(
 impl From<WalWriteError> for IngestError {
     fn from(error: WalWriteError) -> Self {
         Self::Store(StoreError::WalWrite(error))
+    }
+}
+
+#[cfg(test)]
+mod vector_order_tests {
+    use super::*;
+
+    #[test]
+    fn documented_candidate_precedes_legacy_candidate_at_an_equal_score() {
+        let segment = SegmentId::from_bytes([0x44; 16]);
+        let legacy = SearchCandidate::new(
+            GlobalRowId::new(RowSource::Sealed(segment), 0),
+            None,
+            1.0,
+            true,
+        );
+        let documented = SearchCandidate::new(
+            GlobalRowId::new(RowSource::Sealed(segment), 9),
+            Some(DocumentVersion::new(DocId::new(9), Revision::new(1))),
+            1.0,
+            true,
+        );
+
+        assert_eq!(
+            compare_search_candidates(&documented, &legacy),
+            std::cmp::Ordering::Less,
+            "documented-vs-legacy order fell back to physical row identity"
+        );
     }
 }

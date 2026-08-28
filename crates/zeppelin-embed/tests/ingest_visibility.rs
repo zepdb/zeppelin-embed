@@ -6,11 +6,16 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use zeppelin_embed::ingest::wal_payload::PayloadError;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
-    RowSource, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError,
+    IngestRetentionCheckpoint, IngestRetentionFaultController, IngestRetentionFaultEffect,
+    IngestRetentionFaultKind, IngestRetentionIoKind, IngestRetentionOperation,
+    IngestRetentionTestFault, PartialBatchAppendVfs, Revision, RowSource, SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreError};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreTestDependencies,
+    SystemMonotonicClock,
+};
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
 use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
@@ -247,6 +252,238 @@ fn ingest_batch_commits_every_document_in_one_generation() {
     assert_eq!(ack.seq().get(), 2);
     assert_eq!(ack.generation(), 1);
     assert_eq!(returned, std::collections::BTreeSet::from([first, second]));
+}
+
+#[test]
+fn post_ack_batch_retry_emits_one_replay_receipt_without_mutation() {
+    let directory = tempdir().expect("post-ack retry Store directory");
+    let controller = IngestRetentionFaultController::new(20);
+    let dependencies = StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller.clone());
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open post-ack retry Store");
+    let batch = IngestBatch::new(vec![
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(120), Revision::new(1)),
+            vec![1.0, 0.0],
+        )
+        .with_timestamp(12),
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(121), Revision::new(1)),
+            vec![0.0, 1.0],
+        )
+        .with_timestamp(13),
+    ]);
+    let first = store
+        .ingest(batch.clone())
+        .expect("first acknowledged batch");
+    let wal_before = std::fs::read(directory.path().join("wal.ze")).expect("read WAL before retry");
+    let generation_before = store
+        .snapshot()
+        .expect("snapshot before post-ack retry")
+        .generation();
+    controller
+        .arm(IngestRetentionTestFault::PostAckRetry {
+            first_ack_seq: first.seq().get(),
+            first_ack_generation: first.generation(),
+        })
+        .expect("arm post-ack retry receipt");
+
+    let retry = store.ingest(batch).expect("retry acknowledged batch");
+    let wal_after = std::fs::read(directory.path().join("wal.ze")).expect("read WAL after retry");
+    let generation_after = store
+        .snapshot()
+        .expect("snapshot after post-ack retry")
+        .generation();
+    let receipts = controller
+        .take_receipts()
+        .expect("take post-ack retry receipts");
+
+    assert_eq!(retry, first);
+    assert_eq!(wal_after, wal_before);
+    assert_eq!(generation_after, generation_before);
+    assert_eq!(
+        receipts.len(),
+        1,
+        "selected feature fault post-ack-retry produced {} Store receipts, expected 1",
+        receipts.len()
+    );
+    let receipt = &receipts[0];
+    assert_eq!(receipt.campaign(), "ingest-retention");
+    assert_eq!(receipt.operation(), IngestRetentionOperation::BatchCommit);
+    assert_eq!(receipt.fault(), IngestRetentionFaultKind::PostAckRetry);
+    assert_eq!(
+        receipt.checkpoint(),
+        IngestRetentionCheckpoint::IngestReplayNoWalAppend
+    );
+    assert_eq!(receipt.cardinality(), 1);
+    assert_eq!(receipt.invocation_id(), 20);
+    assert_eq!(
+        receipt.effect(),
+        &IngestRetentionFaultEffect::PostAckRetry {
+            batch_count: 2,
+            replay_count: 2,
+            returned_seq: first.seq().get(),
+            returned_generation: first.generation(),
+            wal_records_appended: 0,
+            generation_delta: 0,
+            active_published: false,
+        }
+    );
+}
+
+#[test]
+fn partial_batch_append_error_preserves_clean_prefix_and_emits_receipt() {
+    let directory = tempdir().expect("partial-batch Store directory");
+    let controller = IngestRetentionFaultController::new(21);
+    let vfs = Arc::new(PartialBatchAppendVfs::new(
+        Arc::new(StdVfs),
+        controller.clone(),
+    ));
+    let dependencies = StoreTestDependencies::new(vfs, Arc::new(SystemMonotonicClock))
+        .with_ingest_retention_fault_controller(controller.clone());
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open partial-batch Store");
+    let baseline = DocumentVersion::new(DocId::new(130), Revision::new(1));
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(baseline, vec![1.0, 0.0]).with_timestamp(13),
+        ]))
+        .expect("commit partial-batch baseline");
+    let submitted = [
+        DocumentVersion::new(DocId::new(131), Revision::new(1)),
+        DocumentVersion::new(DocId::new(132), Revision::new(1)),
+    ];
+    let batch = IngestBatch::new(vec![
+        IngestDocument::new(submitted[0], vec![0.0, 1.0]).with_timestamp(14),
+        IngestDocument::new(submitted[1], vec![0.5, 0.5]).with_timestamp(15),
+    ]);
+    let generation_before = store
+        .snapshot()
+        .expect("snapshot before partial batch")
+        .generation();
+    let wal_before =
+        std::fs::read(directory.path().join("wal.ze")).expect("read WAL before partial batch");
+    controller
+        .arm(IngestRetentionTestFault::PartialBatchAppend { prefix_bytes: 7 })
+        .expect("arm partial batch append");
+
+    let error = store
+        .ingest(batch.clone())
+        .expect_err("partial WAL append must reject the complete batch");
+    let expected_detail = "injected partial-batch-append after 7/140 bytes";
+    match &error {
+        IngestError::Store(StoreError::WalWrite(WalWriteError::Failed { kind, detail })) => {
+            assert_eq!(*kind, std::io::ErrorKind::Other);
+            assert_eq!(detail.as_ref(), expected_detail);
+        }
+        other => panic!("partial batch returned the wrong typed error: {other:?}"),
+    }
+    let receipts = controller
+        .take_receipts()
+        .expect("take partial-batch receipts");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "selected feature fault partial-batch-append produced {} Store receipts, expected 1",
+        receipts.len()
+    );
+
+    let generation_after = store
+        .snapshot()
+        .expect("snapshot after partial batch")
+        .generation();
+    assert_eq!(generation_after, generation_before);
+    let immediate = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            8,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after partial batch");
+    assert_eq!(
+        immediate
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([baseline])
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("wal.ze")).expect("read repaired WAL"),
+        wal_before
+    );
+
+    store.close().expect("close repaired Store");
+    let reopened = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen repaired Store after partial append");
+    let reopened_rows = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            8,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search reopened partial-batch Store");
+    assert_eq!(
+        reopened_rows
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([baseline])
+    );
+
+    let retry = reopened
+        .ingest(batch)
+        .expect("clean retry after repaired WAL");
+    assert_eq!(retry.generation(), generation_before + 1);
+    let final_rows = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            8,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search after clean retry");
+    assert_eq!(
+        final_rows
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([baseline, submitted[0], submitted[1]])
+    );
+
+    let receipt = &receipts[0];
+    assert_eq!(receipt.campaign(), "ingest-retention");
+    assert_eq!(receipt.operation(), IngestRetentionOperation::BatchCommit);
+    assert_eq!(
+        receipt.fault(),
+        IngestRetentionFaultKind::PartialBatchAppend
+    );
+    assert_eq!(
+        receipt.checkpoint(),
+        IngestRetentionCheckpoint::IngestCommitManyAppendError
+    );
+    assert_eq!(receipt.cardinality(), 1);
+    assert_eq!(receipt.invocation_id(), 21);
+    assert_eq!(
+        receipt.effect(),
+        &IngestRetentionFaultEffect::PartialBatchAppend {
+            submitted_count: 2,
+            changed_records: 2,
+            encoded_bytes: 140,
+            prefix_bytes: 7,
+            io_kind: IngestRetentionIoKind::Other,
+            detail: expected_detail.to_owned(),
+            active_published: false,
+            generation_delta: 0,
+        }
+    );
 }
 
 #[test]
