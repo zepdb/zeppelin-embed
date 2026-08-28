@@ -19,6 +19,8 @@ use super::{SnapshotLease, StoreError};
 enum WorkerMessage {
     Run(WorkItem),
     Stop,
+    #[cfg(any(test, feature = "test-support"))]
+    PanicForTest,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +93,10 @@ impl QueryPool {
                                 }
                             }
                             WorkerMessage::Stop => return,
+                            #[cfg(any(test, feature = "test-support"))]
+                            WorkerMessage::PanicForTest => {
+                                panic!("injected query worker panic");
+                            }
                         }
                     }
                 }) {
@@ -192,6 +198,27 @@ impl QueryPool {
         } else {
             Ok(())
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn panic_one_and_join(&self) -> Result<(), StoreError> {
+        let workers = self
+            .workers
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "query pool",
+            })?;
+        let worker = workers.as_ref().and_then(|workers| workers.first()).ok_or(
+            StoreError::Synchronization {
+                component: "stopped query pool",
+            },
+        )?;
+        worker
+            .sender
+            .send(WorkerMessage::PanicForTest)
+            .map_err(|_| StoreError::QueryPoolThreadPanicked)?;
+        drop(workers);
+        self.stop_and_join()
     }
 
     fn stop_best_effort(&mut self) {

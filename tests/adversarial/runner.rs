@@ -70,6 +70,7 @@ use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
 use zeppelin_embed_adversarial_oracle::hybrid_fusion as hybrid_oracle;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
+use zeppelin_embed_adversarial_oracle::lifecycle_accounting as lifecycle_oracle;
 use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
 use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
 use zeppelin_embed_adversarial_oracle::tiering_maintenance as tier_oracle;
@@ -83,6 +84,7 @@ use super::fault_vfs::{self, FaultEvent};
 use super::fts as fts_adapter;
 use super::hybrid_fusion as hybrid_adapter;
 use super::ingest_retention as ingest_adapter;
+use super::lifecycle_accounting as lifecycle_adapter;
 use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
 use super::oracle::{OracleFirstDifference, OracleRecord};
@@ -2739,6 +2741,7 @@ enum ProductionFeatureReceipt {
     ValidatedFts(fts_adapter::FtsFaultReceipt),
     ValidatedHybrid(hybrid_adapter::HybridFaultReceipt),
     ValidatedTier(tier_adapter::TierFaultReceipt),
+    ValidatedLifecycle(lifecycle_adapter::LifecycleFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2756,6 +2759,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedFts(_) => "fts",
             Self::ValidatedHybrid(_) => "hybrid-fusion",
             Self::ValidatedTier(_) => "tiering-maintenance",
+            Self::ValidatedLifecycle(_) => "lifecycle-accounting",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2775,6 +2779,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedFts(receipt) => receipt.operation.key(),
             Self::ValidatedHybrid(receipt) => receipt.operation.key(),
             Self::ValidatedTier(receipt) => receipt.operation.key(),
+            Self::ValidatedLifecycle(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2798,6 +2803,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedFts(receipt) => Some(receipt.fault.key()),
             Self::ValidatedHybrid(receipt) => Some(receipt.fault.key()),
             Self::ValidatedTier(receipt) => Some(receipt.fault.key()),
+            Self::ValidatedLifecycle(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2827,6 +2833,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedFts(receipt) => receipt.site,
             Self::ValidatedHybrid(receipt) => receipt.site,
             Self::ValidatedTier(receipt) => receipt.site,
+            Self::ValidatedLifecycle(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2841,6 +2848,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedFts(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedHybrid(receipt) => Some(u32::from(receipt.cardinality)),
             Self::ValidatedTier(receipt) => Some(u32::from(receipt.cardinality)),
+            Self::ValidatedLifecycle(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3107,6 +3115,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
         ),
         ProductionFeatureReceipt::ValidatedTier(receipt) => format!(
             "{{\"campaign\":\"tiering-maintenance\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
+        ),
+        ProductionFeatureReceipt::ValidatedLifecycle(receipt) => format!(
+            "{{\"campaign\":\"lifecycle-accounting\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
             receipt.operation.key(),
             receipt.fault.key(),
             receipt.site,
@@ -3397,6 +3412,16 @@ fn run_campaign_operation(
             coverage,
         );
     }
+    if let super::campaign::FeatureOperation::Lifecycle(lifecycle_operation) = operation {
+        return run_lifecycle_campaign_operation(
+            lifecycle_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -3562,6 +3587,176 @@ fn run_tier_campaign_operation(
                 .receipts
                 .into_iter()
                 .map(ProductionFeatureReceipt::ValidatedTier),
+        );
+    }
+    Ok(receipts)
+}
+
+fn lifecycle_operation_kind(
+    operation: super::campaign::LifecycleOperation,
+) -> lifecycle_adapter::LifecycleOperationKind {
+    match operation {
+        super::campaign::LifecycleOperation::Deadline => {
+            lifecycle_adapter::LifecycleOperationKind::Deadline
+        }
+        super::campaign::LifecycleOperation::Cancellation => {
+            lifecycle_adapter::LifecycleOperationKind::Cancellation
+        }
+        super::campaign::LifecycleOperation::CloseDrain => {
+            lifecycle_adapter::LifecycleOperationKind::CloseDrain
+        }
+        super::campaign::LifecycleOperation::Locking => {
+            lifecycle_adapter::LifecycleOperationKind::Locking
+        }
+        super::campaign::LifecycleOperation::Accounting => {
+            lifecycle_adapter::LifecycleOperationKind::Accounting
+        }
+    }
+}
+
+fn lifecycle_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<lifecycle_adapter::LifecycleFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::LifecycleClockFreezeJump => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::ClockFreezeJump)
+        }
+        super::campaign::FeatureFault::LifecycleCancelAdmissionQuery => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::CancelAdmissionQuery)
+        }
+        super::campaign::FeatureFault::LifecycleCloseActiveQuery => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::CloseActiveQuery)
+        }
+        super::campaign::FeatureFault::LifecycleWorkerPanic => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::WorkerPanic)
+        }
+        super::campaign::FeatureFault::LifecycleLockContention => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::LockContention)
+        }
+        super::campaign::FeatureFault::LifecycleAllocationDenial => {
+            Ok(lifecycle_adapter::LifecycleFaultKind::AllocationDenial)
+        }
+        other => Err(format!("{} is not a lifecycle fault", other.key())),
+    }
+}
+
+fn lifecycle_input_json(input: &lifecycle_oracle::LifecycleInput) -> String {
+    format!(
+        "{{\"expected_active_queries_after\":{}}}",
+        input.expected_active_queries_after
+    )
+}
+
+fn lifecycle_observed_json(observed: &lifecycle_oracle::LifecycleObserved) -> String {
+    format!(
+        "{{\"deadline_timed_out_without_partial\":{},\"cancellation_without_partial\":{},\"close_cancelled_active_query\":{},\"post_close_refused\":{},\"second_writer_refused\":{},\"active_queries_after\":{},\"query_pool_bytes\":{},\"allocation_denied\":{}}}",
+        observed.deadline_timed_out_without_partial,
+        observed.cancellation_without_partial,
+        observed.close_cancelled_active_query,
+        observed.post_close_refused,
+        observed.second_writer_refused,
+        observed.active_queries_after,
+        observed.query_pool_bytes,
+        observed.allocation_denied,
+    )
+}
+
+fn run_lifecycle_campaign_operation(
+    operation: super::campaign::LifecycleOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(lifecycle_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence =
+            lifecycle_adapter::run_lifecycle_operation(lifecycle_operation_kind(operation), fault)?;
+        let (id, checker, input, observed, result) = match evidence.invariant {
+            lifecycle_adapter::LifecycleInvariantEvidence::I54 { input, observed } => {
+                let result = lifecycle_oracle::compare_i54(&input, &observed);
+                (
+                    54,
+                    lifecycle_oracle::I54_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            lifecycle_adapter::LifecycleInvariantEvidence::I55 { input, observed } => {
+                let result = lifecycle_oracle::compare_i55(&input, &observed);
+                (
+                    55,
+                    lifecycle_oracle::I55_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            lifecycle_adapter::LifecycleInvariantEvidence::I56 { input, observed } => {
+                let result = lifecycle_oracle::compare_i56(&input, &observed);
+                (
+                    56,
+                    lifecycle_oracle::I56_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            lifecycle_adapter::LifecycleInvariantEvidence::I57 { input, observed } => {
+                let result = lifecycle_oracle::compare_i57(&input, &observed);
+                (
+                    57,
+                    lifecycle_oracle::I57_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+            lifecycle_adapter::LifecycleInvariantEvidence::I58 { input, observed } => {
+                let result = lifecycle_oracle::compare_i58(&input, &observed);
+                (
+                    58,
+                    lifecycle_oracle::I58_CHECKER_ID,
+                    input,
+                    observed,
+                    result,
+                )
+            }
+        };
+        push_feature_json_record(
+            id,
+            checker,
+            operation.key(),
+            lifecycle_input_json(&input),
+            lifecycle_observed_json(&observed),
+            format!("public lifecycle operation seed={seed}"),
+            result,
+            oracle_records,
+            coverage,
+        );
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"lifecycle-accounting\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedLifecycle),
         );
     }
     Ok(receipts)

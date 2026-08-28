@@ -46,9 +46,7 @@ pub struct StoreTestDependencies {
     clock: Arc<dyn MonotonicClock>,
     hybrid_leg_fault: Option<HybridLegTestFault>,
     storage_fault_controller: Option<StorageFaultController>,
-    ingest_retention_fault_controller: Option<
-        crate::ingest::IngestRetentionFaultController,
-    >,
+    ingest_retention_fault_controller: Option<crate::ingest::IngestRetentionFaultController>,
     metadata_test_controller: Option<Arc<crate::planner::MetadataTestController>>,
     pub(crate) vector_fault_controller: Option<crate::scan::vector_fault::VectorFaultController>,
     pub(crate) kernel_fault_controller: Option<crate::kernels::vector_fault::KernelFaultController>,
@@ -2118,9 +2116,8 @@ pub struct Store {
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) schema: crate::meta::Schema,
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) ingest_retention_fault_controller: Option<
-        crate::ingest::IngestRetentionFaultController,
-    >,
+    pub(crate) ingest_retention_fault_controller:
+        Option<crate::ingest::IngestRetentionFaultController>,
     #[cfg(any(test, feature = "test-support"))]
     hybrid_leg_fault: Mutex<Option<HybridLegTestFault>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -2836,6 +2833,26 @@ impl Store {
         let result = pool.execute(request, k, options, control, SnapshotLease::new(snapshot));
         drop(active);
         result
+    }
+
+    /// Injects one persistent query-worker panic and joins the pool.
+    ///
+    /// This is test-support-only and exists so the lifecycle campaign reaches
+    /// the real worker teardown/error path.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn panic_query_worker_for_test(&self) -> Result<(), StoreError> {
+        let pool = self
+            .query_pool
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "query pool",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Synchronization {
+                component: "query pool initialization",
+            })?;
+        pool.panic_one_and_join()
     }
 
     /// Searches the active segment plus every immutable segment in one pinned
