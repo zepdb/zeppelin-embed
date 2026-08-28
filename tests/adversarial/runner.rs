@@ -70,6 +70,7 @@ use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::ingest_retention as ingest_oracle;
 use zeppelin_embed_adversarial_oracle::metadata_filter_planner as metadata_oracle;
 use zeppelin_embed_adversarial_oracle::storage_durability as storage_oracle;
+use zeppelin_embed_adversarial_oracle::vamana_graph as graph_oracle;
 use zeppelin_embed_adversarial_oracle::vector_execution as vector_oracle;
 
 use super::artifacts::RunArtifacts;
@@ -83,6 +84,7 @@ use super::oracle::{OracleFirstDifference, OracleRecord};
 use super::profiles::FaultProfile;
 use super::program::{self, Op, Program, SearchKind};
 use super::storage_durability as storage_adapter;
+use super::vamana_graph as graph_adapter;
 use super::vector_execution as vector_adapter;
 
 const THREAD_BUDGET: usize = 1;
@@ -2727,6 +2729,7 @@ enum ProductionFeatureReceipt {
     ValidatedIngestRetention(IngestRetentionFaultReceiptV1),
     ValidatedMetadataFeature(MetadataFeatureReceipt),
     ValidatedVectorFeature(VectorFaultReceipt),
+    ValidatedGraph(graph_adapter::GraphFaultReceipt),
     MetadataExecution {
         operation: &'static str,
         receipt: MetadataExecutionReceipt,
@@ -2740,6 +2743,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedIngestRetention(receipt) => receipt.campaign(),
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.campaign(),
             Self::ValidatedVectorFeature(receipt) => vector_campaign_key(receipt.campaign()),
+            Self::ValidatedGraph(_) => "vamana-graph",
             Self::MetadataExecution { .. } => "metadata-filter-planner",
         }
     }
@@ -2755,6 +2759,7 @@ impl ProductionFeatureReceipt {
             },
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.operation(),
             Self::ValidatedVectorFeature(receipt) => vector_operation_key(receipt.operation()),
+            Self::ValidatedGraph(receipt) => receipt.operation.key(),
             Self::MetadataExecution { operation, .. } => operation,
         }
     }
@@ -2774,6 +2779,7 @@ impl ProductionFeatureReceipt {
             }),
             Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.fault()),
             Self::ValidatedVectorFeature(receipt) => Some(vector_fault_key(receipt.fault())),
+            Self::ValidatedGraph(receipt) => Some(receipt.fault.key()),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -2799,6 +2805,7 @@ impl ProductionFeatureReceipt {
             },
             Self::ValidatedMetadataFeature(receipt) => receipt.origin.site(),
             Self::ValidatedVectorFeature(receipt) => vector_site_key(receipt.site()),
+            Self::ValidatedGraph(receipt) => receipt.site,
             Self::MetadataExecution { .. } => "planner.exec.execution-receipt",
         }
     }
@@ -2809,6 +2816,7 @@ impl ProductionFeatureReceipt {
             Self::ValidatedIngestRetention(receipt) => Some(u32::from(receipt.cardinality())),
             Self::ValidatedMetadataFeature(receipt) => Some(receipt.origin.cardinality()),
             Self::ValidatedVectorFeature(receipt) => Some(u32::from(receipt.cardinality())),
+            Self::ValidatedGraph(receipt) => Some(u32::from(receipt.cardinality)),
             Self::MetadataExecution { .. } => None,
         }
     }
@@ -3051,6 +3059,13 @@ fn production_receipt_json(receipt: &ProductionFeatureReceipt) -> String {
             receipt.seed_case_id(),
             vector_effect_json(receipt.effect()),
             receipt.result_published(),
+        ),
+        ProductionFeatureReceipt::ValidatedGraph(receipt) => format!(
+            "{{\"campaign\":\"vamana-graph\",\"operation\":\"{}\",\"fault\":\"{}\",\"site\":\"{}\",\"cardinality\":{}}}",
+            receipt.operation.key(),
+            receipt.fault.key(),
+            receipt.site,
+            receipt.cardinality,
         ),
         ProductionFeatureReceipt::MetadataExecution { operation, receipt } => format!(
             "{{\"campaign\":\"metadata-filter-planner\",\"operation\":\"{}\",\"site\":\"planner.exec.execution-receipt\",\"query_id\":{},\"receipt\":{}}}",
@@ -3297,6 +3312,16 @@ fn run_campaign_operation(
             coverage,
         );
     }
+    if let super::campaign::FeatureOperation::Graph(graph_operation) = operation {
+        return run_graph_campaign_operation(
+            graph_operation,
+            selected_faults,
+            seed,
+            oracle_records,
+            control_records,
+            coverage,
+        );
+    }
     for fault in selected_faults {
         if fault.operation() != operation {
             return Err(format!(
@@ -3324,6 +3349,258 @@ fn run_campaign_operation(
         operation.campaign().key(),
         operation.key(),
     ))
+}
+
+fn graph_operation_kind(
+    operation: super::campaign::GraphOperation,
+) -> graph_adapter::GraphOperationKind {
+    match operation {
+        super::campaign::GraphOperation::Shape => graph_adapter::GraphOperationKind::Shape,
+        super::campaign::GraphOperation::EntryPoints => {
+            graph_adapter::GraphOperationKind::EntryPoints
+        }
+        super::campaign::GraphOperation::Checkpoint => {
+            graph_adapter::GraphOperationKind::Checkpoint
+        }
+        super::campaign::GraphOperation::BoundedBuild => {
+            graph_adapter::GraphOperationKind::BoundedBuild
+        }
+        super::campaign::GraphOperation::Search => graph_adapter::GraphOperationKind::Search,
+        super::campaign::GraphOperation::Publication => {
+            graph_adapter::GraphOperationKind::Publication
+        }
+        super::campaign::GraphOperation::FilteredSearch => {
+            graph_adapter::GraphOperationKind::FilteredSearch
+        }
+    }
+}
+
+fn graph_fault_kind(
+    fault: super::campaign::FeatureFault,
+) -> Result<graph_adapter::GraphFaultKind, String> {
+    match fault {
+        super::campaign::FeatureFault::GraphCheckpointCorruption => {
+            Ok(graph_adapter::GraphFaultKind::CheckpointCorruption)
+        }
+        super::campaign::FeatureFault::GraphBuildBudgetCancel => {
+            Ok(graph_adapter::GraphFaultKind::BuildBudgetCancel)
+        }
+        super::campaign::FeatureFault::GraphCorruptNode => {
+            Ok(graph_adapter::GraphFaultKind::CorruptNode)
+        }
+        super::campaign::FeatureFault::GraphCorruptEntry => {
+            Ok(graph_adapter::GraphFaultKind::CorruptEntry)
+        }
+        super::campaign::FeatureFault::GraphMissingRescore => {
+            Ok(graph_adapter::GraphFaultKind::MissingRescore)
+        }
+        super::campaign::FeatureFault::GraphSearchCancellation => {
+            Ok(graph_adapter::GraphFaultKind::SearchCancellation)
+        }
+        super::campaign::FeatureFault::GraphPublicationCrash => {
+            Ok(graph_adapter::GraphFaultKind::PublicationCrash)
+        }
+        other => Err(format!("{} is not a graph fault", other.key())),
+    }
+}
+
+fn graph_input_json(input: &graph_oracle::GraphInput) -> String {
+    let documents = input
+        .top_documents
+        .iter()
+        .map(u128::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let filtered = input
+        .filtered_documents
+        .iter()
+        .map(u128::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"row_count\":{},\"top_documents\":[{documents}],\"filtered_documents\":[{filtered}]}}",
+        input.row_count
+    )
+}
+
+fn graph_observed_json(observed: &graph_oracle::GraphObserved) -> String {
+    let list = |values: &[u128]| {
+        values
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "{{\"row_count\":{},\"graphs_built\":{},\"budget_exhausted\":{},\"graph_segments\":{},\"entry_discoveries\":{},\"documents\":[{}],\"reopened_documents\":[{}],\"filtered_documents\":[{}],\"source_aligned\":{}}}",
+        observed.row_count,
+        observed.graphs_built,
+        observed.budget_exhausted,
+        observed.graph_segments,
+        observed.entry_discoveries,
+        list(&observed.documents),
+        list(&observed.reopened_documents),
+        list(&observed.filtered_documents),
+        observed.source_aligned,
+    )
+}
+
+fn run_graph_campaign_operation(
+    operation: super::campaign::GraphOperation,
+    selected_faults: &[super::campaign::FeatureFault],
+    seed: u64,
+    oracle_records: &mut Vec<OracleRecord>,
+    control_records: &mut Vec<String>,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    let faults = selected_faults
+        .iter()
+        .copied()
+        .map(graph_fault_kind)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = if faults.is_empty() {
+        vec![None]
+    } else {
+        faults.into_iter().map(Some).collect()
+    };
+    let mut receipts = Vec::new();
+    for fault in cases {
+        let evidence =
+            graph_adapter::run_graph_operation(graph_operation_kind(operation), seed, fault)?;
+        for invariant in evidence.invariants {
+            let (id, checker, input, observed, result) = match invariant {
+                graph_adapter::GraphInvariantEvidence::I28 { input, observed } => {
+                    let result = graph_oracle::compare_i28(&input, &observed);
+                    (28, graph_oracle::I28_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I29 { input, observed } => {
+                    let result = graph_oracle::compare_i29(&input, &observed);
+                    (29, graph_oracle::I29_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I30 { input, observed } => {
+                    let result = graph_oracle::compare_i30(&input, &observed);
+                    (30, graph_oracle::I30_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I31 { input, observed } => {
+                    let result = graph_oracle::compare_i31(&input, &observed);
+                    (31, graph_oracle::I31_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I32 { input, observed } => {
+                    let result = graph_oracle::compare_i32(&input, &observed);
+                    (32, graph_oracle::I32_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I33 { input, observed } => {
+                    let result = graph_oracle::compare_i33(&input, &observed);
+                    (33, graph_oracle::I33_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I34 { input, observed } => {
+                    let result = graph_oracle::compare_i34(&input, &observed);
+                    (34, graph_oracle::I34_CHECKER_ID, input, observed, result)
+                }
+                graph_adapter::GraphInvariantEvidence::I35 { input, observed } => {
+                    let result = graph_oracle::compare_i35(&input, &observed);
+                    (35, graph_oracle::I35_CHECKER_ID, input, observed, result)
+                }
+            };
+            push_feature_json_record(
+                id,
+                checker,
+                operation.key(),
+                graph_input_json(&input),
+                graph_observed_json(&observed),
+                format!("public graph operation seed={seed}"),
+                result,
+                oracle_records,
+                coverage,
+            );
+        }
+        if fault.is_some() {
+            control_records.push(format!(
+                "{{\"campaign\":\"vamana-graph\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
+                operation.key(), evidence.clean_control_passed
+            ));
+        }
+        receipts.extend(
+            evidence
+                .receipts
+                .into_iter()
+                .map(ProductionFeatureReceipt::ValidatedGraph),
+        );
+    }
+    match operation {
+        super::campaign::GraphOperation::Search => coverage.hit("search.graph"),
+        super::campaign::GraphOperation::FilteredSearch => coverage.hit("search.filtered_graph"),
+        _ => {}
+    }
+    Ok(receipts)
+}
+
+#[cfg(test)]
+mod graph_campaign_tests {
+    use super::*;
+
+    #[test]
+    fn graph_campaign_dispatch_records_every_invariant_and_fault_receipt() {
+        let operations = [
+            super::super::campaign::GraphOperation::Shape,
+            super::super::campaign::GraphOperation::EntryPoints,
+            super::super::campaign::GraphOperation::Checkpoint,
+            super::super::campaign::GraphOperation::BoundedBuild,
+            super::super::campaign::GraphOperation::Search,
+            super::super::campaign::GraphOperation::Publication,
+            super::super::campaign::GraphOperation::FilteredSearch,
+        ];
+        let mut records = Vec::new();
+        let mut controls = Vec::new();
+        let mut coverage = CoverageRegistry::default();
+        for operation in operations {
+            let receipts = run_graph_campaign_operation(
+                operation,
+                &[],
+                9,
+                &mut records,
+                &mut controls,
+                &mut coverage,
+            )
+            .expect("clean graph campaign operation");
+            assert!(receipts.is_empty());
+        }
+        assert_eq!(records.len(), 8);
+        assert!(records.iter().all(|record| record.passed));
+        for invariant in 28..=35 {
+            assert_eq!(
+                coverage.count(&format!("invariant.I{invariant}.checked")),
+                1
+            );
+        }
+
+        for fault in [
+            super::super::campaign::FeatureFault::GraphCheckpointCorruption,
+            super::super::campaign::FeatureFault::GraphBuildBudgetCancel,
+            super::super::campaign::FeatureFault::GraphCorruptNode,
+            super::super::campaign::FeatureFault::GraphCorruptEntry,
+            super::super::campaign::FeatureFault::GraphMissingRescore,
+            super::super::campaign::FeatureFault::GraphSearchCancellation,
+            super::super::campaign::FeatureFault::GraphPublicationCrash,
+        ] {
+            let operation = match fault.operation() {
+                super::super::campaign::FeatureOperation::Graph(operation) => operation,
+                _ => panic!("graph fault escaped graph operation"),
+            };
+            let receipts = run_graph_campaign_operation(
+                operation,
+                &[fault],
+                10,
+                &mut records,
+                &mut controls,
+                &mut coverage,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", fault.key()));
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].fault(), Some(fault.key()));
+            assert_eq!(receipts[0].cardinality(), Some(1));
+        }
+    }
 }
 
 fn ingest_operation_kind(

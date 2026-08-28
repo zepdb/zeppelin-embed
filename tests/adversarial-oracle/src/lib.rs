@@ -6,9 +6,10 @@
 #![forbid(unsafe_code)]
 #![deny(warnings)]
 
-pub mod metadata_filter_planner;
 pub mod ingest_retention;
+pub mod metadata_filter_planner;
 pub mod storage_durability;
+pub mod vamana_graph;
 pub mod vector_execution;
 
 /// Append-only contract version attested by episode and campaign evidence.
