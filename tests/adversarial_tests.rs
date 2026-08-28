@@ -7225,6 +7225,45 @@ fn expected_campaign_comparison_counts(
         }
         return counts;
     }
+    if campaign == CampaignKind::TieringMaintenance {
+        let mut counts = CampaignSpec::for_kind(campaign)
+            .owned_invariants
+            .iter()
+            .map(|invariant| (invariant.key(), 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        for episode in 0..episodes {
+            let seed = start_seed
+                .checked_add(episode)
+                .expect("tiering campaign seed fits u64");
+            let profile = campaign_profile(episode);
+            let program = Program::generate_for(campaign, seed);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            for (operation, invariant) in [
+                (adversarial::campaign::TieringOperation::Policy, "I50"),
+                (adversarial::campaign::TieringOperation::Transition, "I51"),
+                (adversarial::campaign::TieringOperation::Budget, "I52"),
+                (adversarial::campaign::TieringOperation::Publication, "I53"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Tiering(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("tiering operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("tiering count contract includes operation invariant");
+                *count = count
+                    .checked_add(comparisons)
+                    .expect("tiering campaign comparison count fits u64");
+            }
+        }
+        return counts;
+    }
     CampaignSpec::for_kind(campaign)
         .owned_invariants
         .iter()
@@ -7463,6 +7502,15 @@ fn hybrid_campaign_comparison_counts_include_same_operation_fault_multiplicity()
     assert_eq!(counts["I47"], 1_000);
     assert_eq!(counts["I48"], 1_000);
     assert_eq!(counts["I49"], 1_057);
+}
+
+#[test]
+fn tiering_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::TieringMaintenance, 0, 1_000);
+    assert_eq!(counts["I50"], 1_000);
+    assert_eq!(counts["I51"], 1_000);
+    assert!(counts["I52"] > 1_000);
+    assert!(counts["I53"] > 1_000);
 }
 
 #[test]
