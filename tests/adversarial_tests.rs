@@ -7185,6 +7185,46 @@ fn expected_campaign_comparison_counts(
         }
         return counts;
     }
+    if campaign == CampaignKind::HybridFusion {
+        let mut counts = CampaignSpec::for_kind(campaign)
+            .owned_invariants
+            .iter()
+            .map(|invariant| (invariant.key(), 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        for episode in 0..episodes {
+            let seed = start_seed
+                .checked_add(episode)
+                .expect("hybrid campaign seed fits u64");
+            let profile = campaign_profile(episode);
+            let program = Program::generate_for(campaign, seed);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            for (operation, invariant) in [
+                (adversarial::campaign::HybridOperation::Provenance, "I45"),
+                (adversarial::campaign::HybridOperation::Normalization, "I46"),
+                (adversarial::campaign::HybridOperation::BoundedFusion, "I47"),
+                (adversarial::campaign::HybridOperation::Rrf, "I48"),
+                (adversarial::campaign::HybridOperation::Legs, "I49"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Hybrid(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("hybrid operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("hybrid count contract includes operation invariant");
+                *count = count
+                    .checked_add(comparisons)
+                    .expect("hybrid campaign comparison count fits u64");
+            }
+        }
+        return counts;
+    }
     CampaignSpec::for_kind(campaign)
         .owned_invariants
         .iter()
@@ -7413,6 +7453,16 @@ fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity()
     assert_eq!(counts["I25"], 69_000);
     assert_eq!(counts["I26"], 12_000);
     assert_eq!(counts["I27"], 17_238);
+}
+
+#[test]
+fn hybrid_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    let counts = expected_campaign_comparison_counts(CampaignKind::HybridFusion, 0, 1_000);
+    assert_eq!(counts["I45"], 1_000);
+    assert_eq!(counts["I46"], 1_000);
+    assert_eq!(counts["I47"], 1_000);
+    assert_eq!(counts["I48"], 1_000);
+    assert_eq!(counts["I49"], 1_057);
 }
 
 #[test]
