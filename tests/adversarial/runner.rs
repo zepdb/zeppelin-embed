@@ -11638,6 +11638,13 @@ fn vector_adapter_fault_key(fault: vector_adapter::VectorFaultKind) -> &'static 
     }
 }
 
+fn vector_case_identity(case_id: u64, fault: Option<vector_adapter::VectorFaultKind>) -> String {
+    fault.map_or_else(
+        || format!("case-{case_id}"),
+        |fault| format!("case-{case_id}-fault-{}", vector_adapter_fault_key(fault)),
+    )
+}
+
 fn vector_generic_fault_json(
     generic: Option<&vector_adapter::VectorGenericFaultEvidence>,
 ) -> String {
@@ -13035,6 +13042,7 @@ fn record_vector_evidence(
                     24,
                     vector_oracle::I24_CHECKER_ID,
                     operation.key(),
+                    vector_case_identity(pair.input.case_id, evidence.fault),
                     vector_i24_expected_json(&expected),
                     vector_i24_observed_json(&pair.observed),
                     case_provenance,
@@ -13074,6 +13082,7 @@ fn record_vector_evidence(
                     25,
                     vector_oracle::I25_CHECKER_ID,
                     operation.key(),
+                    vector_case_identity(pair.input.case_id, evidence.fault),
                     vector_i25_expected_json(&expected),
                     vector_i25_observed_json(&pair.observed),
                     case_provenance,
@@ -13139,6 +13148,7 @@ fn record_vector_evidence(
                     26,
                     vector_oracle::I26_CHECKER_ID,
                     operation.key(),
+                    vector_case_identity(pair.input.case_id, evidence.fault),
                     vector_i26_expected_json(&expected),
                     vector_i26_observed_json(&pair.observed),
                     case_provenance,
@@ -13175,6 +13185,7 @@ fn record_vector_evidence(
                     27,
                     vector_oracle::I27_CHECKER_ID,
                     operation.key(),
+                    vector_case_identity(pair.input.case_id, evidence.fault),
                     vector_i27_expected_json(&expected),
                     vector_i27_observed_json(&pair.observed),
                     case_provenance,
@@ -13580,6 +13591,7 @@ fn push_vector_feature_json_record<E: std::fmt::Display>(
     invariant: u8,
     checker_id: &'static str,
     operation: &'static str,
+    case_identity: String,
     expected: String,
     observed: String,
     provenance: String,
@@ -13628,6 +13640,7 @@ fn push_vector_feature_json_record<E: std::fmt::Display>(
     );
     record.oracle_input_bytes = evidence_hex(&attestation.input.bytes);
     record.oracle_observed_bytes = evidence_hex(&attestation.observed.bytes);
+    record.case_identity = Some(case_identity);
     record.first_difference = attestation.first_difference.map(vector_first_difference);
 }
 
