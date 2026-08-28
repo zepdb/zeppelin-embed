@@ -4670,7 +4670,10 @@ mod graph_campaign_tests {
             .map(|record| {
                 (
                     record.checker_id,
-                    record.case_identity.as_deref().expect("graph case identity"),
+                    record
+                        .case_identity
+                        .as_deref()
+                        .expect("graph case identity"),
                 )
             })
             .collect::<BTreeSet<_>>();
@@ -9106,8 +9109,11 @@ fn record_metadata_evidence(
             oracle_records
                 .last_mut()
                 .expect("metadata I37 comparison appended one oracle record")
-                .case_identity =
-                Some(metadata_adapter::i37_predicate_case_key(evidence.control.seed).to_owned());
+                .case_identity = Some(format!(
+                "op-{op_index}-{}-fault-{}",
+                metadata_adapter::i37_predicate_case_key(evidence.control.seed),
+                evidence.fault.map_or("none", metadata_adapter_fault_key)
+            ));
             passed
         }
         metadata_adapter::MetadataInvariantEvidence::I38 { input, observed } => {

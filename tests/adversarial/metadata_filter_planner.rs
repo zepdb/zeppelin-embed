@@ -4790,7 +4790,14 @@ fn run_bitmap(
             .snapshot()
             .map_err(|error| format!("snapshot metadata Alive fault: {error}"))?
             .generation();
-        let error = exact_query(&store, seed, MetadataOperationKind::Bitmap, 10)
+        let error = store
+            .search_filtered(
+                SearchRequest::new(&[0.0, 0.0]),
+                &Predicate::And(Vec::new()),
+                10,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
             .expect_err("metadata Alive truncation must not return results");
         require_metadata_provenance(&error, &provenance)?;
         let retained_fault_message = error.to_string();
