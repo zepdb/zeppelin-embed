@@ -6992,7 +6992,7 @@ fn expected_campaign_comparison_counts(
         let mut counts = CampaignSpec::for_kind(campaign)
             .owned_invariants
             .iter()
-            .map(|invariant| (invariant.key(), episodes))
+            .map(|invariant| (invariant.key(), 0_u64))
             .collect::<BTreeMap<_, _>>();
         for episode in 0..episodes {
             let seed = start_seed
@@ -7001,19 +7001,54 @@ fn expected_campaign_comparison_counts(
             let profile = campaign_profile(episode);
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
-            if plan.feature.iter().any(|event| {
-                matches!(
-                    event.fault,
-                    adversarial::campaign::FeatureFault::StorageTornWalHeader
-                        | adversarial::campaign::FeatureFault::StorageTornWalBody
-                        | adversarial::campaign::FeatureFault::StorageTornWalChecksum
-                )
-            }) {
+            for (operation, invariant) in [
+                (adversarial::campaign::StorageOperation::WalPrefix, "I16"),
+                (adversarial::campaign::StorageOperation::Publication, "I15"),
+                (adversarial::campaign::StorageOperation::Retry, "I17"),
+                (adversarial::campaign::StorageOperation::FormatCheck, "I18"),
+                (
+                    adversarial::campaign::StorageOperation::OrphanCleanup,
+                    "I19",
+                ),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Storage(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("storage operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("storage count contract includes operation invariant");
+                *count = (*count)
+                    .checked_add(comparisons)
+                    .expect("storage operation comparison count fits u64");
+            }
+            let wal_refusal_projections = plan
+                .feature
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.fault,
+                        adversarial::campaign::FeatureFault::StorageTornWalHeader
+                            | adversarial::campaign::FeatureFault::StorageTornWalBody
+                            | adversarial::campaign::FeatureFault::StorageTornWalChecksum
+                    )
+                })
+                .count();
+            if wal_refusal_projections > 0 {
                 let count = counts
                     .get_mut("I18")
                     .expect("storage count contract includes I18");
-                *count = count
-                    .checked_add(1)
+                *count = (*count)
+                    .checked_add(
+                        u64::try_from(wal_refusal_projections)
+                            .expect("storage WAL refusal projection count fits u64"),
+                    )
                     .expect("storage WAL I18 projection count fits u64");
             }
         }
@@ -7320,6 +7355,20 @@ fn storage_campaign_comparison_counts_include_damaged_wal_i18_projections() {
     let counts = expected_campaign_comparison_counts(campaign, seed, 1);
     assert_eq!(counts.get("I16"), Some(&1));
     assert_eq!(counts.get("I18"), Some(&2));
+}
+
+#[test]
+fn storage_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    assert_eq!(
+        expected_campaign_comparison_counts(CampaignKind::StorageDurability, 0, 1_000),
+        BTreeMap::from([
+            ("I15".to_owned(), 1_002),
+            ("I16".to_owned(), 1_012),
+            ("I17".to_owned(), 1_000),
+            ("I18".to_owned(), 1_321),
+            ("I19".to_owned(), 1_000),
+        ])
+    );
 }
 
 #[test]
