@@ -2713,9 +2713,11 @@ fn record_successful_operation_coverage(coverage: &mut CoverageRegistry, op: &Op
             ));
             if operation.campaign() == CampaignKind::FfiBindings {
                 coverage.hit("op.ffi_probe");
-                for language in ["c", "python", "rust", "swift"] {
-                    coverage.hit(format!("binding.language.{language}"));
-                }
+                // Only the Rust caller of the extern "C" surface actually ran.
+                // C, Python, and Swift adapters do not exist in this harness
+                // yet; their coverage keys stay missing until a real adapter
+                // process earns them.
+                coverage.hit("binding.language.rust");
             }
         }
         _ => {}
@@ -9154,10 +9156,10 @@ fn record_metadata_evidence(
             oracle_records
                 .last_mut()
                 .expect("metadata I37 comparison appended one oracle record")
-                .case_identity = Some(format!(
-                "op-{op_index}-{}-fault-{}",
-                metadata_adapter::i37_predicate_case_key(evidence.control.seed),
-                evidence.fault.map_or("none", metadata_adapter_fault_key)
+                .case_identity = Some(metadata_adapter::i37_case_identity(
+                op_index,
+                evidence.control.seed,
+                evidence.fault.map(metadata_adapter_fault_key),
             ));
             passed
         }

@@ -3504,6 +3504,28 @@ pub fn i37_predicate_case_key(seed: u64) -> &'static str {
     }
 }
 
+/// Stable per-row identity of one I37 oracle record: the operation index,
+/// the seed-selected matrix cell, and the adapter fault that ran (or `none`).
+pub fn i37_case_identity(op_index: usize, seed: u64, fault: Option<&str>) -> String {
+    format!(
+        "op-{op_index}-{}-fault-{}",
+        i37_predicate_case_key(seed),
+        fault.unwrap_or("none")
+    )
+}
+
+/// Recovers the bare matrix-cell key from an identity written by
+/// [`i37_case_identity`]. Cell keys contain `-` but never `-fault-`, so the
+/// right-most split is unambiguous.
+pub fn i37_case_key_from_identity(identity: &str) -> Option<&'static str> {
+    let rest = identity.strip_prefix("op-")?;
+    let (_op_index, rest) = rest.split_once('-')?;
+    let (key, _fault) = rest.rsplit_once("-fault-")?;
+    (0..I37_PREDICATE_CASE_COUNT)
+        .map(i37_predicate_case_key)
+        .find(|candidate| *candidate == key)
+}
+
 fn production_range_bounds(
     shape: u64,
     lower: PredicateValue,
@@ -6665,6 +6687,23 @@ fn run_execution(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn i37_case_identity_round_trips_every_matrix_cell_and_fault() {
+        for seed in 0..I37_PREDICATE_CASE_COUNT {
+            for fault in [None, Some("bitmap-truncation"), Some("column-corruption")] {
+                let identity = i37_case_identity(9, seed, fault);
+                assert_eq!(
+                    i37_case_key_from_identity(&identity),
+                    Some(i37_predicate_case_key(seed)),
+                    "{identity}"
+                );
+            }
+        }
+        assert_eq!(i37_case_key_from_identity("eq-u64"), None);
+        assert_eq!(i37_case_key_from_identity("op-9-eq-u64"), None);
+        assert_eq!(i37_case_key_from_identity("op-9-unknown-fault-none"), None);
+    }
 
     fn predicate_shapes(predicate: &Predicate, shapes: &mut BTreeSet<&'static str>) {
         let shape = match predicate {

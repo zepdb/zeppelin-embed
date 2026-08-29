@@ -3551,10 +3551,16 @@ fn observe_documents(
     thresholds: &[i64],
 ) -> Result<Vec<independent::DocumentFact>, String> {
     let options = SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Scan);
+    // Ask for one more row than the model expects: a resurrected, duplicated,
+    // or partially published row must surface as an extra candidate instead
+    // of being hidden by the top-k cap.
+    let probe_k = cardinality
+        .checked_add(1)
+        .ok_or_else(|| "I20 probe cardinality overflowed".to_owned())?;
     let outcome = store
         .search(
             SearchRequest::new(&QUERY),
-            cardinality,
+            probe_k,
             options,
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -3587,7 +3593,7 @@ fn observe_documents(
             .search_filtered(
                 SearchRequest::new(&QUERY),
                 &predicate,
-                cardinality,
+                probe_k,
                 options,
                 QueryControl::Cancel(CancelToken::new()),
             )
