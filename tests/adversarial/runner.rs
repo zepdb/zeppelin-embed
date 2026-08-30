@@ -4525,42 +4525,115 @@ fn graph_fault_kind(
 
 fn graph_input_json(input: &graph_oracle::GraphInput) -> String {
     let documents = input
-        .top_documents
+        .rows
         .iter()
-        .map(u128::to_string)
+        .map(|row| row.document.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let filtered = input
-        .filtered_documents
+    let deleted = input
+        .rows
         .iter()
-        .map(u128::to_string)
+        .filter(|row| row.deleted)
+        .map(|row| row.document.to_string())
         .collect::<Vec<_>>()
         .join(",");
+    let query = input
+        .query_bits
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let live = input.rows.iter().filter(|row| !row.deleted).count();
     format!(
-        "{{\"row_count\":{},\"top_documents\":[{documents}],\"filtered_documents\":[{filtered}]}}",
-        input.row_count
+        "{{\"seed\":{},\"dims\":{},\"k\":{},\"row_count\":{},\"live_row_count\":{live},\"documents\":[{documents}],\"deleted_documents\":[{deleted}],\"query_bits\":[{query}],\"fixture_digest\":\"fnv1a64:{:016x}\"}}",
+        input.seed,
+        input.dims,
+        input.k,
+        input.rows.len(),
+        graph_oracle::fixture_digest(input),
     )
 }
 
 fn graph_observed_json(observed: &graph_oracle::GraphObserved) -> String {
-    let list = |values: &[u128]| {
+    let id = |value: &[u8; 16]| {
+        value
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let ids = |values: &[[u8; 16]]| {
         values
             .iter()
-            .map(u128::to_string)
+            .map(|value| format!("\"{}\"", id(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let rows = |values: &[u32]| {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let documents = |values: &[u64]| {
+        values
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let candidates = |values: &[graph_oracle::GraphCandidate]| {
+        values
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{{\"document\":{},\"score_bits\":{},\"segment\":\"{}\",\"row\":{}}}",
+                    candidate.document,
+                    candidate.score_bits,
+                    id(&candidate.segment),
+                    candidate.row,
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     };
     format!(
-        "{{\"row_count\":{},\"graphs_built\":{},\"budget_exhausted\":{},\"graph_segments\":{},\"entry_discoveries\":{},\"documents\":[{}],\"reopened_documents\":[{}],\"filtered_documents\":[{}],\"source_aligned\":{}}}",
-        observed.row_count,
+        "{{\"graph_node_count\":{},\"production_live_rows\":{},\"graph_max_degree\":{},\"maximum_observed_degree\":{},\"entry_rows\":[{}],\"entry_documents\":[{}],\"graphs_built\":{},\"graph_segments\":{},\"entry_discoveries\":{},\"exact_rescore\":{},\"graph\":[{}],\"exact\":[{}],\"exact_all\":[{}],\"bounded_budget_exhausted\":{},\"checkpoint_exists_after_bounded\":{},\"bounded_bytes_consumed\":{},\"work_stride\":{},\"checkpoints_resumed\":{},\"checkpoint_removed_after_resume\":{},\"manifest_segments\":[{}],\"graph_segments_on_disk\":{},\"source_segment\":\"{}\",\"source_file_exists\":{},\"source_manifest_referenced\":{},\"temporary_orphans\":{},\"reopened_graph\":[{}],\"filtered_graph\":[{}],\"filtered_graph_exact\":[{}],\"filtered_large_cardinality\":{},\"filtered_graph_branch\":{},\"filtered_graph_exact_rescore\":{},\"filtered_small\":[{}],\"filtered_small_exact\":[{}],\"filtered_small_cardinality\":{},\"filtered_small_exact_allow_list\":{}}}",
+        observed.graph_node_count,
+        observed.production_live_rows,
+        observed.graph_max_degree,
+        observed.maximum_observed_degree,
+        rows(&observed.entry_rows),
+        documents(&observed.entry_documents),
         observed.graphs_built,
-        observed.budget_exhausted,
         observed.graph_segments,
         observed.entry_discoveries,
-        list(&observed.documents),
-        list(&observed.reopened_documents),
-        list(&observed.filtered_documents),
-        observed.source_aligned,
+        observed.exact_rescore,
+        candidates(&observed.graph),
+        candidates(&observed.exact),
+        candidates(&observed.exact_all),
+        observed.bounded_budget_exhausted,
+        observed.checkpoint_exists_after_bounded,
+        observed.bounded_bytes_consumed,
+        observed.work_stride,
+        observed.checkpoints_resumed,
+        observed.checkpoint_removed_after_resume,
+        ids(&observed.manifest_segments),
+        observed.graph_segments_on_disk,
+        id(&observed.source_segment),
+        observed.source_file_exists,
+        observed.source_manifest_referenced,
+        observed.temporary_orphans,
+        candidates(&observed.reopened_graph),
+        candidates(&observed.filtered_graph),
+        candidates(&observed.filtered_graph_exact),
+        observed.filtered_large_cardinality,
+        observed.filtered_graph_branch,
+        observed.filtered_graph_exact_rescore,
+        candidates(&observed.filtered_small),
+        candidates(&observed.filtered_small_exact),
+        observed.filtered_small_cardinality,
+        observed.filtered_small_exact_allow_list,
     )
 }
 

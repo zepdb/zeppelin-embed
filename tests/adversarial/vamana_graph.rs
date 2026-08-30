@@ -1,5 +1,6 @@
-//! Minimal public-path adapter for the Vamana graph campaign.
+//! Public-path adapter for the seed-derived Vamana graph campaign.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,22 +10,25 @@ use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
 };
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::block::GraphNodeLayout;
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource,
+    SearchOutcome, SearchRequest,
 };
 use zeppelin_embed::lifecycle::{
     CancelToken, GraphSearchOptions, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
     StoreTestDependencies, SystemMonotonicClock,
 };
-use zeppelin_embed::meta::{Predicate, RangeBound, RangePredicate, TIMESTAMP_COLUMN};
+use zeppelin_embed::meta::{
+    Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
+};
+use zeppelin_embed::planner::SegmentBranch;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 
 use super::fault_vfs::{FaultEvent, FaultMode, FaultSite, std_scheduled};
-use zeppelin_embed_adversarial_oracle::vamana_graph::{GraphInput, GraphObserved};
-
-const ROWS: usize = 12;
-const DIMS: usize = 128;
-const K: usize = 4;
+use zeppelin_embed_adversarial_oracle::vamana_graph::{
+    self as oracle, GraphCandidate, GraphInput, GraphObserved,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphOperationKind {
@@ -114,36 +118,36 @@ pub struct GraphFaultReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphInvariantEvidence {
     I28 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I29 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I30 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I31 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I32 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I33 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I34 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
     I35 {
-        input: GraphInput,
-        observed: GraphObserved,
+        input: Arc<GraphInput>,
+        observed: Arc<GraphObserved>,
     },
 }
 
@@ -155,12 +159,18 @@ pub struct GraphOperationEvidence {
     pub clean_control_passed: bool,
 }
 
-fn epoch() -> StoreEpoch {
+type CachedObservation = (u64, Arc<GraphInput>, Arc<GraphObserved>);
+
+thread_local! {
+    static OBSERVATION: RefCell<Option<CachedObservation>> = const { RefCell::new(None) };
+}
+
+fn epoch(dimensions: u32) -> StoreEpoch {
     let tower = EmbeddingTower {
         model_id: "graph-campaign".to_owned(),
-        model_version: "1".to_owned(),
-        weights_digest: vec![0x28],
-        dims: DIMS as u32,
+        model_version: "2".to_owned(),
+        weights_digest: vec![0x28, 0x35],
+        dims: dimensions,
         normalization: Normalization::None,
         prompt_prefix: String::new(),
         max_tokens: 512,
@@ -178,51 +188,39 @@ fn epoch() -> StoreEpoch {
     }
 }
 
-fn query() -> Vec<f32> {
-    (0..DIMS)
-        .map(|dimension| {
-            if dimension.is_multiple_of(2) {
-                1.0
-            } else {
-                -1.0
-            }
-        })
-        .collect()
-}
-
-fn documents(seed: u64) -> Vec<IngestDocument> {
-    let base = u128::from(seed) << 64;
-    (0..ROWS)
-        .map(|row| {
-            let amplitude = row as f32 + 1.0;
-            let vector = (0..DIMS)
-                .map(|dimension| {
-                    if dimension.is_multiple_of(2) {
-                        amplitude
-                    } else {
-                        -amplitude
-                    }
-                })
-                .collect();
-            IngestDocument::new(
-                DocumentVersion::new(DocId::new(base | (row as u128 + 1)), Revision::new(1)),
-                vector,
-            )
-            .with_timestamp(row as i64)
-        })
-        .collect()
-}
-
-fn document_ids(outcome: &zeppelin_embed::ingest::SearchOutcome) -> Result<Vec<u128>, String> {
-    outcome
-        .candidates
+fn query(input: &GraphInput) -> Vec<f32> {
+    input
+        .query_bits
         .iter()
-        .map(|candidate| {
-            candidate
-                .document()
-                .map(|document| document.doc_id().get())
-                .ok_or_else(|| "graph candidate omitted its public document identity".to_owned())
+        .copied()
+        .map(f32::from_bits)
+        .collect()
+}
+
+fn documents(input: &GraphInput) -> Vec<IngestDocument> {
+    input
+        .rows
+        .iter()
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(row.document)), Revision::new(1)),
+                row.vector_bits
+                    .iter()
+                    .copied()
+                    .map(f32::from_bits)
+                    .collect(),
+            )
+            .with_timestamp(row.timestamp)
         })
+        .collect()
+}
+
+fn deleted_documents(input: &GraphInput) -> Vec<DocId> {
+    input
+        .rows
+        .iter()
+        .filter(|row| row.deleted)
+        .map(|row| DocId::new(u128::from(row.document)))
         .collect()
 }
 
@@ -232,35 +230,184 @@ fn graph_options(seed: u64) -> SearchOptions {
     ))
 }
 
+fn exact_options() -> SearchOptions {
+    SearchOptions::default().with_tier(SearchTier::Exact)
+}
+
+fn predicate(value: i64) -> Predicate {
+    Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(value))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(value))),
+    })
+}
+
+fn candidates(outcome: &SearchOutcome) -> Result<Vec<GraphCandidate>, String> {
+    outcome
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let document = candidate
+                .document()
+                .ok_or_else(|| "graph candidate omitted its public document identity".to_owned())?
+                .doc_id()
+                .get();
+            let document = u64::try_from(document)
+                .map_err(|_| format!("graph candidate document {document} exceeds u64"))?;
+            let RowSource::Sealed(segment) = candidate.row_id().source() else {
+                return Err("graph candidate escaped the sealed graph segment".to_owned());
+            };
+            Ok(GraphCandidate {
+                document,
+                score_bits: candidate.score().to_bits(),
+                segment: *segment.as_bytes(),
+                row: candidate.row_id().local_row(),
+            })
+        })
+        .collect()
+}
+
+fn filtered_candidates(
+    outcome: &zeppelin_embed::planner::FilteredSearchOutcome,
+) -> Result<Vec<GraphCandidate>, String> {
+    outcome
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let document = candidate
+                .document()
+                .ok_or_else(|| {
+                    "filtered candidate omitted its public document identity".to_owned()
+                })?
+                .doc_id()
+                .get();
+            let document = u64::try_from(document)
+                .map_err(|_| format!("filtered candidate document {document} exceeds u64"))?;
+            let RowSource::Sealed(segment) = candidate.row_id().source() else {
+                return Err("filtered candidate escaped the sealed graph segment".to_owned());
+            };
+            Ok(GraphCandidate {
+                document,
+                score_bits: candidate.score().to_bits(),
+                segment: *segment.as_bytes(),
+                row: candidate.row_id().local_row(),
+            })
+        })
+        .collect()
+}
+
+fn segment_paths(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    std::fs::read_dir(directory)
+        .map_err(|error| format!("list graph store: {error}"))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| format!("read graph store entry: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|paths| {
+            paths
+                .into_iter()
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
+                })
+                .collect()
+        })
+}
+
+fn first_segment_path(directory: &Path) -> Result<PathBuf, String> {
+    segment_paths(directory)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "graph fixture published no segment".to_owned())
+}
+
+fn temporary_orphans(directory: &Path) -> Result<u32, String> {
+    let count = std::fs::read_dir(directory)
+        .map_err(|error| format!("list graph store temporaries: {error}"))?
+        .map(|entry| entry.map_err(|error| format!("read graph store temporary: {error}")))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".tmp"))
+        })
+        .count();
+    u32::try_from(count).map_err(|_| "temporary orphan count exceeds u32".to_owned())
+}
+
 fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let epoch = epoch();
+    let input = oracle::fixture(seed);
+    let directory = tempdir().map_err(|error| format!("graph fixture tempdir: {error}"))?;
+    let epoch = epoch(input.dims);
     let store = Store::open(
         directory.path(),
         OpenOptions::default().with_epoch(epoch.clone()),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("open graph fixture: {error}"))?;
     store
-        .ingest(IngestBatch::new(documents(seed)).with_epoch(epoch.identity()))
-        .map_err(|error| error.to_string())?;
-    store.seal().map_err(|error| error.to_string())?;
+        .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
+        .map_err(|error| format!("ingest graph fixture: {error}"))?;
+    let deleted = deleted_documents(&input);
+    if deleted.is_empty() {
+        return Err("graph fixture did not derive deleted rows".to_owned());
+    }
+    store
+        .delete(DeleteBatch::new(deleted))
+        .map_err(|error| format!("delete graph fixture rows: {error}"))?;
+    store
+        .seal()
+        .map_err(|error| format!("seal graph fixture: {error}"))?;
+
+    let source_snapshot = store
+        .snapshot()
+        .map_err(|error| format!("snapshot graph source: {error}"))?;
+    let source = source_snapshot
+        .segments()
+        .first()
+        .ok_or_else(|| "sealed graph fixture omitted source segment".to_owned())?
+        .meta()
+        .id;
+    drop(source_snapshot);
+    let padded_dims = input
+        .dims
+        .checked_add(127)
+        .map(|dims| dims / 128 * 128)
+        .ok_or_else(|| "graph fixture padded dimensions overflow".to_owned())?;
+    let work_stride = u64::from(
+        GraphNodeLayout::new(input.dims, padded_dims, input.max_degree)
+            .map_err(|error| format!("graph fixture work layout: {error}"))?
+            .stride(),
+    );
+    let bounded_bytes = work_stride
+        .checked_mul(oracle::CHECKPOINT_ROWS)
+        .ok_or_else(|| "graph fixture bounded budget overflow".to_owned())?;
+    let checkpoint_path = directory
+        .path()
+        .join(format!(".tier-{source}.graph.checkpoint"));
     let bounded = store.maintain_with_test_thresholds(
         MaintenanceBudget {
             wall_time: Duration::from_secs(30),
-            bytes: 0,
+            bytes: bounded_bytes,
         },
         TierThresholds {
-            graph_min_rows: ROWS as u32,
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "graph row count exceeds u32".to_owned())?,
         },
     );
-    let budget_exhausted = matches!(bounded.status, MaintenanceStatus::BudgetExhausted);
+    let checkpoint_exists_after_bounded = checkpoint_path.exists();
     let complete = store.maintain_with_test_thresholds(
         MaintenanceBudget {
             wall_time: Duration::from_secs(30),
             bytes: u64::MAX,
         },
         TierThresholds {
-            graph_min_rows: ROWS as u32,
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "graph row count exceeds u32".to_owned())?,
         },
     );
     if complete.graphs_built != 1 || !matches!(complete.status, MaintenanceStatus::Complete) {
@@ -269,100 +416,222 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
             complete.graphs_built, complete.status
         ));
     }
-    let query = query();
-    let outcome = store
-        .search(
-            SearchRequest::new(&query),
-            K,
-            graph_options(seed),
-            QueryControl::Cancel(CancelToken::new()),
-        )
-        .map_err(|error| error.to_string())?;
-    let documents = document_ids(&outcome)?;
-    let source_aligned = outcome
-        .candidates
+
+    let snapshot = store
+        .snapshot()
+        .map_err(|error| format!("snapshot published graph: {error}"))?;
+    let segment = snapshot
+        .segments()
+        .first()
+        .ok_or_else(|| "maintenance published no graph segment".to_owned())?;
+    let production_live_rows = segment
+        .alive()
+        .map_err(|error| format!("read published alive set: {error}"))?
+        .live_count();
+    let graph_path = directory.path().join(segment.meta().id.file_name());
+    let graph_bytes = std::fs::read(&graph_path)
+        .map_err(|error| format!("read published graph segment: {error}"))?;
+    let parsed_graph = oracle::parse_graph_segment(&graph_bytes)?;
+    let entry_documents = parsed_graph
+        .entry_rows
         .iter()
-        .all(|candidate| matches!(candidate.row_id().source(), RowSource::Sealed(_)));
-    let predicate = Predicate::Range(RangePredicate {
-        column: TIMESTAMP_COLUMN,
-        lower: Some(RangeBound::inclusive(
-            zeppelin_embed::meta::PredicateValue::I64(0),
-        )),
-        upper: Some(RangeBound::inclusive(
-            zeppelin_embed::meta::PredicateValue::I64(2),
-        )),
-    });
-    let filtered = store
-        .search_filtered(
-            SearchRequest::new(&query),
-            &predicate,
-            K,
-            graph_options(seed),
-            QueryControl::Cancel(CancelToken::new()),
-        )
-        .map_err(|error| error.to_string())?;
-    let filtered_documents = filtered
-        .candidates
-        .iter()
-        .map(|candidate| {
-            candidate
-                .document()
-                .map(|document| document.doc_id().get())
-                .ok_or_else(|| "filtered graph candidate omitted document identity".to_owned())
+        .map(|row| {
+            segment
+                .document_version(usize::try_from(*row).unwrap_or(usize::MAX))
+                .map_err(|error| format!("read graph entry document {row}: {error}"))?
+                .ok_or_else(|| format!("graph entry row {row} omitted document identity"))
+                .and_then(|document| {
+                    u64::try_from(document.doc_id().get())
+                        .map_err(|_| format!("graph entry document at row {row} exceeds u64"))
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    store.close().map_err(|error| error.to_string())?;
+    drop(snapshot);
+
+    let query = query(&input);
+    let k = usize::try_from(input.k).map_err(|_| "graph k exceeds usize".to_owned())?;
+    let live_count = input.rows.iter().filter(|row| !row.deleted).count();
+    let graph_outcome = store
+        .search(
+            SearchRequest::new(&query),
+            k,
+            graph_options(seed),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("Graph tier search: {error}"))?;
+    let graph = candidates(&graph_outcome)?;
+    let exact = store
+        .search(
+            SearchRequest::new(&query),
+            k,
+            exact_options(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("Exact tier search: {error}"))?;
+    let exact_all = store
+        .search(
+            SearchRequest::new(&query),
+            live_count,
+            exact_options(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("Exact tier identity search: {error}"))?;
+
+    let large_predicate = predicate(input.large_filter_value);
+    let filtered_graph_outcome = store
+        .search_filtered(
+            SearchRequest::new(&query),
+            &large_predicate,
+            k,
+            graph_options(seed),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("FilteredGraph search: {error}"))?;
+    let filtered_graph_exact = store
+        .search_filtered(
+            SearchRequest::new(&query),
+            &large_predicate,
+            k,
+            exact_options(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("large filtered Exact search: {error}"))?;
+    let filtered_large_cardinality = filtered_graph_outcome
+        .plans
+        .first()
+        .filter(|_| filtered_graph_outcome.plans.len() == 1)
+        .map_or(0, |plan| plan.filter_cardinality);
+    let filtered_graph_branch = filtered_graph_outcome.plans.len() == 1
+        && filtered_graph_outcome.plans[0].branch == SegmentBranch::FilteredGraph;
+
+    let small_predicate = predicate(input.small_filter_value);
+    let filtered_small_outcome = store
+        .search_filtered(
+            SearchRequest::new(&query),
+            &small_predicate,
+            k,
+            graph_options(seed),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("small filtered Graph request: {error}"))?;
+    let filtered_small_exact = store
+        .search_filtered(
+            SearchRequest::new(&query),
+            &small_predicate,
+            k,
+            exact_options(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("small filtered Exact search: {error}"))?;
+    let filtered_small_cardinality = filtered_small_outcome
+        .plans
+        .first()
+        .filter(|_| filtered_small_outcome.plans.len() == 1)
+        .map_or(0, |plan| plan.filter_cardinality);
+    let filtered_small_exact_allow_list = filtered_small_outcome.plans.len() == 1
+        && filtered_small_outcome.plans[0].branch == SegmentBranch::ExactAllowList;
+
+    let source_path = directory.path().join(source.file_name());
+    let manifest_bytes = std::fs::read(directory.path().join("manifest.ze"))
+        .map_err(|error| format!("read published graph manifest: {error}"))?;
+    let manifest_segments = oracle::parse_manifest_segment_ids(&manifest_bytes)?;
+    let graph_segments_on_disk = u32::try_from(
+        segment_paths(directory.path())?
+            .iter()
+            .map(std::fs::read)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read segment inventory: {error}"))?
+            .iter()
+            .filter(|bytes| oracle::parse_graph_segment(bytes).is_ok())
+            .count(),
+    )
+    .map_err(|_| "graph segment count exceeds u32".to_owned())?;
+    let source_manifest_referenced = manifest_segments.contains(source.as_bytes());
+    let source_file_exists = source_path.exists();
+    let orphan_count = temporary_orphans(directory.path())?;
+
+    store
+        .close()
+        .map_err(|error| format!("close graph fixture: {error}"))?;
     let reopened = Store::open(directory.path(), OpenOptions::default().with_epoch(epoch))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("reopen graph fixture: {error}"))?;
     let reopened_outcome = reopened
         .search(
             SearchRequest::new(&query),
-            K,
+            k,
             graph_options(seed),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .map_err(|error| error.to_string())?;
-    let reopened_documents = document_ids(&reopened_outcome)?;
-    reopened.close().map_err(|error| error.to_string())?;
-    let base = u128::from(seed) << 64;
-    let top_documents = (1..=K).map(|ordinal| base | ordinal as u128).collect();
-    let expected_filtered = (1..=3).map(|ordinal| base | ordinal as u128).collect();
+        .map_err(|error| format!("reopened Graph search: {error}"))?;
+    let reopened_graph = candidates(&reopened_outcome)?;
+    reopened
+        .close()
+        .map_err(|error| format!("close reopened graph fixture: {error}"))?;
+
     Ok((
-        GraphInput {
-            row_count: ROWS as u32,
-            top_documents,
-            filtered_documents: expected_filtered,
-        },
+        input,
         GraphObserved {
-            row_count: ROWS as u32,
+            graph_node_count: parsed_graph.node_count,
+            production_live_rows,
+            graph_max_degree: parsed_graph.max_degree,
+            maximum_observed_degree: parsed_graph.maximum_observed_degree,
+            entry_rows: parsed_graph.entry_rows,
+            entry_documents,
             graphs_built: complete.graphs_built,
-            budget_exhausted,
-            graph_segments: outcome.graph_stats.segments_traversed as u64,
-            entry_discoveries: outcome.graph_stats.entry_seed_discoveries as u64,
-            documents,
-            reopened_documents,
-            filtered_documents,
-            source_aligned,
+            graph_segments: u64::try_from(graph_outcome.graph_stats.segments_traversed)
+                .map_err(|_| "graph segment traversal count exceeds u64".to_owned())?,
+            entry_discoveries: u64::try_from(graph_outcome.graph_stats.entry_seed_discoveries)
+                .map_err(|_| "graph entry discovery count exceeds u64".to_owned())?,
+            exact_rescore: graph_outcome.diagnostics.exact_rescore,
+            graph,
+            exact: candidates(&exact)?,
+            exact_all: candidates(&exact_all)?,
+            bounded_budget_exhausted: matches!(bounded.status, MaintenanceStatus::BudgetExhausted),
+            checkpoint_exists_after_bounded,
+            bounded_bytes_consumed: bounded.bytes_consumed,
+            work_stride,
+            checkpoints_resumed: complete.checkpoints_resumed,
+            checkpoint_removed_after_resume: !checkpoint_path.exists(),
+            manifest_segments,
+            graph_segments_on_disk,
+            source_segment: *source.as_bytes(),
+            source_file_exists,
+            source_manifest_referenced,
+            temporary_orphans: orphan_count,
+            reopened_graph,
+            filtered_graph: filtered_candidates(&filtered_graph_outcome)?,
+            filtered_graph_exact: filtered_candidates(&filtered_graph_exact)?,
+            filtered_large_cardinality,
+            filtered_graph_branch,
+            filtered_graph_exact_rescore: filtered_graph_outcome.diagnostics.exact_rescore,
+            filtered_small: filtered_candidates(&filtered_small_outcome)?,
+            filtered_small_exact: filtered_candidates(&filtered_small_exact)?,
+            filtered_small_cardinality,
+            filtered_small_exact_allow_list,
         },
     ))
 }
 
-fn first_segment_path(directory: &Path) -> Result<PathBuf, String> {
-    std::fs::read_dir(directory)
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
-        })
-        .ok_or_else(|| "graph fixture published no segment".to_owned())
+fn observation(seed: u64) -> Result<(Arc<GraphInput>, Arc<GraphObserved>), String> {
+    OBSERVATION.with(|cache| {
+        if let Some((cached_seed, input, observed)) = cache.borrow().as_ref()
+            && *cached_seed == seed
+        {
+            return Ok((Arc::clone(input), Arc::clone(observed)));
+        }
+        let (input, observed) = observe(seed)?;
+        let input = Arc::new(input);
+        let observed = Arc::new(observed);
+        cache
+            .borrow_mut()
+            .replace((seed, Arc::clone(&input), Arc::clone(&observed)));
+        Ok((input, observed))
+    })
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
     bytes
-        .get(offset..offset + 2)
+        .get(offset..offset.saturating_add(2))
         .and_then(|bytes| bytes.try_into().ok())
         .map(u16::from_le_bytes)
         .ok_or_else(|| format!("missing u16 at {offset}"))
@@ -370,7 +639,7 @@ fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
     bytes
-        .get(offset..offset + 8)
+        .get(offset..offset.saturating_add(8))
         .and_then(|bytes| bytes.try_into().ok())
         .map(u64::from_le_bytes)
         .ok_or_else(|| format!("missing u64 at {offset}"))
@@ -394,16 +663,20 @@ fn region_byte(bytes: &[u8], kind: u16) -> Result<usize, String> {
     Err(format!("segment omitted region {kind}"))
 }
 
-fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
+fn build_fault_fixture(seed: u64) -> Result<(tempfile::TempDir, StoreEpoch), String> {
+    let input = oracle::fixture(seed);
     let directory = tempdir().map_err(|error| error.to_string())?;
-    let epoch = epoch();
+    let epoch = epoch(input.dims);
     let store = Store::open(
         directory.path(),
         OpenOptions::default().with_epoch(epoch.clone()),
     )
     .map_err(|error| error.to_string())?;
     store
-        .ingest(IngestBatch::new(documents(seed)).with_epoch(epoch.identity()))
+        .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
+        .map_err(|error| error.to_string())?;
+    store
+        .delete(DeleteBatch::new(deleted_documents(&input)))
         .map_err(|error| error.to_string())?;
     store.seal().map_err(|error| error.to_string())?;
     let report = store.maintain_with_test_thresholds(
@@ -412,13 +685,19 @@ fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
             bytes: u64::MAX,
         },
         TierThresholds {
-            graph_min_rows: ROWS as u32,
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "fault fixture row count exceeds u32".to_owned())?,
         },
     );
     if report.graphs_built != 1 {
         return Err("corruption fixture published no graph".to_owned());
     }
     store.close().map_err(|error| error.to_string())?;
+    Ok((directory, epoch))
+}
+
+fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
+    let (directory, epoch) = build_fault_fixture(seed)?;
     let segment = first_segment_path(directory.path())?;
     let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
     let target = region_byte(&bytes, region)?;
@@ -428,9 +707,10 @@ fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
     match reopened {
         Err(_) => Ok(()),
         Ok(store) => {
+            let input = oracle::fixture(seed);
             let result = store.search(
-                SearchRequest::new(&query()),
-                K,
+                SearchRequest::new(&query(&input)),
+                usize::try_from(input.k).unwrap_or(1),
                 graph_options(seed),
                 QueryControl::Cancel(CancelToken::new()),
             );
@@ -445,31 +725,39 @@ fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
 }
 
 fn public_cancel_refused(seed: u64) -> Result<(), String> {
+    let input = oracle::fixture(seed);
     let directory = tempdir().map_err(|error| error.to_string())?;
-    let epoch = epoch();
+    let epoch = epoch(input.dims);
     let store = Store::open(
         directory.path(),
         OpenOptions::default().with_epoch(epoch.clone()),
     )
     .map_err(|error| error.to_string())?;
     store
-        .ingest(IngestBatch::new(documents(seed)).with_epoch(epoch.identity()))
+        .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
+        .map_err(|error| error.to_string())?;
+    store
+        .delete(DeleteBatch::new(deleted_documents(&input)))
         .map_err(|error| error.to_string())?;
     store.seal().map_err(|error| error.to_string())?;
-    let _ = store.maintain_with_test_thresholds(
+    let report = store.maintain_with_test_thresholds(
         MaintenanceBudget {
             wall_time: Duration::from_secs(30),
             bytes: u64::MAX,
         },
         TierThresholds {
-            graph_min_rows: ROWS as u32,
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "cancel fixture row count exceeds u32".to_owned())?,
         },
     );
+    if report.graphs_built != 1 {
+        return Err("cancel fixture published no graph".to_owned());
+    }
     let token = CancelToken::new();
     token.cancel();
     let result = store.search(
-        SearchRequest::new(&query()),
-        K,
+        SearchRequest::new(&query(&input)),
+        usize::try_from(input.k).unwrap_or(1),
         graph_options(seed),
         QueryControl::Cancel(token),
     );
@@ -482,8 +770,9 @@ fn public_cancel_refused(seed: u64) -> Result<(), String> {
 }
 
 fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
+    let input = oracle::fixture(seed);
     let directory = tempdir().map_err(|error| error.to_string())?;
-    let epoch = epoch();
+    let epoch = epoch(input.dims);
     let event = FaultEvent {
         id: format!("graph-publication-{seed}"),
         op_index: 0,
@@ -504,7 +793,10 @@ fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     store
-        .ingest(IngestBatch::new(documents(seed)).with_epoch(epoch.identity()))
+        .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
+        .map_err(|error| error.to_string())?;
+    store
+        .delete(DeleteBatch::new(deleted_documents(&input)))
         .map_err(|error| error.to_string())?;
     store.seal().map_err(|error| error.to_string())?;
     scheduled.set_operation(0);
@@ -514,7 +806,8 @@ fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
             bytes: u64::MAX,
         },
         TierThresholds {
-            graph_min_rows: ROWS as u32,
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "publication fixture row count exceeds u32".to_owned())?,
         },
     );
     let fired = scheduled.event().is_some_and(|event| event.fired);
@@ -543,10 +836,10 @@ fn exercise_fault(
                 .ok_or_else(|| "corrupt checkpoint was accepted".to_owned())
         }
         GraphFaultKind::BuildBudgetCancel => {
-            if observed.budget_exhausted {
+            if observed.bounded_budget_exhausted {
                 Ok(())
             } else {
-                Err("zero graph budget did not defer".to_owned())
+                Err("bounded graph build did not report budget exhaustion".to_owned())
             }
         }
         GraphFaultKind::CorruptNode | GraphFaultKind::CorruptEntry => {
@@ -568,7 +861,7 @@ pub fn run_graph_operation(
             "graph fault {fault:?} does not target {operation:?}"
         ));
     }
-    let (input, observed) = observe(seed)?;
+    let (input, observed) = observation(seed)?;
     let invariants = match operation {
         GraphOperationKind::Shape => vec![GraphInvariantEvidence::I28 { input, observed }],
         GraphOperationKind::EntryPoints => vec![GraphInvariantEvidence::I29 { input, observed }],
@@ -576,13 +869,15 @@ pub fn run_graph_operation(
         GraphOperationKind::BoundedBuild => vec![GraphInvariantEvidence::I32 { input, observed }],
         GraphOperationKind::Search => vec![
             GraphInvariantEvidence::I30 {
-                input: input.clone(),
-                observed: observed.clone(),
+                input: Arc::clone(&input),
+                observed: Arc::clone(&observed),
             },
             GraphInvariantEvidence::I31 { input, observed },
         ],
         GraphOperationKind::Publication => vec![GraphInvariantEvidence::I33 { input, observed }],
-        GraphOperationKind::FilteredSearch => vec![GraphInvariantEvidence::I35 { input, observed }],
+        GraphOperationKind::FilteredSearch => {
+            vec![GraphInvariantEvidence::I35 { input, observed }]
+        }
     };
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
@@ -618,7 +913,6 @@ pub fn run_graph_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeppelin_embed_adversarial_oracle::vamana_graph as oracle;
 
     #[test]
     fn every_graph_operation_runs_its_public_invariant_checker() {
