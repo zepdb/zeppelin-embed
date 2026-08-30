@@ -87,6 +87,8 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.mode.second_opener_in_process",
     "fault.mode.spawn_in_flight",
     "fault.mode.cancel",
+    "fault.mode.clock_jump",
+    "fault.mode.clock_stall",
 ];
 
 /// A mergeable, deterministic ledger of paths that genuinely ran.

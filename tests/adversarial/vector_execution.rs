@@ -284,7 +284,6 @@ pub enum VectorGenericFaultSite {
     Rename,
     List,
     Delete,
-    Clock,
 }
 
 impl VectorGenericFaultSite {
@@ -300,7 +299,6 @@ impl VectorGenericFaultSite {
             Self::Rename => "rename",
             Self::List => "list",
             Self::Delete => "delete",
-            Self::Clock => "clock",
         }
     }
 }
@@ -1039,7 +1037,6 @@ const fn retained_generic_site_tag(site: VectorGenericFaultSite) -> u8 {
         VectorGenericFaultSite::Rename => 6,
         VectorGenericFaultSite::List => 7,
         VectorGenericFaultSite::Delete => 8,
-        VectorGenericFaultSite::Clock => 9,
     }
 }
 
@@ -1054,7 +1051,6 @@ fn retained_generic_site_from_tag(tag: u8) -> Result<VectorGenericFaultSite, Str
         6 => Ok(VectorGenericFaultSite::Rename),
         7 => Ok(VectorGenericFaultSite::List),
         8 => Ok(VectorGenericFaultSite::Delete),
-        9 => Ok(VectorGenericFaultSite::Clock),
         _ => Err(format!(
             "vector retained fixture has unknown generic site tag {tag}"
         )),
@@ -1639,7 +1635,6 @@ fn scheduled_fault_site(site: VectorGenericFaultSite) -> ScheduledFaultSite {
         VectorGenericFaultSite::Rename => ScheduledFaultSite::Rename,
         VectorGenericFaultSite::List => ScheduledFaultSite::List,
         VectorGenericFaultSite::Delete => ScheduledFaultSite::Delete,
-        VectorGenericFaultSite::Clock => ScheduledFaultSite::Clock,
     }
 }
 
@@ -1691,6 +1686,7 @@ fn materialize_fault_event(
         mode: scheduled_fault_mode(schedule.mode),
         nth_match: schedule.nth_match,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: schedule.path_contains.clone(),
         fired: false,
         fire_count: 0,
