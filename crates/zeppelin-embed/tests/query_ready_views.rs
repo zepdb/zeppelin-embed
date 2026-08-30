@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
 use tempfile::tempdir;
+use zeppelin_embed::format::frame::FormatCheck;
 use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
 use zeppelin_embed::fts::sealed::SealedSegment;
 use zeppelin_embed::fts::search::TermQuery;
@@ -579,8 +580,8 @@ fn touched_rescore_chunk_corruption_still_fails_loudly_and_restores() {
         .expect_err("touched rescore corruption must fail");
     assert!(matches!(
         error,
-        QueryError::Store(StoreError::Segment(SegmentError::Geometry(detail)))
-            if detail.contains("BlockChecksum")
+        QueryError::Store(StoreError::Segment(SegmentError::Format(detail)))
+            if detail.check() == FormatCheck::BlockChecksum
     ));
     store.close().expect("close corrupt store");
 
