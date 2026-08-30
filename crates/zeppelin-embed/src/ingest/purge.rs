@@ -505,7 +505,7 @@ impl Store {
                     token_id,
                 );
                 receipt
-                    .write_purge_crash_test_evidence(&receipt_sink)
+                    .write_purge_crash_test_evidence(vfs, &receipt_sink)
                     .map_err(|source| StoreError::Io {
                         path: receipt_sink,
                         source,

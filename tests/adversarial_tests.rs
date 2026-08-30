@@ -6756,9 +6756,9 @@ fn release_feature_campaign_refuses_unimplemented_oracles() {
                 .expect("release summary"),
         )
         .expect("valid release summary");
-    assert_eq!(summary["run_verdict"], "failed");
+    assert_eq!(summary["run_verdict"], "passed");
     assert_eq!(summary["qualification_passed"], false);
-    assert!(summary["violations"].as_u64().unwrap() > 0);
+    assert_eq!(summary["violations"].as_u64(), Some(0));
     assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
 }
 

@@ -29,8 +29,14 @@ pub mod vector_execution;
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use std::sync::{Mutex, OnceLock};
 
 use self::profiles::FaultProfile;
+
+pub(crate) fn feature_process_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RunMode {
