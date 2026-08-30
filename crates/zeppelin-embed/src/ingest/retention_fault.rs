@@ -1,7 +1,7 @@
 //! Test-support-only ingest/retention fault plans and production receipts.
 
 use std::fs::File;
-use std::io::{IoSlice, Write};
+use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
@@ -598,17 +598,16 @@ impl IngestRetentionFaultReceiptV1 {
         Ok(receipt)
     }
 
-    pub(crate) fn write_purge_crash_test_evidence(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn write_purge_crash_test_evidence(
+        &self,
+        vfs: &dyn Vfs,
+        path: &Path,
+    ) -> std::io::Result<()> {
         let bytes = self
             .encode_purge_crash_test_evidence()
             .map_err(std::io::Error::other)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()
+        vfs.write(path, &bytes)?;
+        vfs.sync(path, SyncKind::Full)
     }
 
     #[must_use]

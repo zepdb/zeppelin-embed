@@ -3485,31 +3485,33 @@ impl Store {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let admitted = self.admit_vector_search(options)?;
+        let score = || {
+            search_pinned(
+                admitted.pool.as_deref(),
+                &admitted.snapshot,
+                &admitted.active_segment,
+                &self.accounting,
+                admitted.generation,
+                self.epoch_identity(),
+                request,
+                k,
+                options,
+                control,
+                graph_bound_mode,
+                started,
+                #[cfg(any(test, feature = "test-support"))]
+                self.vector_fault_controller.as_ref(),
+            )
+        };
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(controller) = self.kernel_fault_controller.as_ref() {
-            controller.begin_store_scoring();
-        }
-        let result = search_pinned(
-            admitted.pool.as_deref(),
-            &admitted.snapshot,
-            &admitted.active_segment,
-            &self.accounting,
-            admitted.generation,
-            self.epoch_identity(),
-            request,
-            k,
-            options,
-            control,
-            graph_bound_mode,
-            started,
-            #[cfg(any(test, feature = "test-support"))]
-            self.vector_fault_controller.as_ref(),
+        let result = crate::kernels::vector_fault::run_store_scoring(
+            self.kernel_fault_controller.as_ref(),
+            score,
         );
+        #[cfg(not(any(test, feature = "test-support")))]
+        let result = score();
         #[cfg(any(test, feature = "test-support"))]
         {
-            if let Some(controller) = self.kernel_fault_controller.as_ref() {
-                controller.finish_store_scoring(result.is_ok());
-            }
             if let Some(controller) = self.vector_fault_controller.as_ref() {
                 controller.finalize_search(result.is_ok());
             }

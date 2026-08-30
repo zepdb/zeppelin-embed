@@ -219,35 +219,37 @@ fn execute_store(
         .map(MetadataTestController::begin_query)
         .transpose()?
         .flatten();
+    let score = || {
+        execute_pinned(
+            &snapshot,
+            &active,
+            &schema,
+            &store.accounting,
+            generation,
+            store.epoch_identity(),
+            request,
+            predicate,
+            k,
+            options,
+            &cancellation,
+            started,
+            #[cfg(any(test, feature = "test-support"))]
+            metadata_controller,
+            #[cfg(any(test, feature = "test-support"))]
+            metadata_query.as_ref(),
+            #[cfg(any(test, feature = "test-support"))]
+            store.vector_fault_controller.as_ref(),
+        )
+    };
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(controller) = store.kernel_fault_controller.as_ref() {
-        controller.begin_store_scoring();
-    }
-    let result = execute_pinned(
-        &snapshot,
-        &active,
-        &schema,
-        &store.accounting,
-        generation,
-        store.epoch_identity(),
-        request,
-        predicate,
-        k,
-        options,
-        &cancellation,
-        started,
-        #[cfg(any(test, feature = "test-support"))]
-        metadata_controller,
-        #[cfg(any(test, feature = "test-support"))]
-        metadata_query.as_ref(),
-        #[cfg(any(test, feature = "test-support"))]
-        store.vector_fault_controller.as_ref(),
+    let result = crate::kernels::vector_fault::run_store_scoring(
+        store.kernel_fault_controller.as_ref(),
+        score,
     );
+    #[cfg(not(any(test, feature = "test-support")))]
+    let result = score();
     #[cfg(any(test, feature = "test-support"))]
     {
-        if let Some(controller) = store.kernel_fault_controller.as_ref() {
-            controller.finish_store_scoring(result.is_ok());
-        }
         if let Some(controller) = store.vector_fault_controller.as_ref() {
             controller.finalize_search(result.is_ok());
         }
