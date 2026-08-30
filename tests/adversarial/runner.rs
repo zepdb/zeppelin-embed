@@ -12025,15 +12025,14 @@ fn record_i24_coverage(pair: &vector_adapter::I24EvidencePair, coverage: &mut Co
             if cancellation_present {
                 coverage.hit("I24.f32.cancellation-heavy-alternating-magnitude");
             }
-            let seeded_layout_present = pair.input.f32_a.len() > 11
-                && pair.input.f32_a[4].0 == 0x8000_0000
-                && pair.input.f32_a[5].0 == 0x0000_0001
-                && pair.input.f32_a[8].0 == f32::INFINITY.to_bits()
-                && pair.input.f32_a[9].0 == f32::NEG_INFINITY.to_bits()
-                && f32::from_bits(pair.input.f32_a[10].0).is_nan()
-                && [6_usize, 7, 11]
-                    .into_iter()
-                    .all(|index| f32::from_bits(pair.input.f32_a[index].0).is_finite());
+            let seeded_layout_present = !pair.input.f32_a.is_empty()
+                && pair.input.f32_a.len() == pair.input.f32_b.len()
+                && pair
+                    .input
+                    .f32_a
+                    .iter()
+                    .chain(&pair.input.f32_b)
+                    .all(|value| (119..=135).contains(&((value.0 >> 23) & 0xff)));
             if seeded_layout_present {
                 coverage.hit("I24.f32.seeded-raw-finite");
             }
