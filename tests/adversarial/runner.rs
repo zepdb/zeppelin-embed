@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -1144,7 +1144,9 @@ struct RealEngine {
     directory: PathBuf,
     store: Option<Store>,
     vfs: Arc<fault_vfs::ScheduledVfs<StdVfs>>,
+    manual_clock: Arc<ManualMonotonicClock>,
     clock: Arc<fault_vfs::ScheduledQueryClock<StdVfs>>,
+    deadline_probe: Mutex<Option<Deadline>>,
     graphs_built: u64,
     open_epoch: ModelEpoch,
 }
@@ -1155,16 +1157,17 @@ impl RealEngine {
         vfs: Arc<fault_vfs::ScheduledVfs<StdVfs>>,
         clock: Arc<ManualMonotonicClock>,
     ) -> Self {
-        let clock = Arc::new(fault_vfs::ScheduledQueryClock::new(
-            clock,
+        let scheduled_clock = Arc::new(fault_vfs::ScheduledQueryClock::new(
+            Arc::clone(&clock),
             Arc::clone(&vfs),
-            directory.join("manifest.ze"),
         ));
         Self {
             directory,
             store: None,
             vfs,
-            clock,
+            manual_clock: clock,
+            clock: scheduled_clock,
+            deadline_probe: Mutex::new(None),
             graphs_built: 0,
             open_epoch: ModelEpoch::A,
         }
@@ -1184,7 +1187,27 @@ impl RealEngine {
             .ok_or_else(|| "store is not open".to_owned())
     }
 
+    fn arm_deadline_probe(&self) -> Result<(), String> {
+        let deadline = Deadline::after_with_test_clock(Duration::from_secs(60), self.clock.clone())
+            .map_err(|error| error.to_string())?;
+        self.manual_clock.advance(Duration::from_secs(120));
+        let mut armed = self
+            .deadline_probe
+            .lock()
+            .map_err(|_| "deadline probe mutex was poisoned".to_owned())?;
+        *armed = Some(deadline);
+        Ok(())
+    }
+
     fn query_control(&self) -> Result<QueryControl, String> {
+        if let Some(deadline) = self
+            .deadline_probe
+            .lock()
+            .map_err(|_| "deadline probe mutex was poisoned".to_owned())?
+            .take()
+        {
+            return Ok(QueryControl::Deadline(deadline));
+        }
         let Some(event) = self.vfs.current_clock_event() else {
             return Ok(QueryControl::Cancel(CancelToken::new()));
         };
@@ -2533,23 +2556,18 @@ fn run_program_for_with_clock(
                 })
             }
             Op::DeadlineProbe { query } => {
-                let query = program::query(*query);
-                engine
-                    .search(&query, 1, SearchKind::Scan, seed)
-                    .map(|observed| {
-                        violations.extend(check_search(
-                            seed,
-                            profile,
-                            op_index,
-                            &model,
-                            &query,
-                            1,
-                            SearchKind::Scan,
-                            &observed,
-                            content_fault_fired,
-                        ));
-                        None
-                    })
+                if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
+                    engine.arm_deadline_probe()?;
+                    match engine.search(&program::query(*query), 1, SearchKind::Scan, seed) {
+                        Err(error) if error.contains("deadline expired") => Ok(None),
+                        Err(error) => Err(format!(
+                            "deadline probe returned the wrong typed failure: {error}"
+                        )),
+                        Ok(_) => Err("already-expired deadline was admitted".to_owned()),
+                    }
+                } else {
+                    Ok(None)
+                }
             }
             Op::PredicateSearch {
                 query,
@@ -17285,6 +17303,50 @@ fn _keep_tempdir_type_visible(_: &TempDir) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_family_no_longer_round_trips_a_dead_clock_site() {
+        let error = vector_generic_fault_schedule(&FaultEvent {
+            id: "clock-adapter-refusal".to_owned(),
+            op_index: 1,
+            layer: fault_vfs::Layer::Clock,
+            site: fault_vfs::FaultSite::Clock,
+            mode: fault_vfs::FaultMode::ClockJump { seconds: 1 },
+            nth_match: 1,
+            expected_matches: None,
+            deadline_budget_seconds: Some(1),
+            path_contains: None,
+            fired: false,
+            fire_count: 0,
+            path: None,
+        })
+        .expect_err("vector VFS adapter accepted a clock event");
+        assert!(
+            error.contains("cannot be routed through the vector VFS adapter"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn deadline_probe_refuses_an_already_expired_deadline() {
+        let directory = tempfile::tempdir().expect("deadline probe directory");
+        let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+        engine.open().expect("open deadline probe Store");
+        engine
+            .ingest(&[DocMutation {
+                doc_id: 1,
+                revision: 1,
+                timestamp: 10,
+            }])
+            .expect("ingest deadline probe fixture");
+        engine
+            .arm_deadline_probe()
+            .expect("arm expired deadline probe");
+        let error = engine
+            .search(&program::query(0), 1, SearchKind::Scan, 0)
+            .expect_err("already-expired deadline was admitted");
+        assert!(error.contains("deadline expired"), "{error}");
+    }
 
     #[test]
     fn deadline_probe_is_independent_of_episode_wall_time() {

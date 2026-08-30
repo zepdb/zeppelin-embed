@@ -226,7 +226,6 @@ pub struct ScheduledVfs<V> {
 pub struct ScheduledQueryClock<V> {
     manual: Arc<ManualMonotonicClock>,
     vfs: Arc<ScheduledVfs<V>>,
-    read_path: PathBuf,
     state: Mutex<QueryClockState>,
 }
 
@@ -239,15 +238,10 @@ struct QueryClockState {
 
 impl<V> ScheduledQueryClock<V> {
     #[must_use]
-    pub fn new(
-        manual: Arc<ManualMonotonicClock>,
-        vfs: Arc<ScheduledVfs<V>>,
-        read_path: PathBuf,
-    ) -> Self {
+    pub fn new(manual: Arc<ManualMonotonicClock>, vfs: Arc<ScheduledVfs<V>>) -> Self {
         Self {
             manual,
             vfs,
-            read_path,
             state: Mutex::new(QueryClockState::default()),
         }
     }
@@ -280,16 +274,23 @@ impl<V: Vfs> MonotonicClock for ScheduledQueryClock<V> {
             }
         };
         if should_read {
-            if let Err(error) = self.vfs.read(&self.read_path) {
-                let mut state = self.state.lock().expect("query clock mutex was poisoned");
-                state.error = Some(format!("scheduled clock read failed: {error}"));
-            } else if self
-                .vfs
-                .current_clock_event()
-                .is_some_and(|event| event.fired)
-            {
-                let mut state = self.state.lock().expect("query clock mutex was poisoned");
-                state.armed = false;
+            match self.vfs.action(FaultSite::Clock, Path::new("clock")) {
+                Ok(Some(FaultMode::ClockJump { .. } | FaultMode::ClockStall)) => {
+                    let mut state = self.state.lock().expect("query clock mutex was poisoned");
+                    state.armed = false;
+                }
+                Ok(Some(mode)) => {
+                    let mut state = self.state.lock().expect("query clock mutex was poisoned");
+                    state.error = Some(format!(
+                        "non-clock fault mode {} reached the clock site",
+                        mode.key()
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let mut state = self.state.lock().expect("query clock mutex was poisoned");
+                    state.error = Some(format!("scheduled clock action failed: {error}"));
+                }
             }
         }
         self.manual.now()
@@ -520,10 +521,7 @@ impl<V> ScheduledVfs<V> {
             .zip(runtimes.iter_mut())
             .enumerate()
         {
-            let site_matches = site == event.site
-                || (event.layer == Layer::Clock
-                    && event.site == FaultSite::Clock
-                    && matches!(site, FaultSite::Read | FaultSite::ReadRange));
+            let site_matches = site == event.site;
             if current_operation != event.op_index
                 || !site_matches
                 || runtime.fire_count != 0
@@ -576,7 +574,10 @@ impl<V> ScheduledVfs<V> {
                 self.clock.advance(Duration::from_secs(seconds));
                 Ok(Some(event.mode))
             }
-            FaultMode::ClockStall => Ok(Some(event.mode)),
+            FaultMode::ClockStall => {
+                std::thread::sleep(Duration::from_millis(25));
+                Ok(Some(event.mode))
+            }
             mode => Ok(Some(mode)),
         }
     }
@@ -870,7 +871,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 let mode = if clock_rng.random::<bool>() {
                     FaultMode::ClockStall
                 } else {
-                    let seconds = [budget / 2, budget, budget.saturating_mul(4)]
+                    let seconds = [budget.div_ceil(2), budget, budget.saturating_mul(4)]
                         [clock_rng.random_range(0..3)];
                     FaultMode::ClockJump { seconds }
                 };
@@ -964,8 +965,7 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
             Op::Search { .. }
             | Op::FilteredSearch { .. }
             | Op::PredicateSearch { .. }
-            | Op::HybridSearch { .. }
-            | Op::DeadlineProbe { .. } => &[FaultSite::Clock],
+            | Op::HybridSearch { .. } => &[FaultSite::Clock],
             _ => &[],
         };
     }

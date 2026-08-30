@@ -39,6 +39,7 @@ use zeppelin_embed::lifecycle::{
     SearchTier, Store, StoreError, StoreTestDependencies,
 };
 use zeppelin_embed::meta::{Predicate, Schema, TIMESTAMP_COLUMN};
+use zeppelin_embed::planner::{MetadataControllerError, MetadataTestArm, MetadataTestController};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentError;
 use zeppelin_embed::tier::{
@@ -690,6 +691,27 @@ fn schedule_uses_drawn_nth_match_under_each_stage_01_fault_preset() {
 }
 
 #[test]
+fn clock_jump_planner_never_draws_an_inert_zero_second_jump() {
+    let inert = (0..512_u64)
+        .flat_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Clock, seed),
+                &program,
+            )
+            .events
+        })
+        .filter(|event| event.mode == FaultMode::ClockJump { seconds: 0 })
+        .map(|event| event.id)
+        .collect::<Vec<_>>();
+    assert!(
+        inert.is_empty(),
+        "Clock planner emitted inert jumps: {inert:?}"
+    );
+}
+
+#[test]
 fn clock_jump_past_budget_mid_query_returns_typed_deadline_error_and_no_rows() {
     let (result, fire_count) = run_clock_filtered_query(FaultEvent {
         id: "clock-jump-past-budget".to_owned(),
@@ -700,7 +722,7 @@ fn clock_jump_past_budget_mid_query_returns_typed_deadline_error_and_no_rows() {
         nth_match: 1,
         expected_matches: None,
         deadline_budget_seconds: Some(1),
-        path_contains: Some("manifest.ze".to_owned()),
+        path_contains: None,
         fired: false,
         fire_count: 0,
         path: None,
@@ -758,11 +780,76 @@ fn clock_stall_query_completes_with_the_exact_model_result() {
         .find(|event| event.mode == FaultMode::ClockStall)
     });
     assert!(planned.is_some(), "Clock planner produced no clock stall");
-    let (result, fire_count) =
-        run_clock_filtered_query(planned.expect("asserted planned clock stall"));
+    let (result, fire_count, elapsed) =
+        run_clock_filtered_query_timed(planned.expect("asserted planned clock stall"));
     let result = result.expect("stalled clock rejected an exact query");
     assert_eq!(result, (0_u128..8).collect::<Vec<_>>());
     assert_eq!(fire_count, 1, "clock stall did not fire once");
+    assert!(
+        elapsed >= Duration::from_millis(25),
+        "clock stall injected no observable wall-clock delay: {elapsed:?}"
+    );
+}
+
+#[test]
+fn clock_tick_does_not_consume_or_surface_a_product_read_fault() {
+    let directory = tempfile::tempdir().expect("isolated clock collision directory");
+    let manifest = directory.path().join("manifest.ze");
+    std::fs::write(&manifest, b"manifest").expect("clock collision manifest");
+    let manual_clock = Arc::new(ManualMonotonicClock::new());
+    let scheduled = Arc::new(ScheduledVfs::new_with_clock(
+        StdVfs,
+        FaultSchedule {
+            events: vec![
+                FaultEvent {
+                    id: "product-read".to_owned(),
+                    op_index: 0,
+                    layer: Layer::Content,
+                    site: FaultSite::Read,
+                    mode: FaultMode::WrongObject,
+                    nth_match: 1,
+                    expected_matches: None,
+                    deadline_budget_seconds: None,
+                    path_contains: Some("manifest.ze".to_owned()),
+                    fired: false,
+                    fire_count: 0,
+                    path: None,
+                },
+                FaultEvent {
+                    id: "clock-jump".to_owned(),
+                    op_index: 0,
+                    layer: Layer::Clock,
+                    site: FaultSite::Clock,
+                    mode: FaultMode::ClockJump { seconds: 1 },
+                    nth_match: 1,
+                    expected_matches: None,
+                    deadline_budget_seconds: Some(4),
+                    path_contains: None,
+                    fired: false,
+                    fire_count: 0,
+                    path: None,
+                },
+            ],
+        },
+        manual_clock.clone(),
+    ));
+    let clock = ScheduledQueryClock::new(manual_clock, scheduled.clone());
+    scheduled.set_operation(0);
+    clock.arm_query();
+    let _ = zeppelin_embed::lifecycle::MonotonicClock::now(&clock);
+    let _ = zeppelin_embed::lifecycle::MonotonicClock::now(&clock);
+    clock
+        .finish_query()
+        .expect("clock dispatch must not surface a product VFS error");
+
+    let events = scheduled.events();
+    assert_eq!(events[0].fire_count, 0, "clock consumed the product read");
+    assert_eq!(events[1].fire_count, 1, "clock event did not fire");
+    let error = scheduled
+        .read(&manifest)
+        .expect_err("product read fault was not preserved for the product path");
+    assert!(error.to_string().contains("no sibling"), "{error}");
+    assert_eq!(scheduled.events()[0].fire_count, 1);
 }
 
 fn run_clock_filtered_query(
@@ -770,6 +857,17 @@ fn run_clock_filtered_query(
 ) -> (
     Result<Vec<u128>, zeppelin_embed::planner::FilteredSearchError>,
     usize,
+) {
+    let (result, fire_count, _) = run_clock_filtered_query_timed(event);
+    (result, fire_count)
+}
+
+fn run_clock_filtered_query_timed(
+    event: FaultEvent,
+) -> (
+    Result<Vec<u128>, zeppelin_embed::planner::FilteredSearchError>,
+    usize,
+    Duration,
 ) {
     let budget_seconds = event
         .deadline_budget_seconds
@@ -782,11 +880,7 @@ fn run_clock_filtered_query(
         FaultSchedule::single(event),
         manual_clock.clone(),
     ));
-    let clock = Arc::new(ScheduledQueryClock::new(
-        manual_clock,
-        scheduled.clone(),
-        directory.path().join("manifest.ze"),
-    ));
+    let clock = Arc::new(ScheduledQueryClock::new(manual_clock, scheduled.clone()));
     let store = Store::open_with_test_dependencies(
         directory.path(),
         OpenOptions::default(),
@@ -821,6 +915,7 @@ fn run_clock_filtered_query(
         Deadline::after_with_test_clock(Duration::from_secs(budget_seconds), clock.clone())
             .expect("construct clock query deadline");
     clock.arm_query();
+    let started = Instant::now();
     let result = store.search_filtered(
         zeppelin_embed::ingest::SearchRequest::new(&query),
         &Predicate::Exists(TIMESTAMP_COLUMN),
@@ -828,6 +923,7 @@ fn run_clock_filtered_query(
         SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Exact),
         QueryControl::Deadline(deadline),
     );
+    let elapsed = started.elapsed();
     clock.finish_query().expect("scheduled clock read");
 
     let fire_count = scheduled.events()[0].fire_count;
@@ -844,7 +940,7 @@ fn run_clock_filtered_query(
             })
             .collect()
     });
-    (result, fire_count)
+    (result, fire_count, elapsed)
 }
 
 #[test]
@@ -938,10 +1034,10 @@ fn clock_layer_can_catch_a_deadline_checked_only_before_the_scan() {
         layer: Layer::Clock,
         site: FaultSite::Clock,
         mode: FaultMode::ClockJump { seconds: 4 },
-        nth_match: 1,
+        nth_match: 2,
         expected_matches: None,
         deadline_budget_seconds: Some(1),
-        path_contains: Some("manifest.ze".to_owned()),
+        path_contains: None,
         fired: false,
         fire_count: 0,
         path: None,
@@ -959,11 +1055,54 @@ fn clock_layer_can_catch_a_deadline_checked_only_before_the_scan() {
 }
 
 #[test]
-fn vector_family_no_longer_round_trips_a_dead_clock_site() {
-    let vector_family = include_str!("adversarial/vector_execution.rs");
+fn deadline_probe_is_refused_before_the_query_executor_begins() {
+    let directory = tempfile::tempdir().expect("deadline admission directory");
+    let manual_clock = Arc::new(ManualMonotonicClock::new());
+    let controller = Arc::new(MetadataTestController::new());
+    controller
+        .arm(MetadataTestArm::ObserveExecution { query_id: 54 })
+        .expect("arm executor tripwire");
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(Arc::new(StdVfs), manual_clock.clone())
+            .with_metadata_test_controller(controller.clone()),
+    )
+    .expect("open deadline admission Store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![0.0, 0.0],
+            )
+            .with_timestamp(1),
+        ]))
+        .expect("ingest deadline admission fixture");
+    let deadline = Deadline::after_with_test_clock(Duration::from_secs(60), manual_clock.clone())
+        .expect("construct admission deadline");
+    manual_clock.advance(Duration::from_secs(120));
+    let result = store.search_filtered(
+        zeppelin_embed::ingest::SearchRequest::new(&[0.0, 0.0]),
+        &Predicate::Exists(TIMESTAMP_COLUMN),
+        1,
+        SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Exact),
+        QueryControl::Deadline(deadline),
+    );
     assert!(
-        !vector_family.contains("VectorGenericFaultSite::Clock"),
-        "vector family still round-trips the dead Clock VFS site"
+        matches!(
+            result,
+            Err(zeppelin_embed::planner::FilteredSearchError::Query(
+                QueryError::Timeout { partial: false }
+            ))
+        ),
+        "already-expired deadline was not refused: {result:?}"
+    );
+    assert!(
+        matches!(
+            controller.assert_no_unconsumed_arm(),
+            Err(MetadataControllerError::AlreadyArmed)
+        ),
+        "deadline reached the query executor before admission refused it"
     );
 }
 
@@ -1035,7 +1174,6 @@ fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> 
                     | Op::FilteredSearch { .. }
                     | Op::PredicateSearch { .. }
                     | Op::HybridSearch { .. }
-                    | Op::DeadlineProbe { .. }
             );
     }
     if !matches!(layer, Layer::Io | Layer::Content) {
@@ -1281,16 +1419,12 @@ fn runner_records_violation_after_content_fault_at_earlier_operation() {
 
 #[test]
 fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
-    let mut expected = REQUIRED_SMOKE_COVERAGE
+    let expected = REQUIRED_SMOKE_COVERAGE
         .iter()
         .copied()
         .filter(|key| key.starts_with("fault.site.") || key.starts_with("fault.mode."))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    expected.extend([
-        "fault.mode.clock_jump".to_owned(),
-        "fault.mode.clock_stall".to_owned(),
-    ]);
     let mut observed = BTreeSet::new();
     for seed in 0..200 {
         let program = Program::generate(seed);
@@ -7426,7 +7560,7 @@ fn replay_campaign_episode(
                 campaign,
                 outcome.seed,
                 outcome.profile,
-                profile_for_seed(outcome.seed),
+                outcome.profile,
                 actual_root.path(),
             )?;
             compare_replay_artifacts(&expected, campaign, &replayed)?;
@@ -7637,7 +7771,7 @@ fn campaign() {
                 config.campaign,
                 seed,
                 profile,
-                profile_for_seed(seed),
+                profile,
                 &root,
             )
         }));
