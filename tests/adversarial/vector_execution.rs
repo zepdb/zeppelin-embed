@@ -1689,6 +1689,7 @@ fn materialize_fault_event(
         site: scheduled_fault_site(schedule.site),
         mode: scheduled_fault_mode(schedule.mode),
         nth_match: schedule.nth_match,
+        expected_matches: None,
         path_contains: schedule.path_contains.clone(),
         fired: false,
         fire_count: 0,

@@ -2438,7 +2438,7 @@ fn run_program_for_with_clock(
                         Op::HybridSearch { .. } => Invariant::I3,
                         Op::DeadlineProbe { .. } => Invariant::I54,
                         Op::FtsExtrasProbe { .. } => Invariant::I3,
-                        _ if content_fault_fired => Invariant::I7,
+                        _ if content_at_operation => Invariant::I7,
                         _ => Invariant::I1,
                     };
                     violations.push(violation(
@@ -2480,6 +2480,7 @@ fn run_program_for_with_clock(
             site: fault_vfs::FaultSite::Clock,
             mode: fault_vfs::FaultMode::Latency,
             nth_match: 1,
+            expected_matches: None,
             path_contains: None,
             fired: true,
             fire_count: 1,
@@ -14983,6 +14984,7 @@ fn run_post_commit_retry_fault_probe() -> Result<(), String> {
         site: fault_vfs::FaultSite::Append,
         mode: fault_vfs::FaultMode::PostCommitError,
         nth_match: 1,
+        expected_matches: None,
         path_contains: Some("wal.ze".to_owned()),
         fired: false,
         fire_count: 0,
@@ -15143,6 +15145,7 @@ fn run_orphan_omission_fault_probe() -> Result<(), String> {
         site: fault_vfs::FaultSite::List,
         mode: fault_vfs::FaultMode::SilentDrop,
         nth_match: 1,
+        expected_matches: None,
         path_contains: None,
         fired: false,
         fire_count: 0,

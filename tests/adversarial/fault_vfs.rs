@@ -134,6 +134,7 @@ pub struct FaultEvent {
     pub site: FaultSite,
     pub mode: FaultMode,
     pub nth_match: usize,
+    pub expected_matches: Option<usize>,
     pub path_contains: Option<String>,
     pub fired: bool,
     pub fire_count: usize,
@@ -166,8 +167,11 @@ impl FaultEvent {
         } else {
             self.nth_match.to_string()
         };
+        let expected_matches = self
+            .expected_matches
+            .map_or_else(|| "null".to_owned(), |count| count.to_string());
         format!(
-            "{{\"type\":\"generic\",\"id\":\"{}\",\"op\":{},\"layer\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{nth_match},\"path_contains\":{},\"fired\":{},\"fire_count\":{},\"path\":{path}}}",
+            "{{\"type\":\"generic\",\"id\":\"{}\",\"op\":{},\"layer\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{nth_match},\"expected_matches\":{expected_matches},\"path_contains\":{},\"fired\":{},\"fire_count\":{},\"path\":{path}}}",
             self.id,
             self.op_index,
             self.layer.key(),
@@ -407,7 +411,9 @@ impl<V> ScheduledVfs<V> {
                 continue;
             }
             let nth_match = if event.nth_match == LAST_MATCH {
-                if event.path_contains.is_some() { 1 } else { 3 }
+                event.expected_matches.ok_or_else(|| {
+                    std::io::Error::other("LAST_MATCH event has no expected match count")
+                })?
             } else {
                 event.nth_match
             };
@@ -716,11 +722,12 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             } else {
                 drawn_mode
             };
-            let _drawn_nth_match = rng.random_range(1..=4);
-            let nth_match = if layer == Layer::Content && site == FaultSite::Write {
-                LAST_MATCH
-            } else {
-                1
+            let drawn_nth_match = rng.random_range(1..=4);
+            let known_matches = expected_matches(operation, site);
+            let (nth_match, expected_matches) = match known_matches {
+                Some(count) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
+                Some(_) => (drawn_nth_match, None),
+                None => (drawn_nth_match, None),
             };
             let ordinal = events.len();
             events.push(FaultEvent {
@@ -730,8 +737,8 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 site,
                 mode,
                 nth_match,
-                path_contains: (layer == Layer::Content && site == FaultSite::Write)
-                    .then(|| "manifest.ze".to_owned()),
+                expected_matches,
+                path_contains: None,
                 fired: false,
                 fire_count: 0,
                 path: None,
@@ -739,6 +746,25 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
         }
     }
     FaultSchedule { events }
+}
+
+fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
+    match (operation, site) {
+        (
+            Op::Ingest { .. }
+            | Op::Upsert { .. }
+            | Op::Revise { .. }
+            | Op::Delete { .. }
+            | Op::Purge { .. },
+            FaultSite::Append | FaultSite::Sync,
+        ) => Some(1),
+        (_, FaultSite::List) => Some(1),
+        // A successful seal writes the segment temp and then the manifest temp.
+        (Op::Seal, FaultSite::Write | FaultSite::Rename) => Some(2),
+        (Op::Seal, FaultSite::Sync) => Some(4),
+        // Generated programs select LAST_MATCH only on their final Seal.
+        _ => None,
+    }
 }
 
 fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
@@ -909,6 +935,7 @@ pub fn audit_crash_seam(
         site: FaultSite::Write,
         mode: FaultMode::TornWrite,
         nth_match: states.len(),
+        expected_matches: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -948,6 +975,7 @@ mod tests {
             site,
             mode: FaultMode::Eio,
             nth_match: 1,
+            expected_matches: None,
             path_contains: None,
             fired: false,
             fire_count: 0,

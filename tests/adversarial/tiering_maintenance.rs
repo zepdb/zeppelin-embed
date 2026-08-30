@@ -614,6 +614,7 @@ fn scheduled_publication_fault(
         site,
         mode,
         nth_match: 1,
+        expected_matches: None,
         path_contains: Some(path.to_owned()),
         fired: false,
         fire_count: 0,

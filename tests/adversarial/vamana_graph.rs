@@ -780,6 +780,7 @@ fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
         site: FaultSite::Rename,
         mode: FaultMode::Eio,
         nth_match: 1,
+        expected_matches: None,
         path_contains: Some("manifest.ze".to_owned()),
         fired: false,
         fire_count: 0,

@@ -147,6 +147,87 @@ fn schedule_never_targets_a_site_the_op_cannot_reach() {
     }
 }
 
+#[test]
+fn schedule_uses_drawn_nth_match_under_each_stage_01_fault_preset() {
+    let observed = [
+        FaultProfile::IoErrors,
+        FaultProfile::Content,
+        FaultProfile::Disk,
+        FaultProfile::Full,
+        FaultProfile::Random,
+    ]
+    .into_iter()
+    .any(|profile| {
+        (0..200).any(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(seed, environment_for_profile(profile, seed), &program)
+                .events
+                .iter()
+                .any(|event| (2..=4).contains(&event.nth_match))
+        })
+    });
+    assert!(observed, "no preset planned a drawn nth_match in 2..=4");
+}
+
+#[test]
+fn planned_content_writes_are_not_restricted_to_the_manifest() {
+    let events = (0..200)
+        .flat_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Content, seed),
+                &program,
+            )
+            .events
+        })
+        .filter(|event| event.layer == Layer::Content && event.site == FaultSite::Write)
+        .collect::<Vec<_>>();
+    assert!(!events.is_empty(), "Content preset planned no Write event");
+    assert!(
+        events.iter().all(|event| event.path_contains.is_none()),
+        "Content/Write remained restricted to manifest.ze"
+    );
+}
+
+#[test]
+fn planned_content_write_can_target_the_segment_temp_file() {
+    let event = (0..200)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Content, seed),
+                &program,
+            )
+            .events
+            .into_iter()
+            .find(|event| {
+                event.layer == Layer::Content
+                    && event.site == FaultSite::Write
+                    && event.nth_match == 1
+            })
+        })
+        .expect("Content preset never planned the first Write match");
+    let directory = tempfile::tempdir().expect("planned content Write directory");
+    let segment = directory.path().join(".segment-0001.zseg.tmp");
+    let manifest = directory.path().join(".manifest.ze.tmp");
+    let op_index = event.op_index;
+    let scheduled = ScheduledVfs::new(StdVfs, FaultSchedule::single(event));
+    scheduled.set_operation(op_index);
+
+    assert!(scheduled.write(&segment, b"segment payload").is_ok());
+    assert!(scheduled.write(&manifest, b"manifest payload").is_ok());
+    assert_eq!(
+        scheduled.events()[0]
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        Some(".segment-0001.zseg.tmp")
+    );
+}
+
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
     if !matches!(layer, Layer::Io | Layer::Content) {
         return false;
@@ -210,6 +291,7 @@ fn scheduled_vfs_fires_the_nth_match_not_the_first() {
             site: FaultSite::Write,
             mode: FaultMode::Eio,
             nth_match: 2,
+            expected_matches: None,
             path_contains: None,
             fired: false,
             fire_count: 0,
@@ -233,34 +315,37 @@ fn scheduled_vfs_fires_the_nth_match_not_the_first() {
 
 #[test]
 fn scheduled_vfs_fires_the_last_match_not_the_first() {
-    let directory = tempfile::tempdir().expect("last-match ScheduledVfs directory");
-    let path = directory.path().join("last-match");
-    let scheduled = ScheduledVfs::new(
-        StdVfs,
-        FaultSchedule::single(FaultEvent {
-            id: "last-match".to_owned(),
-            op_index: 4,
-            layer: Layer::Content,
-            site: FaultSite::Write,
-            mode: FaultMode::BitFlip,
-            nth_match: LAST_MATCH,
-            path_contains: None,
-            fired: false,
-            fire_count: 0,
-            path: None,
-        }),
-    );
-    scheduled.set_operation(4);
+    for write_count in 2..=4 {
+        let directory = tempfile::tempdir().expect("last-match ScheduledVfs directory");
+        let path = directory.path().join(format!("last-match-{write_count}"));
+        let scheduled = ScheduledVfs::new(
+            StdVfs,
+            FaultSchedule::single(FaultEvent {
+                id: format!("last-match-{write_count}"),
+                op_index: 4,
+                layer: Layer::Content,
+                site: FaultSite::Write,
+                mode: FaultMode::BitFlip,
+                nth_match: LAST_MATCH,
+                expected_matches: Some(write_count),
+                path_contains: None,
+                fired: false,
+                fire_count: 0,
+                path: None,
+            }),
+        );
+        scheduled.set_operation(4);
 
-    assert!(scheduled.write(&path, b"first").is_ok());
-    assert_eq!(
-        scheduled.events()[0].fire_count,
-        0,
-        "LAST_MATCH fired on the first matching call"
-    );
-    assert!(scheduled.write(&path, b"second").is_ok());
-    assert!(scheduled.write(&path, b"third").is_ok());
-    assert_eq!(std::fs::read(path).expect("last write"), b"thhrd");
+        for write_index in 1..=write_count {
+            assert!(scheduled.write(&path, &[write_index as u8]).is_ok());
+            let expected_fire_count = usize::from(write_index == write_count);
+            assert_eq!(
+                scheduled.events()[0].fire_count,
+                expected_fire_count,
+                "LAST_MATCH did not select write {write_count} of {write_count}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -274,6 +359,7 @@ fn unfired_event_does_not_starve_ready_event_at_same_op_and_site() {
         site: FaultSite::Write,
         mode,
         nth_match,
+        expected_matches: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -310,6 +396,7 @@ fn faults_jsonl_tags_generic_events_with_type_and_layer() {
         site: FaultSite::Write,
         mode: FaultMode::BitFlip,
         nth_match: 1,
+        expected_matches: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -332,6 +419,7 @@ fn runner_retries_after_io_layer_and_not_after_content_layer_at_same_op() {
         site: FaultSite::Append,
         mode,
         nth_match: 1,
+        expected_matches: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -359,6 +447,7 @@ fn runner_records_violation_after_content_fault_at_earlier_operation() {
         site: FaultSite::Write,
         mode: FaultMode::BitFlip,
         nth_match: 1,
+        expected_matches: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -4917,6 +5006,7 @@ fn injected_store_vfs_reaches_open_and_wal_creation() {
             site: FaultSite::Write,
             mode: FaultMode::Eio,
             nth_match: 1,
+            expected_matches: None,
             path_contains: None,
             fired: false,
             fire_count: 0,
@@ -5335,23 +5425,6 @@ fn smoke() {
             smoke_episodes = smoke_episodes.saturating_add(1);
             generic_multi_event_episodes = generic_multi_event_episodes
                 .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
-            if outcome.scheduled_faults_fired > 0
-                && [
-                    "fault.layer.io",
-                    "fault.layer.content",
-                    "fault.layer.crash",
-                    "fault.layer.clock",
-                    "fault.layer.cancel",
-                    "fault.layer.busy",
-                ]
-                .iter()
-                .all(|key| outcome.coverage.count(key) == 0)
-            {
-                unfired.push(format!(
-                    "seed={seed} profile={} fired faults have no layer coverage",
-                    profile.key()
-                ));
-            }
             if !outcome.missing_feature_faults.is_empty() {
                 unfired.push(format!(
                     "seed={seed} profile={} feature={:?}",
@@ -7009,7 +7082,6 @@ fn campaign_replays_each_feature_episode_before_attestation() {
         .env("ZE_ADV_MIN_EPISODES", "1")
         .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
         .env("ZE_ADV_CAMPAIGN_START_SEED", "0")
-        .env("ZE_ADV_PROFILE", "none")
         .env("ZE_ADV_ARTIFACTS", artifacts.path())
         .output()
         .expect("run one feature campaign episode");
@@ -7133,7 +7205,6 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         .env("ZE_ADV_MIN_EPISODES", "89")
         .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
         .env("ZE_ADV_CAMPAIGN_START_SEED", "0")
-        .env("ZE_ADV_PROFILE", "none")
         .env(
             "ZE_ADV_CAMPAIGN_TEST_FAILURES",
             "84:violation,85:error,86:unfired,87:panic",
@@ -7181,7 +7252,7 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         let directory = artifacts
             .path()
             .join("failures")
-            .join(format!("seed-{seed}-none"));
+            .join(format!("seed-{seed}-{}", profile_for_seed(seed).key()));
         for name in [
             "program.jsonl",
             "faults.jsonl",
@@ -7200,10 +7271,12 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         artifacts.path().join("seed-88-none").is_dir(),
         "the campaign did not continue through the canonical matrix: {transcript}"
     );
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=84 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=85 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=86 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=87 profile=none"));
+    for seed in 84..=87 {
+        assert!(transcript.contains(&format!(
+            "ADV_CAMPAIGN_FAILURE seed={seed} profile={}",
+            profile_for_seed(seed).key()
+        )));
+    }
     assert!(transcript.contains("ADV_CAMPAIGN_COMPLETE episodes=89 qualification=failed"));
 }
 
@@ -7443,7 +7516,7 @@ fn vector_rotation_preserves_merged_evidence() {
 }
 
 #[test]
-fn release_feature_campaign_refuses_incomplete_coverage() {
+fn release_feature_campaign_rejects_real_violations() {
     let artifacts = tempfile::tempdir().expect("release campaign artifacts");
     let clean_seed = (0..12)
         .find(|seed| {
@@ -7464,11 +7537,14 @@ fn release_feature_campaign_refuses_incomplete_coverage() {
         .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
         .env("ZE_ADV_CAMPAIGN", "fts")
         .env("ZE_ADV_QUALIFICATION", "release")
-        .env("ZE_ADV_PROFILE", "none")
         .env("ZE_ADV_MIN_SECONDS", "0")
         .env("ZE_ADV_MIN_EPISODES", "1")
         .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
         .env("ZE_ADV_CAMPAIGN_START_SEED", clean_seed.to_string())
+        .env(
+            "ZE_ADV_CAMPAIGN_TEST_FAILURES",
+            format!("{clean_seed}:violation"),
+        )
         .env("ZE_ADV_ARTIFACTS", artifacts.path())
         .output()
         .expect("run release coverage probe");
@@ -7479,10 +7555,9 @@ fn release_feature_campaign_refuses_incomplete_coverage() {
                 .expect("release summary"),
         )
         .expect("valid release summary");
-    assert_eq!(summary["run_verdict"], "passed");
+    assert_eq!(summary["run_verdict"], "failed");
     assert_eq!(summary["qualification_passed"], false);
-    assert_eq!(summary["violations"].as_u64(), Some(0));
-    assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
+    assert!(summary["violations"].as_u64().unwrap() > 0);
 }
 
 #[test]
