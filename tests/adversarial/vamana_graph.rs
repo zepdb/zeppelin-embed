@@ -26,6 +26,7 @@ use zeppelin_embed::planner::SegmentBranch;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 
 use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, std_scheduled};
+use super::runner::ControlStore;
 use zeppelin_embed_adversarial_oracle::vamana_graph::{
     self as oracle, GraphCandidate, GraphInput, GraphObserved,
 };
@@ -156,7 +157,6 @@ pub struct GraphOperationEvidence {
     pub operation: GraphOperationKind,
     pub invariants: Vec<GraphInvariantEvidence>,
     pub receipts: Vec<GraphFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 type CachedObservation = (u64, Arc<GraphInput>, Arc<GraphObserved>);
@@ -340,15 +340,17 @@ fn temporary_orphans(directory: &Path) -> Result<u32, String> {
     u32::try_from(count).map_err(|_| "temporary orphan count exceeds u32".to_owned())
 }
 
-fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
+pub(crate) fn control_open_options(seed: u64) -> OpenOptions {
+    OpenOptions::default().with_epoch(epoch(oracle::fixture(seed).dims))
+}
+
+fn observe_on_store(
+    leg: &mut ControlStore,
+    seed: u64,
+) -> Result<(GraphInput, GraphObserved), String> {
     let input = oracle::fixture(seed);
-    let directory = tempdir().map_err(|error| format!("graph fixture tempdir: {error}"))?;
     let epoch = epoch(input.dims);
-    let store = Store::open(
-        directory.path(),
-        OpenOptions::default().with_epoch(epoch.clone()),
-    )
-    .map_err(|error| format!("open graph fixture: {error}"))?;
+    let store = leg.store()?;
     store
         .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
         .map_err(|error| format!("ingest graph fixture: {error}"))?;
@@ -386,9 +388,7 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
     let bounded_bytes = work_stride
         .checked_mul(oracle::CHECKPOINT_ROWS)
         .ok_or_else(|| "graph fixture bounded budget overflow".to_owned())?;
-    let checkpoint_path = directory
-        .path()
-        .join(format!(".tier-{source}.graph.checkpoint"));
+    let checkpoint_path = leg.path().join(format!(".tier-{source}.graph.checkpoint"));
     let bounded = store.maintain_with_test_thresholds(
         MaintenanceBudget {
             wall_time: Duration::from_secs(30),
@@ -428,7 +428,7 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
         .alive()
         .map_err(|error| format!("read published alive set: {error}"))?
         .live_count();
-    let graph_path = directory.path().join(segment.meta().id.file_name());
+    let graph_path = leg.path().join(segment.meta().id.file_name());
     let graph_bytes = std::fs::read(&graph_path)
         .map_err(|error| format!("read published graph segment: {error}"))?;
     let parsed_graph = oracle::parse_graph_segment(&graph_bytes)?;
@@ -531,12 +531,12 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
     let filtered_small_exact_allow_list = filtered_small_outcome.plans.len() == 1
         && filtered_small_outcome.plans[0].branch == SegmentBranch::ExactAllowList;
 
-    let source_path = directory.path().join(source.file_name());
-    let manifest_bytes = std::fs::read(directory.path().join("manifest.ze"))
+    let source_path = leg.path().join(source.file_name());
+    let manifest_bytes = std::fs::read(leg.path().join("manifest.ze"))
         .map_err(|error| format!("read published graph manifest: {error}"))?;
     let manifest_segments = oracle::parse_manifest_segment_ids(&manifest_bytes)?;
     let graph_segments_on_disk = u32::try_from(
-        segment_paths(directory.path())?
+        segment_paths(leg.path())?
             .iter()
             .map(std::fs::read)
             .collect::<Result<Vec<_>, _>>()
@@ -548,13 +548,11 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
     .map_err(|_| "graph segment count exceeds u32".to_owned())?;
     let source_manifest_referenced = manifest_segments.contains(source.as_bytes());
     let source_file_exists = source_path.exists();
-    let orphan_count = temporary_orphans(directory.path())?;
+    let orphan_count = temporary_orphans(leg.path())?;
 
-    store
-        .close()
-        .map_err(|error| format!("close graph fixture: {error}"))?;
-    let reopened = Store::open(directory.path(), OpenOptions::default().with_epoch(epoch))
+    leg.reopen()
         .map_err(|error| format!("reopen graph fixture: {error}"))?;
+    let reopened = leg.store()?;
     let reopened_outcome = reopened
         .search(
             SearchRequest::new(&query),
@@ -564,9 +562,6 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
         )
         .map_err(|error| format!("reopened Graph search: {error}"))?;
     let reopened_graph = candidates(&reopened_outcome)?;
-    reopened
-        .close()
-        .map_err(|error| format!("close reopened graph fixture: {error}"))?;
 
     Ok((
         input,
@@ -610,6 +605,18 @@ fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
             filtered_small_exact_allow_list,
         },
     ))
+}
+
+fn observe(seed: u64) -> Result<(GraphInput, GraphObserved), String> {
+    let directory = tempdir().map_err(|error| format!("graph fixture tempdir: {error}"))?;
+    let dependencies = StoreTestDependencies::new(
+        Arc::new(zeppelin_embed::vfs::StdVfs),
+        Arc::new(SystemMonotonicClock),
+    );
+    let mut leg = ControlStore::open(directory.path(), control_open_options(seed), dependencies)?;
+    let result = observe_on_store(&mut leg, seed);
+    leg.close()?;
+    result
 }
 
 fn observation(seed: u64) -> Result<(Arc<GraphInput>, Arc<GraphObserved>), String> {
@@ -854,18 +861,12 @@ fn exercise_fault(
     }
 }
 
-pub fn run_graph_operation(
+fn operation_invariants(
     operation: GraphOperationKind,
-    seed: u64,
-    fault: Option<GraphFaultKind>,
-) -> Result<GraphOperationEvidence, String> {
-    if fault.is_some_and(|fault| fault.operation() != operation) {
-        return Err(format!(
-            "graph fault {fault:?} does not target {operation:?}"
-        ));
-    }
-    let (input, observed) = observation(seed)?;
-    let invariants = match operation {
+    input: Arc<GraphInput>,
+    observed: Arc<GraphObserved>,
+) -> Vec<GraphInvariantEvidence> {
+    match operation {
         GraphOperationKind::Shape => vec![GraphInvariantEvidence::I28 { input, observed }],
         GraphOperationKind::EntryPoints => vec![GraphInvariantEvidence::I29 { input, observed }],
         GraphOperationKind::Checkpoint => vec![GraphInvariantEvidence::I34 { input, observed }],
@@ -881,7 +882,15 @@ pub fn run_graph_operation(
         GraphOperationKind::FilteredSearch => {
             vec![GraphInvariantEvidence::I35 { input, observed }]
         }
-    };
+    }
+}
+
+fn finish_operation(
+    operation: GraphOperationKind,
+    invariants: Vec<GraphInvariantEvidence>,
+    fault: Option<GraphFaultKind>,
+    exercise: impl FnOnce(GraphFaultKind, &GraphObserved) -> Result<(), String>,
+) -> Result<GraphOperationEvidence, String> {
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         let observed = match invariants.first() {
@@ -897,7 +906,7 @@ pub fn run_graph_operation(
             ) => observed,
             None => return Err("graph operation emitted no invariant evidence".to_owned()),
         };
-        exercise_fault(seed, fault, observed)?;
+        exercise(fault, observed)?;
         receipts.push(GraphFaultReceipt {
             fault,
             operation,
@@ -909,7 +918,171 @@ pub fn run_graph_operation(
         operation,
         invariants,
         receipts,
-        clean_control_passed: true,
+    })
+}
+
+pub fn run_graph_operation(
+    operation: GraphOperationKind,
+    seed: u64,
+    fault: Option<GraphFaultKind>,
+) -> Result<GraphOperationEvidence, String> {
+    if fault.is_some_and(|fault| fault.operation() != operation) {
+        return Err(format!(
+            "graph fault {fault:?} does not target {operation:?}"
+        ));
+    }
+    let (input, observed) = observation(seed)?;
+    let invariants = operation_invariants(operation, input, observed);
+    finish_operation(operation, invariants, fault, |fault, observed| {
+        exercise_fault(seed, fault, observed)
+    })
+}
+
+fn corruption_refused_on_store(
+    leg: &mut ControlStore,
+    seed: u64,
+    region: u16,
+) -> Result<(), String> {
+    leg.close()?;
+    let segment = first_segment_path(leg.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let target = region_byte(&bytes, region)?;
+    let byte = bytes
+        .get_mut(target)
+        .ok_or_else(|| "graph mutation target disappeared".to_owned())?;
+    *byte ^= 0xff;
+    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
+    if leg.reopen().is_err() {
+        return Ok(());
+    }
+    let input = oracle::fixture(seed);
+    let result = leg.store()?.search(
+        SearchRequest::new(&query(&input)),
+        usize::try_from(input.k).unwrap_or(1),
+        graph_options(seed),
+        QueryControl::Cancel(CancelToken::new()),
+    );
+    if result.is_err() {
+        Ok(())
+    } else {
+        Err("corrupt graph bytes were accepted by public search".to_owned())
+    }
+}
+
+fn cancellation_refused_on_store(leg: &ControlStore, seed: u64) -> Result<(), String> {
+    let input = oracle::fixture(seed);
+    let token = CancelToken::new();
+    token.cancel();
+    let result = leg.store()?.search(
+        SearchRequest::new(&query(&input)),
+        usize::try_from(input.k).unwrap_or(1),
+        graph_options(seed),
+        QueryControl::Cancel(token),
+    );
+    if result.is_err() {
+        Ok(())
+    } else {
+        Err("cancelled graph search succeeded".to_owned())
+    }
+}
+
+fn publication_fault_fired_in_directory(directory: &Path, seed: u64) -> Result<(), String> {
+    let input = oracle::fixture(seed);
+    let epoch = epoch(input.dims);
+    let event = FaultEvent {
+        id: format!("graph-publication-{seed}"),
+        op_index: 0,
+        layer: Layer::Io,
+        site: FaultSite::Rename,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: Some("manifest.ze".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(event)));
+    let dependencies =
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock));
+    let store = Store::open_with_test_dependencies(
+        directory.join("publication-fault"),
+        OpenOptions::default().with_epoch(epoch.clone()),
+        dependencies,
+    )
+    .map_err(|error| error.to_string())?;
+    store
+        .ingest(IngestBatch::new(documents(&input)).with_epoch(epoch.identity()))
+        .map_err(|error| error.to_string())?;
+    store
+        .delete(DeleteBatch::new(deleted_documents(&input)))
+        .map_err(|error| error.to_string())?;
+    store.seal().map_err(|error| error.to_string())?;
+    scheduled.set_operation(0);
+    let report = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: u32::try_from(input.rows.len())
+                .map_err(|_| "publication fixture row count exceeds u32".to_owned())?,
+        },
+    );
+    let fired = scheduled.events().into_iter().any(|event| event.fired);
+    store.close().map_err(|error| error.to_string())?;
+    if fired && matches!(report.status, MaintenanceStatus::Failed(_)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "graph publication fault did not fire: fired={fired} status={:?}",
+            report.status
+        ))
+    }
+}
+
+fn exercise_fault_on_store(
+    leg: &mut ControlStore,
+    seed: u64,
+    fault: GraphFaultKind,
+    observed: &GraphObserved,
+) -> Result<(), String> {
+    match fault {
+        GraphFaultKind::CheckpointCorruption => {
+            zeppelin_embed::graph::build::validate_graph_build_checkpoint(&[])
+                .map_err(|_| "corrupt checkpoint was accepted".to_owned())
+                .err()
+                .map(|_| ())
+                .ok_or_else(|| "corrupt checkpoint was accepted".to_owned())
+        }
+        GraphFaultKind::BuildBudgetCancel if observed.bounded_budget_exhausted => Ok(()),
+        GraphFaultKind::BuildBudgetCancel => {
+            Err("bounded graph build did not report budget exhaustion".to_owned())
+        }
+        GraphFaultKind::CorruptNode | GraphFaultKind::CorruptEntry => {
+            corruption_refused_on_store(leg, seed, 7)
+        }
+        GraphFaultKind::MissingRescore => corruption_refused_on_store(leg, seed, 5),
+        GraphFaultKind::SearchCancellation => cancellation_refused_on_store(leg, seed),
+        GraphFaultKind::PublicationCrash => publication_fault_fired_in_directory(leg.path(), seed),
+    }
+}
+
+pub(crate) fn run_graph_operation_on_store(
+    leg: &mut ControlStore,
+    operation: GraphOperationKind,
+    seed: u64,
+    fault: Option<GraphFaultKind>,
+) -> Result<GraphOperationEvidence, String> {
+    if fault.is_some_and(|fault| fault.operation() != operation) {
+        return Err(format!(
+            "graph fault {fault:?} does not target {operation:?}"
+        ));
+    }
+    let (input, observed) = observe_on_store(leg, seed)?;
+    let invariants = operation_invariants(operation, Arc::new(input), Arc::new(observed));
+    finish_operation(operation, invariants, fault, |fault, observed| {
+        exercise_fault_on_store(leg, seed, fault, observed)
     })
 }
 

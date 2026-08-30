@@ -200,7 +200,7 @@ pub(crate) fn prepare_sealed_tombstones(
             return Ok(None);
         }
         manifest.generation = generation;
-        let remapped = PublishedSnapshot::from_manifest(directory, &manifest, accounting)?;
+        let remapped = PublishedSnapshot::from_manifest(vfs, directory, &manifest, accounting)?;
         Ok(Some(PreparedSealedTombstones {
             manifest,
             snapshot: remapped,
@@ -608,7 +608,8 @@ impl Store {
         let original_segments = manifest.segments.clone();
         for original in original_segments {
             let path = self.directory.join(original.id.file_name());
-            let reader = SegmentReader::open(&path, original.id).map_err(StoreError::Segment)?;
+            let reader =
+                SegmentReader::open(vfs, &path, original.id).map_err(StoreError::Segment)?;
             let survivors = survivor_rows(&reader, &intent.ids)?;
             if survivors.len() == original.row_count as usize {
                 continue;
@@ -643,8 +644,12 @@ impl Store {
             *target = replacement;
             manifest.generation = generation;
             manifest.epochs = self.epoch_registry(&manifest.epochs);
-            let remapped =
-                PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            let remapped = PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                &manifest,
+                &self.accounting,
+            )?;
             commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;
             let mut published = self
@@ -720,8 +725,12 @@ impl Store {
         if manifest.generation < active_state.generation {
             manifest.generation = active_state.generation;
             manifest.epochs = self.epoch_registry(&manifest.epochs);
-            let remapped =
-                PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            let remapped = PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                &manifest,
+                &self.accounting,
+            )?;
             commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;
             let mut published = self

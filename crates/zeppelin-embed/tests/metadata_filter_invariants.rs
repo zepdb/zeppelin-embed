@@ -583,7 +583,7 @@ fn i37_graph_matrix_cases() -> Vec<(Predicate, oracle::PredicateDto)> {
 fn i39_graph_fixture_is_published_by_the_public_store_lifecycle() {
     let directory = tempdir().expect("metadata public graph lifecycle directory");
     let id = publish_metadata_chain_graph(directory.path());
-    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id)
+    let reader = SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id)
         .expect("open metadata public graph lifecycle segment");
     for row in 0..GRAPH_ROWS {
         assert!(
@@ -662,7 +662,7 @@ fn i36_all_null_nullable_dictionary_reopens_without_inventing_a_value() {
     )
     .expect("write checked segment");
 
-    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id)
+    let reader = SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id)
         .expect("reopen checked segment");
     let decoded = reader.columns().unwrap_or_else(|error| {
         panic!(

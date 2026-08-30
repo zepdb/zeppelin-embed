@@ -3385,7 +3385,7 @@ fn build_typed_fixture(
         .get(columns_offset..columns_offset.saturating_add(columns_length))
         .ok_or_else(|| "independent Columns envelope span escapes segment".to_owned())?;
     let parsed_columns = independent::parse_columns(columns_region)?;
-    let reader = SegmentReader::open(&segment_path, segment_id)
+    let reader = SegmentReader::open(&StdVfs, &segment_path, segment_id)
         .map_err(|error| format!("open closed metadata SegmentReader: {error}"))?;
     let decoded_columns = reader
         .columns()
@@ -4679,7 +4679,7 @@ fn run_bitmap(
     clean_store
         .close()
         .map_err(|error| format!("close metadata bitmap clean Store: {error}"))?;
-    let reader = SegmentReader::open(&fixture.segment_path, fixture.segment_id)
+    let reader = SegmentReader::open(&StdVfs, &fixture.segment_path, fixture.segment_id)
         .map_err(|error| format!("open clean metadata bitmap reader: {error}"))?;
     let columns = reader
         .columns()
@@ -6028,7 +6028,7 @@ fn inspect_public_graph(
     }
     std::fs::write(path, &bytes)
         .map_err(|error| format!("write disconnected public metadata graph: {error}"))?;
-    let reader = SegmentReader::open(path, id)
+    let reader = SegmentReader::open(&StdVfs, path, id)
         .map_err(|error| format!("open disconnected public metadata graph: {error}"))?;
     let graph = reader
         .graph_node_blocks()

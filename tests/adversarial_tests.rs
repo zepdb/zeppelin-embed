@@ -10,7 +10,10 @@ mod adversarial;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs::File, io::Write as _};
 
@@ -24,9 +27,519 @@ use adversarial::fault_vfs::{
 use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
 use adversarial::program::{Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
-use zeppelin_embed::lifecycle::{ManualMonotonicClock, OpenOptions, Store, StoreTestDependencies};
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::build::GraphBuildError;
+use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+use zeppelin_embed::lifecycle::{
+    ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+};
 use zeppelin_embed::meta::Schema;
+use zeppelin_embed::segment::SegmentError;
+use zeppelin_embed::tier::{
+    MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
+};
 use zeppelin_embed::vfs::{StdVfs, Vfs};
+
+#[test]
+fn no_family_sets_clean_control_passed_as_a_literal() {
+    let source_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial");
+    let helper_only_families = [
+        "tiering_maintenance.rs",
+        "fts.rs",
+        "vamana_graph.rs",
+        "lifecycle_accounting.rs",
+        "diagnostics_health.rs",
+        "ffi_bindings.rs",
+    ];
+    let mut violations = Vec::new();
+    let mut paths = std::fs::read_dir(&source_directory)
+        .expect("read adversarial sources")
+        .map(|entry| entry.expect("read adversarial source entry").path())
+        .collect::<Vec<_>>();
+    paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial_tests.rs"));
+    let forbidden = [
+        ["clean_control_passed", ":", "true"].concat(),
+        ["clean_control_passed", "=", "true"].concat(),
+        ["clean_control_passed", ":", "!false"].concat(),
+        ["clean_control_passed", "=", "!false"].concat(),
+    ];
+    for path in paths {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read adversarial source");
+        let compact = source.split_whitespace().collect::<String>();
+        let is_helper_only_family = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| helper_only_families.contains(&name));
+        if forbidden.iter().any(|literal| compact.contains(literal))
+            || (is_helper_only_family && compact.contains("clean_control_passed"))
+        {
+            violations.push(path.display().to_string());
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "family clean controls must be measured, not literals: {violations:?}"
+    );
+}
+
+#[test]
+fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let event = FaultEvent {
+        id: "clean-control-must-not-see-schedule".to_owned(),
+        op_index: 17,
+        site: FaultSite::Append,
+        layer: Layer::Io,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: Some("wal.ze".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture")
+        .with_fault(event, 17);
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |store| {
+            let document = zeppelin_embed::ingest::IngestDocument::new(
+                zeppelin_embed::ingest::DocumentVersion::new(
+                    zeppelin_embed::ingest::DocId::new(1),
+                    zeppelin_embed::ingest::Revision::new(1),
+                ),
+                vec![1.0],
+            );
+            store
+                .store()?
+                .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+        |store| {
+            let document = zeppelin_embed::ingest::IngestDocument::new(
+                zeppelin_embed::ingest::DocumentVersion::new(
+                    zeppelin_embed::ingest::DocId::new(1),
+                    zeppelin_embed::ingest::Revision::new(1),
+                ),
+                vec![1.0],
+            );
+            store
+                .store()?
+                .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+        |_| Ok(()),
+    )
+    .expect("materialize clean-control pair");
+
+    assert!(outcome.clean.is_ok(), "plain clean VFS saw the fault");
+    assert!(
+        format!("{:?}", outcome.faulted).contains("Refused"),
+        "faulted VFS did not refuse: {:?}",
+        outcome.faulted
+    );
+    assert!(
+        outcome.fault_event.is_some_and(|event| event.fired),
+        "faulted schedule did not fire"
+    );
+}
+
+#[test]
+fn clean_control_helper_reports_false_when_the_clean_leg_disagrees_with_the_oracle() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture");
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |_store| Ok(()),
+        |_store| Ok(()),
+        |_| Err("family oracle disagreed".to_owned()),
+    )
+    .expect("materialize clean-control pair");
+
+    assert_eq!(outcome.clean, Ok(()));
+    assert!(
+        !outcome.same_seed_control_passed,
+        "oracle disagreement was counted as a passing clean control"
+    );
+}
+
+#[test]
+fn clean_control_helper_records_faulted_open_as_a_typed_refusal() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let event = FaultEvent {
+        id: "faulted-open-refusal".to_owned(),
+        op_index: 23,
+        site: FaultSite::Open,
+        layer: Layer::Io,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: None,
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture")
+        .with_fault(event, 23);
+    let faulted_operation_ran = Arc::new(AtomicBool::new(false));
+    let faulted_marker = Arc::clone(&faulted_operation_ran);
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |_store| Ok(()),
+        move |_store| {
+            faulted_marker.store(true, Ordering::Relaxed);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .expect("materialize clean-control pair");
+
+    assert!(outcome.clean.is_ok(), "clean leg did not run");
+    assert!(
+        format!("{:?}", outcome.faulted).contains("Refused"),
+        "scheduled Store::open fault was not recorded as a typed refusal: {:?}",
+        outcome.faulted
+    );
+    assert!(
+        !faulted_operation_ran.load(Ordering::Relaxed),
+        "faulted operation ran after Store::open refusal"
+    );
+}
+
+#[test]
+fn tiering_control_goes_false_under_a_planted_product_mutation() {
+    let passed = adversarial::runner::tier_clean_control_for_test(
+        adversarial::tiering_maintenance::TierOperationKind::Policy,
+        2,
+    )
+    .expect("tiering clean control");
+    assert!(
+        passed,
+        "tiering clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn fts_control_goes_false_under_a_planted_product_mutation() {
+    let passed = adversarial::runner::fts_clean_control_for_test(
+        adversarial::fts::FtsOperationKind::Bm25,
+        1,
+    )
+    .expect("FTS clean control");
+    assert!(
+        passed,
+        "FTS clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn vamana_control_goes_false_under_a_planted_product_mutation() {
+    let passed = adversarial::runner::graph_clean_control_for_test(
+        adversarial::vamana_graph::GraphOperationKind::FilteredSearch,
+        7,
+    )
+    .expect("Vamana clean control");
+    assert!(
+        passed,
+        "Vamana clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn runner_counts_qualifying_controls_from_the_helper_for_every_family() {
+    for campaign in CampaignKind::FEATURES {
+        let seed = (0..128)
+            .find(|&seed| {
+                let program = Program::generate_for(campaign, seed);
+                let plan = FaultPlan::for_program(
+                    campaign,
+                    seed,
+                    FaultProfile::Full,
+                    &program,
+                    FaultSchedule::default(),
+                );
+                !plan.feature.is_empty()
+            })
+            .unwrap_or_else(|| panic!("{campaign} has no selected feature-fault seed"));
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("helper accounting test binary"),
+        )
+        .args([
+            "runner_helper_accounting_child",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ])
+        .env("ZE_ADV_HELPER_CAMPAIGN", campaign.key())
+        .env("ZE_ADV_HELPER_SEED", seed.to_string())
+        .output()
+        .expect("run helper accounting child");
+        assert!(
+            output.status.success(),
+            "{campaign} helper accounting child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("HELPER_ACCOUNTING_CHILD_RAN"),
+            "{campaign} helper accounting child did not run: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+#[ignore = "isolated child for helper accounting across process-global family tests"]
+fn runner_helper_accounting_child() {
+    let campaign_key = std::env::var("ZE_ADV_HELPER_CAMPAIGN").expect("helper campaign");
+    let campaign = CampaignKind::FEATURES
+        .into_iter()
+        .find(|campaign| campaign.key() == campaign_key)
+        .expect("known helper campaign");
+    let seed = std::env::var("ZE_ADV_HELPER_SEED")
+        .expect("helper seed")
+        .parse::<u64>()
+        .expect("numeric helper seed");
+    let artifacts = tempfile::tempdir().expect("helper accounting artifacts");
+    let outcome =
+        adversarial::runner::run_program_for(campaign, seed, FaultProfile::Full, artifacts.path())
+            .unwrap_or_else(|error| panic!("{campaign} seed {seed}: {error}"));
+    let episode = artifacts
+        .path()
+        .join(campaign.key())
+        .join(format!("seed-{seed}-full"));
+    let operation_by_index = std::fs::read_to_string(episode.join("program.jsonl"))
+        .expect("read helper program records")
+        .lines()
+        .filter_map(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper program");
+            Some((
+                record["op"].as_u64()?,
+                record["operation"].as_str()?.to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let selected_operations = std::fs::read_to_string(episode.join("faults.jsonl"))
+        .expect("read helper fault records")
+        .lines()
+        .filter_map(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper fault");
+            (record["type"].as_str() == Some("feature") && record["fired"].as_bool() == Some(true))
+                .then(|| record["op"].as_u64())
+                .flatten()
+        })
+        .filter_map(|index| operation_by_index.get(&index).cloned())
+        .collect::<BTreeSet<_>>();
+    let controls = std::fs::read_to_string(episode.join("controls.jsonl"))
+        .expect("read helper control records")
+        .lines()
+        .filter(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper control");
+            if campaign == CampaignKind::MetadataFilterPlanner {
+                !record["fault"].is_null()
+            } else {
+                record["operation"]
+                    .as_str()
+                    .is_some_and(|operation| selected_operations.contains(operation))
+            }
+        })
+        .count();
+    assert!(
+        controls > 0,
+        "{campaign} produced 0 qualifying same-seed controls"
+    );
+    assert_eq!(
+        usize::try_from(outcome.same_seed_clean_controls).expect("control count fits usize"),
+        controls,
+        "{campaign} did not count the control records written to disk"
+    );
+    println!("HELPER_ACCOUNTING_CHILD_RAN controls={controls}");
+}
+
+#[test]
+fn scheduled_open_fault_reaches_a_sealed_segment_open() {
+    let directory = tempfile::tempdir().expect("scheduled reopen directory");
+    let scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule::single(FaultEvent {
+            id: "stage-06-open-eio".to_owned(),
+            op_index: 1,
+            layer: Layer::Io,
+            site: FaultSite::Open,
+            mode: FaultMode::Eio,
+            nth_match: 2,
+            expected_matches: None,
+            path_contains: Some(".zseg".to_owned()),
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }),
+    ));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open scheduled store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(6), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest sealed fixture");
+    store.seal().expect("seal fixture");
+    store.close().expect("close before scheduled reopen");
+
+    scheduled.set_operation(1);
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock),
+    );
+    assert!(
+        matches!(
+            reopened,
+            Err(StoreError::Segment(SegmentError::Io { source, .. }))
+                if source.raw_os_error() == Some(5)
+        ),
+        "sealed reopen did not preserve the typed Open/Eio error"
+    );
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
+}
+
+#[test]
+fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
+    let program = Program::generate_for(CampaignKind::VamanaGraph, 6);
+    let maintain = program
+        .ops
+        .iter()
+        .position(|operation| matches!(operation, Op::Maintain { .. }))
+        .expect("Vamana graph program contains Maintain");
+    let event = FaultEvent {
+        id: "stage-06-torn-checkpoint".to_owned(),
+        op_index: maintain,
+        site: FaultSite::Write,
+        layer: Layer::Content,
+        mode: FaultMode::TornWrite,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: Some(".graph.checkpoint.tmp".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
+    let directory = tempfile::tempdir().expect("torn checkpoint directory");
+    let document = EmbeddingTower {
+        model_id: "stage-06-sift-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0x06],
+        dims: 128,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let epoch = StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    };
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open scheduled maintenance store");
+    let documents = (0..128)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                (0..128)
+                    .map(|dimension| {
+                        if dimension % 2 == 0 {
+                            row as f32
+                        } else {
+                            -(row as f32)
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest checkpoint fixture");
+    store.seal().expect("seal checkpoint fixture");
+
+    scheduled.set_operation(maintain);
+    let interrupted = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes: 256 * 64,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(matches!(
+        interrupted.status,
+        MaintenanceStatus::BudgetExhausted
+    ));
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
+    store.close().expect("close after torn checkpoint");
+
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch),
+        StoreTestDependencies::new(scheduled, clock),
+    )
+    .expect("reopen after torn checkpoint");
+    let refused = reopened.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes: u64::MAX,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(
+            &refused.status,
+            MaintenanceStatus::Failed(MaintenanceError::Graph(GraphBuildError::CheckpointCorrupt(
+                _
+            )))
+        ),
+        "reopen accepted a torn graph-build checkpoint: {:?}",
+        refused.status
+    );
+    reopened.close().expect("close refused checkpoint store");
+}
 
 #[test]
 fn profile_for_seed_is_total_and_covers_every_preset_in_eight_seeds() {
@@ -4995,6 +5508,50 @@ fn feature_oracle_attestation_rejects_a_wrong_checker_version() {
 }
 
 #[test]
+fn scheduled_open_fault_reaches_store_directory_admission() {
+    let directory = tempfile::tempdir().expect("scheduled directory admission");
+    let scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule::single(FaultEvent {
+            id: "stage-06-directory-open-eio".to_owned(),
+            op_index: 0,
+            layer: Layer::Io,
+            site: FaultSite::Open,
+            mode: FaultMode::Eio,
+            nth_match: 1,
+            expected_matches: None,
+            path_contains: None,
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }),
+    ));
+    scheduled.set_operation(0);
+
+    let opened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(ManualMonotonicClock::new())),
+    );
+    assert!(
+        matches!(
+            opened,
+            Err(StoreError::Io { path, source })
+                if path == directory.path() && source.raw_os_error() == Some(5)
+        ),
+        "store-directory admission bypassed the scheduled Open/Eio fault"
+    );
+    assert_eq!(
+        scheduled
+            .events()
+            .into_iter()
+            .next()
+            .and_then(|event| event.path),
+        Some(PathBuf::from("."))
+    );
+}
+
+#[test]
 fn injected_store_vfs_reaches_open_and_wal_creation() {
     let directory = tempfile::tempdir().expect("injected VFS store");
     let scheduled = Arc::new(ScheduledVfs::new(
@@ -7513,6 +8070,48 @@ fn vector_rotation_preserves_merged_evidence() {
         retained, 1,
         "vector rotation did not run after merge: {transcript}"
     );
+}
+
+#[test]
+fn release_feature_campaign_refuses_incomplete_coverage() {
+    let artifacts = tempfile::tempdir().expect("release campaign artifacts");
+    let clean_seed = (0..12)
+        .find(|seed| {
+            let program = Program::generate_for(CampaignKind::Fts, *seed);
+            FaultPlan::for_program(
+                CampaignKind::Fts,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
+        })
+        .expect("FTS campaign clean slot");
+    let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
+        .args(["campaign", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
+        .env("ZE_ADV_CAMPAIGN", "fts")
+        .env("ZE_ADV_QUALIFICATION", "release")
+        .env("ZE_ADV_MIN_SECONDS", "0")
+        .env("ZE_ADV_MIN_EPISODES", "1")
+        .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
+        .env("ZE_ADV_CAMPAIGN_START_SEED", clean_seed.to_string())
+        .env("ZE_ADV_ARTIFACTS", artifacts.path())
+        .output()
+        .expect("run release coverage probe");
+    assert!(!output.status.success());
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("release summary"),
+        )
+        .expect("valid release summary");
+    assert_eq!(summary["run_verdict"], "passed");
+    assert_eq!(summary["qualification_passed"], false);
+    assert_eq!(summary["violations"].as_u64(), Some(0));
+    assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
 }
 
 #[test]

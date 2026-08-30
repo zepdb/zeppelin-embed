@@ -229,8 +229,7 @@ struct MappedFile {
 }
 
 impl MappedFile {
-    fn open(path: &Path) -> Result<Self, SegmentError> {
-        let file = File::open(path).map_err(|error| SegmentError::io(path, error))?;
+    fn open(file: File, path: &Path) -> Result<Self, SegmentError> {
         let length = usize::try_from(
             file.metadata()
                 .map_err(|error| SegmentError::io(path, error))?
@@ -446,8 +445,11 @@ impl<'a> StoredTextRows<'a> {
 
 impl SegmentReader {
     /// Memory-maps a segment and validates only its bounded header/directory.
-    pub fn open(path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
-        let mapping = MappedFile::open(path)?;
+    pub fn open(vfs: &dyn Vfs, path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
+        let file = vfs
+            .open_for_map(path)
+            .map_err(|error| SegmentError::io(path, error))?;
+        let mapping = MappedFile::open(file, path)?;
         let artifact = path.display().to_string();
         let parsed = parse_segment_header(
             &artifact,
@@ -474,12 +476,18 @@ impl SegmentReader {
     }
 
     pub(crate) fn open_accounted(
+        vfs: &dyn Vfs,
         path: &Path,
         expected: &SegmentMeta,
         accounting: &Arc<crate::lifecycle::stats::Accounting>,
         mut before_reader_allocation: impl FnMut(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
-        let mapping = MappedFile::open(path).map_err(crate::lifecycle::StoreError::Segment)?;
+        let file = vfs
+            .open_for_map(path)
+            .map_err(|error| SegmentError::io(path, error))
+            .map_err(crate::lifecycle::StoreError::Segment)?;
+        let mapping =
+            MappedFile::open(file, path).map_err(crate::lifecycle::StoreError::Segment)?;
         let artifact = path.display().to_string();
         let region_count =
             preflight_region_count(&artifact, mapping.as_bytes(), mapping.length as u64)

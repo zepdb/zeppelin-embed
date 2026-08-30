@@ -277,7 +277,16 @@ fn maintain_one(
             return Ok(report);
         }
         let checkpoint = checkpoint_path(&store.directory, segment.meta().id);
-        let checkpoint_resumed = checkpoint.exists();
+        let checkpoint_resumed = match store.vfs.open(&checkpoint) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(MaintenanceError::Graph(GraphBuildError::CheckpointIo {
+                    path: checkpoint,
+                    source,
+                }));
+            }
+        };
         report.checkpoints_resumed = report
             .checkpoints_resumed
             .checked_add(u64::from(checkpoint_resumed))

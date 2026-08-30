@@ -1,10 +1,9 @@
 //! Real-Store adapter for the hybrid-fusion adversarial campaign.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tempfile::{TempDir, tempdir};
+use tempfile::tempdir;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fusion::{
@@ -24,6 +23,8 @@ use zeppelin_embed_adversarial_oracle::hybrid_fusion::{
     FusionReportFact, FusionTerminationFact, HybridInput, HybridObserved, LegFailureFact,
     LegFaultObserved, RankedScore,
 };
+
+use super::runner::FrozenStoreFixture;
 
 const MAIN_TERM: &[u8] = b"zeppelin";
 const RRF_TERM: &[u8] = b"airship";
@@ -141,87 +142,6 @@ pub struct HybridOperationEvidence {
     pub invariants: Vec<HybridInvariantEvidence>,
     pub receipts: Vec<HybridFaultReceipt>,
     pub clean_control_passed: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FrozenFile {
-    relative_path: PathBuf,
-    bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FrozenStoreFixture {
-    files: Vec<FrozenFile>,
-}
-
-impl FrozenStoreFixture {
-    fn capture(root: &Path) -> Result<Self, String> {
-        fn collect(
-            root: &Path,
-            directory: &Path,
-            files: &mut Vec<FrozenFile>,
-        ) -> Result<(), String> {
-            let mut entries = std::fs::read_dir(directory)
-                .map_err(|error| format!("read hybrid fixture directory: {error}"))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| format!("enumerate hybrid fixture directory: {error}"))?;
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                let file_type = entry
-                    .file_type()
-                    .map_err(|error| format!("read hybrid fixture file type: {error}"))?;
-                let path = entry.path();
-                if file_type.is_dir() {
-                    collect(root, &path, files)?;
-                } else if file_type.is_file() {
-                    let relative_path = path
-                        .strip_prefix(root)
-                        .map_err(|error| format!("relativize hybrid fixture file: {error}"))?
-                        .to_path_buf();
-                    let bytes = std::fs::read(&path).map_err(|error| {
-                        format!("read hybrid fixture file {}: {error}", path.display())
-                    })?;
-                    files.push(FrozenFile {
-                        relative_path,
-                        bytes,
-                    });
-                } else {
-                    return Err(format!(
-                        "hybrid fixture contains non-file {}",
-                        path.display()
-                    ));
-                }
-            }
-            Ok(())
-        }
-
-        let mut files = Vec::new();
-        collect(root, root, &mut files)?;
-        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        if files.is_empty() {
-            return Err("hybrid Store fixture contains no files".to_owned());
-        }
-        Ok(Self { files })
-    }
-
-    fn materialize(&self) -> Result<TempDir, String> {
-        let directory = tempdir().map_err(|error| format!("hybrid fixture tempdir: {error}"))?;
-        for file in &self.files {
-            let path = directory.path().join(&file.relative_path);
-            let parent = path
-                .parent()
-                .ok_or_else(|| "hybrid fixture file has no parent".to_owned())?;
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create hybrid fixture directory: {error}"))?;
-            std::fs::write(&path, &file.bytes).map_err(|error| {
-                format!("write hybrid fixture file {}: {error}", path.display())
-            })?;
-        }
-        if Self::capture(directory.path())? != *self {
-            return Err("materialized hybrid fixture bytes differ from source".to_owned());
-        }
-        Ok(directory)
-    }
 }
 
 #[derive(Clone, Debug)]

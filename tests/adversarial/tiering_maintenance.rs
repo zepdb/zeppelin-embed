@@ -31,6 +31,7 @@ use zeppelin_embed_adversarial_oracle::tiering_maintenance::{
 };
 
 use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, std_scheduled};
+use super::runner::ControlStore;
 
 const CHECKPOINT_ROWS: u64 = 64;
 const NODE_BLOCK_TRAILER_BYTES: u64 = 128;
@@ -134,7 +135,6 @@ pub enum TierInvariantEvidence {
 pub struct TierOperationEvidence {
     pub invariants: Vec<TierInvariantEvidence>,
     pub receipts: Vec<TierFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 fn epoch(dims: u32, tag: u8) -> StoreEpoch {
@@ -375,24 +375,26 @@ fn publication_fact(directory: &Path, input: &TierInput) -> Result<PublicationFa
     })
 }
 
-fn observe_uncached(seed: u64) -> Result<(TierInput, TierObserved), String> {
+pub(crate) fn control_open_options(seed: u64) -> OpenOptions {
+    OpenOptions::default().with_epoch(epoch(oracle::fixture(seed).dims, 1))
+}
+
+fn observe_on_store(
+    leg: &mut ControlStore,
+    seed: u64,
+) -> Result<(TierInput, TierObserved), String> {
     let fixture = oracle::fixture(seed);
-    let directory = tempdir().map_err(|error| error.to_string())?;
     let epoch = epoch(fixture.dims, 1);
-    let store = Store::open(
-        directory.path(),
-        OpenOptions::default().with_epoch(epoch.clone()),
-    )
-    .map_err(|error| error.to_string())?;
-    ingest_fixture(&store, &fixture, &epoch)?;
-    let (source_generation, source_segment) = parsed_source(directory.path())?;
+    let store = leg.store()?;
+    ingest_fixture(store, &fixture, &epoch)?;
+    let (source_generation, source_segment) = parsed_source(leg.path())?;
     let input = TierInput::from_seed(seed, source_generation, source_segment);
-    let before_auto = search(&store, &fixture, SearchTier::Auto)?;
-    let before_exact = search(&store, &fixture, SearchTier::Exact)?;
+    let before_auto = search(store, &fixture, SearchTier::Auto)?;
+    let before_exact = search(store, &fixture, SearchTier::Exact)?;
 
     let (budget_steps, after_policy) = if input.rows >= input.policy_threshold {
-        let steps = budget_sequence(&store, &input, directory.path());
-        let after = search(&store, &fixture, SearchTier::Auto)?;
+        let steps = budget_sequence(store, &input, leg.path());
+        let after = search(store, &fixture, SearchTier::Auto)?;
         (steps, after)
     } else {
         let _policy_report = store.maintain_with_test_thresholds(
@@ -404,14 +406,14 @@ fn observe_uncached(seed: u64) -> Result<(TierInput, TierObserved), String> {
                 graph_min_rows: input.policy_threshold,
             },
         );
-        let after = search(&store, &fixture, SearchTier::Auto)?;
-        let steps = budget_sequence(&store, &input, directory.path());
+        let after = search(store, &fixture, SearchTier::Auto)?;
+        let steps = budget_sequence(store, &input, leg.path());
         (steps, after)
     };
 
-    let after_exact = search(&store, &fixture, SearchTier::Exact)?;
-    let after_auto = search(&store, &fixture, SearchTier::Auto)?;
-    let publication = publication_fact(directory.path(), &input)?;
+    let after_exact = search(store, &fixture, SearchTier::Exact)?;
+    let after_auto = search(store, &fixture, SearchTier::Auto)?;
+    let publication = publication_fact(leg.path(), &input)?;
     let observed = TierObserved {
         auto_before: plan_fact(&before_auto),
         auto_after_policy: plan_fact(&after_policy),
@@ -429,15 +431,25 @@ fn observe_uncached(seed: u64) -> Result<(TierInput, TierObserved), String> {
         },
         reopened_auto: Vec::new(),
     };
-    store.close().map_err(|error| error.to_string())?;
-    let reopened = Store::open(directory.path(), OpenOptions::default().with_epoch(epoch))
-        .map_err(|error| error.to_string())?;
-    let reopened_auto = search(&reopened, &fixture, SearchTier::Auto)?;
+    leg.reopen()?;
+    let reopened = leg.store()?;
+    let reopened_auto = search(reopened, &fixture, SearchTier::Auto)?;
     let mut observed = observed;
     observed.reopened_auto_plan = plan_fact(&reopened_auto);
     observed.reopened_auto = candidate_facts(&reopened_auto)?;
-    reopened.close().map_err(|error| error.to_string())?;
     Ok((input, observed))
+}
+
+fn observe_uncached(seed: u64) -> Result<(TierInput, TierObserved), String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    let dependencies = StoreTestDependencies::new(
+        Arc::new(zeppelin_embed::vfs::StdVfs),
+        Arc::new(SystemMonotonicClock),
+    );
+    let mut leg = ControlStore::open(directory.path(), control_open_options(seed), dependencies)?;
+    let result = observe_on_store(&mut leg, seed);
+    leg.close()?;
+    result
 }
 
 fn observe(seed: u64) -> Result<(TierInput, TierObserved), String> {
@@ -672,23 +684,25 @@ fn exercise_fault(seed: u64, fault: TierFaultKind, observed: &TierObserved) -> R
     }
 }
 
-pub fn run_tier_operation(
+fn operation_invariants(
     operation: TierOperationKind,
-    seed: u64,
-    fault: Option<TierFaultKind>,
-) -> Result<TierOperationEvidence, String> {
-    if fault.is_some_and(|fault| fault.operation() != operation) {
-        return Err(format!(
-            "tier fault {fault:?} does not target {operation:?}"
-        ));
-    }
-    let (input, observed) = observe(seed)?;
-    let invariants = match operation {
+    input: TierInput,
+    observed: TierObserved,
+) -> Vec<TierInvariantEvidence> {
+    match operation {
         TierOperationKind::Policy => vec![TierInvariantEvidence::I50 { input, observed }],
         TierOperationKind::Transition => vec![TierInvariantEvidence::I51 { input, observed }],
         TierOperationKind::Budget => vec![TierInvariantEvidence::I52 { input, observed }],
         TierOperationKind::Publication => vec![TierInvariantEvidence::I53 { input, observed }],
-    };
+    }
+}
+
+fn finish_operation(
+    operation: TierOperationKind,
+    invariants: Vec<TierInvariantEvidence>,
+    fault: Option<TierFaultKind>,
+    exercise: impl FnOnce(TierFaultKind, &TierObserved) -> Result<(), String>,
+) -> Result<TierOperationEvidence, String> {
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         let observed = match invariants.first() {
@@ -700,7 +714,7 @@ pub fn run_tier_operation(
             ) => observed,
             None => return Err("tier operation omitted invariant".to_owned()),
         };
-        exercise_fault(seed, fault, observed)?;
+        exercise(fault, observed)?;
         receipts.push(TierFaultReceipt {
             fault,
             operation,
@@ -711,7 +725,248 @@ pub fn run_tier_operation(
     Ok(TierOperationEvidence {
         invariants,
         receipts,
-        clean_control_passed: true,
+    })
+}
+
+pub fn run_tier_operation(
+    operation: TierOperationKind,
+    seed: u64,
+    fault: Option<TierFaultKind>,
+) -> Result<TierOperationEvidence, String> {
+    if fault.is_some_and(|fault| fault.operation() != operation) {
+        return Err(format!(
+            "tier fault {fault:?} does not target {operation:?}"
+        ));
+    }
+    let (input, observed) = observe(seed)?;
+    let invariants = operation_invariants(operation, input, observed);
+    finish_operation(operation, invariants, fault, |fault, observed| {
+        exercise_fault(seed, fault, observed)
+    })
+}
+
+fn prepare_fault_store(
+    directory: &Path,
+    seed: u64,
+) -> Result<(Store, StoreEpoch, TierFixture), String> {
+    let fixture = oracle::fixture(seed);
+    let epoch = epoch(fixture.dims, 1);
+    let store = Store::open(directory, OpenOptions::default().with_epoch(epoch.clone()))
+        .map_err(|error| error.to_string())?;
+    ingest_fixture(&store, &fixture, &epoch)?;
+    Ok((store, epoch, fixture))
+}
+
+fn checkpoint_corruption_refused_in(directory: &Path, seed: u64) -> Result<(), String> {
+    let path = directory.join("checkpoint-corruption");
+    let (store, _epoch, fixture) = prepare_fault_store(&path, seed)?;
+    let (_, source) = parsed_source(&path)?;
+    let input = TierInput::from_seed(seed, 0, source);
+    let first = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: CHECKPOINT_ROWS * input.stride,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    let checkpoint = checkpoint_path(&path, source);
+    if !matches!(first.status, MaintenanceStatus::BudgetExhausted) || !checkpoint.is_file() {
+        return Err(format!("real tier checkpoint setup differed: {first:?}"));
+    }
+    let mut bytes = std::fs::read(&checkpoint).map_err(|error| error.to_string())?;
+    let byte = bytes
+        .get_mut(32)
+        .ok_or_else(|| "real tier checkpoint is too short".to_owned())?;
+    *byte ^= 0x80;
+    std::fs::write(&checkpoint, bytes).map_err(|error| error.to_string())?;
+    let corrupted = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    store.close().map_err(|error| error.to_string())?;
+    match corrupted.status {
+        MaintenanceStatus::Failed(MaintenanceError::Graph(GraphBuildError::CheckpointCorrupt(
+            detail,
+        ))) if !detail.is_empty() => Ok(()),
+        other => Err(format!(
+            "checksum-covered tier checkpoint corruption was not typed: {other:?}"
+        )),
+    }
+}
+
+fn stale_source_refused_in(directory: &Path, seed: u64) -> Result<(), String> {
+    let path = directory.join("stale-source");
+    let (store, epoch, fixture) = prepare_fault_store(&path, seed)?;
+    let report = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    if !matches!(report.status, MaintenanceStatus::Complete) || report.graphs_built != 1 {
+        return Err(format!(
+            "tier stale-source setup did not publish: {report:?}"
+        ));
+    }
+    store.close().map_err(|error| error.to_string())?;
+    let segment = first_segment(&path)?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let first = bytes
+        .first_mut()
+        .ok_or_else(|| "tier source segment is empty".to_owned())?;
+    *first ^= 1;
+    std::fs::write(segment, bytes).map_err(|error| error.to_string())?;
+    match Store::open(&path, OpenOptions::default().with_epoch(epoch)) {
+        Err(_) => Ok(()),
+        Ok(store) => {
+            let result = search(&store, &fixture, SearchTier::Exact);
+            store.close().map_err(|error| error.to_string())?;
+            result
+                .err()
+                .map(|_| ())
+                .ok_or_else(|| "stale tier source was accepted".to_owned())
+        }
+    }
+}
+
+fn profile_mismatch_refused_in(directory: &Path, seed: u64) -> Result<(), String> {
+    let fixture = oracle::fixture(seed);
+    let path = directory.join("profile-mismatch");
+    let expected = epoch(fixture.dims, 1);
+    let wrong = epoch(fixture.dims, 2);
+    let store = Store::open(&path, OpenOptions::default().with_epoch(expected))
+        .map_err(|error| error.to_string())?;
+    let documents = fixture
+        .documents
+        .iter()
+        .map(|document| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(document.doc_id)), Revision::new(1)),
+                document.vector.clone(),
+            )
+        })
+        .collect();
+    let result = store.ingest(IngestBatch::new(documents).with_epoch(wrong.identity()));
+    store.close().map_err(|error| error.to_string())?;
+    result
+        .err()
+        .map(|_| ())
+        .ok_or_else(|| "mismatched tier epoch was accepted".to_owned())
+}
+
+fn scheduled_publication_fault_in(
+    directory: &Path,
+    seed: u64,
+    mode: FaultMode,
+    site: FaultSite,
+    path_contains: &str,
+) -> Result<(), String> {
+    let fixture = oracle::fixture(seed);
+    let path = directory.join(format!("publication-{}", path_contains.replace('.', "-")));
+    let epoch = epoch(fixture.dims, 1);
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(FaultEvent {
+        id: format!("tier-{seed}-{path_contains}"),
+        op_index: 0,
+        layer: Layer::Io,
+        site,
+        mode,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: Some(path_contains.to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    })));
+    let store = Store::open_with_test_dependencies(
+        &path,
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .map_err(|error| error.to_string())?;
+    ingest_fixture(&store, &fixture, &epoch)?;
+    scheduled.set_operation(0);
+    let report = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    let fired = scheduled.events().into_iter().any(|event| event.fired);
+    store.close().map_err(|error| error.to_string())?;
+    if fired && matches!(report.status, MaintenanceStatus::Failed(_)) {
+        Ok(())
+    } else {
+        Err(format!("tier publication fault did not fire: {report:?}"))
+    }
+}
+
+fn exercise_fault_in_directory(
+    directory: &Path,
+    seed: u64,
+    fault: TierFaultKind,
+    observed: &TierObserved,
+) -> Result<(), String> {
+    match fault {
+        TierFaultKind::BudgetExhaustion => match observed.budget_steps.get(1) {
+            Some(step)
+                if step.disposition == BudgetDisposition::BudgetExhausted
+                    && step.rows_advanced == CHECKPOINT_ROWS
+                    && step.checkpoint_present =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "real mid-build tier budget cut differed: {other:?}"
+            )),
+        },
+        TierFaultKind::CheckpointCorruption => checkpoint_corruption_refused_in(directory, seed),
+        TierFaultKind::StaleSource => stale_source_refused_in(directory, seed),
+        TierFaultKind::Enospc => scheduled_publication_fault_in(
+            directory,
+            seed,
+            FaultMode::Enospc,
+            FaultSite::Write,
+            ".zseg.tmp",
+        ),
+        TierFaultKind::ProfileMismatch => profile_mismatch_refused_in(directory, seed),
+        TierFaultKind::PublicationCrash => scheduled_publication_fault_in(
+            directory,
+            seed,
+            FaultMode::Eio,
+            FaultSite::Rename,
+            "manifest.ze",
+        ),
+    }
+}
+
+pub(crate) fn run_tier_operation_on_store(
+    leg: &mut ControlStore,
+    operation: TierOperationKind,
+    seed: u64,
+    fault: Option<TierFaultKind>,
+) -> Result<TierOperationEvidence, String> {
+    if fault.is_some_and(|fault| fault.operation() != operation) {
+        return Err(format!(
+            "tier fault {fault:?} does not target {operation:?}"
+        ));
+    }
+    let (input, observed) = observe_on_store(leg, seed)?;
+    let invariants = operation_invariants(operation, input, observed);
+    finish_operation(operation, invariants, fault, |fault, observed| {
+        exercise_fault_in_directory(leg.path(), seed, fault, observed)
     })
 }
 
