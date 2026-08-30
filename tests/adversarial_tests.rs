@@ -6629,9 +6629,12 @@ fn feature_rotation_preserves_complete_merged_evidence_first() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Exploratory runs exit green on a clean run and report the coverage
+    // gap; two episodes cannot fully qualify storage durability.
+    assert!(output.status.success(), "{transcript}");
     assert!(
-        !output.status.success(),
-        "two episodes cannot fully qualify storage durability"
+        transcript.contains("ADV_CAMPAIGN_COVERAGE_INCOMPLETE campaign=storage-durability"),
+        "{transcript}"
     );
 
     let index = std::fs::read_to_string(artifacts.path().join("merged-index.jsonl"))
@@ -6681,9 +6684,12 @@ fn vector_rotation_preserves_merged_evidence() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Exploratory runs exit green on a clean run and report the coverage
+    // gap; two episodes cannot fully qualify vector execution.
+    assert!(output.status.success(), "{transcript}");
     assert!(
-        !output.status.success(),
-        "two episodes cannot fully qualify vector execution"
+        transcript.contains("ADV_CAMPAIGN_COVERAGE_INCOMPLETE campaign=vector-execution"),
+        "{transcript}"
     );
 
     let index = std::fs::read_to_string(artifacts.path().join("merged-index.jsonl"))
