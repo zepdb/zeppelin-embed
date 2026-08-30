@@ -271,4 +271,12 @@ impl<'a> QueryCancellation<'a> {
         }
         self.check()
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cancel_token_for_test(&self) -> Option<CancelToken> {
+        match self.control {
+            QueryControl::Cancel(token) => Some(token.clone()),
+            QueryControl::Deadline(_) => None,
+        }
+    }
 }

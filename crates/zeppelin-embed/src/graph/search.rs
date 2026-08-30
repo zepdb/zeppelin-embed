@@ -1060,7 +1060,7 @@ pub struct GraphSearcher<'a> {
         crate::scan::vector_fault::VectorRowSource,
         crate::scan::vector_fault::VectorSearchTier,
     )>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     hop_cancellation: Option<TestHopCancellation>,
 }
 
@@ -1068,7 +1068,7 @@ pub(crate) trait RescoreValidator {
     fn validate_rows(&self, rows: &[u32]) -> Result<(), String>;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 struct TestHopCancellation {
     after_hops: usize,
@@ -1158,7 +1158,7 @@ impl<'a> GraphSearcher<'a> {
             scratch,
             #[cfg(any(test, feature = "test-support"))]
             vector_fault: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             hop_cancellation: None,
         })
     }
@@ -1179,8 +1179,8 @@ impl<'a> GraphSearcher<'a> {
         self
     }
 
-    #[cfg(test)]
-    fn cancel_after_hops(
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cancel_after_hops(
         &mut self,
         after_hops: usize,
         token: crate::lifecycle::CancelToken,
@@ -1194,7 +1194,7 @@ impl<'a> GraphSearcher<'a> {
         observed_hops
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_hop_for_cancellation(&self, hops: usize) {
         let Some(source) = &self.hop_cancellation else {
             return;
@@ -1362,7 +1362,7 @@ impl<'a> GraphSearcher<'a> {
                 break;
             }
             counters.hops += 1;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             self.observe_hop_for_cancellation(counters.hops);
             let (degree, neighbors) = self.graph.adjacency_checked(candidate.row_id)?;
             let degree = usize::from(degree);

@@ -1497,6 +1497,8 @@ pub struct GraphSearchOptions {
     profile: crate::graph::search::GraphSearchProfile,
     ef: Option<usize>,
     seed: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    cancel_after_hops: Option<usize>,
 }
 
 impl GraphSearchOptions {
@@ -1507,6 +1509,8 @@ impl GraphSearchOptions {
             profile,
             ef: None,
             seed: 0,
+            #[cfg(any(test, feature = "test-support"))]
+            cancel_after_hops: None,
         }
     }
 
@@ -1524,6 +1528,14 @@ impl GraphSearchOptions {
         self
     }
 
+    /// Arms deterministic in-traversal cancellation for integration tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn with_cancel_after_hops(mut self, hops: usize) -> Self {
+        self.cancel_after_hops = Some(hops);
+        self
+    }
+
     pub(crate) const fn profile(self) -> crate::graph::search::GraphSearchProfile {
         self.profile
     }
@@ -1534,6 +1546,11 @@ impl GraphSearchOptions {
 
     pub(crate) const fn seed(self) -> u64 {
         self.seed
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) const fn cancel_after_hops(self) -> Option<usize> {
+        self.cancel_after_hops
     }
 }
 
@@ -4390,6 +4407,15 @@ fn search_pinned(
             )
             .map_err(map_graph_error)?
             .with_rescore_validator(segment);
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(after_hops) = graph_options.cancel_after_hops() {
+                let token = cancellation.cancel_token_for_test().ok_or_else(|| {
+                    QueryError::Graph(crate::graph::search::GraphSearchError::Geometry(
+                        "test hop cancellation requires a Cancel query control".to_owned(),
+                    ))
+                })?;
+                let _observed_hops = searcher.cancel_after_hops(after_hops, token);
+            }
             #[cfg(any(test, feature = "test-support"))]
             if let Some(controller) = vector_fault_controller {
                 searcher = searcher.with_vector_fault_controller(

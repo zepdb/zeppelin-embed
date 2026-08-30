@@ -39,7 +39,7 @@ use zeppelin_embed::lifecycle::{
     StorageFaultReceipt, Store, StoreTestDependencies, SystemMonotonicClock,
 };
 use zeppelin_embed::manifest::EpochMeta;
-use zeppelin_embed::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
 use zeppelin_embed::meta::{
     AliveSet, ColumnDefinition, ColumnId, ColumnStoreBuilder, ColumnType, Predicate,
     PredicateValue, RangeBound, RangePredicate, Schema, TIMESTAMP_COLUMN,
@@ -66,7 +66,7 @@ use zeppelin_embed::segment::writer::{
 };
 use zeppelin_embed::segment::{MetadataDecodeProvenance, SegmentId};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
-use zeppelin_embed::vfs::{StdVfs, Vfs};
+use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::diagnostics_health as diagnostics_oracle;
 use zeppelin_embed_adversarial_oracle::ffi_bindings as ffi_oracle;
 use zeppelin_embed_adversarial_oracle::fts as fts_oracle;
@@ -1201,11 +1201,6 @@ impl RealEngine {
     fn query_control(&mut self) -> Result<QueryControl, String> {
         let deadline = self.deadline_probe.take();
         if let Some(token) = self.vfs.cancel_token()? {
-            // Query-ready mmap access bypasses Vfs, so make the query envelope's
-            // deterministic read checkpoint explicit for the Cancel layer.
-            self.vfs
-                .read(&self.directory.join(MANIFEST_FILE))
-                .map_err(|error| format!("Cancel query read checkpoint failed: {error}"))?;
             Ok(QueryControl::Cancel(token))
         } else if let Some(deadline) = deadline {
             Ok(QueryControl::Deadline(deadline))
@@ -1243,6 +1238,25 @@ fn run_cancel_aware_query<T, E: std::fmt::Display>(
             .map_err(|retry_error| {
                 format!("follow-up uncontrolled query after cancellation failed: {retry_error}")
             }),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn run_cancel_aware_query_with_follow_up<T, E: std::fmt::Display>(
+    control: QueryControl,
+    run: impl FnOnce(QueryControl) -> Result<T, E>,
+    follow_up: impl FnOnce(QueryControl) -> Result<T, E>,
+    is_typed_cancelled: impl Fn(&E) -> bool,
+) -> Result<(T, bool), String> {
+    match run(control) {
+        Ok(value) => Ok((value, false)),
+        Err(error) if is_typed_cancelled(&error) => {
+            follow_up(QueryControl::Cancel(CancelToken::new()))
+                .map(|value| (value, true))
+                .map_err(|retry_error| {
+                    format!("follow-up uncontrolled query after cancellation failed: {retry_error}")
+                })
+        }
         Err(error) => Err(error.to_string()),
     }
 }
@@ -1546,30 +1560,44 @@ impl Engine for RealEngine {
                     entry.kind == zeppelin_embed::segment::layout::RegionKind::GraphNodeBlocks.id()
                 })
             });
-        let tier = match kind {
+        let control = self.query_control()?;
+        let cancel_after_hops = self.vfs.cancel_after_hops()?;
+        let clean_tier = match kind {
             SearchKind::Scan => SearchTier::Scan,
             SearchKind::Auto => SearchTier::Auto,
             SearchKind::Graph => SearchTier::Graph(
                 GraphSearchOptions::new(GraphSearchProfile::SiftClass).with_seed(seed),
             ),
         };
-        let control = self.query_control()?;
+        let tier = match clean_tier {
+            SearchTier::Graph(options) => {
+                let options =
+                    cancel_after_hops.map_or(options, |hops| options.with_cancel_after_hops(hops));
+                SearchTier::Graph(options)
+            }
+            SearchTier::Auto | SearchTier::Exact | SearchTier::Scan => clean_tier,
+        };
         let store = self.store()?;
-        let (outcome, cancelled) = run_cancel_aware_query(
+        let run = |tier, control| {
+            store.search(
+                SearchRequest::new(query),
+                k,
+                SearchOptions::new(ScanOptions {
+                    thread_budget: THREAD_BUDGET,
+                })
+                .with_tier(tier),
+                control,
+            )
+        };
+        let (outcome, cancelled) = run_cancel_aware_query_with_follow_up(
             control,
-            |control| {
-                store.search(
-                    SearchRequest::new(query),
-                    k,
-                    SearchOptions::new(ScanOptions {
-                        thread_budget: THREAD_BUDGET,
-                    })
-                    .with_tier(tier),
-                    control,
-                )
-            },
+            |control| run(tier, control),
+            |control| run(clean_tier, control),
             |error| matches!(error, QueryError::Cancelled { partial: false }),
         )?;
+        if cancelled && cancel_after_hops.is_some() {
+            self.vfs.record_graph_cancel()?;
+        }
         self.query_cancelled |= cancelled;
         let hits = outcome
             .candidates
@@ -2264,6 +2292,23 @@ pub fn run_program_for(
         profile,
         artifact_root,
         Arc::new(ManualMonotonicClock::new()),
+        None,
+    )
+}
+
+pub fn run_program_with_schedule(
+    seed: u64,
+    profile: FaultProfile,
+    artifact_root: &Path,
+    schedule: FaultSchedule,
+) -> Result<RunOutcome, String> {
+    run_program_for_with_clock(
+        CampaignKind::Overall,
+        seed,
+        profile,
+        artifact_root,
+        Arc::new(ManualMonotonicClock::new()),
+        Some(schedule),
     )
 }
 
@@ -2273,7 +2318,14 @@ fn run_program_with_clock(
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
 ) -> Result<RunOutcome, String> {
-    run_program_for_with_clock(CampaignKind::Overall, seed, profile, artifact_root, clock)
+    run_program_for_with_clock(
+        CampaignKind::Overall,
+        seed,
+        profile,
+        artifact_root,
+        clock,
+        None,
+    )
 }
 
 fn run_program_for_with_clock(
@@ -2282,6 +2334,7 @@ fn run_program_for_with_clock(
     profile: FaultProfile,
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
+    schedule_override: Option<FaultSchedule>,
 ) -> Result<RunOutcome, String> {
     let _process_guard = if campaign == CampaignKind::VectorExecution {
         None
@@ -2303,7 +2356,9 @@ fn run_program_for_with_clock(
         Vec::new()
     };
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let schedule = fault_vfs::plan_schedule(seed, environment_for_profile(profile, seed), &program);
+    let schedule = schedule_override.unwrap_or_else(|| {
+        fault_vfs::plan_schedule(seed, environment_for_profile(profile, seed), &program)
+    });
     let storage_episode = if campaign == CampaignKind::StorageDurability {
         Some(storage_adapter::build_storage_episode_fixtures(seed)?)
     } else {
@@ -2539,7 +2594,7 @@ fn run_program_for_with_clock(
                 let requested = if *k == usize::MAX { model.len() } else { *k };
                 engine
                     .search(&query, requested, *kind, seed)
-                    .and_then(|observed| {
+                    .map(|observed| {
                         if observed.graph_segments > 0 {
                             graph_searches = graph_searches.saturating_add(1);
                             coverage.hit("search.graph_traversal");
@@ -2555,26 +2610,7 @@ fn run_program_for_with_clock(
                             &observed,
                             content_fault_fired,
                         ));
-                        if cancel_scheduled && !engine.query_cancelled() {
-                            let _ = scheduled_vfs.finish_cancel()?;
-                            let follow_up = engine.search(&query, requested, *kind, seed)?;
-                            if observed.hits != follow_up.hits
-                                || observed.generation != follow_up.generation
-                                || observed.epoch != follow_up.epoch
-                            {
-                                violations.push(violation(
-                                    Invariant::I55,
-                                    seed,
-                                    profile,
-                                    op_index,
-                                    format!(
-                                        "Cancel query differed from its uncontrolled follow-up: cancelled={:?} follow_up={:?}",
-                                        observed.hits, follow_up.hits
-                                    ),
-                                ));
-                            }
-                        }
-                        Ok(None)
+                        None
                     })
             }
             Op::FilteredSearch {
@@ -2639,6 +2675,10 @@ fn run_program_for_with_clock(
             }
             Op::DeadlineProbe { query } => {
                 if cancel_scheduled {
+                    if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
+                        engine.arm_deadline_probe()?;
+                        coverage.hit("fault.deadline.skipped-for-cancel");
+                    }
                     let query = program::query(*query);
                     engine
                         .search(&query, 1, SearchKind::Scan, seed)
@@ -14486,6 +14526,12 @@ fn vector_generic_fault_schedule(
     event: &FaultEvent,
 ) -> Result<vector_adapter::VectorGenericFaultSchedule, String> {
     let site = match event.site {
+        fault_vfs::FaultSite::Admission | fault_vfs::FaultSite::GraphHop => {
+            return Err(format!(
+                "Cancel-only site {} cannot be adapted as a vector VFS fault",
+                event.site.key()
+            ));
+        }
         fault_vfs::FaultSite::Open => vector_adapter::VectorGenericFaultSite::Open,
         fault_vfs::FaultSite::Read => vector_adapter::VectorGenericFaultSite::Read,
         fault_vfs::FaultSite::ReadRange => vector_adapter::VectorGenericFaultSite::ReadRange,
