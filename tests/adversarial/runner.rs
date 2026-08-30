@@ -799,7 +799,7 @@ impl Violation {
             self.profile.key(),
             self.op_index,
             self.detail,
-            reproduction_for(campaign, self.seed, self.profile)
+            reproduction_for(campaign, self.seed, Some(self.profile))
         )
     }
 
@@ -817,7 +817,7 @@ impl Violation {
             self.profile.key(),
             self.op_index,
             json_escape(&self.detail),
-            json_escape(&reproduction_for(campaign, self.seed, self.profile))
+            json_escape(&reproduction_for(campaign, self.seed, Some(self.profile)))
         )
     }
 }
@@ -827,6 +827,7 @@ pub struct RunOutcome {
     pub campaign: CampaignKind,
     pub seed: u64,
     pub profile: FaultProfile,
+    pub profile_overridden: bool,
     pub operations: usize,
     pub faults_fired: usize,
     pub scheduled_faults_fired: usize,
@@ -867,9 +868,43 @@ pub struct RunOutcome {
     pub family_artifact_bytes: BTreeMap<String, Vec<u8>>,
     pub comparison_counts: BTreeMap<String, u64>,
     pub comparison_pass_counts: BTreeMap<String, u64>,
+    pub comparison_outcome_counts: BTreeMap<String, ComparisonOutcomeCounts>,
     pub same_seed_clean_controls: u64,
     pub integrated_feature_fault_receipts: u64,
     pub expected_feature_fault_receipts: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ComparisonOutcomeCounts {
+    pub equal: u64,
+    pub refused: u64,
+}
+
+pub fn verify_comparison_outcome_counts(
+    expected: &BTreeMap<String, ComparisonOutcomeCounts>,
+    reported: &BTreeMap<String, ComparisonOutcomeCounts>,
+) -> Result<(), String> {
+    if expected == reported {
+        return Ok(());
+    }
+    let mismatches = expected
+        .keys()
+        .chain(reported.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|invariant| expected.get(*invariant) != reported.get(*invariant))
+        .map(|invariant| {
+            format!(
+                "{invariant}: expected={:?} reported={:?}",
+                expected.get(invariant),
+                reported.get(invariant)
+            )
+        })
+        .collect::<Vec<_>>();
+    Err(format!(
+        "comparison outcome counts disagree: {}",
+        mismatches.join(", ")
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2296,6 +2331,8 @@ impl Engine for RealEngine {
         op_index: usize,
         profile: FaultProfile,
     ) -> Result<CrashRecovery, String> {
+        // Parent shutdown is harness plumbing; the child rebuilds and runs the plan.
+        self.vfs.set_operation(usize::MAX);
         if let Some(store) = self.store.take() {
             store.close().map_err(|error| error.to_string())?;
         }
@@ -2683,7 +2720,34 @@ pub fn run_program_for(
     profile: FaultProfile,
     artifact_root: &Path,
 ) -> Result<RunOutcome, String> {
-    run_program_for_with_feature_profile(campaign, seed, profile, profile, artifact_root)
+    run_program_for_with_clock(
+        campaign,
+        seed,
+        profile,
+        Some(profile),
+        profile,
+        artifact_root,
+        Arc::new(ManualMonotonicClock::new()),
+        None,
+    )
+}
+
+pub fn run_program_for_seed(
+    campaign: CampaignKind,
+    seed: u64,
+    artifact_root: &Path,
+) -> Result<RunOutcome, String> {
+    let profile = profile_for_seed(seed);
+    run_program_for_with_clock(
+        campaign,
+        seed,
+        profile,
+        None,
+        profile,
+        artifact_root,
+        Arc::new(ManualMonotonicClock::new()),
+        None,
+    )
 }
 
 pub fn run_program_for_with_feature_profile(
@@ -2693,10 +2757,29 @@ pub fn run_program_for_with_feature_profile(
     feature_profile: FaultProfile,
     artifact_root: &Path,
 ) -> Result<RunOutcome, String> {
+    run_program_for_with_feature_profile_and_override(
+        campaign,
+        seed,
+        profile,
+        Some(profile),
+        feature_profile,
+        artifact_root,
+    )
+}
+
+pub fn run_program_for_with_feature_profile_and_override(
+    campaign: CampaignKind,
+    seed: u64,
+    profile: FaultProfile,
+    profile_override: Option<FaultProfile>,
+    feature_profile: FaultProfile,
+    artifact_root: &Path,
+) -> Result<RunOutcome, String> {
     run_program_for_with_clock(
         campaign,
         seed,
         profile,
+        profile_override,
         feature_profile,
         artifact_root,
         Arc::new(ManualMonotonicClock::new()),
@@ -2714,6 +2797,7 @@ pub fn run_program_with_schedule(
         CampaignKind::Overall,
         seed,
         profile,
+        Some(profile),
         profile,
         artifact_root,
         Arc::new(ManualMonotonicClock::new()),
@@ -2731,6 +2815,7 @@ fn run_program_with_clock(
         CampaignKind::Overall,
         seed,
         profile,
+        Some(profile),
         profile,
         artifact_root,
         clock,
@@ -2738,10 +2823,12 @@ fn run_program_with_clock(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_program_for_with_clock(
     campaign: CampaignKind,
     seed: u64,
     profile: FaultProfile,
+    profile_override: Option<FaultProfile>,
     feature_profile: FaultProfile,
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
@@ -2761,10 +2848,17 @@ fn run_program_for_with_clock(
         .map_err(|_| "GRAPH_ROWS exceeds the runner's usize range".to_owned())?;
     let artifacts = RunArtifacts::create_for(artifact_root, campaign, seed, profile)?;
     let program_bytes = artifacts.write_program(&program)?;
-    let reproduction = reproduction_for(campaign, seed, profile);
+    let reproduction = reproduction_for(campaign, seed, profile_override);
     artifacts.write_reproduction(&reproduction)?;
     let mut episode_bytes = if campaign == CampaignKind::Overall {
-        artifacts.write_episode_metadata(campaign, seed, profile, &reproduction, None)?
+        artifacts.write_episode_metadata(
+            campaign,
+            seed,
+            profile,
+            profile_override.is_some(),
+            &reproduction,
+            None,
+        )?
     } else {
         Vec::new()
     };
@@ -2807,6 +2901,7 @@ fn run_program_for_with_clock(
     let mut receipt_records = Vec::<String>::new();
     let mut integrated_feature_fault_receipts = 0_u64;
     let mut same_seed_clean_controls = 0_u64;
+    let mut refused_comparison_counts = BTreeMap::<String, u64>::new();
     let mut mutation_records = Vec::<String>::new();
     let mut family_artifact_records = BTreeMap::<&'static str, Vec<String>>::new();
     coverage.hit(format!("fault.profile.{}", profile.key()));
@@ -2845,7 +2940,7 @@ fn run_program_for_with_clock(
             .events
             .iter()
             .any(|event| event.op_index == op_index && event.layer == fault_vfs::Layer::Cancel);
-        let cancel_stats_before = if cancel_scheduled
+        let mut cancel_stats_before = if cancel_scheduled
             && matches!(
                 op,
                 Op::Search { .. }
@@ -2877,7 +2972,7 @@ fn run_program_for_with_clock(
                     && event.layer == fault_vfs::Layer::Busy
                     && event.mode == fault_vfs::FaultMode::SpawnInFlight
             });
-        if arm_spawn_for_next_reopen {
+        if arm_spawn_for_next_reopen && engine.store.is_some() {
             if pending_busy_child.is_some() {
                 return Err("a second SpawnInFlight child was armed before Reopen".to_owned());
             }
@@ -2904,57 +2999,143 @@ fn run_program_for_with_clock(
             .filter(|fault| fault.op_index == op_index)
             .map(|event| event.fault)
             .collect::<Vec<_>>();
-        let operation_result = match op {
-            Op::Open => engine.open().map(|_| None),
-            Op::Ingest {
-                first_id,
-                count,
-                revision,
-                timestamp,
-            } => {
-                let documents = (*first_id..first_id.saturating_add(*count))
-                    .map(|doc_id| DocMutation {
-                        doc_id,
+        if spawn_event && pending_busy_child.is_none() {
+            scheduled_vfs.set_operation(usize::MAX);
+        }
+        let content_read_event = fault_plan.schedule.events.iter().find(|event| {
+            event.op_index == op_index
+                && event.layer == fault_vfs::Layer::Content
+                && event.site == fault_vfs::FaultSite::Read
+                && matches!(
+                    op,
+                    Op::Search { .. }
+                        | Op::FilteredSearch { .. }
+                        | Op::PredicateSearch { .. }
+                        | Op::HybridSearch { .. }
+                        | Op::DeadlineProbe { .. }
+                )
+        });
+        let content_read_reopen = if spawn_event && pending_busy_child.is_none() {
+            Ok(())
+        } else if let Some(event) = content_read_event {
+            let attempts = if event.nth_match == fault_vfs::LAST_MATCH {
+                event.expected_matches.unwrap_or(1)
+            } else {
+                event.nth_match
+            };
+            let mut result = Ok(());
+            for _ in 0..attempts.max(1) {
+                match engine.reopen() {
+                    Ok(()) => {
+                        if scheduled_vfs
+                            .events()
+                            .iter()
+                            .any(|observed| observed.id == event.id && observed.fired)
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        scheduled_vfs.set_operation(usize::MAX);
+                        let recovery = engine.reopen();
+                        scheduled_vfs.set_operation(op_index);
+                        result = match recovery {
+                            Ok(()) => Err(error),
+                            Err(recovery_error) => Err(format!(
+                                "content-read refusal {error}; clean reopen failed: {recovery_error}"
+                            )),
+                        };
+                        break;
+                    }
+                }
+            }
+            result
+        } else {
+            Ok(())
+        };
+        if content_read_reopen.is_ok() && cancel_stats_before.is_some() {
+            scheduled_vfs.set_operation(usize::MAX);
+            cancel_stats_before = match warm_cancel_query(&mut engine, &model, op, seed) {
+                Ok(()) => {
+                    engine.reset_query_cancelled();
+                    engine.stats().ok()
+                }
+                Err(_) => None,
+            };
+            scheduled_vfs.set_operation(op_index);
+        }
+        let operation_attempted = content_read_reopen.is_ok();
+        let operation_result = match content_read_reopen {
+            Err(error) => Err(error),
+            Ok(()) => match op {
+                Op::Open => engine.open().map(|_| None),
+                Op::Ingest {
+                    first_id,
+                    count,
+                    revision,
+                    timestamp,
+                } => {
+                    let documents = (*first_id..first_id.saturating_add(*count))
+                        .map(|doc_id| DocMutation {
+                            doc_id,
+                            revision: *revision,
+                            timestamp: *timestamp,
+                        })
+                        .collect::<Vec<_>>();
+                    engine.ingest(&documents).map(|ack| {
+                        text_documents_ingested =
+                            text_documents_ingested.saturating_add(documents.len());
+                        for document in &documents {
+                            model.acknowledge(
+                                document.doc_id,
+                                document.revision,
+                                document.timestamp,
+                            );
+                        }
+                        Some(ack)
+                    })
+                }
+                Op::EpochMismatchProbe {
+                    doc_id,
+                    revision,
+                    timestamp,
+                } => engine
+                    .epoch_mismatch_probe(DocMutation {
+                        doc_id: *doc_id,
                         revision: *revision,
                         timestamp: *timestamp,
                     })
-                    .collect::<Vec<_>>();
-                engine.ingest(&documents).map(|ack| {
-                    text_documents_ingested =
-                        text_documents_ingested.saturating_add(documents.len());
-                    for document in &documents {
-                        model.acknowledge(document.doc_id, document.revision, document.timestamp);
-                    }
-                    Some(ack)
-                })
-            }
-            Op::EpochMismatchProbe {
-                doc_id,
-                revision,
-                timestamp,
-            } => engine
-                .epoch_mismatch_probe(DocMutation {
-                    doc_id: *doc_id,
-                    revision: *revision,
-                    timestamp: *timestamp,
-                })
-                .map(|()| None),
-            Op::PrepareEpochB if seal_precondition_lost_to_crash => {
-                Err("epoch transition blocked by an uncommitted crashed Seal".to_owned())
-            }
-            Op::PrepareEpochB => {
-                let documents = model
-                    .live_documents()
-                    .into_iter()
-                    .map(|(doc_id, revision, timestamp)| DocMutation {
-                        doc_id,
-                        revision,
-                        timestamp,
+                    .map(|()| None),
+                Op::PrepareEpochB if seal_precondition_lost_to_crash => {
+                    Err("epoch transition blocked by an uncommitted crashed Seal".to_owned())
+                }
+                Op::PrepareEpochB => {
+                    let documents = model
+                        .live_documents()
+                        .into_iter()
+                        .map(|(doc_id, revision, timestamp)| DocMutation {
+                            doc_id,
+                            revision,
+                            timestamp,
+                        })
+                        .collect::<Vec<_>>();
+                    engine.prepare_epoch_b(&documents).and_then(|ack| {
+                        model.prepare_epoch_b();
+                        epoch_preparations = epoch_preparations.saturating_add(1);
+                        let visible = engine.visible_epoch_ids()?;
+                        if let Some(violation) =
+                            alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                        {
+                            violations.push(violation);
+                        }
+                        Ok(Some(ack))
                     })
-                    .collect::<Vec<_>>();
-                engine.prepare_epoch_b(&documents).and_then(|ack| {
-                    model.prepare_epoch_b();
-                    epoch_preparations = epoch_preparations.saturating_add(1);
+                }
+                Op::SwitchAliasToB => engine.switch_epoch(ModelEpoch::B).and_then(|ack| {
+                    if !model.switch_epoch(ModelEpoch::B) {
+                        return Err("model has no prepared epoch B".to_owned());
+                    }
+                    epoch_alias_switches = epoch_alias_switches.saturating_add(1);
                     let visible = engine.visible_epoch_ids()?;
                     if let Some(violation) =
                         alias_visibility_violation(seed, profile, op_index, &model, &visible)
@@ -2962,308 +3143,298 @@ fn run_program_for_with_clock(
                         violations.push(violation);
                     }
                     Ok(Some(ack))
-                })
-            }
-            Op::SwitchAliasToB => engine.switch_epoch(ModelEpoch::B).and_then(|ack| {
-                if !model.switch_epoch(ModelEpoch::B) {
-                    return Err("model has no prepared epoch B".to_owned());
+                }),
+                Op::RollbackToA => engine.switch_epoch(ModelEpoch::A).and_then(|ack| {
+                    if !model.switch_epoch(ModelEpoch::A) {
+                        return Err("model epoch A was already dropped".to_owned());
+                    }
+                    epoch_rollbacks = epoch_rollbacks.saturating_add(1);
+                    let visible = engine.visible_epoch_ids()?;
+                    if let Some(violation) =
+                        alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                    {
+                        violations.push(violation);
+                    }
+                    Ok(Some(ack))
+                }),
+                Op::DropEpochA => engine.drop_epoch_a().and_then(|ack| {
+                    if !model.drop_epoch_a() {
+                        return Err("model refused to drop epoch A".to_owned());
+                    }
+                    epoch_drops = epoch_drops.saturating_add(1);
+                    let visible = engine.visible_epoch_ids()?;
+                    if let Some(violation) =
+                        alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                    {
+                        violations.push(violation);
+                    }
+                    Ok(Some(ack))
+                }),
+                Op::RollbackDroppedAProbe => engine.rollback_dropped_a_probe().and_then(|()| {
+                    rejected_dropped_epoch_rollbacks =
+                        rejected_dropped_epoch_rollbacks.saturating_add(1);
+                    let visible = engine.visible_epoch_ids()?;
+                    if let Some(violation) =
+                        alias_visibility_violation(seed, profile, op_index, &model, &visible)
+                    {
+                        violations.push(violation);
+                    }
+                    Ok(None)
+                }),
+                Op::Upsert {
+                    doc_id,
+                    revision,
+                    timestamp,
                 }
-                epoch_alias_switches = epoch_alias_switches.saturating_add(1);
-                let visible = engine.visible_epoch_ids()?;
-                if let Some(violation) =
-                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
-                {
-                    violations.push(violation);
+                | Op::Revise {
+                    doc_id,
+                    revision,
+                    timestamp,
+                } => {
+                    let document = DocMutation {
+                        doc_id: *doc_id,
+                        revision: *revision,
+                        timestamp: *timestamp,
+                    };
+                    engine.ingest(&[document]).map(|ack| {
+                        text_documents_ingested = text_documents_ingested.saturating_add(1);
+                        model.acknowledge(*doc_id, *revision, *timestamp);
+                        Some(ack)
+                    })
                 }
-                Ok(Some(ack))
-            }),
-            Op::RollbackToA => engine.switch_epoch(ModelEpoch::A).and_then(|ack| {
-                if !model.switch_epoch(ModelEpoch::A) {
-                    return Err("model epoch A was already dropped".to_owned());
-                }
-                epoch_rollbacks = epoch_rollbacks.saturating_add(1);
-                let visible = engine.visible_epoch_ids()?;
-                if let Some(violation) =
-                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
-                {
-                    violations.push(violation);
-                }
-                Ok(Some(ack))
-            }),
-            Op::DropEpochA => engine.drop_epoch_a().and_then(|ack| {
-                if !model.drop_epoch_a() {
-                    return Err("model refused to drop epoch A".to_owned());
-                }
-                epoch_drops = epoch_drops.saturating_add(1);
-                let visible = engine.visible_epoch_ids()?;
-                if let Some(violation) =
-                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
-                {
-                    violations.push(violation);
-                }
-                Ok(Some(ack))
-            }),
-            Op::RollbackDroppedAProbe => engine.rollback_dropped_a_probe().and_then(|()| {
-                rejected_dropped_epoch_rollbacks =
-                    rejected_dropped_epoch_rollbacks.saturating_add(1);
-                let visible = engine.visible_epoch_ids()?;
-                if let Some(violation) =
-                    alias_visibility_violation(seed, profile, op_index, &model, &visible)
-                {
-                    violations.push(violation);
-                }
-                Ok(None)
-            }),
-            Op::Upsert {
-                doc_id,
-                revision,
-                timestamp,
-            }
-            | Op::Revise {
-                doc_id,
-                revision,
-                timestamp,
-            } => {
-                let document = DocMutation {
-                    doc_id: *doc_id,
-                    revision: *revision,
-                    timestamp: *timestamp,
-                };
-                engine.ingest(&[document]).map(|ack| {
-                    text_documents_ingested = text_documents_ingested.saturating_add(1);
-                    model.acknowledge(*doc_id, *revision, *timestamp);
+                Op::Delete { doc_id } => engine.delete(*doc_id).map(|ack| {
+                    model.delete(*doc_id);
                     Some(ack)
-                })
-            }
-            Op::Delete { doc_id } => engine.delete(*doc_id).map(|ack| {
-                model.delete(*doc_id);
-                Some(ack)
-            }),
-            Op::Seal => engine.seal().map(|ack| {
-                model.seal();
-                seal_precondition_lost_to_crash = false;
-                Some(ack)
-            }),
-            Op::Maintain { bytes } => engine.maintain(*bytes).map(Some),
-            Op::Search { query, k, kind } => {
-                let query = program::query(*query);
-                let requested = if *k == usize::MAX { model.len() } else { *k };
-                engine
-                    .search(&query, requested, *kind, seed)
-                    .map(|observed| {
-                        if observed.graph_segments > 0 {
-                            graph_searches = graph_searches.saturating_add(1);
-                            coverage.hit("search.graph_traversal");
-                        }
-                        violations.extend(check_search(
-                            seed,
-                            profile,
-                            op_index,
-                            &model,
-                            &query,
-                            requested,
-                            *kind,
-                            &observed,
-                            content_fault_fired,
-                        ));
-                        None
-                    })
-            }
-            Op::FilteredSearch {
-                query,
-                k,
-                maximum_timestamp,
-            } => {
-                let query = program::query(*query);
-                let requested = if *k == usize::MAX { model.len() } else { *k };
-                engine
-                    .filtered_search(&query, requested, *maximum_timestamp)
-                    .map(|observed| {
-                        filtered_searches = filtered_searches.saturating_add(1);
-                        if observed.graph_segments > 0 {
-                            filtered_graph_searches = filtered_graph_searches.saturating_add(1);
-                            coverage.hit("search.filtered_graph");
-                        }
-                        violations.extend(check_filtered_search(
-                            seed,
-                            profile,
-                            op_index,
-                            &model,
-                            &query,
-                            requested,
-                            *maximum_timestamp,
-                            &observed,
-                        ));
-                        None
-                    })
-            }
-            Op::HybridSearch { query, k } => {
-                let requested = if *k == usize::MAX { model.len() } else { *k };
-                run_hybrid_search(&mut engine, &model, *query, requested, seed).map(|check| {
-                    if let Some(check) = check {
-                        hybrid_searches = hybrid_searches.saturating_add(1);
-                        store_lexical_searches =
-                            store_lexical_searches.saturating_add(check.store_lexical_searches);
-                        store_hybrid_searches =
-                            store_hybrid_searches.saturating_add(check.store_hybrid_searches);
-                        if check.store_lexical_searches > 0 {
-                            coverage.hit("store.lexical_search");
-                        }
-                        if check.store_hybrid_searches > 0 {
-                            coverage.hit("store.hybrid_search");
-                        }
-                        hybrid_sealed_vector_documents = hybrid_sealed_vector_documents
-                            .saturating_add(check.sealed_vector_documents);
-                        hybrid_lexical_documents =
-                            hybrid_lexical_documents.saturating_add(check.lexical_documents);
-                        if let Some(detail) = check.mismatch {
-                            violations.push(violation(
-                                Invariant::I3,
-                                seed,
-                                profile,
-                                op_index,
-                                detail,
-                            ));
-                        }
-                    }
-                    None
-                })
-            }
-            Op::DeadlineProbe { query } => {
-                if cancel_scheduled {
-                    if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
-                        engine.arm_deadline_probe()?;
-                        coverage.hit("fault.deadline.skipped-for-cancel");
-                    }
+                }),
+                Op::Seal => engine.seal().map(|ack| {
+                    model.seal();
+                    seal_precondition_lost_to_crash = false;
+                    Some(ack)
+                }),
+                Op::Maintain { bytes } => engine.maintain(*bytes).map(Some),
+                Op::Search { query, k, kind } => {
                     let query = program::query(*query);
+                    let requested = if *k == usize::MAX { model.len() } else { *k };
                     engine
-                        .search(&query, 1, SearchKind::Scan, seed)
+                        .search(&query, requested, *kind, seed)
                         .map(|observed| {
+                            if observed.graph_segments > 0 {
+                                graph_searches = graph_searches.saturating_add(1);
+                                coverage.hit("search.graph_traversal");
+                            }
                             violations.extend(check_search(
                                 seed,
                                 profile,
                                 op_index,
                                 &model,
                                 &query,
-                                1,
-                                SearchKind::Scan,
+                                requested,
+                                *kind,
                                 &observed,
                                 content_fault_fired,
                             ));
                             None
                         })
-                } else if matches!(profile, FaultProfile::Clock | FaultProfile::Full)
-                    && model.is_empty()
-                    && simulated_crash_recovered
-                {
-                    // A preceding crash may legally recover the empty durable
-                    // prefix. The product's empty query has no scan checkpoint,
-                    // so this episode must not fabricate deadline coverage.
-                    Ok(None)
-                } else if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
-                    engine.arm_deadline_probe()?;
-                    match engine.search(&program::query(*query), 1, SearchKind::Scan, seed) {
-                        Err(error) if error.contains("deadline expired") => Ok(None),
-                        Err(error) => Err(format!(
-                            "deadline probe returned the wrong typed failure: {error}"
-                        )),
-                        Ok(_) => Err("already-expired deadline was admitted".to_owned()),
-                    }
-                } else {
-                    Ok(None)
                 }
-            }
-            Op::PredicateSearch {
-                query,
-                k,
-                predicate,
-            } => {
-                let query_vector = program::query(*query);
-                let requested = if *k == usize::MAX { model.len() } else { *k };
-                engine
-                    .predicate_search(&query_vector, requested, *predicate)
-                    .map(|observed| {
-                        predicate_searches = predicate_searches.saturating_add(1);
-                        let expected =
-                            model.expected_predicate(&query_vector, requested, *predicate);
-                        if let Some(detail) = exact_mismatch(&expected, &observed.hits) {
-                            violations.push(violation(
-                                Invariant::I5,
+                Op::FilteredSearch {
+                    query,
+                    k,
+                    maximum_timestamp,
+                } => {
+                    let query = program::query(*query);
+                    let requested = if *k == usize::MAX { model.len() } else { *k };
+                    engine
+                        .filtered_search(&query, requested, *maximum_timestamp)
+                        .map(|observed| {
+                            filtered_searches = filtered_searches.saturating_add(1);
+                            if observed.graph_segments > 0 {
+                                filtered_graph_searches = filtered_graph_searches.saturating_add(1);
+                                coverage.hit("search.filtered_graph");
+                            }
+                            violations.extend(check_filtered_search(
                                 seed,
                                 profile,
                                 op_index,
-                                format!("{} predicate mismatch: {detail}", predicate.key()),
+                                &model,
+                                &query,
+                                requested,
+                                *maximum_timestamp,
+                                &observed,
                             ));
-                        }
-                        if let Some(violation) = diagnostics_violation(
-                            seed,
-                            profile,
-                            op_index,
-                            requested,
-                            model
-                                .expected_predicate(&query_vector, model.len(), *predicate)
-                                .len(),
-                            &observed,
-                        ) {
-                            violations.push(violation);
+                            None
+                        })
+                }
+                Op::HybridSearch { query, k } => {
+                    let requested = if *k == usize::MAX { model.len() } else { *k };
+                    run_hybrid_search(&mut engine, &model, *query, requested, seed).map(|check| {
+                        if let Some(check) = check {
+                            hybrid_searches = hybrid_searches.saturating_add(1);
+                            store_lexical_searches =
+                                store_lexical_searches.saturating_add(check.store_lexical_searches);
+                            store_hybrid_searches =
+                                store_hybrid_searches.saturating_add(check.store_hybrid_searches);
+                            if check.store_lexical_searches > 0 {
+                                coverage.hit("store.lexical_search");
+                            }
+                            if check.store_hybrid_searches > 0 {
+                                coverage.hit("store.hybrid_search");
+                            }
+                            hybrid_sealed_vector_documents = hybrid_sealed_vector_documents
+                                .saturating_add(check.sealed_vector_documents);
+                            hybrid_lexical_documents =
+                                hybrid_lexical_documents.saturating_add(check.lexical_documents);
+                            if let Some(detail) = check.mismatch {
+                                violations.push(violation(
+                                    Invariant::I3,
+                                    seed,
+                                    profile,
+                                    op_index,
+                                    detail,
+                                ));
+                            }
                         }
                         None
                     })
-            }
-            Op::FtsExtrasProbe { slot } => run_fts_extras_probe(*slot).map(|()| {
-                phrase_searches = phrase_searches.saturating_add(1);
-                prefix_searches = prefix_searches.saturating_add(1);
-                fuzzy_searches = fuzzy_searches.saturating_add(1);
-                phonetic_encodes = phonetic_encodes.saturating_add(1);
-                snippets_built = snippets_built.saturating_add(1);
-                coverage.hit("fts.phrase");
-                coverage.hit("fts.prefix");
-                coverage.hit("fts.fuzzy");
-                coverage.hit("fts.phonetic");
-                coverage.hit("fts.snippet");
-                None
-            }),
-            Op::Feature(operation) => {
-                let record_start = oracle_records.len();
-                let control_start = control_records.len();
-                let result = run_campaign_operation_with_clean_control(
-                    *operation,
-                    CampaignOperationContext {
-                        selected_faults: &selected_feature_faults,
-                        generic_fault: fault_plan
-                            .schedule
-                            .events
-                            .iter()
-                            .find(|event| event.op_index == op_index),
-                        storage_episode: storage_episode.as_ref(),
-                        hybrid_episode: hybrid_episode.as_ref(),
-                        seed,
-                        profile,
-                        op_index,
-                        oracle_records: &mut oracle_records,
-                        control_records: &mut control_records,
-                        mutation_records: &mut mutation_records,
-                        family_artifact_records: &mut family_artifact_records,
-                        coverage: &mut coverage,
-                        control_store: None,
-                    },
-                );
-                for record in oracle_records.get(record_start..).unwrap_or_default() {
-                    if !record.passed {
-                        violations.push(Violation {
-                            invariant: Invariant::Feature(super::campaign::InvariantId::new(
-                                record.invariant,
+                }
+                Op::DeadlineProbe { query } => {
+                    if cancel_scheduled {
+                        if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
+                            engine.arm_deadline_probe()?;
+                            coverage.hit("fault.deadline.skipped-for-cancel");
+                        }
+                        let query = program::query(*query);
+                        engine
+                            .search(&query, 1, SearchKind::Scan, seed)
+                            .map(|observed| {
+                                violations.extend(check_search(
+                                    seed,
+                                    profile,
+                                    op_index,
+                                    &model,
+                                    &query,
+                                    1,
+                                    SearchKind::Scan,
+                                    &observed,
+                                    content_fault_fired,
+                                ));
+                                None
+                            })
+                    } else if matches!(profile, FaultProfile::Clock | FaultProfile::Full)
+                        && model.is_empty()
+                        && simulated_crash_recovered
+                    {
+                        // A preceding crash may legally recover the empty durable
+                        // prefix. The product's empty query has no scan checkpoint,
+                        // so this episode must not fabricate deadline coverage.
+                        Ok(None)
+                    } else if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
+                        engine.arm_deadline_probe()?;
+                        match engine.search(&program::query(*query), 1, SearchKind::Scan, seed) {
+                            Err(error) if error.contains("deadline expired") => Ok(None),
+                            Err(error) => Err(format!(
+                                "deadline probe returned the wrong typed failure: {error}"
                             )),
+                            Ok(_) => Err("already-expired deadline was admitted".to_owned()),
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Op::PredicateSearch {
+                    query,
+                    k,
+                    predicate,
+                } => {
+                    let query_vector = program::query(*query);
+                    let requested = if *k == usize::MAX { model.len() } else { *k };
+                    engine
+                        .predicate_search(&query_vector, requested, *predicate)
+                        .map(|observed| {
+                            predicate_searches = predicate_searches.saturating_add(1);
+                            let expected =
+                                model.expected_predicate(&query_vector, requested, *predicate);
+                            if let Some(detail) = exact_mismatch(&expected, &observed.hits) {
+                                violations.push(violation(
+                                    Invariant::I5,
+                                    seed,
+                                    profile,
+                                    op_index,
+                                    format!("{} predicate mismatch: {detail}", predicate.key()),
+                                ));
+                            }
+                            if let Some(violation) = diagnostics_violation(
+                                seed,
+                                profile,
+                                op_index,
+                                requested,
+                                model
+                                    .expected_predicate(&query_vector, model.len(), *predicate)
+                                    .len(),
+                                &observed,
+                            ) {
+                                violations.push(violation);
+                            }
+                            None
+                        })
+                }
+                Op::FtsExtrasProbe { slot } => run_fts_extras_probe(*slot).map(|()| {
+                    phrase_searches = phrase_searches.saturating_add(1);
+                    prefix_searches = prefix_searches.saturating_add(1);
+                    fuzzy_searches = fuzzy_searches.saturating_add(1);
+                    phonetic_encodes = phonetic_encodes.saturating_add(1);
+                    snippets_built = snippets_built.saturating_add(1);
+                    coverage.hit("fts.phrase");
+                    coverage.hit("fts.prefix");
+                    coverage.hit("fts.fuzzy");
+                    coverage.hit("fts.phonetic");
+                    coverage.hit("fts.snippet");
+                    None
+                }),
+                Op::Feature(operation) => {
+                    let record_start = oracle_records.len();
+                    let control_start = control_records.len();
+                    let result = run_campaign_operation_with_clean_control(
+                        *operation,
+                        CampaignOperationContext {
+                            selected_faults: &selected_feature_faults,
+                            generic_fault: fault_plan
+                                .schedule
+                                .events
+                                .iter()
+                                .find(|event| event.op_index == op_index),
+                            storage_episode: storage_episode.as_ref(),
+                            hybrid_episode: hybrid_episode.as_ref(),
                             seed,
                             profile,
                             op_index,
-                            detail: format!("{}: {}", record.checker_id, record.detail),
-                        });
+                            oracle_records: &mut oracle_records,
+                            control_records: &mut control_records,
+                            mutation_records: &mut mutation_records,
+                            family_artifact_records: &mut family_artifact_records,
+                            coverage: &mut coverage,
+                            control_store: None,
+                        },
+                    );
+                    for record in oracle_records.get(record_start..).unwrap_or_default() {
+                        if !record.passed {
+                            violations.push(Violation {
+                                invariant: Invariant::Feature(super::campaign::InvariantId::new(
+                                    record.invariant,
+                                )),
+                                seed,
+                                profile,
+                                op_index,
+                                detail: format!("{}: {}", record.checker_id, record.detail),
+                            });
+                        }
                     }
-                }
-                result.and_then(|operation_outcome| {
+                    result.and_then(|operation_outcome| {
                     if let Some(event) = operation_outcome.generic_fault_event.as_ref() {
                         scheduled_vfs.adopt_cancel_event(event)?;
+                    }
+                    for (invariant, count) in &operation_outcome.refused_comparison_counts {
+                        let total = refused_comparison_counts.entry(invariant.clone()).or_default();
+                        *total = total.saturating_add(*count);
                     }
                     if !selected_feature_faults.is_empty() {
                         let observed_controls = control_records.len().saturating_sub(control_start);
@@ -3348,158 +3519,167 @@ fn run_program_for_with_clock(
                     }
                     Ok(None)
                 })
-            }
-            Op::Stats => engine.stats().map(|stats| {
-                if let Some(violation) = stats_violation(seed, profile, op_index, stats) {
-                    violations.push(violation);
                 }
-                None
-            }),
-            Op::Close => engine.close().map(|_| None),
-            Op::Reopen if spawn_event => (|| {
-                let child = pending_busy_child
-                    .take()
-                    .ok_or_else(|| "SpawnInFlight reached Reopen without a child".to_owned())?;
-                scheduled_vfs.fire_runner_event(op_index, fault_vfs::FaultMode::SpawnInFlight)?;
-                let first = reopen_once_for_busy(&mut engine);
-                child.finish()?;
-                match first? {
-                    BusyReopenAttempt::Opened => {
-                        return Err(
-                            "SpawnInFlight did not engage the inherited writer lock".to_owned()
-                        );
+                Op::Stats => engine.stats().map(|stats| {
+                    if let Some(violation) = stats_violation(seed, profile, op_index, stats) {
+                        violations.push(violation);
                     }
-                    BusyReopenAttempt::StoreBusy => {
-                        retry_reopen_after_busy(&mut engine)?;
-                    }
-                }
-                // A clean first attempt means lock inheritance failed; it is not coverage.
-                coverage.hit("fault.busy.spawn.retried");
-                match engine.stats() {
-                    Ok(stats) => {
-                        if let Some(violation) =
-                            lifecycle_stats_violation(seed, profile, op_index, stats)
-                        {
-                            violations.push(violation);
+                    None
+                }),
+                Op::Close => engine.close().map(|_| None),
+                Op::Reopen if spawn_event && pending_busy_child.is_some() => (|| {
+                    let child = pending_busy_child
+                        .take()
+                        .ok_or_else(|| "SpawnInFlight reached Reopen without a child".to_owned())?;
+                    scheduled_vfs
+                        .fire_runner_event(op_index, fault_vfs::FaultMode::SpawnInFlight)?;
+                    let first = reopen_once_for_busy(&mut engine);
+                    child.finish()?;
+                    match first? {
+                        BusyReopenAttempt::Opened => {
+                            return Err(
+                                "SpawnInFlight did not engage the inherited writer lock".to_owned()
+                            );
+                        }
+                        BusyReopenAttempt::StoreBusy => {
+                            retry_reopen_after_busy(&mut engine)?;
                         }
                     }
-                    Err(error) => violations.push(violation(
-                        Invariant::I8,
-                        seed,
-                        profile,
-                        op_index,
-                        format!("reopen stats failed: {error}"),
-                    )),
-                }
-                Ok(None)
-            })(),
-            Op::Reopen => engine.reopen().map(|_| {
-                match engine.stats() {
-                    Ok(stats) => {
-                        if let Some(violation) =
-                            lifecycle_stats_violation(seed, profile, op_index, stats)
-                        {
-                            violations.push(violation);
-                        }
-                    }
-                    Err(error) => violations.push(violation(
-                        Invariant::I8,
-                        seed,
-                        profile,
-                        op_index,
-                        format!("reopen stats failed: {error}"),
-                    )),
-                }
-                None
-            }),
-            Op::Crash {
-                doc_id,
-                revision,
-                timestamp,
-                boundary,
-            } => {
-                let document = DocMutation {
-                    doc_id: *doc_id,
-                    revision: *revision,
-                    timestamp: *timestamp,
-                };
-                engine
-                    .crash_at_boundary(document, *boundary, campaign, seed, op_index, profile)
-                    .map(|recovery| {
-                        match recovery.disposition {
-                            CrashDisposition::Unacknowledged => {}
-                            CrashDisposition::Visible => {
-                                text_documents_ingested = text_documents_ingested.saturating_add(1);
-                                model.acknowledge(*doc_id, *revision, *timestamp);
+                    // A clean first attempt means lock inheritance failed; it is not coverage.
+                    coverage.hit("fault.busy.spawn.retried");
+                    match engine.stats() {
+                        Ok(stats) => {
+                            if let Some(violation) =
+                                lifecycle_stats_violation(seed, profile, op_index, stats)
+                            {
+                                violations.push(violation);
                             }
-                            CrashDisposition::Gone => {
-                                text_documents_ingested = text_documents_ingested.saturating_add(1);
-                                model.purge(*doc_id);
-                                if let Some(violation) = purge_proof_violation(
+                        }
+                        Err(error) => violations.push(violation(
+                            Invariant::I8,
+                            seed,
+                            profile,
+                            op_index,
+                            format!("reopen stats failed: {error}"),
+                        )),
+                    }
+                    Ok(None)
+                })(),
+                Op::Reopen => engine.reopen().map(|_| {
+                    match engine.stats() {
+                        Ok(stats) => {
+                            if let Some(violation) =
+                                lifecycle_stats_violation(seed, profile, op_index, stats)
+                            {
+                                violations.push(violation);
+                            }
+                        }
+                        Err(error) => violations.push(violation(
+                            Invariant::I8,
+                            seed,
+                            profile,
+                            op_index,
+                            format!("reopen stats failed: {error}"),
+                        )),
+                    }
+                    None
+                }),
+                Op::Crash {
+                    doc_id,
+                    revision,
+                    timestamp,
+                    boundary,
+                } => {
+                    let document = DocMutation {
+                        doc_id: *doc_id,
+                        revision: *revision,
+                        timestamp: *timestamp,
+                    };
+                    engine
+                        .crash_at_boundary(document, *boundary, campaign, seed, op_index, profile)
+                        .map(|recovery| {
+                            match recovery.disposition {
+                                CrashDisposition::Unacknowledged => {}
+                                CrashDisposition::Visible => {
+                                    text_documents_ingested =
+                                        text_documents_ingested.saturating_add(1);
+                                    model.acknowledge(*doc_id, *revision, *timestamp);
+                                }
+                                CrashDisposition::Gone => {
+                                    text_documents_ingested =
+                                        text_documents_ingested.saturating_add(1);
+                                    model.purge(*doc_id);
+                                    if let Some(violation) = purge_proof_violation(
+                                        seed,
+                                        profile,
+                                        op_index,
+                                        directory.path(),
+                                        *doc_id,
+                                    ) {
+                                        violations.push(violation);
+                                    }
+                                }
+                            }
+                            match full_scan(&mut engine, &model, seed) {
+                                Ok(observed) => {
+                                    if let Some(violation) = epoch_identity_violation(
+                                        seed,
+                                        profile,
+                                        op_index,
+                                        identity_for(model.published_epoch()),
+                                        &observed,
+                                    ) {
+                                        violations.push(violation);
+                                    }
+                                    if let Some(violation) = durability_prefix_violation(
+                                        seed, profile, op_index, &model, &observed,
+                                    ) {
+                                        violations.push(violation);
+                                    }
+                                }
+                                Err(error) => violations.push(violation(
+                                    Invariant::I4,
                                     seed,
                                     profile,
                                     op_index,
-                                    directory.path(),
-                                    *doc_id,
-                                ) {
-                                    violations.push(violation);
-                                }
+                                    format!(
+                                        "crash recovery did not open as a clean prefix: {error}"
+                                    ),
+                                )),
                             }
-                        }
-                        match full_scan(&mut engine, &model, seed) {
-                            Ok(observed) => {
-                                if let Some(violation) = epoch_identity_violation(
-                                    seed,
-                                    profile,
-                                    op_index,
-                                    identity_for(model.published_epoch()),
-                                    &observed,
-                                ) {
-                                    violations.push(violation);
-                                }
-                                if let Some(violation) = durability_prefix_violation(
-                                    seed, profile, op_index, &model, &observed,
-                                ) {
-                                    violations.push(violation);
-                                }
-                            }
-                            Err(error) => violations.push(violation(
-                                Invariant::I4,
-                                seed,
-                                profile,
-                                op_index,
-                                format!("crash recovery did not open as a clean prefix: {error}"),
-                            )),
-                        }
-                        Some(MutationAck {
-                            generation: recovery.generation,
-                            changed: recovery.disposition != CrashDisposition::Unacknowledged,
+                            Some(MutationAck {
+                                generation: recovery.generation,
+                                changed: recovery.disposition != CrashDisposition::Unacknowledged,
+                            })
                         })
+                }
+                Op::DropPartition { start, end } => {
+                    engine.drop_partition(*start, *end).map(|ack| {
+                        if ack.changed {
+                            model.drop_partition(*start, *end);
+                        }
+                        Some(ack)
                     })
-            }
-            Op::DropPartition { start, end } => engine.drop_partition(*start, *end).map(|ack| {
-                if ack.changed {
-                    model.drop_partition(*start, *end);
                 }
-                Some(ack)
-            }),
-            Op::Purge { doc_id } => engine.purge(*doc_id).map(|ack| {
-                if ack.changed {
-                    model.purge(*doc_id);
-                }
-                if let Some(violation) =
-                    purge_proof_violation(seed, profile, op_index, directory.path(), *doc_id)
-                {
-                    violations.push(violation);
-                }
-                Some(ack)
-            }),
+                Op::Purge { doc_id } => engine.purge(*doc_id).map(|ack| {
+                    if ack.changed {
+                        model.purge(*doc_id);
+                    }
+                    if let Some(violation) =
+                        purge_proof_violation(seed, profile, op_index, directory.path(), *doc_id)
+                    {
+                        violations.push(violation);
+                    }
+                    Some(ack)
+                }),
+            },
         };
 
-        if cancel_stats_before.is_some() || operation_result.is_ok() {
-            if let Some(cancel_outcome) = scheduled_vfs.finish_cancel()? {
-                coverage.hit(cancel_outcome.coverage_key());
-            }
+        if operation_attempted
+            && (cancel_stats_before.is_some() || operation_result.is_ok())
+            && let Some(cancel_outcome) = scheduled_vfs.finish_cancel()?
+        {
+            coverage.hit(cancel_outcome.coverage_key());
         }
         if engine.query_cancelled() && !cancel_scheduled {
             violations.push(violation(
@@ -3510,7 +3690,7 @@ fn run_program_for_with_clock(
                 "query returned typed cancellation without a planned Cancel event".to_owned(),
             ));
         }
-        if let Some(before) = cancel_stats_before {
+        if operation_attempted && let Some(before) = cancel_stats_before {
             let after = engine.stats()?;
             if before == after {
                 coverage.hit("fault.cancel.generic.state-unchanged");
@@ -3538,7 +3718,9 @@ fn run_program_for_with_clock(
         content_fault_fired |= content_at_operation;
         let clock_timeout_expected = clock_jump_requires_timeout(&fired_at_operation);
 
-        if let Err(error) = busy_hook_result {
+        if let Err(error) = busy_hook_result
+            && !persisted_content_fault_before(&scheduled_vfs.events(), op_index)
+        {
             if !runner_records_error(
                 &scheduled_vfs.events(),
                 op_index,
@@ -3615,6 +3797,7 @@ fn run_program_for_with_clock(
                     match engine.recover_from_simulated_crash() {
                         Ok(()) => {
                             reconcile_simulated_crash(&mut model, op, crash_event)?;
+                            reconcile_recovered_locations(&mut engine, &mut model)?;
                             simulated_crash_recovered = true;
                             if matches!(op, Op::Seal) {
                                 seal_precondition_lost_to_crash = true;
@@ -3642,7 +3825,10 @@ fn run_program_for_with_clock(
                         Err(recovery_error) => {
                             if persisted_content_fault_preceded(&scheduled_vfs.events(), op_index) {
                                 coverage.hit("crash.recovery_refused_after_content_write");
-                                break;
+                                if campaign == CampaignKind::Overall {
+                                    break;
+                                }
+                                continue;
                             }
                             violations.push(violation(
                                 Invariant::I4,
@@ -3724,6 +3910,7 @@ fn run_program_for_with_clock(
                                 match engine.recover_from_simulated_crash() {
                                     Ok(()) => {
                                         reconcile_simulated_crash(&mut model, op, &crash_event)?;
+                                        reconcile_recovered_locations(&mut engine, &mut model)?;
                                         simulated_crash_recovered = true;
                                         if matches!(op, Op::Seal) {
                                             seal_precondition_lost_to_crash = true;
@@ -3755,7 +3942,10 @@ fn run_program_for_with_clock(
                                         ) {
                                             coverage
                                                 .hit("crash.recovery_refused_after_content_write");
-                                            break;
+                                            if campaign == CampaignKind::Overall {
+                                                break;
+                                            }
+                                            continue;
                                         }
                                         violations.push(violation(
                                             Invariant::I4,
@@ -3782,6 +3972,12 @@ fn run_program_for_with_clock(
                                 content_fault_fired = true;
                                 if campaign == CampaignKind::Overall {
                                     break;
+                                }
+                                if !persisted_content_fault_preceded(
+                                    &scheduled_vfs.events(),
+                                    op_index,
+                                ) {
+                                    engine.reopen()?;
                                 }
                                 continue;
                             }
@@ -3857,7 +4053,14 @@ fn run_program_for_with_clock(
         .map(|event| event.layer)
         .collect::<BTreeSet<_>>();
     if !fired_layers.is_empty() {
-        coverage.hit(format!("fault.layer.count.{}", fired_layers.len().min(4)));
+        for count in 1..=fired_layers.len().min(4) {
+            coverage.hit(format!("fault.layer.count.{count}"));
+        }
+    }
+    if fault_plan.feature.iter().any(|event| event.fired) {
+        for layer in &fired_layers {
+            coverage.hit(format!("fault.layered.{}+feature", layer.key()));
+        }
     }
     let faults_fired = faults
         .iter()
@@ -3905,10 +4108,30 @@ fn run_program_for_with_clock(
             *passes = passes.saturating_add(1);
         }
     }
+    for (invariant, refused) in &refused_comparison_counts {
+        let count = comparison_counts.entry(invariant.clone()).or_default();
+        *count = count.saturating_add(*refused);
+    }
+    let comparison_outcome_counts = comparison_counts
+        .keys()
+        .map(|invariant| {
+            (
+                invariant.clone(),
+                ComparisonOutcomeCounts {
+                    equal: comparison_pass_counts.get(invariant).copied().unwrap_or(0),
+                    refused: refused_comparison_counts
+                        .get(invariant)
+                        .copied()
+                        .unwrap_or(0),
+                },
+            )
+        })
+        .collect();
     let mut outcome = RunOutcome {
         campaign,
         seed,
         profile,
+        profile_overridden: profile_override.is_some(),
         operations: executed_operations,
         faults_fired,
         scheduled_faults_fired,
@@ -3953,6 +4176,7 @@ fn run_program_for_with_clock(
         family_artifact_bytes,
         comparison_counts,
         comparison_pass_counts,
+        comparison_outcome_counts,
         same_seed_clean_controls,
         integrated_feature_fault_receipts,
         expected_feature_fault_receipts,
@@ -4022,6 +4246,7 @@ fn run_program_for_with_clock(
         };
         let attestation = super::artifacts::EpisodeAttestation {
             comparison_counts: outcome.comparison_counts.clone(),
+            comparison_outcome_counts: outcome.comparison_outcome_counts.clone(),
             same_seed_clean_controls: outcome.same_seed_clean_controls,
             integrated_feature_fault_receipts: outcome.integrated_feature_fault_receipts,
             expected_feature_fault_receipts: outcome.expected_feature_fault_receipts,
@@ -4032,6 +4257,7 @@ fn run_program_for_with_clock(
             campaign,
             seed,
             profile,
+            profile_override.is_some(),
             &reproduction,
             Some(&attestation),
         )?;
@@ -4172,6 +4398,7 @@ struct CampaignOperationOutcome {
     receipts: Vec<ProductionFeatureReceipt>,
     qualifying_controls: usize,
     generic_fault_event: Option<FaultEvent>,
+    refused_comparison_counts: BTreeMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -4828,6 +5055,7 @@ fn run_campaign_operation_with_clean_control(
             receipts,
             qualifying_controls,
             generic_fault_event: None,
+            refused_comparison_counts: BTreeMap::new(),
         });
     }
 
@@ -4927,8 +5155,8 @@ fn run_campaign_operation_with_clean_control(
         ));
     }
     let generic_fault_event = control.fault_event.clone();
-    let receipts = match control.faulted? {
-        FaultedLeg::Observed(result) => result.receipts,
+    let (receipts, refused_comparison_counts) = match control.faulted? {
+        FaultedLeg::Observed(result) => (result.receipts, BTreeMap::new()),
         FaultedLeg::Refused { stage, error } => {
             let fault = control
                 .fault_event
@@ -4943,7 +5171,16 @@ fn run_campaign_operation_with_clean_control(
                 json_escape(stage),
                 json_escape(&error),
             ));
-            Vec::new()
+            let mut refused = BTreeMap::new();
+            let comparison_multiplier = u64::try_from(selected_faults.len().max(1))
+                .map_err(|_| "selected feature-fault count exceeds u64".to_owned())?;
+            for record in &clean_oracle_records {
+                let count = refused
+                    .entry(format!("I{}", record.invariant))
+                    .or_insert(0_u64);
+                *count = count.saturating_add(comparison_multiplier);
+            }
+            (Vec::new(), refused)
         }
     };
     let control_start = control_records.len();
@@ -4963,6 +5200,7 @@ fn run_campaign_operation_with_clean_control(
         receipts,
         qualifying_controls,
         generic_fault_event,
+        refused_comparison_counts,
     })
 }
 
@@ -9052,8 +9290,9 @@ fn storage_retained_omission_case(
         .position(|candidate| *candidate == profile)
         .and_then(|ordinal| u32::try_from(ordinal).ok())
         .ok_or_else(|| "storage profile ordinal is absent".to_owned())?;
+    let schedule_seed = seed.saturating_add(seed / FaultProfile::ALL.len() as u64);
     Ok(Some(storage_adapter::omission_case_for_schedule(
-        seed,
+        schedule_seed,
         profile_ordinal,
     )))
 }
@@ -9383,27 +9622,29 @@ fn run_storage_campaign_operation(
                 }
             }
             super::campaign::StorageOperation::OrphanCleanup => {
-                let evidence =
-                    if fault == Some(storage_adapter::StorageFaultKind::ListDeleteOmission) {
-                        let profile_ordinal = FaultProfile::ALL
-                            .iter()
-                            .position(|candidate| *candidate == profile)
-                            .and_then(|ordinal| u32::try_from(ordinal).ok())
-                            .ok_or_else(|| "storage profile ordinal is absent".to_owned())?;
-                        let omission_case =
-                            storage_adapter::omission_case_for_schedule(seed, profile_ordinal);
-                        storage_adapter::observe_reachability_case_from_episode(
-                            episode,
-                            op_index_u32,
-                            Some(omission_case),
-                        )?
-                    } else {
-                        storage_adapter::observe_reachability_from_episode(
-                            episode,
-                            op_index_u32,
-                            fault,
-                        )?
-                    };
+                let evidence = if fault
+                    == Some(storage_adapter::StorageFaultKind::ListDeleteOmission)
+                {
+                    let profile_ordinal = FaultProfile::ALL
+                        .iter()
+                        .position(|candidate| *candidate == profile)
+                        .and_then(|ordinal| u32::try_from(ordinal).ok())
+                        .ok_or_else(|| "storage profile ordinal is absent".to_owned())?;
+                    let schedule_seed = seed.saturating_add(seed / FaultProfile::ALL.len() as u64);
+                    let omission_case =
+                        storage_adapter::omission_case_for_schedule(schedule_seed, profile_ordinal);
+                    storage_adapter::observe_reachability_case_from_episode(
+                        episode,
+                        op_index_u32,
+                        Some(omission_case),
+                    )?
+                } else {
+                    storage_adapter::observe_reachability_from_episode(
+                        episode,
+                        op_index_u32,
+                        fault,
+                    )?
+                };
                 let omission_case = storage_omission_case_key(&evidence)?;
                 let passed = record_storage_evidence(
                     19,
@@ -17163,8 +17404,17 @@ fn persisted_content_fault_preceded(events: &[FaultEvent], op_index: usize) -> b
         event.fired
             && event.op_index <= op_index
             && event.layer == fault_vfs::Layer::Content
-            && event.site == fault_vfs::FaultSite::Write
+            && matches!(
+                event.site,
+                fault_vfs::FaultSite::Append | fault_vfs::FaultSite::Write
+            )
     })
+}
+
+fn persisted_content_fault_before(events: &[FaultEvent], op_index: usize) -> bool {
+    op_index
+        .checked_sub(1)
+        .is_some_and(|previous| persisted_content_fault_preceded(events, previous))
 }
 
 fn recover_and_retry_faulted_operation(
@@ -17356,6 +17606,33 @@ fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> 
     Ok(())
 }
 
+fn reconcile_recovered_locations(engine: &mut RealEngine, model: &mut Model) -> Result<(), String> {
+    let snapshot = engine
+        .store()?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let mut sealed = BTreeSet::new();
+    for segment in snapshot.segments() {
+        for row in 0..segment.meta().row_count as usize {
+            let Some(version) = segment
+                .document_version(row)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            let doc_id = u32::try_from(version.doc_id().get())
+                .map_err(|_| "sealed document id exceeds adversarial vocabulary")?;
+            sealed.insert((doc_id, version.revision().get()));
+        }
+    }
+    for (doc_id, revision, timestamp) in model.live_documents() {
+        if !sealed.contains(&(doc_id, revision)) {
+            model.acknowledge(doc_id, revision, timestamp);
+        }
+    }
+    Ok(())
+}
+
 fn crash_path_is(crash: &FaultEvent, expected: &str) -> bool {
     crash
         .path
@@ -17439,11 +17716,11 @@ fn run_hybrid_search(
     seed: u64,
 ) -> Result<Option<HybridCheck>, String> {
     let sealed_vector_documents = model.sealed_document_count();
+    let query_vector = program::query(query_slot);
+    let observed = engine.search(&query_vector, model.len(), SearchKind::Auto, seed)?;
     if sealed_vector_documents == 0 || model.is_empty() {
         return Ok(None);
     }
-    let query_vector = program::query(query_slot);
-    let observed = engine.search(&query_vector, model.len(), SearchKind::Auto, seed)?;
     if !observed.graph_available {
         return Ok(None);
     }
@@ -18061,16 +18338,26 @@ fn violation(
 
 #[must_use]
 pub fn reproduction(seed: u64, profile: FaultProfile) -> String {
-    reproduction_for(CampaignKind::Overall, seed, profile)
+    reproduction_for(CampaignKind::Overall, seed, Some(profile))
 }
 
 #[must_use]
-pub fn reproduction_for(campaign: CampaignKind, seed: u64, profile: FaultProfile) -> String {
-    reproduction_for_profile_override(
-        campaign,
-        seed,
-        profile,
-        std::env::var_os("ZE_ADV_PROFILE").is_some(),
+pub fn reproduction_for(
+    campaign: CampaignKind,
+    seed: u64,
+    profile_override: Option<FaultProfile>,
+) -> String {
+    let profile = profile_override
+        .map(|profile| format!("ZE_ADV_PROFILE={} ", profile.key()))
+        .unwrap_or_default();
+    if campaign == CampaignKind::Overall {
+        return format!(
+            "{profile}ZE_ADV_SEED={seed} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
+        );
+    }
+    format!(
+        "{profile}ZE_ADV_CAMPAIGN={} ZE_ADV_SEED={seed} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture",
+        campaign.key()
     )
 }
 
@@ -18082,19 +18369,11 @@ pub fn reproduction_for_profile_override(
     profile_overridden: bool,
 ) -> String {
     let profile_override = if profile_overridden {
-        format!(" ZE_ADV_PROFILE={}", profile.key())
+        Some(profile)
     } else {
-        String::new()
+        None
     };
-    if campaign == CampaignKind::Overall {
-        return format!(
-            "ZE_ADV_SEED={seed}{profile_override} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
-        );
-    }
-    format!(
-        "ZE_ADV_CAMPAIGN={} ZE_ADV_SEED={seed}{profile_override} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture",
-        campaign.key()
-    )
+    reproduction_for(campaign, seed, profile_override)
 }
 
 fn json_escape(value: &str) -> String {

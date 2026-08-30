@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::fault_vfs::FaultSchedule;
-use super::profiles::{FaultProfile, profile_for_seed};
+use super::fault_vfs::{FaultSchedule, Layer, plan_schedule};
+use super::profiles::{FaultProfile, environment_for_profile, profile_for_seed};
 use super::program::{Op, Program};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -389,6 +389,7 @@ fn validate_feature_replay_attestation(
         .as_str()
         .is_some_and(|revision| !revision.is_empty() && revision != "unknown")
         || !attestation["comparison_counts"].is_object()
+        || !attestation["comparison_outcome_counts"].is_object()
         || !attestation["same_seed_clean_controls"].is_u64()
         || !attestation["integrated_feature_fault_receipts"].is_u64()
         || !attestation["expected_feature_fault_receipts"].is_u64()
@@ -1005,7 +1006,7 @@ pub struct RunConfig {
     pub campaign: CampaignKind,
     pub seed: u64,
     pub start_seed: u64,
-    pub profile: FaultProfile,
+    pub profile: Option<FaultProfile>,
     pub qualification: Qualification,
     pub minimum_seconds: u64,
     pub minimum_episodes: u64,
@@ -1024,8 +1025,9 @@ impl RunConfig {
         )?;
         let seed = env_u64("ZE_ADV_SEED", 0)?;
         let profile = match std::env::var("ZE_ADV_PROFILE") {
-            Ok(value) => FaultProfile::from_key(&value)?,
-            Err(_) => profile_for_seed(seed),
+            Ok(value) => Some(FaultProfile::from_key(&value)?),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(format!("read ZE_ADV_PROFILE: {error}")),
         };
         let start_seed = match std::env::var("ZE_ADV_START_SEED") {
             Ok(value) => parse_u64("ZE_ADV_START_SEED", &value)?,
@@ -1839,7 +1841,6 @@ pub struct CampaignSpec {
     pub fault_profiles: &'static [FaultProfile],
     pub feature_faults: &'static [FeatureFault],
     pub required_coverage: &'static [&'static str],
-    pub smoke_seeds: &'static [u64],
 }
 
 impl CampaignSpec {
@@ -1894,6 +1895,13 @@ impl CampaignSpec {
                 .map(InvariantId::checked_coverage_key),
         );
         keys.extend(self.feature_faults.iter().map(|fault| fault.coverage_key()));
+        if !self.feature_faults.is_empty() {
+            keys.extend(
+                super::coverage::REQUIRED_LAYERED_COVERAGE
+                    .iter()
+                    .map(|key| (*key).to_owned()),
+            );
+        }
         keys.extend(
             self.required_operations
                 .iter()
@@ -1903,14 +1911,145 @@ impl CampaignSpec {
         keys.dedup();
         keys
     }
+
+    #[must_use]
+    pub fn planned_smoke_coverage(self, seed: u64) -> BTreeSet<String> {
+        self.planned_smoke_coverage_for_profile(seed, profile_for_seed(seed))
+    }
+
+    fn planned_smoke_coverage_for_profile(
+        self,
+        seed: u64,
+        profile: FaultProfile,
+    ) -> BTreeSet<String> {
+        let program = Program::generate_for(self.kind, seed);
+        let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+        let plan = FaultPlan::for_program(self.kind, seed, profile, &program, schedule);
+        let mut coverage = BTreeSet::from([format!("fault.profile.{}", profile.key())]);
+        let layers = plan
+            .schedule
+            .events
+            .iter()
+            .map(|event| event.layer)
+            .collect::<BTreeSet<_>>();
+        for event in &plan.schedule.events {
+            coverage.insert(format!("fault.site.{}", event.site.key()));
+            coverage.insert(format!("fault.mode.{}", event.mode.key()));
+            coverage.insert(format!("fault.layer.{}", event.layer.key()));
+        }
+        for count in 1..=layers.len().min(4) {
+            coverage.insert(format!("fault.layer.count.{count}"));
+        }
+        for event in &plan.feature {
+            coverage.insert(event.fault.coverage_key());
+        }
+        if self.kind == CampaignKind::StorageDurability
+            && plan
+                .feature
+                .iter()
+                .any(|event| event.fault == FeatureFault::StorageListDeleteOmission)
+        {
+            let profile_ordinal = FaultProfile::ALL
+                .iter()
+                .position(|candidate| *candidate == profile)
+                .and_then(|ordinal| u32::try_from(ordinal).ok())
+                .expect("storage profile belongs to FaultProfile::ALL");
+            let schedule_seed = seed.saturating_add(seed / FaultProfile::ALL.len() as u64);
+            let omission = super::storage_durability::omission_case_for_schedule(
+                schedule_seed,
+                profile_ordinal,
+            );
+            let case_index =
+                zeppelin_embed_adversarial_oracle::storage_durability::ALL_OMISSION_CASES
+                    .iter()
+                    .position(|candidate| *candidate == omission)
+                    .expect("storage omission case belongs to the complete catalog");
+            coverage.insert(STORAGE_OMISSION_COVERAGE[case_index].to_owned());
+            let subsite = if case_index % 2 == 0 {
+                "list"
+            } else {
+                "delete"
+            };
+            coverage.insert(format!(
+                "feature_fault.storage-durability.list-delete-omission.site.{subsite}"
+            ));
+            coverage.insert(format!("storage.receipt-site.orphan-cleanup-{subsite}"));
+        }
+        if !plan.feature.is_empty() {
+            coverage.extend(
+                layers
+                    .iter()
+                    .map(|layer| format!("fault.layered.{}+feature", layer.key())),
+            );
+        }
+        for content in plan
+            .schedule
+            .events
+            .iter()
+            .filter(|event| event.layer == Layer::Content)
+        {
+            if plan
+                .schedule
+                .events
+                .iter()
+                .any(|event| event.layer == Layer::Crash && event.op_index >= content.op_index)
+            {
+                coverage.insert(format!("crash.after.{}", content.mode.key()));
+            }
+        }
+        coverage
+    }
+
+    pub fn derived_smoke_seeds(self, start_seed: u64) -> Result<Vec<u64>, String> {
+        let mut required = FaultProfile::ALL
+            .into_iter()
+            .map(|profile| format!("fault.profile.{}", profile.key()))
+            .collect::<BTreeSet<_>>();
+        required.extend(
+            super::coverage::REQUIRED_SMOKE_COVERAGE
+                .iter()
+                .copied()
+                .filter(|key| key.starts_with("fault.site.") || key.starts_with("fault.mode."))
+                .map(str::to_owned),
+        );
+        required.extend(self.feature_faults.iter().map(|fault| fault.coverage_key()));
+        if self.kind == CampaignKind::StorageDurability {
+            required.extend(
+                STORAGE_DERIVED_SMOKE_COVERAGE
+                    .iter()
+                    .map(|key| (*key).to_owned()),
+            );
+        }
+        if !self.feature_faults.is_empty() {
+            required.extend(
+                super::coverage::REQUIRED_LAYERED_COVERAGE
+                    .iter()
+                    .map(|key| (*key).to_owned()),
+            );
+        }
+
+        let mut observed = BTreeSet::new();
+        let mut seeds = Vec::new();
+        for offset in 0..224_u64 {
+            let seed = start_seed
+                .checked_add(offset)
+                .ok_or_else(|| "derived smoke seed range exceeds u64".to_owned())?;
+            observed.extend(self.planned_smoke_coverage(seed));
+            seeds.push(seed);
+            if required.is_subset(&observed)
+                && (self.kind != CampaignKind::Overall || seeds.len() == 224)
+            {
+                return Ok(seeds);
+            }
+        }
+        let missing = required.difference(&observed).cloned().collect::<Vec<_>>();
+        Err(format!(
+            "{} planned smoke coverage needs more than 224 seeds; missing={missing:?}",
+            self.kind.key()
+        ))
+    }
 }
 
-const SMOKE_SEEDS: [u64; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-/// Vector faults are selected by `seed % 6` and their variants by
-/// `seed / 6`, so four variants need four seeds per fault: 24 seeds.
-const VECTOR_SMOKE_SEEDS: [u64; 24] = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-];
 const OVERALL_ACTIVE_INVARIANTS: [InvariantId; 12] = [
     InvariantId::new(1),
     InvariantId::new(2),
@@ -2114,6 +2253,28 @@ const STORAGE_COVERAGE: [&str; 4] = [
     "feature_fault.storage-durability.list-delete-omission.site.list",
     "feature_fault.storage-durability.wrong-segment-object.site.family",
     "feature_fault.storage-durability.wrong-segment-object.site.identity",
+];
+
+const STORAGE_OMISSION_COVERAGE: [&str; 6] = [
+    "storage.omission.final-segment.list",
+    "storage.omission.final-segment.delete",
+    "storage.omission.segment-temporary.list",
+    "storage.omission.segment-temporary.delete",
+    "storage.omission.manifest-temporary.list",
+    "storage.omission.manifest-temporary.delete",
+];
+
+const STORAGE_DERIVED_SMOKE_COVERAGE: [&str; 10] = [
+    "feature_fault.storage-durability.list-delete-omission.site.delete",
+    "feature_fault.storage-durability.list-delete-omission.site.list",
+    "storage.omission.final-segment.list",
+    "storage.omission.final-segment.delete",
+    "storage.omission.segment-temporary.list",
+    "storage.omission.segment-temporary.delete",
+    "storage.omission.manifest-temporary.list",
+    "storage.omission.manifest-temporary.delete",
+    "storage.receipt-site.orphan-cleanup-list",
+    "storage.receipt-site.orphan-cleanup-delete",
 ];
 
 fn storage_family_required_coverage() -> impl Iterator<Item = &'static str> {
@@ -2702,7 +2863,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &NO_FAULTS,
         required_coverage: &OVERALL_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::StorageDurability,
@@ -2715,7 +2875,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &STORAGE_FAULTS,
         required_coverage: &STORAGE_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::IngestRetention,
@@ -2728,7 +2887,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &INGEST_FAULTS,
         required_coverage: &INGEST_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::VectorExecution,
@@ -2741,7 +2899,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &VECTOR_FAULTS,
         required_coverage: &VECTOR_COVERAGE,
-        smoke_seeds: &VECTOR_SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::VamanaGraph,
@@ -2754,7 +2911,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &GRAPH_FAULTS,
         required_coverage: &GRAPH_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::MetadataFilterPlanner,
@@ -2767,7 +2923,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &FILTER_FAULTS,
         required_coverage: &FILTER_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::Fts,
@@ -2780,7 +2935,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &FTS_FAULTS,
         required_coverage: &FTS_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::HybridFusion,
@@ -2793,7 +2947,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &HYBRID_FAULTS,
         required_coverage: &HYBRID_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::TieringMaintenance,
@@ -2806,7 +2959,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &TIER_FAULTS,
         required_coverage: &TIER_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::LifecycleAccounting,
@@ -2819,7 +2971,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &LIFECYCLE_FAULTS,
         required_coverage: &LIFECYCLE_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::DiagnosticsHealth,
@@ -2832,7 +2983,6 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &DIAGNOSTIC_FAULTS,
         required_coverage: &DIAGNOSTIC_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::FfiBindings,
@@ -2845,6 +2995,5 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::ALL,
         feature_faults: &FFI_FAULTS,
         required_coverage: &FFI_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
     },
 ];

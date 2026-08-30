@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use super::campaign::{CampaignKind, FeatureFaultEvent};
+use super::campaign::{CampaignKind, FaultPlan, FeatureFaultEvent};
 use super::coverage::CoverageRegistry;
-use super::fault_vfs::FaultEvent;
+use super::fault_vfs::{FaultEvent, plan_schedule};
 use super::oracle::OracleRecord;
-use super::profiles::FaultProfile;
+use super::profiles::{FaultProfile, environment_for_profile};
 use super::program::Program;
+use super::runner::ComparisonOutcomeCounts;
 use super::runner::Violation;
 
 pub const REPLAY_ARTIFACTS: [&str; 9] = [
@@ -67,6 +68,135 @@ pub fn replay_artifacts_for(campaign: CampaignKind) -> Vec<&'static str> {
     artifacts
 }
 
+pub fn verify_recomputed_fault_plan_bytes(
+    campaign: CampaignKind,
+    seed: u64,
+    profile: FaultProfile,
+    faults_bytes: &[u8],
+) -> Result<FaultPlan, String> {
+    let records = faults_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            zeppelin_embed_bench::harness_json::from_slice::<
+                zeppelin_embed_bench::harness_json::Value,
+            >(line)
+            .map_err(|error| format!("parse faults.jsonl row: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan = verify_recomputed_fault_plan_records(campaign, seed, profile, &records)?;
+    let recomputed = fault_plan_bytes(&plan.schedule.events, &plan.feature);
+    if recomputed != faults_bytes {
+        return Err("recomputed fault plan does not equal faults.jsonl bytes".to_owned());
+    }
+    Ok(plan)
+}
+
+pub fn verify_recomputed_fault_plan_records(
+    campaign: CampaignKind,
+    seed: u64,
+    profile: FaultProfile,
+    records: &[zeppelin_embed_bench::harness_json::Value],
+) -> Result<FaultPlan, String> {
+    let program = Program::generate_for(campaign, seed);
+    let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+    let mut plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
+    let expected_records = plan
+        .schedule
+        .events
+        .len()
+        .saturating_add(plan.feature.len());
+    if records.len() != expected_records {
+        return Err(format!(
+            "faults.jsonl record count expected={expected_records} observed={}",
+            records.len()
+        ));
+    }
+
+    for (event, record) in plan.schedule.events.iter_mut().zip(records) {
+        if record["type"].as_str() != Some("generic") {
+            return Err("faults.jsonl generic plan row has the wrong type".to_owned());
+        }
+        let fired = record["fired"]
+            .as_bool()
+            .ok_or_else(|| "faults.jsonl generic row omitted fired".to_owned())?;
+        let fire_count = record["fire_count"]
+            .as_u64()
+            .ok_or_else(|| "faults.jsonl generic row omitted fire_count".to_owned())?;
+        if fire_count != u64::from(fired) {
+            return Err(format!(
+                "faults.jsonl generic row has fired={fired} fire_count={fire_count}"
+            ));
+        }
+        event.fired = fired;
+        event.fire_count = usize::from(fired);
+        event.path = match record.get("path") {
+            Some(value) if value.is_null() => None,
+            Some(value) => Some(PathBuf::from(value.as_str().ok_or_else(|| {
+                "faults.jsonl generic path is neither string nor null".to_owned()
+            })?)),
+            None => return Err("faults.jsonl generic row omitted path".to_owned()),
+        };
+    }
+    for (event, record) in plan
+        .feature
+        .iter_mut()
+        .zip(records.iter().skip(plan.schedule.events.len()))
+    {
+        if record["type"].as_str() != Some("feature") {
+            return Err("faults.jsonl feature plan row has the wrong type".to_owned());
+        }
+        let fired = record["fired"]
+            .as_bool()
+            .ok_or_else(|| "faults.jsonl feature row omitted fired".to_owned())?;
+        let fire_count = record["fire_count"]
+            .as_u64()
+            .ok_or_else(|| "faults.jsonl feature row omitted fire_count".to_owned())?;
+        let expected_fire_count = if fired {
+            u64::try_from(event.fault.required_receipt_cardinality())
+                .map_err(|_| "feature receipt cardinality exceeds u64".to_owned())?
+        } else {
+            0
+        };
+        if fire_count != expected_fire_count {
+            return Err(format!(
+                "faults.jsonl feature row has fired={fired} fire_count={fire_count} expected={expected_fire_count}"
+            ));
+        }
+        event.fired = fired;
+        event.fire_count = usize::try_from(fire_count)
+            .map_err(|_| "feature fire_count exceeds usize".to_owned())?;
+    }
+
+    let recomputed = fault_plan_bytes(&plan.schedule.events, &plan.feature)
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            zeppelin_embed_bench::harness_json::from_slice::<
+                zeppelin_embed_bench::harness_json::Value,
+            >(line)
+            .map_err(|error| format!("parse recomputed faults.jsonl row: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if recomputed != records {
+        return Err("recomputed fault plan does not equal faults.jsonl records".to_owned());
+    }
+    Ok(plan)
+}
+
+fn fault_plan_bytes(faults: &[FaultEvent], feature_faults: &[FeatureFaultEvent]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for fault in faults {
+        bytes.extend_from_slice(fault.json_line().as_bytes());
+        bytes.push(b'\n');
+    }
+    for fault in feature_faults {
+        bytes.extend_from_slice(fault.json_line().as_bytes());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
 #[must_use]
 pub const fn oracle_contract(campaign: CampaignKind) -> &'static str {
     match campaign {
@@ -96,6 +226,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpisodeAttestation {
     pub comparison_counts: BTreeMap<String, u64>,
+    pub comparison_outcome_counts: BTreeMap<String, ComparisonOutcomeCounts>,
     pub same_seed_clean_controls: u64,
     pub integrated_feature_fault_receipts: u64,
     pub expected_feature_fault_receipts: u64,
@@ -750,11 +881,7 @@ impl RunArtifacts {
     }
 
     pub fn write_faults(&self, faults: &[FaultEvent]) -> Result<Vec<u8>, String> {
-        let mut bytes = Vec::new();
-        for fault in faults {
-            bytes.extend_from_slice(fault.json_line().as_bytes());
-            bytes.push(b'\n');
-        }
+        let bytes = fault_plan_bytes(faults, &[]);
         fs::write(self.directory.join("faults.jsonl"), &bytes)
             .map_err(|error| format!("write faults.jsonl: {error}"))?;
         Ok(bytes)
@@ -768,15 +895,7 @@ impl RunArtifacts {
         if feature_faults.is_empty() {
             return self.write_faults(faults);
         }
-        let mut bytes = Vec::new();
-        for fault in faults {
-            bytes.extend_from_slice(fault.json_line().as_bytes());
-            bytes.push(b'\n');
-        }
-        for fault in feature_faults {
-            bytes.extend_from_slice(fault.json_line().as_bytes());
-            bytes.push(b'\n');
-        }
+        let bytes = fault_plan_bytes(faults, feature_faults);
         fs::write(self.directory.join("faults.jsonl"), &bytes)
             .map_err(|error| format!("write faults.jsonl: {error}"))?;
         Ok(bytes)
@@ -816,6 +935,7 @@ impl RunArtifacts {
         campaign: CampaignKind,
         seed: u64,
         profile: FaultProfile,
+        profile_overridden: bool,
         reproduction: &str,
         attestation: Option<&EpisodeAttestation>,
     ) -> Result<Vec<u8>, String> {
@@ -825,6 +945,12 @@ impl RunArtifacts {
                 "oracle_contract": oracle_contract(campaign),
                 "harness_git_revision": harness_git_revision(),
                 "comparison_counts": attestation.comparison_counts,
+                "comparison_outcome_counts": attestation.comparison_outcome_counts.iter().map(|(invariant, counts)| {
+                    (invariant.clone(), zeppelin_embed_bench::harness_json::json!({
+                        "equal": counts.equal,
+                        "refused": counts.refused,
+                    }))
+                }).collect::<BTreeMap<_, _>>(),
                 "same_seed_clean_controls": attestation.same_seed_clean_controls,
                 "integrated_feature_fault_receipts": attestation.integrated_feature_fault_receipts,
                 "expected_feature_fault_receipts": attestation.expected_feature_fault_receipts,
@@ -850,6 +976,7 @@ impl RunArtifacts {
                 "campaign": campaign.key(),
                 "seed": seed,
                 "profile": profile.key(),
+                "profile_overridden": profile_overridden,
                 "reproduction": reproduction,
                 "attestation": attestation_json,
             })
@@ -860,6 +987,7 @@ impl RunArtifacts {
                 "campaign": campaign.key(),
                 "seed": seed,
                 "profile": profile.key(),
+                "profile_overridden": profile_overridden,
                 "reproduction": reproduction,
             })
         };
