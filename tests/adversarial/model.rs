@@ -497,6 +497,11 @@ impl Model {
     }
 
     #[must_use]
+    pub fn has_active_documents(&self) -> bool {
+        !self.active.is_empty()
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.live.is_empty()
     }
