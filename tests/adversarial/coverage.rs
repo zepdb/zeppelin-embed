@@ -62,6 +62,7 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.profile.disk",
     "fault.profile.clock",
     "fault.profile.full",
+    "fault.profile.random",
     "fault.site.open",
     "fault.site.read",
     "fault.site.read_range",

@@ -3,8 +3,8 @@ use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::fault_vfs::FaultEvent;
-use super::profiles::FaultProfile;
+use super::fault_vfs::FaultSchedule;
+use super::profiles::{FaultProfile, profile_for_seed};
 use super::program::{Op, Program};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1019,13 +1019,14 @@ impl RunConfig {
         let campaign = CampaignKind::from_key(
             &std::env::var("ZE_ADV_CAMPAIGN").unwrap_or_else(|_| "overall".to_owned()),
         )?;
-        let profile = FaultProfile::from_key(
-            &std::env::var("ZE_ADV_PROFILE").unwrap_or_else(|_| "none".to_owned()),
-        )?;
         let qualification = Qualification::from_key(
             &std::env::var("ZE_ADV_QUALIFICATION").unwrap_or_else(|_| "exploratory".to_owned()),
         )?;
         let seed = env_u64("ZE_ADV_SEED", 0)?;
+        let profile = match std::env::var("ZE_ADV_PROFILE") {
+            Ok(value) => FaultProfile::from_key(&value)?,
+            Err(_) => profile_for_seed(seed),
+        };
         let start_seed = match std::env::var("ZE_ADV_START_SEED") {
             Ok(value) => parse_u64("ZE_ADV_START_SEED", &value)?,
             Err(_) => env_u64("ZE_ADV_CAMPAIGN_START_SEED", 0)?,
@@ -1754,7 +1755,7 @@ impl FeatureFaultEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultPlan {
-    pub generic: Option<FaultEvent>,
+    pub schedule: FaultSchedule,
     pub feature: Vec<FeatureFaultEvent>,
 }
 
@@ -1765,12 +1766,12 @@ impl FaultPlan {
         seed: u64,
         profile: FaultProfile,
         program: &Program,
-        generic: Option<FaultEvent>,
+        schedule: FaultSchedule,
     ) -> Self {
         let spec = CampaignSpec::for_kind(campaign);
         if campaign == CampaignKind::Overall || spec.feature_faults.is_empty() {
             return Self {
-                generic,
+                schedule,
                 feature: Vec::new(),
             };
         }
@@ -1813,7 +1814,7 @@ impl FaultPlan {
                 fire_count: 0,
             })
             .collect();
-        Self { generic, feature }
+        Self { schedule, feature }
     }
 
     #[must_use]
@@ -2698,7 +2699,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &NO_INVARIANT_SPECS,
         required_operations: &OVERALL_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &NO_FAULTS,
         required_coverage: &OVERALL_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2711,7 +2712,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &STORAGE_INVARIANT_SPECS,
         required_operations: &STORAGE_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &STORAGE_FAULTS,
         required_coverage: &STORAGE_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2724,7 +2725,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &INGEST_INVARIANT_SPECS,
         required_operations: &INGEST_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &INGEST_FAULTS,
         required_coverage: &INGEST_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2737,7 +2738,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &VECTOR_INVARIANT_SPECS,
         required_operations: &VECTOR_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &VECTOR_FAULTS,
         required_coverage: &VECTOR_COVERAGE,
         smoke_seeds: &VECTOR_SMOKE_SEEDS,
@@ -2750,7 +2751,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &GRAPH_INVARIANT_SPECS,
         required_operations: &GRAPH_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &GRAPH_FAULTS,
         required_coverage: &GRAPH_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2763,7 +2764,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &METADATA_INVARIANT_SPECS,
         required_operations: &FILTER_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &FILTER_FAULTS,
         required_coverage: &FILTER_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2776,7 +2777,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &FTS_INVARIANT_SPECS,
         required_operations: &FTS_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &FTS_FAULTS,
         required_coverage: &FTS_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2789,7 +2790,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &HYBRID_INVARIANT_SPECS,
         required_operations: &HYBRID_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &HYBRID_FAULTS,
         required_coverage: &HYBRID_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2802,7 +2803,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &TIER_INVARIANT_SPECS,
         required_operations: &TIER_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &TIER_FAULTS,
         required_coverage: &TIER_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2815,7 +2816,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &LIFECYCLE_INVARIANT_SPECS,
         required_operations: &LIFECYCLE_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &LIFECYCLE_FAULTS,
         required_coverage: &LIFECYCLE_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2828,7 +2829,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &DIAGNOSTIC_INVARIANT_SPECS,
         required_operations: &DIAGNOSTIC_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &DIAGNOSTIC_FAULTS,
         required_coverage: &DIAGNOSTIC_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,
@@ -2841,7 +2842,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         reused_invariants: &NO_INVARIANTS,
         invariant_specs: &FFI_INVARIANT_SPECS,
         required_operations: &FFI_OPS,
-        fault_profiles: &FaultProfile::DEFAULTS,
+        fault_profiles: &FaultProfile::ALL,
         feature_faults: &FFI_FAULTS,
         required_coverage: &FFI_COVERAGE,
         smoke_seeds: &SMOKE_SEEDS,

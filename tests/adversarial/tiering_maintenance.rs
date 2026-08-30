@@ -30,7 +30,7 @@ use zeppelin_embed_adversarial_oracle::tiering_maintenance::{
     PublicationFact, TierFixture, TierInput, TierObserved,
 };
 
-use super::fault_vfs::{FaultEvent, FaultMode, FaultSite, std_scheduled};
+use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, std_scheduled};
 
 const CHECKPOINT_ROWS: u64 = 64;
 const NODE_BLOCK_TRAILER_BYTES: u64 = 128;
@@ -607,14 +607,16 @@ fn scheduled_publication_fault(
     let fixture = oracle::fixture(seed);
     let directory = tempdir().map_err(|error| error.to_string())?;
     let epoch = epoch(fixture.dims, 1);
-    let scheduled = Arc::new(std_scheduled(Some(FaultEvent {
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(FaultEvent {
         id: format!("tier-{seed}-{path}"),
         op_index: 0,
+        layer: Layer::Io,
         site,
         mode,
         nth_match: 1,
         path_contains: Some(path.to_owned()),
         fired: false,
+        fire_count: 0,
         path: None,
     })));
     let store = Store::open_with_test_dependencies(
@@ -634,7 +636,7 @@ fn scheduled_publication_fault(
             graph_min_rows: fixture.rows,
         },
     );
-    let fired = scheduled.event().is_some_and(|event| event.fired);
+    let fired = scheduled.events().into_iter().any(|event| event.fired);
     store.close().map_err(|error| error.to_string())?;
     if fired && matches!(report.status, MaintenanceStatus::Failed(_)) {
         Ok(())

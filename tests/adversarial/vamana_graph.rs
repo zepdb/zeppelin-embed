@@ -25,7 +25,7 @@ use zeppelin_embed::meta::{
 use zeppelin_embed::planner::SegmentBranch;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 
-use super::fault_vfs::{FaultEvent, FaultMode, FaultSite, std_scheduled};
+use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, std_scheduled};
 use zeppelin_embed_adversarial_oracle::vamana_graph::{
     self as oracle, GraphCandidate, GraphInput, GraphObserved,
 };
@@ -776,14 +776,16 @@ fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
     let event = FaultEvent {
         id: format!("graph-publication-{seed}"),
         op_index: 0,
+        layer: Layer::Io,
         site: FaultSite::Rename,
         mode: FaultMode::Eio,
         nth_match: 1,
         path_contains: Some("manifest.ze".to_owned()),
         fired: false,
+        fire_count: 0,
         path: None,
     };
-    let scheduled = Arc::new(std_scheduled(Some(event)));
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(event)));
     let dependencies =
         StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock));
     let store = Store::open_with_test_dependencies(
@@ -810,7 +812,7 @@ fn public_publication_fault_fired(seed: u64) -> Result<(), String> {
                 .map_err(|_| "publication fixture row count exceeds u32".to_owned())?,
         },
     );
-    let fired = scheduled.event().is_some_and(|event| event.fired);
+    let fired = scheduled.events().into_iter().any(|event| event.fired);
     let _ = store.close();
     if fired && matches!(report.status, MaintenanceStatus::Failed(_)) {
         Ok(())

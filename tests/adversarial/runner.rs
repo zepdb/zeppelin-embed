@@ -92,7 +92,7 @@ use super::lifecycle_accounting as lifecycle_adapter;
 use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
 use super::oracle::{OracleFirstDifference, OracleRecord};
-use super::profiles::FaultProfile;
+use super::profiles::{FaultProfile, environment_for_profile, profile_for_seed};
 use super::program::{self, Op, Program, SearchKind};
 use super::storage_durability as storage_adapter;
 use super::tiering_maintenance as tier_adapter;
@@ -675,6 +675,8 @@ trait Engine {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
+        seed: u64,
+        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String>;
     fn generation(&mut self) -> Result<u64, String>;
 }
@@ -709,7 +711,7 @@ impl RealEngine {
     fn without_faults(directory: PathBuf) -> Self {
         Self::new(
             directory,
-            Arc::new(fault_vfs::std_scheduled(None)),
+            Arc::new(fault_vfs::std_scheduled(fault_vfs::FaultSchedule::default())),
             Arc::new(ManualMonotonicClock::new()),
         )
     }
@@ -1334,6 +1336,8 @@ impl Engine for RealEngine {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
+        seed: u64,
+        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String> {
         if let Some(store) = self.store.take() {
             store.close().map_err(|error| error.to_string())?;
@@ -1352,6 +1356,8 @@ impl Engine for RealEngine {
             .env("ZE_ADV_CRASH_CHILD_REV", mutation.revision.to_string())
             .env("ZE_ADV_CRASH_CHILD_TS", mutation.timestamp.to_string())
             .env("ZE_ADV_CRASH_BOUNDARY", boundary.key())
+            .env("ZE_ADV_CRASH_CHILD_SEED", seed.to_string())
+            .env("ZE_ADV_CRASH_CHILD_CAMPAIGN", campaign.key())
             .output()
             .map_err(|error| format!("spawn crash child: {error}"))?;
         if output.status.success() {
@@ -1597,8 +1603,11 @@ impl<E: Engine> Engine for SelfTestEngine<E> {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
+        seed: u64,
+        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String> {
-        self.inner.crash_at_boundary(mutation, boundary)
+        self.inner
+            .crash_at_boundary(mutation, boundary, seed, campaign)
     }
 
     fn generation(&mut self) -> Result<u64, String> {
@@ -1727,7 +1736,7 @@ fn run_program_for_with_clock(
         Vec::new()
     };
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let scheduled_event = fault_vfs::scheduled_event_for_program(seed, profile, &program);
+    let schedule = fault_vfs::plan_schedule(seed, environment_for_profile(profile, seed), &program);
     let storage_episode = if campaign == CampaignKind::StorageDurability {
         Some(storage_adapter::build_storage_episode_fixtures(seed)?)
     } else {
@@ -1739,13 +1748,14 @@ fn run_program_for_with_clock(
         None
     };
     let mut fault_plan =
-        FaultPlan::for_program(campaign, seed, profile, &program, scheduled_event.clone());
+        FaultPlan::for_program(campaign, seed, profile, &program, schedule.clone());
+    artifacts.write_fault_plan(&fault_plan.schedule.events, &fault_plan.feature)?;
     let expected_feature_fault_receipts = fault_plan
         .feature
         .iter()
         .map(|event| event.fault.required_receipt_cardinality() as u64)
         .sum();
-    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled(scheduled_event.clone()));
+    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled(schedule));
     let mut engine = RealEngine::new(
         directory.path().to_path_buf(),
         Arc::clone(&scheduled_vfs),
@@ -1753,7 +1763,7 @@ fn run_program_for_with_clock(
     );
     let mut model = Model::default();
     let mut violations = Vec::new();
-    let mut faults = Vec::<FaultEvent>::new();
+    let mut supplemental_faults = Vec::<FaultEvent>::new();
     let mut coverage = CoverageRegistry::default();
     let mut oracle_records = Vec::<OracleRecord>::new();
     let mut control_records = Vec::<String>::new();
@@ -2095,7 +2105,11 @@ fn run_program_for_with_clock(
                     *operation,
                     CampaignOperationContext {
                         selected_faults: &selected_feature_faults,
-                        generic_fault: scheduled_event.as_ref(),
+                        generic_fault: fault_plan
+                            .schedule
+                            .events
+                            .iter()
+                            .find(|event| event.op_index == op_index),
                         storage_episode: storage_episode.as_ref(),
                         hybrid_episode: hybrid_episode.as_ref(),
                         seed,
@@ -2261,14 +2275,14 @@ fn run_program_for_with_clock(
                 boundary,
             } => {
                 let crash_event = fault_vfs::audit_crash_seam(seed, op_index, *boundary)?;
-                faults.push(crash_event);
+                supplemental_faults.push(crash_event);
                 let document = DocMutation {
                     doc_id: *doc_id,
                     revision: *revision,
                     timestamp: *timestamp,
                 };
                 engine
-                    .crash_at_boundary(document, *boundary)
+                    .crash_at_boundary(document, *boundary, seed, campaign)
                     .map(|recovery| {
                         match recovery.disposition {
                             CrashDisposition::Unacknowledged => {}
@@ -2340,9 +2354,15 @@ fn run_program_for_with_clock(
             }),
         };
 
-        content_fault_fired |= scheduled_vfs
-            .event()
-            .is_some_and(|event| event.fired && profile == FaultProfile::Content);
+        let fired_at_operation = scheduled_vfs
+            .events()
+            .into_iter()
+            .filter(|event| event.op_index == op_index && event.fired)
+            .collect::<Vec<_>>();
+        let content_at_operation = fired_at_operation
+            .iter()
+            .any(|event| event.layer == fault_vfs::Layer::Content);
+        content_fault_fired |= content_at_operation;
 
         let mut operation_succeeded = false;
         match operation_result {
@@ -2359,10 +2379,7 @@ fn run_program_for_with_clock(
             }
             Ok(None) => operation_succeeded = true,
             Err(error) => {
-                let injected = scheduled_vfs
-                    .event()
-                    .is_some_and(|fault| fault.op_index == op_index && fault.fired);
-                if injected && profile == FaultProfile::Content {
+                if content_at_operation || content_fault_fired {
                     // A persisted content mutation may be impossible to clear.
                     // The typed refusal itself satisfies I7. Feature campaigns
                     // keep executing so an independently materialized family
@@ -2374,23 +2391,38 @@ fn run_program_for_with_clock(
                         break;
                     }
                     continue;
-                } else if injected {
+                } else if runner_retries_faulted_operation(&fired_at_operation, op_index) {
                     match recover_and_retry_faulted_operation(&mut engine, &mut model, op) {
                         Ok(Some(ack)) => {
                             operation_succeeded = true;
                             last_generation = last_generation.max(ack.generation);
                         }
                         Ok(None) => operation_succeeded = true,
-                        Err(recovery_error) => violations.push(violation(
-                            Invariant::I8,
-                            seed,
-                            profile,
-                            op_index,
-                            format!(
-                                "{} fault {error}; automatic reopen/retry failed: {recovery_error}",
-                                op.kind()
-                            ),
-                        )),
+                        Err(recovery_error) => {
+                            let content_fired_during_retry =
+                                scheduled_vfs.events().iter().any(|event| {
+                                    event.op_index == op_index
+                                        && event.fired
+                                        && event.layer == fault_vfs::Layer::Content
+                                });
+                            if content_fired_during_retry {
+                                content_fault_fired = true;
+                                if campaign == CampaignKind::Overall {
+                                    break;
+                                }
+                                continue;
+                            }
+                            violations.push(violation(
+                                Invariant::I8,
+                                seed,
+                                profile,
+                                op_index,
+                                format!(
+                                    "{} fault {error}; automatic reopen/retry failed: {recovery_error}",
+                                    op.kind()
+                                ),
+                            ));
+                        }
                     }
                 } else {
                     let invariant = match op {
@@ -2424,19 +2456,20 @@ fn run_program_for_with_clock(
         }
     }
 
-    let scheduled_event = scheduled_vfs.event();
-    let scheduled_faults_fired =
-        usize::from(scheduled_event.as_ref().is_some_and(|event| event.fired));
-    if let Some(event) = scheduled_event {
+    let mut faults = scheduled_vfs.events();
+    let scheduled_faults_fired = faults.iter().filter(|event| event.fired).count();
+    faults.append(&mut supplemental_faults);
+    for event in &faults {
         if event.fired {
             coverage.hit(format!("fault.site.{}", event.site.key()));
             coverage.hit(format!("fault.mode.{}", event.mode.key()));
+            coverage.hit(format!("fault.layer.{}", event.layer.key()));
         }
-        faults.push(event);
     }
     if clock_faults_fired > 0 {
         coverage.hit("fault.site.clock");
         coverage.hit("fault.mode.latency");
+        coverage.hit("fault.layer.clock");
         faults.push(FaultEvent {
             id: format!("clock-{seed}"),
             op_index: program
@@ -2444,13 +2477,23 @@ fn run_program_for_with_clock(
                 .iter()
                 .position(|op| matches!(op, Op::DeadlineProbe { .. }))
                 .unwrap_or(0),
+            layer: fault_vfs::Layer::Clock,
             site: fault_vfs::FaultSite::Clock,
             mode: fault_vfs::FaultMode::Latency,
             nth_match: 1,
             path_contains: None,
             fired: true,
+            fire_count: 1,
             path: None,
         });
+    }
+    let fired_layers = faults
+        .iter()
+        .filter(|event| event.fired)
+        .map(|event| event.layer)
+        .collect::<BTreeSet<_>>();
+    if !fired_layers.is_empty() {
+        coverage.hit(format!("fault.layer.count.{}", fired_layers.len().min(4)));
     }
     let faults_fired = faults
         .iter()
@@ -7350,7 +7393,7 @@ fn storage_retained_omission_case(
     {
         return Ok(None);
     }
-    let profile_ordinal = FaultProfile::DEFAULTS
+    let profile_ordinal = FaultProfile::ALL
         .iter()
         .position(|candidate| *candidate == profile)
         .and_then(|ordinal| u32::try_from(ordinal).ok())
@@ -7688,7 +7731,7 @@ fn run_storage_campaign_operation(
             super::campaign::StorageOperation::OrphanCleanup => {
                 let evidence =
                     if fault == Some(storage_adapter::StorageFaultKind::ListDeleteOmission) {
-                        let profile_ordinal = FaultProfile::DEFAULTS
+                        let profile_ordinal = FaultProfile::ALL
                             .iter()
                             .position(|candidate| *candidate == profile)
                             .and_then(|ordinal| u32::try_from(ordinal).ok())
@@ -14936,14 +14979,18 @@ fn run_post_commit_retry_fault_probe() -> Result<(), String> {
     let event = FaultEvent {
         id: "feature-storage-post-commit".to_owned(),
         op_index: 1,
+        layer: fault_vfs::Layer::Io,
         site: fault_vfs::FaultSite::Append,
         mode: fault_vfs::FaultMode::PostCommitError,
         nth_match: 1,
         path_contains: Some("wal.ze".to_owned()),
         fired: false,
+        fire_count: 0,
         path: None,
     };
-    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    let scheduled = Arc::new(fault_vfs::std_scheduled(fault_vfs::FaultSchedule::single(
+        event,
+    )));
     let mut engine = RealEngine::new(
         directory.path().to_path_buf(),
         Arc::clone(&scheduled),
@@ -14958,7 +15005,7 @@ fn run_post_commit_retry_fault_probe() -> Result<(), String> {
         timestamp: 10,
     };
     let _ambiguous = engine.ingest(&[document]);
-    if !scheduled.event().is_some_and(|event| event.fired) {
+    if !scheduled.events().into_iter().any(|event| event.fired) {
         return Err("post-commit append fault did not reach the Store WAL".to_owned());
     }
     engine.reopen()?;
@@ -15092,14 +15139,18 @@ fn run_orphan_omission_fault_probe() -> Result<(), String> {
     let event = FaultEvent {
         id: "feature-storage-list-omission".to_owned(),
         op_index: 0,
+        layer: fault_vfs::Layer::Content,
         site: fault_vfs::FaultSite::List,
         mode: fault_vfs::FaultMode::SilentDrop,
         nth_match: 1,
         path_contains: None,
         fired: false,
+        fire_count: 0,
         path: None,
     };
-    let scheduled = Arc::new(fault_vfs::std_scheduled(Some(event)));
+    let scheduled = Arc::new(fault_vfs::std_scheduled(fault_vfs::FaultSchedule::single(
+        event,
+    )));
     scheduled.set_operation(0);
     zeppelin_embed::manifest::io::open_manifest(
         scheduled.as_ref(),
@@ -15108,7 +15159,7 @@ fn run_orphan_omission_fault_probe() -> Result<(), String> {
         &HashSet::new(),
     )
     .map_err(|error| error.to_string())?;
-    if !scheduled.event().is_some_and(|event| event.fired) {
+    if !scheduled.events().into_iter().any(|event| event.fired) {
         return Err("list omission did not reach manifest orphan cleanup".to_owned());
     }
     if !orphan.exists() {
@@ -15164,6 +15215,8 @@ fn run_publication_crash_fault_probe(boundary: program::CrashBoundary) -> Result
             timestamp: 11,
         },
         boundary,
+        0,
+        CampaignKind::Overall,
     )?;
     let observed = engine.search(&program::query(3), 2, SearchKind::Scan, 0)?;
     let ids = observed
@@ -15359,6 +15412,28 @@ fn naive_edit_distance(left: &[u8], right: &[u8]) -> usize {
     previous.last().copied().unwrap_or(left.len())
 }
 
+#[must_use]
+pub fn runner_retries_faulted_operation(events: &[FaultEvent], op_index: usize) -> bool {
+    if events.iter().any(|event| {
+        event.op_index == op_index && event.fired && event.layer == fault_vfs::Layer::Content
+    }) {
+        return false;
+    }
+    events.iter().any(|event| {
+        event.op_index == op_index
+            && event.fired
+            && event.layer == fault_vfs::Layer::Io
+            && matches!(
+                event.mode,
+                fault_vfs::FaultMode::Eio
+                    | fault_vfs::FaultMode::Eacces
+                    | fault_vfs::FaultMode::Enospc
+                    | fault_vfs::FaultMode::PostCommitError
+                    | fault_vfs::FaultMode::Latency
+            )
+    })
+}
+
 fn recover_and_retry_faulted_operation(
     engine: &mut RealEngine,
     model: &mut Model,
@@ -15430,7 +15505,8 @@ fn recover_and_retry_faulted_operation(
             model.purge(*doc_id);
             Ok(Some(ack))
         }
-        Op::Reopen => Ok(None),
+        Op::Open | Op::Reopen => Ok(None),
+        Op::Maintain { bytes } => engine.maintain(*bytes).map(Some),
         other => Err(format!(
             "no idempotent fault retry is defined for {}",
             other.kind()
@@ -16041,16 +16117,19 @@ pub fn reproduction(seed: u64, profile: FaultProfile) -> String {
 
 #[must_use]
 pub fn reproduction_for(campaign: CampaignKind, seed: u64, profile: FaultProfile) -> String {
+    let profile_override = if std::env::var_os("ZE_ADV_PROFILE").is_some() {
+        format!(" ZE_ADV_PROFILE={}", profile.key())
+    } else {
+        String::new()
+    };
     if campaign == CampaignKind::Overall {
         return format!(
-            "ZE_ADV_SEED={seed} ZE_ADV_PROFILE={} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture",
-            profile.key()
+            "ZE_ADV_SEED={seed}{profile_override} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
         );
     }
     format!(
-        "ZE_ADV_CAMPAIGN={} ZE_ADV_SEED={seed} ZE_ADV_PROFILE={} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture",
-        campaign.key(),
-        profile.key()
+        "ZE_ADV_CAMPAIGN={} ZE_ADV_SEED={seed}{profile_override} cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture",
+        campaign.key()
     )
 }
 
@@ -16334,11 +16413,32 @@ pub fn crash_child_from_env() -> Result<(), String> {
         .map_err(|_| "crash child doc id exceeds u32".to_owned())?;
     let revision = parse("ZE_ADV_CRASH_CHILD_REV")?;
     let timestamp = parse("ZE_ADV_CRASH_CHILD_TS")? as i64;
+    let seed = parse("ZE_ADV_CRASH_CHILD_SEED")?;
+    let campaign = CampaignKind::from_key(
+        &std::env::var("ZE_ADV_CRASH_CHILD_CAMPAIGN")
+            .map_err(|_| "ZE_ADV_CRASH_CHILD_CAMPAIGN is unset".to_owned())?,
+    )?;
     let boundary = program::CrashBoundary::from_key(
         &std::env::var("ZE_ADV_CRASH_BOUNDARY")
             .map_err(|_| "ZE_ADV_CRASH_BOUNDARY is unset".to_owned())?,
     )?;
-    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(StdVfs, boundary));
+    let profile = match std::env::var("ZE_ADV_PROFILE") {
+        Ok(value) => FaultProfile::from_key(&value)?,
+        Err(_) => profile_for_seed(seed),
+    };
+    let program = Program::generate_for(campaign, seed);
+    let crash_op_index = program
+        .ops
+        .iter()
+        .position(|operation| matches!(operation, Op::Crash { .. }))
+        .ok_or_else(|| "crash child program omitted Op::Crash".to_owned())?;
+    let scheduled_vfs = fault_vfs::std_scheduled(fault_vfs::plan_schedule(
+        seed,
+        environment_for_profile(profile, seed),
+        &program,
+    ));
+    scheduled_vfs.set_operation(crash_op_index);
+    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(scheduled_vfs, boundary));
     let store = Store::open_with_test_dependencies(
         &directory,
         RealEngine::options(ModelEpoch::A),

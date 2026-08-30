@@ -27,6 +27,8 @@ pub mod tiering_maintenance;
 pub mod vamana_graph;
 pub mod vector_execution;
 
+use profiles::profile_for_seed;
+
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
@@ -72,7 +74,7 @@ pub const fn effective_seed_assignment(
         },
         RunMode::Mixed => SeedAssignment {
             mode: RunMode::Chaos,
-            profile: FaultProfile::DEFAULTS[(seed as usize) % FaultProfile::DEFAULTS.len()],
+            profile: profile_for_seed(seed),
         },
     }
 }
