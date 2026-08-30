@@ -1144,8 +1144,7 @@ struct RealEngine {
     directory: PathBuf,
     store: Option<Store>,
     vfs: Arc<fault_vfs::ScheduledVfs<StdVfs>>,
-    clock: Arc<ManualMonotonicClock>,
-    deadline_probe: Option<Deadline>,
+    clock: Arc<fault_vfs::ScheduledQueryClock<StdVfs>>,
     graphs_built: u64,
     open_epoch: ModelEpoch,
 }
@@ -1156,12 +1155,16 @@ impl RealEngine {
         vfs: Arc<fault_vfs::ScheduledVfs<StdVfs>>,
         clock: Arc<ManualMonotonicClock>,
     ) -> Self {
+        let clock = Arc::new(fault_vfs::ScheduledQueryClock::new(
+            clock,
+            Arc::clone(&vfs),
+            directory.join("manifest.ze"),
+        ));
         Self {
             directory,
             store: None,
             vfs,
             clock,
-            deadline_probe: None,
             graphs_built: 0,
             open_epoch: ModelEpoch::A,
         }
@@ -1175,18 +1178,35 @@ impl RealEngine {
         )
     }
 
-    fn arm_deadline_probe(&mut self) -> Result<(), String> {
-        let deadline = Deadline::after_with_test_clock(Duration::from_secs(60), self.clock.clone())
-            .map_err(|error| error.to_string())?;
-        self.clock.advance(Duration::from_secs(120));
-        self.deadline_probe = Some(deadline);
-        Ok(())
-    }
-
     fn store(&self) -> Result<&Store, String> {
         self.store
             .as_ref()
             .ok_or_else(|| "store is not open".to_owned())
+    }
+
+    fn query_control(&self) -> Result<QueryControl, String> {
+        let Some(event) = self.vfs.current_clock_event() else {
+            return Ok(QueryControl::Cancel(CancelToken::new()));
+        };
+        let budget = event
+            .deadline_budget_seconds
+            .ok_or_else(|| format!("clock fault {} omitted its deadline budget", event.id))?;
+        let deadline =
+            Deadline::after_with_test_clock(Duration::from_secs(budget), self.clock.clone())
+                .map(QueryControl::Deadline)
+                .map_err(|error| error.to_string())?;
+        self.clock.arm_query();
+        Ok(deadline)
+    }
+
+    fn run_query<T>(
+        &self,
+        query: impl FnOnce(QueryControl) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let control = self.query_control()?;
+        let result = query(control);
+        self.clock.finish_query()?;
+        result
     }
 
     fn options(epoch: ModelEpoch) -> OpenOptions {
@@ -1506,23 +1526,19 @@ impl Engine for RealEngine {
                 GraphSearchOptions::new(GraphSearchProfile::SiftClass).with_seed(seed),
             ),
         };
-        let control = if let Some(deadline) = self.deadline_probe.take() {
-            QueryControl::Deadline(deadline)
-        } else {
-            QueryControl::Cancel(CancelToken::new())
-        };
-        let outcome = self
-            .store()?
-            .search(
-                SearchRequest::new(query),
-                k,
-                SearchOptions::new(ScanOptions {
-                    thread_budget: THREAD_BUDGET,
-                })
-                .with_tier(tier),
-                control,
-            )
-            .map_err(|error| error.to_string())?;
+        let outcome = self.run_query(|control| {
+            self.store()?
+                .search(
+                    SearchRequest::new(query),
+                    k,
+                    SearchOptions::new(ScanOptions {
+                        thread_budget: THREAD_BUDGET,
+                    })
+                    .with_tier(tier),
+                    control,
+                )
+                .map_err(|error| error.to_string())
+        })?;
         let hits = outcome
             .candidates
             .iter()
@@ -1581,18 +1597,19 @@ impl Engine for RealEngine {
                 maximum_timestamp,
             ))),
         });
-        let outcome = self
-            .store()?
-            .search_filtered(
-                SearchRequest::new(query),
-                &predicate,
-                k,
-                SearchOptions::new(ScanOptions {
-                    thread_budget: THREAD_BUDGET,
-                }),
-                QueryControl::Cancel(CancelToken::new()),
-            )
-            .map_err(|error| error.to_string())?;
+        let outcome = self.run_query(|control| {
+            self.store()?
+                .search_filtered(
+                    SearchRequest::new(query),
+                    &predicate,
+                    k,
+                    SearchOptions::new(ScanOptions {
+                        thread_budget: THREAD_BUDGET,
+                    }),
+                    control,
+                )
+                .map_err(|error| error.to_string())
+        })?;
         let graph_available = outcome
             .plans
             .iter()
@@ -1650,19 +1667,20 @@ impl Engine for RealEngine {
         k: usize,
         predicate: program::PredicateKind,
     ) -> Result<SearchObservation, String> {
-        let outcome = self
-            .store()?
-            .search_filtered(
-                SearchRequest::new(query),
-                &adversarial_predicate(predicate),
-                k,
-                SearchOptions::new(ScanOptions {
-                    thread_budget: THREAD_BUDGET,
-                })
-                .with_tier(SearchTier::Exact),
-                QueryControl::Cancel(CancelToken::new()),
-            )
-            .map_err(|error| error.to_string())?;
+        let outcome = self.run_query(|control| {
+            self.store()?
+                .search_filtered(
+                    SearchRequest::new(query),
+                    &adversarial_predicate(predicate),
+                    k,
+                    SearchOptions::new(ScanOptions {
+                        thread_budget: THREAD_BUDGET,
+                    })
+                    .with_tier(SearchTier::Exact),
+                    control,
+                )
+                .map_err(|error| error.to_string())
+        })?;
         let hits = outcome
             .candidates
             .iter()
@@ -1703,20 +1721,22 @@ impl Engine for RealEngine {
             vec![program::lexical_query(query_slot).to_vec()],
             &[DEFAULT_FIELD],
         );
-        self.store()?
-            .search_lexical(&query, k, QueryControl::Cancel(CancelToken::new()))
-            .map_err(|error| error.to_string())?
-            .candidates
-            .into_iter()
-            .map(|candidate| {
-                Ok(LexicalHit {
-                    doc_id: u32::try_from(candidate.document.doc_id().get())
-                        .map_err(|_| "lexical document id exceeds vocabulary".to_owned())?,
-                    revision: candidate.document.revision().get(),
-                    score: candidate.score,
-                })
+        self.run_query(|control| {
+            self.store()?
+                .search_lexical(&query, k, control)
+                .map_err(|error| error.to_string())
+        })?
+        .candidates
+        .into_iter()
+        .map(|candidate| {
+            Ok(LexicalHit {
+                doc_id: u32::try_from(candidate.document.doc_id().get())
+                    .map_err(|_| "lexical document id exceeds vocabulary".to_owned())?,
+                revision: candidate.document.revision().get(),
+                score: candidate.score,
             })
-            .collect()
+        })
+        .collect()
     }
 
     fn hybrid_search(&mut self, query_slot: u8, k: usize) -> Result<HybridObservation, String> {
@@ -1725,18 +1745,19 @@ impl Engine for RealEngine {
             vec![program::lexical_query(query_slot).to_vec()],
             &[DEFAULT_FIELD],
         );
-        let outcome = self
-            .store()?
-            .search_hybrid(
-                SearchRequest::new(&vector),
-                &lexical,
-                &HybridQuery::new(k).with_epoch(declared_identity()),
-                SearchOptions::new(ScanOptions {
-                    thread_budget: THREAD_BUDGET,
-                }),
-                QueryControl::Cancel(CancelToken::new()),
-            )
-            .map_err(|error| error.to_string())?;
+        let outcome = self.run_query(|control| {
+            self.store()?
+                .search_hybrid(
+                    SearchRequest::new(&vector),
+                    &lexical,
+                    &HybridQuery::new(k).with_epoch(declared_identity()),
+                    SearchOptions::new(ScanOptions {
+                        thread_budget: THREAD_BUDGET,
+                    }),
+                    control,
+                )
+                .map_err(|error| error.to_string())
+        })?;
         let report_epoch = outcome
             .diagnostics
             .fusion
@@ -2152,10 +2173,21 @@ pub fn run_program_for(
     profile: FaultProfile,
     artifact_root: &Path,
 ) -> Result<RunOutcome, String> {
+    run_program_for_with_feature_profile(campaign, seed, profile, profile, artifact_root)
+}
+
+pub fn run_program_for_with_feature_profile(
+    campaign: CampaignKind,
+    seed: u64,
+    profile: FaultProfile,
+    feature_profile: FaultProfile,
+    artifact_root: &Path,
+) -> Result<RunOutcome, String> {
     run_program_for_with_clock(
         campaign,
         seed,
         profile,
+        feature_profile,
         artifact_root,
         Arc::new(ManualMonotonicClock::new()),
     )
@@ -2167,13 +2199,21 @@ fn run_program_with_clock(
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
 ) -> Result<RunOutcome, String> {
-    run_program_for_with_clock(CampaignKind::Overall, seed, profile, artifact_root, clock)
+    run_program_for_with_clock(
+        CampaignKind::Overall,
+        seed,
+        profile,
+        profile,
+        artifact_root,
+        clock,
+    )
 }
 
 fn run_program_for_with_clock(
     campaign: CampaignKind,
     seed: u64,
     profile: FaultProfile,
+    feature_profile: FaultProfile,
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
 ) -> Result<RunOutcome, String> {
@@ -2209,14 +2249,17 @@ fn run_program_for_with_clock(
         None
     };
     let mut fault_plan =
-        FaultPlan::for_program(campaign, seed, profile, &program, schedule.clone());
+        FaultPlan::for_program(campaign, seed, feature_profile, &program, schedule.clone());
     artifacts.write_fault_plan(&fault_plan.schedule.events, &fault_plan.feature)?;
     let expected_feature_fault_receipts = fault_plan
         .feature
         .iter()
         .map(|event| event.fault.required_receipt_cardinality() as u64)
         .sum();
-    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled(schedule));
+    let scheduled_vfs = Arc::new(fault_vfs::std_scheduled_with_clock(
+        schedule,
+        Arc::clone(&clock),
+    ));
     let mut engine = RealEngine::new(
         directory.path().to_path_buf(),
         Arc::clone(&scheduled_vfs),
@@ -2237,7 +2280,6 @@ fn run_program_for_with_clock(
     let mut executed_operations = 0_usize;
     let mut last_generation = 0_u64;
     let mut content_fault_fired = false;
-    let mut clock_faults_fired = 0_usize;
     let mut graph_searches = 0_usize;
     let mut filtered_searches = 0_usize;
     let mut filtered_graph_searches = 0_usize;
@@ -2491,21 +2533,23 @@ fn run_program_for_with_clock(
                 })
             }
             Op::DeadlineProbe { query } => {
-                if matches!(profile, FaultProfile::Clock | FaultProfile::Full) {
-                    engine.arm_deadline_probe()?;
-                    match engine.search(&program::query(*query), 1, SearchKind::Scan, seed) {
-                        Err(error) if error.contains("deadline expired") => {
-                            clock_faults_fired = clock_faults_fired.saturating_add(1);
-                            Ok(None)
-                        }
-                        Err(error) => Err(format!(
-                            "clock probe returned the wrong typed failure: {error}"
-                        )),
-                        Ok(_) => Err("jumped clock did not expire the deadline".to_owned()),
-                    }
-                } else {
-                    Ok(None)
-                }
+                let query = program::query(*query);
+                engine
+                    .search(&query, 1, SearchKind::Scan, seed)
+                    .map(|observed| {
+                        violations.extend(check_search(
+                            seed,
+                            profile,
+                            op_index,
+                            &model,
+                            &query,
+                            1,
+                            SearchKind::Scan,
+                            &observed,
+                            content_fault_fired,
+                        ));
+                        None
+                    })
             }
             Op::PredicateSearch {
                 query,
@@ -2800,23 +2844,56 @@ fn run_program_for_with_clock(
             .iter()
             .any(|event| event.layer == fault_vfs::Layer::Content);
         content_fault_fired |= content_at_operation;
+        let clock_timeout_expected = clock_jump_requires_timeout(&fired_at_operation);
 
         let mut operation_succeeded = false;
         match operation_result {
             Ok(Some(ack)) => {
-                operation_succeeded = true;
-                if ack.changed {
-                    if let Some(generation) =
-                        generation_violation(seed, profile, op_index, last_generation, ack)
-                    {
-                        violations.push(generation);
+                if clock_timeout_expected {
+                    violations.push(violation(
+                        Invariant::I54,
+                        seed,
+                        profile,
+                        op_index,
+                        "clock jumped past its deadline but the query returned a result".to_owned(),
+                    ));
+                } else {
+                    operation_succeeded = true;
+                    if ack.changed {
+                        if let Some(generation) =
+                            generation_violation(seed, profile, op_index, last_generation, ack)
+                        {
+                            violations.push(generation);
+                        }
+                        last_generation = last_generation.max(ack.generation);
                     }
-                    last_generation = last_generation.max(ack.generation);
                 }
             }
-            Ok(None) => operation_succeeded = true,
+            Ok(None) => {
+                if clock_timeout_expected {
+                    violations.push(violation(
+                        Invariant::I54,
+                        seed,
+                        profile,
+                        op_index,
+                        "clock jumped past its deadline but the query returned a result".to_owned(),
+                    ));
+                } else {
+                    operation_succeeded = true;
+                }
+            }
             Err(error) => {
-                if !runner_records_operation_error(&scheduled_vfs.events(), op_index) {
+                if clock_timeout_expected && error.contains("deadline expired") {
+                    operation_succeeded = true;
+                } else if clock_timeout_expected {
+                    violations.push(violation(
+                        Invariant::I54,
+                        seed,
+                        profile,
+                        op_index,
+                        format!("clock jump returned the wrong typed failure: {error}"),
+                    ));
+                } else if !runner_records_operation_error(&scheduled_vfs.events(), op_index) {
                     // A persisted content mutation may be impossible to clear.
                     // The typed refusal itself satisfies I7. Feature campaigns
                     // keep executing so an independently materialized family
@@ -2901,28 +2978,6 @@ fn run_program_for_with_clock(
             coverage.hit(format!("fault.mode.{}", event.mode.key()));
             coverage.hit(format!("fault.layer.{}", event.layer.key()));
         }
-    }
-    if clock_faults_fired > 0 {
-        coverage.hit("fault.site.clock");
-        coverage.hit("fault.mode.latency");
-        coverage.hit("fault.layer.clock");
-        faults.push(FaultEvent {
-            id: format!("clock-{seed}"),
-            op_index: program
-                .ops
-                .iter()
-                .position(|op| matches!(op, Op::DeadlineProbe { .. }))
-                .unwrap_or(0),
-            layer: fault_vfs::Layer::Clock,
-            site: fault_vfs::FaultSite::Clock,
-            mode: fault_vfs::FaultMode::Latency,
-            nth_match: 1,
-            expected_matches: None,
-            path_contains: None,
-            fired: true,
-            fire_count: 1,
-            path: None,
-        });
     }
     let fired_layers = faults
         .iter()
@@ -12456,7 +12511,6 @@ fn vector_generic_fault_site_key(site: vector_adapter::VectorGenericFaultSite) -
         vector_adapter::VectorGenericFaultSite::Rename => "rename",
         vector_adapter::VectorGenericFaultSite::List => "list",
         vector_adapter::VectorGenericFaultSite::Delete => "delete",
-        vector_adapter::VectorGenericFaultSite::Clock => "clock",
     }
 }
 
@@ -14293,7 +14347,12 @@ fn vector_generic_fault_schedule(
         fault_vfs::FaultSite::Rename => vector_adapter::VectorGenericFaultSite::Rename,
         fault_vfs::FaultSite::List => vector_adapter::VectorGenericFaultSite::List,
         fault_vfs::FaultSite::Delete => vector_adapter::VectorGenericFaultSite::Delete,
-        fault_vfs::FaultSite::Clock => vector_adapter::VectorGenericFaultSite::Clock,
+        fault_vfs::FaultSite::Clock => {
+            return Err(format!(
+                "clock fault {} cannot be routed through the vector VFS adapter",
+                event.id
+            ));
+        }
     };
     let mode = match event.mode {
         fault_vfs::FaultMode::Eio => vector_adapter::VectorGenericFaultMode::Eio,
@@ -14311,6 +14370,12 @@ fn vector_generic_fault_schedule(
         fault_vfs::FaultMode::SilentDrop => vector_adapter::VectorGenericFaultMode::SilentDrop,
         fault_vfs::FaultMode::PostCommitError => {
             vector_adapter::VectorGenericFaultMode::PostCommitError
+        }
+        fault_vfs::FaultMode::ClockJump { .. } | fault_vfs::FaultMode::ClockStall => {
+            return Err(format!(
+                "clock fault {} cannot be routed through the vector VFS adapter",
+                event.id
+            ));
         }
     };
     if event.nth_match == 0 {
@@ -15693,6 +15758,7 @@ fn run_post_commit_retry_fault_probe() -> Result<(), String> {
         mode: fault_vfs::FaultMode::PostCommitError,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: Some("wal.ze".to_owned()),
         fired: false,
         fire_count: 0,
@@ -15854,6 +15920,7 @@ fn run_orphan_omission_fault_probe() -> Result<(), String> {
         mode: fault_vfs::FaultMode::SilentDrop,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -16147,6 +16214,18 @@ pub fn runner_retries_faulted_operation(events: &[FaultEvent], op_index: usize) 
 pub fn runner_records_operation_error(events: &[FaultEvent], op_index: usize) -> bool {
     !events.iter().any(|event| {
         event.fired && event.layer == fault_vfs::Layer::Content && event.op_index == op_index
+    })
+}
+
+fn clock_jump_requires_timeout(events: &[FaultEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event.mode,
+            fault_vfs::FaultMode::ClockJump { seconds }
+                if event
+                    .deadline_budget_seconds
+                    .is_some_and(|budget| seconds >= budget)
+        )
     })
 }
 

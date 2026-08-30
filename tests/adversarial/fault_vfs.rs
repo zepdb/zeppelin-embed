@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
+use zeppelin_embed::lifecycle::{ManualMonotonicClock, MonotonicClock};
 use zeppelin_embed::vfs::crash::{CrashVfs, MemoryVfs};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
@@ -73,6 +74,8 @@ pub enum FaultMode {
     Latency,
     SilentDrop,
     PostCommitError,
+    ClockJump { seconds: u64 },
+    ClockStall,
 }
 
 impl FaultMode {
@@ -91,6 +94,8 @@ impl FaultMode {
             Self::Latency => "latency",
             Self::SilentDrop => "silent_drop",
             Self::PostCommitError => "post_commit_error",
+            Self::ClockJump { .. } => "clock_jump",
+            Self::ClockStall => "clock_stall",
         }
     }
 }
@@ -136,6 +141,7 @@ pub struct FaultEvent {
     pub mode: FaultMode,
     pub nth_match: usize,
     pub expected_matches: Option<usize>,
+    pub deadline_budget_seconds: Option<u64>,
     pub path_contains: Option<String>,
     pub fired: bool,
     pub fire_count: usize,
@@ -171,8 +177,21 @@ impl FaultEvent {
         let expected_matches = self
             .expected_matches
             .map_or_else(|| "null".to_owned(), |count| count.to_string());
+        let clock_fields = match self.mode {
+            FaultMode::ClockJump { seconds } => format!(
+                ",\"seconds\":{seconds},\"budget_seconds\":{}",
+                self.deadline_budget_seconds
+                    .map_or_else(|| "null".to_owned(), |budget| budget.to_string())
+            ),
+            FaultMode::ClockStall => format!(
+                ",\"budget_seconds\":{}",
+                self.deadline_budget_seconds
+                    .map_or_else(|| "null".to_owned(), |budget| budget.to_string())
+            ),
+            _ => String::new(),
+        };
         format!(
-            "{{\"type\":\"generic\",\"id\":\"{}\",\"op\":{},\"layer\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{nth_match},\"expected_matches\":{expected_matches},\"path_contains\":{},\"fired\":{},\"fire_count\":{},\"path\":{path}}}",
+            "{{\"type\":\"generic\",\"id\":\"{}\",\"op\":{},\"layer\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\"{clock_fields},\"nth_match\":{nth_match},\"expected_matches\":{expected_matches},\"path_contains\":{},\"fired\":{},\"fire_count\":{},\"path\":{path}}}",
             self.id,
             self.op_index,
             self.layer.key(),
@@ -201,6 +220,80 @@ pub struct ScheduledVfs<V> {
     schedule: FaultSchedule,
     runtimes: Arc<Mutex<Vec<Runtime>>>,
     current_operation: Arc<AtomicUsize>,
+    clock: Arc<ManualMonotonicClock>,
+}
+
+pub struct ScheduledQueryClock<V> {
+    manual: Arc<ManualMonotonicClock>,
+    vfs: Arc<ScheduledVfs<V>>,
+    read_path: PathBuf,
+    state: Mutex<QueryClockState>,
+}
+
+#[derive(Default)]
+struct QueryClockState {
+    armed: bool,
+    skip_checks: usize,
+    error: Option<String>,
+}
+
+impl<V> ScheduledQueryClock<V> {
+    #[must_use]
+    pub fn new(
+        manual: Arc<ManualMonotonicClock>,
+        vfs: Arc<ScheduledVfs<V>>,
+        read_path: PathBuf,
+    ) -> Self {
+        Self {
+            manual,
+            vfs,
+            read_path,
+            state: Mutex::new(QueryClockState::default()),
+        }
+    }
+
+    pub fn arm_query(&self) {
+        let mut state = self.state.lock().expect("query clock mutex was poisoned");
+        state.armed = true;
+        state.skip_checks = 1;
+        state.error = None;
+    }
+
+    pub fn finish_query(&self) -> Result<(), String> {
+        let mut state = self.state.lock().expect("query clock mutex was poisoned");
+        state.armed = false;
+        state.error.take().map_or(Ok(()), Err)
+    }
+}
+
+impl<V: Vfs> MonotonicClock for ScheduledQueryClock<V> {
+    fn now(&self) -> std::time::Instant {
+        let should_read = {
+            let mut state = self.state.lock().expect("query clock mutex was poisoned");
+            if !state.armed {
+                false
+            } else if state.skip_checks > 0 {
+                state.skip_checks = state.skip_checks.saturating_sub(1);
+                false
+            } else {
+                true
+            }
+        };
+        if should_read {
+            if let Err(error) = self.vfs.read(&self.read_path) {
+                let mut state = self.state.lock().expect("query clock mutex was poisoned");
+                state.error = Some(format!("scheduled clock read failed: {error}"));
+            } else if self
+                .vfs
+                .current_clock_event()
+                .is_some_and(|event| event.fired)
+            {
+                let mut state = self.state.lock().expect("query clock mutex was poisoned");
+                state.armed = false;
+            }
+        }
+        self.manual.now()
+    }
 }
 
 /// A child-process-only VFS that terminates the process at one named product
@@ -365,12 +458,22 @@ fn is_segment_temp(path: &Path) -> bool {
 impl<V> ScheduledVfs<V> {
     #[must_use]
     pub fn new(inner: V, schedule: FaultSchedule) -> Self {
+        Self::new_with_clock(inner, schedule, Arc::new(ManualMonotonicClock::new()))
+    }
+
+    #[must_use]
+    pub fn new_with_clock(
+        inner: V,
+        schedule: FaultSchedule,
+        clock: Arc<ManualMonotonicClock>,
+    ) -> Self {
         let runtimes = vec![Runtime::default(); schedule.events.len()];
         Self {
             inner,
             schedule,
             runtimes: Arc::new(Mutex::new(runtimes)),
             current_operation: Arc::new(AtomicUsize::new(usize::MAX)),
+            clock,
         }
     }
 
@@ -395,6 +498,14 @@ impl<V> ScheduledVfs<V> {
         self.current_operation.store(op_index, Ordering::Relaxed);
     }
 
+    #[must_use]
+    pub fn current_clock_event(&self) -> Option<FaultEvent> {
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        self.events()
+            .into_iter()
+            .find(|event| event.op_index == current_operation && event.layer == Layer::Clock)
+    }
+
     fn action(&self, site: FaultSite, path: &Path) -> std::io::Result<Option<FaultMode>> {
         let current_operation = self.current_operation.load(Ordering::Relaxed);
         let mut runtimes = self
@@ -409,8 +520,12 @@ impl<V> ScheduledVfs<V> {
             .zip(runtimes.iter_mut())
             .enumerate()
         {
+            let site_matches = site == event.site
+                || (event.layer == Layer::Clock
+                    && event.site == FaultSite::Clock
+                    && matches!(site, FaultSite::Read | FaultSite::ReadRange));
             if current_operation != event.op_index
-                || site != event.site
+                || !site_matches
                 || runtime.fire_count != 0
                 || event
                     .path_contains
@@ -457,6 +572,11 @@ impl<V> ScheduledVfs<V> {
                 std::thread::sleep(Duration::from_millis(1));
                 Ok(Some(event.mode))
             }
+            FaultMode::ClockJump { seconds } => {
+                self.clock.advance(Duration::from_secs(seconds));
+                Ok(Some(event.mode))
+            }
+            FaultMode::ClockStall => Ok(Some(event.mode)),
             mode => Ok(Some(mode)),
         }
     }
@@ -485,6 +605,7 @@ struct ScheduledFile {
     schedule: FaultSchedule,
     runtimes: Arc<Mutex<Vec<Runtime>>>,
     current_operation: Arc<AtomicUsize>,
+    clock: Arc<ManualMonotonicClock>,
 }
 
 impl ScheduledFile {
@@ -494,6 +615,7 @@ impl ScheduledFile {
             schedule: self.schedule.clone(),
             runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
+            clock: Arc::clone(&self.clock),
         };
         schedule.action(FaultSite::Append, &self.path)
     }
@@ -504,6 +626,7 @@ impl ScheduledFile {
             schedule: FaultSchedule::default(),
             runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
+            clock: Arc::clone(&self.clock),
         };
         schedule.transform(mode, bytes)
     }
@@ -547,6 +670,7 @@ impl VfsFile for ScheduledFile {
             schedule: self.schedule.clone(),
             runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
+            clock: Arc::clone(&self.clock),
         };
         match schedule.action(FaultSite::Sync, &self.path)? {
             Some(FaultMode::SilentDrop) => Ok(()),
@@ -664,6 +788,7 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
             schedule: self.schedule.clone(),
             runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
+            clock: Arc::clone(&self.clock),
         }))
     }
 
@@ -715,6 +840,7 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
 #[must_use]
 pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> FaultSchedule {
     let mut rng = test_support::seeded_rng("adversarial::schedule", seed);
+    let mut clock_rng = test_support::seeded_rng("adversarial::schedule::clock", seed);
     let mut events = Vec::new();
     for (op_index, operation) in program.ops.iter().enumerate() {
         for layer in Layer::ALL {
@@ -726,7 +852,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             if sites.is_empty() {
                 continue;
             }
-            let site = sites[rng.random_range(0..sites.len())];
+            let site = if layer == Layer::Clock {
+                FaultSite::Clock
+            } else {
+                sites[rng.random_range(0..sites.len())]
+            };
             if layer == Layer::Content
                 && site == FaultSite::Write
                 && program.ops[op_index.saturating_add(1)..]
@@ -735,37 +865,54 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             {
                 continue;
             }
-            let modes = modes_for(operation, layer, site);
-            if modes.is_empty() {
-                continue;
-            }
-            let drawn_mode = modes[rng.random_range(0..modes.len())];
-            let mode = if layer == Layer::Content && site == FaultSite::Write {
-                let profile_offset = if environment
-                    == (Environment {
-                        io: 32,
-                        content: 32,
-                        crash: 32,
-                        clock: 16,
-                        cancel: 32,
-                        busy: 16,
-                    }) {
-                    2
-                } else if environment
-                    == (Environment {
-                        content: 64,
-                        ..Environment::default()
-                    })
-                {
-                    0
+            let (mode, deadline_budget_seconds) = if layer == Layer::Clock {
+                let budget = clock_rng.random_range(1..=4_u64);
+                let mode = if clock_rng.random::<bool>() {
+                    FaultMode::ClockStall
                 } else {
-                    1
+                    let seconds = [budget / 2, budget, budget.saturating_mul(4)]
+                        [clock_rng.random_range(0..3)];
+                    FaultMode::ClockJump { seconds }
                 };
-                modes[(seed as usize).wrapping_add(profile_offset) % modes.len()]
+                (mode, Some(budget))
             } else {
-                drawn_mode
+                let modes = modes_for(operation, layer, site);
+                if modes.is_empty() {
+                    continue;
+                }
+                let drawn_mode = modes[rng.random_range(0..modes.len())];
+                let mode = if layer == Layer::Content && site == FaultSite::Write {
+                    let profile_offset = if environment
+                        == (Environment {
+                            io: 32,
+                            content: 32,
+                            crash: 32,
+                            clock: 16,
+                            cancel: 32,
+                            busy: 16,
+                        }) {
+                        2
+                    } else if environment
+                        == (Environment {
+                            content: 64,
+                            ..Environment::default()
+                        })
+                    {
+                        0
+                    } else {
+                        1
+                    };
+                    modes[(seed as usize).wrapping_add(profile_offset) % modes.len()]
+                } else {
+                    drawn_mode
+                };
+                (mode, None)
             };
-            let drawn_nth_match = rng.random_range(1..=4);
+            let drawn_nth_match = if layer == Layer::Clock {
+                clock_rng.random_range(1..=4)
+            } else {
+                rng.random_range(1..=4)
+            };
             let known_matches = expected_matches(operation, site);
             let (nth_match, expected_matches) = match known_matches {
                 Some(count) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
@@ -781,6 +928,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 mode,
                 nth_match,
                 expected_matches,
+                deadline_budget_seconds,
                 path_contains: None,
                 fired: false,
                 fire_count: 0,
@@ -811,6 +959,16 @@ fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
 }
 
 fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
+    if layer == Layer::Clock {
+        return match operation {
+            Op::Search { .. }
+            | Op::FilteredSearch { .. }
+            | Op::PredicateSearch { .. }
+            | Op::HybridSearch { .. }
+            | Op::DeadlineProbe { .. } => &[FaultSite::Clock],
+            _ => &[],
+        };
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return &[];
     }
@@ -979,6 +1137,7 @@ pub fn audit_crash_seam(
         mode: FaultMode::TornWrite,
         nth_match: states.len(),
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -989,6 +1148,14 @@ pub fn audit_crash_seam(
 #[must_use]
 pub fn std_scheduled(schedule: FaultSchedule) -> ScheduledVfs<StdVfs> {
     ScheduledVfs::new(StdVfs, schedule)
+}
+
+#[must_use]
+pub fn std_scheduled_with_clock(
+    schedule: FaultSchedule,
+    clock: Arc<ManualMonotonicClock>,
+) -> ScheduledVfs<StdVfs> {
+    ScheduledVfs::new_with_clock(StdVfs, schedule, clock)
 }
 
 fn json_escape(value: &str) -> String {
@@ -1019,6 +1186,7 @@ mod tests {
             mode: FaultMode::Eio,
             nth_match: 1,
             expected_matches: None,
+            deadline_budget_seconds: None,
             path_contains: None,
             fired: false,
             fire_count: 0,

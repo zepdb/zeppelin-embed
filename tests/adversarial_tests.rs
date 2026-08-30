@@ -22,7 +22,8 @@ use adversarial::campaign::{
 };
 use adversarial::coverage::{CoverageRegistry, REQUIRED_SMOKE_COVERAGE};
 use adversarial::fault_vfs::{
-    FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledVfs, plan_schedule,
+    FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledQueryClock,
+    ScheduledVfs, plan_schedule,
 };
 use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
 use adversarial::program::{Op, PredicateKind, Program};
@@ -34,9 +35,11 @@ use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::build::GraphBuildError;
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::{
-    ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+    Deadline, ManualMonotonicClock, OpenOptions, QueryControl, QueryError, SearchOptions,
+    SearchTier, Store, StoreError, StoreTestDependencies,
 };
-use zeppelin_embed::meta::Schema;
+use zeppelin_embed::meta::{Predicate, Schema, TIMESTAMP_COLUMN};
+use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentError;
 use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
@@ -101,6 +104,7 @@ fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
         mode: FaultMode::Eio,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: Some("wal.ze".to_owned()),
         fired: false,
         fire_count: 0,
@@ -190,6 +194,7 @@ fn clean_control_helper_records_faulted_open_as_a_typed_refusal() {
         mode: FaultMode::Eio,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -390,6 +395,7 @@ fn scheduled_open_fault_reaches_a_sealed_segment_open() {
             mode: FaultMode::Eio,
             nth_match: 2,
             expected_matches: None,
+            deadline_budget_seconds: None,
             path_contains: Some(".zseg".to_owned()),
             fired: false,
             fire_count: 0,
@@ -445,6 +451,7 @@ fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
         mode: FaultMode::TornWrite,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: Some(".graph.checkpoint.tmp".to_owned()),
         fired: false,
         fire_count: 0,
@@ -683,6 +690,284 @@ fn schedule_uses_drawn_nth_match_under_each_stage_01_fault_preset() {
 }
 
 #[test]
+fn clock_jump_past_budget_mid_query_returns_typed_deadline_error_and_no_rows() {
+    let (result, fire_count) = run_clock_filtered_query(FaultEvent {
+        id: "clock-jump-past-budget".to_owned(),
+        op_index: 1,
+        layer: Layer::Clock,
+        site: FaultSite::Clock,
+        mode: FaultMode::ClockJump { seconds: 4 },
+        nth_match: 1,
+        expected_matches: None,
+        deadline_budget_seconds: Some(1),
+        path_contains: Some("manifest.ze".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    });
+
+    assert!(
+        matches!(
+            result,
+            Err(zeppelin_embed::planner::FilteredSearchError::Query(
+                QueryError::Timeout { partial: false }
+            ))
+        ),
+        "mid-query clock jump did not return the typed no-partial timeout: {result:?}"
+    );
+    assert_eq!(fire_count, 1, "mid-query clock jump did not fire once");
+}
+
+#[test]
+fn clock_jump_within_budget_mid_query_returns_the_exact_model_result() {
+    let planned = (0..512_u64).find_map(|seed| {
+        let program = Program::generate(seed);
+        plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Clock, seed),
+            &program,
+        )
+        .events
+        .into_iter()
+        .find(|event| {
+            matches!(event.mode, FaultMode::ClockJump { seconds } if seconds < event.deadline_budget_seconds.unwrap_or(0))
+        })
+    });
+    assert!(
+        planned.is_some(),
+        "Clock planner produced no within-budget jump"
+    );
+    let (result, fire_count) =
+        run_clock_filtered_query(planned.expect("asserted planned clock jump"));
+    let result = result.expect("within-budget clock jump rejected an exact query");
+    assert_eq!(result, (0_u128..8).collect::<Vec<_>>());
+    assert_eq!(fire_count, 1, "within-budget clock jump did not fire once");
+}
+
+#[test]
+fn clock_stall_query_completes_with_the_exact_model_result() {
+    let planned = (0..512_u64).find_map(|seed| {
+        let program = Program::generate(seed);
+        plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Clock, seed),
+            &program,
+        )
+        .events
+        .into_iter()
+        .find(|event| event.mode == FaultMode::ClockStall)
+    });
+    assert!(planned.is_some(), "Clock planner produced no clock stall");
+    let (result, fire_count) =
+        run_clock_filtered_query(planned.expect("asserted planned clock stall"));
+    let result = result.expect("stalled clock rejected an exact query");
+    assert_eq!(result, (0_u128..8).collect::<Vec<_>>());
+    assert_eq!(fire_count, 1, "clock stall did not fire once");
+}
+
+fn run_clock_filtered_query(
+    event: FaultEvent,
+) -> (
+    Result<Vec<u128>, zeppelin_embed::planner::FilteredSearchError>,
+    usize,
+) {
+    let budget_seconds = event
+        .deadline_budget_seconds
+        .expect("clock event carries a deadline budget");
+    let op_index = event.op_index;
+    let directory = tempfile::tempdir().expect("clock query directory");
+    let manual_clock = Arc::new(ManualMonotonicClock::new());
+    let scheduled = Arc::new(ScheduledVfs::new_with_clock(
+        StdVfs,
+        FaultSchedule::single(event),
+        manual_clock.clone(),
+    ));
+    let clock = Arc::new(ScheduledQueryClock::new(
+        manual_clock,
+        scheduled.clone(),
+        directory.path().join("manifest.ze"),
+    ));
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open clock query store");
+    let documents = (0..4_096_u128)
+        .map(|doc_id| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(doc_id), Revision::new(1)),
+                vec![doc_id as f32, -(doc_id as f32)],
+            )
+            .with_timestamp(1)
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest clock query fixture");
+    store.seal().expect("seal clock query fixture");
+    let query = [0.0_f32, 0.0];
+    store
+        .search_filtered(
+            zeppelin_embed::ingest::SearchRequest::new(&query),
+            &Predicate::Exists(TIMESTAMP_COLUMN),
+            8,
+            SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Exact),
+            QueryControl::Cancel(zeppelin_embed::lifecycle::CancelToken::new()),
+        )
+        .expect("prewarm clock query views");
+    scheduled.set_operation(op_index);
+    let deadline =
+        Deadline::after_with_test_clock(Duration::from_secs(budget_seconds), clock.clone())
+            .expect("construct clock query deadline");
+    clock.arm_query();
+    let result = store.search_filtered(
+        zeppelin_embed::ingest::SearchRequest::new(&query),
+        &Predicate::Exists(TIMESTAMP_COLUMN),
+        8,
+        SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Exact),
+        QueryControl::Deadline(deadline),
+    );
+    clock.finish_query().expect("scheduled clock read");
+
+    let fire_count = scheduled.events()[0].fire_count;
+    let result = result.map(|outcome| {
+        outcome
+            .candidates
+            .into_iter()
+            .map(|candidate| {
+                candidate
+                    .document()
+                    .expect("clock query candidate has document identity")
+                    .doc_id()
+                    .get()
+            })
+            .collect()
+    });
+    (result, fire_count)
+}
+
+#[test]
+fn clock_layer_events_are_real_not_synthesized() {
+    let (seed, planned) = (0..128_u64)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            let planned = plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Clock, seed),
+                &program,
+            )
+            .events
+            .into_iter()
+            .filter(|event| event.layer == Layer::Clock)
+            .collect::<Vec<_>>();
+            planned
+                .iter()
+                .any(|event| {
+                    event.nth_match == 1 && matches!(program.ops[event.op_index], Op::Search { .. })
+                })
+                .then_some((seed, planned))
+        })
+        .expect("Clock profile planned no first-match Search event in 128 seeds");
+    let artifacts = tempfile::tempdir().expect("clock receipt artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Clock, artifacts.path())
+        .expect("run clock receipt episode");
+    assert!(
+        outcome.violations.is_empty(),
+        "{:#?}; program={:#?}; planned={planned:#?}",
+        outcome.violations,
+        Program::generate(seed).ops
+    );
+    let records = std::fs::read_to_string(
+        artifacts
+            .path()
+            .join(format!("seed-{seed}-clock/faults.jsonl")),
+    )
+    .expect("read clock fault receipts");
+    let observed = records
+        .lines()
+        .map(|line| -> zeppelin_embed_bench::harness_json::Value {
+            zeppelin_embed_bench::harness_json::from_str(line).expect("parse clock fault receipt")
+        })
+        .filter(|record| {
+            record["type"].as_str() == Some("generic") && record["layer"].as_str() == Some("clock")
+        })
+        .collect::<Vec<_>>();
+    let planned_ids = planned
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let observed_ids = observed
+        .iter()
+        .filter_map(|record| record["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        observed_ids, planned_ids,
+        "faults.jsonl contains synthesized Clock events"
+    );
+    assert!(
+        observed.iter().any(|record| {
+            record["fired"].as_bool() == Some(true)
+                && matches!(record["mode"].as_str(), Some("clock_jump" | "clock_stall"))
+        }),
+        "no real planned Clock event fired"
+    );
+
+    let clean_seed = seed.saturating_add(1_000);
+    adversarial::runner::run_program(clean_seed, FaultProfile::None, artifacts.path())
+        .expect("run no-clock receipt episode");
+    let clean_records = std::fs::read_to_string(
+        artifacts
+            .path()
+            .join(format!("seed-{clean_seed}-none/faults.jsonl")),
+    )
+    .expect("read no-clock fault receipts");
+    assert!(
+        !clean_records
+            .lines()
+            .any(|line| line.contains("\"layer\":\"clock\"")),
+        "runner emitted a Clock event when none was planned"
+    );
+}
+
+#[test]
+fn clock_layer_can_catch_a_deadline_checked_only_before_the_scan() {
+    let (result, fire_count) = run_clock_filtered_query(FaultEvent {
+        id: "clock-can-catch-scan-deadline".to_owned(),
+        op_index: 1,
+        layer: Layer::Clock,
+        site: FaultSite::Clock,
+        mode: FaultMode::ClockJump { seconds: 4 },
+        nth_match: 1,
+        expected_matches: None,
+        deadline_budget_seconds: Some(1),
+        path_contains: Some("manifest.ze".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    });
+    assert!(
+        matches!(
+            result,
+            Err(zeppelin_embed::planner::FilteredSearchError::Query(
+                QueryError::Timeout { partial: false }
+            ))
+        ),
+        "mid-scan clock jump escaped the deadline loop: {result:?}"
+    );
+    assert_eq!(fire_count, 1, "mid-scan clock jump did not fire once");
+}
+
+#[test]
+fn vector_family_no_longer_round_trips_a_dead_clock_site() {
+    let vector_family = include_str!("adversarial/vector_execution.rs");
+    assert!(
+        !vector_family.contains("VectorGenericFaultSite::Clock"),
+        "vector family still round-trips the dead Clock VFS site"
+    );
+}
+
+#[test]
 fn planned_content_writes_are_not_restricted_to_the_manifest() {
     let events = (0..200)
         .flat_map(|seed| {
@@ -742,6 +1027,17 @@ fn planned_content_write_can_target_the_segment_temp_file() {
 }
 
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if layer == Layer::Clock {
+        return site == FaultSite::Clock
+            && matches!(
+                operation,
+                Op::Search { .. }
+                    | Op::FilteredSearch { .. }
+                    | Op::PredicateSearch { .. }
+                    | Op::HybridSearch { .. }
+                    | Op::DeadlineProbe { .. }
+            );
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return false;
     }
@@ -805,6 +1101,7 @@ fn scheduled_vfs_fires_the_nth_match_not_the_first() {
             mode: FaultMode::Eio,
             nth_match: 2,
             expected_matches: None,
+            deadline_budget_seconds: None,
             path_contains: None,
             fired: false,
             fire_count: 0,
@@ -841,6 +1138,7 @@ fn scheduled_vfs_fires_the_last_match_not_the_first() {
                 mode: FaultMode::BitFlip,
                 nth_match: LAST_MATCH,
                 expected_matches: Some(write_count),
+                deadline_budget_seconds: None,
                 path_contains: None,
                 fired: false,
                 fire_count: 0,
@@ -873,6 +1171,7 @@ fn unfired_event_does_not_starve_ready_event_at_same_op_and_site() {
         mode,
         nth_match,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -910,6 +1209,7 @@ fn faults_jsonl_tags_generic_events_with_type_and_layer() {
         mode: FaultMode::BitFlip,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: false,
         fire_count: 0,
@@ -933,6 +1233,7 @@ fn runner_retries_after_io_layer_and_not_after_content_layer_at_same_op() {
         mode,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -961,6 +1262,7 @@ fn runner_records_violation_after_content_fault_at_earlier_operation() {
         mode: FaultMode::BitFlip,
         nth_match: 1,
         expected_matches: None,
+        deadline_budget_seconds: None,
         path_contains: None,
         fired: true,
         fire_count: 1,
@@ -979,16 +1281,17 @@ fn runner_records_violation_after_content_fault_at_earlier_operation() {
 
 #[test]
 fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
-    let expected = REQUIRED_SMOKE_COVERAGE
+    let mut expected = REQUIRED_SMOKE_COVERAGE
         .iter()
         .copied()
         .filter(|key| key.starts_with("fault.site.") || key.starts_with("fault.mode."))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    let mut observed = BTreeSet::from([
-        "fault.site.clock".to_owned(),
-        "fault.mode.latency".to_owned(),
+    expected.extend([
+        "fault.mode.clock_jump".to_owned(),
+        "fault.mode.clock_stall".to_owned(),
     ]);
+    let mut observed = BTreeSet::new();
     for seed in 0..200 {
         let program = Program::generate(seed);
         for event in plan_schedule(
@@ -5520,6 +5823,7 @@ fn scheduled_open_fault_reaches_store_directory_admission() {
             mode: FaultMode::Eio,
             nth_match: 1,
             expected_matches: None,
+            deadline_budget_seconds: None,
             path_contains: None,
             fired: false,
             fire_count: 0,
@@ -5564,6 +5868,7 @@ fn injected_store_vfs_reaches_open_and_wal_creation() {
             mode: FaultMode::Eio,
             nth_match: 1,
             expected_matches: None,
+            deadline_budget_seconds: None,
             path_contains: None,
             fired: false,
             fire_count: 0,
@@ -7117,10 +7422,11 @@ fn replay_campaign_episode(
         _ => {
             let actual_root = tempfile::tempdir()
                 .map_err(|error| format!("create feature replay root: {error}"))?;
-            let replayed = adversarial::runner::run_program_for(
+            let replayed = adversarial::runner::run_program_for_with_feature_profile(
                 campaign,
                 outcome.seed,
                 outcome.profile,
+                profile_for_seed(outcome.seed),
                 actual_root.path(),
             )?;
             compare_replay_artifacts(&expected, campaign, &replayed)?;
@@ -7327,7 +7633,13 @@ fn campaign() {
                 injected != Some(CampaignInjectedFailure::Panic),
                 "test-mode injected episode panic"
             );
-            adversarial::runner::run_program_for(config.campaign, seed, profile, &root)
+            adversarial::runner::run_program_for_with_feature_profile(
+                config.campaign,
+                seed,
+                profile,
+                profile_for_seed(seed),
+                &root,
+            )
         }));
         let result = match result {
             Ok(result) => result,
