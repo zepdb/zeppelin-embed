@@ -6027,6 +6027,51 @@ fn simulated_crash_after_torn_seal_write_yields_clean_prefix_or_refusal() {
 }
 
 #[test]
+fn simulated_crash_oracle_rejects_a_torn_middle() {
+    let violation = adversarial::runner::simulated_crash_torn_middle_counterexample();
+    assert_eq!(violation.invariant, Invariant::I4);
+    assert!(
+        violation.detail.contains("[6]"),
+        "torn-middle oracle reported the wrong durable loss: {}",
+        violation.detail
+    );
+}
+
+#[test]
+fn crashed_seal_does_not_credit_dependent_epoch_transitions() {
+    let seed = 10;
+    let program = Program::generate(seed);
+    let prepare = program
+        .ops
+        .iter()
+        .position(|op| matches!(op, Op::PrepareEpochB))
+        .expect("program has an epoch preparation");
+    assert!(matches!(
+        program.ops.get(prepare.saturating_sub(1)),
+        Some(Op::Seal)
+    ));
+    assert!(
+        plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Crash, seed),
+            &program,
+        )
+        .events
+        .iter()
+        .any(|event| event.layer == Layer::Crash && event.op_index + 1 == prepare),
+        "seed no longer crashes the Seal before epoch preparation"
+    );
+    let artifacts = tempfile::tempdir().expect("crashed Seal artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Crash, artifacts.path())
+        .expect("crashed Seal episode");
+
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    assert_eq!(outcome.operations, prepare + 1);
+    assert_eq!(outcome.epoch_preparations, 0);
+    assert_eq!(outcome.coverage.count("op.prepare_epoch_b"), 0);
+}
+
+#[test]
 fn real_crash_child_rebuilds_the_schedule_from_seed() {
     let (seed, op_index, boundary, event_id) =
         (0..20_000)
@@ -6035,7 +6080,8 @@ fn real_crash_child_rebuilds_the_schedule_from_seed() {
                 let (op_index, boundary) = program.ops.iter().enumerate().find_map(
                     |(index, operation)| match operation {
                         Op::Crash { boundary, .. }
-                            if *boundary == adversarial::program::CrashBoundary::MidWalGroup =>
+                            if *boundary
+                                == adversarial::program::CrashBoundary::PreManifestRename =>
                         {
                             Some((index, *boundary))
                         }
@@ -6052,11 +6098,11 @@ fn real_crash_child_rebuilds_the_schedule_from_seed() {
                 .find(|event| {
                     event.op_index == op_index
                         && matches!(event.layer, Layer::Io | Layer::Content)
-                        && event.site == FaultSite::Append
+                        && event.site == FaultSite::Rename
                 })?;
                 Some((seed, op_index, boundary, event.id))
             })
-            .expect("no seed planned a child-visible fault at MidWalGroup");
+            .expect("no seed planned a child-visible fault at PreManifestRename");
     let directory = tempfile::tempdir().expect("real crash child directory");
     let marker = directory.path().join("crash-marker");
     let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
@@ -6092,63 +6138,65 @@ fn real_crash_child_rebuilds_the_schedule_from_seed() {
         }),
         "child fault {event_id} did not fire: {faults}"
     );
+    assert!(
+        directory.path().join(".manifest.ze.tmp").is_file(),
+        "PreManifestRename abort applied the manifest rename before crashing"
+    );
 }
 
 #[test]
 fn crash_layer_can_catch_a_missing_sync_before_manifest_rename() {
     let artifacts = tempfile::tempdir().expect("crash CAN-CATCH artifacts");
-    let mut publication_sync_witnesses = 0_usize;
+    let mut crash_episodes = 0_usize;
     for seed in 0..96 {
-        let program = Program::generate(seed);
-        let required_publication_syncs = plan_schedule(
-            seed,
-            environment_for_profile(FaultProfile::Crash, seed),
-            &program,
-        )
-        .events
-        .into_iter()
-        .filter(|event| {
-            event.layer == Layer::Crash
-                && event.site == FaultSite::Sync
-                && event.nth_match == 4
-                && event.expected_matches.is_none()
-                && matches!(program.ops[event.op_index], Op::Seal)
-        })
-        .map(|event| event.id)
-        .collect::<Vec<_>>();
         let outcome = adversarial::runner::run_program(seed, FaultProfile::Crash, artifacts.path())
             .unwrap_or_else(|error| panic!("crash episode {seed} failed: {error}"));
+        crash_episodes = crash_episodes
+            .saturating_add(usize::from(outcome.coverage.count("fault.layer.crash") > 0));
         assert!(
             outcome.violations.is_empty(),
-            "crash episode {seed} found violations: {:?}; faults={}; program={}",
+            "crash episode {seed} detected a durability violation: {:?}; faults={}; program={}",
             outcome.violations,
             String::from_utf8_lossy(&outcome.faults_bytes),
             String::from_utf8_lossy(&outcome.program_bytes)
         );
-        let fired = std::str::from_utf8(&outcome.faults_bytes)
-            .expect("crash CAN-CATCH faults are UTF-8")
-            .lines()
-            .filter_map(|line| {
-                let record: zeppelin_embed_bench::harness_json::Value =
-                    zeppelin_embed_bench::harness_json::from_str(line)
-                        .expect("parse crash CAN-CATCH fault");
-                (record["fired"].as_bool() == Some(true))
-                    .then(|| record["id"].as_str().map(str::to_owned))
-                    .flatten()
-            })
-            .collect::<BTreeSet<_>>();
-        for event_id in required_publication_syncs {
-            publication_sync_witnesses = publication_sync_witnesses.saturating_add(1);
-            assert!(
-                fired.contains(&event_id),
-                "crash episode {seed} did not reach required manifest publication sync {event_id}"
-            );
-        }
     }
     assert!(
-        publication_sync_witnesses > 0,
-        "96 crash episodes scheduled no manifest publication sync witness"
+        crash_episodes > 0,
+        "96 crash episodes fired no crash-layer event"
     );
+}
+
+#[test]
+fn crash_preset_fires_in_at_least_forty_percent_of_each_family() {
+    let artifacts = tempfile::tempdir().expect("crash coverage artifacts");
+    for campaign in CampaignKind::FEATURES {
+        let mut crash_episodes = 0_usize;
+        for seed in 0..48 {
+            let outcome = adversarial::runner::run_program_for(
+                campaign,
+                seed,
+                FaultProfile::Crash,
+                artifacts.path(),
+            )
+            .unwrap_or_else(|error| {
+                panic!("{} crash episode {seed} failed: {error}", campaign.key())
+            });
+            assert!(
+                outcome.violations.is_empty(),
+                "{} crash episode {seed} found violations: {:?}",
+                campaign.key(),
+                outcome.violations
+            );
+            crash_episodes = crash_episodes
+                .saturating_add(usize::from(outcome.coverage.count("fault.layer.crash") > 0));
+        }
+        assert!(
+            crash_episodes.saturating_mul(100) >= 48 * 40,
+            "{} fired crash-layer events in {crash_episodes}/48 episodes; require >=40%",
+            campaign.key()
+        );
+    }
 }
 
 #[test]

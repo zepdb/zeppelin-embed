@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
-use zeppelin_embed::vfs::crash::{CrashVfs, MemoryVfs};
+use zeppelin_embed::vfs::crash::{CrashStateKind, CrashVfs, MemoryVfs};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
 use super::profiles::Environment;
@@ -490,20 +490,18 @@ type CrashCallback = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 /// A child-process-only VFS that terminates the process at one named product
 /// durability boundary. The parent then reopens the same directory and checks
 /// it against the logical model.
-pub struct ProcessCrashVfs<V> {
-    inner: V,
+pub struct ProcessCrashVfs {
+    inner: ScheduledVfs<StdVfs>,
     boundary: CrashBoundary,
-    drive_pre_rename_fault: bool,
     armed: Arc<AtomicBool>,
 }
 
-impl<V> ProcessCrashVfs<V> {
+impl ProcessCrashVfs {
     #[must_use]
-    pub fn new(inner: V, boundary: CrashBoundary, drive_pre_rename_fault: bool) -> Self {
+    pub fn new(inner: ScheduledVfs<StdVfs>, boundary: CrashBoundary) -> Self {
         Self {
             inner,
             boundary,
-            drive_pre_rename_fault,
             armed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -564,7 +562,7 @@ impl VfsFile for ProcessCrashFile {
     }
 }
 
-impl<V: Vfs> Vfs for ProcessCrashVfs<V> {
+impl Vfs for ProcessCrashVfs {
     fn segment_data_read_counter(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
         self.inner.segment_data_read_counter()
     }
@@ -612,9 +610,10 @@ impl<V: Vfs> Vfs for ProcessCrashVfs<V> {
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if file_name_is(to, "manifest.ze") {
             if self.armed_for(CrashBoundary::PreManifestRename) {
-                if self.drive_pre_rename_fault {
-                    let _ = self.inner.rename(from, to);
-                }
+                // Let the scheduled layer record the attempted rename while
+                // preserving the named boundary: the filesystem rename has
+                // not happened when the process aborts.
+                let _ = self.inner.action(FaultSite::Rename, to);
                 std::process::abort();
             }
             if self.armed_for(CrashBoundary::PostManifestRename) {
@@ -1574,12 +1573,18 @@ mod tests {
                 (path, bytes)
             })
             .collect::<std::collections::BTreeMap<_, _>>();
+        let expected_kind = CrashStateKind::Prefix {
+            completed_operations: 2,
+        };
         let states = recorder.crash_states().expect("enumerate product states");
-        assert!(
-            states
-                .iter()
-                .any(|state| state.vfs().files().expect("read product state") == actual),
-            "simulated crash state was not enumerated by the product recorder: {actual:?}"
+        let expected = states
+            .iter()
+            .find(|state| state.kind() == &expected_kind)
+            .expect("product recorder emitted the durable operation prefix");
+        assert_eq!(
+            expected.vfs().files().expect("read expected product state"),
+            actual,
+            "simulated crash did not apply the exact durable operation prefix"
         );
     }
 
@@ -1596,6 +1601,40 @@ mod tests {
             fired: false,
             fire_count: 0,
             path: None,
+        }
+    }
+
+    #[test]
+    fn read_range_counts_as_a_logical_read_without_changing_nth_match() {
+        for (layer, mode) in [
+            (Layer::Io, FaultMode::Eio),
+            (Layer::Content, FaultMode::BitFlip),
+        ] {
+            let backing = MemoryVfs::new();
+            let path = Path::new("/read-event");
+            backing
+                .insert(path, b"original".to_vec())
+                .expect("seed MemoryVfs file");
+            let mut read = event("read-fallback", FaultSite::Read);
+            read.layer = layer;
+            read.mode = mode;
+            read.nth_match = 2;
+            let scheduled = ScheduledVfs::new(backing, FaultSchedule::single(read));
+            scheduled.set_operation(3);
+
+            assert_eq!(
+                scheduled
+                    .read_range(path, 0, 8)
+                    .expect("first logical read"),
+                b"original"
+            );
+            assert!(!scheduled.events()[0].fired);
+            let second = scheduled.read_range(path, 0, 8);
+            assert!(
+                second.is_err() || second.is_ok_and(|bytes| bytes != b"original"),
+                "{layer:?} Read fault did not fire on its declared second match"
+            );
+            assert_eq!(scheduled.events()[0].fire_count, 1);
         }
     }
 

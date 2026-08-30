@@ -2218,6 +2218,8 @@ fn run_program_for_with_clock(
         )
     };
     let program = Program::generate_for(campaign, seed);
+    let graph_rows = usize::try_from(program::GRAPH_ROWS)
+        .map_err(|_| "GRAPH_ROWS exceeds the runner's usize range".to_owned())?;
     let artifacts = RunArtifacts::create_for(artifact_root, campaign, seed, profile)?;
     let program_bytes = artifacts.write_program(&program)?;
     let reproduction = reproduction_for(campaign, seed, profile);
@@ -2288,7 +2290,8 @@ fn run_program_for_with_clock(
     let mut epoch_rollbacks = 0_usize;
     let mut epoch_drops = 0_usize;
     let mut rejected_dropped_epoch_rollbacks = 0_usize;
-    let mut epoch_transition_blocked_by_crash = false;
+    let mut simulated_crash_recovered = false;
+    let mut seal_precondition_lost_to_crash = false;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         executed_operations = executed_operations.saturating_add(1);
@@ -2335,7 +2338,9 @@ fn run_program_for_with_clock(
                     timestamp: *timestamp,
                 })
                 .map(|()| None),
-            Op::PrepareEpochB if epoch_transition_blocked_by_crash => Ok(None),
+            Op::PrepareEpochB if seal_precondition_lost_to_crash => {
+                Err("epoch transition blocked by an uncommitted crashed Seal".to_owned())
+            }
             Op::PrepareEpochB => {
                 let documents = model
                     .live_documents()
@@ -2358,7 +2363,6 @@ fn run_program_for_with_clock(
                     Ok(Some(ack))
                 })
             }
-            Op::SwitchAliasToB if epoch_transition_blocked_by_crash => Ok(None),
             Op::SwitchAliasToB => engine.switch_epoch(ModelEpoch::B).and_then(|ack| {
                 if !model.switch_epoch(ModelEpoch::B) {
                     return Err("model has no prepared epoch B".to_owned());
@@ -2372,7 +2376,6 @@ fn run_program_for_with_clock(
                 }
                 Ok(Some(ack))
             }),
-            Op::RollbackToA if epoch_transition_blocked_by_crash => Ok(None),
             Op::RollbackToA => engine.switch_epoch(ModelEpoch::A).and_then(|ack| {
                 if !model.switch_epoch(ModelEpoch::A) {
                     return Err("model epoch A was already dropped".to_owned());
@@ -2386,7 +2389,6 @@ fn run_program_for_with_clock(
                 }
                 Ok(Some(ack))
             }),
-            Op::DropEpochA if epoch_transition_blocked_by_crash => Ok(None),
             Op::DropEpochA => engine.drop_epoch_a().and_then(|ack| {
                 if !model.drop_epoch_a() {
                     return Err("model refused to drop epoch A".to_owned());
@@ -2400,7 +2402,6 @@ fn run_program_for_with_clock(
                 }
                 Ok(Some(ack))
             }),
-            Op::RollbackDroppedAProbe if epoch_transition_blocked_by_crash => Ok(None),
             Op::RollbackDroppedAProbe => engine.rollback_dropped_a_probe().and_then(|()| {
                 rejected_dropped_epoch_rollbacks =
                     rejected_dropped_epoch_rollbacks.saturating_add(1);
@@ -2439,7 +2440,7 @@ fn run_program_for_with_clock(
             }),
             Op::Seal => engine.seal().map(|ack| {
                 model.seal();
-                epoch_transition_blocked_by_crash = false;
+                seal_precondition_lost_to_crash = false;
                 Some(ack)
             }),
             Op::Maintain { bytes } => engine.maintain(*bytes).map(Some),
@@ -2528,7 +2529,10 @@ fn run_program_for_with_clock(
                 })
             }
             Op::DeadlineProbe { query } => {
-                if matches!(profile, FaultProfile::Clock | FaultProfile::Full) && model.is_empty() {
+                if matches!(profile, FaultProfile::Clock | FaultProfile::Full)
+                    && model.is_empty()
+                    && simulated_crash_recovered
+                {
                     // A preceding crash may legally recover the empty durable
                     // prefix. The product's empty query has no scan checkpoint,
                     // so this episode must not fabricate deadline coverage.
@@ -2860,13 +2864,32 @@ fn run_program_for_with_clock(
                     .iter()
                     .any(|event| event.layer == fault_vfs::Layer::Crash)
                 {
+                    let crash_event = fired_at_operation
+                        .iter()
+                        .find(|event| event.layer == fault_vfs::Layer::Crash)
+                        .ok_or_else(|| {
+                            "fired Crash event disappeared before recovery".to_owned()
+                        })?;
                     match engine.recover_from_simulated_crash() {
                         Ok(()) => {
-                            reconcile_simulated_crash(&mut engine, &mut model, op, seed)?;
+                            reconcile_simulated_crash(&mut model, op, crash_event)?;
+                            simulated_crash_recovered = true;
                             if matches!(op, Op::Seal) {
-                                epoch_transition_blocked_by_crash = true;
+                                seal_precondition_lost_to_crash = true;
                             }
-                            last_generation = engine.generation()?;
+                            let recovered_generation = engine.generation()?;
+                            if recovered_generation < last_generation {
+                                violations.push(violation(
+                                    Invariant::I4,
+                                    seed,
+                                    profile,
+                                    op_index,
+                                    format!(
+                                        "simulated crash recovery regressed durable generation from {last_generation} to {recovered_generation}"
+                                    ),
+                                ));
+                            }
+                            last_generation = last_generation.max(recovered_generation);
                             let observed = full_scan(&mut engine, &model, seed)?;
                             if let Some(violation) = durability_prefix_violation(
                                 seed, profile, op_index, &model, &observed,
@@ -2874,21 +2897,43 @@ fn run_program_for_with_clock(
                                 violations.push(violation);
                             }
                         }
-                        Err(_) => break,
+                        Err(recovery_error) => {
+                            if persisted_content_fault_preceded(&scheduled_vfs.events(), op_index) {
+                                coverage.hit("crash.recovery_refused_after_content_write");
+                                break;
+                            }
+                            violations.push(violation(
+                                Invariant::I4,
+                                seed,
+                                profile,
+                                op_index,
+                                format!(
+                                    "simulated crash recovery refused after {}: {recovery_error}",
+                                    op.kind()
+                                ),
+                            ));
+                            break;
+                        }
                     }
-                } else if (error.contains("has no graph region")
-                    || error.contains("active segment is empty"))
-                    && scheduled_vfs.events().iter().any(|event| {
-                        event.fired
-                            && event.layer == fault_vfs::Layer::Crash
-                            && event.op_index < op_index
-                    })
+                } else if matches!(op, Op::PrepareEpochB)
+                    && seal_precondition_lost_to_crash
+                    && error == "epoch transition blocked by an uncommitted crashed Seal"
                 {
-                    // Losing an unacknowledged ingest can leave an empty
-                    // active segment or a formerly graph-eligible segment
-                    // below the graph threshold. These operations must then
-                    // refuse, not fabricate state or results.
-                    continue;
+                    break;
+                } else if simulated_crash_recovered
+                    && ((matches!(op, Op::Seal)
+                        && !model.has_active_documents()
+                        && error.contains("active segment is empty"))
+                        || (matches!(
+                            op,
+                            Op::Search {
+                                kind: SearchKind::Graph,
+                                ..
+                            }
+                        ) && model.sealed_document_count() < graph_rows
+                            && error.contains("has no graph region")))
+                {
+                    operation_succeeded = true;
                 } else if !runner_records_operation_error(&scheduled_vfs.events(), op_index) {
                     // A persisted content mutation may be impossible to clear.
                     // The typed refusal itself satisfies I7. Feature campaigns
@@ -2921,18 +2966,37 @@ fn run_program_for_with_clock(
                                         && event.layer == fault_vfs::Layer::Crash
                                 });
                             if crash_fired_during_retry {
+                                let crash_event = scheduled_vfs
+                                    .events()
+                                    .into_iter()
+                                    .find(|event| {
+                                        event.op_index == op_index
+                                            && event.fired
+                                            && event.layer == fault_vfs::Layer::Crash
+                                    })
+                                    .ok_or_else(|| {
+                                        "retry Crash event disappeared before recovery".to_owned()
+                                    })?;
                                 match engine.recover_from_simulated_crash() {
                                     Ok(()) => {
-                                        reconcile_simulated_crash(
-                                            &mut engine,
-                                            &mut model,
-                                            op,
-                                            seed,
-                                        )?;
+                                        reconcile_simulated_crash(&mut model, op, &crash_event)?;
+                                        simulated_crash_recovered = true;
                                         if matches!(op, Op::Seal) {
-                                            epoch_transition_blocked_by_crash = true;
+                                            seal_precondition_lost_to_crash = true;
                                         }
-                                        last_generation = engine.generation()?;
+                                        let recovered_generation = engine.generation()?;
+                                        if recovered_generation < last_generation {
+                                            violations.push(violation(
+                                                Invariant::I4,
+                                                seed,
+                                                profile,
+                                                op_index,
+                                                format!(
+                                                    "simulated crash recovery regressed durable generation from {last_generation} to {recovered_generation}"
+                                                ),
+                                            ));
+                                        }
+                                        last_generation = last_generation.max(recovered_generation);
                                         let observed = full_scan(&mut engine, &model, seed)?;
                                         if let Some(violation) = durability_prefix_violation(
                                             seed, profile, op_index, &model, &observed,
@@ -2940,7 +3004,27 @@ fn run_program_for_with_clock(
                                             violations.push(violation);
                                         }
                                     }
-                                    Err(_) => break,
+                                    Err(crash_recovery_error) => {
+                                        if persisted_content_fault_preceded(
+                                            &scheduled_vfs.events(),
+                                            op_index,
+                                        ) {
+                                            coverage
+                                                .hit("crash.recovery_refused_after_content_write");
+                                            break;
+                                        }
+                                        violations.push(violation(
+                                            Invariant::I4,
+                                            seed,
+                                            profile,
+                                            op_index,
+                                            format!(
+                                                "simulated crash recovery refused during {} retry: {crash_recovery_error}",
+                                                op.kind()
+                                            ),
+                                        ));
+                                        break;
+                                    }
                                 }
                                 continue;
                             }
@@ -3010,14 +3094,12 @@ fn run_program_for_with_clock(
             coverage.hit(format!("fault.layer.{}", event.layer.key()));
             if event.layer == fault_vfs::Layer::Crash {
                 coverage.hit(format!("crash.simulated.{}", event.site.key()));
-                for content in faults.iter().filter(|content| {
-                    content.fired
-                        && content.layer == fault_vfs::Layer::Content
-                        && content.op_index <= event.op_index
-                }) {
-                    coverage.hit(format!("crash.after.{}", content.mode.key()));
-                }
             }
+        }
+    }
+    for (mode, count) in crash_after_coverage_counts(&faults) {
+        for _ in 0..count {
+            coverage.hit(format!("crash.after.{mode}"));
         }
     }
     if clock_faults_fired > 0 {
@@ -3239,6 +3321,23 @@ fn run_program_for_with_clock(
             .insert("episode-summary.json".to_owned(), episode_summary);
     }
     Ok(outcome)
+}
+
+fn crash_after_coverage_counts(faults: &[FaultEvent]) -> BTreeMap<&'static str, usize> {
+    let mut counts = BTreeMap::new();
+    for content in faults.iter().filter(|event| {
+        event.fired
+            && event.layer == fault_vfs::Layer::Content
+            && faults.iter().any(|crash| {
+                crash.fired
+                    && crash.layer == fault_vfs::Layer::Crash
+                    && crash.op_index >= event.op_index
+            })
+    }) {
+        let count = counts.entry(content.mode.key()).or_insert(0_usize);
+        *count = count.saturating_add(1);
+    }
+    counts
 }
 
 fn render_family_artifact(name: &str, records: &[String]) -> Result<Vec<u8>, String> {
@@ -16278,6 +16377,15 @@ pub fn runner_records_operation_error(events: &[FaultEvent], op_index: usize) ->
     })
 }
 
+fn persisted_content_fault_preceded(events: &[FaultEvent], op_index: usize) -> bool {
+    events.iter().any(|event| {
+        event.fired
+            && event.op_index <= op_index
+            && event.layer == fault_vfs::Layer::Content
+            && event.site == fault_vfs::FaultSite::Write
+    })
+}
+
 fn recover_and_retry_faulted_operation(
     engine: &mut RealEngine,
     model: &mut Model,
@@ -16358,32 +16466,29 @@ fn recover_and_retry_faulted_operation(
     }
 }
 
-fn reconcile_simulated_crash(
-    engine: &mut RealEngine,
-    model: &mut Model,
-    op: &Op,
-    seed: u64,
-) -> Result<(), String> {
-    let observed = engine.search(&program::query(3), 1_024, SearchKind::Scan, seed)?;
-    let survived = |doc_id: u32, revision: u64| {
-        observed
-            .hits
-            .iter()
-            .any(|hit| hit.doc_id == doc_id && hit.revision == revision)
-    };
+fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> Result<(), String> {
+    if crash.layer != fault_vfs::Layer::Crash || crash.mode != fault_vfs::FaultMode::Crash {
+        return Err("simulated crash recovery received a non-Crash event".to_owned());
+    }
     match op {
         Op::Ingest {
             first_id,
             count,
             revision,
             timestamp,
-        } => {
-            for doc_id in *first_id..first_id.saturating_add(*count) {
-                if survived(doc_id, *revision) {
-                    model.acknowledge(doc_id, *revision, *timestamp);
+        } => match crash.site {
+            fault_vfs::FaultSite::Append => {}
+            fault_vfs::FaultSite::Sync => {
+                if crash_path_is(crash, "wal.ze") {
+                    for doc_id in *first_id..first_id.saturating_add(*count) {
+                        model.acknowledge(doc_id, *revision, *timestamp);
+                    }
                 }
             }
-        }
+            site => {
+                return Err(format!("Crash/{site:?} is not a durable ingest boundary"));
+            }
+        },
         Op::Upsert {
             doc_id,
             revision,
@@ -16393,27 +16498,73 @@ fn reconcile_simulated_crash(
             doc_id,
             revision,
             timestamp,
-        } => {
-            if survived(*doc_id, *revision) {
-                model.acknowledge(*doc_id, *revision, *timestamp);
+        } => match crash.site {
+            fault_vfs::FaultSite::Append => {}
+            fault_vfs::FaultSite::Sync => {
+                if crash_path_is(crash, "wal.ze") {
+                    model.acknowledge(*doc_id, *revision, *timestamp);
+                }
             }
-        }
-        Op::Delete { doc_id } => {
-            if !observed.hits.iter().any(|hit| hit.doc_id == *doc_id) {
-                model.delete(*doc_id);
+            site => {
+                return Err(format!(
+                    "Crash/{site:?} is not a durable {} boundary",
+                    op.kind()
+                ));
             }
-        }
-        Op::Purge { doc_id } => {
-            if !observed.hits.iter().any(|hit| hit.doc_id == *doc_id) {
-                model.purge(*doc_id);
+        },
+        Op::Delete { doc_id } => match crash.site {
+            fault_vfs::FaultSite::Append => {}
+            fault_vfs::FaultSite::Sync => {
+                if crash_path_is(crash, "wal.ze") {
+                    model.delete(*doc_id);
+                }
             }
+            site => {
+                return Err(format!("Crash/{site:?} is not a durable delete boundary"));
+            }
+        },
+        Op::Purge { .. } => match crash.site {
+            // The scheduled first Append/Sync boundary is before the purge
+            // intent rename and manifest omission. It cannot make the purge
+            // logically durable merely because its temporary bytes synced.
+            fault_vfs::FaultSite::Append | fault_vfs::FaultSite::Sync => {}
+            site => {
+                return Err(format!("Crash/{site:?} is not a durable purge boundary"));
+            }
+        },
+        // A scheduled Seal crash fires before the manifest rename is made
+        // directory-durable. The durable WAL independently preserves the
+        // logical document set in the active segment after reopen.
+        Op::Seal => match crash.site {
+            fault_vfs::FaultSite::Write
+            | fault_vfs::FaultSite::Sync
+            | fault_vfs::FaultSite::Rename
+            | fault_vfs::FaultSite::Delete => {}
+            site => {
+                return Err(format!("Crash/{site:?} is not a Seal boundary"));
+            }
+        },
+        // DropPartition unlinks only after its manifest omission is committed
+        // and published, so any reachable Delete crash retains that omission.
+        Op::DropPartition { start, end } => {
+            if crash.site != fault_vfs::FaultSite::Delete {
+                return Err(format!(
+                    "Crash/{:?} is not a DropPartition boundary",
+                    crash.site
+                ));
+            }
+            model.drop_partition(*start, *end);
         }
-        // Every scheduled Seal crash point precedes the operation's ack. The
-        // reopened manifest therefore decides visibility while the logical
-        // document set remains unchanged.
-        Op::Seal => {}
-        Op::DropPartition { start, end } => model.drop_partition(*start, *end),
-        Op::Maintain { .. } => {}
+        // Maintenance changes derived accelerators, never logical documents.
+        Op::Maintain { .. } => match crash.site {
+            fault_vfs::FaultSite::Write
+            | fault_vfs::FaultSite::Sync
+            | fault_vfs::FaultSite::Rename
+            | fault_vfs::FaultSite::Delete => {}
+            site => {
+                return Err(format!("Crash/{site:?} is not a Maintain boundary"));
+            }
+        },
         _ => {
             return Err(format!(
                 "Crash event reached unsupported {} operation",
@@ -16422,6 +16573,72 @@ fn reconcile_simulated_crash(
         }
     }
     Ok(())
+}
+
+fn crash_path_is(crash: &FaultEvent, expected: &str) -> bool {
+    crash
+        .path
+        .as_deref()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some(expected)
+}
+
+#[must_use]
+pub fn simulated_crash_torn_middle_counterexample() -> Violation {
+    let seed = 92_004;
+    let mut model = Model::default();
+    let operation = Op::Ingest {
+        first_id: 5,
+        count: 3,
+        revision: 1,
+        timestamp: 10,
+    };
+    let crash = FaultEvent {
+        id: "torn-middle-crash".to_owned(),
+        op_index: 1,
+        layer: fault_vfs::Layer::Crash,
+        site: fault_vfs::FaultSite::Sync,
+        mode: fault_vfs::FaultMode::Crash,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: Some("wal.ze".to_owned()),
+        fired: true,
+        fire_count: 1,
+        path: Some(PathBuf::from("wal.ze")),
+    };
+    reconcile_simulated_crash(&mut model, &operation, &crash)
+        .expect("synced ingest crash boundary is supported");
+    let expected = model.expected_scan(&program::query(3), model.len());
+    let hits = expected
+        .into_iter()
+        .filter(|hit| hit.doc_id != 6)
+        .map(|hit| Hit {
+            doc_id: hit.doc_id,
+            revision: hit.revision,
+            score: hit.score,
+        })
+        .collect::<Vec<_>>();
+    let observed = SearchObservation {
+        diagnostics_requested_k: model.len(),
+        diagnostics_returned: hits.len(),
+        hits,
+        generation: 1,
+        epoch: Some(declared_identity()),
+        graph_available: false,
+        graph_segments: 0,
+        graph_rescored: 0,
+        graph_pruned: 0,
+        diagnostics_approximate: false,
+        diagnostics_exact_rescore: false,
+        diagnostics_budget_exhausted: false,
+        diagnostics_counters_match: true,
+        diagnostics_plan_matches_execution: true,
+        expected_exact_rescore: false,
+        expected_budget_exhausted: false,
+    };
+    durability_prefix_violation(seed, FaultProfile::Crash, 1, &model, &observed)
+        .expect("torn middle must lose an independently expected durable id")
 }
 
 struct HybridCheck {
@@ -17356,23 +17573,11 @@ pub fn crash_child_from_env() -> Result<(), String> {
     )?;
     let program = Program::generate_for(campaign, seed);
     let schedule = fault_vfs::plan_schedule(seed, environment_for_profile(profile, seed), &program);
-    let drive_pre_rename_fault = schedule.events.iter().any(|event| {
-        event.op_index == op_index
-            && matches!(
-                event.layer,
-                fault_vfs::Layer::Io | fault_vfs::Layer::Content
-            )
-            && event.site == fault_vfs::FaultSite::Rename
-    });
     let mut scheduled = fault_vfs::ScheduledVfs::new(StdVfs, schedule);
     scheduled
         .set_fault_log(directory.join("faults.jsonl"))
         .map_err(|error| format!("write child fault plan: {error}"))?;
-    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(
-        scheduled.clone(),
-        boundary,
-        drive_pre_rename_fault,
-    ));
+    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(scheduled.clone(), boundary));
     let store = Store::open_with_test_dependencies(
         &directory,
         RealEngine::options(ModelEpoch::A),
@@ -17431,6 +17636,48 @@ fn _keep_tempdir_type_visible(_: &TempDir) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_after_coverage_counts_each_content_event_once() {
+        let event = |id: &str, op_index, layer, mode| FaultEvent {
+            id: id.to_owned(),
+            op_index,
+            layer,
+            site: fault_vfs::FaultSite::Write,
+            mode,
+            nth_match: 1,
+            expected_matches: None,
+            path_contains: None,
+            fired: true,
+            fire_count: 1,
+            path: None,
+        };
+        let faults = [
+            event(
+                "content",
+                1,
+                fault_vfs::Layer::Content,
+                fault_vfs::FaultMode::TornWrite,
+            ),
+            event(
+                "first-crash",
+                2,
+                fault_vfs::Layer::Crash,
+                fault_vfs::FaultMode::Crash,
+            ),
+            event(
+                "second-crash",
+                3,
+                fault_vfs::Layer::Crash,
+                fault_vfs::FaultMode::Crash,
+            ),
+        ];
+
+        assert_eq!(
+            crash_after_coverage_counts(&faults).get("torn_write"),
+            Some(&1)
+        );
+    }
 
     #[test]
     fn deadline_probe_is_independent_of_episode_wall_time() {
