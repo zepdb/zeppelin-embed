@@ -25,7 +25,7 @@ use adversarial::fault_vfs::{
     FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledVfs, plan_schedule,
 };
 use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
-use adversarial::program::{Op, PredicateKind, Program};
+use adversarial::program::{CrashBoundary, Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
@@ -742,6 +742,33 @@ fn planned_content_write_can_target_the_segment_temp_file() {
 }
 
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if matches!(layer, Layer::Io | Layer::Content)
+        && let Op::Crash { boundary, .. } = operation
+    {
+        return match boundary {
+            CrashBoundary::MidWalGroup => site == FaultSite::Append,
+            CrashBoundary::MidSeal => site == FaultSite::Write,
+            CrashBoundary::PreManifestRename | CrashBoundary::PostManifestRename => {
+                site == FaultSite::Rename
+            }
+            CrashBoundary::MidPurge => site == FaultSite::Delete,
+        };
+    }
+    if layer == Layer::Crash {
+        return match operation {
+            Op::Ingest { .. }
+            | Op::Upsert { .. }
+            | Op::Revise { .. }
+            | Op::Delete { .. }
+            | Op::Purge { .. } => matches!(site, FaultSite::Append | FaultSite::Sync),
+            Op::Seal | Op::Maintain { .. } => matches!(
+                site,
+                FaultSite::Write | FaultSite::Sync | FaultSite::Rename | FaultSite::Delete
+            ),
+            Op::DropPartition { .. } => site == FaultSite::Delete,
+            _ => false,
+        };
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return false;
     }
@@ -5904,6 +5931,227 @@ fn crash_seam_audit_does_not_credit_injected_fault_coverage() {
 }
 
 #[test]
+fn audit_crash_seam_no_longer_pushes_a_synthetic_event() {
+    let artifacts = tempfile::tempdir().expect("crash audit artifact root");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, artifacts.path())
+        .expect("run crash audit episode");
+
+    assert!(
+        outcome.faults_bytes.is_empty(),
+        "crash audit emitted a synthetic fault event: {}",
+        String::from_utf8_lossy(&outcome.faults_bytes)
+    );
+}
+
+#[test]
+fn simulated_crash_event_fires_at_a_sampled_ingest_and_store_reopens() {
+    let (seed, op_index) = (0..512)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Crash, seed),
+                &program,
+            )
+            .events
+            .iter()
+            .find(|event| {
+                event.layer == Layer::Crash
+                    && matches!(program.ops[event.op_index], Op::Ingest { .. })
+            })
+            .map(|event| (seed, event.op_index))
+        })
+        .expect("Crash preset never planned a sampled ingest");
+    let artifacts = tempfile::tempdir().expect("simulated crash artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Crash, artifacts.path())
+        .expect("run sampled ingest crash episode");
+
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    assert!(outcome.coverage.count("fault.layer.crash") > 0);
+    assert!(
+        std::str::from_utf8(&outcome.faults_bytes)
+            .expect("fault records are UTF-8")
+            .lines()
+            .any(|line| {
+                let record: zeppelin_embed_bench::harness_json::Value =
+                    zeppelin_embed_bench::harness_json::from_str(line)
+                        .expect("parse crash fault record");
+                record["op"].as_u64() == Some(op_index as u64)
+                    && record["layer"].as_str() == Some("crash")
+                    && record["fired"].as_bool() == Some(true)
+            }),
+        "sampled ingest crash event did not fire"
+    );
+    assert_eq!(outcome.operations, Program::generate(seed).ops.len());
+}
+
+#[test]
+fn simulated_crash_after_torn_seal_write_yields_clean_prefix_or_refusal() {
+    let (seed, content_op, crash_op) = (0..20_000)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            let schedule = plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Full, seed),
+                &program,
+            );
+            let content = schedule.events.iter().find(|event| {
+                event.layer == Layer::Content
+                    && event.site == FaultSite::Write
+                    && event.mode == FaultMode::TornWrite
+                    && matches!(program.ops[event.op_index], Op::Seal)
+            })?;
+            let crash = schedule.events.iter().find(|event| {
+                event.layer == Layer::Crash
+                    && event.op_index > content.op_index
+                    && event.op_index <= content.op_index.saturating_add(3)
+            })?;
+            Some((seed, content.op_index, crash.op_index))
+        })
+        .expect("no seed planned TornWrite/Seal followed by Crash within three ops");
+    let artifacts = tempfile::tempdir().expect("torn seal crash artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+        .expect("torn seal crash episode must return a typed outcome");
+
+    assert!(
+        outcome.violations.iter().all(|violation| {
+            violation.invariant != Invariant::I4 || violation.op_index != crash_op
+        }),
+        "seed {seed} violated I4 after ops {content_op}->{crash_op}: {:?}",
+        outcome.violations
+    );
+    assert!(
+        outcome.coverage.count("crash.after.torn_write") > 0,
+        "seed {seed} did not credit torn-write -> crash composition"
+    );
+}
+
+#[test]
+fn real_crash_child_rebuilds_the_schedule_from_seed() {
+    let (seed, op_index, boundary, event_id) =
+        (0..20_000)
+            .find_map(|seed| {
+                let program = Program::generate(seed);
+                let (op_index, boundary) = program.ops.iter().enumerate().find_map(
+                    |(index, operation)| match operation {
+                        Op::Crash { boundary, .. }
+                            if *boundary == adversarial::program::CrashBoundary::MidWalGroup =>
+                        {
+                            Some((index, *boundary))
+                        }
+                        _ => None,
+                    },
+                )?;
+                let event = plan_schedule(
+                    seed,
+                    environment_for_profile(FaultProfile::Full, seed),
+                    &program,
+                )
+                .events
+                .into_iter()
+                .find(|event| {
+                    event.op_index == op_index
+                        && matches!(event.layer, Layer::Io | Layer::Content)
+                        && event.site == FaultSite::Append
+                })?;
+                Some((seed, op_index, boundary, event.id))
+            })
+            .expect("no seed planned a child-visible fault at MidWalGroup");
+    let directory = tempfile::tempdir().expect("real crash child directory");
+    let marker = directory.path().join("crash-marker");
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["crash_child", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CRASH_CHILD_PATH", directory.path())
+        .env("ZE_ADV_CRASH_CHILD_MARKER", &marker)
+        .env("ZE_ADV_CRASH_CHILD_DOC", "1")
+        .env("ZE_ADV_CRASH_CHILD_REV", "1")
+        .env("ZE_ADV_CRASH_CHILD_TS", "10")
+        .env("ZE_ADV_CRASH_BOUNDARY", boundary.key())
+        .env("ZE_ADV_CRASH_CHILD_OP", op_index.to_string())
+        .env("ZE_ADV_SEED", seed.to_string())
+        .env("ZE_ADV_CAMPAIGN", CampaignKind::Overall.key())
+        .env("ZE_ADV_PROFILE", FaultProfile::Full.key())
+        .output()
+        .expect("spawn real crash child");
+    assert!(
+        !output.status.success() && output.status.code().is_none(),
+        "child did not die by signal: {} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let faults = std::fs::read_to_string(directory.path().join("faults.jsonl"))
+        .expect("child wrote faults.jsonl");
+    assert!(
+        faults.lines().any(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line)
+                    .expect("parse child fault record");
+            record["id"].as_str() == Some(event_id.as_str())
+                && record["fired"].as_bool() == Some(true)
+                && record["fire_count"].as_u64() == Some(1)
+        }),
+        "child fault {event_id} did not fire: {faults}"
+    );
+}
+
+#[test]
+fn crash_layer_can_catch_a_missing_sync_before_manifest_rename() {
+    let artifacts = tempfile::tempdir().expect("crash CAN-CATCH artifacts");
+    let mut publication_sync_witnesses = 0_usize;
+    for seed in 0..96 {
+        let program = Program::generate(seed);
+        let required_publication_syncs = plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Crash, seed),
+            &program,
+        )
+        .events
+        .into_iter()
+        .filter(|event| {
+            event.layer == Layer::Crash
+                && event.site == FaultSite::Sync
+                && event.nth_match == 4
+                && event.expected_matches.is_none()
+                && matches!(program.ops[event.op_index], Op::Seal)
+        })
+        .map(|event| event.id)
+        .collect::<Vec<_>>();
+        let outcome = adversarial::runner::run_program(seed, FaultProfile::Crash, artifacts.path())
+            .unwrap_or_else(|error| panic!("crash episode {seed} failed: {error}"));
+        assert!(
+            outcome.violations.is_empty(),
+            "crash episode {seed} found violations: {:?}; faults={}; program={}",
+            outcome.violations,
+            String::from_utf8_lossy(&outcome.faults_bytes),
+            String::from_utf8_lossy(&outcome.program_bytes)
+        );
+        let fired = std::str::from_utf8(&outcome.faults_bytes)
+            .expect("crash CAN-CATCH faults are UTF-8")
+            .lines()
+            .filter_map(|line| {
+                let record: zeppelin_embed_bench::harness_json::Value =
+                    zeppelin_embed_bench::harness_json::from_str(line)
+                        .expect("parse crash CAN-CATCH fault");
+                (record["fired"].as_bool() == Some(true))
+                    .then(|| record["id"].as_str().map(str::to_owned))
+                    .flatten()
+            })
+            .collect::<BTreeSet<_>>();
+        for event_id in required_publication_syncs {
+            publication_sync_witnesses = publication_sync_witnesses.saturating_add(1);
+            assert!(
+                fired.contains(&event_id),
+                "crash episode {seed} did not reach required manifest publication sync {event_id}"
+            );
+        }
+    }
+    assert!(
+        publication_sync_witnesses > 0,
+        "96 crash episodes scheduled no manifest publication sync witness"
+    );
+}
+
+#[test]
 fn twelve_seed_sweep_emits_every_typed_predicate() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..12 {
@@ -8416,8 +8664,13 @@ fn feature_attestation_complete(
     let Some(merged) = merged else {
         return false;
     };
-    let expected_comparisons =
-        expected_campaign_comparison_counts(config.campaign, config.start_seed, episodes);
+    let profile_override = std::env::var_os("ZE_ADV_PROFILE").map(|_| config.profile);
+    let expected_comparisons = expected_campaign_comparison_counts_with_profile(
+        config.campaign,
+        config.start_seed,
+        episodes,
+        profile_override,
+    );
     let exact_comparisons = counters.comparison_counts == expected_comparisons;
     let stream_records = |name: &str| merged.streams.get(name).map_or(0, |stream| stream.records);
     let expected_core = [
@@ -8469,6 +8722,15 @@ fn expected_campaign_comparison_counts(
     start_seed: u64,
     episodes: u64,
 ) -> BTreeMap<String, u64> {
+    expected_campaign_comparison_counts_with_profile(campaign, start_seed, episodes, None)
+}
+
+fn expected_campaign_comparison_counts_with_profile(
+    campaign: CampaignKind,
+    start_seed: u64,
+    episodes: u64,
+    profile_override: Option<FaultProfile>,
+) -> BTreeMap<String, u64> {
     if campaign == CampaignKind::StorageDurability {
         let mut counts = CampaignSpec::for_kind(campaign)
             .owned_invariants
@@ -8479,7 +8741,7 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("storage campaign seed fits u64");
-            let profile = profile_for_seed(seed);
+            let profile = profile_override.unwrap_or_else(|| profile_for_seed(seed));
             let program = Program::generate_for(campaign, seed);
             let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
@@ -8546,7 +8808,7 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("ingest campaign seed fits u64");
-            let profile = profile_for_seed(seed);
+            let profile = profile_override.unwrap_or_else(|| profile_for_seed(seed));
             let program = Program::generate_for(campaign, seed);
             let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
@@ -8587,7 +8849,7 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("vector campaign seed fits u64");
-            let profile = profile_for_seed(seed);
+            let profile = profile_override.unwrap_or_else(|| profile_for_seed(seed));
             let program = Program::generate_for(campaign, seed);
             let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
@@ -8651,7 +8913,7 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("metadata campaign seed fits u64");
-            let profile = profile_for_seed(seed);
+            let profile = profile_override.unwrap_or_else(|| profile_for_seed(seed));
             let program = Program::generate_for(campaign, seed);
             let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
@@ -8703,7 +8965,7 @@ fn expected_campaign_comparison_counts(
         let seed = start_seed
             .checked_add(episode)
             .expect("feature campaign seed fits u64");
-        let profile = profile_for_seed(seed);
+        let profile = profile_override.unwrap_or_else(|| profile_for_seed(seed));
         let program = Program::generate_for(campaign, seed);
         let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
         let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
@@ -15624,8 +15886,18 @@ fn verify_feature_summary_attestation(
             ));
         }
     }
-    let exact_comparisons =
-        observed_comparisons == expected_campaign_comparison_counts(campaign, start_seed, episodes);
+    let profile_override = match std::env::var("ZE_ADV_PROFILE") {
+        Ok(value) => Some(FaultProfile::from_key(&value)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(format!("read ZE_ADV_PROFILE: {error}")),
+    };
+    let exact_comparisons = observed_comparisons
+        == expected_campaign_comparison_counts_with_profile(
+            campaign,
+            start_seed,
+            episodes,
+            profile_override,
+        );
     let valid = merged_episodes == episodes
         && exact_comparisons
         && every_comparison_passed
