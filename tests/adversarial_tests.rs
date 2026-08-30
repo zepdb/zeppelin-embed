@@ -240,7 +240,7 @@ fn cancel_after_nth_read_returns_cancelled_or_the_exact_result_never_partial() {
     let mut outcome_count = 0_usize;
     let mut outcomes = BTreeMap::new();
     let mut violations = Vec::new();
-    for seed in 0..96 {
+    for seed in 0..224 {
         let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
             .unwrap_or_else(|error| panic!("cancel sweep seed {seed}: {error}"));
         violations.extend(
@@ -290,6 +290,51 @@ fn cancel_after_nth_read_returns_cancelled_or_the_exact_result_never_partial() {
             *outcomes.entry(key).or_insert(0_usize) += count;
         }
     }
+    let seed = 48;
+    let program = Program::generate(seed);
+    let event = plan_schedule(
+        seed,
+        environment_for_profile(FaultProfile::Full, seed),
+        &program,
+    )
+    .events
+    .into_iter()
+    .find(|event| {
+        event.layer == Layer::Cancel
+            && event.nth_match > 0
+            && matches!(
+                program.ops.get(event.op_index),
+                Some(Op::Search {
+                    kind: adversarial::program::SearchKind::Graph,
+                    ..
+                })
+            )
+    })
+    .expect("seed 48 must arm an in-flight explicit Graph search");
+    let targeted_artifacts = tempfile::tempdir().expect("targeted cancel artifacts");
+    let targeted = adversarial::runner::run_program_with_schedule(
+        seed,
+        FaultProfile::Full,
+        targeted_artifacts.path(),
+        FaultSchedule::single(event),
+    )
+    .unwrap_or_else(|error| panic!("targeted cancel seed {seed}: {error}"));
+    let during = targeted
+        .coverage
+        .count("fault.cancel.generic.during-traversal");
+    assert_eq!(during, 1, "targeted Graph-hop Cancel did not fire");
+    scheduled = scheduled.saturating_add(1);
+    fired = fired.saturating_add(1);
+    outcome_count = outcome_count.saturating_add(during);
+    *outcomes
+        .entry("fault.cancel.generic.during-traversal")
+        .or_insert(0_usize) += during;
+    violations.extend(
+        targeted
+            .violations
+            .iter()
+            .map(|violation| violation.report()),
+    );
     assert!(scheduled > 0, "full sweep planned no Cancel events");
     assert!(fired > 0, "full sweep fired no Cancel events");
     assert_eq!(scheduled, fired.saturating_add(unfired));
@@ -1326,7 +1371,7 @@ fn busy_layer_surfaces_second_writer_when_content_shares_the_operation() {
 #[ignore = "stage 05 explicit 48-episode per-family gate"]
 fn busy_layer_full_family_gate() {
     let config = RunConfig::from_env().expect("valid busy-layer family configuration");
-    assert_eq!(config.profile, FaultProfile::Full);
+    assert_eq!(config.profile, Some(FaultProfile::Full));
     assert_eq!(config.minimum_episodes, 48);
     let mut coverage = CoverageRegistry::default();
     let mut violations = 0_usize;
@@ -2446,6 +2491,223 @@ fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
     }
 
     assert_eq!(observed, expected);
+}
+
+#[test]
+fn every_family_requires_every_layered_coverage_key() {
+    let layered_keys = [
+        "fault.layer.io",
+        "fault.layer.content",
+        "fault.layer.crash",
+        "fault.layer.clock",
+        "fault.layer.cancel",
+        "fault.layer.busy",
+        "fault.layer.count.2",
+        "fault.layer.count.3",
+        "fault.layered.io+feature",
+        "fault.layered.content+feature",
+        "fault.layered.crash+feature",
+        "fault.layered.clock+feature",
+        "fault.layered.cancel+feature",
+        "fault.layered.busy+feature",
+        "crash.after.bit_flip",
+        "crash.after.torn_write",
+        "crash.after.truncate",
+        "crash.after.wrong_object",
+        "crash.after.misdirected_write",
+        "crash.after.zero_fill",
+        "crash.after.silent_drop",
+    ];
+
+    for spec in CampaignSpec::catalog()
+        .iter()
+        .filter(|spec| !spec.feature_faults.is_empty())
+    {
+        let required = spec.all_required_coverage();
+        for key in layered_keys {
+            assert!(
+                required.iter().any(|required| required == key),
+                "{} does not require {key}",
+                spec.kind.key()
+            );
+        }
+    }
+}
+
+#[test]
+fn derived_smoke_seed_prefix_covers_every_key_and_is_at_most_224() {
+    for spec in CampaignSpec::catalog()
+        .iter()
+        .filter(|spec| !spec.feature_faults.is_empty())
+    {
+        let seeds = spec
+            .derived_smoke_seeds(0)
+            .unwrap_or_else(|error| panic!("{}: {error}", spec.kind.key()));
+        let prefix_end = u64::try_from(seeds.len()).expect("smoke seed count fits u64");
+        assert_eq!(
+            seeds,
+            (0..prefix_end).collect::<Vec<_>>(),
+            "{} smoke seeds are not a prefix",
+            spec.kind.key()
+        );
+        println!(
+            "ADV_DERIVED_SMOKE_PREFIX campaign={} seeds={}",
+            spec.kind.key(),
+            seeds.len()
+        );
+        assert!(
+            seeds.len() <= 224,
+            "{} smoke prefix grew to {} seeds",
+            spec.kind.key(),
+            seeds.len()
+        );
+
+        let mut required = FaultProfile::ALL
+            .into_iter()
+            .map(|profile| format!("fault.profile.{}", profile.key()))
+            .collect::<BTreeSet<_>>();
+        required.extend(
+            REQUIRED_SMOKE_COVERAGE
+                .iter()
+                .copied()
+                .filter(|key| key.starts_with("fault.site.") || key.starts_with("fault.mode."))
+                .map(str::to_owned),
+        );
+        required.extend(
+            adversarial::coverage::REQUIRED_LAYERED_COVERAGE
+                .iter()
+                .map(|key| (*key).to_owned()),
+        );
+        required.extend(spec.feature_faults.iter().map(|fault| fault.coverage_key()));
+        let planned = seeds
+            .iter()
+            .flat_map(|seed| spec.planned_smoke_coverage(*seed))
+            .collect::<BTreeSet<_>>();
+        let missing = required.difference(&planned).cloned().collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "{} derived smoke prefix missed planned coverage {missing:?}",
+            spec.kind.key()
+        );
+    }
+}
+
+#[test]
+fn attestation_rejects_a_refused_comparison_counted_as_equal() {
+    let expected = BTreeMap::from([(
+        "I40".to_owned(),
+        adversarial::runner::ComparisonOutcomeCounts {
+            equal: 0,
+            refused: 1,
+        },
+    )]);
+    let reported = BTreeMap::from([(
+        "I40".to_owned(),
+        adversarial::runner::ComparisonOutcomeCounts {
+            equal: 1,
+            refused: 0,
+        },
+    )]);
+
+    let error = adversarial::runner::verify_comparison_outcome_counts(&expected, &reported)
+        .expect_err("a refused comparison was accepted as equal");
+    assert!(error.contains("I40"), "{error}");
+}
+
+#[test]
+fn verifier_recomputed_plan_equals_the_faults_jsonl_bytes() {
+    let campaign = CampaignKind::Fts;
+    let seed = 6;
+    let artifacts = tempfile::tempdir().expect("plan-verifier artifacts");
+    let outcome =
+        adversarial::runner::run_program_for(campaign, seed, FaultProfile::Full, artifacts.path())
+            .expect("faulted FTS episode");
+
+    adversarial::artifacts::verify_recomputed_fault_plan_bytes(
+        campaign,
+        seed,
+        FaultProfile::Full,
+        &outcome.faults_bytes,
+    )
+    .expect("recomputed plan matches faults.jsonl");
+}
+
+#[test]
+fn reproduction_line_omits_profile_unless_overridden() {
+    let seed_only = adversarial::runner::reproduction_for(CampaignKind::Fts, 17, None);
+    assert_eq!(
+        seed_only,
+        "ZE_ADV_CAMPAIGN=fts ZE_ADV_SEED=17 cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
+    );
+    let overridden =
+        adversarial::runner::reproduction_for(CampaignKind::Fts, 17, Some(FaultProfile::Full));
+    assert_eq!(
+        overridden,
+        "ZE_ADV_PROFILE=full ZE_ADV_CAMPAIGN=fts ZE_ADV_SEED=17 cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
+    );
+}
+
+#[test]
+fn run_with_seed_only_replays_the_campaign_episode_byte_identically() {
+    let campaign = CampaignKind::Fts;
+    for seed in 0..8 {
+        let first_root = tempfile::tempdir().expect("first seed-only replay root");
+        let second_root = tempfile::tempdir().expect("second seed-only replay root");
+        let first = adversarial::runner::run_program_for_seed(campaign, seed, first_root.path())
+            .unwrap_or_else(|error| panic!("first seed-only run seed={seed}: {error}"));
+        let second = adversarial::runner::run_program_for_seed(campaign, seed, second_root.path())
+            .unwrap_or_else(|error| panic!("second seed-only run seed={seed}: {error}"));
+        assert_eq!(first.profile, profile_for_seed(seed), "seed={seed}");
+        assert_eq!(first.faults_bytes, second.faults_bytes, "seed={seed}");
+        assert_eq!(first.controls_bytes, second.controls_bytes, "seed={seed}");
+        assert_eq!(
+            first.family_artifact_bytes, second.family_artifact_bytes,
+            "seed={seed}"
+        );
+        println!(
+            "ADV_SEED_ONLY_REPLAY seed={seed} profile={} byte_identical=true",
+            first.profile.key()
+        );
+    }
+}
+
+#[test]
+fn release_qualification_fails_when_a_family_has_no_layered_episode() {
+    let campaign = CampaignKind::Fts;
+    let mut coverage = CoverageRegistry::default();
+    let required = CampaignSpec::for_kind(campaign)
+        .all_required_coverage()
+        .into_iter()
+        .chain(
+            REQUIRED_SMOKE_COVERAGE
+                .iter()
+                .copied()
+                .filter(|key| {
+                    key.starts_with("fault.profile.")
+                        || key.starts_with("fault.site.")
+                        || key.starts_with("fault.mode.")
+                })
+                .map(str::to_owned),
+        )
+        .collect::<BTreeSet<_>>();
+    for key in required
+        .iter()
+        .filter(|key| !key.starts_with("fault.layered."))
+    {
+        coverage.hit(key.clone());
+    }
+    let missing = missing_campaign_coverage(campaign, &coverage);
+    assert!(
+        missing.iter().any(|key| key.starts_with("fault.layered.")),
+        "synthetic family unexpectedly has layered coverage"
+    );
+    assert!(!campaign_qualification_passes(
+        campaign,
+        Qualification::Release,
+        true,
+        true,
+        missing.is_empty(),
+    ));
 }
 
 #[test]
@@ -4432,7 +4694,7 @@ fn vector_campaign_requires_the_exact_typed_coverage_catalog() {
                 || key.starts_with("I25.")
                 || key.starts_with("I26.")
                 || key.starts_with("I27.")
-                || key.starts_with("fault.")
+                || is_vector_receipt_site_coverage_key(key)
         })
         .collect::<BTreeSet<_>>();
     assert_eq!(actual, expected_vector_family_coverage());
@@ -4894,7 +5156,7 @@ fn ingest_retention_old_summary_without_oracle_attestation_is_rejected() {
         campaign: CampaignKind::IngestRetention,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -7658,55 +7920,51 @@ fn smoke() {
     let mut coverage = CoverageRegistry::default();
     let mut smoke_episodes = 0_u64;
     let mut generic_multi_event_episodes = 0_u64;
-    let smoke_seeds = CampaignSpec::for_kind(config.campaign).smoke_seeds;
-    for profile in FaultProfile::ALL {
-        for offset in smoke_seeds {
-            let seed = config
-                .start_seed
-                .checked_add(*offset)
-                .expect("smoke seed range fits u64");
-            let outcome =
-                adversarial::runner::run_program_for(config.campaign, seed, profile, &root)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "campaign={} seed={seed} profile={}: {error}",
-                            config.campaign.key(),
-                            profile.key()
-                        )
-                    });
-            println!(
-                "ADV campaign={} seed={seed} profile={} ops={} faults={} scheduled_faults={} feature_faults={}/{} graph_searches={} filtered_searches={} filtered_graph_searches={} predicate_searches={} hybrid_searches={} hybrid_sealed_vector_documents={} hybrid_lexical_documents={} violations={}",
-                config.campaign.key(),
+    let smoke_seeds = CampaignSpec::for_kind(config.campaign)
+        .derived_smoke_seeds(config.start_seed)
+        .expect("derived adversarial smoke seed prefix");
+    for seed in &smoke_seeds {
+        let profile = profile_for_seed(*seed);
+        let outcome = adversarial::runner::run_program_for_seed(config.campaign, *seed, &root)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "campaign={} seed={seed} profile={}: {error}",
+                    config.campaign.key(),
+                    profile.key()
+                )
+            });
+        println!(
+            "ADV campaign={} seed={seed} profile={} ops={} faults={} scheduled_faults={} feature_faults={}/{} graph_searches={} filtered_searches={} filtered_graph_searches={} predicate_searches={} hybrid_searches={} hybrid_sealed_vector_documents={} hybrid_lexical_documents={} violations={}",
+            config.campaign.key(),
+            profile.key(),
+            outcome.operations,
+            outcome.faults_fired,
+            outcome.scheduled_faults_fired,
+            outcome.feature_faults_fired,
+            outcome.feature_faults_scheduled,
+            outcome.graph_searches,
+            outcome.filtered_searches,
+            outcome.filtered_graph_searches,
+            outcome.predicate_searches,
+            outcome.hybrid_searches,
+            outcome.hybrid_sealed_vector_documents,
+            outcome.hybrid_lexical_documents,
+            outcome.violations.len()
+        );
+        smoke_episodes = smoke_episodes.saturating_add(1);
+        generic_multi_event_episodes = generic_multi_event_episodes
+            .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
+        if !outcome.missing_feature_faults.is_empty() {
+            unfired.push(format!(
+                "seed={seed} profile={} feature={:?}",
                 profile.key(),
-                outcome.operations,
-                outcome.faults_fired,
-                outcome.scheduled_faults_fired,
-                outcome.feature_faults_fired,
-                outcome.feature_faults_scheduled,
-                outcome.graph_searches,
-                outcome.filtered_searches,
-                outcome.filtered_graph_searches,
-                outcome.predicate_searches,
-                outcome.hybrid_searches,
-                outcome.hybrid_sealed_vector_documents,
-                outcome.hybrid_lexical_documents,
-                outcome.violations.len()
-            );
-            smoke_episodes = smoke_episodes.saturating_add(1);
-            generic_multi_event_episodes = generic_multi_event_episodes
-                .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
-            if !outcome.missing_feature_faults.is_empty() {
-                unfired.push(format!(
-                    "seed={seed} profile={} feature={:?}",
-                    profile.key(),
-                    outcome.missing_feature_faults
-                ));
-            }
-            coverage.merge(&outcome.coverage);
-            for violation in outcome.violations {
-                println!("{}", violation.report_for(config.campaign));
-                failures.push(violation);
-            }
+                outcome.missing_feature_faults
+            ));
+        }
+        coverage.merge(&outcome.coverage);
+        for violation in outcome.violations {
+            println!("{}", violation.report_for(config.campaign));
+            failures.push(violation);
         }
     }
     assert!(
@@ -7725,7 +7983,9 @@ fn smoke() {
     let missing = missing_campaign_coverage(config.campaign, &coverage);
     assert!(
         missing.is_empty(),
-        "adversarial smoke missed required coverage: {missing:?}"
+        "campaign={} missing required smoke coverage: {}",
+        config.campaign.key(),
+        missing.join(",")
     );
 }
 
@@ -7733,13 +7993,26 @@ fn smoke() {
 #[ignore = "explicit seeded adversarial replay entry point"]
 fn run() {
     let config = RunConfig::from_env().expect("valid adversarial run configuration");
-    let outcome = adversarial::runner::run_program_for(
-        config.campaign,
-        config.seed,
-        config.profile,
-        &config.artifacts,
-    )
-    .expect("seeded adversarial run");
+    let outcome = config
+        .profile
+        .map_or_else(
+            || {
+                adversarial::runner::run_program_for_seed(
+                    config.campaign,
+                    config.seed,
+                    &config.artifacts,
+                )
+            },
+            |profile| {
+                adversarial::runner::run_program_for(
+                    config.campaign,
+                    config.seed,
+                    profile,
+                    &config.artifacts,
+                )
+            },
+        )
+        .expect("seeded adversarial run");
     for violation in &outcome.violations {
         println!("{}", violation.report_for(config.campaign));
     }
@@ -7802,7 +8075,12 @@ fn replay() {
             .expect("retained replay metadata profile");
         (seed, profile)
     } else {
-        (config.seed, config.profile)
+        (
+            config.seed,
+            config
+                .profile
+                .unwrap_or_else(|| profile_for_seed(config.seed)),
+        )
     };
     let actual_root = tempfile::tempdir().expect("replay output root");
     let outcome =
@@ -8830,10 +9108,11 @@ fn replay_campaign_episode(
         _ => {
             let actual_root = tempfile::tempdir()
                 .map_err(|error| format!("create feature replay root: {error}"))?;
-            let replayed = adversarial::runner::run_program_for_with_feature_profile(
+            let replayed = adversarial::runner::run_program_for_with_feature_profile_and_override(
                 campaign,
                 outcome.seed,
                 outcome.profile,
+                outcome.profile_overridden.then_some(outcome.profile),
                 outcome.profile,
                 actual_root.path(),
             )?;
@@ -9030,21 +9309,18 @@ fn campaign() {
     let required_duration = Duration::from_secs(config.minimum_seconds);
 
     while episodes < config.minimum_episodes || started.elapsed() < required_duration {
-        let profile = if std::env::var_os("ZE_ADV_PROFILE").is_some() {
-            config.profile
-        } else {
-            profile_for_seed(seed)
-        };
+        let profile = config.profile.unwrap_or_else(|| profile_for_seed(seed));
         let injected = injected_failures.get(&seed).copied();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert!(
                 injected != Some(CampaignInjectedFailure::Panic),
                 "test-mode injected episode panic"
             );
-            adversarial::runner::run_program_for_with_feature_profile(
+            adversarial::runner::run_program_for_with_feature_profile_and_override(
                 config.campaign,
                 seed,
                 profile,
+                config.profile,
                 profile,
                 &root,
             )
@@ -9151,8 +9427,15 @@ fn campaign() {
         };
 
         if let Some((kind, detail)) = failure {
-            let artifact_directory =
-                preserve_campaign_failure(&root, config.campaign, seed, profile, kind, &detail);
+            let artifact_directory = preserve_campaign_failure(
+                &root,
+                config.campaign,
+                seed,
+                profile,
+                config.profile,
+                kind,
+                &detail,
+            );
             println!(
                 "ADV_CAMPAIGN_FAILURE seed={seed} profile={} campaign={} kind={} artifacts={}",
                 profile.key(),
@@ -9233,11 +9516,13 @@ fn campaign() {
             &attestation_counters,
             merged_evidence.as_ref().map(|merged| merged.stats()),
         );
-    let qualification_passed = run_passed
-        && attestation_complete
-        && (config.campaign == CampaignKind::Overall
-            && config.qualification == Qualification::Exploratory
-            || missing.is_empty());
+    let qualification_passed = campaign_qualification_passes(
+        config.campaign,
+        config.qualification,
+        run_passed,
+        attestation_complete,
+        missing.is_empty(),
+    );
     write_campaign_summary(
         &root,
         &config,
@@ -9457,6 +9742,28 @@ impl CampaignAttestationCounters {
 
     fn mark_replayed(&mut self) {
         self.replayed_seeds = self.replayed_seeds.saturating_add(1);
+    }
+
+    fn comparison_outcome_counts(
+        &self,
+    ) -> BTreeMap<String, adversarial::runner::ComparisonOutcomeCounts> {
+        self.comparison_counts
+            .iter()
+            .map(|(invariant, count)| {
+                let equal = self
+                    .comparison_pass_counts
+                    .get(invariant)
+                    .copied()
+                    .unwrap_or(0);
+                let refused = count
+                    .checked_sub(equal)
+                    .expect("comparison pass count does not exceed total count");
+                (
+                    invariant.clone(),
+                    adversarial::runner::ComparisonOutcomeCounts { equal, refused },
+                )
+            })
+            .collect()
     }
 }
 
@@ -9943,6 +10250,19 @@ fn missing_campaign_coverage(campaign: CampaignKind, coverage: &CoverageRegistry
     }
 }
 
+fn campaign_qualification_passes(
+    campaign: CampaignKind,
+    qualification: Qualification,
+    run_passed: bool,
+    attestation_complete: bool,
+    coverage_complete: bool,
+) -> bool {
+    run_passed
+        && attestation_complete
+        && (campaign == CampaignKind::Overall && qualification == Qualification::Exploratory
+            || coverage_complete)
+}
+
 fn campaign_test_failures(test_mode: bool) -> BTreeMap<u64, CampaignInjectedFailure> {
     let Ok(specification) = std::env::var("ZE_ADV_CAMPAIGN_TEST_FAILURES") else {
         return BTreeMap::new();
@@ -10005,6 +10325,7 @@ fn preserve_campaign_failure(
     campaign: CampaignKind,
     seed: u64,
     profile: FaultProfile,
+    profile_override: Option<FaultProfile>,
     kind: CampaignFailureKind,
     detail: &str,
 ) -> PathBuf {
@@ -10045,7 +10366,7 @@ fn preserve_campaign_failure(
         &destination.join("repro.txt"),
         format!(
             "{}\n",
-            adversarial::runner::reproduction_for(campaign, seed, profile)
+            adversarial::runner::reproduction_for(campaign, seed, profile_override)
         )
         .as_bytes(),
     );
@@ -10071,7 +10392,7 @@ fn preserve_campaign_failure(
         "kind": kind.key(),
         "detail": detail,
         "partial_artifacts": partial_artifacts,
-        "reproduce": adversarial::runner::reproduction_for(campaign, seed, profile),
+        "reproduce": adversarial::runner::reproduction_for(campaign, seed, profile_override),
     });
     write_file_synced(
         &destination.join("failure.json"),
@@ -10144,7 +10465,7 @@ fn feature_attestation_complete(
     let Some(merged) = merged else {
         return false;
     };
-    let profile_override = std::env::var_os("ZE_ADV_PROFILE").map(|_| config.profile);
+    let profile_override = config.profile;
     let expected_comparisons = expected_campaign_comparison_counts_with_profile(
         config.campaign,
         config.start_seed,
@@ -10153,6 +10474,14 @@ fn feature_attestation_complete(
     );
     let exact_comparisons = counters.comparison_counts == expected_comparisons;
     let stream_records = |name: &str| merged.streams.get(name).map_or(0, |stream| stream.records);
+    let classified_comparisons = counters.comparison_counts.iter().all(|(invariant, count)| {
+        let equal = counters
+            .comparison_pass_counts
+            .get(invariant)
+            .copied()
+            .unwrap_or(0);
+        equal <= *count && (equal == *count || stream_records("faults") > 0)
+    });
     let expected_core = [
         "program",
         "faults",
@@ -10187,12 +10516,17 @@ fn feature_attestation_complete(
     // `empty_family_evidence_streams`), not an attestation defect.
     merged.episodes == episodes
         && exact_comparisons
-        && counters.comparison_pass_counts == counters.comparison_counts
+        && classified_comparisons
         && observed_core == expected_core
         && observed_family == expected_family
         && counters.same_seed_clean_controls == counters.selected_feature_fault_events
         && counters.integrated_feature_fault_receipts == counters.expected_feature_fault_receipts
-        && stream_records("oracle") == counters.comparison_counts.values().copied().sum::<u64>()
+        && stream_records("oracle")
+            == counters
+                .comparison_pass_counts
+                .values()
+                .copied()
+                .sum::<u64>()
         && stream_records("controls") >= counters.same_seed_clean_controls
         && stream_records("receipts") >= counters.integrated_feature_fault_receipts
 }
@@ -10474,7 +10808,7 @@ fn feature_attestation_accepts_a_declared_multi_receipt_fault() {
         campaign: CampaignKind::MetadataFilterPlanner,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -10549,7 +10883,7 @@ fn feature_attestation_rejects_a_failed_comparison() {
         campaign: CampaignKind::MetadataFilterPlanner,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -10647,7 +10981,7 @@ fn feature_attestation_rejects_empty_declared_family_streams() {
         campaign: CampaignKind::MetadataFilterPlanner,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -10698,7 +11032,7 @@ fn feature_attestation_rejects_excess_oracle_comparisons() {
         campaign: CampaignKind::MetadataFilterPlanner,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -11342,6 +11676,7 @@ fn storage_campaign_executes_every_required_format_and_omission_case() {
     let mut seed_by_key = BTreeMap::<String, u64>::new();
     for seed in 0..4096 {
         let program = Program::generate_for(campaign, seed);
+        let schedule_seed = seed.saturating_add(seed / FaultProfile::ALL.len() as u64);
         let plan = FaultPlan::for_program(
             campaign,
             seed,
@@ -11389,7 +11724,8 @@ fn storage_campaign_executes_every_required_format_and_omission_case() {
             seed_by_key.entry(key.to_owned()).or_insert(seed);
         }
         if selected == Some(adversarial::campaign::FeatureFault::StorageListDeleteOmission) {
-            let omission = adversarial::storage_durability::omission_case_for_schedule(seed, 0);
+            let omission =
+                adversarial::storage_durability::omission_case_for_schedule(schedule_seed, 0);
             let orphan = match omission.orphan {
                 OrphanKind::FinalSegment => "final-segment",
                 OrphanKind::SegmentTemporary => "segment-temporary",
@@ -11442,7 +11778,7 @@ fn campaign_attestation_binds_every_merged_core_stream() {
         campaign: CampaignKind::Fts,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -11489,7 +11825,7 @@ fn storage_campaign_attestation_embeds_the_strict_family_ledger() {
         campaign: CampaignKind::StorageDurability,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -11669,7 +12005,7 @@ fn vector_campaign_attestation_embeds_the_exact_family_ledger() {
         campaign: CampaignKind::VectorExecution,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -11764,7 +12100,7 @@ fn metadata_campaign_attestation_reports_the_exact_family_ledger() {
         campaign: CampaignKind::MetadataFilterPlanner,
         seed: 0,
         start_seed: 0,
-        profile: FaultProfile::None,
+        profile: None,
         qualification: Qualification::Exploratory,
         minimum_seconds: 0,
         minimum_episodes: 1,
@@ -12761,7 +13097,7 @@ fn validate_vector_oracle_attestation_shape(
     let expected_sites = CampaignSpec::for_kind(CampaignKind::VectorExecution)
         .all_required_coverage()
         .into_iter()
-        .filter(|key| key.starts_with("fault."))
+        .filter(|key| is_vector_receipt_site_coverage_key(key))
         .collect::<BTreeSet<_>>();
     exact_keys(
         "receipt sites",
@@ -12936,6 +13272,18 @@ fn validate_vector_oracle_attestation_shape(
         );
     }
     Ok(())
+}
+
+fn is_vector_receipt_site_coverage_key(key: &str) -> bool {
+    [
+        "fault.allocation.",
+        "fault.cancel.",
+        "fault.forced-backend.",
+        "fault.quant.",
+        "fault.rescore.",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
 }
 
 fn validate_storage_oracle_attestation_shape(
@@ -15371,7 +15719,7 @@ fn vector_oracle_attestation_json(
     let fault_sites = CampaignSpec::for_kind(CampaignKind::VectorExecution)
         .all_required_coverage()
         .into_iter()
-        .filter(|key| key.starts_with("fault."))
+        .filter(|key| is_vector_receipt_site_coverage_key(key))
         .map(|key| {
             let count = coverage_count(&key);
             (key, count)
@@ -15999,6 +16347,12 @@ fn campaign_attestation_json(
         "oracle_contract_versions": oracle_contract_versions,
         "harness_git_revision": adversarial::artifacts::harness_git_revision(),
         "comparison_counts": counters.comparison_counts,
+        "comparison_outcome_counts": counters.comparison_outcome_counts().iter().map(|(invariant, counts)| {
+            (invariant.clone(), zeppelin_embed_bench::harness_json::json!({
+                "equal": counts.equal,
+                "refused": counts.refused,
+            }))
+        }).collect::<BTreeMap<_, _>>(),
         "same_seed_clean_controls": counters.same_seed_clean_controls,
         "integrated_feature_fault_receipts": counters.integrated_feature_fault_receipts,
         "expected_feature_fault_receipts": counters.expected_feature_fault_receipts,
@@ -16300,11 +16654,13 @@ fn validate_completed_campaign_summary(root: &Path, config: &RunConfig) {
     let attestation_valid =
         verify_feature_summary_attestation(root, config.campaign, episodes, &summary)
             .unwrap_or_else(|error| panic!("campaign summary attestation rejected: {error}"));
-    let expected_qualification = run_passed
-        && attestation_valid
-        && (config.campaign == CampaignKind::Overall
-            && config.qualification == Qualification::Exploratory
-            || coverage_complete);
+    let expected_qualification = campaign_qualification_passes(
+        config.campaign,
+        config.qualification,
+        run_passed,
+        attestation_valid,
+        coverage_complete,
+    );
     assert_eq!(
         summary["qualification_passed"].as_bool(),
         Some(expected_qualification),
@@ -17166,6 +17522,36 @@ fn verify_feature_summary_attestation(
                 .ok_or_else(|| format!("comparison count for {invariant} is not u64"))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let reported_outcomes = attestation["comparison_outcome_counts"]
+        .as_object()
+        .ok_or_else(|| "feature summary attestation missing: comparison_outcome_counts".to_owned())?
+        .iter()
+        .map(|(invariant, counts)| {
+            let equal = counts["equal"]
+                .as_u64()
+                .ok_or_else(|| format!("equal outcome count for {invariant} is not u64"))?;
+            let refused = counts["refused"]
+                .as_u64()
+                .ok_or_else(|| format!("refused outcome count for {invariant} is not u64"))?;
+            Ok((
+                invariant.clone(),
+                adversarial::runner::ComparisonOutcomeCounts { equal, refused },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    for (invariant, count) in &reported_comparisons {
+        let outcomes = reported_outcomes
+            .get(invariant)
+            .ok_or_else(|| format!("comparison outcome counts omitted invariant {invariant}"))?;
+        if outcomes.equal.saturating_add(outcomes.refused) != *count {
+            return Err(format!(
+                "comparison outcome counts for {invariant} do not sum to {count}"
+            ));
+        }
+    }
+    if reported_outcomes.len() != reported_comparisons.len() {
+        return Err("comparison outcome counts contain an unknown invariant".to_owned());
+    }
     let required_count = |field: &str| {
         attestation[field]
             .as_u64()
@@ -17181,13 +17567,27 @@ fn verify_feature_summary_attestation(
     })?;
     let index_bytes = std::fs::read(root.join("merged-index.jsonl"))
         .map_err(|error| format!("read merged-index.jsonl: {error}"))?;
-    let index_records = index_bytes
+    let episode_keys = index_bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
-        .count() as u64;
-    if index_records != merged_episodes {
+        .map(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_slice(line)
+                    .map_err(|error| format!("parse merged-index.jsonl row: {error}"))?;
+            let seed = record["seed"]
+                .as_u64()
+                .ok_or_else(|| "merged index row omitted seed".to_owned())?;
+            let profile = record["profile"]
+                .as_str()
+                .ok_or_else(|| "merged index row omitted profile".to_owned())?
+                .to_owned();
+            Ok((seed, profile))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if episode_keys.len() as u64 != merged_episodes {
         return Err(format!(
-            "merged index count mismatch: summary={merged_episodes} file={index_records}"
+            "merged index count mismatch: summary={merged_episodes} file={}",
+            episode_keys.len()
         ));
     }
 
@@ -17196,6 +17596,8 @@ fn verify_feature_summary_attestation(
     let mut observed_i37_case_counts = BTreeMap::<String, u64>::new();
     let mut every_comparison_passed = true;
     let mut observed_stream_records = BTreeMap::<String, u64>::new();
+    let mut fault_records =
+        BTreeMap::<(u64, String), Vec<zeppelin_embed_bench::harness_json::Value>>::new();
     let reported_streams = merged["streams"]
         .as_object()
         .ok_or_else(|| "feature summary attestation missing merged streams".to_owned())?;
@@ -17281,10 +17683,122 @@ fn verify_feature_summary_attestation(
                 every_comparison_passed &= passed;
             }
         }
+        if name == "faults" {
+            for line in bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+            {
+                let envelope: zeppelin_embed_bench::harness_json::Value =
+                    zeppelin_embed_bench::harness_json::from_slice(line)
+                        .map_err(|error| format!("parse merged fault row: {error}"))?;
+                let seed = envelope["seed"]
+                    .as_u64()
+                    .ok_or_else(|| "merged fault row omitted seed".to_owned())?;
+                let profile = envelope["profile"]
+                    .as_str()
+                    .ok_or_else(|| "merged fault row omitted profile".to_owned())?
+                    .to_owned();
+                let record = envelope
+                    .get("record")
+                    .ok_or_else(|| "merged fault row omitted record".to_owned())?
+                    .clone();
+                fault_records
+                    .entry((seed, profile))
+                    .or_default()
+                    .push(record);
+            }
+        }
     }
-    if observed_comparisons != reported_comparisons {
-        return Err("comparison counts disagree with merged oracle rows".to_owned());
+    let reported_equal = reported_outcomes
+        .iter()
+        .filter_map(|(invariant, counts)| {
+            (counts.equal != 0).then_some((invariant.clone(), counts.equal))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if observed_comparisons != reported_equal {
+        return Err("equal comparison counts disagree with merged oracle rows".to_owned());
     }
+    let profile_override = match std::env::var("ZE_ADV_PROFILE") {
+        Ok(value) => Some(FaultProfile::from_key(&value)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(format!("read ZE_ADV_PROFILE: {error}")),
+    };
+    let spec = CampaignSpec::for_kind(campaign);
+    let mut expected_outcomes = spec
+        .owned_invariants
+        .iter()
+        .map(|invariant| {
+            (
+                invariant.key(),
+                adversarial::runner::ComparisonOutcomeCounts::default(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for (seed, profile_key) in &episode_keys {
+        let profile = FaultProfile::from_key(profile_key)?;
+        let expected_profile = profile_override.unwrap_or_else(|| profile_for_seed(*seed));
+        if profile != expected_profile {
+            return Err(format!(
+                "merged fault profile mismatch seed={seed} expected={} observed={}",
+                expected_profile.key(),
+                profile.key()
+            ));
+        }
+        let records = fault_records
+            .remove(&(*seed, profile_key.clone()))
+            .unwrap_or_default();
+        let plan = adversarial::artifacts::verify_recomputed_fault_plan_records(
+            campaign, *seed, profile, &records,
+        )?;
+        let program = Program::generate_for(campaign, *seed);
+        let refused_operations = plan
+            .schedule
+            .events
+            .iter()
+            .filter(|event| {
+                event.fired
+                    && matches!(
+                        event.layer,
+                        Layer::Content | Layer::Crash | Layer::Cancel | Layer::Clock
+                    )
+            })
+            .filter_map(|event| match program.ops.get(event.op_index) {
+                Some(Op::Feature(operation))
+                    if !(event.layer == Layer::Cancel
+                        && matches!(
+                            operation,
+                            adversarial::campaign::FeatureOperation::Fts(
+                                adversarial::campaign::FtsOperation::Extras
+                            )
+                        )) =>
+                {
+                    Some(*operation)
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let totals =
+            expected_campaign_comparison_counts_with_profile(campaign, *seed, 1, Some(profile));
+        for invariant in spec.invariant_specs {
+            let key = invariant.invariant.key();
+            let total = totals
+                .get(&key)
+                .copied()
+                .ok_or_else(|| format!("recomputed comparison counts omitted invariant {key}"))?;
+            let counts = expected_outcomes
+                .get_mut(&key)
+                .ok_or_else(|| format!("outcome contract omitted invariant {key}"))?;
+            if refused_operations.contains(&invariant.operation) {
+                counts.refused = counts.refused.saturating_add(total);
+            } else {
+                counts.equal = counts.equal.saturating_add(total);
+            }
+        }
+    }
+    if !fault_records.is_empty() {
+        return Err("merged faults contain rows for an unknown episode".to_owned());
+    }
+    adversarial::runner::verify_comparison_outcome_counts(&expected_outcomes, &reported_outcomes)?;
     if campaign == CampaignKind::StorageDurability {
         let coverage_counts = read_merged_coverage_counts(root)?;
         validate_storage_attested_coverage(
@@ -17366,12 +17880,7 @@ fn verify_feature_summary_attestation(
             ));
         }
     }
-    let profile_override = match std::env::var("ZE_ADV_PROFILE") {
-        Ok(value) => Some(FaultProfile::from_key(&value)?),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => return Err(format!("read ZE_ADV_PROFILE: {error}")),
-    };
-    let exact_comparisons = observed_comparisons
+    let exact_comparisons = reported_comparisons
         == expected_campaign_comparison_counts_with_profile(
             campaign,
             start_seed,

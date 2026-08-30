@@ -92,6 +92,30 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.mode.crash",
 ];
 
+pub const REQUIRED_LAYERED_COVERAGE: &[&str] = &[
+    "fault.layer.io",
+    "fault.layer.content",
+    "fault.layer.crash",
+    "fault.layer.clock",
+    "fault.layer.cancel",
+    "fault.layer.busy",
+    "fault.layer.count.2",
+    "fault.layer.count.3",
+    "fault.layered.io+feature",
+    "fault.layered.content+feature",
+    "fault.layered.crash+feature",
+    "fault.layered.clock+feature",
+    "fault.layered.cancel+feature",
+    "fault.layered.busy+feature",
+    "crash.after.bit_flip",
+    "crash.after.torn_write",
+    "crash.after.truncate",
+    "crash.after.wrong_object",
+    "crash.after.misdirected_write",
+    "crash.after.zero_fill",
+    "crash.after.silent_drop",
+];
+
 /// A mergeable, deterministic ledger of paths that genuinely ran.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CoverageRegistry {
