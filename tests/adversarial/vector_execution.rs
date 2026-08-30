@@ -48,6 +48,7 @@ use super::fault_vfs::{
     FaultEvent as ScheduledFaultEvent, FaultMode as ScheduledFaultMode,
     FaultSite as ScheduledFaultSite, ScheduledVfs,
 };
+use super::runner::FrozenStoreFixture;
 
 const QUERY: [f32; 3] = [1.0, -1.0, 0.5];
 const ROWS: [[f32; 3]; 3] = [[1.0, -1.0, 0.5], [0.5, -0.5, 0.25], [-1.0, 1.0, -0.5]];
@@ -2062,7 +2063,7 @@ fn run_generic_fault_evidence(
             None,
         )
     };
-    let pair = frozen.isolated_pair()?;
+    let pair = isolated_pair(&frozen)?;
     let event = materialize_fault_event(schedule, context.program_op_index)?;
     let clean_scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event.clone())));
     let fault_scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event)));
@@ -3148,17 +3149,6 @@ fn vector_process_lock() -> &'static Mutex<()> {
     super::feature_process_lock()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FrozenFixtureFile {
-    relative_path: String,
-    bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FrozenStoreFixture {
-    files: Vec<FrozenFixtureFile>,
-}
-
 struct IsolatedStorePair {
     clean: TempDir,
     fault: TempDir,
@@ -3175,127 +3165,55 @@ fn vector_fixture_digest(bytes: &[u8]) -> u64 {
     digest
 }
 
-fn collect_frozen_fixture_files(
-    root: &Path,
-    directory: &Path,
-    output: &mut Vec<FrozenFixtureFile>,
-) -> Result<(), String> {
-    let mut entries = std::fs::read_dir(directory)
-        .map_err(|error| format!("read vector fixture directory: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("enumerate vector fixture directory: {error}"))?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("read vector fixture file type: {error}"))?;
-        let path = entry.path();
-        if file_type.is_dir() {
-            collect_frozen_fixture_files(root, &path, output)?;
-            continue;
-        }
-        if !file_type.is_file() {
-            return Err(format!(
-                "vector fixture contains non-file {}",
-                path.display()
-            ));
-        }
-        let relative_path = path
-            .strip_prefix(root)
-            .map_err(|error| format!("relativize vector fixture file: {error}"))?
+fn frozen_fixture_evidence(
+    fixture: &FrozenStoreFixture,
+) -> Result<VectorFixtureDirectoryEvidence, String> {
+    let mut canonical = Vec::new();
+    let mut files = Vec::with_capacity(fixture.files().len());
+    for file in fixture.files() {
+        let relative_path = file
+            .relative_path
             .to_str()
             .ok_or_else(|| "vector fixture relative path is not UTF-8".to_owned())?
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let bytes = std::fs::read(&path)
-            .map_err(|error| format!("read vector fixture file {}: {error}", path.display()))?;
-        output.push(FrozenFixtureFile {
+        canonical.extend_from_slice(
+            &u64::try_from(relative_path.len())
+                .map_err(|_| "vector fixture path length exceeds u64".to_owned())?
+                .to_le_bytes(),
+        );
+        canonical.extend_from_slice(relative_path.as_bytes());
+        let byte_length = u64::try_from(file.bytes.len())
+            .map_err(|_| "vector fixture file length exceeds u64".to_owned())?;
+        let digest = vector_fixture_digest(&file.bytes);
+        canonical.extend_from_slice(&byte_length.to_le_bytes());
+        canonical.extend_from_slice(&digest.to_le_bytes());
+        files.push(VectorFixtureFileFact {
             relative_path,
-            bytes,
+            byte_length,
+            digest,
         });
     }
-    Ok(())
+    Ok(VectorFixtureDirectoryEvidence {
+        digest: vector_fixture_digest(&canonical),
+        files,
+    })
 }
 
-impl FrozenStoreFixture {
-    fn capture(directory: &Path) -> Result<Self, String> {
-        let mut files = Vec::new();
-        collect_frozen_fixture_files(directory, directory, &mut files)?;
-        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        if files.is_empty() {
-            return Err("vector Store fixture contains no files".to_owned());
-        }
-        Ok(Self { files })
+fn isolated_pair(fixture: &FrozenStoreFixture) -> Result<IsolatedStorePair, String> {
+    let pair = fixture.isolated_pair()?;
+    let expected = frozen_fixture_evidence(fixture)?;
+    let clean_initial = frozen_fixture_evidence(&FrozenStoreFixture::capture(pair.clean.path())?)?;
+    let fault_initial =
+        frozen_fixture_evidence(&FrozenStoreFixture::capture(pair.faulted.path())?)?;
+    if clean_initial != expected || fault_initial != expected {
+        return Err("vector clean/fault fixture directories are not byte-identical".to_owned());
     }
-
-    fn evidence(&self) -> Result<VectorFixtureDirectoryEvidence, String> {
-        let mut canonical = Vec::new();
-        let mut files = Vec::with_capacity(self.files.len());
-        for file in &self.files {
-            let relative_path = file.relative_path.as_bytes();
-            canonical.extend_from_slice(
-                &u64::try_from(relative_path.len())
-                    .map_err(|_| "vector fixture path length exceeds u64".to_owned())?
-                    .to_le_bytes(),
-            );
-            canonical.extend_from_slice(relative_path);
-            let byte_length = u64::try_from(file.bytes.len())
-                .map_err(|_| "vector fixture file length exceeds u64".to_owned())?;
-            let digest = vector_fixture_digest(&file.bytes);
-            canonical.extend_from_slice(&byte_length.to_le_bytes());
-            canonical.extend_from_slice(&digest.to_le_bytes());
-            files.push(VectorFixtureFileFact {
-                relative_path: file.relative_path.clone(),
-                byte_length,
-                digest,
-            });
-        }
-        Ok(VectorFixtureDirectoryEvidence {
-            digest: vector_fixture_digest(&canonical),
-            files,
-        })
-    }
-
-    fn materialize(&self) -> Result<TempDir, String> {
-        let directory = tempdir().map_err(|error| format!("vector fixture tempdir: {error}"))?;
-        for file in &self.files {
-            let path = directory.path().join(&file.relative_path);
-            let parent = path
-                .parent()
-                .ok_or_else(|| "vector fixture file has no parent".to_owned())?;
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create vector fixture directory: {error}"))?;
-            std::fs::write(&path, &file.bytes).map_err(|error| {
-                format!("write vector fixture file {}: {error}", path.display())
-            })?;
-        }
-        let materialized = Self::capture(directory.path())?;
-        if materialized != *self {
-            return Err(
-                "materialized vector fixture bytes differ from immutable source".to_owned(),
-            );
-        }
-        Ok(directory)
-    }
-
-    fn isolated_pair(&self) -> Result<IsolatedStorePair, String> {
-        let clean = self.materialize()?;
-        let fault = self.materialize()?;
-        if clean.path() == fault.path() {
-            return Err("vector clean/fault fixtures share one directory".to_owned());
-        }
-        let expected = self.evidence()?;
-        let clean_initial = Self::capture(clean.path())?.evidence()?;
-        let fault_initial = Self::capture(fault.path())?.evidence()?;
-        if clean_initial != expected || fault_initial != expected {
-            return Err("vector clean/fault fixture directories are not byte-identical".to_owned());
-        }
-        Ok(IsolatedStorePair {
-            clean,
-            fault,
-            clean_initial,
-            fault_initial,
-        })
-    }
+    Ok(IsolatedStorePair {
+        clean: pair.clean,
+        fault: pair.faulted,
+        clean_initial,
+        fault_initial,
+    })
 }
 
 fn run_kernel_parity(
@@ -3424,7 +3342,7 @@ fn run_kernel_parity(
         .close()
         .map_err(|error| format!("close immutable kernel fixture Store: {error}"))?;
     let frozen = FrozenStoreFixture::capture(directory.path())?;
-    let pair = frozen.isolated_pair()?;
+    let pair = isolated_pair(&frozen)?;
     let clean_store = Store::open_with_test_dependencies(
         pair.clean.path(),
         OpenOptions::default(),
@@ -4902,7 +4820,7 @@ fn run_quantization(
         match (seed / 6) % 3 {
             0 => {
                 let fixture = sealed_bit4_fixture(seed)?;
-                let pair = fixture.frozen.isolated_pair()?;
+                let pair = isolated_pair(&fixture.frozen)?;
                 let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
                     .map_err(|error| format!("open Bit4 padding control Store: {error}"))?;
                 let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -4956,7 +4874,7 @@ fn run_quantization(
             }
             1 => {
                 let fixture = sealed_bit4_fixture(seed)?;
-                let pair = fixture.frozen.isolated_pair()?;
+                let pair = isolated_pair(&fixture.frozen)?;
                 let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
                     .map_err(|error| format!("open Bit4 factor control Store: {error}"))?;
                 let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -5010,7 +4928,7 @@ fn run_quantization(
             }
             _ => {
                 let fixture = sealed_int8_fixture(seed)?;
-                let pair = fixture.frozen.isolated_pair()?;
+                let pair = isolated_pair(&fixture.frozen)?;
                 let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
                     .map_err(|error| format!("open Int8 factor control Store: {error}"))?;
                 let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -5065,7 +4983,7 @@ fn run_quantization(
         }
     } else {
         let fixture = sealed_bit4_fixture(seed)?;
-        let pair = fixture.frozen.isolated_pair()?;
+        let pair = isolated_pair(&fixture.frozen)?;
         let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
             .map_err(|error| format!("open quantization control Store: {error}"))?;
         let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -5525,7 +5443,7 @@ fn run_rescore(
         .map_err(|error| format!("close active rescore Store: {error}"))?;
 
     let fixture = sealed_bit4_fixture(seed)?;
-    let rescore_pair = fixture.frozen.isolated_pair()?;
+    let rescore_pair = isolated_pair(&fixture.frozen)?;
     let clean_store = Store::open(rescore_pair.clean.path(), OpenOptions::default())
         .map_err(|error| format!("open rescore control Store: {error}"))?;
     let clean_outcome = search(&clean_store, SearchTier::Exact, ROWS.len())
@@ -5630,7 +5548,7 @@ fn run_rescore(
             )
         } else if fault == Some(VectorFaultKind::MissingRescoreRows) {
             let graph = graph_evidence;
-            let graph_pair = graph.frozen.isolated_pair()?;
+            let graph_pair = isolated_pair(&graph.frozen)?;
             let clean_store = Store::open(
                 graph_pair.clean.path(),
                 OpenOptions::default().with_epoch(graph.epoch.clone()),
@@ -6194,7 +6112,7 @@ fn run_row_cancellation_fixture(
     let requested_rows = 1 + (seed % 2) as u32;
     match (seed / 6) % 4 {
         0 => {
-            let pair = identity.frozen.isolated_pair()?;
+            let pair = isolated_pair(&identity.frozen)?;
             let clean_store = Store::open(
                 pair.clean.path(),
                 OpenOptions::default().with_epoch(identity.epoch.clone()),
@@ -6253,7 +6171,7 @@ fn run_row_cancellation_fixture(
         }
         1 => {
             let fixture = sealed_bit4_fixture(seed)?;
-            let pair = fixture.frozen.isolated_pair()?;
+            let pair = isolated_pair(&fixture.frozen)?;
             let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
                 .map_err(|error| format!("open sealed Bit4 cancellation control Store: {error}"))?;
             let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -6308,7 +6226,7 @@ fn run_row_cancellation_fixture(
         }
         2 => {
             let fixture = sealed_int8_fixture(seed)?;
-            let pair = fixture.frozen.isolated_pair()?;
+            let pair = isolated_pair(&fixture.frozen)?;
             let clean_store = Store::open(pair.clean.path(), OpenOptions::default())
                 .map_err(|error| format!("open sealed Int8 cancellation control Store: {error}"))?;
             let clean = result_fact(search(&clean_store, SearchTier::Scan, ROWS.len()))?;
@@ -6363,7 +6281,7 @@ fn run_row_cancellation_fixture(
         }
         _ => {
             let fixture = graph_fixture(seed)?;
-            let pair = fixture.frozen.isolated_pair()?;
+            let pair = isolated_pair(&fixture.frozen)?;
             let clean_store = Store::open(
                 pair.clean.path(),
                 OpenOptions::default().with_epoch(fixture.epoch.clone()),
@@ -6466,7 +6384,7 @@ fn run_row_identity(
             )
         }
         Some(VectorFaultKind::AllocationDenial) => {
-            let pair = fixture.frozen.isolated_pair()?;
+            let pair = isolated_pair(&fixture.frozen)?;
             let clean_store = Store::open(
                 pair.clean.path(),
                 OpenOptions::default().with_epoch(fixture.epoch.clone()),
@@ -6527,7 +6445,7 @@ fn run_row_identity(
             )
         }
         None => {
-            let pair = fixture.frozen.isolated_pair()?;
+            let pair = isolated_pair(&fixture.frozen)?;
             let clean_store = Store::open(
                 pair.clean.path(),
                 OpenOptions::default().with_epoch(fixture.epoch.clone()),
