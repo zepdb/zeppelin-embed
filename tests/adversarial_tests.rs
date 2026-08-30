@@ -7058,6 +7058,7 @@ fn feature_attestation_complete(
     // `empty_family_evidence_streams`), not an attestation defect.
     merged.episodes == episodes
         && exact_comparisons
+        && counters.comparison_pass_counts == counters.comparison_counts
         && observed_core == expected_core
         && observed_family == expected_family
         && counters.same_seed_clean_controls == counters.selected_feature_fault_events
@@ -7392,6 +7393,83 @@ fn feature_attestation_accepts_a_declared_multi_receipt_fault() {
     };
 
     assert!(feature_attestation_complete(
+        &config,
+        1,
+        &counters,
+        Some(merged),
+    ));
+}
+
+#[test]
+fn feature_attestation_rejects_a_failed_comparison() {
+    let config = RunConfig {
+        campaign: CampaignKind::MetadataFilterPlanner,
+        seed: 0,
+        start_seed: 0,
+        profile: FaultProfile::None,
+        qualification: Qualification::Exploratory,
+        minimum_seconds: 0,
+        minimum_episodes: 1,
+        retain_successful: 1,
+        artifacts: PathBuf::from("unused"),
+        replay_directory: None,
+    };
+    let counters = CampaignAttestationCounters {
+        comparison_counts: BTreeMap::from([
+            ("I36".to_owned(), 1),
+            (
+                "I37".to_owned(),
+                adversarial::metadata_filter_planner::I37_PREDICATE_CASE_COUNT,
+            ),
+            ("I38".to_owned(), 1),
+            ("I39".to_owned(), 1),
+        ]),
+        comparison_pass_counts: BTreeMap::from([
+            ("I36".to_owned(), 0),
+            (
+                "I37".to_owned(),
+                adversarial::metadata_filter_planner::I37_PREDICATE_CASE_COUNT,
+            ),
+            ("I38".to_owned(), 1),
+            ("I39".to_owned(), 1),
+        ]),
+        same_seed_clean_controls: 1,
+        integrated_feature_fault_receipts: 2,
+        expected_feature_fault_receipts: 2,
+        selected_feature_fault_events: 1,
+        replayed_seeds: 1,
+    };
+    let stream = |records| adversarial::artifacts::MergedStreamStats {
+        records,
+        bytes: records,
+        digest: format!("fnv1a64:{records:016x}"),
+    };
+    let merged = adversarial::artifacts::MergedEvidenceStats {
+        episodes: 1,
+        streams: BTreeMap::from([
+            ("program".to_owned(), stream(1)),
+            ("faults".to_owned(), stream(0)),
+            ("violations".to_owned(), stream(1)),
+            ("coverage".to_owned(), stream(1)),
+            (
+                "oracle".to_owned(),
+                stream(
+                    adversarial::metadata_filter_planner::I37_PREDICATE_CASE_COUNT
+                        .saturating_add(3),
+                ),
+            ),
+            ("controls".to_owned(), stream(1)),
+            ("receipts".to_owned(), stream(2)),
+            ("mutations".to_owned(), stream(0)),
+            ("family/metadata-fixture.json".to_owned(), stream(1)),
+            ("family/queries.jsonl".to_owned(), stream(1)),
+            ("family/fixture-mutations.jsonl".to_owned(), stream(1)),
+        ]),
+    };
+
+    // The verifier recomputes validity from the oracle rows, so a failed
+    // comparison must make the producer's flag false as well.
+    assert!(!feature_attestation_complete(
         &config,
         1,
         &counters,

@@ -289,8 +289,17 @@ fn expected(input: &GraphInput, predicate: Option<i64>, k: usize) -> Vec<Expecte
             row: u32::try_from(row).unwrap_or(u32::MAX),
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(expected_order);
+    // The product selects the top k by score then ascending physical row
+    // (`scan/topk.rs`) and orders the selected set by score then document
+    // id (`ingest/mod.rs`). Equal vectors straddling the cutoff therefore
+    // survive by row order, not by document id.
+    candidates.sort_by(|left, right| {
+        f32::from_bits(right.score_bits)
+            .total_cmp(&f32::from_bits(left.score_bits))
+            .then_with(|| left.row.cmp(&right.row))
+    });
     candidates.truncate(k.min(candidates.len()));
+    candidates.sort_by(expected_order);
     candidates
 }
 
