@@ -3171,8 +3171,7 @@ fn choose_forced_backend() -> Result<KernelBackendId, String> {
 }
 
 fn vector_process_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    super::feature_process_lock()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

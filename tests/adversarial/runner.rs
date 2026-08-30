@@ -1716,6 +1716,15 @@ fn run_program_for_with_clock(
     artifact_root: &Path,
     clock: Arc<ManualMonotonicClock>,
 ) -> Result<RunOutcome, String> {
+    let _process_guard = if campaign == CampaignKind::VectorExecution {
+        None
+    } else {
+        Some(
+            super::feature_process_lock()
+                .lock()
+                .map_err(|_| "feature operation process lock was poisoned".to_owned())?,
+        )
+    };
     let program = Program::generate_for(campaign, seed);
     let artifacts = RunArtifacts::create_for(artifact_root, campaign, seed, profile)?;
     let program_bytes = artifacts.write_program(&program)?;

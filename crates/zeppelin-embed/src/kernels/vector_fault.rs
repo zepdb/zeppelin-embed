@@ -1,6 +1,6 @@
 //! Test-support-only observation of the table used by a real Store score.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::scan::vector_fault::{
     VectorFaultEffect, VectorFaultKind, VectorFaultReceipt, VectorFaultSite, VectorOperation,
@@ -222,6 +222,41 @@ impl KernelFaultController {
     }
 }
 
+fn scoring_isolation() -> &'static RwLock<()> {
+    static ISOLATION: OnceLock<RwLock<()>> = OnceLock::new();
+    ISOLATION.get_or_init(|| RwLock::new(()))
+}
+
+fn scoring_reader() -> RwLockReadGuard<'static, ()> {
+    match scoring_isolation().read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn scoring_writer() -> RwLockWriteGuard<'static, ()> {
+    match scoring_isolation().write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+pub(crate) fn run_store_scoring<T, E>(
+    controller: Option<&KernelFaultController>,
+    score: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    if let Some(controller) = controller {
+        let _guard = scoring_writer();
+        controller.begin_store_scoring();
+        let result = score();
+        controller.finish_store_scoring(result.is_ok());
+        result
+    } else {
+        let _guard = scoring_reader();
+        score()
+    }
+}
+
 fn installed() -> &'static Mutex<Option<KernelFaultController>> {
     static INSTALLED: OnceLock<Mutex<Option<KernelFaultController>>> = OnceLock::new();
     INSTALLED.get_or_init(|| Mutex::new(None))
@@ -232,6 +267,9 @@ pub(super) fn observe_selected_score(
     kernel: KernelOperationId,
     work_items: usize,
 ) {
+    if kernel != KernelOperationId::ScoreBit4PreparedBatch {
+        return;
+    }
     let controller = installed()
         .lock()
         .ok()
@@ -258,6 +296,9 @@ pub(super) fn observe_selected_score(
 }
 
 pub(super) fn observe_selected_result(value: KernelScoreValue) {
+    if !matches!(value, KernelScoreValue::F32s(_)) {
+        return;
+    }
     let controller = installed()
         .lock()
         .ok()

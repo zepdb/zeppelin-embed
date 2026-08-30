@@ -7481,7 +7481,7 @@ fn release_feature_campaign_refuses_incomplete_coverage() {
         .expect("valid release summary");
     assert_eq!(summary["run_verdict"], "passed");
     assert_eq!(summary["qualification_passed"], false);
-    assert_eq!(summary["violations"], 0);
+    assert_eq!(summary["violations"].as_u64(), Some(0));
     assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
 }
 
