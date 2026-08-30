@@ -7219,10 +7219,10 @@ fn expected_campaign_comparison_counts(
             .checked_mul(episodes)
             .expect("metadata I37 campaign comparison count fits u64");
         let mut counts = BTreeMap::from([
-            ("I36".to_owned(), episodes),
+            ("I36".to_owned(), 0),
             ("I37".to_owned(), matrix),
-            ("I38".to_owned(), episodes),
-            ("I39".to_owned(), episodes),
+            ("I38".to_owned(), 0),
+            ("I39".to_owned(), 0),
         ]);
         for episode in 0..episodes {
             let seed = start_seed
@@ -7231,6 +7231,31 @@ fn expected_campaign_comparison_counts(
             let profile = campaign_profile(episode);
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            // Each operation runs once per selected feature fault (at least
+            // once). Execution owns two fault kinds, so a `full` profile can
+            // select both and compare I39 twice in one episode.
+            for (operation, invariant) in [
+                (adversarial::campaign::MetadataOperation::Columns, "I36"),
+                (adversarial::campaign::MetadataOperation::Planner, "I38"),
+                (adversarial::campaign::MetadataOperation::Execution, "I39"),
+            ] {
+                let selected = plan
+                    .feature
+                    .iter()
+                    .filter(|event| {
+                        event.fault.operation()
+                            == adversarial::campaign::FeatureOperation::Metadata(operation)
+                    })
+                    .count();
+                let comparisons = u64::try_from(selected.max(1))
+                    .expect("metadata operation comparison count fits u64");
+                let count = counts
+                    .get_mut(invariant)
+                    .expect("metadata count contract includes operation invariant");
+                *count = count
+                    .checked_add(comparisons)
+                    .expect("metadata operation comparison count fits u64");
+            }
             if plan.feature.iter().any(|event| {
                 event.fault == adversarial::campaign::FeatureFault::MetadataBitmapTruncation
             }) {
@@ -7542,6 +7567,17 @@ fn ffi_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     assert_eq!(counts["I68"], 1_000);
     assert_eq!(counts["I69"], 1_000);
     assert_eq!(counts["I70"], 1_000);
+}
+
+#[test]
+fn metadata_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
+    // Execution owns two fault kinds; 22 `full`-profile episodes in the
+    // first 1,000 select both, so I39 compares twice in those episodes.
+    let counts = expected_campaign_comparison_counts(CampaignKind::MetadataFilterPlanner, 0, 1_000);
+    assert_eq!(counts["I36"], 1_000);
+    assert_eq!(counts["I37"], 45_241);
+    assert_eq!(counts["I38"], 1_000);
+    assert_eq!(counts["I39"], 1_022);
 }
 
 #[test]
@@ -12799,8 +12835,9 @@ fn write_campaign_summary(
         .copied()
         .filter(|key| !fired_generic_faults.contains(key))
         .collect::<Vec<_>>();
+    // Only the Rust binding adapter exists; see `missing_campaign_coverage`.
     let required_languages = if config.campaign == CampaignKind::FfiBindings {
-        vec!["rust", "c", "python", "swift"]
+        vec!["rust"]
     } else {
         Vec::new()
     };
