@@ -2,7 +2,7 @@
 //!
 //! The product supplies primitive ranked leg scores. This module owns the
 //! normalization, fusion, ordering, bounded-round replay, and RRF oracle. It
-//! deliberately remains std-only and does not depend on the product crate.
+//! deliberately remains std-only and does not depend on product code.
 
 use std::collections::{BTreeMap, BTreeSet};
 

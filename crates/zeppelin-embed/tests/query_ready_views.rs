@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
 use tempfile::tempdir;
+use zeppelin_embed::format::frame::FormatCheck;
 use zeppelin_embed::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
 use zeppelin_embed::fts::sealed::SealedSegment;
 use zeppelin_embed::fts::search::TermQuery;
@@ -282,7 +283,7 @@ fn document_version_hashes_the_region_once_per_reader() {
     let path = directory.path().join(id.file_name());
     let region_bytes = (ROWS * 24) as u64;
 
-    let full_reader = SegmentReader::open(&path, id).expect("open full-iteration reader");
+    let full_reader = SegmentReader::open(&StdVfs, &path, id).expect("open full-iteration reader");
     assert_eq!(
         full_reader
             .directory()
@@ -309,7 +310,7 @@ fn document_version_hashes_the_region_once_per_reader() {
         "full iteration must hash the identity region once"
     );
 
-    let merge_reader = SegmentReader::open(&path, id).expect("open merge reader");
+    let merge_reader = SegmentReader::open(&StdVfs, &path, id).expect("open merge reader");
     let merge_audit = SegmentCostAudit::new();
     merge_audit.measure(|| {
         for row in 0..MERGE_K {
@@ -547,7 +548,7 @@ fn touched_rescore_chunk_corruption_still_fails_loudly_and_restores() {
         })
         .expect("graph segment path");
     let id = SegmentId::new(0x0304_0506_0708, [0x53; 10]);
-    let reader = SegmentReader::open(&segment_path, id).expect("locate rescore region");
+    let reader = SegmentReader::open(&StdVfs, &segment_path, id).expect("locate rescore region");
     let rescore_offset = reader
         .directory()
         .iter()
@@ -579,8 +580,8 @@ fn touched_rescore_chunk_corruption_still_fails_loudly_and_restores() {
         .expect_err("touched rescore corruption must fail");
     assert!(matches!(
         error,
-        QueryError::Store(StoreError::Segment(SegmentError::Geometry(detail)))
-            if detail.contains("BlockChecksum")
+        QueryError::Store(StoreError::Segment(SegmentError::Format(detail)))
+            if detail.check() == FormatCheck::BlockChecksum
     ));
     store.close().expect("close corrupt store");
 

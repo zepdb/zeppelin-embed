@@ -1120,8 +1120,16 @@ impl crate::vfs::Vfs for StorageFaultVfs {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -2216,17 +2224,13 @@ impl Store {
             options.max_resident_bytes,
             options.max_temp_bytes,
         ));
-        if options.access_mode == AccessMode::ReadWrite {
-            std::fs::create_dir_all(path).map_err(|source| StoreError::Io {
+        let is_directory = vfs
+            .ensure_directory(path, options.access_mode == AccessMode::ReadWrite)
+            .map_err(|source| StoreError::Io {
                 path: path.to_path_buf(),
                 source,
             })?;
-        }
-        let metadata = std::fs::metadata(path).map_err(|source| StoreError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if !metadata.is_dir() {
+        if !is_directory {
             return Err(StoreError::NotDirectory {
                 path: path.to_path_buf(),
             });
@@ -3481,31 +3485,33 @@ impl Store {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let admitted = self.admit_vector_search(options)?;
+        let score = || {
+            search_pinned(
+                admitted.pool.as_deref(),
+                &admitted.snapshot,
+                &admitted.active_segment,
+                &self.accounting,
+                admitted.generation,
+                self.epoch_identity(),
+                request,
+                k,
+                options,
+                control,
+                graph_bound_mode,
+                started,
+                #[cfg(any(test, feature = "test-support"))]
+                self.vector_fault_controller.as_ref(),
+            )
+        };
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(controller) = self.kernel_fault_controller.as_ref() {
-            controller.begin_store_scoring();
-        }
-        let result = search_pinned(
-            admitted.pool.as_deref(),
-            &admitted.snapshot,
-            &admitted.active_segment,
-            &self.accounting,
-            admitted.generation,
-            self.epoch_identity(),
-            request,
-            k,
-            options,
-            control,
-            graph_bound_mode,
-            started,
-            #[cfg(any(test, feature = "test-support"))]
-            self.vector_fault_controller.as_ref(),
+        let result = crate::kernels::vector_fault::run_store_scoring(
+            self.kernel_fault_controller.as_ref(),
+            score,
         );
+        #[cfg(not(any(test, feature = "test-support")))]
+        let result = score();
         #[cfg(any(test, feature = "test-support"))]
         {
-            if let Some(controller) = self.kernel_fault_controller.as_ref() {
-                controller.finish_store_scoring(result.is_ok());
-            }
             if let Some(controller) = self.vector_fault_controller.as_ref() {
                 controller.finalize_search(result.is_ok());
             }
@@ -5189,6 +5195,7 @@ impl Drop for Store {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::error::Error;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
 
@@ -5197,9 +5204,13 @@ mod tests {
     use crate::manifest::{Manifest, ManifestError};
     use crate::meta::Schema;
     use crate::vfs::StdVfs;
+    use crate::vfs::crash::MemoryVfs;
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
-    use super::{OpenOptions, Store, StoreError, resolve_hybrid_leg_results};
+    use super::{
+        ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+        resolve_hybrid_leg_results,
+    };
 
     #[test]
     fn hybrid_dual_failure_precedence_is_independent_of_leg_completion_order() {
@@ -5309,6 +5320,26 @@ mod tests {
             StoreError::Durability(DurabilityPolicyError::AttachedNotYetSupported)
         ));
         assert!(!store_path.exists(), "rejected open created store files");
+    }
+
+    #[test]
+    fn memory_vfs_store_open_does_not_create_host_directory() {
+        let parent = tempdir().expect("parent directory");
+        let store_path = parent.path().join("memory-only-store");
+        let dependencies = StoreTestDependencies::new(
+            Arc::new(MemoryVfs::new()),
+            Arc::new(ManualMonotonicClock::new()),
+        );
+
+        let store =
+            Store::open_with_test_dependencies(&store_path, OpenOptions::read_only(), dependencies)
+                .expect("MemoryVfs-backed store open");
+        store.close().expect("MemoryVfs-backed store close");
+
+        assert!(
+            !store_path.exists(),
+            "MemoryVfs-backed Store touched the host filesystem"
+        );
     }
 
     #[test]

@@ -230,7 +230,7 @@ impl Store {
         // manifest commit point. After commit, publication is an in-memory
         // pointer swap and cannot fail on segment I/O or accounting budget.
         let remapped =
-            PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
         commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;
 
