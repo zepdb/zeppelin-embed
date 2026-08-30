@@ -4305,57 +4305,62 @@ fn fts_fault_kind(
     }
 }
 
-fn fts_tokens_json(tokens: &[fts_oracle::TokenFact]) -> String {
-    tokens
-        .iter()
-        .map(|token| {
-            format!(
-                "{{\"term\":\"{}\",\"position\":{},\"start\":{},\"end\":{}}}",
-                json_escape(&token.term),
-                token.position,
-                token.start,
-                token.end
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 fn fts_input_json(input: &fts_oracle::FtsInput) -> String {
-    let rows = input
-        .expected_rows
+    let terms = input
+        .bm25_terms
         .iter()
-        .map(u32::to_string)
+        .map(|term| format!("\"{}\"", json_escape(term)))
         .collect::<Vec<_>>()
         .join(",");
+    let sealed = input
+        .documents
+        .iter()
+        .filter(|document| document.sealed)
+        .count();
+    let active = input.documents.len().saturating_sub(sealed);
+    let deleted = input
+        .documents
+        .iter()
+        .filter(|document| document.deleted)
+        .count();
     format!(
-        "{{\"tokens\":[{}],\"row_count\":{},\"expected_rows\":[{rows}]}}",
-        fts_tokens_json(&input.tokens),
-        input.row_count
+        "{{\"documents\":{},\"sealed\":{sealed},\"active\":{active},\"deleted\":{deleted},\"bm25_terms\":[{terms}],\"bm25_k\":{}}}",
+        input.documents.len(),
+        input.bm25_k,
     )
 }
 
 fn fts_observed_json(observed: &fts_oracle::FtsObserved) -> String {
-    let rows = |values: &[u32]| {
+    let hits = |values: &[fts_oracle::ScoreFact]| {
         values
             .iter()
-            .map(u32::to_string)
+            .map(|hit| {
+                format!(
+                    "{{\"doc_id\":{},\"score_bits\":{}}}",
+                    hit.doc_id, hit.score_bits
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     };
+    let token_count = observed
+        .tokens
+        .iter()
+        .map(|document| document.tokens.len())
+        .sum::<usize>();
     format!(
-        "{{\"tokens\":[{}],\"row_count\":{},\"term_count\":{},\"exhaustive_rows\":[{}],\"pruned_rows\":[{}],\"finite_scores\":{},\"phrase_ok\":{},\"prefix_ok\":{},\"fuzzy_ok\":{},\"phonetic_ok\":{},\"snippet_ok\":{}}}",
-        fts_tokens_json(&observed.tokens),
-        observed.row_count,
-        observed.term_count,
-        rows(&observed.exhaustive_rows),
-        rows(&observed.pruned_rows),
-        observed.finite_scores,
-        observed.phrase_ok,
-        observed.prefix_ok,
-        observed.fuzzy_ok,
-        observed.phonetic_ok,
-        observed.snippet_ok,
+        "{{\"token_documents\":{},\"token_count\":{token_count},\"sealed_segment_bytes\":{},\"bm25_hits\":[{}],\"wand_hits\":[{}],\"maxscore_hits\":[{}],\"wand_blocks_skipped\":{},\"maxscore_blocks_skipped\":{},\"phrase_results\":{},\"prefix_results\":{},\"fuzzy_results\":{},\"phonetic_results\":{}}}",
+        observed.tokens.len(),
+        observed.sealed_segment.len(),
+        hits(&observed.bm25_hits),
+        hits(&observed.wand_hits),
+        hits(&observed.maxscore_hits),
+        observed.wand_blocks_skipped,
+        observed.maxscore_blocks_skipped,
+        observed.phrase.result_ids.len(),
+        observed.prefix.result_ids.len(),
+        observed.fuzzy.result_ids.len(),
+        observed.phonetic.result_ids.len(),
     )
 }
 
