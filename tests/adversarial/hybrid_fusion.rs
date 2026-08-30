@@ -1,10 +1,34 @@
-//! Minimal product adapter for the hybrid-fusion campaign.
+//! Real-Store adapter for the hybrid-fusion adversarial campaign.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use tempfile::{TempDir, tempdir};
+use zeppelin_embed::fts::index::DEFAULT_FIELD;
+use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fusion::{
-    FusionError, FusionLeg, FusionMethod, HybridQuery, LegFailureKind, LexicalCandidate,
-    VectorCandidate, execute_hybrid,
+    FusionError, FusionLeg, FusionMethod, FusionTermination, HybridQuery, LegFailureKind,
+    LexicalCandidate, VectorCandidate, execute_hybrid,
 };
-use zeppelin_embed_adversarial_oracle::hybrid_fusion::{HybridInput, HybridObserved};
+use zeppelin_embed::ingest::{
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+};
+use zeppelin_embed::lifecycle::{
+    CancelToken, HybridLegTestFault, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
+    StoreTestDependencies, SystemMonotonicClock,
+};
+use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed_adversarial_oracle::hybrid_fusion::{
+    FusedHitFact, FusionCaseInput, FusionCaseObserved, FusionLegFact, FusionMethodFact,
+    FusionReportFact, FusionTerminationFact, HybridInput, HybridObserved, LegFailureFact,
+    LegFaultObserved, RankedScore,
+};
+
+const MAIN_TERM: &[u8] = b"zeppelin";
+const RRF_TERM: &[u8] = b"airship";
+const SINGLE_TERM: &[u8] = b"bronz";
+const EMPTY_TERM: &[u8] = b"absent";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HybridOperationKind {
@@ -119,52 +143,531 @@ pub struct HybridOperationEvidence {
     pub clean_control_passed: bool,
 }
 
-fn observation() -> Result<(HybridInput, HybridObserved), String> {
-    let query = HybridQuery::new(2).with_alpha(0.5);
-    let outcome = execute_hybrid(
-        &query,
-        || {
-            Ok(vec![
-                VectorCandidate::exact(1_u32, 0.0),
-                VectorCandidate::exact(2_u32, 10.0),
-            ])
-        },
-        || {
-            Ok(vec![
-                LexicalCandidate::new(1_u32, 10.0),
-                LexicalCandidate::new(2_u32, 1.0),
-            ])
-        },
-        |id| Some(*id),
-        |id| Some(*id),
-    )
-    .map_err(|error| error.to_string())?;
-    let rrf = execute_hybrid(
-        &HybridQuery::new(2),
-        || Ok(vec![VectorCandidate::exact(1_u32, 0.0)]),
-        || Ok(vec![LexicalCandidate::new(2_u32, 1.0)]),
-        |id| Some(*id),
-        |id| Some(*id),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok((
-        HybridInput {
-            k: 2,
-            expected_ids: vec![1, 2],
-            expected_rrf_ids: vec![1, 2],
-        },
-        HybridObserved {
-            ids: outcome.hits.iter().map(|hit| hit.key).collect(),
-            rrf_ids: rrf.hits.iter().map(|hit| hit.key).collect(),
-            raw_scores_preserved: outcome
-                .hits
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FrozenFile {
+    relative_path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FrozenStoreFixture {
+    files: Vec<FrozenFile>,
+}
+
+impl FrozenStoreFixture {
+    fn capture(root: &Path) -> Result<Self, String> {
+        fn collect(
+            root: &Path,
+            directory: &Path,
+            files: &mut Vec<FrozenFile>,
+        ) -> Result<(), String> {
+            let mut entries = std::fs::read_dir(directory)
+                .map_err(|error| format!("read hybrid fixture directory: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("enumerate hybrid fixture directory: {error}"))?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let file_type = entry
+                    .file_type()
+                    .map_err(|error| format!("read hybrid fixture file type: {error}"))?;
+                let path = entry.path();
+                if file_type.is_dir() {
+                    collect(root, &path, files)?;
+                } else if file_type.is_file() {
+                    let relative_path = path
+                        .strip_prefix(root)
+                        .map_err(|error| format!("relativize hybrid fixture file: {error}"))?
+                        .to_path_buf();
+                    let bytes = std::fs::read(&path).map_err(|error| {
+                        format!("read hybrid fixture file {}: {error}", path.display())
+                    })?;
+                    files.push(FrozenFile {
+                        relative_path,
+                        bytes,
+                    });
+                } else {
+                    return Err(format!(
+                        "hybrid fixture contains non-file {}",
+                        path.display()
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        let mut files = Vec::new();
+        collect(root, root, &mut files)?;
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        if files.is_empty() {
+            return Err("hybrid Store fixture contains no files".to_owned());
+        }
+        Ok(Self { files })
+    }
+
+    fn materialize(&self) -> Result<TempDir, String> {
+        let directory = tempdir().map_err(|error| format!("hybrid fixture tempdir: {error}"))?;
+        for file in &self.files {
+            let path = directory.path().join(&file.relative_path);
+            let parent = path
+                .parent()
+                .ok_or_else(|| "hybrid fixture file has no parent".to_owned())?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create hybrid fixture directory: {error}"))?;
+            std::fs::write(&path, &file.bytes).map_err(|error| {
+                format!("write hybrid fixture file {}: {error}", path.display())
+            })?;
+        }
+        if Self::capture(directory.path())? != *self {
+            return Err("materialized hybrid fixture bytes differ from source".to_owned());
+        }
+        Ok(directory)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FixtureDocument {
+    id: u64,
+    vector: Vec<f32>,
+    text: String,
+    deleted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    const fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = self.state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            0
+        } else {
+            (self.next() as usize) % bound
+        }
+    }
+}
+
+pub struct HybridEpisode {
+    input: HybridInput,
+    observed: HybridObserved,
+    frozen: FrozenStoreFixture,
+    vector_query: Vec<f32>,
+}
+
+fn component(rng: &mut SplitMix64) -> f32 {
+    let numerator = i32::try_from(rng.next() % 2_001).unwrap_or(0) - 1_000;
+    numerator as f32 / 137.0
+}
+
+fn derive_documents(seed: u64) -> (Vec<FixtureDocument>, Vec<f32>, usize, usize, usize) {
+    let mut rng = SplitMix64::new(seed ^ 0x4859_4252_4944_4655);
+    let count = 40 + rng.below(161);
+    let dimensions = if rng.next() & 1 == 0 { 8 } else { 32 };
+    let active_docs = 3 + rng.below(6);
+    let minimum_deleted = count.saturating_mul(5).div_ceil(100);
+    let maximum_deleted = count.saturating_mul(10) / 100;
+    let deleted_docs = minimum_deleted
+        + rng.below(
+            maximum_deleted
+                .saturating_sub(minimum_deleted)
+                .saturating_add(1),
+        );
+    let query = (0..dimensions)
+        .map(|_| component(&mut rng))
+        .collect::<Vec<_>>();
+    let id_limit = (1_u64 << 52).saturating_sub(count as u64).saturating_sub(1);
+    let id_base = 1 + rng.next() % id_limit;
+    let mut documents = Vec::with_capacity(count);
+    for index in 0..count {
+        let vector = if index == 1 {
+            documents
+                .first()
+                .map_or_else(Vec::new, |document: &FixtureDocument| {
+                    document.vector.clone()
+                })
+        } else {
+            (0..dimensions)
+                .map(|_| component(&mut rng))
+                .collect::<Vec<_>>()
+        };
+        let text = match index {
+            0 | 1 => "zeppelin airship amber cobalt".to_owned(),
+            2 => "zeppelin zeppelin bronze amber".to_owned(),
+            _ => match index % 4 {
+                0 => "zeppelin amber".to_owned(),
+                1 => "zeppelin zeppelin cobalt".to_owned(),
+                2 => "amber cobalt delta".to_owned(),
+                _ => "zeppelin delta echo cobalt amber".to_owned(),
+            },
+        };
+        documents.push(FixtureDocument {
+            id: id_base + (count - index) as u64,
+            vector,
+            text,
+            deleted: false,
+        });
+    }
+    let sealed_count = count - active_docs;
+    let mut deleted = BTreeSet::new();
+    while deleted.len() < deleted_docs {
+        deleted.insert(4 + rng.below(sealed_count - 4));
+    }
+    for index in deleted {
+        if let Some(document) = documents.get_mut(index) {
+            document.deleted = true;
+        }
+    }
+    (documents, query, dimensions, active_docs, deleted_docs)
+}
+
+fn ingest_documents(store: &Store, documents: &[FixtureDocument]) -> Result<(), String> {
+    let batch = documents
+        .iter()
+        .map(|document| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(document.id)), Revision::new(1)),
+                document.vector.clone(),
+            )
+            .with_text(document.text.clone())
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(batch))
+        .map_err(|error| format!("ingest hybrid fixture: {error}"))?;
+    Ok(())
+}
+
+fn vector_scores(
+    store: &Store,
+    documents: &[FixtureDocument],
+    query: &[f32],
+    k: usize,
+) -> Result<Vec<RankedScore>, String> {
+    let independent = documents
+        .iter()
+        .filter(|document| !document.deleted)
+        .map(|document| {
+            let squared_l2 = document
+                .vector
                 .iter()
-                .all(|hit| hit.vector_squared_l2.is_some() && hit.lexical_bm25.is_some()),
-            finite_scores: outcome.hits.iter().all(|hit| hit.fused_score.is_finite()),
-            used_rrf: rrf.report.method == FusionMethod::ReciprocalRankFusion,
-            no_partial: true,
+                .zip(query)
+                .map(|(left, right)| {
+                    let delta = f64::from(*left) - f64::from(*right);
+                    delta * delta
+                })
+                .sum::<f64>();
+            (document.id, f64::from(squared_l2 as f32).to_bits())
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut scores = store
+        .search(
+            SearchRequest::new(query),
+            k,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("observe public exact vector leg: {error}"))?
+        .candidates
+        .into_iter()
+        .map(|candidate| {
+            let document = candidate
+                .document()
+                .ok_or_else(|| "public exact vector leg omitted document identity".to_owned())?;
+            let id = doc_id_u64(document.doc_id())?;
+            let score_bits = independent
+                .get(&id)
+                .copied()
+                .ok_or_else(|| format!("public exact vector leg returned unknown document {id}"))?;
+            let observed_bits = (-f64::from(candidate.score())).to_bits();
+            if observed_bits != score_bits {
+                return Err(format!(
+                    "independent squared-L2 differs for document {id}: expected bits {score_bits} observed {observed_bits}"
+                ));
+            }
+            Ok(RankedScore::new(id, score_bits))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    scores.sort_by(|left, right| {
+        f64::from_bits(left.score_bits)
+            .total_cmp(&f64::from_bits(right.score_bits))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(scores)
+}
+
+fn term_query(term: &[u8]) -> TermQuery {
+    TermQuery::flat(vec![term.to_vec()], &[DEFAULT_FIELD])
+}
+
+fn doc_id_u64(id: DocId) -> Result<u64, String> {
+    u64::try_from(id.get()).map_err(|_| format!("hybrid document id {} exceeds u64", id.get()))
+}
+
+fn lexical_scores(store: &Store, term: &[u8], k: usize) -> Result<Vec<RankedScore>, String> {
+    let mut scores = store
+        .search_lexical(
+            &term_query(term),
+            k,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("observe public lexical leg: {error}"))?
+        .candidates
+        .into_iter()
+        .map(|candidate| {
+            Ok(RankedScore::new(
+                doc_id_u64(candidate.document.doc_id())?,
+                candidate.score.to_bits(),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    scores.sort_by(|left, right| {
+        f64::from_bits(right.score_bits)
+            .total_cmp(&f64::from_bits(left.score_bits))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(scores)
+}
+
+fn report_fact(report: &zeppelin_embed::fusion::FusionReport) -> FusionReportFact {
+    FusionReportFact {
+        method: match report.method {
+            FusionMethod::ConvexCombination => FusionMethodFact::ConvexCombination,
+            FusionMethod::ReciprocalRankFusion => FusionMethodFact::ReciprocalRankFusion,
         },
-    ))
+        rounds: report.rounds,
+        budget_exhausted: report.budget_exhausted,
+        termination: match report.termination {
+            FusionTermination::StableBound => FusionTerminationFact::StableBound,
+            FusionTermination::ListsExhausted => FusionTerminationFact::ListsExhausted,
+            FusionTermination::BudgetFullMaterialization => {
+                FusionTerminationFact::BudgetFullMaterialization
+            }
+        },
+    }
+}
+
+fn observe_case(
+    store: &Store,
+    vector_query: &[f32],
+    lexical_term: &[u8],
+    query: &HybridQuery,
+) -> Result<FusionCaseObserved, String> {
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(vector_query),
+            &term_query(lexical_term),
+            query,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|error| format!("observe public hybrid result: {error}"))?;
+    let report = outcome
+        .diagnostics
+        .fusion
+        .as_ref()
+        .ok_or_else(|| "public hybrid diagnostics omitted fusion report".to_owned())?;
+    let hits = outcome
+        .hits
+        .into_iter()
+        .map(|hit| {
+            Ok(FusedHitFact {
+                id: doc_id_u64(hit.key)?,
+                vector_squared_l2_bits: hit.vector_squared_l2.map(f64::to_bits),
+                lexical_bm25_bits: hit.lexical_bm25.map(f64::to_bits),
+                fused_score_bits: hit.fused_score.to_bits(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(FusionCaseObserved {
+        hits,
+        report: report_fact(report),
+    })
+}
+
+fn case_input(
+    query: &HybridQuery,
+    vector: &[RankedScore],
+    lexical: Vec<RankedScore>,
+) -> FusionCaseInput {
+    FusionCaseInput {
+        k: query.k,
+        alpha_bits: query
+            .alpha
+            .unwrap_or(zeppelin_embed::fusion::DEFAULT_ALPHA)
+            .to_bits(),
+        max_rounds: query.max_rounds,
+        vector: vector.to_vec(),
+        lexical,
+    }
+}
+
+pub fn build_hybrid_episode(seed: u64) -> Result<HybridEpisode, String> {
+    let (documents, vector_query, dimensions, active_docs, deleted_docs) = derive_documents(seed);
+    let generated_docs = documents.len();
+    let sealed_count = generated_docs - active_docs;
+    let directory = tempdir().map_err(|error| format!("hybrid Store tempdir: {error}"))?;
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .map_err(|error| format!("open hybrid Store: {error}"))?;
+    ingest_documents(&store, &documents[..sealed_count])?;
+    store
+        .seal()
+        .map_err(|error| format!("seal hybrid fixture: {error}"))?;
+    let deleted = documents[..sealed_count]
+        .iter()
+        .filter(|document| document.deleted)
+        .map(|document| DocId::new(u128::from(document.id)))
+        .collect::<Vec<_>>();
+    store
+        .delete(DeleteBatch::new(deleted))
+        .map_err(|error| format!("delete hybrid fixture rows: {error}"))?;
+    ingest_documents(&store, &documents[sealed_count..])?;
+
+    let live_count = generated_docs - deleted_docs;
+    let vector = vector_scores(&store, &documents, &vector_query, live_count)?;
+    let k = 5 + (seed as usize % 11);
+    let alpha = [
+        0.0,
+        0.5,
+        1.0,
+        std::f64::consts::FRAC_1_SQRT_2,
+        0.618_033_988_749_894_8,
+    ][seed as usize % 5];
+    let query = HybridQuery::new(k).with_alpha(alpha);
+    let main = case_input(
+        &query,
+        &vector,
+        lexical_scores(&store, MAIN_TERM, live_count)?,
+    );
+    let rrf = case_input(
+        &query,
+        &vector,
+        lexical_scores(&store, RRF_TERM, live_count)?,
+    );
+    let single = case_input(
+        &query,
+        &vector,
+        lexical_scores(&store, SINGLE_TERM, live_count)?,
+    );
+    let empty = case_input(
+        &query,
+        &vector,
+        lexical_scores(&store, EMPTY_TERM, live_count)?,
+    );
+    let observed = HybridObserved {
+        main: observe_case(&store, &vector_query, MAIN_TERM, &query)?,
+        rrf: observe_case(&store, &vector_query, RRF_TERM, &query)?,
+        single: observe_case(&store, &vector_query, SINGLE_TERM, &query)?,
+        empty: observe_case(&store, &vector_query, EMPTY_TERM, &query)?,
+        leg_faults: Vec::new(),
+        same_seed_control_passed: false,
+    };
+    store
+        .close()
+        .map_err(|error| format!("close hybrid fixture Store: {error}"))?;
+    let frozen = FrozenStoreFixture::capture(directory.path())?;
+    let control = frozen.materialize()?;
+    let same_seed_control_passed = control.path() != directory.path()
+        && FrozenStoreFixture::capture(control.path())? == frozen;
+
+    Ok(HybridEpisode {
+        input: HybridInput {
+            generated_docs,
+            deleted_docs,
+            active_docs,
+            dimensions,
+            fixture_ids: documents.iter().map(|document| document.id).collect(),
+            main,
+            rrf,
+            single,
+            empty,
+        },
+        observed: HybridObserved {
+            same_seed_control_passed,
+            ..observed
+        },
+        frozen,
+        vector_query,
+    })
+}
+
+fn dependencies(leg: FusionLeg) -> StoreTestDependencies {
+    StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+        .with_hybrid_leg_fault(HybridLegTestFault::Panic(leg))
+}
+
+fn observe_leg_fault(episode: &HybridEpisode, leg: FusionLeg) -> Result<LegFaultObserved, String> {
+    let directory = episode.frozen.materialize()?;
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        dependencies(leg),
+    )
+    .map_err(|error| format!("open hybrid leg-fault Store: {error}"))?;
+    let query = HybridQuery::new(episode.input.main.k)
+        .with_alpha(f64::from_bits(episode.input.main.alpha_bits));
+    let error = match store.search_hybrid(
+        SearchRequest::new(&episode.vector_query),
+        &term_query(MAIN_TERM),
+        &query,
+        SearchOptions::default(),
+        QueryControl::Cancel(CancelToken::new()),
+    ) {
+        Err(error) => error,
+        Ok(_) => return Err(format!("{leg:?} hybrid leg panic returned partial success")),
+    };
+    let (observed_leg, detail) = match error {
+        FusionError::LegPanic { leg, detail } => (leg, detail),
+        other => return Err(format!("{leg:?} hybrid leg panic returned {other:?}")),
+    };
+    if observed_leg != leg {
+        return Err(format!(
+            "armed {leg:?} hybrid leg panic reported {observed_leg:?}"
+        ));
+    }
+    let receipt = store
+        .take_hybrid_execution_receipt()
+        .ok_or_else(|| format!("{leg:?} hybrid leg panic omitted execution receipt"))?;
+    let retry = observe_case(&store, &episode.vector_query, MAIN_TERM, &query)?;
+    store
+        .close()
+        .map_err(|error| format!("close hybrid leg-fault Store: {error}"))?;
+    Ok(LegFaultObserved {
+        leg: match leg {
+            FusionLeg::Vector => FusionLegFact::Vector,
+            FusionLeg::Lexical => FusionLegFact::Lexical,
+        },
+        kind: LegFailureFact::Panic,
+        detail: detail.to_owned(),
+        no_partial: true,
+        both_legs_completed: receipt.vector_completed && receipt.lexical_completed,
+        retry,
+    })
+}
+
+fn observed_for_operation(
+    episode: &HybridEpisode,
+    operation: HybridOperationKind,
+) -> Result<HybridObserved, String> {
+    let mut observed = episode.observed.clone();
+    if operation == HybridOperationKind::Legs {
+        observed.leg_faults = vec![
+            observe_leg_fault(episode, FusionLeg::Vector)?,
+            observe_leg_fault(episode, FusionLeg::Lexical)?,
+        ];
+    }
+    Ok(observed)
 }
 
 fn leg_error(leg: FusionLeg, detail: &str) -> FusionError {
@@ -175,89 +678,109 @@ fn leg_error(leg: FusionLeg, detail: &str) -> FusionError {
     }
 }
 
-fn exercise_fault(fault: HybridFaultKind) -> Result<(), String> {
-    let query = HybridQuery::new(1);
+fn exercise_fault(fault: HybridFaultKind, observed: &HybridObserved) -> Result<(), String> {
     if fault == HybridFaultKind::LegPanic {
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if observed.leg_faults.len() == 2
+            && observed
+                .leg_faults
+                .iter()
+                .all(|fact| fact.kind == LegFailureFact::Panic && fact.no_partial)
+        {
+            return Ok(());
+        }
+        return Err("production hybrid leg panic seam did not emit both typed failures".to_owned());
+    }
+    let query = HybridQuery::new(1);
+    let (result, expected) = match fault {
+        HybridFaultKind::VectorLegError => (
             execute_hybrid(
                 &query,
-                || -> Result<Vec<VectorCandidate<u32>>, FusionError> {
-                    panic!("hybrid test panic")
-                },
+                || Err(leg_error(FusionLeg::Vector, "vector fault")),
                 || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
                 |id| Some(*id),
                 |id| Some(*id),
-            )
-        }))
-        .is_err();
-        return if panicked {
-            Ok(())
-        } else {
-            Err("hybrid leg panic did not reach the product execution seam".to_owned())
-        };
-    }
-    let result = match fault {
-        HybridFaultKind::VectorLegError => execute_hybrid(
-            &query,
-            || Err(leg_error(FusionLeg::Vector, "vector fault")),
-            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
-            |id| Some(*id),
-            |id| Some(*id),
+            ),
+            leg_error(FusionLeg::Vector, "vector fault"),
         ),
-        HybridFaultKind::LexicalLegError => execute_hybrid(
-            &query,
-            || Ok(vec![VectorCandidate::exact(1_u32, 0.0)]),
-            || Err(leg_error(FusionLeg::Lexical, "lexical fault")),
-            |id| Some(*id),
-            |id| Some(*id),
+        HybridFaultKind::LexicalLegError => (
+            execute_hybrid(
+                &query,
+                || Ok(vec![VectorCandidate::exact(1_u32, 0.0)]),
+                || Err(leg_error(FusionLeg::Lexical, "lexical fault")),
+                |id| Some(*id),
+                |id| Some(*id),
+            ),
+            leg_error(FusionLeg::Lexical, "lexical fault"),
         ),
-        HybridFaultKind::DualFailureOrder => execute_hybrid(
-            &query,
-            || Err(leg_error(FusionLeg::Vector, "vector fault")),
-            || Err(leg_error(FusionLeg::Lexical, "lexical fault")),
-            |id: &u32| Some(*id),
-            |id: &u32| Some(*id),
+        HybridFaultKind::DualFailureOrder => (
+            execute_hybrid(
+                &query,
+                || Err(leg_error(FusionLeg::Vector, "vector fault")),
+                || Err(leg_error(FusionLeg::Lexical, "lexical fault")),
+                |id: &u32| Some(*id),
+                |id: &u32| Some(*id),
+            ),
+            leg_error(FusionLeg::Vector, "vector fault"),
         ),
-        HybridFaultKind::LegPanic => unreachable!("handled before product execution match"),
-        HybridFaultKind::EstimatedScore => execute_hybrid(
-            &query,
-            || Ok(vec![VectorCandidate::estimated(1_u32, 0.5)]),
-            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
-            |id| Some(*id),
-            |id| Some(*id),
+        HybridFaultKind::EstimatedScore => (
+            execute_hybrid(
+                &query,
+                || Ok(vec![VectorCandidate::estimated(1_u32, 0.5)]),
+                || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+                |id| Some(*id),
+                |id| Some(*id),
+            ),
+            FusionError::EstimatedVectorScore { rank: 0 },
         ),
-        HybridFaultKind::NonfiniteScore => execute_hybrid(
-            &query,
-            || Ok(vec![VectorCandidate::exact(1_u32, f64::NAN)]),
-            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
-            |id| Some(*id),
-            |id| Some(*id),
+        HybridFaultKind::NonfiniteScore => (
+            execute_hybrid(
+                &query,
+                || Ok(vec![VectorCandidate::exact(1_u32, f64::NAN)]),
+                || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+                |id| Some(*id),
+                |id| Some(*id),
+            ),
+            FusionError::NonFiniteScore {
+                leg: FusionLeg::Vector,
+                rank: 0,
+            },
         ),
-        HybridFaultKind::CancelClose => execute_hybrid(
-            &query,
-            || Err(FusionError::Cancelled { partial: false }),
-            || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
-            |id| Some(*id),
-            |id| Some(*id),
+        HybridFaultKind::CancelClose => (
+            execute_hybrid(
+                &query,
+                || Err(FusionError::Cancelled { partial: false }),
+                || Ok(vec![LexicalCandidate::new(1_u32, 1.0)]),
+                |id| Some(*id),
+                |id| Some(*id),
+            ),
+            FusionError::Cancelled { partial: false },
         ),
+        HybridFaultKind::LegPanic => {
+            return Err("leg panic escaped its production-seam branch".to_owned());
+        }
     };
-    if result.is_err() {
-        Ok(())
-    } else {
-        Err(format!("hybrid fault {} was accepted", fault.key()))
+    match result {
+        Err(actual) if actual == expected => Ok(()),
+        Err(actual) => Err(format!(
+            "hybrid fault {} returned {actual:?}, expected {expected:?}",
+            fault.key()
+        )),
+        Ok(_) => Err(format!("hybrid fault {} was accepted", fault.key())),
     }
 }
 
 pub fn run_hybrid_operation(
+    episode: &HybridEpisode,
     operation: HybridOperationKind,
     fault: Option<HybridFaultKind>,
 ) -> Result<HybridOperationEvidence, String> {
-    if fault.is_some_and(|fault| fault.operation() != operation) {
+    if fault.is_some_and(|selected| selected.operation() != operation) {
         return Err(format!(
             "hybrid fault {fault:?} does not target {operation:?}"
         ));
     }
-    let (input, observed) = observation()?;
+    let input = episode.input.clone();
+    let observed = observed_for_operation(episode, operation)?;
     let invariants = match operation {
         HybridOperationKind::Provenance => vec![HybridInvariantEvidence::I45 { input, observed }],
         HybridOperationKind::Normalization => {
@@ -271,7 +794,15 @@ pub fn run_hybrid_operation(
     };
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
-        exercise_fault(fault)?;
+        let observed = match invariants.first() {
+            Some(HybridInvariantEvidence::I45 { observed, .. })
+            | Some(HybridInvariantEvidence::I46 { observed, .. })
+            | Some(HybridInvariantEvidence::I47 { observed, .. })
+            | Some(HybridInvariantEvidence::I48 { observed, .. })
+            | Some(HybridInvariantEvidence::I49 { observed, .. }) => observed,
+            None => return Err("hybrid operation omitted invariant evidence".to_owned()),
+        };
+        exercise_fault(fault, observed)?;
         receipts.push(HybridFaultReceipt {
             fault,
             operation,
@@ -282,7 +813,7 @@ pub fn run_hybrid_operation(
     Ok(HybridOperationEvidence {
         invariants,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed: episode.observed.same_seed_control_passed,
     })
 }
 
@@ -292,7 +823,8 @@ mod tests {
     use zeppelin_embed_adversarial_oracle::hybrid_fusion as oracle;
 
     #[test]
-    fn every_hybrid_operation_runs_its_checker() {
+    fn every_hybrid_operation_runs_its_checker_on_one_shared_episode() {
+        let episode = build_hybrid_episode(7).expect("hybrid episode");
         for operation in [
             HybridOperationKind::Provenance,
             HybridOperationKind::Normalization,
@@ -300,7 +832,8 @@ mod tests {
             HybridOperationKind::Rrf,
             HybridOperationKind::Legs,
         ] {
-            let evidence = run_hybrid_operation(operation, None).expect("hybrid operation");
+            let evidence =
+                run_hybrid_operation(&episode, operation, None).expect("hybrid operation");
             for invariant in evidence.invariants {
                 match invariant {
                     HybridInvariantEvidence::I45 { input, observed } => {
@@ -326,6 +859,7 @@ mod tests {
 
     #[test]
     fn every_declared_hybrid_fault_fires_once() {
+        let episode = build_hybrid_episode(11).expect("hybrid episode");
         for fault in [
             HybridFaultKind::VectorLegError,
             HybridFaultKind::LexicalLegError,
@@ -335,7 +869,7 @@ mod tests {
             HybridFaultKind::NonfiniteScore,
             HybridFaultKind::CancelClose,
         ] {
-            let evidence = run_hybrid_operation(fault.operation(), Some(fault))
+            let evidence = run_hybrid_operation(&episode, fault.operation(), Some(fault))
                 .unwrap_or_else(|error| panic!("{fault:?}: {error}"));
             assert_eq!(evidence.receipts.len(), 1);
             assert_eq!(evidence.receipts[0].fault, fault);

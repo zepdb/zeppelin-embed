@@ -1733,6 +1733,11 @@ fn run_program_for_with_clock(
     } else {
         None
     };
+    let hybrid_episode = if campaign == CampaignKind::HybridFusion {
+        Some(hybrid_adapter::build_hybrid_episode(seed)?)
+    } else {
+        None
+    };
     let mut fault_plan =
         FaultPlan::for_program(campaign, seed, profile, &program, scheduled_event.clone());
     let expected_feature_fault_receipts = fault_plan
@@ -2092,6 +2097,7 @@ fn run_program_for_with_clock(
                         selected_faults: &selected_feature_faults,
                         generic_fault: scheduled_event.as_ref(),
                         storage_episode: storage_episode.as_ref(),
+                        hybrid_episode: hybrid_episode.as_ref(),
                         seed,
                         profile,
                         op_index,
@@ -2728,6 +2734,7 @@ struct CampaignOperationContext<'a> {
     selected_faults: &'a [super::campaign::FeatureFault],
     generic_fault: Option<&'a FaultEvent>,
     storage_episode: Option<&'a storage_adapter::StorageEpisodeFixtures>,
+    hybrid_episode: Option<&'a hybrid_adapter::HybridEpisode>,
     seed: u64,
     profile: FaultProfile,
     op_index: usize,
@@ -3335,6 +3342,7 @@ fn run_campaign_operation(
         selected_faults,
         generic_fault,
         storage_episode,
+        hybrid_episode,
         seed,
         profile,
         op_index,
@@ -3425,9 +3433,12 @@ fn run_campaign_operation(
         );
     }
     if let super::campaign::FeatureOperation::Hybrid(hybrid_operation) = operation {
+        let episode = hybrid_episode
+            .ok_or_else(|| "hybrid campaign operation omitted its shared episode".to_owned())?;
         return run_hybrid_campaign_operation(
             hybrid_operation,
             selected_faults,
+            episode,
             seed,
             oracle_records,
             control_records,
@@ -4144,43 +4155,63 @@ fn hybrid_fault_kind(
 }
 
 fn hybrid_input_json(input: &hybrid_oracle::HybridInput) -> String {
-    let list = |values: &[u32]| {
-        values
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    };
     format!(
-        "{{\"k\":{},\"expected_ids\":[{}],\"expected_rrf_ids\":[{}]}}",
-        input.k,
-        list(&input.expected_ids),
-        list(&input.expected_rrf_ids)
+        "{{\"generated_docs\":{},\"deleted_docs\":{},\"active_docs\":{},\"dimensions\":{},\"k\":{},\"alpha_bits\":{},\"vector_candidates\":{},\"lexical_candidates\":{},\"rrf_lexical_candidates\":{},\"single_lexical_candidates\":{},\"empty_lexical_candidates\":{}}}",
+        input.generated_docs,
+        input.deleted_docs,
+        input.active_docs,
+        input.dimensions,
+        input.main.k,
+        input.main.alpha_bits,
+        input.main.vector.len(),
+        input.main.lexical.len(),
+        input.rrf.lexical.len(),
+        input.single.lexical.len(),
+        input.empty.lexical.len(),
     )
 }
 
 fn hybrid_observed_json(observed: &hybrid_oracle::HybridObserved) -> String {
-    let list = |values: &[u32]| {
+    let hits = |values: &[hybrid_oracle::FusedHitFact]| {
         values
             .iter()
-            .map(u32::to_string)
+            .map(|hit| {
+                let optional = |value: Option<u64>| {
+                    value.map_or_else(|| "null".to_owned(), |bits| bits.to_string())
+                };
+                format!(
+                    "{{\"id\":{},\"vector_bits\":{},\"lexical_bits\":{},\"fused_bits\":{}}}",
+                    hit.id,
+                    optional(hit.vector_squared_l2_bits),
+                    optional(hit.lexical_bm25_bits),
+                    hit.fused_score_bits,
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     };
+    let method = |value: hybrid_oracle::FusionMethodFact| match value {
+        hybrid_oracle::FusionMethodFact::ConvexCombination => "convex-combination",
+        hybrid_oracle::FusionMethodFact::ReciprocalRankFusion => "rrf",
+    };
     format!(
-        "{{\"ids\":[{}],\"rrf_ids\":[{}],\"raw_scores_preserved\":{},\"finite_scores\":{},\"used_rrf\":{},\"no_partial\":{}}}",
-        list(&observed.ids),
-        list(&observed.rrf_ids),
-        observed.raw_scores_preserved,
-        observed.finite_scores,
-        observed.used_rrf,
-        observed.no_partial,
+        "{{\"main_hits\":[{}],\"main_method\":\"{}\",\"main_rounds\":{},\"rrf_hits\":[{}],\"rrf_method\":\"{}\",\"single_method\":\"{}\",\"empty_method\":\"{}\",\"leg_faults\":{},\"same_seed_control_passed\":{}}}",
+        hits(&observed.main.hits),
+        method(observed.main.report.method),
+        observed.main.report.rounds,
+        hits(&observed.rrf.hits),
+        method(observed.rrf.report.method),
+        method(observed.single.report.method),
+        method(observed.empty.report.method),
+        observed.leg_faults.len(),
+        observed.same_seed_control_passed,
     )
 }
 
 fn run_hybrid_campaign_operation(
     operation: super::campaign::HybridOperation,
     selected_faults: &[super::campaign::FeatureFault],
+    episode: &hybrid_adapter::HybridEpisode,
     seed: u64,
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
@@ -4204,7 +4235,7 @@ fn run_hybrid_campaign_operation(
             fault.map_or("none", hybrid_adapter::HybridFaultKind::key)
         );
         let evidence =
-            hybrid_adapter::run_hybrid_operation(hybrid_operation_kind(operation), fault)?;
+            hybrid_adapter::run_hybrid_operation(episode, hybrid_operation_kind(operation), fault)?;
         for invariant in evidence.invariants {
             let (id, checker, input, observed, result) = match invariant {
                 hybrid_adapter::HybridInvariantEvidence::I45 { input, observed } => {
