@@ -1206,6 +1206,9 @@ impl RealEngine {
 }
 
 fn require_second_opener_refusal(engine: &mut RealEngine) -> Result<(), String> {
+    if engine.store.is_none() {
+        return Err("first handle is not open before second-opener probe".to_owned());
+    }
     match Store::open(&engine.directory, RealEngine::options(engine.open_epoch)) {
         Err(StoreError::StoreBusy { .. }) => {}
         Err(error) => {
@@ -1214,24 +1217,10 @@ fn require_second_opener_refusal(engine: &mut RealEngine) -> Result<(), String> 
             ));
         }
         Ok(second) => {
-            let document = IngestDocument::new(
-                DocumentVersion::new(DocId::new(u128::from(u32::MAX)), Revision::new(1)),
-                program::vector(u32::MAX, 1).to_vec(),
-            )
-            .with_timestamp(i64::MAX)
-            .with_metadata(program::sentinel(u32::MAX))
-            .with_text(program::lexical_text(u32::MAX, 1))
-            .with_columns(adversarial_columns(u32::MAX));
-            let ingest = second
-                .ingest(IngestBatch::new(vec![document]).with_epoch(declared_identity()))
-                .map_err(|error| error.to_string());
-            let close = second.close().map_err(|error| error.to_string());
-            return match (ingest, close) {
-                (Ok(_), Ok(())) => {
-                    Err("second opener acquired the writer lock and ingested".to_owned())
-                }
-                (Err(error), _) | (Ok(_), Err(error)) => Err(format!(
-                    "second opener acquired the writer lock; second-writer ingest failed: {error}"
+            return match second.close() {
+                Ok(()) => Err("second opener acquired the writer lock".to_owned()),
+                Err(error) => Err(format!(
+                    "second opener acquired the writer lock; close failed: {error}"
                 )),
             };
         }
@@ -1275,8 +1264,19 @@ pub(crate) fn second_opener_artifacts_for_test() -> Result<(Vec<PathBuf>, Vec<Pa
     Ok((before, after))
 }
 
+pub(crate) fn second_opener_without_first_handle_for_test()
+-> Result<(Vec<PathBuf>, Vec<PathBuf>, String), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    let before = store_directory_entries(directory.path())?;
+    let error = require_second_opener_refusal(&mut engine)
+        .expect_err("second-opener probe accepted an absent first handle");
+    let after = store_directory_entries(directory.path())?;
+    Ok((before, after, error))
+}
+
 struct BusyChildProcess {
-    child: Child,
+    child: Option<Child>,
     release: Option<UnixStream>,
 }
 
@@ -1290,8 +1290,11 @@ impl BusyChildProcess {
             .write_all(&[1])
             .map_err(|error| format!("release busy child: {error}"))?;
         drop(release);
-        let output = self
+        let child = self
             .child
+            .take()
+            .ok_or_else(|| "busy child process is absent".to_owned())?;
+        let output = child
             .wait_with_output()
             .map_err(|error| format!("wait for busy child: {error}"))?;
         if !output.status.success() {
@@ -1302,6 +1305,16 @@ impl BusyChildProcess {
             ));
         }
         Ok(())
+    }
+}
+
+impl Drop for BusyChildProcess {
+    fn drop(&mut self) {
+        self.release.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -1385,7 +1398,7 @@ fn spawn_busy_child(engine: &RealEngine) -> Result<BusyChildProcess, String> {
         .map_err(|error| format!("spawn busy child: {error}"))?;
     drop(lock);
     Ok(BusyChildProcess {
-        child,
+        child: Some(child),
         release: Some(release),
     })
 }
@@ -3002,18 +3015,18 @@ fn run_program_for_with_clock(
                 scheduled_vfs.fire_runner_event(op_index, fault_vfs::FaultMode::SpawnInFlight)?;
                 let first = reopen_once_for_busy(&mut engine);
                 child.finish()?;
-                let retried = match first? {
-                    BusyReopenAttempt::Opened => false,
+                match first? {
+                    BusyReopenAttempt::Opened => {
+                        return Err(
+                            "SpawnInFlight did not engage the inherited writer lock".to_owned()
+                        );
+                    }
                     BusyReopenAttempt::StoreBusy => {
                         retry_reopen_after_busy(&mut engine)?;
-                        true
                     }
-                };
-                coverage.hit(if retried {
-                    "fault.busy.spawn.retried"
-                } else {
-                    "fault.busy.spawn.clean"
-                });
+                }
+                // A clean first attempt means lock inheritance failed; it is not coverage.
+                coverage.hit("fault.busy.spawn.retried");
                 match engine.stats() {
                     Ok(stats) => {
                         if let Some(violation) =
@@ -3136,8 +3149,6 @@ fn run_program_for_with_clock(
                 Some(ack)
             }),
         };
-        let operation_result = busy_hook_result.and(operation_result);
-
         let fired_at_operation = scheduled_vfs
             .events()
             .into_iter()
@@ -3147,6 +3158,23 @@ fn run_program_for_with_clock(
             .iter()
             .any(|event| event.layer == fault_vfs::Layer::Content);
         content_fault_fired |= content_at_operation;
+
+        if let Err(error) = busy_hook_result {
+            if !runner_records_error(
+                &scheduled_vfs.events(),
+                op_index,
+                RunnerErrorSource::BusyHook,
+            ) {
+                return Err("Busy-hook error suppression contract returned false".to_owned());
+            }
+            violations.push(violation(
+                Invariant::I8,
+                seed,
+                profile,
+                op_index,
+                format!("busy hook returned unexpected error: {error}"),
+            ));
+        }
 
         let mut operation_succeeded = false;
         match operation_result {
@@ -16500,9 +16528,25 @@ pub fn runner_retries_faulted_operation(events: &[FaultEvent], op_index: usize) 
 
 #[must_use]
 pub fn runner_records_operation_error(events: &[FaultEvent], op_index: usize) -> bool {
-    !events.iter().any(|event| {
-        event.fired && event.layer == fault_vfs::Layer::Content && event.op_index == op_index
-    })
+    runner_records_error(events, op_index, RunnerErrorSource::Operation)
+}
+
+#[must_use]
+pub fn runner_records_error(
+    events: &[FaultEvent],
+    op_index: usize,
+    source: RunnerErrorSource,
+) -> bool {
+    source == RunnerErrorSource::BusyHook
+        || !events.iter().any(|event| {
+            event.fired && event.layer == fault_vfs::Layer::Content && event.op_index == op_index
+        })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunnerErrorSource {
+    Operation,
+    BusyHook,
 }
 
 fn recover_and_retry_faulted_operation(
