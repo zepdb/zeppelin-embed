@@ -15,9 +15,10 @@ use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::snippet;
 use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, StoreLexicalError,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, QueryError, Store};
+use zeppelin_embed::scan::ScanError;
 use zeppelin_embed_adversarial_oracle::fts::{
     DocumentFact, DocumentTokens, FtsInput, FtsObserved, PhoneticFact, ScoreFact, SnippetFact,
     StructuredFact, TokenFact,
@@ -358,6 +359,12 @@ fn first_segment(directory: &Path) -> Result<PathBuf, String> {
 
 fn query_control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
+}
+
+fn pre_cancelled_control() -> QueryControl {
+    let token = CancelToken::new();
+    token.cancel();
+    QueryControl::Cancel(token)
 }
 
 fn score_fact(document: DocumentVersion, score: f64) -> Result<ScoreFact, String> {
@@ -741,18 +748,25 @@ fn cancellation_refused(seed: u64) -> Result<(), String> {
     store
         .ingest(IngestBatch::new(vec![document]))
         .map_err(|error| error.to_string())?;
-    let token = CancelToken::new();
-    token.cancel();
     let result = store.search_lexical(
         &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
         1,
-        QueryControl::Cancel(token),
+        pre_cancelled_control(),
     );
     store.close().map_err(|error| error.to_string())?;
     match result {
-        Err(_error) => Ok(()),
+        Err(error) if is_typed_cancelled(&error) => Ok(()),
+        Err(error) => Err(format!("cancelled lexical query returned {error:?}")),
         Ok(_outcome) => Err("cancelled lexical query succeeded".to_owned()),
     }
+}
+
+fn is_typed_cancelled(error: &StoreLexicalError) -> bool {
+    matches!(
+        error,
+        StoreLexicalError::Query(QueryError::Cancelled { partial: false })
+            | StoreLexicalError::Query(QueryError::Scan(ScanError::Cancelled { partial: false }))
+    )
 }
 
 fn exercise_fault(seed: u64, fault: FtsFaultKind) -> Result<(), String> {
@@ -850,14 +864,16 @@ fn exercise_fault_on_store(leg: &mut ControlStore, fault: FtsFaultKind) -> Resul
             }
         }
         FtsFaultKind::LexicalCancellation => {
-            let token = CancelToken::new();
-            token.cancel();
+            let control = leg
+                .scheduled_query_control()
+                .unwrap_or_else(pre_cancelled_control);
             match leg.store()?.search_lexical(
                 &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
                 1,
-                QueryControl::Cancel(token),
+                control,
             ) {
-                Err(_error) => Ok(()),
+                Err(error) if is_typed_cancelled(&error) => Ok(()),
+                Err(error) => Err(format!("cancelled lexical query returned {error:?}")),
                 Ok(_outcome) => Err("cancelled lexical query succeeded".to_owned()),
             }
         }

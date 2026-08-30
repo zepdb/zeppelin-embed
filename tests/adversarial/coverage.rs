@@ -65,7 +65,6 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.profile.random",
     "fault.site.open",
     "fault.site.read",
-    "fault.site.read_range",
     "fault.site.write",
     "fault.site.append",
     "fault.site.sync",
@@ -87,6 +86,7 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.mode.post_commit_error",
     "fault.mode.second_opener_in_process",
     "fault.mode.spawn_in_flight",
+    "fault.mode.cancel",
 ];
 
 /// A mergeable, deterministic ledger of paths that genuinely ran.

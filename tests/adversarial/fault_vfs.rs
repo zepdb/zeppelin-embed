@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
+use zeppelin_embed::lifecycle::CancelToken;
 use zeppelin_embed::vfs::crash::{CrashVfs, MemoryVfs};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
@@ -14,6 +15,22 @@ use super::program::{CrashBoundary, Op, Program};
 use super::test_support;
 
 pub const LAST_MATCH: usize = usize::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancelOutcome {
+    Pre,
+    DuringTraversal,
+}
+
+impl CancelOutcome {
+    #[must_use]
+    pub const fn coverage_key(self) -> &'static str {
+        match self {
+            Self::Pre => "fault.cancel.generic.pre",
+            Self::DuringTraversal => "fault.cancel.generic.during-traversal",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Layer {
@@ -75,6 +92,7 @@ pub enum FaultMode {
     PostCommitError,
     SecondOpenerInProcess,
     SpawnInFlight,
+    Cancel,
 }
 
 impl FaultMode {
@@ -95,12 +113,15 @@ impl FaultMode {
             Self::PostCommitError => "post_commit_error",
             Self::SecondOpenerInProcess => "second_opener_in_process",
             Self::SpawnInFlight => "spawn_in_flight",
+            Self::Cancel => "cancel",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultSite {
+    Admission,
+    GraphHop,
     Open,
     Read,
     ReadRange,
@@ -117,6 +138,8 @@ impl FaultSite {
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
+            Self::Admission => "admission",
+            Self::GraphHop => "graph_hop",
             Self::Open => "open",
             Self::Read => "read",
             Self::ReadRange => "read_range",
@@ -197,6 +220,8 @@ struct Runtime {
     matches: usize,
     fire_count: usize,
     path: Option<PathBuf>,
+    cancel_token: Option<CancelToken>,
+    cancel_outcome: Option<CancelOutcome>,
 }
 
 #[derive(Clone)]
@@ -431,6 +456,236 @@ impl<V> ScheduledVfs<V> {
         Ok(())
     }
 
+    pub fn cancel_token(&self) -> Result<Option<CancelToken>, String> {
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        let indices = self
+            .schedule
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                (event.op_index == current_operation && event.layer == Layer::Cancel)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if indices.len() > 1 {
+            return Err(format!(
+                "operation {current_operation} has {} Cancel events",
+                indices.len()
+            ));
+        }
+        let Some(index) = indices.first().copied() else {
+            return Ok(None);
+        };
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| "scheduled Cancel event is absent".to_owned())?;
+        if event.mode != FaultMode::Cancel {
+            return Err(format!(
+                "Cancel layer event {} has mode {}",
+                event.id,
+                event.mode.key()
+            ));
+        }
+        let mut runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| "scheduled fault runtime mutex poisoned".to_owned())?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| "scheduled Cancel runtime is absent".to_owned())?;
+        if runtime.fire_count > 0 {
+            return Ok(None);
+        }
+        let token = runtime
+            .cancel_token
+            .get_or_insert_with(CancelToken::new)
+            .clone();
+        if event.nth_match == 0 {
+            token.cancel();
+            runtime.fire_count = 1;
+            runtime.cancel_outcome = Some(CancelOutcome::Pre);
+        }
+        Ok(Some(token))
+    }
+
+    pub fn finish_cancel(&self) -> Result<Option<CancelOutcome>, String> {
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        let indices = self
+            .schedule
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                (event.op_index == current_operation && event.layer == Layer::Cancel)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if indices.len() > 1 {
+            return Err(format!(
+                "operation {current_operation} has {} Cancel events",
+                indices.len()
+            ));
+        }
+        let Some(index) = indices.first().copied() else {
+            return Ok(None);
+        };
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| "scheduled Cancel event is absent".to_owned())?;
+        let mut runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| "scheduled fault runtime mutex poisoned".to_owned())?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| "scheduled Cancel runtime is absent".to_owned())?;
+        if runtime.cancel_token.is_none() {
+            return Err(format!(
+                "Cancel event {} reached completion without a query token",
+                event.id
+            ));
+        }
+        if runtime.fire_count > 1 {
+            return Err(format!(
+                "Cancel event {} fired {} times",
+                event.id, runtime.fire_count
+            ));
+        }
+        if let Some(outcome) = runtime.cancel_outcome {
+            return Ok(Some(outcome));
+        }
+        if runtime.fire_count == 0 {
+            return Ok(None);
+        }
+        Err(format!(
+            "Cancel event {} fired without an outcome classification",
+            event.id
+        ))
+    }
+
+    pub fn cancel_after_hops(&self) -> Result<Option<usize>, String> {
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        let events = self
+            .schedule
+            .events
+            .iter()
+            .filter(|event| event.op_index == current_operation && event.layer == Layer::Cancel)
+            .collect::<Vec<_>>();
+        if events.len() > 1 {
+            return Err(format!(
+                "operation {current_operation} has {} Cancel events",
+                events.len()
+            ));
+        }
+        Ok(events
+            .first()
+            .filter(|event| event.site == FaultSite::GraphHop && event.nth_match > 0)
+            .map(|event| event.nth_match))
+    }
+
+    pub fn record_graph_cancel(&self) -> Result<(), String> {
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        let index = self
+            .schedule
+            .events
+            .iter()
+            .position(|event| {
+                event.op_index == current_operation
+                    && event.layer == Layer::Cancel
+                    && event.site == FaultSite::GraphHop
+                    && event.nth_match > 0
+            })
+            .ok_or_else(|| {
+                format!("operation {current_operation} has no armed graph-hop Cancel event")
+            })?;
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| "scheduled graph-hop Cancel event is absent".to_owned())?;
+        let mut runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| "scheduled fault runtime mutex poisoned".to_owned())?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| "scheduled graph-hop Cancel runtime is absent".to_owned())?;
+        if runtime.cancel_token.is_none() {
+            return Err(format!(
+                "graph-hop Cancel event {} has no query token",
+                event.id
+            ));
+        }
+        if runtime.fire_count != 0 {
+            return Err(format!(
+                "graph-hop Cancel event {} fired {} times before its receipt",
+                event.id, runtime.fire_count
+            ));
+        }
+        runtime.fire_count = 1;
+        runtime.cancel_outcome = Some(CancelOutcome::DuringTraversal);
+        runtime.path = Some(PathBuf::from(format!("graph-hop-{}", event.nth_match)));
+        Ok(())
+    }
+
+    pub fn adopt_cancel_event(&self, observed: &FaultEvent) -> Result<(), String> {
+        if observed.layer != Layer::Cancel || observed.mode != FaultMode::Cancel {
+            return Err(format!("event {} is not a Cancel event", observed.id));
+        }
+        if !observed.fired || observed.fire_count != 1 {
+            return Err(format!(
+                "Cancel event {} was not observed exactly once",
+                observed.id
+            ));
+        }
+        let index = self
+            .schedule
+            .events
+            .iter()
+            .position(|event| event.id == observed.id)
+            .ok_or_else(|| format!("Cancel event {} is not in the runner schedule", observed.id))?;
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| "adopted Cancel event is absent".to_owned())?;
+        if event.op_index != observed.op_index || event.nth_match != observed.nth_match {
+            return Err(format!("Cancel event {} changed identity", observed.id));
+        }
+        let mut runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| "scheduled fault runtime mutex poisoned".to_owned())?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| "adopted Cancel runtime is absent".to_owned())?;
+        runtime.fire_count = 1;
+        runtime.path.clone_from(&observed.path);
+        let token = CancelToken::new();
+        token.cancel();
+        runtime.cancel_token = Some(token);
+        runtime.cancel_outcome = Some(if event.nth_match == 0 {
+            CancelOutcome::Pre
+        } else {
+            match event.site {
+                FaultSite::GraphHop => CancelOutcome::DuringTraversal,
+                site => {
+                    return Err(format!(
+                        "Cancel event {} used unsupported site {}",
+                        event.id,
+                        site.key()
+                    ));
+                }
+            }
+        });
+        Ok(())
+    }
+
     fn action(&self, site: FaultSite, path: &Path) -> std::io::Result<Option<FaultMode>> {
         let current_operation = self.current_operation.load(Ordering::Relaxed);
         let mut runtimes = self
@@ -485,6 +740,11 @@ impl<V> ScheduledVfs<V> {
         runtime.matches = runtime.matches.saturating_add(1);
         runtime.fire_count = runtime.fire_count.saturating_add(1);
         runtime.path = Some(stable_fault_path(path));
+        if event.mode == FaultMode::Cancel {
+            return Err(std::io::Error::other(
+                "Cancel events must fire at admission or a graph hop, not a VFS site",
+            ));
+        }
         match event.mode {
             FaultMode::Eio => Err(std::io::Error::from_raw_os_error(5)),
             FaultMode::Eacces => Err(std::io::Error::from_raw_os_error(13)),
@@ -765,8 +1025,35 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             if sites.is_empty() {
                 continue;
             }
+            let mut cancel_rng = (layer == Layer::Cancel).then(|| {
+                test_support::seeded_rng(
+                    "adversarial::schedule::cancel",
+                    seed.wrapping_add((op_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+                )
+            });
+            let cancel_nth_match = (layer == Layer::Cancel).then(|| {
+                if matches!(
+                    operation,
+                    Op::Search {
+                        kind: super::program::SearchKind::Graph,
+                        ..
+                    }
+                ) {
+                    cancel_rng
+                        .as_mut()
+                        .map_or(0, |cancel_rng| cancel_rng.random_range(0..=4))
+                } else {
+                    0
+                }
+            });
             let site = if layer == Layer::Busy {
                 FaultSite::Open
+            } else if layer == Layer::Cancel {
+                if cancel_nth_match == Some(0) {
+                    FaultSite::Admission
+                } else {
+                    FaultSite::GraphHop
+                }
             } else {
                 sites[rng.random_range(0..sites.len())]
             };
@@ -784,6 +1071,8 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             }
             let drawn_mode = if layer == Layer::Busy {
                 modes[0]
+            } else if let Some(cancel_rng) = cancel_rng.as_mut() {
+                modes[cancel_rng.random_range(0..modes.len())]
             } else {
                 modes[rng.random_range(0..modes.len())]
             };
@@ -812,10 +1101,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             } else {
                 drawn_mode
             };
+            // Keep the established non-Cancel draw order: site, mode, match.
             let drawn_nth_match = if layer == Layer::Busy {
                 1
             } else {
-                rng.random_range(1..=4)
+                cancel_nth_match.unwrap_or_else(|| rng.random_range(1..=4))
             };
             let known_matches = expected_matches(operation, site);
             let (nth_match, expected_matches) = if layer == Layer::Busy {
@@ -879,6 +1169,23 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
             _ => &[],
         };
     }
+    if layer == Layer::Cancel {
+        return match operation {
+            Op::Search {
+                kind: super::program::SearchKind::Graph,
+                ..
+            } => &[FaultSite::Admission, FaultSite::GraphHop],
+            Op::Search { .. }
+            | Op::FilteredSearch { .. }
+            | Op::PredicateSearch { .. }
+            | Op::HybridSearch { .. }
+            | Op::DeadlineProbe { .. } => &[FaultSite::Admission],
+            Op::Feature(super::campaign::FeatureOperation::Fts(
+                super::campaign::FtsOperation::Extras,
+            )) => &[FaultSite::Admission],
+            _ => &[],
+        };
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return &[];
     }
@@ -905,12 +1212,11 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
             FaultSite::Rename,
             FaultSite::Delete,
         ],
-        Op::Open | Op::Reopen if layer == Layer::Io => &[
-            FaultSite::Open,
-            FaultSite::Read,
-            FaultSite::ReadRange,
-            FaultSite::List,
-        ],
+        // This harness opens and queries segments through mmap; no operation
+        // reaches Vfs::read_range.
+        Op::Open | Op::Reopen if layer == Layer::Io => {
+            &[FaultSite::Open, FaultSite::Read, FaultSite::List]
+        }
         Op::Open | Op::Reopen => &[FaultSite::Read],
         Op::Search { .. }
         | Op::FilteredSearch { .. }
@@ -919,13 +1225,13 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
         | Op::DeadlineProbe { .. }
             if layer == Layer::Io =>
         {
-            &[FaultSite::Read, FaultSite::ReadRange, FaultSite::Open]
+            &[FaultSite::Read, FaultSite::Open]
         }
         Op::Search { .. }
         | Op::FilteredSearch { .. }
         | Op::PredicateSearch { .. }
         | Op::HybridSearch { .. }
-        | Op::DeadlineProbe { .. } => &[FaultSite::Read, FaultSite::ReadRange],
+        | Op::DeadlineProbe { .. } => &[FaultSite::Read],
         Op::DropPartition { .. } if layer == Layer::Io => &[FaultSite::Delete, FaultSite::List],
         _ => &[],
     }
@@ -935,6 +1241,21 @@ fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMo
     match layer {
         Layer::Busy if matches!(operation, Op::Reopen) => &[FaultMode::SpawnInFlight],
         Layer::Busy => &[FaultMode::SecondOpenerInProcess],
+        Layer::Cancel
+            if matches!(
+                operation,
+                Op::Search { .. }
+                    | Op::FilteredSearch { .. }
+                    | Op::PredicateSearch { .. }
+                    | Op::HybridSearch { .. }
+                    | Op::DeadlineProbe { .. }
+                    | Op::Feature(super::campaign::FeatureOperation::Fts(
+                        super::campaign::FtsOperation::Extras
+                    ))
+            ) && matches!(site, FaultSite::Admission | FaultSite::GraphHop) =>
+        {
+            &[FaultMode::Cancel]
+        }
         Layer::Io
             if matches!(
                 operation,
@@ -1012,7 +1333,7 @@ fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMo
             FaultSite::Sync | FaultSite::Rename | FaultSite::List | FaultSite::Delete => {
                 &[FaultMode::SilentDrop]
             }
-            FaultSite::Open | FaultSite::Clock => &[],
+            FaultSite::Admission | FaultSite::GraphHop | FaultSite::Open | FaultSite::Clock => &[],
         },
         Layer::Crash | Layer::Clock | Layer::Cancel => &[],
     }
