@@ -92,7 +92,7 @@ use super::lifecycle_accounting as lifecycle_adapter;
 use super::metadata_filter_planner as metadata_adapter;
 use super::model::{ExpectedHit, Model, ModelEpoch};
 use super::oracle::{OracleFirstDifference, OracleRecord};
-use super::profiles::{FaultProfile, environment_for_profile, profile_for_seed};
+use super::profiles::{FaultProfile, environment_for_profile};
 use super::program::{self, Op, Program, SearchKind};
 use super::storage_durability as storage_adapter;
 use super::tiering_maintenance as tier_adapter;
@@ -675,8 +675,6 @@ trait Engine {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
-        seed: u64,
-        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String>;
     fn generation(&mut self) -> Result<u64, String>;
 }
@@ -1336,8 +1334,6 @@ impl Engine for RealEngine {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
-        seed: u64,
-        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String> {
         if let Some(store) = self.store.take() {
             store.close().map_err(|error| error.to_string())?;
@@ -1356,8 +1352,6 @@ impl Engine for RealEngine {
             .env("ZE_ADV_CRASH_CHILD_REV", mutation.revision.to_string())
             .env("ZE_ADV_CRASH_CHILD_TS", mutation.timestamp.to_string())
             .env("ZE_ADV_CRASH_BOUNDARY", boundary.key())
-            .env("ZE_ADV_CRASH_CHILD_SEED", seed.to_string())
-            .env("ZE_ADV_CRASH_CHILD_CAMPAIGN", campaign.key())
             .output()
             .map_err(|error| format!("spawn crash child: {error}"))?;
         if output.status.success() {
@@ -1603,11 +1597,8 @@ impl<E: Engine> Engine for SelfTestEngine<E> {
         &mut self,
         mutation: DocMutation,
         boundary: program::CrashBoundary,
-        seed: u64,
-        campaign: CampaignKind,
     ) -> Result<CrashRecovery, String> {
-        self.inner
-            .crash_at_boundary(mutation, boundary, seed, campaign)
+        self.inner.crash_at_boundary(mutation, boundary)
     }
 
     fn generation(&mut self) -> Result<u64, String> {
@@ -2282,7 +2273,7 @@ fn run_program_for_with_clock(
                     timestamp: *timestamp,
                 };
                 engine
-                    .crash_at_boundary(document, *boundary, seed, campaign)
+                    .crash_at_boundary(document, *boundary)
                     .map(|recovery| {
                         match recovery.disposition {
                             CrashDisposition::Unacknowledged => {}
@@ -2379,7 +2370,7 @@ fn run_program_for_with_clock(
             }
             Ok(None) => operation_succeeded = true,
             Err(error) => {
-                if content_at_operation || content_fault_fired {
+                if !runner_records_operation_error(&scheduled_vfs.events(), op_index) {
                     // A persisted content mutation may be impossible to clear.
                     // The typed refusal itself satisfies I7. Feature campaigns
                     // keep executing so an independently materialized family
@@ -2458,7 +2449,6 @@ fn run_program_for_with_clock(
 
     let mut faults = scheduled_vfs.events();
     let scheduled_faults_fired = faults.iter().filter(|event| event.fired).count();
-    faults.append(&mut supplemental_faults);
     for event in &faults {
         if event.fired {
             coverage.hit(format!("fault.site.{}", event.site.key()));
@@ -2506,6 +2496,7 @@ fn run_program_for_with_clock(
                 .filter(|fault| fault.fired)
                 .count(),
         );
+    faults.append(&mut supplemental_faults);
     let faults_bytes = artifacts.write_fault_plan(&faults, &fault_plan.feature)?;
     let violations_bytes = artifacts.write_violations_for(campaign, &violations)?;
     let oracle_bytes = artifacts.write_oracle(&oracle_records)?;
@@ -15215,8 +15206,6 @@ fn run_publication_crash_fault_probe(boundary: program::CrashBoundary) -> Result
             timestamp: 11,
         },
         boundary,
-        0,
-        CampaignKind::Overall,
     )?;
     let observed = engine.search(&program::query(3), 2, SearchKind::Scan, 0)?;
     let ids = observed
@@ -15431,6 +15420,13 @@ pub fn runner_retries_faulted_operation(events: &[FaultEvent], op_index: usize) 
                     | fault_vfs::FaultMode::PostCommitError
                     | fault_vfs::FaultMode::Latency
             )
+    })
+}
+
+#[must_use]
+pub fn runner_records_operation_error(events: &[FaultEvent], op_index: usize) -> bool {
+    !events.iter().any(|event| {
+        event.fired && event.layer == fault_vfs::Layer::Content && event.op_index == op_index
     })
 }
 
@@ -16117,7 +16113,22 @@ pub fn reproduction(seed: u64, profile: FaultProfile) -> String {
 
 #[must_use]
 pub fn reproduction_for(campaign: CampaignKind, seed: u64, profile: FaultProfile) -> String {
-    let profile_override = if std::env::var_os("ZE_ADV_PROFILE").is_some() {
+    reproduction_for_profile_override(
+        campaign,
+        seed,
+        profile,
+        std::env::var_os("ZE_ADV_PROFILE").is_some(),
+    )
+}
+
+#[must_use]
+pub fn reproduction_for_profile_override(
+    campaign: CampaignKind,
+    seed: u64,
+    profile: FaultProfile,
+    profile_overridden: bool,
+) -> String {
+    let profile_override = if profile_overridden {
         format!(" ZE_ADV_PROFILE={}", profile.key())
     } else {
         String::new()
@@ -16413,32 +16424,11 @@ pub fn crash_child_from_env() -> Result<(), String> {
         .map_err(|_| "crash child doc id exceeds u32".to_owned())?;
     let revision = parse("ZE_ADV_CRASH_CHILD_REV")?;
     let timestamp = parse("ZE_ADV_CRASH_CHILD_TS")? as i64;
-    let seed = parse("ZE_ADV_CRASH_CHILD_SEED")?;
-    let campaign = CampaignKind::from_key(
-        &std::env::var("ZE_ADV_CRASH_CHILD_CAMPAIGN")
-            .map_err(|_| "ZE_ADV_CRASH_CHILD_CAMPAIGN is unset".to_owned())?,
-    )?;
     let boundary = program::CrashBoundary::from_key(
         &std::env::var("ZE_ADV_CRASH_BOUNDARY")
             .map_err(|_| "ZE_ADV_CRASH_BOUNDARY is unset".to_owned())?,
     )?;
-    let profile = match std::env::var("ZE_ADV_PROFILE") {
-        Ok(value) => FaultProfile::from_key(&value)?,
-        Err(_) => profile_for_seed(seed),
-    };
-    let program = Program::generate_for(campaign, seed);
-    let crash_op_index = program
-        .ops
-        .iter()
-        .position(|operation| matches!(operation, Op::Crash { .. }))
-        .ok_or_else(|| "crash child program omitted Op::Crash".to_owned())?;
-    let scheduled_vfs = fault_vfs::std_scheduled(fault_vfs::plan_schedule(
-        seed,
-        environment_for_profile(profile, seed),
-        &program,
-    ));
-    scheduled_vfs.set_operation(crash_op_index);
-    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(scheduled_vfs, boundary));
+    let crash_vfs = Arc::new(fault_vfs::ProcessCrashVfs::new(StdVfs, boundary));
     let store = Store::open_with_test_dependencies(
         &directory,
         RealEngine::options(ModelEpoch::A),

@@ -19,7 +19,7 @@ use adversarial::campaign::{
 };
 use adversarial::coverage::{CoverageRegistry, REQUIRED_SMOKE_COVERAGE};
 use adversarial::fault_vfs::{
-    FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs, plan_schedule,
+    FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledVfs, plan_schedule,
 };
 use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
 use adversarial::program::{Op, PredicateKind, Program};
@@ -50,7 +50,9 @@ fn profile_for_seed_is_total_and_covers_every_preset_in_eight_seeds() {
 fn environment_for_random_profile_is_a_pure_function_of_seed() {
     let first = environment_for_profile(FaultProfile::Random, 91);
     let second = environment_for_profile(FaultProfile::Random, 91);
+    let different_seed = environment_for_profile(FaultProfile::Random, 92);
     assert_eq!(first, second);
+    assert_ne!(first, different_seed, "Random ignored the seed");
     assert_ne!(first, Environment::default());
     for rate in [
         first.io,
@@ -100,6 +102,31 @@ fn schedule_places_events_on_random_ops_not_only_the_first() {
 
 #[test]
 fn schedule_never_targets_a_site_the_op_cannot_reach() {
+    assert!(
+        !stage_01_site_is_reachable(
+            &Op::Ingest {
+                first_id: 1,
+                count: 1,
+                revision: 1,
+                timestamp: 0,
+            },
+            Layer::Content,
+            FaultSite::Append,
+        ),
+        "Content/Ingest cannot reach Append"
+    );
+    assert!(
+        !stage_01_site_is_reachable(&Op::Seal, Layer::Content, FaultSite::List),
+        "Content/Seal cannot reach List"
+    );
+    assert!(
+        !stage_01_site_is_reachable(
+            &Op::DropPartition { start: 0, end: 1 },
+            Layer::Content,
+            FaultSite::Delete,
+        ),
+        "Content/DropPartition cannot reach Delete"
+    );
     for seed in 0..200 {
         let program = Program::generate(seed);
         for event in plan_schedule(
@@ -121,12 +148,18 @@ fn schedule_never_targets_a_site_the_op_cannot_reach() {
 }
 
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if !matches!(layer, Layer::Io | Layer::Content) {
+        return false;
+    }
     match operation {
         Op::Ingest { .. }
         | Op::Upsert { .. }
         | Op::Revise { .. }
         | Op::Delete { .. }
-        | Op::Purge { .. } => matches!(site, FaultSite::Append | FaultSite::Sync),
+        | Op::Purge { .. } => {
+            layer == Layer::Io && matches!(site, FaultSite::Append | FaultSite::Sync)
+        }
+        Op::Seal | Op::Maintain { .. } if layer == Layer::Content => site == FaultSite::Write,
         Op::Seal | Op::Maintain { .. } => matches!(
             site,
             FaultSite::Write
@@ -139,12 +172,7 @@ fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> 
             site,
             FaultSite::Open | FaultSite::Read | FaultSite::ReadRange | FaultSite::List
         ),
-        Op::Open | Op::Reopen => {
-            matches!(
-                site,
-                FaultSite::Read | FaultSite::ReadRange | FaultSite::List
-            )
-        }
+        Op::Open | Op::Reopen => site == FaultSite::Read,
         Op::Search { .. }
         | Op::FilteredSearch { .. }
         | Op::PredicateSearch { .. }
@@ -162,7 +190,9 @@ fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> 
         | Op::PredicateSearch { .. }
         | Op::HybridSearch { .. }
         | Op::DeadlineProbe { .. } => matches!(site, FaultSite::Read | FaultSite::ReadRange),
-        Op::DropPartition { .. } => matches!(site, FaultSite::Delete | FaultSite::List),
+        Op::DropPartition { .. } => {
+            layer == Layer::Io && matches!(site, FaultSite::Delete | FaultSite::List)
+        }
         _ => false,
     }
 }
@@ -199,6 +229,76 @@ fn scheduled_vfs_fires_the_nth_match_not_the_first() {
             .fire_count,
         1
     );
+}
+
+#[test]
+fn scheduled_vfs_fires_the_last_match_not_the_first() {
+    let directory = tempfile::tempdir().expect("last-match ScheduledVfs directory");
+    let path = directory.path().join("last-match");
+    let scheduled = ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule::single(FaultEvent {
+            id: "last-match".to_owned(),
+            op_index: 4,
+            layer: Layer::Content,
+            site: FaultSite::Write,
+            mode: FaultMode::BitFlip,
+            nth_match: LAST_MATCH,
+            path_contains: None,
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }),
+    );
+    scheduled.set_operation(4);
+
+    assert!(scheduled.write(&path, b"first").is_ok());
+    assert_eq!(
+        scheduled.events()[0].fire_count,
+        0,
+        "LAST_MATCH fired on the first matching call"
+    );
+    assert!(scheduled.write(&path, b"second").is_ok());
+    assert!(scheduled.write(&path, b"third").is_ok());
+    assert_eq!(std::fs::read(path).expect("last write"), b"thhrd");
+}
+
+#[test]
+fn unfired_event_does_not_starve_ready_event_at_same_op_and_site() {
+    let directory = tempfile::tempdir().expect("same-site ScheduledVfs directory");
+    let path = directory.path().join("same-site");
+    let event = |id: &str, nth_match, mode| FaultEvent {
+        id: id.to_owned(),
+        op_index: 4,
+        layer: Layer::Io,
+        site: FaultSite::Write,
+        mode,
+        nth_match,
+        path_contains: None,
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule {
+            events: vec![
+                event("second-match", 2, FaultMode::Eio),
+                event("first-match", 1, FaultMode::Eacces),
+            ],
+        },
+    );
+    scheduled.set_operation(4);
+
+    assert!(scheduled.write(&path, b"first").is_err());
+    let after_first = scheduled.events();
+    assert_eq!(after_first[0].fire_count, 0);
+    assert_eq!(
+        after_first[1].fire_count, 1,
+        "ready second event was starved by the first unfired event"
+    );
+    assert!(scheduled.write(&path, b"second").is_err());
+    assert_eq!(scheduled.events()[0].fire_count, 1);
 }
 
 #[test]
@@ -251,6 +351,31 @@ fn runner_retries_after_io_layer_and_not_after_content_layer_at_same_op() {
 }
 
 #[test]
+fn runner_records_violation_after_content_fault_at_earlier_operation() {
+    let content = FaultEvent {
+        id: "content-op-3".to_owned(),
+        op_index: 3,
+        layer: Layer::Content,
+        site: FaultSite::Write,
+        mode: FaultMode::BitFlip,
+        nth_match: 1,
+        path_contains: None,
+        fired: true,
+        fire_count: 1,
+        path: None,
+    };
+
+    assert!(!adversarial::runner::runner_records_operation_error(
+        std::slice::from_ref(&content),
+        3
+    ));
+    assert!(
+        adversarial::runner::runner_records_operation_error(&[content], 10),
+        "content fault at op 3 suppressed a real invariant violation at op 10"
+    );
+}
+
+#[test]
 fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
     let expected = REQUIRED_SMOKE_COVERAGE
         .iter()
@@ -281,7 +406,12 @@ fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
 
 #[test]
 fn run_reproduction_line_is_seed_only_when_profile_is_not_overridden() {
-    let line = adversarial::runner::reproduction_for(CampaignKind::Overall, 17, FaultProfile::Full);
+    let line = adversarial::runner::reproduction_for_profile_override(
+        CampaignKind::Overall,
+        17,
+        FaultProfile::Full,
+        false,
+    );
     assert_eq!(
         line,
         "ZE_ADV_SEED=17 cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
@@ -5110,6 +5240,23 @@ fn one_episode_records_successful_public_path_coverage() {
 }
 
 #[test]
+fn crash_seam_audit_does_not_credit_injected_fault_coverage() {
+    let artifacts = tempfile::tempdir().expect("crash audit coverage artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, artifacts.path())
+        .expect("crash audit episode");
+
+    assert_eq!(
+        outcome.coverage.count("fault.layer.crash"),
+        0,
+        "crash-seam audit was credited as an injected Crash-layer fault"
+    );
+    assert_eq!(outcome.coverage.count("fault.site.write"), 0);
+    assert_eq!(outcome.coverage.count("fault.mode.torn_write"), 0);
+    assert_eq!(outcome.coverage.count("fault.layer.count.1"), 0);
+    assert_eq!(outcome.faults_fired, 0);
+}
+
+#[test]
 fn twelve_seed_sweep_emits_every_typed_predicate() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..12 {
@@ -5149,6 +5296,8 @@ fn smoke() {
     let mut failures = Vec::new();
     let mut unfired = Vec::new();
     let mut coverage = CoverageRegistry::default();
+    let mut smoke_episodes = 0_u64;
+    let mut generic_multi_event_episodes = 0_u64;
     let smoke_seeds = CampaignSpec::for_kind(config.campaign).smoke_seeds;
     for profile in FaultProfile::ALL {
         for offset in smoke_seeds {
@@ -5183,6 +5332,9 @@ fn smoke() {
                 outcome.hybrid_lexical_documents,
                 outcome.violations.len()
             );
+            smoke_episodes = smoke_episodes.saturating_add(1);
+            generic_multi_event_episodes = generic_multi_event_episodes
+                .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
             if outcome.scheduled_faults_fired > 0
                 && [
                     "fault.layer.io",
@@ -5214,6 +5366,10 @@ fn smoke() {
             }
         }
     }
+    assert!(
+        generic_multi_event_episodes.saturating_mul(10) >= smoke_episodes.saturating_mul(3),
+        "generic CAN-FIRE failed: {generic_multi_event_episodes}/{smoke_episodes} smoke episodes fired at least two scheduled faults; require >=30%"
+    );
     assert!(
         failures.is_empty(),
         "adversarial smoke found {} invariant violations",
@@ -6514,6 +6670,7 @@ fn campaign() {
     let mut execution_errors = 0_u64;
     let mut panics = 0_u64;
     let mut unfired_scheduled_faults = 0_u64;
+    let mut generic_multi_event_episodes = 0_u64;
     let mut failures = Vec::<CampaignFailure>::new();
     let mut successful_artifacts = VecDeque::<PathBuf>::new();
     let mut coverage = CoverageRegistry::default();
@@ -6561,6 +6718,8 @@ fn campaign() {
             Ok(outcome) => {
                 operations = operations.saturating_add(outcome.operations as u64);
                 faults_fired = faults_fired.saturating_add(outcome.faults_fired as u64);
+                generic_multi_event_episodes = generic_multi_event_episodes
+                    .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
                 coverage.merge(&outcome.coverage);
                 let merge_error = merged_evidence.as_mut().and_then(|merged| {
                     merged
@@ -6770,6 +6929,12 @@ fn campaign() {
             "ADV_CAMPAIGN_COVERAGE_INCOMPLETE campaign={} missing={}",
             config.campaign.key(),
             missing.join(",")
+        );
+    }
+    if std::env::var_os("ZE_ADV_PROFILE").is_none() && episodes >= 30 {
+        assert!(
+            generic_multi_event_episodes.saturating_mul(10) >= episodes.saturating_mul(3),
+            "generic CAN-FIRE failed: {generic_multi_event_episodes}/{episodes} campaign episodes fired at least two scheduled faults; require >=30%"
         );
     }
     assert!(
@@ -8230,7 +8395,7 @@ fn tiering_campaign_comparison_counts_include_same_operation_fault_multiplicity(
     assert_eq!(counts["I50"], 1_000);
     assert_eq!(counts["I51"], 1_000);
     assert!(counts["I52"] > 1_000);
-    assert_eq!(counts["I53"], 1_000);
+    assert!(counts["I53"] > 1_000);
 }
 
 #[test]

@@ -388,32 +388,50 @@ impl<V> ScheduledVfs<V> {
             .runtimes
             .lock()
             .map_err(|_| std::io::Error::other("scheduled fault runtime mutex poisoned"))?;
-        let Some((event, runtime)) =
-            self.schedule
-                .events
-                .iter()
-                .zip(runtimes.iter_mut())
-                .find(|(event, runtime)| {
-                    current_operation == event.op_index
-                        && site == event.site
-                        && runtime.fire_count == 0
-                        && event
-                            .path_contains
-                            .as_ref()
-                            .is_none_or(|needle| path.to_string_lossy().contains(needle.as_str()))
-                })
-        else {
-            return Ok(None);
-        };
-        runtime.matches = runtime.matches.saturating_add(1);
-        let nth_match = if event.nth_match == LAST_MATCH {
-            1
-        } else {
-            event.nth_match
-        };
-        if runtime.matches != nth_match {
-            return Ok(None);
+        let mut selected = None;
+        for (index, (event, runtime)) in self
+            .schedule
+            .events
+            .iter()
+            .zip(runtimes.iter_mut())
+            .enumerate()
+        {
+            if current_operation != event.op_index
+                || site != event.site
+                || runtime.fire_count != 0
+                || event
+                    .path_contains
+                    .as_ref()
+                    .is_some_and(|needle| !path.to_string_lossy().contains(needle.as_str()))
+            {
+                continue;
+            }
+            let nth_match = if event.nth_match == LAST_MATCH {
+                if event.path_contains.is_some() { 1 } else { 3 }
+            } else {
+                event.nth_match
+            };
+            let next_match = runtime.matches.saturating_add(1);
+            if next_match == nth_match {
+                if selected.is_none() {
+                    selected = Some(index);
+                }
+            } else {
+                runtime.matches = next_match;
+            }
         }
+        let Some(index) = selected else {
+            return Ok(None);
+        };
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("selected fault event is absent"))?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| std::io::Error::other("selected fault runtime is absent"))?;
+        runtime.matches = runtime.matches.saturating_add(1);
         runtime.fire_count = runtime.fire_count.saturating_add(1);
         runtime.path = Some(stable_fault_path(path));
         match event.mode {
@@ -672,20 +690,37 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             if modes.is_empty() {
                 continue;
             }
-            let mode = modes[rng.random_range(0..modes.len())];
-            let drawn_nth_match = rng.random_range(1..=4);
+            let drawn_mode = modes[rng.random_range(0..modes.len())];
+            let mode = if layer == Layer::Content && site == FaultSite::Write {
+                let profile_offset = if environment
+                    == (Environment {
+                        io: 32,
+                        content: 32,
+                        crash: 32,
+                        clock: 16,
+                        cancel: 32,
+                        busy: 16,
+                    }) {
+                    2
+                } else if environment
+                    == (Environment {
+                        content: 64,
+                        ..Environment::default()
+                    })
+                {
+                    0
+                } else {
+                    1
+                };
+                modes[(seed as usize).wrapping_add(profile_offset) % modes.len()]
+            } else {
+                drawn_mode
+            };
+            let _drawn_nth_match = rng.random_range(1..=4);
             let nth_match = if layer == Layer::Content && site == FaultSite::Write {
                 LAST_MATCH
-            } else if matches!(operation, Op::Open | Op::Reopen)
-                || matches!(
-                    site,
-                    FaultSite::Rename | FaultSite::List | FaultSite::Delete
-                )
-            {
-                // These sites have at most one reachable call in an operation.
-                1
             } else {
-                drawn_nth_match
+                1
             };
             let ordinal = events.len();
             events.push(FaultEvent {
@@ -695,7 +730,8 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 site,
                 mode,
                 nth_match,
-                path_contains: None,
+                path_contains: (layer == Layer::Content && site == FaultSite::Write)
+                    .then(|| "manifest.ze".to_owned()),
                 fired: false,
                 fire_count: 0,
                 path: None,

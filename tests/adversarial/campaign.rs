@@ -2032,8 +2032,8 @@ const TIER_FAULTS: [FeatureFault; 6] = feature_faults![
     TierCheckpointCorruption,
     TierStaleSource,
     TierEnospc,
-    TierProfileMismatch,
     TierPublicationCrash,
+    TierProfileMismatch,
 ];
 const LIFECYCLE_FAULTS: [FeatureFault; 6] = feature_faults![
     LifecycleClockFreezeJump,
