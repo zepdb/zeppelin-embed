@@ -1905,6 +1905,11 @@ impl CampaignSpec {
 }
 
 const SMOKE_SEEDS: [u64; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+/// Vector faults are selected by `seed % 6` and their variants by
+/// `seed / 6`, so four variants need four seeds per fault: 24 seeds.
+const VECTOR_SMOKE_SEEDS: [u64; 24] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
 const OVERALL_ACTIVE_INVARIANTS: [InvariantId; 12] = [
     InvariantId::new(1),
     InvariantId::new(2),
@@ -2735,7 +2740,7 @@ const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
         fault_profiles: &FaultProfile::DEFAULTS,
         feature_faults: &VECTOR_FAULTS,
         required_coverage: &VECTOR_COVERAGE,
-        smoke_seeds: &SMOKE_SEEDS,
+        smoke_seeds: &VECTOR_SMOKE_SEEDS,
     },
     CampaignSpec {
         kind: CampaignKind::VamanaGraph,

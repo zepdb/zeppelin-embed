@@ -4622,11 +4622,12 @@ fn smoke() {
     let mut failures = Vec::new();
     let mut unfired = Vec::new();
     let mut coverage = CoverageRegistry::default();
+    let smoke_seeds = CampaignSpec::for_kind(config.campaign).smoke_seeds;
     for profile in FaultProfile::DEFAULTS {
-        for offset in 0..12 {
+        for offset in smoke_seeds {
             let seed = config
                 .start_seed
-                .checked_add(offset)
+                .checked_add(*offset)
                 .expect("smoke seed range fits u64");
             let outcome =
                 adversarial::runner::run_program_for(config.campaign, seed, profile, &root)
