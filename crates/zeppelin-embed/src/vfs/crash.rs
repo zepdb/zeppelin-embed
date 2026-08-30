@@ -1,6 +1,7 @@
 //! In-memory mutating-operation recorder and deterministic crash-state materializer.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -271,6 +272,10 @@ impl<V: Vfs> Vfs for RecordingVfs<V> {
         self.inner.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path)
     }
@@ -419,6 +424,13 @@ impl Vfs for MemoryVfs {
             .get(path)
             .map(|bytes| bytes.len() as u64)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "path is absent"))
+    }
+
+    fn open_for_map(&self, _: &Path) -> std::io::Result<File> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "memory VFS does not support file-backed mappings",
+        ))
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -829,6 +841,10 @@ impl CrashVfs {
 impl Vfs for CrashVfs {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

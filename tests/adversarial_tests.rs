@@ -22,9 +22,101 @@ use adversarial::fault_vfs::{FaultEvent, FaultMode, FaultSite, ScheduledVfs};
 use adversarial::profiles::FaultProfile;
 use adversarial::program::{Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
-use zeppelin_embed::lifecycle::{ManualMonotonicClock, OpenOptions, Store, StoreTestDependencies};
+use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+use zeppelin_embed::lifecycle::{
+    ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+};
 use zeppelin_embed::meta::Schema;
-use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed::segment::SegmentError;
+use zeppelin_embed::vfs::{StdVfs, Vfs};
+
+#[test]
+#[ignore = "requires layered-faults stage 01 operation scheduling for Open/Eio at Reopen"]
+fn scheduled_open_fault_reaches_a_sealed_segment_open() {
+    let directory = tempfile::tempdir().expect("scheduled reopen directory");
+    let scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        Some(FaultEvent {
+            id: "stage-06-open-eio".to_owned(),
+            op_index: 1,
+            site: FaultSite::Open,
+            mode: FaultMode::Eio,
+            nth_match: 1,
+            path_contains: Some(".zseg".to_owned()),
+            fired: false,
+            path: None,
+        }),
+    ));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open scheduled store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(6), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest sealed fixture");
+    store.seal().expect("seal fixture");
+    store.close().expect("close before scheduled reopen");
+
+    scheduled.set_operation(1);
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock),
+    );
+    assert!(
+        matches!(
+            reopened,
+            Err(StoreError::Segment(SegmentError::Io { source, .. }))
+                if source.raw_os_error() == Some(5)
+        ),
+        "sealed reopen did not preserve the typed Open/Eio error"
+    );
+    assert!(scheduled.event().is_some_and(|event| event.fired));
+}
+
+#[test]
+#[ignore = "requires layered-faults stage 01 operation scheduling for TornWrite at Maintain"]
+fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
+    let program = Program::generate_for(CampaignKind::VamanaGraph, 6);
+    let maintain = program
+        .ops
+        .iter()
+        .position(|operation| matches!(operation, Op::Maintain { .. }))
+        .expect("Vamana graph program contains Maintain");
+    let event = FaultEvent {
+        id: "stage-06-torn-checkpoint".to_owned(),
+        op_index: maintain,
+        site: FaultSite::Write,
+        mode: FaultMode::TornWrite,
+        nth_match: 1,
+        path_contains: Some(".graph.checkpoint.tmp".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let scheduled = ScheduledVfs::new(StdVfs, Some(event));
+    scheduled.set_operation(maintain);
+    let directory = tempfile::tempdir().expect("torn checkpoint directory");
+    let checkpoint = directory.path().join(".tier-stage-06.graph.checkpoint.tmp");
+    scheduled
+        .write(
+            &checkpoint,
+            b"ZEVAMCP1-stage-01-must-split-maintain-and-reopen",
+        )
+        .expect("single-event harness writes the torn checkpoint plant");
+    let torn = std::fs::read(&checkpoint).expect("read torn checkpoint plant");
+
+    assert!(matches!(
+        zeppelin_embed::graph::build::validate_graph_build_checkpoint(&torn),
+        Err(zeppelin_embed::graph::build::GraphBuildError::CheckpointCorrupt(_))
+    ));
+    assert!(scheduled.event().is_some_and(|event| event.fired));
+}
 
 #[test]
 fn campaign_registry_is_complete_unique_and_smoke_bounded() {

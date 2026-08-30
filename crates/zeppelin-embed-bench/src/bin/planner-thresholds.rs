@@ -854,7 +854,7 @@ fn build_graph_fixture(rows: usize) -> Result<GraphFixture, Box<dyn Error>> {
         },
         DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?,
     )?;
-    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id)?;
+    let reader = SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id)?;
     let query = vectors
         .get(0..DIMENSIONS)
         .ok_or_else(|| io::Error::other("graph fixture has no query row"))?

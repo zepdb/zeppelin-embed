@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -212,6 +213,10 @@ impl<V: Vfs> Vfs for ProcessCrashVfs<V> {
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -453,6 +458,26 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         }
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        match self.action(FaultSite::Open, path)? {
+            Some(FaultMode::WrongObject) => {
+                let parent = path.parent().unwrap_or_else(|| Path::new("."));
+                let sibling = self
+                    .inner
+                    .list(parent)?
+                    .into_iter()
+                    .find(|candidate| candidate != path)
+                    .ok_or_else(|| std::io::Error::other("no sibling for wrong-object fault"))?;
+                self.inner.open_for_map(&sibling)
+            }
+            Some(FaultMode::PostCommitError) => {
+                let _ = self.inner.open_for_map(path)?;
+                Err(std::io::Error::other("scheduled post-open error"))
+            }
+            _ => self.inner.open_for_map(path),
+        }
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         let bytes = self.inner.read(path)?;
         match self.action(FaultSite::Read, path)? {
@@ -487,6 +512,8 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         }
     }
 
+    // Mapped segment bytes bypass read-side transformations. Content faults
+    // reach those immutable payloads only when this Write site damages them.
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         match self.action(FaultSite::Write, path)? {
             Some(FaultMode::SilentDrop) => Ok(()),

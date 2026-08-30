@@ -565,7 +565,7 @@ fn run_segment_action(
     id: SegmentId,
     action: SegmentAction,
 ) -> Result<Option<Vec<u16>>, SegmentError> {
-    let reader = SegmentReader::open(path, id)?;
+    let reader = SegmentReader::open(&StdVfs, path, id)?;
     match action {
         SegmentAction::Open => Ok(None),
         SegmentAction::ValidateAll => reader.validate_all().map(|()| None),

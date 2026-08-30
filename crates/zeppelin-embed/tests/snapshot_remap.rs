@@ -912,6 +912,12 @@ impl Vfs for NoCacheVfs {
         StdVfs.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        let file = std::fs::File::open(path)?;
+        disable_file_cache(&file)?;
+        Ok(file)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         let mut file = std::fs::File::open(path)?;
         disable_file_cache(&file)?;

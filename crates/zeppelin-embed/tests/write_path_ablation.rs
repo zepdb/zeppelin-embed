@@ -109,6 +109,10 @@ impl Vfs for TruncatingWriteVfs {
         self.inner.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path)
     }

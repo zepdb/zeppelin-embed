@@ -1,6 +1,5 @@
 //! Single-threaded flat Vamana graph construction.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use xxhash_rust::xxh3::xxh3_64;
@@ -331,6 +330,7 @@ impl std::error::Error for GraphBuildError {
 }
 
 struct GraphBuildSession<'a> {
+    vfs: &'a dyn Vfs,
     vectors: SegmentVectors<'a>,
     params: GraphParams,
     seed: u64,
@@ -341,6 +341,7 @@ struct GraphBuildSession<'a> {
 
 impl<'a> GraphBuildSession<'a> {
     fn new(
+        vfs: &'a dyn Vfs,
         reader: &'a SegmentReader,
         params: GraphParams,
         seed: u64,
@@ -349,17 +350,20 @@ impl<'a> GraphBuildSession<'a> {
         accounting: Option<&std::sync::Arc<Accounting>>,
     ) -> Result<Self, GraphBuildError> {
         let vectors = SegmentVectors::new(reader)?;
-        let state = if checkpoint_path.exists() {
-            let bytes =
-                fs::read(checkpoint_path).map_err(|source| GraphBuildError::CheckpointIo {
+        let state = match vfs.read(checkpoint_path) {
+            Ok(bytes) => decode_checkpoint(&bytes, &vectors, params, seed, passes, accounting)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                BuildState::new(&vectors, params, seed, accounting)?
+            }
+            Err(source) => {
+                return Err(GraphBuildError::CheckpointIo {
                     path: checkpoint_path.to_path_buf(),
                     source,
-                })?;
-            decode_checkpoint(&bytes, &vectors, params, seed, passes, accounting)?
-        } else {
-            BuildState::new(&vectors, params, seed, accounting)?
+                });
+            }
         };
         Ok(Self {
+            vfs,
             vectors,
             params,
             seed,
@@ -399,6 +403,7 @@ impl<'a> GraphBuildSession<'a> {
                 None => None,
             };
             let written = write_checkpoint(
+                self.vfs,
                 &self.checkpoint_path,
                 &self.vectors,
                 self.params,
@@ -449,7 +454,7 @@ impl<'a> GraphBuildSession<'a> {
             ..
         } = self.state;
         let artifact = encode_artifact(&self.vectors, self.params, &entries, &adjacency, memory)?;
-        remove_checkpoint(&self.checkpoint_path)?;
+        remove_checkpoint(self.vfs, &self.checkpoint_path)?;
         Ok(artifact)
     }
 }
@@ -551,6 +556,7 @@ pub fn build_graph_checkpointed(
     let cancellation = QueryCancellation::new(request.control, lease);
     check_cancellation(&cancellation)?;
     let mut session = GraphBuildSession::new(
+        store.vfs.as_ref(),
         reader,
         request.params,
         request.seed,
@@ -964,6 +970,7 @@ fn checkpoint_temp_path(path: &Path) -> PathBuf {
 }
 
 fn write_checkpoint(
+    vfs: &dyn Vfs,
     path: &Path,
     vectors: &SegmentVectors<'_>,
     params: GraphParams,
@@ -1027,15 +1034,15 @@ fn write_checkpoint(
     }
     bytes.extend_from_slice(&xxh3_64(&bytes).to_le_bytes());
     let temporary = checkpoint_temp_path(path);
-    if let Err(source) = fs::write(&temporary, &bytes) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(source) = vfs.write(&temporary, &bytes) {
+        let _ = vfs.delete(&temporary);
         return Err(GraphBuildError::CheckpointIo {
             path: temporary,
             source,
         });
     }
-    if let Err(source) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(source) = vfs.rename(&temporary, path) {
+        let _ = vfs.delete(&temporary);
         return Err(GraphBuildError::CheckpointIo {
             path: path.to_path_buf(),
             source,
@@ -1058,9 +1065,9 @@ fn checkpoint_encoded_bytes(state: &BuildState) -> Result<usize, GraphBuildError
         .ok_or_else(|| GraphBuildError::Geometry("checkpoint encoded bytes overflow".to_owned()))
 }
 
-fn remove_checkpoint(path: &Path) -> Result<(), GraphBuildError> {
+fn remove_checkpoint(vfs: &dyn Vfs, path: &Path) -> Result<(), GraphBuildError> {
     let temporary = checkpoint_temp_path(path);
-    match fs::remove_file(&temporary) {
+    match vfs.delete(&temporary) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(source) => {
@@ -1070,7 +1077,7 @@ fn remove_checkpoint(path: &Path) -> Result<(), GraphBuildError> {
             });
         }
     }
-    match fs::remove_file(path) {
+    match vfs.delete(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(GraphBuildError::CheckpointIo {
@@ -1980,13 +1987,17 @@ mod tests {
     use crate::graph::block::decode_node_blocks;
     use crate::lifecycle::QueryCancellation;
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::lifecycle::{
+        CancelToken, ManualMonotonicClock, OpenOptions, QueryControl, Store,
+        StoreTestDependencies,
+    };
     use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
     use crate::quant::{Bit4Factors, quantize_bit4};
     use crate::segment::SegmentId;
     use crate::segment::reader::SegmentReader;
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
-    use crate::vfs::StdVfs;
+    use crate::vfs::{CountingVfs, StdVfs};
+    use std::sync::Arc;
 
     use super::{
         Adjacency, CheckpointedGraphBuild, GraphBuildError, GraphBuildPasses, GraphBuildSession,
@@ -2039,7 +2050,64 @@ mod tests {
             policy,
         )
         .expect("sealed Bit4 fixture");
-        SegmentReader::open(&directory.join(id.file_name()), id).expect("fixture reader")
+        SegmentReader::open(&StdVfs, &directory.join(id.file_name()), id)
+            .expect("fixture reader")
+    }
+
+    #[test]
+    fn graph_checkpoint_io_goes_through_the_store_vfs() {
+        let segment_directory = tempfile::tempdir().expect("checkpoint segment directory");
+        let reader = fixture_reader(segment_directory.path(), 4);
+        let store_directory = tempfile::tempdir().expect("checkpoint store directory");
+        let vfs = Arc::new(CountingVfs::new(StdVfs));
+        let store = Store::open_with_test_dependencies(
+            store_directory.path(),
+            OpenOptions::default(),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("checkpoint store");
+        let lease = store.snapshot().expect("checkpoint snapshot");
+        let checkpoint = store_directory.path().join("graph-build.checkpoint");
+        let params = GraphParams::new(2, 3, 1.0, 1.0, 3, 1).expect("checkpoint params");
+        let control = QueryControl::Cancel(CancelToken::new());
+
+        vfs.reset();
+        let interrupted = build_graph_checkpointed(
+            &store,
+            &reader,
+            CheckpointedGraphBuild::new(
+                params,
+                0x06,
+                GraphBuildPasses::One,
+                &checkpoint,
+                &control,
+            )
+            .with_max_work_rows(1),
+            &lease,
+        );
+        assert!(matches!(
+            interrupted,
+            Err(GraphBuildError::BudgetExhausted { rows_completed: 1 })
+        ));
+        build_graph_checkpointed(
+            &store,
+            &reader,
+            CheckpointedGraphBuild::new(
+                params,
+                0x06,
+                GraphBuildPasses::One,
+                &checkpoint,
+                &control,
+            ),
+            &lease,
+        )
+        .expect("resumed graph build");
+
+        assert!(vfs.write_calls() >= 1, "checkpoint write bypassed Vfs");
+        assert!(vfs.rename_calls() >= 1, "checkpoint rename bypassed Vfs");
+        assert!(vfs.delete_calls() >= 1, "checkpoint delete bypassed Vfs");
+        drop(lease);
+        store.close().expect("close checkpoint store");
     }
 
     fn checkpoint_with_mutation(
@@ -2117,7 +2185,11 @@ mod tests {
             .expect("published graph segment");
         assert_eq!(meta.id, output_id);
         let published =
-            SegmentReader::open(&directory.path().join(output_id.file_name()), output_id)
+            SegmentReader::open(
+                &StdVfs,
+                &directory.path().join(output_id.file_name()),
+                output_id,
+            )
                 .expect("published reader");
         let graph = published
             .graph_node_blocks()
@@ -2190,6 +2262,7 @@ mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
         let mut session = GraphBuildSession::new(
+&StdVfs,
             &reader,
             params,
             0x0001_9000_3c0d_ec01,
@@ -2293,6 +2366,7 @@ mod tests {
         let cancellation = QueryCancellation::new(&control, &lease);
 
         let unfinished = GraphBuildSession::new(
+            &StdVfs,
             &reader,
             params,
             0x0001_9000_3100_0001,
@@ -2308,6 +2382,7 @@ mod tests {
 
         assert!(matches!(
             GraphBuildSession::new(
+                &StdVfs,
                 &reader,
                 params,
                 0x0001_9000_3100_0001,
@@ -2320,6 +2395,7 @@ mod tests {
 
         let missing_parent = directory.path().join("missing").join("write.checkpoint");
         let mut unwritable = GraphBuildSession::new(
+            &StdVfs,
             &reader,
             params,
             0x0001_9000_3100_0001,
@@ -2374,6 +2450,7 @@ mod tests {
         let control = QueryControl::Cancel(token.clone());
         let cancellation = QueryCancellation::new(&control, &lease);
         let mut session = GraphBuildSession::new(
+            &StdVfs,
             &reader,
             params,
             0x19_0003,
@@ -2415,6 +2492,7 @@ mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
         let mut interrupted = GraphBuildSession::new(
+            &StdVfs,
             &reader,
             params,
             0x19_0003_00c0_ffee,
@@ -2431,6 +2509,7 @@ mod tests {
         drop(interrupted);
 
         let mut resumed = GraphBuildSession::new(
+            &StdVfs,
             &reader,
             params,
             0x19_0003_00c0_ffee,

@@ -6,6 +6,17 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# ZE_VFS_SEAM_CLOSURE: mapping admission and graph checkpoints stay on Vfs.
+for source in \
+    crates/zeppelin-embed/src/segment/reader.rs \
+    crates/zeppelin-embed/src/graph/build.rs; do
+    if sed '/^mod tests {$/,$d' "$source" \
+        | grep -n -E '(^|[^[:alnum:]_])(fs::(read|write|rename|remove_file)|File::(open|create))\(|use[[:space:]]+std::fs;'; then
+        echo "forbidden direct filesystem operation in $source" >&2
+        exit 1
+    fi
+done
+
 if grep -R -n -E 'sync_(all|data)' crates/zeppelin-embed/src; then
     echo "forbidden direct file synchronization under crates/zeppelin-embed/src" >&2
     exit 1

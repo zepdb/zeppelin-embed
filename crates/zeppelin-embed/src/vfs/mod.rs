@@ -53,6 +53,8 @@ pub trait Vfs: Send + Sync {
     }
     /// Opens an existing path and returns its byte length.
     fn open(&self, path: &Path) -> std::io::Result<u64>;
+    /// Opens an existing path as an owned file suitable for memory mapping.
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File>;
     /// Reads an entire file.
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
     /// Reads at most `length` bytes beginning at `offset`.
@@ -105,6 +107,10 @@ impl VfsFile for StdVfsFile {
 impl Vfs for StdVfs {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         Ok(File::open(path)?.metadata()?.len())
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        File::open(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -178,6 +184,7 @@ pub struct CountingVfs<V> {
 #[derive(Default)]
 struct CountingVfsCounters {
     open_calls: AtomicU64,
+    open_for_map_calls: AtomicU64,
     read_calls: AtomicU64,
     read_bytes: AtomicU64,
     segment_bytes_read: Arc<AtomicU64>,
@@ -260,6 +267,12 @@ impl<V> CountingVfs<V> {
     #[must_use]
     pub fn open_calls(&self) -> u64 {
         self.counters.open_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns observed mapping-file open calls.
+    #[must_use]
+    pub fn open_for_map_calls(&self) -> u64 {
+        self.counters.open_for_map_calls.load(Ordering::Relaxed)
     }
 
     /// Returns observed read calls.
@@ -345,6 +358,7 @@ impl<V> CountingVfs<V> {
     /// Resets all counters without changing the wrapped filesystem.
     pub fn reset(&self) {
         self.counters.open_calls.store(0, Ordering::Relaxed);
+        self.counters.open_for_map_calls.store(0, Ordering::Relaxed);
         self.counters.read_calls.store(0, Ordering::Relaxed);
         self.counters.read_bytes.store(0, Ordering::Relaxed);
         self.counters.segment_bytes_read.store(0, Ordering::Relaxed);
@@ -373,6 +387,13 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.counters.open_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.counters
+            .open_for_map_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

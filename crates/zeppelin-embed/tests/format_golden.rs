@@ -309,7 +309,7 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         let (bytes, id) = golden_segment(dims, rows, int8);
         let path = directory.path().join(format!("{label}.zseg"));
         std::fs::write(&path, &bytes).expect("write");
-        let reader = SegmentReader::open(&path, id).expect("open");
+        let reader = SegmentReader::open(&StdVfs, &path, id).expect("open");
         reader.validate_all().expect("all bytes");
         if !header_fixture.is_empty() {
             assert_eq!(
@@ -430,7 +430,8 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
     );
     let unknown_path = directory.path().join("UNKNOWN.zseg");
     std::fs::write(&unknown_path, &unknown).expect("unknown write");
-    let reader = SegmentReader::open(&unknown_path, id).expect("unknown kind is skippable");
+    let reader =
+        SegmentReader::open(&StdVfs, &unknown_path, id).expect("unknown kind is skippable");
     assert_eq!(reader.unknown_region_ids(), vec![65_000]);
     reader
         .validate_all()
@@ -469,8 +470,8 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
     )
     .expect("write document-version segment");
     let document_path = directory.path().join(document_id.file_name());
-    let document_reader =
-        SegmentReader::open(&document_path, document_id).expect("open document-version segment");
+    let document_reader = SegmentReader::open(&StdVfs, &document_path, document_id)
+        .expect("open document-version segment");
     assert_eq!(
         document_reader
             .region(RegionKind::DocumentVersions)
@@ -512,9 +513,12 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
             .expect("stored-metadata policy"),
     )
     .expect("write stored-metadata segment");
-    let metadata_reader =
-        SegmentReader::open(&directory.path().join(metadata_id.file_name()), metadata_id)
-            .expect("open stored-metadata segment");
+    let metadata_reader = SegmentReader::open(
+        &StdVfs,
+        &directory.path().join(metadata_id.file_name()),
+        metadata_id,
+    )
+    .expect("open stored-metadata segment");
     assert_eq!(
         metadata_reader
             .region(RegionKind::StoredMetadata)
@@ -570,8 +574,12 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
             .expect("stored-text policy"),
     )
     .expect("write stored-text segment");
-    let text_reader = SegmentReader::open(&directory.path().join(text_id.file_name()), text_id)
-        .expect("open stored-text segment");
+    let text_reader = SegmentReader::open(
+        &StdVfs,
+        &directory.path().join(text_id.file_name()),
+        text_id,
+    )
+    .expect("open stored-text segment");
     assert_eq!(
         text_reader
             .region(RegionKind::StoredText)
@@ -597,7 +605,7 @@ fn prechange_segment_fixture_opens_without_postings() {
     let directory = tempfile::tempdir().expect("prechange segment directory");
     let path = directory.path().join(id.file_name());
     std::fs::write(&path, &frozen).expect("install prechange segment fixture");
-    let reader = SegmentReader::open(&path, id).expect("open prechange segment fixture");
+    let reader = SegmentReader::open(&StdVfs, &path, id).expect("open prechange segment fixture");
     reader
         .validate_all()
         .expect("validate prechange segment fixture");

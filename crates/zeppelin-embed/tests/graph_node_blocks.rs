@@ -85,7 +85,8 @@ fn repair_graph_checksum(bytes: &mut [u8]) {
 }
 
 fn rewrite_graph_region(path: &Path, id: SegmentId, mutate: impl FnOnce(&mut Vec<u8>)) {
-    let reader = SegmentReader::open(path, id).expect("segment header opens before rewrite");
+    let reader =
+        SegmentReader::open(&StdVfs, path, id).expect("segment header opens before rewrite");
     let header_length = reader.header_length();
     let graph_index = reader
         .directory()
@@ -351,7 +352,8 @@ fn graph_node_block_round_trip_through_mapped_accessor() {
     )
     .expect("segment with graph");
 
-    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id).expect("open");
+    let reader =
+        SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id).expect("open");
     let graph_entry = reader
         .directory()
         .iter()
@@ -550,7 +552,8 @@ fn graph_segment_reader_rejects_checksum_valid_geometry_mismatches() {
         graph[trailer + 12..trailer + 16].copy_from_slice(&1_u32.to_le_bytes());
         repair_graph_checksum(graph);
     });
-    let dimensions_reader = SegmentReader::open(&path, id).expect("forged dimensions header");
+    let dimensions_reader =
+        SegmentReader::open(&StdVfs, &path, id).expect("forged dimensions header");
     dimensions_reader
         .validate_all()
         .expect("all segment framing checksums were repaired");
@@ -581,7 +584,8 @@ fn graph_segment_reader_rejects_checksum_valid_geometry_mismatches() {
     .expect("standalone two-node graph")
     .into_bytes();
     rewrite_graph_region(&path, id, |graph| *graph = two_node_graph);
-    let row_count_reader = SegmentReader::open(&path, id).expect("forged node-count header");
+    let row_count_reader =
+        SegmentReader::open(&StdVfs, &path, id).expect("forged node-count header");
     row_count_reader
         .validate_all()
         .expect("all segment framing checksums were repaired");
@@ -689,7 +693,7 @@ fn graph_reader_validates_every_node_after_forgeable_checksums() {
             }
             repair_graph_checksum(graph);
         });
-        let reader = SegmentReader::open(&path, id).expect("forged segment header");
+        let reader = SegmentReader::open(&StdVfs, &path, id).expect("forged segment header");
         reader
             .validate_all()
             .expect("all segment framing checksums were repaired");
@@ -770,7 +774,7 @@ fn corrupt_graph_region_surfaces_typed_error_and_exact_scan_fallback() {
 
     rewrite_graph_region(&path, id, |graph| graph[0] ^= 1);
 
-    let damaged = SegmentReader::open(&path, id).expect("bounded header remains valid");
+    let damaged = SegmentReader::open(&StdVfs, &path, id).expect("bounded header remains valid");
     damaged
         .validate_all()
         .expect("frame, chunk, header, and whole-file checksums were repaired");

@@ -441,7 +441,12 @@ fn open_cached_sift_graph(
         .into());
     }
     let id = SegmentId::new(19, [0x32; 10]);
-    SegmentReader::open(&directory.join(id.file_name()), id).map_err(Into::into)
+    SegmentReader::open(
+        &zeppelin_embed::vfs::StdVfs,
+        &directory.join(id.file_name()),
+        id,
+    )
+    .map_err(Into::into)
 }
 
 fn fill_zero_query_results(

@@ -1,5 +1,6 @@
 //! Test-support-only ingest/retention fault plans and production receipts.
 
+use std::fs::File;
 use std::io::{IoSlice, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -985,6 +986,10 @@ impl Vfs for PartialBatchAppendVfs {
         self.inner.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path)
     }
@@ -1043,6 +1048,10 @@ impl Vfs for PurgeUnlinkErrorVfs {
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

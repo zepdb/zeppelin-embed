@@ -314,6 +314,10 @@ impl<V: Vfs> Vfs for TimedVfs<V> {
         self.inner.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         self.inner.read(path)
     }

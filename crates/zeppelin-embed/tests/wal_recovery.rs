@@ -151,6 +151,10 @@ impl<V: Vfs> Vfs for BlockingAppendVfs<V> {
         self.inner.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path)
     }
@@ -240,6 +244,10 @@ impl VfsFile for PayloadPointerVfsFile {
 impl<V: Vfs> Vfs for PayloadPointerVfs<V> {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -1346,6 +1354,10 @@ impl VfsFile for KillPointVfsFile {
 impl Vfs for KillPointVfs {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         StdVfs.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        StdVfs.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

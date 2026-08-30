@@ -1158,6 +1158,10 @@ impl Vfs for BlockingDeleteVfs {
         StdVfs.open(path)
     }
 
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        StdVfs.open_for_map(path)
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         StdVfs.read(path)
     }

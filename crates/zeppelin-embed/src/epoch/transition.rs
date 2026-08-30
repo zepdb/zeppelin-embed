@@ -285,7 +285,7 @@ impl Store {
         manifest.generation = generation;
         manifest.epoch_alias = Some(target);
         let remapped =
-            PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
         let source_documents = live_document_versions(&remapped, previous.embedding)?;
         let target_documents = live_document_versions(&remapped, target.embedding)?;
         let missing_documents = multiset_difference(&source_documents, &target_documents);
@@ -412,7 +412,7 @@ impl Store {
         manifest.generation = generation;
         manifest.segments = retained;
         let remapped =
-            PublishedSnapshot::from_manifest(&self.directory, &manifest, &self.accounting)?;
+            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
         commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;
         let mut published = self

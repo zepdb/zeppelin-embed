@@ -1,6 +1,7 @@
 //! Deterministic page-cache loss and explicitly blocked synchronization tests.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -94,6 +95,13 @@ impl Vfs for FaultVfs {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "path is absent"))
     }
 
+    fn open_for_map(&self, _: &Path) -> std::io::Result<File> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fault VFS does not support file-backed mappings",
+        ))
+    }
+
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.lock_state()?
             .visible
@@ -178,6 +186,13 @@ impl Vfs for FaultImage {
             .get(path)
             .map(|bytes| bytes.len() as u64)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "path is absent"))
+    }
+
+    fn open_for_map(&self, _: &Path) -> std::io::Result<File> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fault image does not support file-backed mappings",
+        ))
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -345,6 +360,10 @@ impl VfsFile for BlockingVfsFile {
 impl<V: Vfs> Vfs for BlockingVfs<V> {
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
