@@ -73,6 +73,8 @@ pub enum FaultMode {
     Latency,
     SilentDrop,
     PostCommitError,
+    SecondOpenerInProcess,
+    SpawnInFlight,
 }
 
 impl FaultMode {
@@ -91,6 +93,8 @@ impl FaultMode {
             Self::Latency => "latency",
             Self::SilentDrop => "silent_drop",
             Self::PostCommitError => "post_commit_error",
+            Self::SecondOpenerInProcess => "second_opener_in_process",
+            Self::SpawnInFlight => "spawn_in_flight",
         }
     }
 }
@@ -395,6 +399,38 @@ impl<V> ScheduledVfs<V> {
         self.current_operation.store(op_index, Ordering::Relaxed);
     }
 
+    pub fn fire_runner_event(&self, op_index: usize, mode: FaultMode) -> Result<(), String> {
+        let index = self
+            .schedule
+            .events
+            .iter()
+            .position(|event| {
+                event.op_index == op_index && event.layer == Layer::Busy && event.mode == mode
+            })
+            .ok_or_else(|| {
+                format!(
+                    "runner attempted unscheduled busy fault {} at op {op_index}",
+                    mode.key()
+                )
+            })?;
+        let mut runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| "scheduled fault runtime mutex poisoned".to_owned())?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| "scheduled busy fault runtime is absent".to_owned())?;
+        if runtime.fire_count != 0 {
+            return Err(format!(
+                "busy fault {} fired more than once at op {op_index}",
+                mode.key()
+            ));
+        }
+        runtime.matches = runtime.matches.saturating_add(1);
+        runtime.fire_count = runtime.fire_count.saturating_add(1);
+        Ok(())
+    }
+
     fn action(&self, site: FaultSite, path: &Path) -> std::io::Result<Option<FaultMode>> {
         let current_operation = self.current_operation.load(Ordering::Relaxed);
         let mut runtimes = self
@@ -457,6 +493,9 @@ impl<V> ScheduledVfs<V> {
                 std::thread::sleep(Duration::from_millis(1));
                 Ok(Some(event.mode))
             }
+            FaultMode::SecondOpenerInProcess | FaultMode::SpawnInFlight => Err(
+                std::io::Error::other("runner-only busy fault reached a VFS call"),
+            ),
             mode => Ok(Some(mode)),
         }
     }
@@ -726,7 +765,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             if sites.is_empty() {
                 continue;
             }
-            let site = sites[rng.random_range(0..sites.len())];
+            let site = if layer == Layer::Busy {
+                FaultSite::Open
+            } else {
+                sites[rng.random_range(0..sites.len())]
+            };
             if layer == Layer::Content
                 && site == FaultSite::Write
                 && program.ops[op_index.saturating_add(1)..]
@@ -739,7 +782,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             if modes.is_empty() {
                 continue;
             }
-            let drawn_mode = modes[rng.random_range(0..modes.len())];
+            let drawn_mode = if layer == Layer::Busy {
+                modes[0]
+            } else {
+                modes[rng.random_range(0..modes.len())]
+            };
             let mode = if layer == Layer::Content && site == FaultSite::Write {
                 let profile_offset = if environment
                     == (Environment {
@@ -765,12 +812,20 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             } else {
                 drawn_mode
             };
-            let drawn_nth_match = rng.random_range(1..=4);
+            let drawn_nth_match = if layer == Layer::Busy {
+                1
+            } else {
+                rng.random_range(1..=4)
+            };
             let known_matches = expected_matches(operation, site);
-            let (nth_match, expected_matches) = match known_matches {
-                Some(count) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
-                Some(_) => (drawn_nth_match, None),
-                None => (drawn_nth_match, None),
+            let (nth_match, expected_matches) = if layer == Layer::Busy {
+                (1, None)
+            } else {
+                match known_matches {
+                    Some(count) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
+                    Some(_) => (drawn_nth_match, None),
+                    None => (drawn_nth_match, None),
+                }
             };
             let ordinal = events.len();
             events.push(FaultEvent {
@@ -811,6 +866,19 @@ fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
 }
 
 fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
+    if layer == Layer::Busy {
+        return match operation {
+            Op::Seal
+            | Op::Search { .. }
+            | Op::FilteredSearch { .. }
+            | Op::PredicateSearch { .. }
+            | Op::HybridSearch { .. }
+            | Op::Stats
+            | Op::Close
+            | Op::Reopen => &[FaultSite::Open],
+            _ => &[],
+        };
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return &[];
     }
@@ -865,6 +933,8 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
 
 fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMode] {
     match layer {
+        Layer::Busy if matches!(operation, Op::Reopen) => &[FaultMode::SpawnInFlight],
+        Layer::Busy => &[FaultMode::SecondOpenerInProcess],
         Layer::Io
             if matches!(
                 operation,
@@ -944,7 +1014,7 @@ fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMo
             }
             FaultSite::Open | FaultSite::Clock => &[],
         },
-        Layer::Crash | Layer::Clock | Layer::Cancel | Layer::Busy => &[],
+        Layer::Crash | Layer::Clock | Layer::Cancel => &[],
     }
 }
 

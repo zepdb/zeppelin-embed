@@ -593,6 +593,175 @@ fn schedule_is_deterministic_for_seed_environment_and_program() {
 }
 
 #[test]
+fn second_opener_in_process_is_refused_and_first_handle_keeps_working() {
+    adversarial::runner::second_opener_in_process_for_test()
+        .expect("second opener must be refused without affecting the first handle");
+}
+
+#[test]
+fn second_opener_refusal_leaves_no_artifact_in_the_store_directory() {
+    let (before, after) = adversarial::runner::second_opener_artifacts_for_test()
+        .expect("observe second-opener directory artifacts");
+    assert_eq!(after, before, "refused second opener changed store files");
+}
+
+#[test]
+fn busy_child_helper_exits_zero_and_never_touches_the_store() {
+    let (before, after) = adversarial::runner::busy_child_round_trip_for_test()
+        .expect("busy child descriptor round trip");
+    assert_eq!(after, before, "busy child changed store files");
+}
+
+#[test]
+fn spawn_in_flight_reopen_matches_the_p2_contract() {
+    let artifacts = tempfile::tempdir().expect("spawn-in-flight artifacts");
+    let (seed, outcome) = (0..256)
+        .filter(|seed| {
+            let program = Program::generate(*seed);
+            plan_schedule(
+                *seed,
+                environment_for_profile(FaultProfile::Full, *seed),
+                &program,
+            )
+            .events
+            .iter()
+            .any(|event| event.mode == FaultMode::SpawnInFlight)
+        })
+        .find_map(|seed| {
+            let outcome =
+                adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+                    .unwrap_or_else(|error| panic!("SpawnInFlight seed {seed}: {error}"));
+            (outcome.coverage.count("fault.busy.spawn.clean")
+                + outcome.coverage.count("fault.busy.spawn.retried")
+                > 0)
+            .then_some((seed, outcome))
+        })
+        .expect("no planned SpawnInFlight event reached Reopen");
+    let clean = outcome.coverage.count("fault.busy.spawn.clean");
+    let retried = outcome.coverage.count("fault.busy.spawn.retried");
+    println!(
+        "SPAWN_IN_FLIGHT_SEED={seed} disposition={}",
+        if retried > 0 { "retried" } else { "clean" }
+    );
+    assert_eq!(
+        clean + retried,
+        1,
+        "SpawnInFlight did not fire exactly once"
+    );
+    assert!(
+        outcome.violations.is_empty(),
+        "SpawnInFlight violated the document contract: {:?}",
+        outcome.violations
+    );
+}
+
+#[test]
+#[ignore = "P2 undecided: fix contract"]
+fn spawn_in_flight_reopen_matches_the_fix_contract() {
+    let retried = adversarial::runner::spawn_in_flight_reopen_for_test()
+        .expect("fixed Reopen contract must succeed");
+    assert!(
+        !retried,
+        "fixed Reopen returned StoreBusy before succeeding"
+    );
+}
+
+#[test]
+fn busy_layer_can_catch_a_second_writer_that_acquires_the_lock() {
+    let (seed, operation) = (0..256)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Full, seed),
+                &program,
+            )
+            .events
+            .into_iter()
+            .find(|event| {
+                event.layer == Layer::Busy && event.mode == FaultMode::SecondOpenerInProcess
+            })
+            .map(|event| (seed, program.ops[event.op_index].kind()))
+        })
+        .expect("full profile planned no in-process busy event");
+    let artifacts = tempfile::tempdir().expect("busy-layer artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+        .unwrap_or_else(|error| panic!("busy seed {seed}: {error}"));
+
+    assert!(outcome.coverage.count("fault.layer.busy") > 0);
+    assert!(
+        outcome
+            .coverage
+            .count(&format!("fault.busy.second-opener.{operation}"))
+            > 0,
+        "scheduled second opener did not fire at {operation}"
+    );
+    assert!(
+        outcome.violations.is_empty(),
+        "busy layer admitted a second writer: {:?}",
+        outcome.violations
+    );
+}
+
+#[test]
+#[ignore = "stage 05 explicit 48-episode per-family gate"]
+fn busy_layer_full_family_gate() {
+    let config = RunConfig::from_env().expect("valid busy-layer family configuration");
+    assert_eq!(config.profile, FaultProfile::Full);
+    assert_eq!(config.minimum_episodes, 48);
+    let mut coverage = CoverageRegistry::default();
+    let mut violations = 0_usize;
+    for offset in 0..config.minimum_episodes {
+        let seed = config
+            .start_seed
+            .checked_add(offset)
+            .expect("busy family seed fits u64");
+        let artifacts = tempfile::tempdir().expect("busy family episode artifacts");
+        let outcome = adversarial::runner::run_program_for(
+            config.campaign,
+            seed,
+            FaultProfile::Full,
+            artifacts.path(),
+        )
+        .unwrap_or_else(|error| panic!("{} seed {seed}: {error}", config.campaign));
+        assert!(
+            outcome.missing_feature_faults.is_empty(),
+            "{} seed {seed} left feature faults unfired: {:?}",
+            config.campaign,
+            outcome.missing_feature_faults
+        );
+        violations = violations.saturating_add(outcome.violations.len());
+        coverage.merge(&outcome.coverage);
+    }
+    let second_openers = [
+        "close",
+        "filtered_search",
+        "hybrid_search",
+        "predicate_search",
+        "seal",
+        "search",
+        "stats",
+    ]
+    .into_iter()
+    .map(|operation| coverage.count(&format!("fault.busy.second-opener.{operation}")))
+    .sum::<usize>();
+    let spawn_clean = coverage.count("fault.busy.spawn.clean");
+    let spawn_retried = coverage.count("fault.busy.spawn.retried");
+    println!(
+        "BUSY_FAMILY campaign={} episodes=48 violations={violations} busy_layer={} second_opener={second_openers} spawn_clean={spawn_clean} spawn_retried={spawn_retried}",
+        config.campaign,
+        coverage.count("fault.layer.busy")
+    );
+    assert_eq!(violations, 0);
+    assert!(coverage.count("fault.layer.busy") > 0);
+    assert!(second_openers > 0, "no second-opener busy event fired");
+    assert!(
+        spawn_clean + spawn_retried > 0,
+        "no SpawnInFlight busy event fired"
+    );
+}
+
+#[test]
 fn schedule_places_events_on_random_ops_not_only_the_first() {
     let op_indices = (0..200)
         .flat_map(|seed| {
@@ -742,6 +911,20 @@ fn planned_content_write_can_target_the_segment_temp_file() {
 }
 
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if layer == Layer::Busy {
+        return site == FaultSite::Open
+            && matches!(
+                operation,
+                Op::Seal
+                    | Op::Search { .. }
+                    | Op::FilteredSearch { .. }
+                    | Op::PredicateSearch { .. }
+                    | Op::HybridSearch { .. }
+                    | Op::Stats
+                    | Op::Close
+                    | Op::Reopen
+            );
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return false;
     }
@@ -8164,6 +8347,14 @@ fn release_feature_campaign_rejects_real_violations() {
 fn crash_child() {
     if let Err(error) = adversarial::runner::crash_child_from_env() {
         panic!("crash child setup failed: {error}");
+    }
+}
+
+#[test]
+#[ignore = "helper subprocess holds an inherited writer-lock descriptor"]
+fn busy_child() {
+    if let Err(error) = adversarial::runner::busy_child_from_env() {
+        panic!("busy child setup failed: {error}");
     }
 }
 

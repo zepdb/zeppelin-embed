@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::{Read as _, Write as _};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +41,7 @@ use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, Durabili
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl,
     SearchOptions, SearchTier, StorageCleanupReport, StorageFaultPlan, StorageFaultReceipt, Store,
-    StoreTestDependencies, SystemMonotonicClock,
+    StoreError, StoreTestDependencies, SystemMonotonicClock,
 };
 use zeppelin_embed::manifest::EpochMeta;
 use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
@@ -1200,6 +1205,278 @@ impl RealEngine {
     }
 }
 
+fn require_second_opener_refusal(engine: &mut RealEngine) -> Result<(), String> {
+    match Store::open(&engine.directory, RealEngine::options(engine.open_epoch)) {
+        Err(StoreError::StoreBusy { .. }) => {}
+        Err(error) => {
+            return Err(format!(
+                "second opener returned {error} instead of StoreBusy"
+            ));
+        }
+        Ok(second) => {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(u32::MAX)), Revision::new(1)),
+                program::vector(u32::MAX, 1).to_vec(),
+            )
+            .with_timestamp(i64::MAX)
+            .with_metadata(program::sentinel(u32::MAX))
+            .with_text(program::lexical_text(u32::MAX, 1))
+            .with_columns(adversarial_columns(u32::MAX));
+            let ingest = second
+                .ingest(IngestBatch::new(vec![document]).with_epoch(declared_identity()))
+                .map_err(|error| error.to_string());
+            let close = second.close().map_err(|error| error.to_string());
+            return match (ingest, close) {
+                (Ok(_), Ok(())) => {
+                    Err("second opener acquired the writer lock and ingested".to_owned())
+                }
+                (Err(error), _) | (Ok(_), Err(error)) => Err(format!(
+                    "second opener acquired the writer lock; second-writer ingest failed: {error}"
+                )),
+            };
+        }
+    }
+    engine
+        .stats()
+        .map(|_| ())
+        .map_err(|error| format!("first handle failed after second-opener refusal: {error}"))
+}
+
+fn store_directory_entries(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| PathBuf::from(entry.file_name()))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    Ok(entries)
+}
+
+pub(crate) fn second_opener_in_process_for_test() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let result = require_second_opener_refusal(&mut engine);
+    let close = engine.close();
+    result.and(close)
+}
+
+pub(crate) fn second_opener_artifacts_for_test() -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let before = store_directory_entries(directory.path())?;
+    require_second_opener_refusal(&mut engine)?;
+    let after = store_directory_entries(directory.path())?;
+    engine.close()?;
+    Ok((before, after))
+}
+
+struct BusyChildProcess {
+    child: Child,
+    release: Option<UnixStream>,
+}
+
+impl BusyChildProcess {
+    fn finish(mut self) -> Result<(), String> {
+        let mut release = self
+            .release
+            .take()
+            .ok_or_else(|| "busy child release pipe is absent".to_owned())?;
+        release
+            .write_all(&[1])
+            .map_err(|error| format!("release busy child: {error}"))?;
+        drop(release);
+        let output = self
+            .child
+            .wait_with_output()
+            .map_err(|error| format!("wait for busy child: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "busy child failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn descriptor_path(raw_fd: i32) -> Option<PathBuf> {
+    unsafe extern "C" {
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
+    }
+    const F_GETPATH: i32 = 50;
+    const MAX_PATH_BYTES: usize = 1_024;
+    let mut path = [0_i8; MAX_PATH_BYTES];
+    let status = unsafe {
+        // SAFETY: F_GETPATH writes a NUL-terminated path into this fixed-size
+        // buffer and does not retain the pointer.
+        fcntl(raw_fd, F_GETPATH, path.as_mut_ptr())
+    };
+    if status == -1 {
+        return None;
+    }
+    let path = unsafe {
+        // SAFETY: successful F_GETPATH initialized a NUL-terminated string.
+        std::ffi::CStr::from_ptr(path.as_ptr())
+    };
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(raw_fd: i32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{raw_fd}")).ok()
+}
+
+fn duplicate_store_lock_descriptor(directory: &Path) -> Result<OwnedFd, String> {
+    let lock_path = std::fs::canonicalize(directory.join("writer.lock"))
+        .map_err(|error| format!("resolve writer lock: {error}"))?;
+    for raw_fd in 3..256 {
+        if descriptor_path(raw_fd).as_deref() != Some(lock_path.as_path()) {
+            continue;
+        }
+        let borrowed = unsafe {
+            // SAFETY: `descriptor_path` succeeded for this live descriptor and
+            // the borrow ends before the owning Store can be closed.
+            BorrowedFd::borrow_raw(raw_fd)
+        };
+        return borrowed
+            .try_clone_to_owned()
+            .map_err(|error| format!("duplicate writer lock descriptor: {error}"));
+    }
+    Err("open writer-lock descriptor was not found".to_owned())
+}
+
+fn spawn_busy_child(engine: &RealEngine) -> Result<BusyChildProcess, String> {
+    let lock = duplicate_store_lock_descriptor(&engine.directory)?;
+    let (read, release) =
+        UnixStream::pair().map_err(|error| format!("create busy child pipe: {error}"))?;
+    let read: OwnedFd = read.into();
+    let lock_fd = lock.as_raw_fd();
+    const CHILD_LOCK_FD: i32 = 198;
+    unsafe extern "C" {
+        fn dup2(source: i32, destination: i32) -> i32;
+    }
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    command
+        .args(["busy_child", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_BUSY_CHILD_LOCK_FD", CHILD_LOCK_FD.to_string())
+        .stdin(Stdio::from(read))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    unsafe {
+        // SAFETY: this closure performs only the async-signal-safe `dup2`
+        // between fork and exec. `lock` remains live through `spawn`.
+        command.pre_exec(move || {
+            if dup2(lock_fd, CHILD_LOCK_FD) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawn busy child: {error}"))?;
+    drop(lock);
+    Ok(BusyChildProcess {
+        child,
+        release: Some(release),
+    })
+}
+
+pub(crate) fn busy_child_round_trip_for_test() -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let before = store_directory_entries(directory.path())?;
+    spawn_busy_child(&engine)?.finish()?;
+    let after = store_directory_entries(directory.path())?;
+    engine.close()?;
+    Ok((before, after))
+}
+
+pub fn busy_child_from_env() -> Result<(), String> {
+    let lock_fd = std::env::var("ZE_ADV_BUSY_CHILD_LOCK_FD")
+        .map_err(|_| "ZE_ADV_BUSY_CHILD_LOCK_FD is absent".to_owned())?
+        .parse::<i32>()
+        .map_err(|_| "ZE_ADV_BUSY_CHILD_LOCK_FD is not an integer".to_owned())?;
+    let lock = unsafe {
+        // SAFETY: the parent maps its live duplicated lock descriptor to this
+        // numeric descriptor before exec and keeps no child-side Rust owner.
+        BorrowedFd::borrow_raw(lock_fd)
+    };
+    let _lock_guard = lock
+        .try_clone_to_owned()
+        .map_err(|_| "inherited writer-lock descriptor is closed".to_owned())?;
+    let mut release = [0_u8; 1];
+    std::io::stdin()
+        .read_exact(&mut release)
+        .map_err(|error| format!("wait on busy child pipe: {error}"))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BusyReopenAttempt {
+    Opened,
+    StoreBusy,
+}
+
+fn reopen_once_for_busy(engine: &mut RealEngine) -> Result<BusyReopenAttempt, String> {
+    if let Some(store) = engine.store.take() {
+        store.close().map_err(|error| error.to_string())?;
+    }
+    match Store::open_with_test_dependencies(
+        &engine.directory,
+        RealEngine::options(engine.open_epoch),
+        StoreTestDependencies::new(engine.vfs.clone(), engine.clock.clone()),
+    ) {
+        Ok(store) => {
+            engine.store = Some(store);
+            Ok(BusyReopenAttempt::Opened)
+        }
+        Err(StoreError::StoreBusy { .. }) => Ok(BusyReopenAttempt::StoreBusy),
+        Err(error) => Err(format!("Reopen returned a non-busy error: {error}")),
+    }
+}
+
+fn retry_reopen_after_busy(engine: &mut RealEngine) -> Result<(), String> {
+    const HOST_REOPEN_ATTEMPTS: usize = 8;
+    for _ in 0..HOST_REOPEN_ATTEMPTS {
+        match reopen_once_for_busy(engine)? {
+            BusyReopenAttempt::Opened => return Ok(()),
+            BusyReopenAttempt::StoreBusy => std::thread::yield_now(),
+        }
+    }
+    Err(format!(
+        "I8: Reopen remained StoreBusy after {HOST_REOPEN_ATTEMPTS} host retries"
+    ))
+}
+
+pub(crate) fn spawn_in_flight_reopen_for_test() -> Result<bool, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    engine.open()?;
+    let child = spawn_busy_child(&engine)?;
+    let first = reopen_once_for_busy(&mut engine);
+    child.finish()?;
+    let retried = match first? {
+        BusyReopenAttempt::Opened => false,
+        BusyReopenAttempt::StoreBusy => {
+            retry_reopen_after_busy(&mut engine)?;
+            true
+        }
+    };
+    engine.stats()?;
+    engine.close()?;
+    Ok(retried)
+}
+
 impl Engine for RealEngine {
     fn open(&mut self) -> Result<(), String> {
         if self.store.is_some() {
@@ -2258,11 +2535,43 @@ fn run_program_for_with_clock(
     let mut epoch_rollbacks = 0_usize;
     let mut epoch_drops = 0_usize;
     let mut rejected_dropped_epoch_rollbacks = 0_usize;
+    let mut pending_busy_child = None::<BusyChildProcess>;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         executed_operations = executed_operations.saturating_add(1);
         coverage.hit(format!("attempt.op.{}", op.kind()));
         scheduled_vfs.set_operation(op_index);
+        let spawn_event = fault_plan.schedule.events.iter().any(|event| {
+            event.op_index == op_index
+                && event.layer == fault_vfs::Layer::Busy
+                && event.mode == fault_vfs::FaultMode::SpawnInFlight
+        });
+        let arm_spawn_for_next_reopen = matches!(op, Op::Close)
+            && fault_plan.schedule.events.iter().any(|event| {
+                event.op_index == op_index.saturating_add(1)
+                    && event.layer == fault_vfs::Layer::Busy
+                    && event.mode == fault_vfs::FaultMode::SpawnInFlight
+            });
+        if arm_spawn_for_next_reopen {
+            if pending_busy_child.is_some() {
+                return Err("a second SpawnInFlight child was armed before Reopen".to_owned());
+            }
+            pending_busy_child = Some(spawn_busy_child(&engine)?);
+        }
+        let second_opener_event = fault_plan.schedule.events.iter().any(|event| {
+            event.op_index == op_index
+                && event.layer == fault_vfs::Layer::Busy
+                && event.mode == fault_vfs::FaultMode::SecondOpenerInProcess
+        });
+        let busy_hook_result = if second_opener_event {
+            let result = require_second_opener_refusal(&mut engine);
+            scheduled_vfs
+                .fire_runner_event(op_index, fault_vfs::FaultMode::SecondOpenerInProcess)?;
+            coverage.hit(format!("fault.busy.second-opener.{}", op.kind()));
+            result
+        } else {
+            Ok(())
+        };
         let selected_feature_faults = fault_plan
             .feature
             .iter()
@@ -2686,6 +2995,43 @@ fn run_program_for_with_clock(
                 None
             }),
             Op::Close => engine.close().map(|_| None),
+            Op::Reopen if spawn_event => (|| {
+                let child = pending_busy_child
+                    .take()
+                    .ok_or_else(|| "SpawnInFlight reached Reopen without a child".to_owned())?;
+                scheduled_vfs.fire_runner_event(op_index, fault_vfs::FaultMode::SpawnInFlight)?;
+                let first = reopen_once_for_busy(&mut engine);
+                child.finish()?;
+                let retried = match first? {
+                    BusyReopenAttempt::Opened => false,
+                    BusyReopenAttempt::StoreBusy => {
+                        retry_reopen_after_busy(&mut engine)?;
+                        true
+                    }
+                };
+                coverage.hit(if retried {
+                    "fault.busy.spawn.retried"
+                } else {
+                    "fault.busy.spawn.clean"
+                });
+                match engine.stats() {
+                    Ok(stats) => {
+                        if let Some(violation) =
+                            lifecycle_stats_violation(seed, profile, op_index, stats)
+                        {
+                            violations.push(violation);
+                        }
+                    }
+                    Err(error) => violations.push(violation(
+                        Invariant::I8,
+                        seed,
+                        profile,
+                        op_index,
+                        format!("reopen stats failed: {error}"),
+                    )),
+                }
+                Ok(None)
+            })(),
             Op::Reopen => engine.reopen().map(|_| {
                 match engine.stats() {
                     Ok(stats) => {
@@ -2790,6 +3136,7 @@ fn run_program_for_with_clock(
                 Some(ack)
             }),
         };
+        let operation_result = busy_hook_result.and(operation_result);
 
         let fired_at_operation = scheduled_vfs
             .events()
@@ -2891,6 +3238,11 @@ fn run_program_for_with_clock(
         if operation_succeeded {
             record_successful_operation_coverage(&mut coverage, op);
         }
+    }
+
+    if let Some(child) = pending_busy_child {
+        child.finish()?;
+        return Err("SpawnInFlight child did not reach its scheduled Reopen".to_owned());
     }
 
     let mut faults = scheduled_vfs.events();
@@ -14311,6 +14663,9 @@ fn vector_generic_fault_schedule(
         fault_vfs::FaultMode::SilentDrop => vector_adapter::VectorGenericFaultMode::SilentDrop,
         fault_vfs::FaultMode::PostCommitError => {
             vector_adapter::VectorGenericFaultMode::PostCommitError
+        }
+        fault_vfs::FaultMode::SecondOpenerInProcess | fault_vfs::FaultMode::SpawnInFlight => {
+            return Err("runner-only busy fault reached vector adapter".to_owned());
         }
     };
     if event.nth_match == 0 {
