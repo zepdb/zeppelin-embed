@@ -106,8 +106,8 @@ fn prop_segment_roundtrip() {
             ordered_policy(),
         )
         .expect("segment write");
-        let reader =
-            SegmentReader::open(&directory.path().join(id.file_name()), id).expect("segment open");
+        let reader = SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id)
+            .expect("segment open");
         reader.validate_all().expect("all bytes validate");
 
         let decoded_codes = reader.bit4_codes().expect("Bit4 codes");
@@ -180,7 +180,7 @@ fn segment_large_regions_are_validated_lazily_per_64k_chunk() {
         ordered_policy(),
     )
     .expect("segment");
-    let reader = SegmentReader::open(&path, id).expect("open");
+    let reader = SegmentReader::open(&StdVfs, &path, id).expect("open");
     assert_eq!(
         reader
             .region_chunk(RegionKind::VectorCodes, 0)
@@ -206,7 +206,7 @@ fn segment_large_regions_are_validated_lazily_per_64k_chunk() {
     let mut bytes = std::fs::read(&path).expect("read segment");
     bytes[entry.offset as usize + 65_536] ^= 1;
     std::fs::write(&path, bytes).expect("write damage");
-    let damaged = SegmentReader::open(&path, id).expect("header still valid");
+    let damaged = SegmentReader::open(&StdVfs, &path, id).expect("header still valid");
     let whole_region = damaged
         .region(RegionKind::VectorCodes)
         .expect_err("whole-region checksum must catch the damaged byte");
@@ -284,7 +284,8 @@ fn every_persisted_column_type_roundtrips_values_nulls_and_ieee_bits() {
     )
     .expect("write all-column segment");
 
-    let reader = SegmentReader::open(&directory.path().join(id.file_name()), id).expect("open");
+    let reader =
+        SegmentReader::open(&StdVfs, &directory.path().join(id.file_name()), id).expect("open");
     let decoded = reader.columns().expect("decode every column type");
     assert_eq!(decoded, columns);
     assert_eq!(decoded.timestamps(), &[-9, 12]);
@@ -371,16 +372,24 @@ fn scheme_specific_readers_and_graph_build_reject_cross_scheme_use() {
     )
     .expect("write Int8 segment");
 
-    let bit4 = SegmentReader::open(&directory.path().join(bit4_id.file_name()), bit4_id)
-        .expect("open Bit4");
+    let bit4 = SegmentReader::open(
+        &StdVfs,
+        &directory.path().join(bit4_id.file_name()),
+        bit4_id,
+    )
+    .expect("open Bit4");
     assert!(matches!(bit4.int8_codes(), Err(SegmentError::Geometry(_))));
     assert!(matches!(
         bit4.int8_factors(),
         Err(SegmentError::Geometry(_))
     ));
 
-    let int8 = SegmentReader::open(&directory.path().join(int8_id.file_name()), int8_id)
-        .expect("open Int8");
+    let int8 = SegmentReader::open(
+        &StdVfs,
+        &directory.path().join(int8_id.file_name()),
+        int8_id,
+    )
+    .expect("open Int8");
     assert_eq!(int8.int8_codes().expect("Int8 codes"), &[127]);
     assert!(matches!(int8.bit4_codes(), Err(SegmentError::Geometry(_))));
     assert!(matches!(

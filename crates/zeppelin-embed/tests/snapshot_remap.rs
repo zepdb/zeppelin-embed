@@ -908,8 +908,18 @@ fn page_size() -> std::io::Result<usize> {
 struct NoCacheVfs;
 
 impl Vfs for NoCacheVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        StdVfs.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         StdVfs.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        let file = std::fs::File::open(path)?;
+        disable_file_cache(&file)?;
+        Ok(file)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

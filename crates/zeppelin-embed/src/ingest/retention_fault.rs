@@ -1,5 +1,6 @@
 //! Test-support-only ingest/retention fault plans and production receipts.
 
+use std::fs::File;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -980,8 +981,16 @@ impl Vfs for PartialBatchAppendVfs {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -1040,8 +1049,16 @@ impl Vfs for PurgeUnlinkErrorVfs {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

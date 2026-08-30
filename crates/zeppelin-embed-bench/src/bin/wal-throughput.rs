@@ -310,8 +310,16 @@ impl VfsFile for TimedVfsFile {
 }
 
 impl<V: Vfs> Vfs for TimedVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {

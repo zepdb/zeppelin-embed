@@ -22,9 +22,179 @@ use adversarial::fault_vfs::{FaultEvent, FaultMode, FaultSite, ScheduledVfs};
 use adversarial::profiles::FaultProfile;
 use adversarial::program::{Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
-use zeppelin_embed::lifecycle::{ManualMonotonicClock, OpenOptions, Store, StoreTestDependencies};
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::build::GraphBuildError;
+use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+use zeppelin_embed::lifecycle::{
+    ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+};
 use zeppelin_embed::meta::Schema;
+use zeppelin_embed::segment::SegmentError;
+use zeppelin_embed::tier::{
+    MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
+};
 use zeppelin_embed::vfs::StdVfs;
+
+#[test]
+fn scheduled_open_fault_reaches_a_sealed_segment_open() {
+    let directory = tempfile::tempdir().expect("scheduled reopen directory");
+    let scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        Some(FaultEvent {
+            id: "stage-06-open-eio".to_owned(),
+            op_index: 1,
+            site: FaultSite::Open,
+            mode: FaultMode::Eio,
+            nth_match: 2,
+            path_contains: Some(".zseg".to_owned()),
+            fired: false,
+            path: None,
+        }),
+    ));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open scheduled store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(6), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest sealed fixture");
+    store.seal().expect("seal fixture");
+    store.close().expect("close before scheduled reopen");
+
+    scheduled.set_operation(1);
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), clock),
+    );
+    assert!(
+        matches!(
+            reopened,
+            Err(StoreError::Segment(SegmentError::Io { source, .. }))
+                if source.raw_os_error() == Some(5)
+        ),
+        "sealed reopen did not preserve the typed Open/Eio error"
+    );
+    assert!(scheduled.event().is_some_and(|event| event.fired));
+}
+
+#[test]
+fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
+    let program = Program::generate_for(CampaignKind::VamanaGraph, 6);
+    let maintain = program
+        .ops
+        .iter()
+        .position(|operation| matches!(operation, Op::Maintain { .. }))
+        .expect("Vamana graph program contains Maintain");
+    let event = FaultEvent {
+        id: "stage-06-torn-checkpoint".to_owned(),
+        op_index: maintain,
+        site: FaultSite::Write,
+        mode: FaultMode::TornWrite,
+        nth_match: 1,
+        path_contains: Some(".graph.checkpoint.tmp".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event)));
+    let directory = tempfile::tempdir().expect("torn checkpoint directory");
+    let document = EmbeddingTower {
+        model_id: "stage-06-sift-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0x06],
+        dims: 128,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let epoch = StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    };
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled.clone(), clock.clone()),
+    )
+    .expect("open scheduled maintenance store");
+    let documents = (0..128)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                (0..128)
+                    .map(|dimension| {
+                        if dimension % 2 == 0 {
+                            row as f32
+                        } else {
+                            -(row as f32)
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest checkpoint fixture");
+    store.seal().expect("seal checkpoint fixture");
+
+    scheduled.set_operation(maintain);
+    let interrupted = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes: 256 * 64,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(matches!(
+        interrupted.status,
+        MaintenanceStatus::BudgetExhausted
+    ));
+    assert!(scheduled.event().is_some_and(|event| event.fired));
+    store.close().expect("close after torn checkpoint");
+
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch),
+        StoreTestDependencies::new(scheduled, clock),
+    )
+    .expect("reopen after torn checkpoint");
+    let refused = reopened.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes: u64::MAX,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(
+            &refused.status,
+            MaintenanceStatus::Failed(MaintenanceError::Graph(GraphBuildError::CheckpointCorrupt(
+                _
+            )))
+        ),
+        "reopen accepted a torn graph-build checkpoint: {:?}",
+        refused.status
+    );
+    reopened.close().expect("close refused checkpoint store");
+}
 
 #[test]
 fn campaign_registry_is_complete_unique_and_smoke_bounded() {
@@ -4248,6 +4418,43 @@ fn feature_oracle_attestation_rejects_a_wrong_checker_version() {
     let error = validate_feature_oracle_record(CampaignKind::MetadataFilterPlanner, &record)
         .expect_err("a generic checker version earned I36 credit");
     assert!(error.contains("checker_id"), "{error}");
+}
+
+#[test]
+fn scheduled_open_fault_reaches_store_directory_admission() {
+    let directory = tempfile::tempdir().expect("scheduled directory admission");
+    let scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        Some(FaultEvent {
+            id: "stage-06-directory-open-eio".to_owned(),
+            op_index: 0,
+            site: FaultSite::Open,
+            mode: FaultMode::Eio,
+            nth_match: 1,
+            path_contains: None,
+            fired: false,
+            path: None,
+        }),
+    ));
+    scheduled.set_operation(0);
+
+    let opened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(ManualMonotonicClock::new())),
+    );
+    assert!(
+        matches!(
+            opened,
+            Err(StoreError::Io { path, source })
+                if path == directory.path() && source.raw_os_error() == Some(5)
+        ),
+        "store-directory admission bypassed the scheduled Open/Eio fault"
+    );
+    assert_eq!(
+        scheduled.event().and_then(|event| event.path),
+        Some(PathBuf::from("."))
+    );
 }
 
 #[test]

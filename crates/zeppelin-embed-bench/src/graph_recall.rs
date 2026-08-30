@@ -259,7 +259,7 @@ pub fn build_sift1m_graph(
     let marker_path = cache_directory.join("sift1m-graph-build.meta");
     let marker = graph_marker(passes, seed);
     if fs::read_to_string(&marker_path).ok().as_deref() == Some(marker.as_str())
-        && let Ok(reader) = SegmentReader::open(&output_path, output_id)
+        && let Ok(reader) = SegmentReader::open(&StdVfs, &output_path, output_id)
     {
         return Ok(reader);
     }
@@ -289,7 +289,7 @@ pub fn build_sift1m_graph(
     fs::rename(&temporary_marker, &marker_path)?;
     drop(lease);
     drop(store);
-    SegmentReader::open(&output_path, output_id).map_err(Into::into)
+    SegmentReader::open(&StdVfs, &output_path, output_id).map_err(Into::into)
 }
 
 /// Builds one M4b graph with the unchanged SIFT construction parameters.
@@ -343,7 +343,11 @@ pub fn build_cross_dataset_graph(
     write_cross_graph_marker(dataset, cache_directory, passes, seed, &metadata)?;
     drop(lease);
     drop(store);
-    let reader = SegmentReader::open(&cache_directory.join(graph_id().file_name()), graph_id())?;
+    let reader = SegmentReader::open(
+        &StdVfs,
+        &cache_directory.join(graph_id().file_name()),
+        graph_id(),
+    )?;
     Ok(CrossGraphArtifact { reader, metadata })
 }
 
@@ -387,7 +391,11 @@ pub fn open_cross_dataset_graph(
         zero_norm_rows: parse_zero_rows(measurements)?,
         cache_hit: true,
     };
-    let reader = SegmentReader::open(&cache_directory.join(graph_id().file_name()), graph_id())?;
+    let reader = SegmentReader::open(
+        &StdVfs,
+        &cache_directory.join(graph_id().file_name()),
+        graph_id(),
+    )?;
     if reader.meta().row_count as usize != dataset.rows()
         || reader.meta().dims as usize != dataset.dimensions()
         || reader.meta().scheme != 4
@@ -465,7 +473,7 @@ fn prepare_input_segment_for_shape(
 ) -> Result<SegmentReader, Box<dyn std::error::Error>> {
     let id = input_id();
     let segment_path = cache_directory.join(id.file_name());
-    if let Ok(reader) = SegmentReader::open(&segment_path, id)
+    if let Ok(reader) = SegmentReader::open(&StdVfs, &segment_path, id)
         && reader.meta().row_count as usize == rows
         && reader.meta().dims as usize == dimensions
         && reader.meta().scheme == 4
@@ -512,7 +520,7 @@ fn prepare_input_segment_for_shape(
         },
         policy,
     )?;
-    SegmentReader::open(&segment_path, id).map_err(Into::into)
+    SegmentReader::open(&StdVfs, &segment_path, id).map_err(Into::into)
 }
 
 fn prepare_cross_input_segment(
@@ -530,7 +538,7 @@ fn prepare_cross_input_segment(
         {
             let id = input_id();
             let segment_path = cache_directory.join(id.file_name());
-            if let Ok(reader) = SegmentReader::open(&segment_path, id)
+            if let Ok(reader) = SegmentReader::open(&StdVfs, &segment_path, id)
                 && reader.meta().row_count as usize == dataset.rows()
                 && reader.meta().dims as usize == dataset.dimensions()
                 && reader.meta().scheme == 4
@@ -598,7 +606,7 @@ fn prepare_cross_input_segment(
         &format!("{identity}\nzero_rows={zero_rows}\n"),
     )?;
     let segment_path = cache_directory.join(id.file_name());
-    let reader = SegmentReader::open(&segment_path, id)?;
+    let reader = SegmentReader::open(&StdVfs, &segment_path, id)?;
     Ok((reader, zero_norm_rows))
 }
 

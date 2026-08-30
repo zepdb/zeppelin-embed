@@ -383,10 +383,11 @@ impl PublishedSnapshot {
                 validate_header_with_vfs(vfs, &path, expected).map_err(StoreError::Segment)?;
             }
         }
-        Self::from_manifest(directory, &manifest, accounting)
+        Self::from_manifest(vfs, directory, &manifest, accounting)
     }
 
     pub(crate) fn from_manifest(
+        vfs: &dyn Vfs,
         directory: &Path,
         manifest: &Manifest,
         accounting: &Arc<Accounting>,
@@ -413,8 +414,12 @@ impl PublishedSnapshot {
             );
         for expected in ordered_segments {
             let path = directory.join(expected.id.file_name());
-            let reader =
-                SegmentReader::open_accounted(&path, expected, accounting, |allocation_bytes| {
+            let reader = SegmentReader::open_accounted(
+                vfs,
+                &path,
+                expected,
+                accounting,
+                |allocation_bytes| {
                     let bytes = u64::try_from(allocation_bytes).map_err(|_| {
                         StoreError::BudgetExceeded {
                             needed: u64::MAX,
@@ -423,7 +428,8 @@ impl PublishedSnapshot {
                         }
                     })?;
                     segments.reserve_additional_bytes(bytes)
-                })?;
+                },
+            )?;
             // Stored text is an optional append-only region. Older segments
             // omit it, while a present v1 region must be semantically valid
             // before the snapshot becomes reachable by any query.
@@ -668,11 +674,15 @@ impl Drop for SnapshotLease {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::tempdir;
 
     use super::{InMemorySegment, InMemorySegmentFactors, PublishedSnapshot};
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
-    use crate::lifecycle::{OpenOptions, Store, StoreError};
+    use crate::lifecycle::{
+        ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+    };
     use crate::manifest::Manifest;
     use crate::manifest::io::commit_manifest;
     use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
@@ -680,7 +690,65 @@ mod tests {
     use crate::segment::SegmentId;
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
     use crate::vfs::crash::{CrashOperation, RecordingVfs};
-    use crate::vfs::{StdVfs, SyncKind};
+    use crate::vfs::{CountingVfs, StdVfs, SyncKind};
+
+    #[test]
+    fn sealed_segment_open_is_routed_through_vfs_open_for_map() {
+        let directory = tempdir().expect("mapped segment directory");
+        let schema = Schema::new(Vec::new()).expect("timestamp-only schema");
+        let mut builder = ColumnStoreBuilder::new(schema.clone());
+        builder.push_row(7, &[]).expect("fixture row");
+        let columns = builder.finish().expect("fixture columns");
+        let alive = AliveSet::new(1);
+        let id = SegmentId::new(0x06, [0x06; 10]);
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived policy");
+        let segment = write_segment(
+            &StdVfs,
+            directory.path(),
+            SegmentBuild {
+                id,
+                scheme: 4,
+                dims: 4,
+                codes: &[0_u8; 2],
+                factors: SegmentFactors::Bit4(&[Bit4Factors::from_persisted(1.0, 1.0, 1.0)]),
+                rescore: &[0.0_f32; 4],
+                columns: &columns,
+                alive: &alive,
+            },
+            policy,
+        )
+        .expect("sealed segment");
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &Manifest {
+                generation: 1,
+                log_seq: 0,
+                segments: vec![segment],
+                epochs: Vec::new(),
+                epoch_alias: None,
+                schema,
+            },
+            policy,
+        )
+        .expect("segment manifest");
+        let vfs = Arc::new(CountingVfs::new(StdVfs));
+
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("store maps sealed segment");
+
+        assert_eq!(
+            vfs.open_for_map_calls(),
+            1,
+            "sealed segment mapping bypassed Vfs::open_for_map"
+        );
+        store.close().expect("close mapped store");
+    }
 
     #[test]
     fn publish_swaps_a_whole_snapshot_while_existing_readers_keep_their_generation() {

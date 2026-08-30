@@ -862,6 +862,7 @@ impl crate::lifecycle::Store {
                         let segment_artifact = ArtifactRef::Segment { id: expected.id };
                         examined.insert(segment_artifact.clone());
                         let fresh = match crate::segment::reader::SegmentReader::open(
+                            self.vfs.as_ref(),
                             &self.directory.join(expected.id.file_name()),
                             expected.id,
                         ) {

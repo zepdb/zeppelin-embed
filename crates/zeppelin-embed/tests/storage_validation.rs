@@ -82,7 +82,7 @@ fn rewrite_region(bytes: &mut [u8], entry_index: usize) {
 }
 
 fn open_error(path: &Path, id: SegmentId) -> SegmentError {
-    match SegmentReader::open(path, id) {
+    match SegmentReader::open(&StdVfs, path, id) {
         Ok(_) => panic!("damaged header unexpectedly opened"),
         Err(error) => error,
     }
@@ -285,7 +285,7 @@ fn segment_header_and_vector_geometry_reject_specific_malformed_fields() {
         }
         rewrite_region(&mut bytes, entry_index);
         std::fs::write(&path, bytes).expect("write");
-        let reader = SegmentReader::open(&path, id).expect("header");
+        let reader = SegmentReader::open(&StdVfs, &path, id).expect("header");
         let result = match entry_index {
             2 => reader.bit4_factors().map(|_| ()),
             3 => reader.bit4_codes().map(|_| ()),
@@ -296,7 +296,7 @@ fn segment_header_and_vector_geometry_reject_specific_malformed_fields() {
     }
 
     std::fs::write(&path, &valid).expect("valid write");
-    let reader = SegmentReader::open(&path, id).expect("valid open");
+    let reader = SegmentReader::open(&StdVfs, &path, id).expect("valid open");
     assert!(reader.int8_factors().is_err());
     assert!(reader.region(RegionKind::Postings).is_err());
     assert!(reader.region_chunk(RegionKind::VectorCodes, 99).is_err());
@@ -319,7 +319,7 @@ fn alive_and_column_decoders_reject_semantically_invalid_checked_bytes() {
     rewrite_region(&mut alive_length, 1);
     std::fs::write(&path, alive_length).expect("write");
     assert!(
-        SegmentReader::open(&path, id)
+        SegmentReader::open(&StdVfs, &path, id)
             .expect("open")
             .alive()
             .is_err()
@@ -330,7 +330,7 @@ fn alive_and_column_decoders_reject_semantically_invalid_checked_bytes() {
     rewrite_region(&mut alive_tail, 1);
     std::fs::write(&path, alive_tail).expect("write");
     assert!(
-        SegmentReader::open(&path, id)
+        SegmentReader::open(&StdVfs, &path, id)
             .expect("open")
             .alive()
             .is_err()
@@ -347,7 +347,7 @@ fn alive_and_column_decoders_reject_semantically_invalid_checked_bytes() {
     rewrite_region(&mut no_columns, 0);
     std::fs::write(&path, no_columns).expect("write");
     assert!(
-        SegmentReader::open(&path, id)
+        SegmentReader::open(&StdVfs, &path, id)
             .expect("open")
             .columns()
             .is_err()
@@ -358,7 +358,7 @@ fn alive_and_column_decoders_reject_semantically_invalid_checked_bytes() {
     rewrite_region(&mut bad_timestamp, 0);
     std::fs::write(&path, bad_timestamp).expect("write");
     assert!(
-        SegmentReader::open(&path, id)
+        SegmentReader::open(&StdVfs, &path, id)
             .expect("open")
             .columns()
             .is_err()
@@ -468,7 +468,7 @@ fn column_decoder_rejects_value_bearing_semantic_corruption() {
         mutate(&mut bytes);
         rewrite_region(&mut bytes, 0);
         std::fs::write(&path, bytes).expect("write semantic corruption");
-        let error = SegmentReader::open(&path, id)
+        let error = SegmentReader::open(&StdVfs, &path, id)
             .expect("header remains valid")
             .columns()
             .expect_err("semantic corruption must be rejected");
@@ -480,7 +480,13 @@ fn column_decoder_rejects_value_bearing_semantic_corruption() {
 fn segment_writer_surfaces_each_vfs_commit_stage() {
     struct FailingVfs;
     impl Vfs for FailingVfs {
+        fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+            Err(std::io::ErrorKind::Other.into())
+        }
         fn open(&self, _: &Path) -> std::io::Result<u64> {
+            Err(std::io::ErrorKind::Other.into())
+        }
+        fn open_for_map(&self, _: &Path) -> std::io::Result<std::fs::File> {
             Err(std::io::ErrorKind::Other.into())
         }
         fn read(&self, _: &Path) -> std::io::Result<Vec<u8>> {
@@ -538,8 +544,14 @@ struct StageVfs {
 }
 
 impl Vfs for StageVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
     }
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path)

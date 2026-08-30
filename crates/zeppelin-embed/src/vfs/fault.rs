@@ -1,6 +1,7 @@
 //! Deterministic page-cache loss and explicitly blocked synchronization tests.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -86,12 +87,23 @@ impl VfsFile for FaultVfsFile {
 }
 
 impl Vfs for FaultVfs {
+    fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+        Ok(true)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.lock_state()?
             .visible
             .get(path)
             .map(|bytes| bytes.len() as u64)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "path is absent"))
+    }
+
+    fn open_for_map(&self, _: &Path) -> std::io::Result<File> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fault VFS does not support file-backed mappings",
+        ))
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -173,11 +185,22 @@ impl FaultImage {
 }
 
 impl Vfs for FaultImage {
+    fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+        Ok(true)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.files
             .get(path)
             .map(|bytes| bytes.len() as u64)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "path is absent"))
+    }
+
+    fn open_for_map(&self, _: &Path) -> std::io::Result<File> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fault image does not support file-backed mappings",
+        ))
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -343,8 +366,16 @@ impl VfsFile for BlockingVfsFile {
 }
 
 impl<V: Vfs> Vfs for BlockingVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.inner.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

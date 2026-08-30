@@ -77,7 +77,7 @@ fn rewrite_region(bytes: &mut [u8], entry: usize) {
 
 fn write_and_open(path: &Path, bytes: &[u8], id: SegmentId) -> SegmentReader {
     std::fs::write(path, bytes).expect("write checked semantic mutation");
-    SegmentReader::open(path, id).expect("outer checksums remain valid")
+    SegmentReader::open(&StdVfs, path, id).expect("outer checksums remain valid")
 }
 
 fn semantic_metadata_segment() -> (Vec<u8>, SegmentId) {
