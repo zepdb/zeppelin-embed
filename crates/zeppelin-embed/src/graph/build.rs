@@ -1977,8 +1977,6 @@ impl SplitMix64 {
     clippy::unwrap_used
 )]
 mod tests {
-    use std::fs;
-
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     use rand::{Rng, RngCore};
@@ -1988,15 +1986,14 @@ mod tests {
     use crate::lifecycle::QueryCancellation;
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::lifecycle::{
-        CancelToken, ManualMonotonicClock, OpenOptions, QueryControl, Store,
-        StoreTestDependencies,
+        CancelToken, ManualMonotonicClock, OpenOptions, QueryControl, Store, StoreTestDependencies,
     };
     use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
     use crate::quant::{Bit4Factors, quantize_bit4};
     use crate::segment::SegmentId;
     use crate::segment::reader::SegmentReader;
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
-    use crate::vfs::{CountingVfs, StdVfs};
+    use crate::vfs::{CountingVfs, StdVfs, Vfs};
     use std::sync::Arc;
 
     use super::{
@@ -2050,8 +2047,7 @@ mod tests {
             policy,
         )
         .expect("sealed Bit4 fixture");
-        SegmentReader::open(&StdVfs, &directory.join(id.file_name()), id)
-            .expect("fixture reader")
+        SegmentReader::open(&StdVfs, &directory.join(id.file_name()), id).expect("fixture reader")
     }
 
     #[test]
@@ -2059,7 +2055,8 @@ mod tests {
         let segment_directory = tempfile::tempdir().expect("checkpoint segment directory");
         let reader = fixture_reader(segment_directory.path(), 4);
         let store_directory = tempfile::tempdir().expect("checkpoint store directory");
-        let vfs = Arc::new(CountingVfs::new(StdVfs));
+        let checkpoint = store_directory.path().join("graph-build.checkpoint");
+        let vfs = Arc::new(CountingVfs::new(StdVfs).with_read_path_filter(checkpoint.clone()));
         let store = Store::open_with_test_dependencies(
             store_directory.path(),
             OpenOptions::default(),
@@ -2067,7 +2064,6 @@ mod tests {
         )
         .expect("checkpoint store");
         let lease = store.snapshot().expect("checkpoint snapshot");
-        let checkpoint = store_directory.path().join("graph-build.checkpoint");
         let params = GraphParams::new(2, 3, 1.0, 1.0, 3, 1).expect("checkpoint params");
         let control = QueryControl::Cancel(CancelToken::new());
 
@@ -2075,14 +2071,8 @@ mod tests {
         let interrupted = build_graph_checkpointed(
             &store,
             &reader,
-            CheckpointedGraphBuild::new(
-                params,
-                0x06,
-                GraphBuildPasses::One,
-                &checkpoint,
-                &control,
-            )
-            .with_max_work_rows(1),
+            CheckpointedGraphBuild::new(params, 0x06, GraphBuildPasses::One, &checkpoint, &control)
+                .with_max_work_rows(1),
             &lease,
         );
         assert!(matches!(
@@ -2092,17 +2082,17 @@ mod tests {
         build_graph_checkpointed(
             &store,
             &reader,
-            CheckpointedGraphBuild::new(
-                params,
-                0x06,
-                GraphBuildPasses::One,
-                &checkpoint,
-                &control,
-            ),
+            CheckpointedGraphBuild::new(params, 0x06, GraphBuildPasses::One, &checkpoint, &control),
             &lease,
         )
         .expect("resumed graph build");
 
+        assert!(vfs.read_calls() >= 1, "checkpoint read bypassed Vfs");
+        assert_eq!(
+            vfs.filtered_read_calls(),
+            1,
+            "graph-build.checkpoint read bypassed Vfs"
+        );
         assert!(vfs.write_calls() >= 1, "checkpoint write bypassed Vfs");
         assert!(vfs.rename_calls() >= 1, "checkpoint rename bypassed Vfs");
         assert!(vfs.delete_calls() >= 1, "checkpoint delete bypassed Vfs");
@@ -2184,13 +2174,12 @@ mod tests {
             .write_segment_with_graph(&StdVfs, directory.path(), &reader, output_id, policy)
             .expect("published graph segment");
         assert_eq!(meta.id, output_id);
-        let published =
-            SegmentReader::open(
-                &StdVfs,
-                &directory.path().join(output_id.file_name()),
-                output_id,
-            )
-                .expect("published reader");
+        let published = SegmentReader::open(
+            &StdVfs,
+            &directory.path().join(output_id.file_name()),
+            output_id,
+        )
+        .expect("published reader");
         let graph = published
             .graph_node_blocks()
             .expect("published graph region");
@@ -2262,7 +2251,7 @@ mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
         let mut session = GraphBuildSession::new(
-&StdVfs,
+            &StdVfs,
             &reader,
             params,
             0x0001_9000_3c0d_ec01,
@@ -2276,7 +2265,7 @@ mod tests {
                 .advance_batch(&cancellation)
                 .expect("checkpoint batch")
         );
-        let valid = fs::read(&checkpoint).expect("valid checkpoint bytes");
+        let valid = StdVfs.read(&checkpoint).expect("valid checkpoint bytes");
         validate_graph_build_checkpoint(&valid).expect("valid checkpoint parses");
 
         let mut bad_checksum = valid.clone();
@@ -2439,7 +2428,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("sealed segment directory");
         let reader = fixture_reader(directory.path(), 48);
         let segment_path = directory.path().join(reader.meta().id.file_name());
-        let before = fs::read(&segment_path).expect("sealed bytes before build");
+        let before = StdVfs
+            .read(&segment_path)
+            .expect("sealed bytes before build");
         let checkpoint = directory.path().join("graph-build.checkpoint");
         let checkpoint_temp = directory.path().join("graph-build.checkpoint.tmp");
         let params = GraphParams::new(8, 12, 1.0, 1.2, 24, 8).expect("test params");
@@ -2467,7 +2458,9 @@ mod tests {
             Err(GraphBuildError::Cancelled { partial: false })
         ));
         assert_eq!(
-            fs::read(&segment_path).expect("sealed bytes after cancel"),
+            StdVfs
+                .read(&segment_path)
+                .expect("sealed bytes after cancel"),
             before
         );
         assert!(

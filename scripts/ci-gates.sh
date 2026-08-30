@@ -7,11 +7,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # ZE_VFS_SEAM_CLOSURE: mapping admission and graph checkpoints stay on Vfs.
+VFS_SEAM_DENIED='(^|[^[:alnum:]_])((std::)?fs::(read|read_to_string|write|rename|remove_file|metadata|copy|hard_link|create_dir_all)|File::(open|create|options))\(|(std::)?fs::OpenOptions::new\(|use[[:space:]]+std::fs([[:space:]]+as[[:space:]]+[[:alnum:]_]+)?[[:space:]]*;|use[[:space:]]+std::fs::(OpenOptions|read|read_to_string|write|rename|remove_file|metadata|copy|hard_link|create_dir_all)[[:space:]]*;'
 for source in \
     crates/zeppelin-embed/src/segment/reader.rs \
-    crates/zeppelin-embed/src/graph/build.rs; do
-    if sed '/^mod tests {$/,$d' "$source" \
-        | grep -n -E '(^|[^[:alnum:]_])(fs::(read|write|rename|remove_file)|File::(open|create))\(|use[[:space:]]+std::fs;'; then
+    crates/zeppelin-embed/src/graph/build.rs \
+    crates/zeppelin-embed/src/lifecycle/mod.rs; do
+    if grep -n -E "$VFS_SEAM_DENIED" "$source"; then
         echo "forbidden direct filesystem operation in $source" >&2
         exit 1
     fi

@@ -51,9 +51,22 @@ pub trait Vfs: Send + Sync {
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
         None
     }
+    /// Admits a store directory, creating missing ancestors when requested,
+    /// and reports whether the resulting path is a directory.
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        if create {
+            std::fs::create_dir_all(path)?;
+        }
+        Ok(std::fs::metadata(path)?.is_dir())
+    }
     /// Opens an existing path and returns its byte length.
     fn open(&self, path: &Path) -> std::io::Result<u64>;
     /// Opens an existing path as an owned file suitable for memory mapping.
+    ///
+    /// Test filesystems without a native file descriptor return
+    /// [`std::io::ErrorKind::Unsupported`]. Consequently `MemoryVfs`,
+    /// `CrashVfs`, and memory-backed `FaultVfs` images cannot publish or reopen
+    /// a sealed segment; use a path-backed VFS when exercising that lifecycle.
     fn open_for_map(&self, path: &Path) -> std::io::Result<File>;
     /// Reads an entire file.
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
@@ -179,6 +192,7 @@ impl Vfs for StdVfs {
 pub struct CountingVfs<V> {
     inner: V,
     counters: Arc<CountingVfsCounters>,
+    read_path_filter: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -186,6 +200,7 @@ struct CountingVfsCounters {
     open_calls: AtomicU64,
     open_for_map_calls: AtomicU64,
     read_calls: AtomicU64,
+    filtered_read_calls: AtomicU64,
     read_bytes: AtomicU64,
     segment_bytes_read: Arc<AtomicU64>,
     write_calls: AtomicU64,
@@ -245,7 +260,15 @@ impl<V> CountingVfs<V> {
         Self {
             inner,
             counters: Arc::new(CountingVfsCounters::default()),
+            read_path_filter: None,
         }
+    }
+
+    /// Counts successful reads of one exact path separately from global reads.
+    #[must_use]
+    pub fn with_read_path_filter(mut self, path: impl Into<PathBuf>) -> Self {
+        self.read_path_filter = Some(path.into());
+        self
     }
 
     /// Returns the wrapped filesystem.
@@ -279,6 +302,12 @@ impl<V> CountingVfs<V> {
     #[must_use]
     pub fn read_calls(&self) -> u64 {
         self.counters.read_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns successful reads matching the configured exact path.
+    #[must_use]
+    pub fn filtered_read_calls(&self) -> u64 {
+        self.counters.filtered_read_calls.load(Ordering::Relaxed)
     }
 
     /// Returns exact bytes returned by reads.
@@ -360,6 +389,9 @@ impl<V> CountingVfs<V> {
         self.counters.open_calls.store(0, Ordering::Relaxed);
         self.counters.open_for_map_calls.store(0, Ordering::Relaxed);
         self.counters.read_calls.store(0, Ordering::Relaxed);
+        self.counters
+            .filtered_read_calls
+            .store(0, Ordering::Relaxed);
         self.counters.read_bytes.store(0, Ordering::Relaxed);
         self.counters.segment_bytes_read.store(0, Ordering::Relaxed);
         self.counters.write_calls.store(0, Ordering::Relaxed);
@@ -384,6 +416,10 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         Some(Arc::clone(&self.counters.segment_bytes_read))
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.counters.open_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.open(path)
@@ -399,6 +435,11 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         let bytes = self.inner.read(path)?;
         self.counters.read_calls.fetch_add(1, Ordering::Relaxed);
+        if self.read_path_filter.as_deref() == Some(path) {
+            self.counters
+                .filtered_read_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.counters
             .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
@@ -413,6 +454,11 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
         let bytes = self.inner.read_range(path, offset, length)?;
         self.counters.read_calls.fetch_add(1, Ordering::Relaxed);
+        if self.read_path_filter.as_deref() == Some(path) {
+            self.counters
+                .filtered_read_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.counters
             .read_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);

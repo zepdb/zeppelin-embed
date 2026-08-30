@@ -1120,6 +1120,10 @@ impl crate::vfs::Vfs for StorageFaultVfs {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -2220,17 +2224,13 @@ impl Store {
             options.max_resident_bytes,
             options.max_temp_bytes,
         ));
-        if options.access_mode == AccessMode::ReadWrite {
-            std::fs::create_dir_all(path).map_err(|source| StoreError::Io {
+        let is_directory = vfs
+            .ensure_directory(path, options.access_mode == AccessMode::ReadWrite)
+            .map_err(|source| StoreError::Io {
                 path: path.to_path_buf(),
                 source,
             })?;
-        }
-        let metadata = std::fs::metadata(path).map_err(|source| StoreError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if !metadata.is_dir() {
+        if !is_directory {
             return Err(StoreError::NotDirectory {
                 path: path.to_path_buf(),
             });

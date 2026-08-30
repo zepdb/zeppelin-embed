@@ -211,6 +211,10 @@ impl<V: Vfs> Vfs for ProcessCrashVfs<V> {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -448,6 +452,18 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        match self.action(FaultSite::Open, path)? {
+            Some(FaultMode::PostCommitError) => {
+                let _ = self.inner.ensure_directory(path, create)?;
+                Err(std::io::Error::other(
+                    "scheduled post-directory-admission error",
+                ))
+            }
+            _ => self.inner.ensure_directory(path, create),
+        }
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         match self.action(FaultSite::Open, path)? {
             Some(FaultMode::PostCommitError) => {
@@ -462,9 +478,9 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         match self.action(FaultSite::Open, path)? {
             Some(FaultMode::WrongObject) => {
                 let parent = path.parent().unwrap_or_else(|| Path::new("."));
-                let sibling = self
-                    .inner
-                    .list(parent)?
+                let mut siblings = self.inner.list(parent)?;
+                siblings.sort();
+                let sibling = siblings
                     .into_iter()
                     .find(|candidate| candidate != path)
                     .ok_or_else(|| std::io::Error::other("no sibling for wrong-object fault"))?;
@@ -483,9 +499,9 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         match self.action(FaultSite::Read, path)? {
             Some(FaultMode::WrongObject) => {
                 let parent = path.parent().unwrap_or_else(|| Path::new("."));
-                let sibling = self
-                    .inner
-                    .list(parent)?
+                let mut siblings = self.inner.list(parent)?;
+                siblings.sort();
+                let sibling = siblings
                     .into_iter()
                     .find(|candidate| candidate != path)
                     .ok_or_else(|| std::io::Error::other("no sibling for wrong-object fault"))?;
