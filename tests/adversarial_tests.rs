@@ -6998,6 +6998,9 @@ fn empty_family_evidence_streams(
     adversarial::artifacts::replay_artifacts_for(campaign)
         .into_iter()
         .filter(|name| !adversarial::artifacts::REPLAY_ARTIFACTS.contains(name))
+        // The family violations alias mirrors the core violations stream
+        // and is empty by design on a clean run.
+        .filter(|name| *name != "violations.jsonl")
         .map(|name| format!("family/{name}"))
         .filter(|name| {
             merged
@@ -7475,6 +7478,27 @@ fn feature_attestation_rejects_a_failed_comparison() {
         &counters,
         Some(merged),
     ));
+}
+
+#[test]
+fn empty_family_violations_alias_is_not_a_coverage_gap() {
+    let stream = |records| adversarial::artifacts::MergedStreamStats {
+        records,
+        bytes: records,
+        digest: format!("fnv1a64:{records:016x}"),
+    };
+    let merged = adversarial::artifacts::MergedEvidenceStats {
+        episodes: 1,
+        streams: adversarial::artifacts::replay_artifacts_for(CampaignKind::VectorExecution)
+            .into_iter()
+            .filter(|name| !adversarial::artifacts::REPLAY_ARTIFACTS.contains(name))
+            .map(|name| {
+                let records = u64::from(name != "violations.jsonl");
+                (format!("family/{name}"), stream(records))
+            })
+            .collect(),
+    };
+    assert!(empty_family_evidence_streams(CampaignKind::VectorExecution, Some(&merged)).is_empty());
 }
 
 #[test]
