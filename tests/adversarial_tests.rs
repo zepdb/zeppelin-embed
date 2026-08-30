@@ -10,7 +10,10 @@ mod adversarial;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs::File, io::Write as _};
 
@@ -29,24 +32,40 @@ use zeppelin_embed::vfs::StdVfs;
 #[test]
 fn no_family_sets_clean_control_passed_as_a_literal() {
     let source_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial");
+    let helper_only_families = [
+        "tiering_maintenance.rs",
+        "fts.rs",
+        "vamana_graph.rs",
+        "lifecycle_accounting.rs",
+        "diagnostics_health.rs",
+        "ffi_bindings.rs",
+    ];
     let mut violations = Vec::new();
-    for entry in std::fs::read_dir(&source_directory).expect("read adversarial sources") {
-        let path = entry.expect("read adversarial source entry").path();
+    let mut paths = std::fs::read_dir(&source_directory)
+        .expect("read adversarial sources")
+        .map(|entry| entry.expect("read adversarial source entry").path())
+        .collect::<Vec<_>>();
+    paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial_tests.rs"));
+    let forbidden = [
+        ["clean_control_passed", ":", "true"].concat(),
+        ["clean_control_passed", "=", "true"].concat(),
+        ["clean_control_passed", ":", "!false"].concat(),
+        ["clean_control_passed", "=", "!false"].concat(),
+    ];
+    for path in paths {
         if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
             continue;
         }
         let source = std::fs::read_to_string(&path).expect("read adversarial source");
-        for (line_index, line) in source.lines().enumerate() {
-            if line.contains("clean_control_passed: true")
-                || line.contains("clean_control_passed = true")
-            {
-                violations.push(format!(
-                    "{}:{}:{}",
-                    path.display(),
-                    line_index.saturating_add(1),
-                    line.trim()
-                ));
-            }
+        let compact = source.split_whitespace().collect::<String>();
+        let is_helper_only_family = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| helper_only_families.contains(&name));
+        if forbidden.iter().any(|literal| compact.contains(literal))
+            || (is_helper_only_family && compact.contains("clean_control_passed"))
+        {
+            violations.push(path.display().to_string());
         }
     }
     assert!(
@@ -84,6 +103,7 @@ fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
                 vec![1.0],
             );
             store
+                .store()?
                 .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -97,15 +117,21 @@ fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
                 vec![1.0],
             );
             store
+                .store()?
                 .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         },
+        |_| Ok(()),
     )
     .expect("materialize clean-control pair");
 
     assert!(outcome.clean.is_ok(), "plain clean VFS saw the fault");
-    assert!(outcome.faulted.is_err(), "faulted VFS did not refuse");
+    assert!(
+        format!("{:?}", outcome.faulted).contains("Refused"),
+        "faulted VFS did not refuse: {:?}",
+        outcome.faulted
+    );
     assert!(
         outcome.fault_event.is_some_and(|event| event.fired),
         "faulted schedule did not fire"
@@ -121,12 +147,13 @@ fn clean_control_helper_reports_false_when_the_clean_leg_disagrees_with_the_orac
         .expect("capture source fixture");
     let outcome = adversarial::runner::run_with_clean_control(
         &fixture,
-        |_store| Err::<(), _>("family oracle disagreed".to_owned()),
         |_store| Ok(()),
+        |_store| Ok(()),
+        |_| Err("family oracle disagreed".to_owned()),
     )
     .expect("materialize clean-control pair");
 
-    assert_eq!(outcome.clean, Err("family oracle disagreed".to_owned()));
+    assert_eq!(outcome.clean, Ok(()));
     assert!(
         !outcome.same_seed_control_passed,
         "oracle disagreement was counted as a passing clean control"
@@ -134,40 +161,83 @@ fn clean_control_helper_reports_false_when_the_clean_leg_disagrees_with_the_orac
 }
 
 #[test]
+fn clean_control_helper_records_faulted_open_as_a_typed_refusal() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let event = FaultEvent {
+        id: "faulted-open-refusal".to_owned(),
+        op_index: 23,
+        site: FaultSite::Open,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        path_contains: None,
+        fired: false,
+        path: None,
+    };
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture")
+        .with_fault(event, 23);
+    let faulted_operation_ran = Arc::new(AtomicBool::new(false));
+    let faulted_marker = Arc::clone(&faulted_operation_ran);
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |_store| Ok(()),
+        move |_store| {
+            faulted_marker.store(true, Ordering::Relaxed);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .expect("materialize clean-control pair");
+
+    assert!(outcome.clean.is_ok(), "clean leg did not run");
+    assert!(
+        format!("{:?}", outcome.faulted).contains("Refused"),
+        "scheduled Store::open fault was not recorded as a typed refusal: {:?}",
+        outcome.faulted
+    );
+    assert!(
+        !faulted_operation_ran.load(Ordering::Relaxed),
+        "faulted operation ran after Store::open refusal"
+    );
+}
+
+#[test]
 fn tiering_control_goes_false_under_a_planted_product_mutation() {
-    let evidence = adversarial::tiering_maintenance::run_tier_operation(
+    let passed = adversarial::runner::tier_clean_control_for_test(
         adversarial::tiering_maintenance::TierOperationKind::Policy,
         2,
-        None,
     )
     .expect("tiering clean control");
     assert!(
-        adversarial::tiering_maintenance::clean_control_passed(&evidence.invariants),
+        passed,
         "tiering clean control disagreed with its independent oracle"
     );
 }
 
 #[test]
 fn fts_control_goes_false_under_a_planted_product_mutation() {
-    let evidence =
-        adversarial::fts::run_fts_operation(adversarial::fts::FtsOperationKind::Bm25, 1, None)
-            .expect("FTS clean control");
+    let passed = adversarial::runner::fts_clean_control_for_test(
+        adversarial::fts::FtsOperationKind::Bm25,
+        1,
+    )
+    .expect("FTS clean control");
     assert!(
-        adversarial::fts::clean_control_passed(&evidence.invariants),
+        passed,
         "FTS clean control disagreed with its independent oracle"
     );
 }
 
 #[test]
 fn vamana_control_goes_false_under_a_planted_product_mutation() {
-    let evidence = adversarial::vamana_graph::run_graph_operation(
+    let passed = adversarial::runner::graph_clean_control_for_test(
         adversarial::vamana_graph::GraphOperationKind::FilteredSearch,
         7,
-        None,
     )
     .expect("Vamana clean control");
     assert!(
-        adversarial::vamana_graph::clean_control_passed(&evidence.invariants),
+        passed,
         "Vamana clean control disagreed with its independent oracle"
     );
 }
@@ -175,26 +245,36 @@ fn vamana_control_goes_false_under_a_planted_product_mutation() {
 #[test]
 fn runner_counts_qualifying_controls_from_the_helper_for_every_family() {
     for campaign in CampaignKind::FEATURES {
-        let (seed, selected) = (0..128)
-            .find_map(|seed| {
+        let seed = (0..128)
+            .find(|&seed| {
                 let program = Program::generate_for(campaign, seed);
                 let plan =
                     FaultPlan::for_program(campaign, seed, FaultProfile::Full, &program, None);
-                (!plan.feature.is_empty()).then_some((seed, plan.feature.len()))
+                !plan.feature.is_empty()
             })
             .unwrap_or_else(|| panic!("{campaign} has no selected feature-fault seed"));
         let output = std::process::Command::new(
             std::env::current_exe().expect("helper accounting test binary"),
         )
-        .args(["runner_helper_accounting_child", "--ignored", "--exact"])
+        .args([
+            "runner_helper_accounting_child",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ])
         .env("ZE_ADV_HELPER_CAMPAIGN", campaign.key())
         .env("ZE_ADV_HELPER_SEED", seed.to_string())
-        .env("ZE_ADV_HELPER_SELECTED", selected.to_string())
         .output()
         .expect("run helper accounting child");
         assert!(
             output.status.success(),
             "{campaign} helper accounting child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("HELPER_ACCOUNTING_CHILD_RAN"),
+            "{campaign} helper accounting child did not run: {}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -213,18 +293,63 @@ fn runner_helper_accounting_child() {
         .expect("helper seed")
         .parse::<u64>()
         .expect("numeric helper seed");
-    let selected = std::env::var("ZE_ADV_HELPER_SELECTED")
-        .expect("helper selected count")
-        .parse::<u64>()
-        .expect("numeric helper selected count");
     let artifacts = tempfile::tempdir().expect("helper accounting artifacts");
     let outcome =
         adversarial::runner::run_program_for(campaign, seed, FaultProfile::Full, artifacts.path())
             .unwrap_or_else(|error| panic!("{campaign} seed {seed}: {error}"));
-    assert_eq!(
-        outcome.same_seed_clean_controls, selected,
-        "{campaign} did not count helper-qualified controls"
+    let episode = artifacts
+        .path()
+        .join(campaign.key())
+        .join(format!("seed-{seed}-full"));
+    let operation_by_index = std::fs::read_to_string(episode.join("program.jsonl"))
+        .expect("read helper program records")
+        .lines()
+        .filter_map(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper program");
+            Some((
+                record["op"].as_u64()?,
+                record["operation"].as_str()?.to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let selected_operations = std::fs::read_to_string(episode.join("faults.jsonl"))
+        .expect("read helper fault records")
+        .lines()
+        .filter_map(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper fault");
+            (record["type"].as_str() == Some("feature") && record["fired"].as_bool() == Some(true))
+                .then(|| record["op"].as_u64())
+                .flatten()
+        })
+        .filter_map(|index| operation_by_index.get(&index).cloned())
+        .collect::<BTreeSet<_>>();
+    let controls = std::fs::read_to_string(episode.join("controls.jsonl"))
+        .expect("read helper control records")
+        .lines()
+        .filter(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("parse helper control");
+            if campaign == CampaignKind::MetadataFilterPlanner {
+                !record["fault"].is_null()
+            } else {
+                record["operation"]
+                    .as_str()
+                    .is_some_and(|operation| selected_operations.contains(operation))
+            }
+        })
+        .count();
+    assert!(
+        controls > 0,
+        "{campaign} produced 0 qualifying same-seed controls"
     );
+    assert_eq!(
+        usize::try_from(outcome.same_seed_clean_controls).expect("control count fits usize"),
+        controls,
+        "{campaign} did not count the control records written to disk"
+    );
+    println!("HELPER_ACCOUNTING_CHILD_RAN controls={controls}");
 }
 
 #[test]
@@ -6928,7 +7053,7 @@ fn vector_rotation_preserves_merged_evidence() {
 }
 
 #[test]
-fn release_feature_campaign_refuses_unimplemented_oracles() {
+fn release_feature_campaign_refuses_incomplete_coverage() {
     let artifacts = tempfile::tempdir().expect("release campaign artifacts");
     let clean_seed = (0..12)
         .find(|seed| {
@@ -6957,9 +7082,9 @@ fn release_feature_campaign_refuses_unimplemented_oracles() {
                 .expect("release summary"),
         )
         .expect("valid release summary");
-    assert_eq!(summary["run_verdict"], "failed");
+    assert_eq!(summary["run_verdict"], "passed");
     assert_eq!(summary["qualification_passed"], false);
-    assert!(summary["violations"].as_u64().unwrap() > 0);
+    assert_eq!(summary["violations"].as_u64(), Some(0));
     assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
 }
 

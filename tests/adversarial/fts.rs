@@ -19,9 +19,11 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed_adversarial_oracle::fts::{
-    self as oracle, DocumentFact, DocumentTokens, FtsInput, FtsObserved, PhoneticFact, ScoreFact,
-    SnippetFact, StructuredFact, TokenFact,
+    DocumentFact, DocumentTokens, FtsInput, FtsObserved, PhoneticFact, ScoreFact, SnippetFact,
+    StructuredFact, TokenFact,
 };
+
+use super::runner::ControlStore;
 
 const VOCABULARY: [&str; 40] = [
     "amber", "beacon", "cobalt", "delta", "ember", "falcon", "gamma", "harbor", "indigo", "jovial",
@@ -152,7 +154,6 @@ pub enum FtsInvariantEvidence {
 pub struct FtsOperationEvidence {
     pub invariants: Vec<FtsInvariantEvidence>,
     pub receipts: Vec<FtsFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 #[derive(Clone)]
@@ -463,11 +464,12 @@ fn pruning_observation(
     ))
 }
 
-fn build_observation(seed: u64) -> Result<ObservationBundle, String> {
+fn build_observation_on_store(
+    store: &Store,
+    directory: &std::path::Path,
+    seed: u64,
+) -> Result<ObservationBundle, String> {
     let input = fixture_input(seed)?;
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .map_err(|error| format!("open FTS fixture: {error}"))?;
     let sealed = input
         .documents
         .iter()
@@ -489,16 +491,11 @@ fn build_observation(seed: u64) -> Result<ObservationBundle, String> {
     store
         .delete(DeleteBatch::new(deleted))
         .map_err(|error| format!("delete sealed FTS rows: {error}"))?;
-    store
-        .close()
-        .map_err(|error| format!("close sealed FTS fixture: {error}"))?;
-    let segment = first_segment(directory.path())?;
+    let segment = first_segment(directory)?;
     let sealed_segment: Arc<[u8]> = std::fs::read(segment)
         .map_err(|error| format!("read sealed FTS segment: {error}"))?
         .into();
 
-    let store = Store::open(directory.path(), OpenOptions::default())
-        .map_err(|error| format!("reopen FTS fixture: {error}"))?;
     let active = input
         .documents
         .iter()
@@ -606,9 +603,6 @@ fn build_observation(seed: u64) -> Result<ObservationBundle, String> {
             code: phonetic::encode(name),
         })
         .collect();
-    store
-        .close()
-        .map_err(|error| format!("close mixed FTS fixture: {error}"))?;
     Ok(ObservationBundle {
         input,
         observed: FtsObserved {
@@ -626,6 +620,17 @@ fn build_observation(seed: u64) -> Result<ObservationBundle, String> {
             phonetic_codes,
         },
     })
+}
+
+fn build_observation(seed: u64) -> Result<ObservationBundle, String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .map_err(|error| format!("open FTS fixture: {error}"))?;
+    let result = build_observation_on_store(&store, directory.path(), seed);
+    store
+        .close()
+        .map_err(|error| format!("close FTS fixture: {error}"))?;
+    result
 }
 
 fn observation(seed: u64) -> Result<ObservationBundle, String> {
@@ -771,19 +776,6 @@ fn exercise_fault(seed: u64, fault: FtsFaultKind) -> Result<(), String> {
     }
 }
 
-pub(crate) fn clean_control_passed(invariants: &[FtsInvariantEvidence]) -> bool {
-    invariants.iter().all(|invariant| {
-        match invariant {
-            FtsInvariantEvidence::I40 { input, observed } => oracle::compare_i40(input, observed),
-            FtsInvariantEvidence::I41 { input, observed } => oracle::compare_i41(input, observed),
-            FtsInvariantEvidence::I42 { input, observed } => oracle::compare_i42(input, observed),
-            FtsInvariantEvidence::I43 { input, observed } => oracle::compare_i43(input, observed),
-            FtsInvariantEvidence::I44 { input, observed } => oracle::compare_i44(input, observed),
-        }
-        .is_ok()
-    })
-}
-
 pub fn run_fts_operation(
     operation: FtsOperationKind,
     seed: u64,
@@ -800,7 +792,6 @@ pub fn run_fts_operation(
         FtsOperationKind::Pruning => vec![FtsInvariantEvidence::I43 { input, observed }],
         FtsOperationKind::Extras => vec![FtsInvariantEvidence::I44 { input, observed }],
     };
-    let clean_control_passed = clean_control_passed(&invariants);
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         exercise_fault(seed, fault)?;
@@ -814,7 +805,96 @@ pub fn run_fts_operation(
     Ok(FtsOperationEvidence {
         invariants,
         receipts,
-        clean_control_passed,
+    })
+}
+
+fn corruption_refused_on_store(leg: &mut ControlStore, region: u16) -> Result<(), String> {
+    leg.close()?;
+    let segment = first_segment(leg.path())?;
+    let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
+    let target = region_byte(&bytes, region)?;
+    let value = bytes
+        .get_mut(target)
+        .ok_or_else(|| "lexical mutation target disappeared".to_owned())?;
+    *value ^= 0x5a;
+    std::fs::write(&segment, bytes).map_err(|error| error.to_string())?;
+    if leg.reopen().is_err() {
+        return Ok(());
+    }
+    let result = leg.store()?.search_lexical(
+        &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+        2,
+        query_control(),
+    );
+    match result {
+        Err(_error) => Ok(()),
+        Ok(_outcome) => Err("corrupt lexical region was accepted".to_owned()),
+    }
+}
+
+fn exercise_fault_on_store(leg: &mut ControlStore, fault: FtsFaultKind) -> Result<(), String> {
+    match fault {
+        FtsFaultKind::PostingsCorruption
+        | FtsFaultKind::DictionaryCorruption
+        | FtsFaultKind::NormCorruption
+        | FtsFaultKind::BlockMaxCorruption => corruption_refused_on_store(leg, 6),
+        FtsFaultKind::StoredTextCorruption => corruption_refused_on_store(leg, 14),
+        FtsFaultKind::StoredTextAbsence => {
+            let analyzer = Analyzer::new(TokenizerConfig::text_default())
+                .map_err(|error| error.to_string())?;
+            match snippet::best_window(&analyzer, "beta only", &[b"alpha".to_vec()], 16, true)
+                .map_err(|error| error.to_string())?
+            {
+                None => Ok(()),
+                Some(_snippet) => Err("absent stored-text match produced a snippet".to_owned()),
+            }
+        }
+        FtsFaultKind::LexicalCancellation => {
+            let token = CancelToken::new();
+            token.cancel();
+            match leg.store()?.search_lexical(
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                1,
+                QueryControl::Cancel(token),
+            ) {
+                Err(_error) => Ok(()),
+                Ok(_outcome) => Err("cancelled lexical query succeeded".to_owned()),
+            }
+        }
+    }
+}
+
+pub(crate) fn run_fts_operation_on_store(
+    leg: &mut ControlStore,
+    operation: FtsOperationKind,
+    seed: u64,
+    fault: Option<FtsFaultKind>,
+) -> Result<FtsOperationEvidence, String> {
+    if fault.is_some_and(|fault| fault.operation() != operation) {
+        return Err(format!("FTS fault {fault:?} does not target {operation:?}"));
+    }
+    let ObservationBundle { input, observed } =
+        build_observation_on_store(leg.store()?, leg.path(), seed)?;
+    let invariants = match operation {
+        FtsOperationKind::Tokenizer => vec![FtsInvariantEvidence::I40 { input, observed }],
+        FtsOperationKind::Regions => vec![FtsInvariantEvidence::I41 { input, observed }],
+        FtsOperationKind::Bm25 => vec![FtsInvariantEvidence::I42 { input, observed }],
+        FtsOperationKind::Pruning => vec![FtsInvariantEvidence::I43 { input, observed }],
+        FtsOperationKind::Extras => vec![FtsInvariantEvidence::I44 { input, observed }],
+    };
+    let mut receipts = Vec::new();
+    if let Some(fault) = fault {
+        exercise_fault_on_store(leg, fault)?;
+        receipts.push(FtsFaultReceipt {
+            fault,
+            operation,
+            site: fault.site(),
+            cardinality: 1,
+        });
+    }
+    Ok(FtsOperationEvidence {
+        invariants,
+        receipts,
     })
 }
 

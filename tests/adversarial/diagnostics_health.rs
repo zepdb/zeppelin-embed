@@ -10,7 +10,7 @@ use zeppelin_embed::ingest::{
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
 use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed_adversarial_oracle::diagnostics_health::{
-    self as oracle, DiagnosticsInput, DiagnosticsObserved,
+    DiagnosticsInput, DiagnosticsObserved,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +95,6 @@ pub enum DiagnosticsInvariantEvidence {
 pub struct DiagnosticsOperationEvidence {
     pub invariant: DiagnosticsInvariantEvidence,
     pub receipts: Vec<DiagnosticsFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 fn blank() -> DiagnosticsObserved {
@@ -116,10 +115,7 @@ fn document(id: u128, vector: Vec<f32>) -> IngestDocument {
     )
 }
 
-fn populated_store(seed: u64) -> Result<(tempfile::TempDir, Store), String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
+fn populate_store(store: &Store, seed: u64) -> Result<(), String> {
     let base = u128::from(seed) << 64;
     store
         .ingest(IngestBatch::new(vec![
@@ -127,11 +123,14 @@ fn populated_store(seed: u64) -> Result<(tempfile::TempDir, Store), String> {
             document(base | 2, vec![0.0, 1.0]),
         ]))
         .map_err(|error| error.to_string())?;
-    Ok((directory, store))
+    Ok(())
 }
 
-fn observe_health(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved), String> {
-    let (_directory, store) = populated_store(seed)?;
+fn observe_health(
+    store: &Store,
+    seed: u64,
+) -> Result<(DiagnosticsInput, DiagnosticsObserved), String> {
+    populate_store(store, seed)?;
     let query = [1.0_f32, 0.0];
     let before = store
         .search(
@@ -172,7 +171,6 @@ fn observe_health(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved), 
             .bytes_read
             .checked_sub(before.diagnostics.counters.scan.bytes_read)
             == Some(1);
-    store.close().map_err(|error| error.to_string())?;
     Ok((
         DiagnosticsInput {
             expected_documents: 3,
@@ -218,12 +216,14 @@ fn flip_byte(path: &std::path::Path, offset: u64) -> Result<(), String> {
 }
 
 fn observe_self_check(
+    store: &Store,
+    directory: &std::path::Path,
     seed: u64,
     corrupt: bool,
 ) -> Result<(DiagnosticsInput, DiagnosticsObserved), String> {
-    let (directory, store) = populated_store(seed)?;
+    populate_store(store, seed)?;
     store.seal().map_err(|error| error.to_string())?;
-    let (path, offset) = mutation_target(&store, directory.path())?;
+    let (path, offset) = mutation_target(store, directory)?;
     if corrupt {
         flip_byte(&path, offset)?;
     }
@@ -238,7 +238,6 @@ fn observe_self_check(
             .unresolved_faults
             .keys()
             .any(|key| key.kind == HealthFaultKind::Format);
-    store.close().map_err(|error| error.to_string())?;
     Ok((
         DiagnosticsInput {
             expected_documents: 0,
@@ -248,10 +247,14 @@ fn observe_self_check(
     ))
 }
 
-fn observe_recovery(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved), String> {
-    let (directory, store) = populated_store(seed)?;
+fn observe_recovery(
+    store: &Store,
+    directory: &std::path::Path,
+    seed: u64,
+) -> Result<(DiagnosticsInput, DiagnosticsObserved), String> {
+    populate_store(store, seed)?;
     store.seal().map_err(|error| error.to_string())?;
-    let (path, offset) = mutation_target(&store, directory.path())?;
+    let (path, offset) = mutation_target(store, directory)?;
     flip_byte(&path, offset)?;
     let damaged = store.self_check(0, seed);
     flip_byte(&path, offset)?;
@@ -261,7 +264,6 @@ fn observe_recovery(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved)
     observed.corruption_attributed = damaged.health_status == HealthStatus::Unhealthy;
     observed.recovery_cleared_fault =
         repaired.health_status == HealthStatus::Healthy && health.unresolved_faults.is_empty();
-    store.close().map_err(|error| error.to_string())?;
     Ok((
         DiagnosticsInput {
             expected_documents: 0,
@@ -271,22 +273,9 @@ fn observe_recovery(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved)
     ))
 }
 
-fn clean_control_passed(invariant: &DiagnosticsInvariantEvidence) -> bool {
-    match invariant {
-        DiagnosticsInvariantEvidence::I63 { input, observed } => {
-            oracle::compare_i63(input, observed)
-        }
-        DiagnosticsInvariantEvidence::I64 { input, observed } => {
-            oracle::compare_i64(input, observed)
-        }
-        DiagnosticsInvariantEvidence::I65 { input, observed } => {
-            oracle::compare_i65(input, observed)
-        }
-    }
-    .is_ok()
-}
-
-pub fn run_diagnostics_operation(
+pub(crate) fn run_diagnostics_operation_on_store(
+    store: &Store,
+    directory: &std::path::Path,
     operation: DiagnosticsOperationKind,
     seed: u64,
     fault: Option<DiagnosticsFaultKind>,
@@ -296,18 +285,20 @@ pub fn run_diagnostics_operation(
     }
     let invariant = match operation {
         DiagnosticsOperationKind::Health => {
-            let (input, observed) = observe_health(seed)?;
+            let (input, observed) = observe_health(store, seed)?;
             DiagnosticsInvariantEvidence::I63 { input, observed }
         }
         DiagnosticsOperationKind::SelfCheck => {
             let (input, observed) = observe_self_check(
+                store,
+                directory,
                 seed,
                 matches!(fault, Some(DiagnosticsFaultKind::CorruptArtifact)),
             )?;
             DiagnosticsInvariantEvidence::I64 { input, observed }
         }
         DiagnosticsOperationKind::Recovery => {
-            let (input, observed) = observe_recovery(seed)?;
+            let (input, observed) = observe_recovery(store, directory, seed)?;
             DiagnosticsInvariantEvidence::I65 { input, observed }
         }
     };
@@ -320,12 +311,24 @@ pub fn run_diagnostics_operation(
         })
         .into_iter()
         .collect();
-    let clean_control_passed = clean_control_passed(&invariant);
     Ok(DiagnosticsOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed,
     })
+}
+
+pub fn run_diagnostics_operation(
+    operation: DiagnosticsOperationKind,
+    seed: u64,
+    fault: Option<DiagnosticsFaultKind>,
+) -> Result<DiagnosticsOperationEvidence, String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    let store =
+        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
+    let result =
+        run_diagnostics_operation_on_store(&store, directory.path(), operation, seed, fault);
+    store.close().map_err(|error| error.to_string())?;
+    result
 }
 
 #[cfg(test)]
@@ -367,7 +370,6 @@ mod tests {
             assert_eq!(evidence.receipts.len(), 1);
             assert_eq!(evidence.receipts[0].fault, fault);
             assert_eq!(evidence.receipts[0].cardinality, 1);
-            assert!(evidence.clean_control_passed);
         }
     }
 }

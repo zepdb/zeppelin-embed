@@ -126,9 +126,121 @@ pub(crate) struct IsolatedStoreDirectories {
 #[derive(Debug)]
 pub(crate) struct ControlOutcome<T> {
     pub(crate) clean: Result<T, String>,
-    pub(crate) faulted: Result<T, String>,
+    pub(crate) faulted: Result<FaultedLeg<T>, String>,
     pub(crate) same_seed_control_passed: bool,
     pub(crate) fault_event: Option<FaultEvent>,
+}
+
+#[derive(Debug)]
+pub(crate) enum FaultedLeg<T> {
+    Observed(T),
+    Refused { stage: &'static str, error: String },
+}
+
+pub(crate) struct ControlStore {
+    store: Option<Store>,
+    directory: PathBuf,
+    open_options: OpenOptions,
+    dependencies: StoreTestDependencies,
+    frozen_files: Vec<FrozenFixtureFile>,
+}
+
+impl ControlStore {
+    pub(crate) fn open(
+        directory: &Path,
+        open_options: OpenOptions,
+        dependencies: StoreTestDependencies,
+    ) -> Result<Self, String> {
+        Self::open_with_frozen_files(directory, open_options, dependencies, None)
+    }
+
+    fn open_with_frozen_files(
+        directory: &Path,
+        open_options: OpenOptions,
+        dependencies: StoreTestDependencies,
+        frozen_files: Option<Vec<FrozenFixtureFile>>,
+    ) -> Result<Self, String> {
+        let store = Store::open_with_test_dependencies(
+            directory,
+            open_options.clone(),
+            dependencies.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        let frozen_files = match frozen_files {
+            Some(files) => files,
+            None => FrozenStoreFixture::capture(directory)?.files,
+        };
+        Ok(Self {
+            store: Some(store),
+            directory: directory.to_path_buf(),
+            open_options,
+            dependencies,
+            frozen_files,
+        })
+    }
+
+    pub(crate) fn store(&self) -> Result<&Store, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "clean-control Store is closed".to_owned())
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.directory
+    }
+
+    pub(crate) fn close(&mut self) -> Result<(), String> {
+        if let Some(store) = self.store.take() {
+            store.close().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reopen(&mut self) -> Result<(), String> {
+        self.close()?;
+        let store = Store::open_with_test_dependencies(
+            &self.directory,
+            self.open_options.clone(),
+            self.dependencies.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        self.store = Some(store);
+        Ok(())
+    }
+
+    pub(crate) fn reset_to_frozen(&mut self) -> Result<(), String> {
+        self.close()?;
+        for entry in std::fs::read_dir(&self.directory)
+            .map_err(|error| format!("read control Store directory for reset: {error}"))?
+        {
+            let entry = entry.map_err(|error| format!("read control Store entry: {error}"))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("read control Store entry type: {error}"))?;
+            if file_type.is_dir() {
+                std::fs::remove_dir_all(&path).map_err(|error| {
+                    format!("remove control Store directory {}: {error}", path.display())
+                })?;
+            } else {
+                std::fs::remove_file(&path).map_err(|error| {
+                    format!("remove control Store file {}: {error}", path.display())
+                })?;
+            }
+        }
+        for file in &self.frozen_files {
+            let path = self.directory.join(&file.relative_path);
+            let parent = path
+                .parent()
+                .ok_or_else(|| "frozen Store fixture file has no parent".to_owned())?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create reset Store fixture parent: {error}"))?;
+            std::fs::write(&path, &file.bytes).map_err(|error| {
+                format!("write reset Store fixture file {}: {error}", path.display())
+            })?;
+        }
+        self.reopen()
+    }
 }
 
 impl FrozenStoreFixture {
@@ -197,15 +309,19 @@ impl FrozenStoreFixture {
         self
     }
 
-    fn for_control(event: Option<FaultEvent>, current_operation: usize) -> Result<Self, String> {
+    fn for_control(
+        open_options: OpenOptions,
+        event: Option<FaultEvent>,
+        current_operation: usize,
+    ) -> Result<Self, String> {
         let source = tempfile::tempdir()
             .map_err(|error| format!("create clean-control source directory: {error}"))?;
-        let store = Store::open(source.path(), OpenOptions::default())
+        let store = Store::open(source.path(), open_options.clone())
             .map_err(|error| format!("open clean-control source Store: {error}"))?;
         store
             .close()
             .map_err(|error| format!("close clean-control source Store: {error}"))?;
-        let fixture = Self::capture(source.path())?;
+        let fixture = Self::capture(source.path())?.with_open_options(open_options);
         Ok(match event {
             Some(event) => fixture.with_fault(event, current_operation),
             None => fixture,
@@ -216,7 +332,7 @@ impl FrozenStoreFixture {
         &self.files
     }
 
-    fn materialize(&self) -> Result<TempDir, String> {
+    pub(crate) fn materialize(&self) -> Result<TempDir, String> {
         let directory = tempfile::tempdir()
             .map_err(|error| format!("create frozen Store fixture directory: {error}"))?;
         for file in &self.files {
@@ -250,52 +366,197 @@ impl FrozenStoreFixture {
     }
 }
 
-fn finish_control_leg<T>(store: Store, result: Result<T, String>) -> Result<T, String> {
-    let closed = store.close().map_err(|error| error.to_string());
+fn finish_control_leg<T>(store: &mut ControlStore, result: Result<T, String>) -> Result<T, String> {
+    let closed = store.close();
     match (result, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
     }
 }
 
-pub(crate) fn run_with_clean_control<T: PartialEq + std::fmt::Debug>(
+pub(crate) fn run_with_clean_control<T: std::fmt::Debug>(
     fixture: &FrozenStoreFixture,
-    clean: impl FnOnce(&Store) -> Result<T, String>,
-    faulted: impl FnOnce(&Store) -> Result<T, String>,
+    clean: impl FnOnce(&mut ControlStore) -> Result<T, String>,
+    faulted: impl FnOnce(&mut ControlStore) -> Result<T, String>,
+    clean_oracle: impl FnOnce(&T) -> Result<(), String>,
 ) -> Result<ControlOutcome<T>, String> {
     let directories = fixture.isolated_pair()?;
-    let clean_result = Store::open_with_test_dependencies(
+    let clean_dependencies =
+        StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock));
+    let mut clean_store = ControlStore::open_with_frozen_files(
         directories.clean.path(),
         fixture.open_options.clone(),
-        StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock)),
+        clean_dependencies,
+        Some(fixture.files.clone()),
     )
-    .map_err(|error| error.to_string())
-    .and_then(|store| {
-        let result = clean(&store);
-        finish_control_leg(store, result)
-    });
+    .map_err(|error| format!("open clean-control Store: {error}"))?;
+    let clean_result = clean(&mut clean_store);
+    let clean_result = finish_control_leg(&mut clean_store, clean_result)
+        .map_err(|error| format!("run clean-control operation: {error}"))?;
+    let same_seed_control_passed = clean_oracle(&clean_result).is_ok();
 
-    // Stage 01 replaces only this construction site when ScheduledVfs gains
-    // its per-operation event list. The clean leg above remains plain StdVfs.
     let scheduled = Arc::new(fault_vfs::std_scheduled(fixture.fault_event.clone()));
     scheduled.set_operation(fixture.current_operation);
-    let faulted_result = Store::open_with_test_dependencies(
+    let faulted_dependencies =
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock));
+    let faulted_result = ControlStore::open_with_frozen_files(
         directories.faulted.path(),
         fixture.open_options.clone(),
-        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
-    )
-    .map_err(|error| error.to_string())
-    .and_then(|store| {
-        let result = faulted(&store);
-        finish_control_leg(store, result)
-    });
+        faulted_dependencies,
+        Some(fixture.files.clone()),
+    );
+    let faulted_result = match faulted_result {
+        Ok(mut store) => {
+            let result = faulted(&mut store);
+            let result = finish_control_leg(&mut store, result);
+            match result {
+                Ok(observed) => Ok(FaultedLeg::Observed(observed)),
+                Err(error) if scheduled.event().is_some_and(|event| event.fired) => {
+                    Ok(FaultedLeg::Refused {
+                        stage: "operation",
+                        error,
+                    })
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) if scheduled.event().is_some_and(|event| event.fired) => {
+            Ok(FaultedLeg::Refused {
+                stage: "Store::open",
+                error,
+            })
+        }
+        Err(error) => Err(error),
+    };
     let fault_event = scheduled.event();
     Ok(ControlOutcome {
-        same_seed_control_passed: clean_result.is_ok(),
-        clean: clean_result,
+        same_seed_control_passed,
+        clean: Ok(clean_result),
         faulted: faulted_result,
         fault_event,
     })
+}
+
+pub(crate) fn tier_clean_control_for_test(
+    operation: tier_adapter::TierOperationKind,
+    seed: u64,
+) -> Result<bool, String> {
+    let fixture =
+        FrozenStoreFixture::for_control(tier_adapter::control_open_options(seed), None, 0)?;
+    let outcome = run_with_clean_control(
+        &fixture,
+        |store| tier_adapter::run_tier_operation_on_store(store, operation, seed, None),
+        |store| tier_adapter::run_tier_operation_on_store(store, operation, seed, None),
+        |evidence| {
+            let passed = evidence.invariants.iter().all(|invariant| {
+                match invariant {
+                    tier_adapter::TierInvariantEvidence::I50 { input, observed } => {
+                        tier_oracle::compare_i50(input, observed)
+                    }
+                    tier_adapter::TierInvariantEvidence::I51 { input, observed } => {
+                        tier_oracle::compare_i51(input, observed)
+                    }
+                    tier_adapter::TierInvariantEvidence::I52 { input, observed } => {
+                        tier_oracle::compare_i52(input, observed)
+                    }
+                    tier_adapter::TierInvariantEvidence::I53 { input, observed } => {
+                        tier_oracle::compare_i53(input, observed)
+                    }
+                }
+                .is_ok()
+            });
+            passed
+                .then_some(())
+                .ok_or_else(|| "tier oracle disagreed".to_owned())
+        },
+    )?;
+    Ok(outcome.same_seed_control_passed)
+}
+
+pub(crate) fn fts_clean_control_for_test(
+    operation: fts_adapter::FtsOperationKind,
+    seed: u64,
+) -> Result<bool, String> {
+    let fixture = FrozenStoreFixture::for_control(OpenOptions::default(), None, 0)?;
+    let outcome = run_with_clean_control(
+        &fixture,
+        |store| fts_adapter::run_fts_operation_on_store(store, operation, seed, None),
+        |store| fts_adapter::run_fts_operation_on_store(store, operation, seed, None),
+        |evidence| {
+            let passed = evidence.invariants.iter().all(|invariant| {
+                match invariant {
+                    fts_adapter::FtsInvariantEvidence::I40 { input, observed } => {
+                        fts_oracle::compare_i40(input, observed)
+                    }
+                    fts_adapter::FtsInvariantEvidence::I41 { input, observed } => {
+                        fts_oracle::compare_i41(input, observed)
+                    }
+                    fts_adapter::FtsInvariantEvidence::I42 { input, observed } => {
+                        fts_oracle::compare_i42(input, observed)
+                    }
+                    fts_adapter::FtsInvariantEvidence::I43 { input, observed } => {
+                        fts_oracle::compare_i43(input, observed)
+                    }
+                    fts_adapter::FtsInvariantEvidence::I44 { input, observed } => {
+                        fts_oracle::compare_i44(input, observed)
+                    }
+                }
+                .is_ok()
+            });
+            passed
+                .then_some(())
+                .ok_or_else(|| "FTS oracle disagreed".to_owned())
+        },
+    )?;
+    Ok(outcome.same_seed_control_passed)
+}
+
+pub(crate) fn graph_clean_control_for_test(
+    operation: graph_adapter::GraphOperationKind,
+    seed: u64,
+) -> Result<bool, String> {
+    let fixture =
+        FrozenStoreFixture::for_control(graph_adapter::control_open_options(seed), None, 0)?;
+    let outcome = run_with_clean_control(
+        &fixture,
+        |store| graph_adapter::run_graph_operation_on_store(store, operation, seed, None),
+        |store| graph_adapter::run_graph_operation_on_store(store, operation, seed, None),
+        |evidence| {
+            let passed = evidence.invariants.iter().all(|invariant| {
+                match invariant {
+                    graph_adapter::GraphInvariantEvidence::I28 { input, observed } => {
+                        graph_oracle::compare_i28(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I29 { input, observed } => {
+                        graph_oracle::compare_i29(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I30 { input, observed } => {
+                        graph_oracle::compare_i30(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I31 { input, observed } => {
+                        graph_oracle::compare_i31(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I32 { input, observed } => {
+                        graph_oracle::compare_i32(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I33 { input, observed } => {
+                        graph_oracle::compare_i33(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I34 { input, observed } => {
+                        graph_oracle::compare_i34(input, observed)
+                    }
+                    graph_adapter::GraphInvariantEvidence::I35 { input, observed } => {
+                        graph_oracle::compare_i35(input, observed)
+                    }
+                }
+                .is_ok()
+            });
+            passed
+                .then_some(())
+                .ok_or_else(|| "graph oracle disagreed".to_owned())
+        },
+    )?;
+    Ok(outcome.same_seed_control_passed)
 }
 
 fn adversarial_schema() -> Schema {
@@ -2298,6 +2559,7 @@ fn run_program_for_with_clock(
                         mutation_records: &mut mutation_records,
                         family_artifact_records: &mut family_artifact_records,
                         coverage: &mut coverage,
+                        control_store: None,
                     },
                 );
                 for record in oracle_records.get(record_start..).unwrap_or_default() {
@@ -2912,6 +3174,7 @@ struct CampaignOperationContext<'a> {
     mutation_records: &'a mut Vec<String>,
     family_artifact_records: &'a mut BTreeMap<&'static str, Vec<String>>,
     coverage: &'a mut CoverageRegistry,
+    control_store: Option<&'a mut ControlStore>,
 }
 
 struct CampaignOperationOutcome {
@@ -2919,6 +3182,7 @@ struct CampaignOperationOutcome {
     qualifying_controls: usize,
 }
 
+#[derive(Debug)]
 enum ProductionFeatureReceipt {
     ValidatedStorage(StorageFaultReceipt),
     ValidatedIngestRetention(IngestRetentionFaultReceiptV1),
@@ -3523,9 +3787,20 @@ fn run_campaign_operation_with_clean_control(
         mutation_records,
         family_artifact_records,
         coverage,
+        control_store: _,
     } = context;
-    if selected_faults.is_empty() {
-        return run_campaign_operation(
+    let uses_shared_control = matches!(
+        operation,
+        super::campaign::FeatureOperation::Graph(_)
+            | super::campaign::FeatureOperation::Fts(_)
+            | super::campaign::FeatureOperation::Tiering(_)
+            | super::campaign::FeatureOperation::Lifecycle(_)
+            | super::campaign::FeatureOperation::Diagnostics(_)
+            | super::campaign::FeatureOperation::Ffi(_)
+    );
+    if !uses_shared_control {
+        let control_start = control_records.len();
+        let receipts = run_campaign_operation(
             operation,
             CampaignOperationContext {
                 selected_faults,
@@ -3540,25 +3815,52 @@ fn run_campaign_operation_with_clean_control(
                 mutation_records,
                 family_artifact_records,
                 coverage,
+                control_store: None,
             },
-        )
-        .map(|receipts| CampaignOperationOutcome {
+        )?;
+        let records = control_records
+            .get(control_start..)
+            .unwrap_or_default()
+            .to_vec();
+        let qualifying_controls = if operation.campaign() == CampaignKind::MetadataFilterPlanner {
+            records
+                .iter()
+                .filter(|record| {
+                    record.contains("\"fault\":") && !record.contains("\"fault\":null")
+                })
+                .count()
+        } else {
+            records.len()
+        };
+        return Ok(CampaignOperationOutcome {
             receipts,
-            qualifying_controls: 0,
+            qualifying_controls,
         });
     }
 
-    let fixture = FrozenStoreFixture::for_control(generic_fault.cloned(), op_index)?;
+    let open_options = match operation {
+        super::campaign::FeatureOperation::Graph(_) => graph_adapter::control_open_options(seed),
+        super::campaign::FeatureOperation::Tiering(_) => tier_adapter::control_open_options(seed),
+        super::campaign::FeatureOperation::Lifecycle(
+            super::campaign::LifecycleOperation::CloseDrain,
+        ) => OpenOptions::default().with_reader_drain_timeout(Duration::ZERO),
+        _ => OpenOptions::default(),
+    };
+    let fixture = FrozenStoreFixture::for_control(open_options, generic_fault.cloned(), op_index)?;
     let mut clean_oracle_records = Vec::new();
     let mut clean_control_records = Vec::new();
     let mut clean_mutation_records = Vec::new();
     let mut clean_family_artifact_records = BTreeMap::new();
     let mut clean_coverage = CoverageRegistry::default();
-    let faulted_receipts = std::cell::RefCell::new(None);
+    #[derive(Debug)]
+    struct FamilyLegResult {
+        receipts: Vec<ProductionFeatureReceipt>,
+        oracle_passed: bool,
+    }
     let control = run_with_clean_control(
         &fixture,
-        |_store| {
-            run_campaign_operation(
+        |store| {
+            let receipts = run_campaign_operation(
                 operation,
                 CampaignOperationContext {
                     selected_faults: &[],
@@ -3573,27 +3875,17 @@ fn run_campaign_operation_with_clean_control(
                     mutation_records: &mut clean_mutation_records,
                     family_artifact_records: &mut clean_family_artifact_records,
                     coverage: &mut clean_coverage,
+                    control_store: Some(store),
                 },
             )?;
-            if clean_oracle_records.is_empty() {
-                return Err(format!(
-                    "clean control for {}/{} emitted no family oracle record",
-                    operation.campaign().key(),
-                    operation.key()
-                ));
-            }
-            if let Some(failed) = clean_oracle_records.iter().find(|record| !record.passed) {
-                return Err(format!(
-                    "clean control for {}/{} disagreed with {}: {}",
-                    operation.campaign().key(),
-                    operation.key(),
-                    failed.checker_id,
-                    failed.detail
-                ));
-            }
-            Ok(())
+            Ok(FamilyLegResult {
+                receipts,
+                oracle_passed: !clean_oracle_records.is_empty()
+                    && clean_oracle_records.iter().all(|record| record.passed),
+            })
         },
-        |_store| {
+        |store| {
+            let record_start = oracle_records.len();
             let receipts = run_campaign_operation(
                 operation,
                 CampaignOperationContext {
@@ -3609,25 +3901,73 @@ fn run_campaign_operation_with_clean_control(
                     mutation_records,
                     family_artifact_records,
                     coverage,
+                    control_store: Some(store),
                 },
             )?;
-            faulted_receipts.replace(Some(receipts));
-            Ok(())
+            Ok(FamilyLegResult {
+                receipts,
+                oracle_passed: oracle_records.get(record_start..).is_some_and(|records| {
+                    !records.is_empty() && records.iter().all(|record| record.passed)
+                }),
+            })
+        },
+        |result| {
+            if result.oracle_passed {
+                Ok(())
+            } else {
+                Err("family oracle disagreed".to_owned())
+            }
         },
     )?;
     if !control.same_seed_control_passed {
-        return Err(control
-            .clean
-            .err()
-            .unwrap_or_else(|| "same-seed clean control failed without an error".to_owned()));
+        let detail = clean_oracle_records
+            .iter()
+            .find(|record| !record.passed)
+            .map_or_else(
+                || "emitted no family oracle record".to_owned(),
+                |record| format!("disagreed with {}: {}", record.checker_id, record.detail),
+            );
+        return Err(format!(
+            "clean control for {}/{} {detail}",
+            operation.campaign().key(),
+            operation.key()
+        ));
     }
-    control.faulted?;
-    let receipts = faulted_receipts
-        .into_inner()
-        .ok_or_else(|| "faulted family leg emitted no receipt result".to_owned())?;
+    let receipts = match control.faulted? {
+        FaultedLeg::Observed(result) => result.receipts,
+        FaultedLeg::Refused { stage, error } => {
+            let fault = control
+                .fault_event
+                .as_ref()
+                .map_or("null".to_owned(), |event| {
+                    format!("\"{}\"", json_escape(&event.id))
+                });
+            control_records.push(format!(
+                "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"seed\":{seed},\"fault\":{fault},\"typed_refusal\":true,\"stage\":\"{}\",\"error\":\"{}\"}}",
+                operation.campaign().key(),
+                operation.key(),
+                json_escape(stage),
+                json_escape(&error),
+            ));
+            Vec::new()
+        }
+    };
+    let control_start = control_records.len();
+    for receipt in &receipts {
+        if let Some(fault) = receipt.fault() {
+            control_records.push(format!(
+                "{{\"campaign\":\"{}\",\"operation\":\"{}\",\"seed\":{seed},\"fault\":\"{}\",\"qualifying_same_seed_control\":true,\"clean_control_passed\":{}}}",
+                operation.campaign().key(),
+                operation.key(),
+                json_escape(fault),
+                control.same_seed_control_passed,
+            ));
+        }
+    }
+    let qualifying_controls = control_records.len().saturating_sub(control_start);
     Ok(CampaignOperationOutcome {
         receipts,
-        qualifying_controls: selected_faults.len(),
+        qualifying_controls,
     })
 }
 
@@ -3648,6 +3988,7 @@ fn run_campaign_operation(
         mutation_records,
         family_artifact_records,
         coverage,
+        mut control_store,
     } = context;
     if let super::campaign::FeatureOperation::Storage(storage_operation) = operation {
         let episode = storage_episode.ok_or_else(|| {
@@ -3717,6 +4058,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store,
         );
     }
     if let super::campaign::FeatureOperation::Fts(fts_operation) = operation {
@@ -3727,6 +4069,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store.as_deref_mut(),
         );
     }
     if let super::campaign::FeatureOperation::Hybrid(hybrid_operation) = operation {
@@ -3750,6 +4093,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store.as_deref_mut(),
         );
     }
     if let super::campaign::FeatureOperation::Lifecycle(lifecycle_operation) = operation {
@@ -3760,6 +4104,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store.as_deref_mut(),
         );
     }
     if let super::campaign::FeatureOperation::Diagnostics(diagnostics_operation) = operation {
@@ -3770,6 +4115,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store.as_deref_mut(),
         );
     }
     if let super::campaign::FeatureOperation::Ffi(ffi_operation) = operation {
@@ -3780,6 +4126,7 @@ fn run_campaign_operation(
             oracle_records,
             control_records,
             coverage,
+            control_store,
         );
     }
     for fault in selected_faults {
@@ -3881,6 +4228,7 @@ fn run_tier_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -3893,14 +4241,26 @@ fn run_tier_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
         let case_identity = format!(
             "seed-{seed}-operation-{}-fault-{}",
             operation.key(),
             fault.map_or("none", tier_adapter::TierFaultKind::key)
         );
-        let evidence =
-            tier_adapter::run_tier_operation(tier_operation_kind(operation), seed, fault)?;
+        let evidence = match control_store.as_deref_mut() {
+            Some(store) => tier_adapter::run_tier_operation_on_store(
+                store,
+                tier_operation_kind(operation),
+                seed,
+                fault,
+            )?,
+            None => tier_adapter::run_tier_operation(tier_operation_kind(operation), seed, fault)?,
+        };
         for invariant in evidence.invariants {
             let (id, checker, input, observed, result) = match invariant {
                 tier_adapter::TierInvariantEvidence::I50 { input, observed } => {
@@ -3936,12 +4296,7 @@ fn run_tier_campaign_operation(
                 .expect("tiering comparison appended one oracle record")
                 .case_identity = Some(case_identity.clone());
         }
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"tiering-maintenance\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -4029,6 +4384,7 @@ fn run_lifecycle_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -4041,14 +4397,29 @@ fn run_lifecycle_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
         let case_identity = format!(
             "seed-{seed}-operation-{}-fault-{}",
             operation.key(),
             fault.map_or("none", lifecycle_adapter::LifecycleFaultKind::key)
         );
-        let evidence =
-            lifecycle_adapter::run_lifecycle_operation(lifecycle_operation_kind(operation), fault)?;
+        let evidence = match control_store.as_deref() {
+            Some(store) => lifecycle_adapter::run_lifecycle_operation_on_store(
+                store.store()?,
+                store.path(),
+                lifecycle_operation_kind(operation),
+                fault,
+            )?,
+            None => lifecycle_adapter::run_lifecycle_operation(
+                lifecycle_operation_kind(operation),
+                fault,
+            )?,
+        };
         let (id, checker, input, observed, result) = match evidence.invariant {
             lifecycle_adapter::LifecycleInvariantEvidence::I54 { input, observed } => {
                 let result = lifecycle_oracle::compare_i54(&input, &observed);
@@ -4116,12 +4487,7 @@ fn run_lifecycle_campaign_operation(
             .last_mut()
             .expect("lifecycle comparison appended one oracle record")
             .case_identity = Some(case_identity);
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"lifecycle-accounting\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -4191,6 +4557,7 @@ fn run_diagnostics_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -4203,12 +4570,26 @@ fn run_diagnostics_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
-        let evidence = diagnostics_adapter::run_diagnostics_operation(
-            diagnostics_operation_kind(operation),
-            seed,
-            fault,
-        )?;
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
+        let evidence = match control_store.as_deref() {
+            Some(store) => diagnostics_adapter::run_diagnostics_operation_on_store(
+                store.store()?,
+                store.path(),
+                diagnostics_operation_kind(operation),
+                seed,
+                fault,
+            )?,
+            None => diagnostics_adapter::run_diagnostics_operation(
+                diagnostics_operation_kind(operation),
+                seed,
+                fault,
+            )?,
+        };
         let (id, checker, input, observed, result) = match evidence.invariant {
             diagnostics_adapter::DiagnosticsInvariantEvidence::I63 { input, observed } => {
                 let result = diagnostics_oracle::compare_i63(&input, &observed);
@@ -4252,12 +4633,7 @@ fn run_diagnostics_campaign_operation(
             oracle_records,
             coverage,
         );
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"diagnostics-health\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -4330,6 +4706,7 @@ fn run_ffi_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -4342,13 +4719,26 @@ fn run_ffi_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
         let case_identity = format!(
             "seed-{seed}-operation-{}-fault-{}",
             operation.key(),
             fault.map_or("none", ffi_adapter::FfiFaultKind::key)
         );
-        let evidence = ffi_adapter::run_ffi_operation(ffi_operation_kind(operation), fault)?;
+        let evidence = match control_store.as_deref_mut() {
+            Some(store) => {
+                store.store()?.stats().map_err(|error| error.to_string())?;
+                let path = store.path().to_path_buf();
+                store.close()?;
+                ffi_adapter::run_ffi_operation_at_path(&path, ffi_operation_kind(operation), fault)?
+            }
+            None => ffi_adapter::run_ffi_operation(ffi_operation_kind(operation), fault)?,
+        };
         let (id, checker, input, observed, result) = match evidence.invariant {
             ffi_adapter::FfiInvariantEvidence::I66 { input, observed } => {
                 let result = ffi_oracle::compare_i66(&input, &observed);
@@ -4386,12 +4776,7 @@ fn run_ffi_campaign_operation(
             .last_mut()
             .expect("FFI comparison appended one oracle record")
             .case_identity = Some(case_identity);
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"ffi-bindings\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -4691,6 +5076,7 @@ fn run_fts_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -4703,13 +5089,26 @@ fn run_fts_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
         let case_identity = format!(
             "seed-{seed}-operation-{}-fault-{}",
             operation.key(),
             fault.map_or("none", fts_adapter::FtsFaultKind::key)
         );
-        let evidence = fts_adapter::run_fts_operation(fts_operation_kind(operation), seed, fault)?;
+        let evidence = match control_store.as_deref_mut() {
+            Some(store) => fts_adapter::run_fts_operation_on_store(
+                store,
+                fts_operation_kind(operation),
+                seed,
+                fault,
+            )?,
+            None => fts_adapter::run_fts_operation(fts_operation_kind(operation), seed, fault)?,
+        };
         for invariant in evidence.invariants {
             let (id, checker, input, observed, result) = match invariant {
                 fts_adapter::FtsInvariantEvidence::I40 { input, observed } => {
@@ -4749,12 +5148,7 @@ fn run_fts_campaign_operation(
                 .expect("FTS comparison appended one oracle record")
                 .case_identity = Some(case_identity.clone());
         }
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"fts\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -4939,6 +5333,7 @@ fn run_graph_campaign_operation(
     oracle_records: &mut Vec<OracleRecord>,
     control_records: &mut Vec<String>,
     coverage: &mut CoverageRegistry,
+    mut control_store: Option<&mut ControlStore>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
     let faults = selected_faults
         .iter()
@@ -4951,14 +5346,28 @@ fn run_graph_campaign_operation(
         faults.into_iter().map(Some).collect()
     };
     let mut receipts = Vec::new();
-    for fault in cases {
+    for (case_index, fault) in cases.into_iter().enumerate() {
+        if case_index > 0
+            && let Some(store) = control_store.as_deref_mut()
+        {
+            store.reset_to_frozen()?;
+        }
         let case_identity = format!(
             "seed-{seed}-operation-{}-fault-{}",
             operation.key(),
             fault.map_or("none", graph_adapter::GraphFaultKind::key)
         );
-        let evidence =
-            graph_adapter::run_graph_operation(graph_operation_kind(operation), seed, fault)?;
+        let evidence = match control_store.as_deref_mut() {
+            Some(store) => graph_adapter::run_graph_operation_on_store(
+                store,
+                graph_operation_kind(operation),
+                seed,
+                fault,
+            )?,
+            None => {
+                graph_adapter::run_graph_operation(graph_operation_kind(operation), seed, fault)?
+            }
+        };
         for invariant in evidence.invariants {
             let (id, checker, input, observed, result) = match invariant {
                 graph_adapter::GraphInvariantEvidence::I28 { input, observed } => {
@@ -5010,12 +5419,7 @@ fn run_graph_campaign_operation(
                 .expect("graph comparison appended one oracle record")
                 .case_identity = Some(case_identity.clone());
         }
-        if fault.is_some() {
-            control_records.push(format!(
-                "{{\"campaign\":\"vamana-graph\",\"operation\":\"{}\",\"seed\":{seed},\"clean_control_passed\":{}}}",
-                operation.key(), evidence.clean_control_passed
-            ));
-        }
+        let _ = control_records;
         receipts.extend(
             evidence
                 .receipts
@@ -5057,6 +5461,7 @@ mod graph_campaign_tests {
                 &mut records,
                 &mut controls,
                 &mut coverage,
+                None,
             )
             .expect("clean graph campaign operation");
             assert!(receipts.is_empty());
@@ -5090,6 +5495,7 @@ mod graph_campaign_tests {
                 &mut records,
                 &mut controls,
                 &mut coverage,
+                None,
             )
             .unwrap_or_else(|error| panic!("{}: {error}", fault.key()));
             assert_eq!(receipts.len(), 1);
@@ -5108,6 +5514,7 @@ mod graph_campaign_tests {
             &mut records,
             &mut controls,
             &mut coverage,
+            None,
         )
         .expect("two graph search faults at one operation");
         let identities = records[start..]

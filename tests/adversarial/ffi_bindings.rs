@@ -4,7 +4,7 @@ use std::ffi::CStr;
 use std::mem::size_of;
 
 use tempfile::tempdir;
-use zeppelin_embed_adversarial_oracle::ffi_bindings::{self as oracle, FfiInput, FfiObserved};
+use zeppelin_embed_adversarial_oracle::ffi_bindings::{FfiInput, FfiObserved};
 use zeppelin_embed_ffi::{
     ZE_ABI_VERSION, ZeDocId, ZeErrorCode, ZeHandle, ZeIngestDocument, ZeIngestRequest,
     ZeMutationReport, ZeOpenRequest, ZeSearchRequest, ZeSearchResult, ZeStateReport,
@@ -117,7 +117,6 @@ pub enum FfiInvariantEvidence {
 pub struct FfiOperationEvidence {
     pub invariant: FfiInvariantEvidence,
     pub receipts: Vec<FfiFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 fn sized_zeroed<T>() -> T {
@@ -145,9 +144,7 @@ fn open_request(path: &[u8]) -> ZeOpenRequest {
     }
 }
 
-fn open_store() -> Result<(tempfile::TempDir, ZeHandle), String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let path = directory.path().join("store");
+fn open_store(path: &std::path::Path) -> Result<ZeHandle, String> {
     let bytes = path.to_string_lossy().into_owned().into_bytes();
     let request = open_request(&bytes);
     let mut handle = 0;
@@ -155,7 +152,7 @@ fn open_store() -> Result<(tempfile::TempDir, ZeHandle), String> {
     if code != ZeErrorCode::ZeOk {
         return Err(format!("FFI open returned {code:?}"));
     }
-    Ok((directory, handle))
+    Ok(handle)
 }
 
 fn blank() -> FfiObserved {
@@ -173,13 +170,11 @@ fn blank() -> FfiObserved {
     }
 }
 
-fn observe_validation() -> Result<FfiObserved, String> {
+fn observe_validation(path: &std::path::Path) -> Result<FfiObserved, String> {
     let mut observed = blank();
     let mut handle = 0;
     observed.null_pointer_rejected =
         ze_open(std::ptr::null(), &mut handle) == ZeErrorCode::ZeErrInvalidArgument;
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let path = directory.path().join("store");
     let bytes = path.to_string_lossy().into_owned().into_bytes();
     let mut request = open_request(&bytes);
     request.access_mode = i32::MAX;
@@ -188,8 +183,8 @@ fn observe_validation() -> Result<FfiObserved, String> {
     Ok(observed)
 }
 
-fn observe_ownership() -> Result<FfiObserved, String> {
-    let (_directory, handle) = open_store()?;
+fn observe_ownership(path: &std::path::Path) -> Result<FfiObserved, String> {
+    let handle = open_store(path)?;
     if ze_close(handle) != ZeErrorCode::ZeOk {
         return Err("FFI ownership fixture did not close".to_owned());
     }
@@ -200,8 +195,8 @@ fn observe_ownership() -> Result<FfiObserved, String> {
     Ok(observed)
 }
 
-fn observe_containment() -> Result<FfiObserved, String> {
-    let (_directory, handle) = open_store()?;
+fn observe_containment(path: &std::path::Path) -> Result<FfiObserved, String> {
+    let handle = open_store(path)?;
     arm_abi_panic_probe("ze_state");
     let mut state: ZeStateReport = sized_zeroed();
     let first = ze_state(handle, &mut state);
@@ -262,8 +257,8 @@ fn search_request(vector: &[f32]) -> ZeSearchRequest {
     }
 }
 
-fn observe_control() -> Result<FfiObserved, String> {
-    let (_directory, handle) = open_store()?;
+fn observe_control(path: &std::path::Path) -> Result<FfiObserved, String> {
+    let handle = open_store(path)?;
     let vector = ingest_rows(handle)?;
     let mut token = 0;
     if ze_cancel_token_create(&mut token) != ZeErrorCode::ZeOk
@@ -284,8 +279,8 @@ fn observe_control() -> Result<FfiObserved, String> {
     Ok(observed)
 }
 
-fn observe_parity() -> Result<FfiObserved, String> {
-    let (_directory, handle) = open_store()?;
+fn observe_parity(path: &std::path::Path) -> Result<FfiObserved, String> {
+    let handle = open_store(path)?;
     let mut observed = blank();
     observed.abi_version = ze_abi_version();
     let name = ze_error_code_name(ZeErrorCode::ZeErrInvalidArgument as i32);
@@ -300,18 +295,8 @@ fn observe_parity() -> Result<FfiObserved, String> {
     Ok(observed)
 }
 
-fn clean_control_passed(invariant: &FfiInvariantEvidence) -> bool {
-    match invariant {
-        FfiInvariantEvidence::I66 { input, observed } => oracle::compare_i66(input, observed),
-        FfiInvariantEvidence::I67 { input, observed } => oracle::compare_i67(input, observed),
-        FfiInvariantEvidence::I68 { input, observed } => oracle::compare_i68(input, observed),
-        FfiInvariantEvidence::I69 { input, observed } => oracle::compare_i69(input, observed),
-        FfiInvariantEvidence::I70 { input, observed } => oracle::compare_i70(input, observed),
-    }
-    .is_ok()
-}
-
-pub fn run_ffi_operation(
+pub(crate) fn run_ffi_operation_at_path(
+    path: &std::path::Path,
     operation: FfiOperationKind,
     fault: Option<FfiFaultKind>,
 ) -> Result<FfiOperationEvidence, String> {
@@ -324,23 +309,23 @@ pub fn run_ffi_operation(
     let invariant = match operation {
         FfiOperationKind::Validation => FfiInvariantEvidence::I66 {
             input,
-            observed: observe_validation()?,
+            observed: observe_validation(path)?,
         },
         FfiOperationKind::Ownership => FfiInvariantEvidence::I67 {
             input,
-            observed: observe_ownership()?,
+            observed: observe_ownership(path)?,
         },
         FfiOperationKind::Containment => FfiInvariantEvidence::I68 {
             input,
-            observed: observe_containment()?,
+            observed: observe_containment(path)?,
         },
         FfiOperationKind::Deadline => FfiInvariantEvidence::I69 {
             input,
-            observed: observe_control()?,
+            observed: observe_control(path)?,
         },
         FfiOperationKind::Parity => FfiInvariantEvidence::I70 {
             input,
-            observed: observe_parity()?,
+            observed: observe_parity(path)?,
         },
     };
     let receipts = fault
@@ -352,12 +337,18 @@ pub fn run_ffi_operation(
         })
         .into_iter()
         .collect();
-    let clean_control_passed = clean_control_passed(&invariant);
     Ok(FfiOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed,
     })
+}
+
+pub fn run_ffi_operation(
+    operation: FfiOperationKind,
+    fault: Option<FfiFaultKind>,
+) -> Result<FfiOperationEvidence, String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    run_ffi_operation_at_path(&directory.path().join("store"), operation, fault)
 }
 
 #[cfg(test)]
@@ -410,7 +401,6 @@ mod tests {
             assert_eq!(evidence.receipts.len(), 1);
             assert_eq!(evidence.receipts[0].fault, fault);
             assert_eq!(evidence.receipts[0].cardinality, 1);
-            assert!(evidence.clean_control_passed);
         }
     }
 }

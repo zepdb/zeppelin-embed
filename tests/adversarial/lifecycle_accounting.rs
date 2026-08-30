@@ -5,14 +5,10 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 use zeppelin_embed::lifecycle::{
-    CancelToken, Deadline, ManualMonotonicClock, OpenOptions, QueryControl, QueryError, Store,
-    StoreError, StoreTestDependencies,
+    CancelToken, Deadline, OpenOptions, QueryControl, QueryError, Store, StoreError,
 };
 use zeppelin_embed::scan::{F32Rows, ScanOptions, ScanQuery, ScanRequest, ScanRows};
-use zeppelin_embed::vfs::StdVfs;
-use zeppelin_embed_adversarial_oracle::lifecycle_accounting::{
-    self as oracle, LifecycleInput, LifecycleObserved,
-};
+use zeppelin_embed_adversarial_oracle::lifecycle_accounting::{LifecycleInput, LifecycleObserved};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleOperationKind {
@@ -119,7 +115,6 @@ pub enum LifecycleInvariantEvidence {
 pub struct LifecycleOperationEvidence {
     pub invariant: LifecycleInvariantEvidence,
     pub receipts: Vec<LifecycleFaultReceipt>,
-    pub clean_control_passed: bool,
 }
 
 fn blank() -> LifecycleObserved {
@@ -143,16 +138,8 @@ fn request<'a>(query: &'a [f32], rows: &'a F32Rows) -> ScanRequest<'a> {
     }
 }
 
-fn observe_deadline() -> Result<LifecycleObserved, String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let clock = Arc::new(ManualMonotonicClock::new());
-    let dependencies = StoreTestDependencies::new(clock_vfs(), clock.clone());
-    let store =
-        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
-            .map_err(|error| error.to_string())?;
-    let deadline = Deadline::after_with_test_clock(Duration::from_millis(1), clock.clone())
-        .map_err(|error| error.to_string())?;
-    clock.advance(Duration::from_millis(2));
+fn observe_deadline(store: &Store) -> Result<LifecycleObserved, String> {
+    let deadline = Deadline::after(Duration::ZERO).map_err(|error| error.to_string())?;
     let query = [1.0_f32];
     let rows = F32Rows::new(vec![1.0; 128]);
     let result = store.top_k_with_options(
@@ -164,18 +151,10 @@ fn observe_deadline() -> Result<LifecycleObserved, String> {
     let mut observed = blank();
     observed.deadline_timed_out_without_partial =
         matches!(result, Err(QueryError::Timeout { partial: false }));
-    store.close().map_err(|error| error.to_string())?;
     Ok(observed)
 }
 
-fn clock_vfs() -> Arc<StdVfs> {
-    Arc::new(StdVfs)
-}
-
-fn observe_cancellation() -> Result<LifecycleObserved, String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
+fn observe_cancellation(store: &Store) -> Result<LifecycleObserved, String> {
     let query = [1.0_f32];
     let rows = F32Rows::new(vec![1.0; 4_096]);
     let token = CancelToken::new();
@@ -191,48 +170,40 @@ fn observe_cancellation() -> Result<LifecycleObserved, String> {
     observed.cancellation_without_partial =
         matches!(result, Err(QueryError::Cancelled { partial: false }));
     observed.active_queries_after = stats.active_queries;
-    store.close().map_err(|error| error.to_string())?;
     Ok(observed)
 }
 
-fn observe_close_drain() -> Result<LifecycleObserved, String> {
+fn observe_close_drain(store: &Store) -> Result<LifecycleObserved, String> {
     const ROWS: usize = 10_000_000;
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store = Arc::new(
-        Store::open(
-            directory.path(),
-            OpenOptions::default().with_reader_drain_timeout(Duration::ZERO),
-        )
-        .map_err(|error| error.to_string())?,
-    );
     let rows = Arc::new(F32Rows::new(vec![1.0; ROWS]));
-    let query_store = Arc::clone(&store);
     let query_rows = Arc::clone(&rows);
-    let query = std::thread::spawn(move || {
-        let values = [1.0_f32];
-        query_store.top_k_with_options(
-            request(&values, &query_rows),
-            1,
-            ScanOptions { thread_budget: 1 },
-            QueryControl::Cancel(CancelToken::new()),
-        )
-    });
-    let until = Instant::now() + Duration::from_secs(5);
-    while store
-        .stats()
-        .map_err(|error| error.to_string())?
-        .active_queries
-        == 0
-    {
-        if Instant::now() >= until {
-            return Err("lifecycle close fixture query was never admitted".to_owned());
+    let result = std::thread::scope(|scope| -> Result<_, String> {
+        let query = scope.spawn(move || {
+            let values = [1.0_f32];
+            store.top_k_with_options(
+                request(&values, &query_rows),
+                1,
+                ScanOptions { thread_budget: 1 },
+                QueryControl::Cancel(CancelToken::new()),
+            )
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while store
+            .stats()
+            .map_err(|error| error.to_string())?
+            .active_queries
+            == 0
+        {
+            if Instant::now() >= until {
+                return Err("lifecycle close fixture query was never admitted".to_owned());
+            }
+            std::thread::yield_now();
         }
-        std::thread::yield_now();
-    }
-    store.close().map_err(|error| error.to_string())?;
-    let result = query
-        .join()
-        .map_err(|_| "lifecycle close fixture thread panicked".to_owned())?;
+        store.close().map_err(|error| error.to_string())?;
+        query
+            .join()
+            .map_err(|_| "lifecycle close fixture thread panicked".to_owned())
+    })?;
     let values = [1.0_f32];
     let small_rows = F32Rows::new(vec![1.0]);
     let post_close = store.top_k_with_options(
@@ -248,21 +219,21 @@ fn observe_close_drain() -> Result<LifecycleObserved, String> {
     Ok(observed)
 }
 
-fn observe_locking() -> Result<LifecycleObserved, String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
-    let second = Store::open(directory.path(), OpenOptions::default());
+fn observe_locking(
+    store: &Store,
+    directory: &std::path::Path,
+) -> Result<LifecycleObserved, String> {
+    store.stats().map_err(|error| error.to_string())?;
+    let second = Store::open(directory, OpenOptions::default());
     let mut observed = blank();
     observed.second_writer_refused = matches!(second, Err(StoreError::StoreBusy { .. }));
-    store.close().map_err(|error| error.to_string())?;
     Ok(observed)
 }
 
-fn observe_accounting() -> Result<LifecycleObserved, String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
+fn observe_accounting(
+    store: &Store,
+    directory: &std::path::Path,
+) -> Result<LifecycleObserved, String> {
     let query = [1.0_f32];
     let rows = F32Rows::new(vec![1.0; 128]);
     store
@@ -274,11 +245,9 @@ fn observe_accounting() -> Result<LifecycleObserved, String> {
         )
         .map_err(|error| error.to_string())?;
     let stats = store.stats().map_err(|error| error.to_string())?;
-    store.close().map_err(|error| error.to_string())?;
-
-    let denied_directory = tempdir().map_err(|error| error.to_string())?;
+    let denied_directory = directory.join("allocation-denied");
     let denied = Store::open(
-        denied_directory.path(),
+        &denied_directory,
         OpenOptions::default().with_max_resident_bytes(0),
     )
     .map_err(|error| error.to_string())?;
@@ -299,10 +268,9 @@ fn observe_accounting() -> Result<LifecycleObserved, String> {
     Ok(observed)
 }
 
-fn observe_worker_panic() -> Result<bool, String> {
-    let directory = tempdir().map_err(|error| error.to_string())?;
-    let store =
-        Store::open(directory.path(), OpenOptions::default()).map_err(|error| error.to_string())?;
+fn observe_worker_panic(directory: &std::path::Path) -> Result<bool, String> {
+    let store = Store::open(directory.join("worker-panic"), OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     let query = [1.0_f32];
     let rows = F32Rows::new(vec![1.0; 128]);
     store
@@ -319,18 +287,9 @@ fn observe_worker_panic() -> Result<bool, String> {
     ))
 }
 
-fn clean_control_passed(invariant: &LifecycleInvariantEvidence) -> bool {
-    match invariant {
-        LifecycleInvariantEvidence::I54 { input, observed } => oracle::compare_i54(input, observed),
-        LifecycleInvariantEvidence::I55 { input, observed } => oracle::compare_i55(input, observed),
-        LifecycleInvariantEvidence::I56 { input, observed } => oracle::compare_i56(input, observed),
-        LifecycleInvariantEvidence::I57 { input, observed } => oracle::compare_i57(input, observed),
-        LifecycleInvariantEvidence::I58 { input, observed } => oracle::compare_i58(input, observed),
-    }
-    .is_ok()
-}
-
-pub fn run_lifecycle_operation(
+pub(crate) fn run_lifecycle_operation_on_store(
+    store: &Store,
+    directory: &std::path::Path,
     operation: LifecycleOperationKind,
     fault: Option<LifecycleFaultKind>,
 ) -> Result<LifecycleOperationEvidence, String> {
@@ -338,13 +297,13 @@ pub fn run_lifecycle_operation(
         return Err("lifecycle fault targeted the wrong operation".to_owned());
     }
     let observed = match operation {
-        LifecycleOperationKind::Deadline => observe_deadline()?,
-        LifecycleOperationKind::Cancellation => observe_cancellation()?,
-        LifecycleOperationKind::CloseDrain => observe_close_drain()?,
-        LifecycleOperationKind::Locking => observe_locking()?,
-        LifecycleOperationKind::Accounting => observe_accounting()?,
+        LifecycleOperationKind::Deadline => observe_deadline(store)?,
+        LifecycleOperationKind::Cancellation => observe_cancellation(store)?,
+        LifecycleOperationKind::CloseDrain => observe_close_drain(store)?,
+        LifecycleOperationKind::Locking => observe_locking(store, directory)?,
+        LifecycleOperationKind::Accounting => observe_accounting(store, directory)?,
     };
-    if matches!(fault, Some(LifecycleFaultKind::WorkerPanic)) && !observe_worker_panic()? {
+    if matches!(fault, Some(LifecycleFaultKind::WorkerPanic)) && !observe_worker_panic(directory)? {
         return Err("query worker panic did not reach the typed product error".to_owned());
     }
     let input = LifecycleInput {
@@ -366,12 +325,26 @@ pub fn run_lifecycle_operation(
         })
         .into_iter()
         .collect();
-    let clean_control_passed = clean_control_passed(&invariant);
     Ok(LifecycleOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed,
     })
+}
+
+pub fn run_lifecycle_operation(
+    operation: LifecycleOperationKind,
+    fault: Option<LifecycleFaultKind>,
+) -> Result<LifecycleOperationEvidence, String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    let options = if operation == LifecycleOperationKind::CloseDrain {
+        OpenOptions::default().with_reader_drain_timeout(Duration::ZERO)
+    } else {
+        OpenOptions::default()
+    };
+    let store = Store::open(directory.path(), options).map_err(|error| error.to_string())?;
+    let result = run_lifecycle_operation_on_store(&store, directory.path(), operation, fault);
+    store.close().map_err(|error| error.to_string())?;
+    result
 }
 
 #[cfg(test)]
@@ -424,7 +397,6 @@ mod tests {
             assert_eq!(evidence.receipts.len(), 1);
             assert_eq!(evidence.receipts[0].fault, fault);
             assert_eq!(evidence.receipts[0].cardinality, 1);
-            assert!(evidence.clean_control_passed);
         }
     }
 }

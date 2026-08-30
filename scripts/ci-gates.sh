@@ -6,8 +6,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
-if grep -R -n -E 'clean_control_passed[[:space:]]*(:|=)[[:space:]]*true' tests/adversarial/*.rs; then
-    echo "family clean controls must be measured, not literals" >&2
+for source in tests/adversarial/*.rs tests/adversarial_tests.rs; do
+    if tr -d '[:space:]' < "$source" | grep -E 'clean_control_passed(:|=)(true|!false)'; then
+        echo "family clean controls must be measured, not literals: $source" >&2
+        exit 1
+    fi
+done
+
+if grep -n 'clean_control_passed' \
+    tests/adversarial/{tiering_maintenance,fts,vamana_graph,lifecycle_accounting,diagnostics_health,ffi_bindings}.rs; then
+    echo "family clean controls must come from run_with_clean_control" >&2
     exit 1
 fi
 
