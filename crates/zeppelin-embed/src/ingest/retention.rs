@@ -248,14 +248,18 @@ impl Store {
         drop(published);
         drop(previous);
 
+        let mut bytes_reclaimed = selection.bytes_reclaimed;
         for segment in &selection.dropped {
             let path = self.directory.join(segment.id.file_name());
+            // The manifest omission is already committed, so an unlink failure
+            // leaves an unreachable orphan rather than rolling back the drop.
             // Queries admitted before the commit own their snapshot's open
             // segment descriptor and mmap. POSIX unlink removes only the path;
             // the inode remains alive until the final pinned descriptor/mapping
             // is released, so their in-flight reads remain valid.
-            vfs.delete(&path)
-                .map_err(|source| StoreError::Io { path, source })?;
+            if vfs.delete(&path).is_err() {
+                bytes_reclaimed = bytes_reclaimed.saturating_sub(segment.file_size);
+            }
         }
         if let SyncRequirement::Sync(kind) = self.durability_policy.directory_sync() {
             vfs.sync(&self.directory, kind)
@@ -273,7 +277,7 @@ impl Store {
             generation,
             manifest_committed: true,
             segments_dropped: dropped_ids,
-            bytes_reclaimed: selection.bytes_reclaimed,
+            bytes_reclaimed,
             straddlers_skipped: selection.straddlers,
         })
     }
