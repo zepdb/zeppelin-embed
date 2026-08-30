@@ -30,18 +30,477 @@ use adversarial::runner::{Invariant, SelfTestBug};
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
 };
+use zeppelin_embed::fts::index::DEFAULT_FIELD;
+use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::fusion::{FusionError, HybridQuery};
 use zeppelin_embed::graph::build::GraphBuildError;
-use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
-use zeppelin_embed::lifecycle::{
-    ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+use zeppelin_embed::graph::search::GraphSearchProfile;
+use zeppelin_embed::ingest::{
+    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
-use zeppelin_embed::meta::Schema;
+use zeppelin_embed::lifecycle::{
+    CancelToken, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl, QueryError,
+    SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
+};
+use zeppelin_embed::meta::{
+    Predicate, PredicateValue, RangeBound, RangePredicate, Schema, TIMESTAMP_COLUMN,
+};
+use zeppelin_embed::planner::FilteredSearchError;
+use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentError;
 use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
 };
 use zeppelin_embed::vfs::{StdVfs, Vfs};
+
+#[test]
+fn pre_cancelled_query_returns_typed_error_for_every_query_op_kind() {
+    let directory = tempfile::tempdir().expect("pre-cancel query directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open query store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_timestamp(1)
+            .with_text("alpha"),
+        ]))
+        .expect("ingest query fixture");
+
+    let query = [1.0, 0.0];
+    let search_options =
+        |tier| SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(tier);
+    for (label, tier) in [
+        ("search.scan", SearchTier::Scan),
+        ("search.auto", SearchTier::Auto),
+        (
+            "search.graph",
+            SearchTier::Graph(GraphSearchOptions::new(GraphSearchProfile::SiftClass)),
+        ),
+    ] {
+        let token = CancelToken::new();
+        token.cancel();
+        let error = store
+            .search(
+                SearchRequest::new(&query),
+                1,
+                search_options(tier),
+                QueryControl::Cancel(token),
+            )
+            .expect_err(label);
+        assert!(
+            matches!(error, QueryError::Cancelled { partial: false }),
+            "{label} returned {error:?}"
+        );
+    }
+
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: None,
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(1))),
+    });
+    for label in ["filtered", "predicate"] {
+        let token = CancelToken::new();
+        token.cancel();
+        let error = store
+            .search_filtered(
+                SearchRequest::new(&query),
+                &predicate,
+                1,
+                search_options(SearchTier::Exact),
+                QueryControl::Cancel(token),
+            )
+            .expect_err(label);
+        assert!(
+            matches!(
+                error,
+                FilteredSearchError::Query(QueryError::Cancelled { partial: false })
+            ),
+            "{label} returned {error:?}"
+        );
+    }
+
+    let lexical = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
+    let token = CancelToken::new();
+    token.cancel();
+    let error = store
+        .search_hybrid(
+            SearchRequest::new(&query),
+            &lexical,
+            &HybridQuery::new(1),
+            search_options(SearchTier::Exact),
+            QueryControl::Cancel(token),
+        )
+        .expect_err("hybrid");
+    assert!(
+        matches!(error, FusionError::Cancelled { partial: false }),
+        "hybrid returned {error:?}"
+    );
+
+    let token = CancelToken::new();
+    token.cancel();
+    let error = store
+        .search(
+            SearchRequest::new(&query),
+            1,
+            search_options(SearchTier::Scan),
+            QueryControl::Cancel(token),
+        )
+        .expect_err("deadline probe under Cancel layer");
+    assert!(matches!(error, QueryError::Cancelled { partial: false }));
+    store.close().expect("close query fixture");
+
+    let program = Program {
+        seed: 0,
+        ops: vec![
+            Op::Search {
+                query: 0,
+                k: 1,
+                kind: adversarial::program::SearchKind::Scan,
+            },
+            Op::Search {
+                query: 0,
+                k: 1,
+                kind: adversarial::program::SearchKind::Auto,
+            },
+            Op::Search {
+                query: 0,
+                k: 1,
+                kind: adversarial::program::SearchKind::Graph,
+            },
+            Op::FilteredSearch {
+                query: 0,
+                k: 1,
+                maximum_timestamp: 1,
+            },
+            Op::PredicateSearch {
+                query: 0,
+                k: 1,
+                predicate: PredicateKind::Eq,
+            },
+            Op::HybridSearch { query: 0, k: 1 },
+            Op::DeadlineProbe { query: 0 },
+        ],
+    };
+    let expected = BTreeSet::from([
+        "search.scan",
+        "search.auto",
+        "search.graph",
+        "filtered_search",
+        "predicate_search",
+        "hybrid_search",
+        "deadline_probe",
+    ]);
+    let mut planned_pre = BTreeSet::new();
+    for seed in 0..512 {
+        for event in plan_schedule(
+            seed,
+            Environment {
+                cancel: u8::MAX,
+                ..Environment::default()
+            },
+            &program,
+        )
+        .events
+        {
+            if event.layer != Layer::Cancel || event.nth_match != 0 {
+                continue;
+            }
+            match &program.ops[event.op_index] {
+                Op::Search { kind, .. } => {
+                    planned_pre.insert(match kind {
+                        adversarial::program::SearchKind::Scan => "search.scan",
+                        adversarial::program::SearchKind::Auto => "search.auto",
+                        adversarial::program::SearchKind::Graph => "search.graph",
+                    });
+                }
+                operation => {
+                    planned_pre.insert(operation.kind());
+                }
+            }
+        }
+    }
+    assert_eq!(
+        planned_pre, expected,
+        "generic Cancel planning did not reach every query op kind"
+    );
+}
+
+#[test]
+fn cancel_after_nth_read_returns_cancelled_or_the_exact_result_never_partial() {
+    let artifacts = tempfile::tempdir().expect("cancel sweep artifacts");
+    let mut scheduled = 0_usize;
+    let mut fired = 0_usize;
+    let mut outcome_count = 0_usize;
+    let mut outcomes = BTreeMap::new();
+    let mut violations = Vec::new();
+    for seed in 0..96 {
+        let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+            .unwrap_or_else(|error| panic!("cancel sweep seed {seed}: {error}"));
+        violations.extend(
+            outcome
+                .violations
+                .iter()
+                .map(|violation| violation.report()),
+        );
+        for line in outcome.faults_bytes.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_slice(line)
+                    .expect("parse cancel fault record");
+            if record["type"].as_str() == Some("generic")
+                && record["layer"].as_str() == Some("cancel")
+                && record["op"]
+                    .as_u64()
+                    .is_some_and(|op| op < outcome.operations as u64)
+            {
+                scheduled = scheduled.saturating_add(1);
+                fired = fired.saturating_add(usize::from(
+                    record["fired"].as_bool() == Some(true)
+                        && record["fire_count"].as_u64() == Some(1),
+                ));
+            }
+        }
+        for key in [
+            "fault.cancel.generic.pre",
+            "fault.cancel.generic.during-open",
+            "fault.cancel.generic.during-read",
+            "fault.cancel.generic.during-read-range",
+            "fault.cancel.generic.completed",
+        ] {
+            let count = outcome.coverage.count(key);
+            outcome_count = outcome_count.saturating_add(count);
+            *outcomes.entry(key).or_insert(0_usize) += count;
+        }
+    }
+    assert!(scheduled > 0, "full sweep planned no Cancel events");
+    assert_eq!(
+        fired, scheduled,
+        "every Cancel event must be classified as typed cancellation or exact completion"
+    );
+    assert_eq!(
+        outcome_count, scheduled,
+        "each Cancel event must earn exactly one generic outcome key"
+    );
+    for required in [
+        "fault.cancel.generic.pre",
+        "fault.cancel.generic.during-read",
+        "fault.cancel.generic.completed",
+    ] {
+        assert!(
+            outcomes.get(required).copied().unwrap_or_default() > 0,
+            "Cancel sweep missed {required}: {outcomes:?}"
+        );
+    }
+    assert!(
+        violations.is_empty(),
+        "Cancel sweep exposed partial or non-exact results: {violations:#?}"
+    );
+}
+
+#[test]
+fn cancel_does_not_change_store_state() {
+    let seed = (0..96)
+        .find(|seed| {
+            let program = Program::generate(*seed);
+            plan_schedule(
+                *seed,
+                environment_for_profile(FaultProfile::Full, *seed),
+                &program,
+            )
+            .events
+            .iter()
+            .any(|event| event.layer == Layer::Cancel)
+        })
+        .expect("full profile planned no Cancel event");
+    let artifacts = tempfile::tempdir().expect("cancel state artifacts");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+        .unwrap_or_else(|error| panic!("cancel state seed {seed}: {error}"));
+
+    assert!(
+        outcome
+            .coverage
+            .count("fault.cancel.generic.state-unchanged")
+            > 0,
+        "Cancel path did not prove exact stats and follow-up model equality"
+    );
+    assert!(
+        outcome.violations.is_empty(),
+        "Cancel changed state or its follow-up query disagreed with the model: {:#?}",
+        outcome.violations
+    );
+}
+
+#[test]
+fn cancel_layer_can_catch_a_graph_search_that_returns_partial_candidates() {
+    let artifacts = tempfile::tempdir().expect("graph cancel artifacts");
+    let (seed, graph_op) = (0..4_096)
+        .filter(|seed| adversarial::program::exercises_graph(*seed))
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Full, seed),
+                &program,
+            )
+            .events
+            .into_iter()
+            .find(|event| {
+                event.layer == Layer::Cancel
+                    && event.nth_match == 0
+                    && matches!(
+                        program.ops.get(event.op_index),
+                        Some(Op::Search {
+                            kind: adversarial::program::SearchKind::Graph,
+                            ..
+                        })
+                    )
+            })
+            .map(|event| (seed, event.op_index as u64))
+        })
+        .expect("full schedule never pre-cancelled an explicit Graph search");
+    let outcome = adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
+        .unwrap_or_else(|error| panic!("graph cancel seed {seed}: {error}"));
+    let observed_graph_cancel = outcome
+        .faults_bytes
+        .split(|byte| *byte == b'\n')
+        .any(|line| {
+            if line.is_empty() {
+                return false;
+            }
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_slice(line)
+                    .expect("parse graph cancel fault");
+            record["type"].as_str() == Some("generic")
+                && record["layer"].as_str() == Some("cancel")
+                && record["fired"].as_bool() == Some(true)
+                && record["nth_match"].as_u64() == Some(0)
+                && record["op"].as_u64() == Some(graph_op)
+        });
+    assert!(
+        observed_graph_cancel,
+        "selected Graph pre-cancel event did not fire"
+    );
+    assert!(
+        outcome.violations.is_empty(),
+        "graph cancellation exposed partial candidates: {:#?}",
+        outcome.violations
+    );
+}
+
+#[test]
+fn fts_pre_cancelled_probe_is_credited_as_a_generic_cancel_event() {
+    let seed = (0..4_096)
+        .find(|seed| {
+            let program = Program::generate_for(CampaignKind::Fts, *seed);
+            let schedule = plan_schedule(
+                *seed,
+                environment_for_profile(FaultProfile::Full, *seed),
+                &program,
+            );
+            let plan = FaultPlan::for_program(
+                CampaignKind::Fts,
+                *seed,
+                FaultProfile::Full,
+                &program,
+                schedule,
+            );
+            plan.feature.iter().any(|event| {
+                event.fault == adversarial::campaign::FeatureFault::FtsLexicalCancellation
+                    && plan.schedule.events.iter().any(|generic| {
+                        generic.layer == Layer::Cancel
+                            && generic.op_index == event.op_index
+                            && generic.nth_match == 0
+                    })
+            })
+        })
+        .expect("no FTS seed paired lexical cancellation with generic pre-cancel");
+    let artifacts = tempfile::tempdir().expect("FTS generic cancel artifacts");
+    let outcome = adversarial::runner::run_program_for(
+        CampaignKind::Fts,
+        seed,
+        FaultProfile::Full,
+        artifacts.path(),
+    )
+    .unwrap_or_else(|error| panic!("FTS generic cancel seed {seed}: {error}"));
+
+    assert!(
+        outcome.coverage.count("fault.cancel.generic.pre") > 0,
+        "FTS pre-cancelled probe earned no generic Cancel coverage"
+    );
+    assert!(
+        outcome.violations.is_empty(),
+        "FTS generic Cancel probe violated its oracle: {:#?}",
+        outcome.violations
+    );
+}
+
+#[test]
+#[ignore = "stage-04 48-episode full-profile family gate"]
+fn cancel_layer_full_family_gate() {
+    let campaign = CampaignKind::from_key(
+        &std::env::var("ZE_ADV_CAMPAIGN").expect("ZE_ADV_CAMPAIGN for cancel family gate"),
+    )
+    .expect("valid cancel family campaign");
+    assert!(
+        matches!(
+            campaign,
+            CampaignKind::VamanaGraph
+                | CampaignKind::Fts
+                | CampaignKind::HybridFusion
+                | CampaignKind::MetadataFilterPlanner
+        ),
+        "cancel family gate does not cover {}",
+        campaign.key()
+    );
+    let artifacts = tempfile::tempdir().expect("cancel family artifacts");
+    let mut coverage = CoverageRegistry::default();
+    let mut violations = Vec::new();
+    for seed in 0..48 {
+        let outcome = adversarial::runner::run_program_for(
+            campaign,
+            seed,
+            FaultProfile::Full,
+            artifacts.path(),
+        )
+        .unwrap_or_else(|error| panic!("{} cancel seed {seed}: {error}", campaign.key()));
+        coverage.merge(&outcome.coverage);
+        violations.extend(
+            outcome
+                .violations
+                .iter()
+                .map(|violation| violation.report()),
+        );
+    }
+    let pre = coverage.count("fault.cancel.generic.pre");
+    let during_read = coverage.count("fault.cancel.generic.during-read");
+    let completed = coverage.count("fault.cancel.generic.completed");
+    println!(
+        "CANCEL_LAYER_FULL campaign={} episodes=48 pre={pre} during_read={during_read} completed={completed} violations={}",
+        campaign.key(),
+        violations.len()
+    );
+    assert!(pre > 0, "{} missed generic pre-cancel", campaign.key());
+    assert!(
+        during_read > 0,
+        "{} missed generic during-read cancel",
+        campaign.key()
+    );
+    assert!(
+        completed > 0,
+        "{} missed generic completed cancel",
+        campaign.key()
+    );
+    assert!(
+        violations.is_empty(),
+        "{} cancel violations: {violations:#?}",
+        campaign.key()
+    );
+}
 
 #[test]
 fn no_family_sets_clean_control_passed_as_a_literal() {
@@ -742,6 +1201,22 @@ fn planned_content_write_can_target_the_segment_temp_file() {
 }
 
 fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if layer == Layer::Cancel {
+        return matches!(
+            operation,
+            Op::Search { .. }
+                | Op::FilteredSearch { .. }
+                | Op::PredicateSearch { .. }
+                | Op::HybridSearch { .. }
+                | Op::DeadlineProbe { .. }
+                | Op::Feature(adversarial::campaign::FeatureOperation::Fts(
+                    adversarial::campaign::FtsOperation::Extras
+                ))
+        ) && matches!(
+            site,
+            FaultSite::Open | FaultSite::Read | FaultSite::ReadRange
+        );
+    }
     if !matches!(layer, Layer::Io | Layer::Content) {
         return false;
     }
