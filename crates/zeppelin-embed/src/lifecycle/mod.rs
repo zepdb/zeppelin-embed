@@ -5193,6 +5193,7 @@ impl Drop for Store {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::error::Error;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
 
@@ -5201,9 +5202,13 @@ mod tests {
     use crate::manifest::{Manifest, ManifestError};
     use crate::meta::Schema;
     use crate::vfs::StdVfs;
+    use crate::vfs::crash::MemoryVfs;
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
-    use super::{OpenOptions, Store, StoreError, resolve_hybrid_leg_results};
+    use super::{
+        ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+        resolve_hybrid_leg_results,
+    };
 
     #[test]
     fn hybrid_dual_failure_precedence_is_independent_of_leg_completion_order() {
@@ -5313,6 +5318,26 @@ mod tests {
             StoreError::Durability(DurabilityPolicyError::AttachedNotYetSupported)
         ));
         assert!(!store_path.exists(), "rejected open created store files");
+    }
+
+    #[test]
+    fn memory_vfs_store_open_does_not_create_host_directory() {
+        let parent = tempdir().expect("parent directory");
+        let store_path = parent.path().join("memory-only-store");
+        let dependencies = StoreTestDependencies::new(
+            Arc::new(MemoryVfs::new()),
+            Arc::new(ManualMonotonicClock::new()),
+        );
+
+        let store =
+            Store::open_with_test_dependencies(&store_path, OpenOptions::read_only(), dependencies)
+                .expect("MemoryVfs-backed store open");
+        store.close().expect("MemoryVfs-backed store close");
+
+        assert!(
+            !store_path.exists(),
+            "MemoryVfs-backed Store touched the host filesystem"
+        );
     }
 
     #[test]

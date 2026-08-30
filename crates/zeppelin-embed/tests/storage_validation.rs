@@ -480,6 +480,9 @@ fn column_decoder_rejects_value_bearing_semantic_corruption() {
 fn segment_writer_surfaces_each_vfs_commit_stage() {
     struct FailingVfs;
     impl Vfs for FailingVfs {
+        fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+            Err(std::io::ErrorKind::Other.into())
+        }
         fn open(&self, _: &Path) -> std::io::Result<u64> {
             Err(std::io::ErrorKind::Other.into())
         }
@@ -541,6 +544,9 @@ struct StageVfs {
 }
 
 impl Vfs for StageVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }

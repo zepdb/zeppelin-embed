@@ -268,6 +268,10 @@ impl<V> RecordingVfs<V> {
 }
 
 impl<V: Vfs> Vfs for RecordingVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -419,6 +423,10 @@ impl VfsFile for MemoryVfsFile {
 }
 
 impl Vfs for MemoryVfs {
+    fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+        Ok(true)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.lock_files()?
             .get(path)
@@ -839,6 +847,10 @@ impl CrashVfs {
 }
 
 impl Vfs for CrashVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }

@@ -982,6 +982,10 @@ impl Vfs for PartialBatchAppendVfs {
         self.inner.segment_data_read_counter()
     }
 
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -1044,6 +1048,10 @@ impl PurgeUnlinkErrorVfs {
 impl Vfs for PurgeUnlinkErrorVfs {
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
         self.inner.segment_data_read_counter()
+    }
+
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {

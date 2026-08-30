@@ -147,6 +147,10 @@ impl VfsFile for BlockingAppendVfsFile {
 }
 
 impl<V: Vfs> Vfs for BlockingAppendVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -242,6 +246,10 @@ impl VfsFile for PayloadPointerVfsFile {
 }
 
 impl<V: Vfs> Vfs for PayloadPointerVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -1352,6 +1360,10 @@ impl VfsFile for KillPointVfsFile {
 
 #[cfg(unix)]
 impl Vfs for KillPointVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        StdVfs.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         StdVfs.open(path)
     }

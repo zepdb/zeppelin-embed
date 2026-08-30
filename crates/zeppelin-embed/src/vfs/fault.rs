@@ -87,6 +87,10 @@ impl VfsFile for FaultVfsFile {
 }
 
 impl Vfs for FaultVfs {
+    fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+        Ok(true)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.lock_state()?
             .visible
@@ -181,6 +185,10 @@ impl FaultImage {
 }
 
 impl Vfs for FaultImage {
+    fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
+        Ok(true)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.files
             .get(path)
@@ -358,6 +366,10 @@ impl VfsFile for BlockingVfsFile {
 }
 
 impl<V: Vfs> Vfs for BlockingVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }

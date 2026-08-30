@@ -57,6 +57,10 @@ impl RenameCrashVfs {
 }
 
 impl Vfs for RenameCrashVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }

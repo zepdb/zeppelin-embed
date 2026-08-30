@@ -310,6 +310,10 @@ impl VfsFile for TimedVfsFile {
 }
 
 impl<V: Vfs> Vfs for TimedVfs<V> {
+    fn ensure_directory(&self, path: &Path, create: bool) -> io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> io::Result<u64> {
         self.inner.open(path)
     }

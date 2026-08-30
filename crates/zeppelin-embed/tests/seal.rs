@@ -605,6 +605,10 @@ impl BlockingVfs {
 }
 
 impl Vfs for BlockingVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        StdVfs.ensure_directory(path, create)
+    }
+
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         StdVfs.open(path)
     }
