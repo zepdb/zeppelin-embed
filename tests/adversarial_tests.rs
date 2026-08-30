@@ -1626,7 +1626,7 @@ fn vector_kernel_operation_uses_exact_i24_and_real_store_selection() {
             .expect("I24 operation episode");
     let oracle = String::from_utf8(outcome.oracle_bytes).expect("oracle JSON is UTF-8");
     let expected_records =
-        zeppelin_embed::kernels::KernelVariant::available().count() * 11 * 17 + 1;
+        zeppelin_embed::kernels::KernelVariant::available().count() * 15 * 17 + 1;
     assert_eq!(
         oracle
             .matches("\"checker_id\":\"I24.kernel-contract-parity.v1\"")
@@ -1648,22 +1648,38 @@ fn vector_kernel_operation_uses_exact_i24_and_real_store_selection() {
         .find(|operation| operation["operation"] == "kernel-parity")
         .expect("kernel-parity fixture operation");
     let inputs = kernel["inputs"].as_array().expect("I24 primitive inputs");
-    let unique = inputs
+    let unique_case_ids = inputs
         .iter()
-        .map(|input| {
-            (
-                input["backend"].as_str().expect("I24 backend"),
-                input["kernel"].as_str().expect("I24 kernel"),
-                input["dimension"].as_u64().expect("I24 dimension"),
-                input["input_offset"].as_u64().expect("I24 input offset"),
-                input["selected_for_store"]
-                    .as_bool()
-                    .expect("I24 Store-selection flag"),
-            )
-        })
+        .map(|input| input["case_id"].as_u64().expect("I24 case id"))
         .collect::<BTreeSet<_>>();
     assert_eq!(inputs.len(), expected_records);
-    assert_eq!(unique.len(), inputs.len(), "I24 emitted a duplicate cell");
+    assert_eq!(
+        unique_case_ids.len(),
+        inputs.len(),
+        "I24 emitted a duplicate case id"
+    );
+    let mut cases_per_cell = BTreeMap::new();
+    for input in inputs.iter().filter(|input| {
+        !input["selected_for_store"]
+            .as_bool()
+            .expect("I24 Store-selection flag")
+    }) {
+        let cell = (
+            input["backend"].as_str().expect("I24 backend"),
+            input["kernel"].as_str().expect("I24 kernel"),
+            input["dimension"].as_u64().expect("I24 dimension"),
+            input["input_offset"].as_u64().expect("I24 input offset"),
+        );
+        *cases_per_cell.entry(cell).or_insert(0_usize) += 1;
+    }
+    for ((_, kernel, _, _), count) in cases_per_cell {
+        let expected = if matches!(kernel, "dot-f32" | "dot-f16") {
+            3
+        } else {
+            1
+        };
+        assert_eq!(count, expected, "I24 emitted the wrong cases for {kernel}");
+    }
     assert!(
         outcome
             .controls_bytes
@@ -7476,7 +7492,7 @@ fn vector_campaign_comparison_counts_follow_the_family_contract() {
 #[test]
 fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     let counts = expected_campaign_comparison_counts(CampaignKind::VectorExecution, 0, 1_000);
-    assert_eq!(counts["I24"], 1_497_199);
+    assert_eq!(counts["I24"], 2_041_199);
     assert_eq!(counts["I25"], 69_000);
     assert_eq!(counts["I26"], 12_000);
     assert_eq!(counts["I27"], 17_238);

@@ -105,6 +105,10 @@ impl VectorFaultKind {
 
 const I24_DIMENSION_CASES: u64 = 17;
 const I24_KERNEL_CASES: u64 = 11;
+const I24_FLOAT_KERNELS: u64 = 2;
+const I24_FLOAT_CASES_PER_KERNEL: u64 = 3;
+const I24_CASES_PER_DIMENSION: u64 =
+    I24_KERNEL_CASES + I24_FLOAT_KERNELS * (I24_FLOAT_CASES_PER_KERNEL - 1);
 const I24_PUBLIC_STORE_CASES: u64 = 1;
 const I25_PUBLIC_STORE_CASES: u64 = 3;
 const I25_QUANTIZATION_SCHEMES: u64 = 2;
@@ -128,9 +132,10 @@ const I27_REOPEN_PHASE_TIER_CASES: u64 = 4;
 /// Exact clean comparison counts derived from this family's required corpus.
 ///
 /// I24 is the only runtime-dependent total: every actually available backend
-/// executes all eleven kernels over all seventeen dimension cases, followed
-/// by one public Store case. The other totals are structural sums of the
-/// literal I25-I27 corpus categories declared above.
+/// executes nine exact kernels once and two float kernels across three
+/// independent corpora over all seventeen dimension cases, followed by one
+/// public Store case. The other totals are structural sums of the literal
+/// I25-I27 corpus categories declared above.
 pub fn expected_comparison_counts() -> Result<BTreeMap<&'static str, u64>, String> {
     let available_backends = KernelVariant::available().try_fold(0_u64, |count, _| {
         count
@@ -138,7 +143,7 @@ pub fn expected_comparison_counts() -> Result<BTreeMap<&'static str, u64>, Strin
             .ok_or_else(|| "available kernel backend count overflowed u64".to_owned())
     })?;
     let i24 = available_backends
-        .checked_mul(I24_KERNEL_CASES)
+        .checked_mul(I24_CASES_PER_DIMENSION)
         .and_then(|count| count.checked_mul(I24_DIMENSION_CASES))
         .and_then(|count| count.checked_add(I24_PUBLIC_STORE_CASES))
         .ok_or_else(|| "I24 comparison count overflowed u64".to_owned())?;
@@ -2514,22 +2519,60 @@ fn prepare_kernel_query(query: &[i8]) -> Vec<i8> {
     prepared
 }
 
-fn seeded_raw_finite_f32_bits(seed: u64, coordinate: usize) -> u32 {
+fn seeded_word(seed: u64, coordinate: usize) -> u64 {
     let mut value = seed
         .wrapping_add((coordinate as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
         .wrapping_add(0x9e37_79b9_7f4a_7c15);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    let mixed = (value ^ (value >> 31)) as u32;
+    value ^ (value >> 31)
+}
+
+fn seeded_raw_finite_f32_bits(seed: u64, coordinate: usize, terminal: bool) -> u32 {
+    let mixed = seeded_word(seed, coordinate) as u32;
     let sign = mixed & 0x8000_0000;
     let mantissa = mixed & 0x007f_ffff;
-    // Preserve raw seeded sign and every mantissa bit, but confine the normal
-    // exponent to [-15, 16]. Two such values and the largest 768-coordinate
-    // corpus cannot overflow a real f32 accumulator. Explicit signed-zero,
-    // subnormal, infinity, and NaN cells remain separate below.
+    let biased_exponent = if terminal {
+        135
+    } else {
+        119 + ((mixed >> 23) % 17)
+    };
+    sign | (biased_exponent << 23) | mantissa
+}
+
+fn legacy_seeded_raw_finite_f32_bits(seed: u64, coordinate: usize) -> u32 {
+    let mixed = seeded_word(seed, coordinate) as u32;
+    let sign = mixed & 0x8000_0000;
+    let mantissa = mixed & 0x007f_ffff;
     let biased_exponent = 112 + ((mixed >> 23) & 0x1f);
     sign | (biased_exponent << 23) | mantissa
 }
+
+fn seeded_raw_finite_f16_bits(seed: u64, coordinate: usize, terminal: bool) -> u16 {
+    let mixed = seeded_word(seed, coordinate) as u16;
+    let sign = mixed & 0x8000;
+    let mantissa = mixed & 0x03ff;
+    let biased_exponent = if terminal {
+        19
+    } else {
+        11 + ((mixed >> 10) % 9)
+    };
+    sign | (biased_exponent << 10) | mantissa
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FloatKernelCorpus {
+    SeededFinite,
+    Cancellation,
+    Special,
+}
+
+const FLOAT_KERNEL_CORPORA: [Option<FloatKernelCorpus>; 3] = [
+    Some(FloatKernelCorpus::SeededFinite),
+    Some(FloatKernelCorpus::Cancellation),
+    Some(FloatKernelCorpus::Special),
+];
+const NON_FLOAT_KERNEL_CORPUS: [Option<FloatKernelCorpus>; 1] = [None];
 
 fn kernel_input(
     case_id: u64,
@@ -2538,6 +2581,7 @@ fn kernel_input(
     dimension: usize,
     seed: u64,
     selected_for_store: bool,
+    float_corpus: Option<FloatKernelCorpus>,
 ) -> independent::KernelInput {
     let coordinate_query = (0..dimension)
         .map(|index| ((index as i32 * 17 + seed as i32) % 127 - 63) as i8)
@@ -2560,43 +2604,117 @@ fn kernel_input(
         .map(|index| (seed as u8).wrapping_add((index * 19) as u8))
         .collect::<Vec<_>>();
     let bit4_rows = pack_kernel_rows(dimension, batch_rows.max(1), seed);
-    let f32_a = (0..dimension)
-        .map(|index| {
-            let bits = match index % 12 {
-                0 => 1.0e20_f32.to_bits(),
-                1 => 1.0_f32.to_bits(),
-                2 => (-1.0e20_f32).to_bits(),
-                3 => (-1.0_f32).to_bits(),
-                4 => 0x8000_0000,
-                5 => 0x0000_0001,
-                6 | 7 | 11 => seeded_raw_finite_f32_bits(seed, index),
-                8 => f32::INFINITY.to_bits(),
-                9 => f32::NEG_INFINITY.to_bits(),
-                10 => f32::NAN.to_bits(),
-                _ => unreachable!(),
-            };
-            independent::F32(bits)
-        })
-        .collect::<Vec<_>>();
-    let f32_b = (0..dimension)
-        .map(|index| {
-            let bits = if index % 12 < 4 {
-                1.0_f32.to_bits()
-            } else {
-                seeded_raw_finite_f32_bits(seed ^ 0xa5a5_a5a5_a5a5_a5a5, index)
-            };
-            independent::F32(bits)
-        })
-        .collect::<Vec<_>>();
-    let f16_pattern = [
-        0x8000_u16, 0x0001, 0x8001, 0x3c00, 0xbc00, 0x7c00, 0xfc00, 0x7e00, 0x0400, 0x7bff,
-    ];
-    let f16_a = (0..dimension)
-        .map(|index| f16_pattern[index % f16_pattern.len()])
-        .collect::<Vec<_>>();
-    let f16_b = (0..dimension)
-        .map(|index| f16_pattern[(index + 2) % f16_pattern.len()])
-        .collect::<Vec<_>>();
+    let (f32_a, f32_b, f16_a, f16_b) = match float_corpus {
+        Some(FloatKernelCorpus::SeededFinite) => (
+            (0..dimension)
+                .map(|index| {
+                    independent::F32(seeded_raw_finite_f32_bits(
+                        seed,
+                        index,
+                        index + 1 == dimension,
+                    ))
+                })
+                .collect(),
+            (0..dimension)
+                .map(|index| {
+                    independent::F32(seeded_raw_finite_f32_bits(
+                        seed ^ 0xa5a5_a5a5_a5a5_a5a5,
+                        index,
+                        index + 1 == dimension,
+                    ))
+                })
+                .collect(),
+            (0..dimension)
+                .map(|index| seeded_raw_finite_f16_bits(seed, index, index + 1 == dimension))
+                .collect(),
+            (0..dimension)
+                .map(|index| {
+                    seeded_raw_finite_f16_bits(
+                        seed ^ 0xa5a5_a5a5_a5a5_a5a5,
+                        index,
+                        index + 1 == dimension,
+                    )
+                })
+                .collect(),
+        ),
+        Some(FloatKernelCorpus::Cancellation) => {
+            let f32_pattern = [1.0e20_f32, 1.0, -1.0e20, -1.0];
+            let f16_pattern = [0x5c00_u16, 0x3c00, 0xdc00, 0xbc00];
+            (
+                (0..dimension)
+                    .map(|index| {
+                        independent::F32::from_float(f32_pattern[index % f32_pattern.len()])
+                    })
+                    .collect(),
+                vec![independent::F32::from_float(1.0); dimension],
+                (0..dimension)
+                    .map(|index| f16_pattern[index % f16_pattern.len()])
+                    .collect(),
+                vec![0x5c00; dimension],
+            )
+        }
+        Some(FloatKernelCorpus::Special) => {
+            let f32_pattern = [
+                0x8000_0000,
+                0x0000_0001,
+                f32::INFINITY.to_bits(),
+                f32::NEG_INFINITY.to_bits(),
+                f32::NAN.to_bits(),
+                1.0_f32.to_bits(),
+            ];
+            let f16_pattern = [0x8000_u16, 0x0001, 0x7c00, 0xfc00, 0x7e00, 0x3c00];
+            (
+                (0..dimension)
+                    .map(|index| independent::F32(f32_pattern[index % f32_pattern.len()]))
+                    .collect(),
+                vec![independent::F32::from_float(1.0); dimension],
+                (0..dimension)
+                    .map(|index| f16_pattern[index % f16_pattern.len()])
+                    .collect(),
+                vec![0x3c00; dimension],
+            )
+        }
+        None => {
+            let f32_a = (0..dimension)
+                .map(|index| {
+                    let bits = match index % 12 {
+                        0 => 1.0e20_f32.to_bits(),
+                        1 => 1.0_f32.to_bits(),
+                        2 => (-1.0e20_f32).to_bits(),
+                        3 => (-1.0_f32).to_bits(),
+                        4 => 0x8000_0000,
+                        5 => 0x0000_0001,
+                        6 | 7 | 11 => legacy_seeded_raw_finite_f32_bits(seed, index),
+                        8 => f32::INFINITY.to_bits(),
+                        9 => f32::NEG_INFINITY.to_bits(),
+                        10 => f32::NAN.to_bits(),
+                        _ => unreachable!(),
+                    };
+                    independent::F32(bits)
+                })
+                .collect();
+            let f32_b = (0..dimension)
+                .map(|index| {
+                    let bits = if index % 12 < 4 {
+                        1.0_f32.to_bits()
+                    } else {
+                        legacy_seeded_raw_finite_f32_bits(seed ^ 0xa5a5_a5a5_a5a5_a5a5, index)
+                    };
+                    independent::F32(bits)
+                })
+                .collect();
+            let f16_pattern = [
+                0x8000_u16, 0x0001, 0x8001, 0x3c00, 0xbc00, 0x7c00, 0xfc00, 0x7e00, 0x0400, 0x7bff,
+            ];
+            let f16_a = (0..dimension)
+                .map(|index| f16_pattern[index % f16_pattern.len()])
+                .collect();
+            let f16_b = (0..dimension)
+                .map(|index| f16_pattern[(index + 2) % f16_pattern.len()])
+                .collect();
+            (f32_a, f32_b, f16_a, f16_b)
+        }
+    };
     let bit4_factors = (0..batch_rows.max(1))
         .map(|row| {
             [
@@ -3190,7 +3308,17 @@ fn run_kernel_parity(
     ];
     let mut pairs = Vec::new();
     let mut available = Vec::new();
-    for (backend_index, variant) in KernelVariant::available().enumerate() {
+    let variants = KernelVariant::available().collect::<Vec<_>>();
+    let legacy_case_count = variants
+        .len()
+        .checked_mul(KERNELS.len())
+        .and_then(|value| value.checked_mul(dimensions.len()))
+        .ok_or_else(|| "vector kernel legacy case count overflowed".to_owned())?;
+    let extra_float_cases_per_backend = 2_usize
+        .checked_mul(FLOAT_KERNEL_CORPORA.len() - 1)
+        .and_then(|value| value.checked_mul(dimensions.len()))
+        .ok_or_else(|| "vector kernel float case count overflowed".to_owned())?;
+    for (backend_index, variant) in variants.into_iter().enumerate() {
         let backend = backend_id(variant.backend_id());
         for (kernel_index, kernel) in KERNELS.into_iter().enumerate() {
             for (dimension_index, dimension) in dimensions.into_iter().enumerate() {
@@ -3201,30 +3329,77 @@ fn run_kernel_parity(
                 let kernel_offset = kernel_index
                     .checked_mul(dimensions.len())
                     .ok_or_else(|| "vector kernel case offset overflowed".to_owned())?;
-                let offset = backend_offset
+                let legacy_offset = backend_offset
                     .checked_add(kernel_offset)
                     .and_then(|value| value.checked_add(dimension_index))
                     .ok_or_else(|| "vector kernel case offset overflowed".to_owned())?;
-                let base = seed
-                    .checked_mul(100_000)
-                    .ok_or_else(|| "vector kernel case base overflowed".to_owned())?;
-                let mut case_id = base
-                    .checked_add(offset as u64)
-                    .ok_or_else(|| "vector kernel case id overflowed".to_owned())?
-                    & !(1_u64 << 63);
-                if dimension_index % 2 == 1 {
-                    case_id |= 1_u64 << 63;
-                }
-                let input = kernel_input(case_id, backend, kernel, dimension, seed, false);
-                let observed = independent::I24Observed {
-                    case_id,
-                    backend,
-                    kernel,
-                    value: observe_kernel(variant, &input)?,
-                    selected_for_store: false,
-                    work_items: input.work_items,
+                let float_corpora = match kernel {
+                    independent::KernelId::DotF32 | independent::KernelId::DotF16 => {
+                        &FLOAT_KERNEL_CORPORA[..]
+                    }
+                    _ => &NON_FLOAT_KERNEL_CORPUS[..],
                 };
-                pairs.push(I24EvidencePair { input, observed });
+                for (corpus_index, float_corpus) in float_corpora.iter().copied().enumerate() {
+                    let offset = if corpus_index == 0 {
+                        legacy_offset
+                    } else {
+                        let float_kernel_index = match kernel {
+                            independent::KernelId::DotF32 => 0_usize,
+                            independent::KernelId::DotF16 => 1_usize,
+                            _ => unreachable!(),
+                        };
+                        legacy_case_count
+                            .checked_add(
+                                backend_index
+                                    .checked_mul(extra_float_cases_per_backend)
+                                    .ok_or_else(|| {
+                                        "vector kernel float backend offset overflowed".to_owned()
+                                    })?,
+                            )
+                            .and_then(|value| {
+                                value.checked_add(
+                                    float_kernel_index
+                                        * (FLOAT_KERNEL_CORPORA.len() - 1)
+                                        * dimensions.len(),
+                                )
+                            })
+                            .and_then(|value| {
+                                value.checked_add((corpus_index - 1) * dimensions.len())
+                            })
+                            .and_then(|value| value.checked_add(dimension_index))
+                            .ok_or_else(|| {
+                                "vector kernel extra float offset overflowed".to_owned()
+                            })?
+                    };
+                    let base = seed
+                        .checked_mul(100_000)
+                        .ok_or_else(|| "vector kernel case base overflowed".to_owned())?;
+                    let mut case_id = base
+                        .checked_add(offset as u64)
+                        .ok_or_else(|| "vector kernel case id overflowed".to_owned())?
+                        & !(1_u64 << 63);
+                    if dimension_index % 2 == 1 {
+                        case_id |= 1_u64 << 63;
+                    }
+                    let input = kernel_input(
+                        case_id,
+                        backend,
+                        kernel,
+                        dimension,
+                        seed,
+                        false,
+                        float_corpus,
+                    );
+                    let observed = independent::I24Observed {
+                        case_id,
+                        backend,
+                        kernel,
+                        value: observe_kernel(variant, &input)?,
+                        selected_for_store: false,
+                        work_items: input.work_items,
+                    };
+                    pairs.push(I24EvidencePair { input, observed });
+                }
             }
         }
         available.push(variant.backend_id());
@@ -6468,7 +6643,7 @@ mod tests {
     fn vector_expected_comparison_counts_are_family_owned_and_fault_exact() {
         let clean = expected_comparison_counts().expect("vector comparison-count contract");
         let available_backends = KernelVariant::available().map(|_| 1_u64).sum::<u64>();
-        assert_eq!(clean["I24"], available_backends * 11 * 17 + 1);
+        assert_eq!(clean["I24"], available_backends * 15 * 17 + 1);
         assert_eq!(clean["I25"], 69);
         assert_eq!(clean["I26"], 12);
         assert_eq!(clean["I27"], 17);
@@ -7245,26 +7420,46 @@ mod tests {
     }
 
     #[test]
-    fn vector_i24_seeded_raw_finite_and_cancellation_heavy_corpus_is_live() {
-        let first = kernel_input(
+    fn vector_i24_float_corpora_are_separate_and_live() {
+        let first_finite = kernel_input(
             0x2401,
             independent::BackendId::Scalar,
             independent::KernelId::DotF32,
             32,
             7,
             false,
+            Some(FloatKernelCorpus::SeededFinite),
         );
-        let second = kernel_input(
+        let second_finite = kernel_input(
             0x2402,
             independent::BackendId::Scalar,
             independent::KernelId::DotF32,
             32,
             8,
             false,
+            Some(FloatKernelCorpus::SeededFinite),
+        );
+        let cancellation_input = kernel_input(
+            0x2403,
+            independent::BackendId::Scalar,
+            independent::KernelId::DotF32,
+            32,
+            7,
+            false,
+            Some(FloatKernelCorpus::Cancellation),
+        );
+        let special_input = kernel_input(
+            0x2404,
+            independent::BackendId::Scalar,
+            independent::KernelId::DotF32,
+            32,
+            7,
+            false,
+            Some(FloatKernelCorpus::Special),
         );
         let cancellation = [1.0e20_f32, 1.0, -1.0e20, -1.0].map(f32::to_bits);
         assert_eq!(
-            first.f32_a[..cancellation.len()]
+            cancellation_input.f32_a[..cancellation.len()]
                 .iter()
                 .map(|value| value.0)
                 .collect::<Vec<_>>(),
@@ -7272,48 +7467,55 @@ mod tests {
             "I24 omitted its cancellation-heavy alternating-magnitude prefix"
         );
         assert!(
-            first.f32_b[..cancellation.len()]
+            cancellation_input.f32_b[..cancellation.len()]
                 .iter()
                 .all(|value| value.to_float() == 1.0),
             "I24 cancellation prefix is not scored against unit multipliers"
         );
-        let first_seeded = first.f32_a[6].to_float();
-        let second_seeded = second.f32_a[6].to_float();
-        assert!(first_seeded.is_finite() && second_seeded.is_finite());
+        assert!(
+            first_finite
+                .f32_a
+                .iter()
+                .chain(&first_finite.f32_b)
+                .all(|value| (119..=135).contains(&((value.0 >> 23) & 0xff)))
+        );
         assert_ne!(
-            first_seeded.to_bits(),
-            second_seeded.to_bits(),
+            first_finite.f32_a[6].0, second_finite.f32_a[6].0,
             "I24 raw finite bits did not vary with the episode seed"
         );
         assert!(
-            first
+            special_input
                 .f32_a
                 .iter()
                 .any(|value| value.to_float().is_infinite())
-                && first.f32_a.iter().any(|value| value.to_float().is_nan()),
-            "I24 finite stress additions displaced required IEEE special cases"
+                && special_input
+                    .f32_a
+                    .iter()
+                    .any(|value| value.to_float().is_nan()),
+            "I24 special-value corpus omitted infinity or NaN"
         );
 
-        let overflow_case = kernel_input(
+        let finite_case = kernel_input(
             400_038,
             independent::BackendId::Scalar,
             independent::KernelId::DotF32,
             7,
             4,
             false,
+            Some(FloatKernelCorpus::SeededFinite),
         );
         let scalar = KernelVariant::available()
             .find(|variant| variant.backend_id() == KernelBackendId::Scalar)
             .expect("scalar backend is always available");
         let observed = independent::I24Observed {
-            case_id: overflow_case.case_id,
-            backend: overflow_case.backend,
-            kernel: overflow_case.kernel,
-            value: observe_kernel(scalar, &overflow_case).expect("real scalar DotF32 observation"),
+            case_id: finite_case.case_id,
+            backend: finite_case.backend,
+            kernel: finite_case.kernel,
+            value: observe_kernel(scalar, &finite_case).expect("real scalar DotF32 observation"),
             selected_for_store: false,
-            work_items: overflow_case.work_items,
+            work_items: finite_case.work_items,
         };
-        let expected = independent::expected_kernel(&overflow_case)
+        let expected = independent::expected_kernel(&finite_case)
             .expect("independent seeded finite DotF32 reference");
         independent::check_i24(&expected, &observed)
             .expect("seeded finite DotF32 corpus must not overflow f32 accumulation");
