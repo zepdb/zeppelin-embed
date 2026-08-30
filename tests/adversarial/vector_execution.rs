@@ -46,7 +46,8 @@ use zeppelin_embed_adversarial_oracle::vector_execution as independent;
 
 use super::fault_vfs::{
     FaultEvent as ScheduledFaultEvent, FaultMode as ScheduledFaultMode,
-    FaultSite as ScheduledFaultSite, ScheduledVfs,
+    FaultSchedule as ScheduledFaultSchedule, FaultSite as ScheduledFaultSite,
+    Layer as ScheduledFaultLayer, ScheduledVfs,
 };
 use super::runner::FrozenStoreFixture;
 
@@ -1672,11 +1673,27 @@ fn materialize_fault_event(
     Ok(ScheduledFaultEvent {
         id: schedule.id.clone(),
         op_index: program_op_index,
+        layer: match schedule.mode {
+            VectorGenericFaultMode::BitFlip
+            | VectorGenericFaultMode::TornWrite
+            | VectorGenericFaultMode::Truncate
+            | VectorGenericFaultMode::WrongObject
+            | VectorGenericFaultMode::MisdirectedWrite
+            | VectorGenericFaultMode::ZeroFill
+            | VectorGenericFaultMode::SilentDrop => ScheduledFaultLayer::Content,
+            VectorGenericFaultMode::Eio
+            | VectorGenericFaultMode::Eacces
+            | VectorGenericFaultMode::Enospc
+            | VectorGenericFaultMode::Latency
+            | VectorGenericFaultMode::PostCommitError => ScheduledFaultLayer::Io,
+        },
         site: scheduled_fault_site(schedule.site),
         mode: scheduled_fault_mode(schedule.mode),
         nth_match: schedule.nth_match,
+        expected_matches: None,
         path_contains: schedule.path_contains.clone(),
         fired: false,
+        fire_count: 0,
         path: None,
     })
 }
@@ -2065,8 +2082,14 @@ fn run_generic_fault_evidence(
     };
     let pair = isolated_pair(&frozen)?;
     let event = materialize_fault_event(schedule, context.program_op_index)?;
-    let clean_scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event.clone())));
-    let fault_scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event)));
+    let clean_scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        ScheduledFaultSchedule::single(event.clone()),
+    ));
+    let fault_scheduled = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        ScheduledFaultSchedule::single(event),
+    ));
     clean_scheduled.set_operation(context.program_op_index);
     fault_scheduled.set_operation(context.program_op_index);
     let (feature, mapped_feature_mutation) = generic_feature_controller(feature_mutation, source)?;
@@ -2101,10 +2124,14 @@ fn run_generic_fault_evidence(
         feature.as_ref(),
     )?;
     let clean_event = clean_scheduled
-        .event()
+        .events()
+        .into_iter()
+        .next()
         .ok_or_else(|| "clean ScheduledVfs lost its vector schedule".to_owned())?;
     let fault_event = fault_scheduled
-        .event()
+        .events()
+        .into_iter()
+        .next()
         .ok_or_else(|| "fault ScheduledVfs lost its vector schedule".to_owned())?;
     Ok(VectorGenericFaultEvidence {
         operation,

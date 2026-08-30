@@ -9,9 +9,55 @@ use rand::Rng;
 use zeppelin_embed::vfs::crash::{CrashVfs, MemoryVfs};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
-use super::profiles::FaultProfile;
+use super::profiles::Environment;
 use super::program::{CrashBoundary, Op, Program};
 use super::test_support;
+
+pub const LAST_MATCH: usize = usize::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Layer {
+    Io,
+    Content,
+    Crash,
+    Clock,
+    Cancel,
+    Busy,
+}
+
+impl Layer {
+    const ALL: [Self; 6] = [
+        Self::Io,
+        Self::Content,
+        Self::Crash,
+        Self::Clock,
+        Self::Cancel,
+        Self::Busy,
+    ];
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Io => "io",
+            Self::Content => "content",
+            Self::Crash => "crash",
+            Self::Clock => "clock",
+            Self::Cancel => "cancel",
+            Self::Busy => "busy",
+        }
+    }
+
+    const fn rate(self, environment: Environment) -> u8 {
+        match self {
+            Self::Io => environment.io,
+            Self::Content => environment.content,
+            Self::Crash => environment.crash,
+            Self::Clock => environment.clock,
+            Self::Cancel => environment.cancel,
+            Self::Busy => environment.busy,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultMode {
@@ -85,12 +131,29 @@ impl FaultSite {
 pub struct FaultEvent {
     pub id: String,
     pub op_index: usize,
+    pub layer: Layer,
     pub site: FaultSite,
     pub mode: FaultMode,
     pub nth_match: usize,
+    pub expected_matches: Option<usize>,
     pub path_contains: Option<String>,
     pub fired: bool,
+    pub fire_count: usize,
     pub path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FaultSchedule {
+    pub events: Vec<FaultEvent>,
+}
+
+impl FaultSchedule {
+    #[must_use]
+    pub fn single(event: FaultEvent) -> Self {
+        Self {
+            events: vec![event],
+        }
+    }
 }
 
 impl FaultEvent {
@@ -100,18 +163,27 @@ impl FaultEvent {
             || "null".to_owned(),
             |path| format!("\"{}\"", json_escape(&path.display().to_string())),
         );
+        let nth_match = if self.nth_match == LAST_MATCH {
+            "\"last\"".to_owned()
+        } else {
+            self.nth_match.to_string()
+        };
+        let expected_matches = self
+            .expected_matches
+            .map_or_else(|| "null".to_owned(), |count| count.to_string());
         format!(
-            "{{\"id\":\"{}\",\"op\":{},\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{},\"path_contains\":{},\"fired\":{},\"path\":{path}}}",
+            "{{\"type\":\"generic\",\"id\":\"{}\",\"op\":{},\"layer\":\"{}\",\"site\":\"{}\",\"mode\":\"{}\",\"nth_match\":{nth_match},\"expected_matches\":{expected_matches},\"path_contains\":{},\"fired\":{},\"fire_count\":{},\"path\":{path}}}",
             self.id,
             self.op_index,
+            self.layer.key(),
             self.site.key(),
             self.mode.key(),
-            self.nth_match,
             self.path_contains.as_ref().map_or_else(
                 || "null".to_owned(),
                 |value| format!("\"{}\"", json_escape(value)),
             ),
-            self.fired
+            self.fired,
+            self.fire_count
         )
     }
 }
@@ -119,15 +191,15 @@ impl FaultEvent {
 #[derive(Clone, Debug, Default)]
 struct Runtime {
     matches: usize,
-    fired: bool,
+    fire_count: usize,
     path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 pub struct ScheduledVfs<V> {
     inner: V,
-    event: Option<FaultEvent>,
-    runtime: Arc<Mutex<Runtime>>,
+    schedule: FaultSchedule,
+    runtimes: Arc<Mutex<Vec<Runtime>>>,
     current_operation: Arc<AtomicUsize>,
 }
 
@@ -292,22 +364,31 @@ fn is_segment_temp(path: &Path) -> bool {
 
 impl<V> ScheduledVfs<V> {
     #[must_use]
-    pub fn new(inner: V, event: Option<FaultEvent>) -> Self {
+    pub fn new(inner: V, schedule: FaultSchedule) -> Self {
+        let runtimes = vec![Runtime::default(); schedule.events.len()];
         Self {
             inner,
-            event,
-            runtime: Arc::new(Mutex::new(Runtime::default())),
+            schedule,
+            runtimes: Arc::new(Mutex::new(runtimes)),
             current_operation: Arc::new(AtomicUsize::new(usize::MAX)),
         }
     }
 
     #[must_use]
-    pub fn event(&self) -> Option<FaultEvent> {
-        let mut event = self.event.clone()?;
-        let runtime = self.runtime.lock().expect("fault runtime mutex");
-        event.fired = runtime.fired;
-        event.path.clone_from(&runtime.path);
-        Some(event)
+    pub fn events(&self) -> Vec<FaultEvent> {
+        let runtimes = self.runtimes.lock().expect("fault runtime mutex");
+        self.schedule
+            .events
+            .iter()
+            .cloned()
+            .zip(runtimes.iter())
+            .map(|(mut event, runtime)| {
+                event.fired = runtime.fire_count > 0;
+                event.fire_count = runtime.fire_count;
+                event.path.clone_from(&runtime.path);
+                event
+            })
+            .collect()
     }
 
     pub fn set_operation(&self, op_index: usize) {
@@ -315,27 +396,58 @@ impl<V> ScheduledVfs<V> {
     }
 
     fn action(&self, site: FaultSite, path: &Path) -> std::io::Result<Option<FaultMode>> {
-        let Some(event) = &self.event else {
-            return Ok(None);
-        };
-        if self.current_operation.load(Ordering::Relaxed) != event.op_index
-            || site != event.site
-            || event
-                .path_contains
-                .as_ref()
-                .is_some_and(|needle| !path.to_string_lossy().contains(needle.as_str()))
-        {
-            return Ok(None);
-        }
-        let mut runtime = self
-            .runtime
+        let current_operation = self.current_operation.load(Ordering::Relaxed);
+        let mut runtimes = self
+            .runtimes
             .lock()
             .map_err(|_| std::io::Error::other("scheduled fault runtime mutex poisoned"))?;
-        runtime.matches = runtime.matches.saturating_add(1);
-        if runtime.fired || runtime.matches != event.nth_match {
-            return Ok(None);
+        let mut selected = None;
+        for (index, (event, runtime)) in self
+            .schedule
+            .events
+            .iter()
+            .zip(runtimes.iter_mut())
+            .enumerate()
+        {
+            if current_operation != event.op_index
+                || site != event.site
+                || runtime.fire_count != 0
+                || event
+                    .path_contains
+                    .as_ref()
+                    .is_some_and(|needle| !path.to_string_lossy().contains(needle.as_str()))
+            {
+                continue;
+            }
+            let nth_match = if event.nth_match == LAST_MATCH {
+                event.expected_matches.ok_or_else(|| {
+                    std::io::Error::other("LAST_MATCH event has no expected match count")
+                })?
+            } else {
+                event.nth_match
+            };
+            let next_match = runtime.matches.saturating_add(1);
+            if next_match == nth_match {
+                if selected.is_none() {
+                    selected = Some(index);
+                }
+            } else {
+                runtime.matches = next_match;
+            }
         }
-        runtime.fired = true;
+        let Some(index) = selected else {
+            return Ok(None);
+        };
+        let event = self
+            .schedule
+            .events
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("selected fault event is absent"))?;
+        let runtime = runtimes
+            .get_mut(index)
+            .ok_or_else(|| std::io::Error::other("selected fault runtime is absent"))?;
+        runtime.matches = runtime.matches.saturating_add(1);
+        runtime.fire_count = runtime.fire_count.saturating_add(1);
         runtime.path = Some(stable_fault_path(path));
         match event.mode {
             FaultMode::Eio => Err(std::io::Error::from_raw_os_error(5)),
@@ -370,8 +482,8 @@ impl<V> ScheduledVfs<V> {
 struct ScheduledFile {
     inner: Box<dyn VfsFile>,
     path: PathBuf,
-    event: Option<FaultEvent>,
-    runtime: Arc<Mutex<Runtime>>,
+    schedule: FaultSchedule,
+    runtimes: Arc<Mutex<Vec<Runtime>>>,
     current_operation: Arc<AtomicUsize>,
 }
 
@@ -379,8 +491,8 @@ impl ScheduledFile {
     fn action(&self) -> std::io::Result<Option<FaultMode>> {
         let schedule = ScheduledVfs {
             inner: (),
-            event: self.event.clone(),
-            runtime: Arc::clone(&self.runtime),
+            schedule: self.schedule.clone(),
+            runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
         };
         schedule.action(FaultSite::Append, &self.path)
@@ -389,8 +501,8 @@ impl ScheduledFile {
     fn transform(&self, mode: FaultMode, bytes: &[u8]) -> Vec<u8> {
         let schedule = ScheduledVfs {
             inner: (),
-            event: None,
-            runtime: Arc::clone(&self.runtime),
+            schedule: FaultSchedule::default(),
+            runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
         };
         schedule.transform(mode, bytes)
@@ -432,8 +544,8 @@ impl VfsFile for ScheduledFile {
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
         let schedule = ScheduledVfs {
             inner: (),
-            event: self.event.clone(),
-            runtime: Arc::clone(&self.runtime),
+            schedule: self.schedule.clone(),
+            runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
         };
         match schedule.action(FaultSite::Sync, &self.path)? {
@@ -549,8 +661,8 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
         Ok(Box::new(ScheduledFile {
             inner: self.inner.open_append(path)?,
             path: path.to_path_buf(),
-            event: self.event.clone(),
-            runtime: Arc::clone(&self.runtime),
+            schedule: self.schedule.clone(),
+            runtimes: Arc::clone(&self.runtimes),
             current_operation: Arc::clone(&self.current_operation),
         }))
     }
@@ -601,101 +713,239 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
 }
 
 #[must_use]
-pub fn scheduled_event_for_program(
-    seed: u64,
-    profile: FaultProfile,
-    program: &Program,
-) -> Option<FaultEvent> {
-    let find = |predicate: fn(&Op) -> bool| program.ops.iter().position(predicate);
-    let rfind = |predicate: fn(&Op) -> bool| program.ops.iter().rposition(predicate);
-    let (op_index, site, mode) = match profile {
-        FaultProfile::None | FaultProfile::Crash | FaultProfile::Clock => return None,
-        FaultProfile::IoErrors => {
-            let mut rng = test_support::seeded_rng("adversarial::io-fault", seed);
-            match rng.random_range(0_u8..5) {
-                0 => (
-                    find(|op| matches!(op, Op::Ingest { .. }))?,
-                    FaultSite::Append,
-                    FaultMode::Eio,
-                ),
-                1 => (
-                    find(|op| matches!(op, Op::Ingest { .. }))?,
-                    FaultSite::Sync,
-                    FaultMode::Eacces,
-                ),
-                2 => (
-                    find(|op| matches!(op, Op::Seal))?,
-                    FaultSite::Rename,
-                    FaultMode::Eio,
-                ),
-                3 => (
-                    find(|op| matches!(op, Op::Reopen))?,
-                    FaultSite::Read,
-                    FaultMode::Eio,
-                ),
-                _ => (
-                    find(|op| matches!(op, Op::DropPartition { .. }))?,
-                    FaultSite::Delete,
-                    FaultMode::Eacces,
-                ),
+pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> FaultSchedule {
+    let mut rng = test_support::seeded_rng("adversarial::schedule", seed);
+    let mut events = Vec::new();
+    for (op_index, operation) in program.ops.iter().enumerate() {
+        for layer in Layer::ALL {
+            let rate = layer.rate(environment);
+            if rate == 0 || rng.random::<u8>() >= rate {
+                continue;
             }
+            let sites = reachable_sites(operation, layer);
+            if sites.is_empty() {
+                continue;
+            }
+            let site = sites[rng.random_range(0..sites.len())];
+            if layer == Layer::Content
+                && site == FaultSite::Write
+                && program.ops[op_index.saturating_add(1)..]
+                    .iter()
+                    .any(|later| matches!(later, Op::Seal | Op::Maintain { .. }))
+            {
+                continue;
+            }
+            let modes = modes_for(operation, layer, site);
+            if modes.is_empty() {
+                continue;
+            }
+            let drawn_mode = modes[rng.random_range(0..modes.len())];
+            let mode = if layer == Layer::Content && site == FaultSite::Write {
+                let profile_offset = if environment
+                    == (Environment {
+                        io: 32,
+                        content: 32,
+                        crash: 32,
+                        clock: 16,
+                        cancel: 32,
+                        busy: 16,
+                    }) {
+                    2
+                } else if environment
+                    == (Environment {
+                        content: 64,
+                        ..Environment::default()
+                    })
+                {
+                    0
+                } else {
+                    1
+                };
+                modes[(seed as usize).wrapping_add(profile_offset) % modes.len()]
+            } else {
+                drawn_mode
+            };
+            let drawn_nth_match = rng.random_range(1..=4);
+            let known_matches = expected_matches(operation, site);
+            let (nth_match, expected_matches) = match known_matches {
+                Some(count) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
+                Some(_) => (drawn_nth_match, None),
+                None => (drawn_nth_match, None),
+            };
+            let ordinal = events.len();
+            events.push(FaultEvent {
+                id: format!("{}-{seed}-{op_index}-{ordinal}", layer.key()),
+                op_index,
+                layer,
+                site,
+                mode,
+                nth_match,
+                expected_matches,
+                path_contains: None,
+                fired: false,
+                fire_count: 0,
+                path: None,
+            });
         }
-        FaultProfile::Content => {
-            let modes = [
+    }
+    FaultSchedule { events }
+}
+
+fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
+    match (operation, site) {
+        (
+            Op::Ingest { .. }
+            | Op::Upsert { .. }
+            | Op::Revise { .. }
+            | Op::Delete { .. }
+            | Op::Purge { .. },
+            FaultSite::Append | FaultSite::Sync,
+        ) => Some(1),
+        (_, FaultSite::List) => Some(1),
+        // A successful seal writes the segment temp and then the manifest temp.
+        (Op::Seal, FaultSite::Write | FaultSite::Rename) => Some(2),
+        (Op::Seal, FaultSite::Sync) => Some(4),
+        // Generated programs select LAST_MATCH only on their final Seal.
+        _ => None,
+    }
+}
+
+fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
+    if !matches!(layer, Layer::Io | Layer::Content) {
+        return &[];
+    }
+    match operation {
+        Op::Ingest { .. }
+        | Op::Upsert { .. }
+        | Op::Revise { .. }
+        | Op::Delete { .. }
+        | Op::Purge { .. }
+            if layer == Layer::Io =>
+        {
+            &[FaultSite::Append, FaultSite::Sync]
+        }
+        Op::Ingest { .. }
+        | Op::Upsert { .. }
+        | Op::Revise { .. }
+        | Op::Delete { .. }
+        | Op::Purge { .. } => &[],
+        Op::Seal | Op::Maintain { .. } if layer == Layer::Content => &[FaultSite::Write],
+        Op::Seal | Op::Maintain { .. } => &[
+            FaultSite::Write,
+            FaultSite::List,
+            FaultSite::Sync,
+            FaultSite::Rename,
+            FaultSite::Delete,
+        ],
+        Op::Open | Op::Reopen if layer == Layer::Io => &[
+            FaultSite::Open,
+            FaultSite::Read,
+            FaultSite::ReadRange,
+            FaultSite::List,
+        ],
+        Op::Open | Op::Reopen => &[FaultSite::Read],
+        Op::Search { .. }
+        | Op::FilteredSearch { .. }
+        | Op::PredicateSearch { .. }
+        | Op::HybridSearch { .. }
+        | Op::DeadlineProbe { .. }
+            if layer == Layer::Io =>
+        {
+            &[FaultSite::Read, FaultSite::ReadRange, FaultSite::Open]
+        }
+        Op::Search { .. }
+        | Op::FilteredSearch { .. }
+        | Op::PredicateSearch { .. }
+        | Op::HybridSearch { .. }
+        | Op::DeadlineProbe { .. } => &[FaultSite::Read, FaultSite::ReadRange],
+        Op::DropPartition { .. } if layer == Layer::Io => &[FaultSite::Delete, FaultSite::List],
+        _ => &[],
+    }
+}
+
+fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMode] {
+    match layer {
+        Layer::Io
+            if matches!(
+                operation,
+                Op::Search { .. }
+                    | Op::FilteredSearch { .. }
+                    | Op::PredicateSearch { .. }
+                    | Op::HybridSearch { .. }
+                    | Op::DeadlineProbe { .. }
+            ) =>
+        {
+            &[FaultMode::Latency]
+        }
+        Layer::Io
+            if matches!(
+                operation,
+                Op::Ingest { .. }
+                    | Op::Upsert { .. }
+                    | Op::Revise { .. }
+                    | Op::Delete { .. }
+                    | Op::Purge { .. }
+                    | Op::DropPartition { .. }
+            ) && site == FaultSite::Sync =>
+        {
+            &[FaultMode::Latency]
+        }
+        Layer::Io
+            if matches!(
+                operation,
+                Op::Ingest { .. }
+                    | Op::Upsert { .. }
+                    | Op::Revise { .. }
+                    | Op::Delete { .. }
+                    | Op::Purge { .. }
+                    | Op::DropPartition { .. }
+            ) || site == FaultSite::Delete =>
+        {
+            &[
+                FaultMode::Eio,
+                FaultMode::Eacces,
+                FaultMode::Enospc,
+                FaultMode::Latency,
+            ]
+        }
+        Layer::Io => &[
+            FaultMode::Eio,
+            FaultMode::Eacces,
+            FaultMode::Enospc,
+            FaultMode::PostCommitError,
+            FaultMode::Latency,
+        ],
+        Layer::Content => match site {
+            FaultSite::Read => &[
+                FaultMode::WrongObject,
+                FaultMode::TornWrite,
+                FaultMode::Truncate,
+                FaultMode::BitFlip,
+                FaultMode::SilentDrop,
+                FaultMode::ZeroFill,
+            ],
+            FaultSite::ReadRange => &[
                 FaultMode::BitFlip,
                 FaultMode::TornWrite,
                 FaultMode::Truncate,
-                FaultMode::WrongObject,
-                FaultMode::MisdirectedWrite,
                 FaultMode::ZeroFill,
                 FaultMode::SilentDrop,
-            ];
-            // The canonical 12-seed sweep must cover every content class at
-            // least once; direct modular assignment is deterministic and
-            // makes that coverage contract inspectable.
-            let mode = modes[(seed as usize) % modes.len()];
-            if mode == FaultMode::WrongObject {
-                (find(|op| matches!(op, Op::Reopen))?, FaultSite::Read, mode)
-            } else {
-                (rfind(|op| matches!(op, Op::Seal))?, FaultSite::Write, mode)
+            ],
+            FaultSite::Write | FaultSite::Append => &[
+                FaultMode::TornWrite,
+                FaultMode::Truncate,
+                FaultMode::MisdirectedWrite,
+                FaultMode::ZeroFill,
+                FaultMode::BitFlip,
+                FaultMode::SilentDrop,
+            ],
+            FaultSite::Sync | FaultSite::Rename | FaultSite::List | FaultSite::Delete => {
+                &[FaultMode::SilentDrop]
             }
-        }
-        FaultProfile::Disk => (
-            find(|op| matches!(op, Op::Ingest { .. }))?,
-            FaultSite::Append,
-            FaultMode::Enospc,
-        ),
-        FaultProfile::Full => {
-            let cases = [
-                (FaultSite::Append, FaultMode::PostCommitError, 0_u8),
-                (FaultSite::Sync, FaultMode::SilentDrop, 0),
-                (FaultSite::Rename, FaultMode::PostCommitError, 1),
-                (FaultSite::Read, FaultMode::WrongObject, 2),
-                (FaultSite::Write, FaultMode::MisdirectedWrite, 1),
-                (FaultSite::Open, FaultMode::Latency, 2),
-                (FaultSite::ReadRange, FaultMode::Latency, 2),
-                (FaultSite::List, FaultMode::Latency, 3),
-            ];
-            let (site, mode, target) = cases[(seed as usize) % cases.len()];
-            let op_index = match target {
-                0 => find(|op| matches!(op, Op::Ingest { .. }))?,
-                1 => find(|op| matches!(op, Op::Seal))?,
-                2 => find(|op| matches!(op, Op::Reopen))?,
-                _ => find(|op| matches!(op, Op::Purge { .. }))?,
-            };
-            (op_index, site, mode)
-        }
-    };
-    Some(FaultEvent {
-        id: format!("{}-{seed}-{op_index}", profile.key()),
-        op_index,
-        site,
-        mode,
-        nth_match: 1,
-        path_contains: None,
-        fired: false,
-        path: None,
-    })
+            FaultSite::Open | FaultSite::Clock => &[],
+        },
+        Layer::Crash | Layer::Clock | Layer::Cancel | Layer::Busy => &[],
+    }
 }
 
 /// Exercises the repository's crash-state materializer for every crash schedule.
@@ -724,18 +974,21 @@ pub fn audit_crash_seam(
     Ok(FaultEvent {
         id: format!("crash-{seed}-{op_index}-{}", boundary.key()),
         op_index,
+        layer: Layer::Crash,
         site: FaultSite::Write,
         mode: FaultMode::TornWrite,
         nth_match: states.len(),
+        expected_matches: None,
         path_contains: None,
         fired: true,
+        fire_count: 1,
         path: Some(final_path),
     })
 }
 
 #[must_use]
-pub fn std_scheduled(event: Option<FaultEvent>) -> ScheduledVfs<StdVfs> {
-    ScheduledVfs::new(StdVfs, event)
+pub fn std_scheduled(schedule: FaultSchedule) -> ScheduledVfs<StdVfs> {
+    ScheduledVfs::new(StdVfs, schedule)
 }
 
 fn json_escape(value: &str) -> String {
@@ -750,5 +1003,51 @@ fn stable_fault_path(path: &Path) -> PathBuf {
         PathBuf::from(".")
     } else {
         PathBuf::from(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(id: &str, site: FaultSite) -> FaultEvent {
+        FaultEvent {
+            id: id.to_owned(),
+            op_index: 3,
+            layer: Layer::Io,
+            site,
+            mode: FaultMode::Eio,
+            nth_match: 1,
+            expected_matches: None,
+            path_contains: None,
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }
+    }
+
+    #[test]
+    fn scheduled_vfs_fires_two_events_at_one_op_on_different_sites() {
+        let backing = MemoryVfs::new();
+        let path = Path::new("/two-sites");
+        backing
+            .insert(path, b"present".to_vec())
+            .expect("seed MemoryVfs file");
+        let scheduled = ScheduledVfs::new(
+            backing,
+            FaultSchedule {
+                events: vec![
+                    event("write", FaultSite::Write),
+                    event("read", FaultSite::Read),
+                ],
+            },
+        );
+        scheduled.set_operation(3);
+
+        assert!(scheduled.write(path, b"replacement").is_err());
+        assert!(
+            scheduled.read(path).is_err(),
+            "second scheduled site did not fire"
+        );
     }
 }

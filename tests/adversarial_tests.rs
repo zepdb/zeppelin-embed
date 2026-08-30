@@ -20,9 +20,11 @@ use std::{fs::File, io::Write as _};
 use adversarial::campaign::{
     CampaignKind, CampaignSpec, FaultPlan, InvariantId, Qualification, RunConfig,
 };
-use adversarial::coverage::CoverageRegistry;
-use adversarial::fault_vfs::{FaultEvent, FaultMode, FaultSite, ScheduledVfs};
-use adversarial::profiles::FaultProfile;
+use adversarial::coverage::{CoverageRegistry, REQUIRED_SMOKE_COVERAGE};
+use adversarial::fault_vfs::{
+    FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledVfs, plan_schedule,
+};
+use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
 use adversarial::program::{Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
 use zeppelin_embed::epoch::{
@@ -39,7 +41,7 @@ use zeppelin_embed::segment::SegmentError;
 use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
 };
-use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed::vfs::{StdVfs, Vfs};
 
 #[test]
 fn no_family_sets_clean_control_passed_as_a_literal() {
@@ -95,10 +97,13 @@ fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
         id: "clean-control-must-not-see-schedule".to_owned(),
         op_index: 17,
         site: FaultSite::Append,
+        layer: Layer::Io,
         mode: FaultMode::Eio,
         nth_match: 1,
+        expected_matches: None,
         path_contains: Some("wal.ze".to_owned()),
         fired: false,
+        fire_count: 0,
         path: None,
     };
     let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
@@ -181,10 +186,13 @@ fn clean_control_helper_records_faulted_open_as_a_typed_refusal() {
         id: "faulted-open-refusal".to_owned(),
         op_index: 23,
         site: FaultSite::Open,
+        layer: Layer::Io,
         mode: FaultMode::Eio,
         nth_match: 1,
+        expected_matches: None,
         path_contains: None,
         fired: false,
+        fire_count: 0,
         path: None,
     };
     let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
@@ -260,8 +268,13 @@ fn runner_counts_qualifying_controls_from_the_helper_for_every_family() {
         let seed = (0..128)
             .find(|&seed| {
                 let program = Program::generate_for(campaign, seed);
-                let plan =
-                    FaultPlan::for_program(campaign, seed, FaultProfile::Full, &program, None);
+                let plan = FaultPlan::for_program(
+                    campaign,
+                    seed,
+                    FaultProfile::Full,
+                    &program,
+                    FaultSchedule::default(),
+                );
                 !plan.feature.is_empty()
             })
             .unwrap_or_else(|| panic!("{campaign} has no selected feature-fault seed"));
@@ -369,14 +382,17 @@ fn scheduled_open_fault_reaches_a_sealed_segment_open() {
     let directory = tempfile::tempdir().expect("scheduled reopen directory");
     let scheduled = Arc::new(ScheduledVfs::new(
         StdVfs,
-        Some(FaultEvent {
+        FaultSchedule::single(FaultEvent {
             id: "stage-06-open-eio".to_owned(),
             op_index: 1,
+            layer: Layer::Io,
             site: FaultSite::Open,
             mode: FaultMode::Eio,
             nth_match: 2,
+            expected_matches: None,
             path_contains: Some(".zseg".to_owned()),
             fired: false,
+            fire_count: 0,
             path: None,
         }),
     ));
@@ -410,7 +426,7 @@ fn scheduled_open_fault_reaches_a_sealed_segment_open() {
         ),
         "sealed reopen did not preserve the typed Open/Eio error"
     );
-    assert!(scheduled.event().is_some_and(|event| event.fired));
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
 }
 
 #[test]
@@ -425,13 +441,16 @@ fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
         id: "stage-06-torn-checkpoint".to_owned(),
         op_index: maintain,
         site: FaultSite::Write,
+        layer: Layer::Content,
         mode: FaultMode::TornWrite,
         nth_match: 1,
+        expected_matches: None,
         path_contains: Some(".graph.checkpoint.tmp".to_owned()),
         fired: false,
+        fire_count: 0,
         path: None,
     };
-    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, Some(event)));
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
     let directory = tempfile::tempdir().expect("torn checkpoint directory");
     let document = EmbeddingTower {
         model_id: "stage-06-sift-fixture".to_owned(),
@@ -493,7 +512,7 @@ fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
         interrupted.status,
         MaintenanceStatus::BudgetExhausted
     ));
-    assert!(scheduled.event().is_some_and(|event| event.fired));
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
     store.close().expect("close after torn checkpoint");
 
     let reopened = Store::open_with_test_dependencies(
@@ -520,6 +539,485 @@ fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
         refused.status
     );
     reopened.close().expect("close refused checkpoint store");
+}
+
+#[test]
+fn profile_for_seed_is_total_and_covers_every_preset_in_eight_seeds() {
+    let observed = (0..8).map(profile_for_seed).collect::<Vec<_>>();
+    assert_eq!(
+        observed,
+        vec![
+            FaultProfile::None,
+            FaultProfile::IoErrors,
+            FaultProfile::Content,
+            FaultProfile::Crash,
+            FaultProfile::Disk,
+            FaultProfile::Clock,
+            FaultProfile::Full,
+            FaultProfile::Random,
+        ]
+    );
+}
+
+#[test]
+fn environment_for_random_profile_is_a_pure_function_of_seed() {
+    let first = environment_for_profile(FaultProfile::Random, 91);
+    let second = environment_for_profile(FaultProfile::Random, 91);
+    let different_seed = environment_for_profile(FaultProfile::Random, 92);
+    assert_eq!(first, second);
+    assert_ne!(first, different_seed, "Random ignored the seed");
+    assert_ne!(first, Environment::default());
+    for rate in [
+        first.io,
+        first.content,
+        first.crash,
+        first.clock,
+        first.cancel,
+        first.busy,
+    ] {
+        assert!(rate <= 96, "random rate {rate} exceeds 96/256");
+    }
+}
+
+#[test]
+fn schedule_is_deterministic_for_seed_environment_and_program() {
+    let program = Program::generate(7);
+    let environment = environment_for_profile(FaultProfile::Full, 7);
+    let first = plan_schedule(7, environment, &program);
+    let second = plan_schedule(7, environment, &program);
+    assert!(
+        !first.events.is_empty(),
+        "full environment planned no faults"
+    );
+    assert_eq!(first.events, second.events);
+}
+
+#[test]
+fn schedule_places_events_on_random_ops_not_only_the_first() {
+    let op_indices = (0..200)
+        .flat_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::IoErrors, seed),
+                &program,
+            )
+            .events
+        })
+        .filter(|event| event.site == FaultSite::Append && event.mode == FaultMode::Eio)
+        .map(|event| event.op_index)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        op_indices.len() >= 3,
+        "Append/Eio appeared at only {op_indices:?}"
+    );
+}
+
+#[test]
+fn schedule_never_targets_a_site_the_op_cannot_reach() {
+    assert!(
+        !stage_01_site_is_reachable(
+            &Op::Ingest {
+                first_id: 1,
+                count: 1,
+                revision: 1,
+                timestamp: 0,
+            },
+            Layer::Content,
+            FaultSite::Append,
+        ),
+        "Content/Ingest cannot reach Append"
+    );
+    assert!(
+        !stage_01_site_is_reachable(&Op::Seal, Layer::Content, FaultSite::List),
+        "Content/Seal cannot reach List"
+    );
+    assert!(
+        !stage_01_site_is_reachable(
+            &Op::DropPartition { start: 0, end: 1 },
+            Layer::Content,
+            FaultSite::Delete,
+        ),
+        "Content/DropPartition cannot reach Delete"
+    );
+    for seed in 0..200 {
+        let program = Program::generate(seed);
+        for event in plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Full, seed),
+            &program,
+        )
+        .events
+        {
+            assert!(
+                stage_01_site_is_reachable(&program.ops[event.op_index], event.layer, event.site),
+                "seed {seed} planned {:?}/{:?} for {}",
+                event.layer,
+                event.site,
+                program.ops[event.op_index].kind()
+            );
+        }
+    }
+}
+
+#[test]
+fn schedule_uses_drawn_nth_match_under_each_stage_01_fault_preset() {
+    let observed = [
+        FaultProfile::IoErrors,
+        FaultProfile::Content,
+        FaultProfile::Disk,
+        FaultProfile::Full,
+        FaultProfile::Random,
+    ]
+    .into_iter()
+    .any(|profile| {
+        (0..200).any(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(seed, environment_for_profile(profile, seed), &program)
+                .events
+                .iter()
+                .any(|event| (2..=4).contains(&event.nth_match))
+        })
+    });
+    assert!(observed, "no preset planned a drawn nth_match in 2..=4");
+}
+
+#[test]
+fn planned_content_writes_are_not_restricted_to_the_manifest() {
+    let events = (0..200)
+        .flat_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Content, seed),
+                &program,
+            )
+            .events
+        })
+        .filter(|event| event.layer == Layer::Content && event.site == FaultSite::Write)
+        .collect::<Vec<_>>();
+    assert!(!events.is_empty(), "Content preset planned no Write event");
+    assert!(
+        events.iter().all(|event| event.path_contains.is_none()),
+        "Content/Write remained restricted to manifest.ze"
+    );
+}
+
+#[test]
+fn planned_content_write_can_target_the_segment_temp_file() {
+    let event = (0..200)
+        .find_map(|seed| {
+            let program = Program::generate(seed);
+            plan_schedule(
+                seed,
+                environment_for_profile(FaultProfile::Content, seed),
+                &program,
+            )
+            .events
+            .into_iter()
+            .find(|event| {
+                event.layer == Layer::Content
+                    && event.site == FaultSite::Write
+                    && event.nth_match == 1
+            })
+        })
+        .expect("Content preset never planned the first Write match");
+    let directory = tempfile::tempdir().expect("planned content Write directory");
+    let segment = directory.path().join(".segment-0001.zseg.tmp");
+    let manifest = directory.path().join(".manifest.ze.tmp");
+    let op_index = event.op_index;
+    let scheduled = ScheduledVfs::new(StdVfs, FaultSchedule::single(event));
+    scheduled.set_operation(op_index);
+
+    assert!(scheduled.write(&segment, b"segment payload").is_ok());
+    assert!(scheduled.write(&manifest, b"manifest payload").is_ok());
+    assert_eq!(
+        scheduled.events()[0]
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        Some(".segment-0001.zseg.tmp")
+    );
+}
+
+fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> bool {
+    if !matches!(layer, Layer::Io | Layer::Content) {
+        return false;
+    }
+    match operation {
+        Op::Ingest { .. }
+        | Op::Upsert { .. }
+        | Op::Revise { .. }
+        | Op::Delete { .. }
+        | Op::Purge { .. } => {
+            layer == Layer::Io && matches!(site, FaultSite::Append | FaultSite::Sync)
+        }
+        Op::Seal | Op::Maintain { .. } if layer == Layer::Content => site == FaultSite::Write,
+        Op::Seal | Op::Maintain { .. } => matches!(
+            site,
+            FaultSite::Write
+                | FaultSite::Rename
+                | FaultSite::Sync
+                | FaultSite::List
+                | FaultSite::Delete
+        ),
+        Op::Open | Op::Reopen if layer == Layer::Io => matches!(
+            site,
+            FaultSite::Open | FaultSite::Read | FaultSite::ReadRange | FaultSite::List
+        ),
+        Op::Open | Op::Reopen => site == FaultSite::Read,
+        Op::Search { .. }
+        | Op::FilteredSearch { .. }
+        | Op::PredicateSearch { .. }
+        | Op::HybridSearch { .. }
+        | Op::DeadlineProbe { .. }
+            if layer == Layer::Io =>
+        {
+            matches!(
+                site,
+                FaultSite::Read | FaultSite::ReadRange | FaultSite::Open
+            )
+        }
+        Op::Search { .. }
+        | Op::FilteredSearch { .. }
+        | Op::PredicateSearch { .. }
+        | Op::HybridSearch { .. }
+        | Op::DeadlineProbe { .. } => matches!(site, FaultSite::Read | FaultSite::ReadRange),
+        Op::DropPartition { .. } => {
+            layer == Layer::Io && matches!(site, FaultSite::Delete | FaultSite::List)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn scheduled_vfs_fires_the_nth_match_not_the_first() {
+    let directory = tempfile::tempdir().expect("nth-match ScheduledVfs directory");
+    let path = directory.path().join("nth-match");
+    let scheduled = ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule::single(FaultEvent {
+            id: "nth-match".to_owned(),
+            op_index: 4,
+            layer: Layer::Io,
+            site: FaultSite::Write,
+            mode: FaultMode::Eio,
+            nth_match: 2,
+            expected_matches: None,
+            path_contains: None,
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }),
+    );
+    scheduled.set_operation(4);
+
+    assert!(scheduled.write(&path, b"first").is_ok());
+    assert!(scheduled.write(&path, b"second").is_err());
+    assert_eq!(
+        scheduled
+            .events()
+            .into_iter()
+            .next()
+            .expect("scheduled event")
+            .fire_count,
+        1
+    );
+}
+
+#[test]
+fn scheduled_vfs_fires_the_last_match_not_the_first() {
+    for write_count in 2..=4 {
+        let directory = tempfile::tempdir().expect("last-match ScheduledVfs directory");
+        let path = directory.path().join(format!("last-match-{write_count}"));
+        let scheduled = ScheduledVfs::new(
+            StdVfs,
+            FaultSchedule::single(FaultEvent {
+                id: format!("last-match-{write_count}"),
+                op_index: 4,
+                layer: Layer::Content,
+                site: FaultSite::Write,
+                mode: FaultMode::BitFlip,
+                nth_match: LAST_MATCH,
+                expected_matches: Some(write_count),
+                path_contains: None,
+                fired: false,
+                fire_count: 0,
+                path: None,
+            }),
+        );
+        scheduled.set_operation(4);
+
+        for write_index in 1..=write_count {
+            assert!(scheduled.write(&path, &[write_index as u8]).is_ok());
+            let expected_fire_count = usize::from(write_index == write_count);
+            assert_eq!(
+                scheduled.events()[0].fire_count,
+                expected_fire_count,
+                "LAST_MATCH did not select write {write_count} of {write_count}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unfired_event_does_not_starve_ready_event_at_same_op_and_site() {
+    let directory = tempfile::tempdir().expect("same-site ScheduledVfs directory");
+    let path = directory.path().join("same-site");
+    let event = |id: &str, nth_match, mode| FaultEvent {
+        id: id.to_owned(),
+        op_index: 4,
+        layer: Layer::Io,
+        site: FaultSite::Write,
+        mode,
+        nth_match,
+        expected_matches: None,
+        path_contains: None,
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule {
+            events: vec![
+                event("second-match", 2, FaultMode::Eio),
+                event("first-match", 1, FaultMode::Eacces),
+            ],
+        },
+    );
+    scheduled.set_operation(4);
+
+    assert!(scheduled.write(&path, b"first").is_err());
+    let after_first = scheduled.events();
+    assert_eq!(after_first[0].fire_count, 0);
+    assert_eq!(
+        after_first[1].fire_count, 1,
+        "ready second event was starved by the first unfired event"
+    );
+    assert!(scheduled.write(&path, b"second").is_err());
+    assert_eq!(scheduled.events()[0].fire_count, 1);
+}
+
+#[test]
+fn faults_jsonl_tags_generic_events_with_type_and_layer() {
+    let event = FaultEvent {
+        id: "tagged".to_owned(),
+        op_index: 2,
+        layer: Layer::Content,
+        site: FaultSite::Write,
+        mode: FaultMode::BitFlip,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: None,
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let record: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_str(&event.json_line())
+            .expect("parse generic fault JSON");
+
+    assert_eq!(record["type"].as_str(), Some("generic"));
+    assert_eq!(record["layer"].as_str(), Some("content"));
+}
+
+#[test]
+fn runner_retries_after_io_layer_and_not_after_content_layer_at_same_op() {
+    let event = |id: &str, layer, mode| FaultEvent {
+        id: id.to_owned(),
+        op_index: 9,
+        layer,
+        site: FaultSite::Append,
+        mode,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: None,
+        fired: true,
+        fire_count: 1,
+        path: None,
+    };
+    let io = event("io", Layer::Io, FaultMode::PostCommitError);
+    let content = event("content", Layer::Content, FaultMode::BitFlip);
+
+    assert!(adversarial::runner::runner_retries_faulted_operation(
+        std::slice::from_ref(&io),
+        9
+    ));
+    assert!(!adversarial::runner::runner_retries_faulted_operation(
+        &[io, content],
+        9
+    ));
+}
+
+#[test]
+fn runner_records_violation_after_content_fault_at_earlier_operation() {
+    let content = FaultEvent {
+        id: "content-op-3".to_owned(),
+        op_index: 3,
+        layer: Layer::Content,
+        site: FaultSite::Write,
+        mode: FaultMode::BitFlip,
+        nth_match: 1,
+        expected_matches: None,
+        path_contains: None,
+        fired: true,
+        fire_count: 1,
+        path: None,
+    };
+
+    assert!(!adversarial::runner::runner_records_operation_error(
+        std::slice::from_ref(&content),
+        3
+    ));
+    assert!(
+        adversarial::runner::runner_records_operation_error(&[content], 10),
+        "content fault at op 3 suppressed a real invariant violation at op 10"
+    );
+}
+
+#[test]
+fn every_existing_fault_mode_and_site_key_is_still_emitted_under_full() {
+    let expected = REQUIRED_SMOKE_COVERAGE
+        .iter()
+        .copied()
+        .filter(|key| key.starts_with("fault.site.") || key.starts_with("fault.mode."))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::from([
+        "fault.site.clock".to_owned(),
+        "fault.mode.latency".to_owned(),
+    ]);
+    for seed in 0..200 {
+        let program = Program::generate(seed);
+        for event in plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Full, seed),
+            &program,
+        )
+        .events
+        {
+            observed.insert(format!("fault.site.{}", event.site.key()));
+            observed.insert(format!("fault.mode.{}", event.mode.key()));
+        }
+    }
+
+    assert_eq!(observed, expected);
+}
+
+#[test]
+fn run_reproduction_line_is_seed_only_when_profile_is_not_overridden() {
+    let line = adversarial::runner::reproduction_for_profile_override(
+        CampaignKind::Overall,
+        17,
+        FaultProfile::Full,
+        false,
+    );
+    assert_eq!(
+        line,
+        "ZE_ADV_SEED=17 cargo test -p zeppelin-embed-workspace-tests --test adversarial_tests run -- --ignored --exact --nocapture"
+    );
 }
 
 #[test]
@@ -701,9 +1199,16 @@ fn clean_ingest_batch_runs_i20_exact_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            let profile = profile_for_seed(*seed);
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                profile,
+                &program,
+                plan_schedule(*seed, environment_for_profile(profile, *seed), &program),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("clean ingest-retention artifacts");
@@ -747,9 +1252,15 @@ fn clean_seal_runs_i21_exact_multiset_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("clean I21 artifacts");
@@ -783,9 +1294,15 @@ fn clean_retention_runs_i22_exact_boundary_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("clean I22 artifacts");
@@ -818,9 +1335,15 @@ fn clean_physical_purge_runs_i23_byte_and_reopen_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("clean I23 artifacts");
@@ -857,10 +1380,16 @@ fn ingest_post_ack_retry_can_fire_at_batch_commit() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "post-ack-retry")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "post-ack-retry")
         })
         .expect("ingest-retention schedule reaches post-ack-retry");
     let artifacts = tempfile::tempdir().expect("post-ack retry campaign artifacts");
@@ -884,10 +1413,16 @@ fn ingest_partial_batch_append_can_fire_at_batch_commit() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "partial-batch-append")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "partial-batch-append")
         })
         .expect("ingest-retention schedule reaches partial-batch-append");
     let artifacts = tempfile::tempdir().expect("partial-batch campaign artifacts");
@@ -912,10 +1447,16 @@ fn ingest_seal_cancellation_can_fire_at_seal() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "seal-cancellation")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "seal-cancellation")
         })
         .expect("ingest-retention schedule reaches seal-cancellation");
     let artifacts = tempfile::tempdir().expect("seal-cancellation campaign artifacts");
@@ -940,10 +1481,16 @@ fn ingest_retention_clock_boundary_can_fire_at_retention() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "retention-clock-boundary")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "retention-clock-boundary")
         })
         .expect("ingest-retention schedule reaches retention-clock-boundary");
     let artifacts = tempfile::tempdir().expect("retention-clock campaign artifacts");
@@ -968,10 +1515,16 @@ fn ingest_purge_unlink_error_can_fire_at_purge() {
     let seed = (0..48)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "purge-unlink-error")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "purge-unlink-error")
         })
         .expect("ingest-retention schedule reaches purge-unlink-error");
     let artifacts = tempfile::tempdir().expect("purge-unlink campaign artifacts");
@@ -998,10 +1551,16 @@ fn ingest_purge_crash_boundary_can_fire_at_purge() {
     let seed = (0..48)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "purge-crash-boundary")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "purge-crash-boundary")
         })
         .expect("ingest-retention schedule reaches purge-crash-boundary");
     let artifacts = tempfile::tempdir().expect("purge-crash campaign artifacts");
@@ -1289,7 +1848,13 @@ fn feature_fault_plan_has_a_clean_slot_and_full_has_two_distinct_faults() {
         let mut clean = 0;
         for seed in 0..12 {
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+            let plan = FaultPlan::for_program(
+                campaign,
+                seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            );
             assert!(plan.feature.len() <= 1, "{} seed={seed}", campaign.key());
             if let Some(fault) = plan.feature.first() {
                 selected.insert(fault.fault.key());
@@ -1297,7 +1862,13 @@ fn feature_fault_plan_has_a_clean_slot_and_full_has_two_distinct_faults() {
                 clean += 1;
             }
 
-            let full = FaultPlan::for_program(campaign, seed, FaultProfile::Full, &program, None);
+            let full = FaultPlan::for_program(
+                campaign,
+                seed,
+                FaultProfile::Full,
+                &program,
+                FaultSchedule::default(),
+            );
             assert_eq!(full.feature.len(), 2, "{} seed={seed}", campaign.key());
             assert_ne!(full.feature[0].fault, full.feature[1].fault);
         }
@@ -1360,9 +1931,15 @@ fn selected_feature_fault_fires_once_at_its_declared_operation() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            !FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            !FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("storage campaign has a selected fault seed");
     let artifacts = tempfile::tempdir().expect("feature episode artifacts");
@@ -1381,7 +1958,13 @@ fn every_storage_fault_fires_through_its_exact_campaign_operation() {
     let mut fired = BTreeSet::new();
     for seed in 0..12 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         if plan.feature.is_empty() {
             continue;
         }
@@ -1461,7 +2044,7 @@ fn assert_storage_fault_can_fire_with_profile(
                 return false;
             }
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, profile, &program, None)
+            FaultPlan::for_program(campaign, *seed, profile, &program, FaultSchedule::default())
                 .feature
                 .iter()
                 .any(|event| event.fault == fault)
@@ -1619,12 +2202,16 @@ fn storage_wal_damage_records_i16_and_the_exact_i18_projection_once() {
     let seed = (0..128)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| {
-                    event.fault == adversarial::campaign::FeatureFault::StorageTornWalHeader
-                })
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault == adversarial::campaign::FeatureFault::StorageTornWalHeader)
         })
         .expect("storage campaign schedules torn WAL header");
     let artifacts = tempfile::tempdir().expect("storage WAL projection artifacts");
@@ -1655,7 +2242,13 @@ fn storage_shared_subcases_require_validated_production_receipts() {
     let mut seeds = BTreeMap::<&'static str, u64>::new();
     for seed in 0..4096 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         let Some(event) = plan.feature.first() else {
             continue;
         };
@@ -1722,7 +2315,13 @@ fn storage_observation_stream_retains_child_and_cleanup_intermediate_facts() {
     let mut cleanup_seed = None;
     for seed in 0..128 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         match plan.feature.first().map(|event| event.fault) {
             Some(adversarial::campaign::FeatureFault::StorageManifestPreRenameCrash) => {
                 publication_seed.get_or_insert(seed);
@@ -1783,7 +2382,13 @@ fn every_feature_fault_can_fire_once_at_its_declared_operation() {
         let mut fired = BTreeSet::new();
         for seed in 0..12 {
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+            let plan = FaultPlan::for_program(
+                campaign,
+                seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            );
             if plan.feature.is_empty() {
                 continue;
             }
@@ -1821,9 +2426,15 @@ fn clean_feature_episode_executes_every_bound_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("storage campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("clean feature artifacts");
@@ -1862,9 +2473,15 @@ fn metadata_feature_episode_uses_exact_i36_i39_adapters() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("metadata feature artifacts");
@@ -1913,7 +2530,13 @@ fn every_metadata_fault_uses_its_declared_production_receipt_cardinality() {
     let mut fired = BTreeSet::new();
     for seed in 0..12 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         if plan.feature.is_empty() {
             continue;
         }
@@ -1998,7 +2621,13 @@ fn every_vector_fault_uses_one_typed_production_receipt_and_same_seed_control() 
     let mut coverage = CoverageRegistry::default();
     for seed in 0..30 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         if plan.feature.is_empty() {
             continue;
         }
@@ -2049,12 +2678,18 @@ fn vector_forced_child_replay_retains_typed_binary_product_receipt() {
     let seed = (0..128)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| {
-                    event.fault == adversarial::campaign::FeatureFault::VectorForcedDispatchBackend
-                })
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| {
+                event.fault == adversarial::campaign::FeatureFault::VectorForcedDispatchBackend
+            })
         })
         .expect("vector campaign schedules forced backend");
     let artifacts = tempfile::tempdir().expect("vector forced child artifacts");
@@ -2087,9 +2722,15 @@ fn vector_feature_episode_uses_only_exact_family_checkers() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let artifacts = tempfile::tempdir().expect("vector feature artifacts");
@@ -2430,9 +3071,15 @@ fn feature_episode_writes_schema_v3_replay_metadata() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("FTS campaign has a clean feature-fault slot");
     let outcome =
@@ -2509,9 +3156,15 @@ fn storage_replay_declares_every_family_evidence_stream() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("storage campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("storage replay metadata root");
@@ -2710,9 +3363,15 @@ fn storage_fixture_artifact_executes_literal_family_bytes() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("storage campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("storage retained-fixture root");
@@ -2854,10 +3513,16 @@ fn ingest_retention_replay_compares_oracle_controls_and_receipts() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| event.fault.key() == "post-ack-retry")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault.key() == "post-ack-retry")
         })
         .expect("ingest-retention replay seed has a same-seed control and receipt");
     let root = tempfile::tempdir().expect("ingest-retention replay root");
@@ -2951,13 +3616,25 @@ fn ingest_retention_full_profile_replays_two_distinct_faults_on_one_operation() 
     let seed = (0..64)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            let plan = FaultPlan::for_program(campaign, *seed, FaultProfile::Full, &program, None);
+            let plan = FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::Full,
+                &program,
+                FaultSchedule::default(),
+            );
             plan.feature.len() == 2
                 && plan.feature[0].fault.operation() == plan.feature[1].fault.operation()
         })
         .expect("ingest-retention Full profile reaches two faults on one operation");
     let program = Program::generate_for(campaign, seed);
-    let plan = FaultPlan::for_program(campaign, seed, FaultProfile::Full, &program, None);
+    let plan = FaultPlan::for_program(
+        campaign,
+        seed,
+        FaultProfile::Full,
+        &program,
+        FaultSchedule::default(),
+    );
     assert_ne!(plan.feature[0].fault, plan.feature[1].fault);
     assert_eq!(
         plan.feature[0].fault.operation(),
@@ -2983,7 +3660,13 @@ fn ingest_retention_oracle_rows_bind_operation_fault_invocation_identity() {
     let seed = (0..64)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            let plan = FaultPlan::for_program(campaign, *seed, FaultProfile::Full, &program, None);
+            let plan = FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::Full,
+                &program,
+                FaultSchedule::default(),
+            );
             plan.feature.len() == 2
                 && plan.feature[0].fault.operation() == plan.feature[1].fault.operation()
         })
@@ -3095,9 +3778,15 @@ fn ingest_retention_merged_ledger_is_derived_from_retained_rows() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            !FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            !FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention merged-ledger seed selects a feature fault");
     let root = tempfile::tempdir().expect("ingest-retention merged-ledger root");
@@ -3144,10 +3833,16 @@ fn ingest_retention_receipt_checksum_rejects_effect_drift() {
     let seed = (0..64)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .first()
-                .is_some_and(|event| event.fault.key() == "retention-clock-boundary")
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .first()
+            .is_some_and(|event| event.fault.key() == "retention-clock-boundary")
         })
         .expect("ingest-retention checksum seed selects retention-clock-boundary");
     let root = tempfile::tempdir().expect("ingest-retention receipt-checksum root");
@@ -3212,9 +3907,15 @@ fn ingest_retention_observations_are_typed_canonical_records() {
     let seed = (0..32)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention typed-observation seed is clean");
     let root = tempfile::tempdir().expect("ingest-retention typed-observation root");
@@ -3277,9 +3978,15 @@ fn ingest_retention_final_verifier_rejects_fabricated_receipt_credit() {
     let seed = (0..24)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            !FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            !FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("ingest-retention verifier seed selects a feature fault");
     let artifacts = tempfile::tempdir().expect("ingest-retention verifier artifacts");
@@ -3405,9 +4112,15 @@ fn vector_replay_declares_every_family_evidence_stream() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("vector replay root");
@@ -3623,9 +4336,15 @@ fn vector_oracle_record_rejects_a_stale_family_canonical_digest() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("vector canonical record root");
@@ -3662,9 +4381,15 @@ fn vector_replay_executes_the_retained_independent_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("vector retained checker root");
@@ -3719,9 +4444,15 @@ fn metadata_replay_executes_the_retained_independent_checker() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("metadata retained checker root");
@@ -3783,9 +4514,15 @@ fn vector_replay_metadata_rejects_a_stale_nested_canonical_contract() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("vector nested attestation root");
@@ -3820,9 +4557,15 @@ fn metadata_replay_declares_fixture_and_query_evidence() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("metadata replay root");
@@ -3989,9 +4732,15 @@ fn metadata_fixture_artifact_executes_literal_family_bytes() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("metadata retained-fixture root");
@@ -4048,9 +4797,15 @@ fn metadata_replay_executes_retained_literal_fixture_without_program_regeneratio
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("metadata retained replay root");
@@ -4069,9 +4824,15 @@ fn metadata_retained_replay_rejects_a_mutated_same_seed_control_digest() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("metadata campaign has a clean feature-fault slot");
     let root = tempfile::tempdir().expect("metadata control replay root");
@@ -4751,14 +5512,17 @@ fn scheduled_open_fault_reaches_store_directory_admission() {
     let directory = tempfile::tempdir().expect("scheduled directory admission");
     let scheduled = Arc::new(ScheduledVfs::new(
         StdVfs,
-        Some(FaultEvent {
+        FaultSchedule::single(FaultEvent {
             id: "stage-06-directory-open-eio".to_owned(),
             op_index: 0,
+            layer: Layer::Io,
             site: FaultSite::Open,
             mode: FaultMode::Eio,
             nth_match: 1,
+            expected_matches: None,
             path_contains: None,
             fired: false,
+            fire_count: 0,
             path: None,
         }),
     ));
@@ -4778,7 +5542,11 @@ fn scheduled_open_fault_reaches_store_directory_admission() {
         "store-directory admission bypassed the scheduled Open/Eio fault"
     );
     assert_eq!(
-        scheduled.event().and_then(|event| event.path),
+        scheduled
+            .events()
+            .into_iter()
+            .next()
+            .and_then(|event| event.path),
         Some(PathBuf::from("."))
     );
 }
@@ -4788,14 +5556,17 @@ fn injected_store_vfs_reaches_open_and_wal_creation() {
     let directory = tempfile::tempdir().expect("injected VFS store");
     let scheduled = Arc::new(ScheduledVfs::new(
         StdVfs,
-        Some(FaultEvent {
+        FaultSchedule::single(FaultEvent {
             id: "open-write".to_owned(),
             op_index: 0,
+            layer: Layer::Io,
             site: FaultSite::Write,
             mode: FaultMode::Eio,
             nth_match: 1,
+            expected_matches: None,
             path_contains: None,
             fired: false,
+            fire_count: 0,
             path: None,
         }),
     ));
@@ -4811,7 +5582,7 @@ fn injected_store_vfs_reaches_open_and_wal_creation() {
         store.close().expect("close unexpectedly opened store");
     }
     assert!(
-        scheduled.event().is_some_and(|event| event.fired),
+        scheduled.events().into_iter().any(|event| event.fired),
         "the Store-owned VFS did not observe initial manifest publication"
     );
 }
@@ -5116,6 +5887,23 @@ fn one_episode_records_successful_public_path_coverage() {
 }
 
 #[test]
+fn crash_seam_audit_does_not_credit_injected_fault_coverage() {
+    let artifacts = tempfile::tempdir().expect("crash audit coverage artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, artifacts.path())
+        .expect("crash audit episode");
+
+    assert_eq!(
+        outcome.coverage.count("fault.layer.crash"),
+        0,
+        "crash-seam audit was credited as an injected Crash-layer fault"
+    );
+    assert_eq!(outcome.coverage.count("fault.site.write"), 0);
+    assert_eq!(outcome.coverage.count("fault.mode.torn_write"), 0);
+    assert_eq!(outcome.coverage.count("fault.layer.count.1"), 0);
+    assert_eq!(outcome.faults_fired, 0);
+}
+
+#[test]
 fn twelve_seed_sweep_emits_every_typed_predicate() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..12 {
@@ -5155,8 +5943,10 @@ fn smoke() {
     let mut failures = Vec::new();
     let mut unfired = Vec::new();
     let mut coverage = CoverageRegistry::default();
+    let mut smoke_episodes = 0_u64;
+    let mut generic_multi_event_episodes = 0_u64;
     let smoke_seeds = CampaignSpec::for_kind(config.campaign).smoke_seeds;
-    for profile in FaultProfile::DEFAULTS {
+    for profile in FaultProfile::ALL {
         for offset in smoke_seeds {
             let seed = config
                 .start_seed
@@ -5189,13 +5979,9 @@ fn smoke() {
                 outcome.hybrid_lexical_documents,
                 outcome.violations.len()
             );
-            if !matches!(
-                profile,
-                FaultProfile::None | FaultProfile::Crash | FaultProfile::Clock
-            ) && outcome.scheduled_faults_fired != 1
-            {
-                unfired.push(format!("seed={seed} profile={}", profile.key()));
-            }
+            smoke_episodes = smoke_episodes.saturating_add(1);
+            generic_multi_event_episodes = generic_multi_event_episodes
+                .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
             if !outcome.missing_feature_faults.is_empty() {
                 unfired.push(format!(
                     "seed={seed} profile={} feature={:?}",
@@ -5210,6 +5996,10 @@ fn smoke() {
             }
         }
     }
+    assert!(
+        generic_multi_event_episodes.saturating_mul(10) >= smoke_episodes.saturating_mul(3),
+        "generic CAN-FIRE failed: {generic_multi_event_episodes}/{smoke_episodes} smoke episodes fired at least two scheduled faults; require >=30%"
+    );
     assert!(
         failures.is_empty(),
         "adversarial smoke found {} invariant violations",
@@ -6449,9 +7239,15 @@ fn vector_replay_compares_every_artifact() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("vector campaign has a clean feature-fault slot");
     let expected_root = tempfile::tempdir().expect("vector expected replay root");
@@ -6504,6 +7300,7 @@ fn campaign() {
     let mut execution_errors = 0_u64;
     let mut panics = 0_u64;
     let mut unfired_scheduled_faults = 0_u64;
+    let mut generic_multi_event_episodes = 0_u64;
     let mut failures = Vec::<CampaignFailure>::new();
     let mut successful_artifacts = VecDeque::<PathBuf>::new();
     let mut coverage = CoverageRegistry::default();
@@ -6519,7 +7316,11 @@ fn campaign() {
     let required_duration = Duration::from_secs(config.minimum_seconds);
 
     while episodes < config.minimum_episodes || started.elapsed() < required_duration {
-        let profile = campaign_profile(episodes);
+        let profile = if std::env::var_os("ZE_ADV_PROFILE").is_some() {
+            config.profile
+        } else {
+            profile_for_seed(seed)
+        };
         let injected = injected_failures.get(&seed).copied();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert!(
@@ -6547,6 +7348,8 @@ fn campaign() {
             Ok(outcome) => {
                 operations = operations.saturating_add(outcome.operations as u64);
                 faults_fired = faults_fired.saturating_add(outcome.faults_fired as u64);
+                generic_multi_event_episodes = generic_multi_event_episodes
+                    .saturating_add(u64::from(outcome.scheduled_faults_fired >= 2));
                 coverage.merge(&outcome.coverage);
                 let merge_error = merged_evidence.as_mut().and_then(|merged| {
                     merged
@@ -6588,11 +7391,7 @@ fn campaign() {
                         u64::from(injected == Some(CampaignInjectedFailure::Violation)),
                     );
                     violations = violations.saturating_add(episode_violations);
-                    let scheduled_missing = (!matches!(
-                        profile,
-                        FaultProfile::None | FaultProfile::Crash | FaultProfile::Clock
-                    ) && outcome.scheduled_faults_fired != 1)
-                        || !outcome.missing_feature_faults.is_empty()
+                    let scheduled_missing = !outcome.missing_feature_faults.is_empty()
                         || injected == Some(CampaignInjectedFailure::UnfiredScheduledFault);
                     unfired_scheduled_faults =
                         unfired_scheduled_faults.saturating_add(u64::from(scheduled_missing));
@@ -6762,6 +7561,12 @@ fn campaign() {
             missing.join(",")
         );
     }
+    if std::env::var_os("ZE_ADV_PROFILE").is_none() && episodes >= 30 {
+        assert!(
+            generic_multi_event_episodes.saturating_mul(10) >= episodes.saturating_mul(3),
+            "generic CAN-FIRE failed: {generic_multi_event_episodes}/{episodes} campaign episodes fired at least two scheduled faults; require >=30%"
+        );
+    }
     assert!(
         if config.qualification == Qualification::Exploratory {
             exploratory_passed
@@ -6815,7 +7620,7 @@ fn campaign_executes_consecutive_seed_numbers() {
         assert!(
             artifacts
                 .path()
-                .join(format!("seed-{seed}-{}", campaign_profile(seed - 40).key()))
+                .join(format!("seed-{seed}-{}", profile_for_seed(seed).key()))
                 .is_dir(),
             "seed {seed} was skipped: {transcript}"
         );
@@ -7004,7 +7809,7 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         let directory = artifacts
             .path()
             .join("failures")
-            .join(format!("seed-{seed}-none"));
+            .join(format!("seed-{seed}-{}", profile_for_seed(seed).key()));
         for name in [
             "program.jsonl",
             "faults.jsonl",
@@ -7023,10 +7828,12 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
         artifacts.path().join("seed-88-none").is_dir(),
         "the campaign did not continue through the canonical matrix: {transcript}"
     );
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=84 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=85 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=86 profile=none"));
-    assert!(transcript.contains("ADV_CAMPAIGN_FAILURE seed=87 profile=none"));
+    for seed in 84..=87 {
+        assert!(transcript.contains(&format!(
+            "ADV_CAMPAIGN_FAILURE seed={seed} profile={}",
+            profile_for_seed(seed).key()
+        )));
+    }
     assert!(transcript.contains("ADV_CAMPAIGN_COMPLETE episodes=89 qualification=failed"));
 }
 
@@ -7034,12 +7841,18 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
 fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification() {
     let artifacts = tempfile::tempdir().expect("exploratory campaign artifacts");
     let campaign = CampaignKind::StorageDurability;
-    let clean_seed = (0..12)
+    let clean_seed = (0..128)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("storage campaign clean slot");
     let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
@@ -7265,9 +8078,15 @@ fn release_feature_campaign_refuses_incomplete_coverage() {
     let clean_seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(CampaignKind::Fts, *seed);
-            FaultPlan::for_program(CampaignKind::Fts, *seed, FaultProfile::None, &program, None)
-                .feature
-                .is_empty()
+            FaultPlan::for_program(
+                CampaignKind::Fts,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
         })
         .expect("FTS campaign clean slot");
     let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
@@ -7293,6 +8112,51 @@ fn release_feature_campaign_refuses_incomplete_coverage() {
     assert_eq!(summary["qualification_passed"], false);
     assert_eq!(summary["violations"].as_u64(), Some(0));
     assert!(!summary["missing_coverage"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn release_feature_campaign_rejects_real_violations() {
+    let artifacts = tempfile::tempdir().expect("release campaign artifacts");
+    let clean_seed = (0..12)
+        .find(|seed| {
+            let program = Program::generate_for(CampaignKind::Fts, *seed);
+            FaultPlan::for_program(
+                CampaignKind::Fts,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .is_empty()
+        })
+        .expect("FTS campaign clean slot");
+    let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
+        .args(["campaign", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
+        .env("ZE_ADV_CAMPAIGN", "fts")
+        .env("ZE_ADV_QUALIFICATION", "release")
+        .env("ZE_ADV_MIN_SECONDS", "0")
+        .env("ZE_ADV_MIN_EPISODES", "1")
+        .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
+        .env("ZE_ADV_CAMPAIGN_START_SEED", clean_seed.to_string())
+        .env(
+            "ZE_ADV_CAMPAIGN_TEST_FAILURES",
+            format!("{clean_seed}:violation"),
+        )
+        .env("ZE_ADV_ARTIFACTS", artifacts.path())
+        .output()
+        .expect("run release coverage probe");
+    assert!(!output.status.success());
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("release summary"),
+        )
+        .expect("valid release summary");
+    assert_eq!(summary["run_verdict"], "failed");
+    assert_eq!(summary["qualification_passed"], false);
+    assert!(summary["violations"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -7349,10 +8213,6 @@ fn missing_campaign_coverage(campaign: CampaignKind, coverage: &CoverageRegistry
         missing.dedup();
         missing
     }
-}
-
-fn campaign_profile(episode: u64) -> FaultProfile {
-    FaultProfile::DEFAULTS[((episode / 12) as usize) % FaultProfile::DEFAULTS.len()]
 }
 
 fn campaign_test_failures(test_mode: bool) -> BTreeMap<u64, CampaignInjectedFailure> {
@@ -7619,9 +8479,10 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("storage campaign seed fits u64");
-            let profile = campaign_profile(episode);
+            let profile = profile_for_seed(seed);
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
             for (operation, invariant) in [
                 (adversarial::campaign::StorageOperation::WalPrefix, "I16"),
                 (adversarial::campaign::StorageOperation::Publication, "I15"),
@@ -7685,9 +8546,10 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("ingest campaign seed fits u64");
-            let profile = campaign_profile(episode);
+            let profile = profile_for_seed(seed);
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
             for (operation, invariant) in [
                 (adversarial::campaign::IngestOperation::BatchCommit, "I20"),
                 (adversarial::campaign::IngestOperation::Seal, "I21"),
@@ -7725,9 +8587,10 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("vector campaign seed fits u64");
-            let profile = campaign_profile(episode);
+            let profile = profile_for_seed(seed);
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
             for (operation, invariant) in [
                 (adversarial::campaign::VectorOperation::KernelParity, "I24"),
                 (adversarial::campaign::VectorOperation::Quantization, "I25"),
@@ -7788,9 +8651,10 @@ fn expected_campaign_comparison_counts(
             let seed = start_seed
                 .checked_add(episode)
                 .expect("metadata campaign seed fits u64");
-            let profile = campaign_profile(episode);
+            let profile = profile_for_seed(seed);
             let program = Program::generate_for(campaign, seed);
-            let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+            let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+            let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
             // Each operation runs once per selected feature fault (at least
             // once). Execution owns two fault kinds, so a `full` profile can
             // select both and compare I39 twice in one episode.
@@ -7839,9 +8703,10 @@ fn expected_campaign_comparison_counts(
         let seed = start_seed
             .checked_add(episode)
             .expect("feature campaign seed fits u64");
-        let profile = campaign_profile(episode);
+        let profile = profile_for_seed(seed);
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, profile, &program, None);
+        let schedule = plan_schedule(seed, environment_for_profile(profile, seed), &program);
+        let plan = FaultPlan::for_program(campaign, seed, profile, &program, schedule);
         for invariant in spec.invariant_specs {
             let selected = plan
                 .feature
@@ -8159,10 +9024,10 @@ fn vector_campaign_comparison_counts_follow_the_family_contract() {
 #[test]
 fn vector_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     let counts = expected_campaign_comparison_counts(CampaignKind::VectorExecution, 0, 1_000);
-    assert_eq!(counts["I24"], 2_041_199);
+    assert_eq!(counts["I24"], 2_041_175);
     assert_eq!(counts["I25"], 69_000);
     assert_eq!(counts["I26"], 12_000);
-    assert_eq!(counts["I27"], 17_238);
+    assert_eq!(counts["I27"], 17_425);
 }
 
 #[test]
@@ -8170,8 +9035,8 @@ fn graph_campaign_comparison_counts_include_same_operation_fault_multiplicity() 
     let counts = expected_campaign_comparison_counts(CampaignKind::VamanaGraph, 0, 1_000);
     assert_eq!(counts["I28"], 1_000);
     assert_eq!(counts["I29"], 1_000);
-    assert_eq!(counts["I30"], 1_011);
-    assert_eq!(counts["I31"], 1_011);
+    assert_eq!(counts["I30"], 1_006);
+    assert_eq!(counts["I31"], 1_006);
     assert_eq!(counts["I32"], 1_000);
     assert_eq!(counts["I33"], 1_000);
     assert_eq!(counts["I34"], 1_000);
@@ -8185,7 +9050,7 @@ fn fts_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     assert_eq!(counts["I41"], 1_035);
     assert_eq!(counts["I42"], 1_000);
     assert_eq!(counts["I43"], 1_000);
-    assert_eq!(counts["I44"], 1_011);
+    assert_eq!(counts["I44"], 1_006);
 }
 
 #[test]
@@ -8195,7 +9060,7 @@ fn hybrid_campaign_comparison_counts_include_same_operation_fault_multiplicity()
     assert_eq!(counts["I46"], 1_000);
     assert_eq!(counts["I47"], 1_000);
     assert_eq!(counts["I48"], 1_000);
-    assert_eq!(counts["I49"], 1_057);
+    assert_eq!(counts["I49"], 1_059);
 }
 
 #[test]
@@ -8220,8 +9085,8 @@ fn lifecycle_campaign_comparison_counts_include_same_operation_fault_multiplicit
 #[test]
 fn ffi_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
     let counts = expected_campaign_comparison_counts(CampaignKind::FfiBindings, 0, 1_000);
-    assert_eq!(counts["I66"], 1_009);
-    assert_eq!(counts["I67"], 1_009);
+    assert_eq!(counts["I66"], 1_008);
+    assert_eq!(counts["I67"], 1_008);
     assert_eq!(counts["I68"], 1_000);
     assert_eq!(counts["I69"], 1_000);
     assert_eq!(counts["I70"], 1_000);
@@ -8229,13 +9094,13 @@ fn ffi_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
 
 #[test]
 fn metadata_campaign_comparison_counts_include_same_operation_fault_multiplicity() {
-    // Execution owns two fault kinds; 22 `full`-profile episodes in the
+    // Execution owns two fault kinds; 41 `full`-profile episodes in the
     // first 1,000 select both, so I39 compares twice in those episodes.
     let counts = expected_campaign_comparison_counts(CampaignKind::MetadataFilterPlanner, 0, 1_000);
     assert_eq!(counts["I36"], 1_000);
-    assert_eq!(counts["I37"], 45_241);
+    assert_eq!(counts["I37"], 45_217);
     assert_eq!(counts["I38"], 1_000);
-    assert_eq!(counts["I39"], 1_022);
+    assert_eq!(counts["I39"], 1_041);
 }
 
 #[test]
@@ -8505,12 +9370,16 @@ fn storage_campaign_comparison_counts_include_damaged_wal_i18_projections() {
     let seed = (0..128)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| {
-                    event.fault == adversarial::campaign::FeatureFault::StorageTornWalHeader
-                })
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault == adversarial::campaign::FeatureFault::StorageTornWalHeader)
         })
         .expect("storage campaign schedules torn WAL header");
     let counts = expected_campaign_comparison_counts(campaign, seed, 1);
@@ -8523,10 +9392,10 @@ fn storage_campaign_comparison_counts_include_same_operation_fault_multiplicity(
     assert_eq!(
         expected_campaign_comparison_counts(CampaignKind::StorageDurability, 0, 1_000),
         BTreeMap::from([
-            ("I15".to_owned(), 1_002),
-            ("I16".to_owned(), 1_012),
+            ("I15".to_owned(), 1_003),
+            ("I16".to_owned(), 1_005),
             ("I17".to_owned(), 1_000),
-            ("I18".to_owned(), 1_321),
+            ("I18".to_owned(), 1_308),
             ("I19".to_owned(), 1_000),
         ])
     );
@@ -8537,10 +9406,10 @@ fn ingest_campaign_comparison_counts_include_same_operation_fault_multiplicity()
     assert_eq!(
         expected_campaign_comparison_counts(CampaignKind::IngestRetention, 0, 1_000),
         BTreeMap::from([
-            ("I20".to_owned(), 1_010),
+            ("I20".to_owned(), 1_009),
             ("I21".to_owned(), 1_000),
             ("I22".to_owned(), 1_000),
-            ("I23".to_owned(), 1_009),
+            ("I23".to_owned(), 1_008),
         ])
     );
 }
@@ -8576,12 +9445,18 @@ fn storage_fixture_grammar_reaches_required_phases() {
     let seed = (0..12)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| {
-                    event.fault == adversarial::campaign::FeatureFault::StorageListDeleteOmission
-                })
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| {
+                event.fault == adversarial::campaign::FeatureFault::StorageListDeleteOmission
+            })
         })
         .expect("canonical storage smoke schedules list/delete omission");
     let mut coverage = CoverageRegistry::default();
@@ -8659,12 +9534,16 @@ fn storage_summary_reconciles_checkers_controls_and_receipts() {
     let seed = (0..128)
         .find(|seed| {
             let program = Program::generate_for(campaign, *seed);
-            FaultPlan::for_program(campaign, *seed, FaultProfile::None, &program, None)
-                .feature
-                .iter()
-                .any(|event| {
-                    event.fault == adversarial::campaign::FeatureFault::StoragePostCommitError
-                })
+            FaultPlan::for_program(
+                campaign,
+                *seed,
+                FaultProfile::None,
+                &program,
+                FaultSchedule::default(),
+            )
+            .feature
+            .iter()
+            .any(|event| event.fault == adversarial::campaign::FeatureFault::StoragePostCommitError)
         })
         .expect("storage campaign schedules post-commit error");
     let artifacts = tempfile::tempdir().expect("storage reconciliation artifacts");
@@ -8721,7 +9600,13 @@ fn storage_campaign_executes_every_required_format_and_omission_case() {
     let mut seed_by_key = BTreeMap::<String, u64>::new();
     for seed in 0..4096 {
         let program = Program::generate_for(campaign, seed);
-        let plan = FaultPlan::for_program(campaign, seed, FaultProfile::None, &program, None);
+        let plan = FaultPlan::for_program(
+            campaign,
+            seed,
+            FaultProfile::None,
+            &program,
+            FaultSchedule::default(),
+        );
         let selected = plan.feature.first().map(|event| event.fault);
         let format_key = match selected {
             Some(adversarial::campaign::FeatureFault::StorageCorruptSegmentRegion) => {
