@@ -3543,36 +3543,29 @@ fn tier_fault_kind(
 }
 
 fn tier_input_json(input: &tier_oracle::TierInput) -> String {
-    let documents = input
-        .expected_documents
+    let source_segment = input
+        .source_segment
         .iter()
-        .map(u128::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     format!(
-        "{{\"threshold\":{},\"expected_documents\":[{documents}]}}",
-        input.threshold
+        "{{\"seed\":{},\"rows\":{},\"dims\":{},\"policy_threshold\":{},\"maintenance_threshold\":{},\"stride\":{},\"k\":{},\"source_generation\":{},\"source_segment\":\"{source_segment}\"}}",
+        input.seed,
+        input.rows,
+        input.dims,
+        input.policy_threshold,
+        input.maintenance_threshold,
+        input.stride,
+        input.k,
+        input.source_generation,
     )
 }
 
 fn tier_observed_json(observed: &tier_oracle::TierObserved) -> String {
-    let list = |values: &[u128]| {
-        values
-            .iter()
-            .map(u128::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    format!(
-        "{{\"below_stays_scan\":{},\"at_threshold_transitions\":{},\"before_documents\":[{}],\"after_documents\":[{}],\"reopened_documents\":[{}],\"budget_exhausted\":{},\"graphs_built\":{}}}",
-        observed.below_stays_scan,
-        observed.at_threshold_transitions,
-        list(&observed.before_documents),
-        list(&observed.after_documents),
-        list(&observed.reopened_documents),
-        observed.budget_exhausted,
-        observed.graphs_built,
-    )
+    let escaped = format!("{observed:?}")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("{{\"seed_derived_typed_observation\":\"{escaped}\"}}")
 }
 
 fn run_tier_campaign_operation(
@@ -3650,6 +3643,7 @@ fn run_tier_campaign_operation(
                 .map(ProductionFeatureReceipt::ValidatedTier),
         );
     }
+    coverage.hit("search.auto");
     Ok(receipts)
 }
 
