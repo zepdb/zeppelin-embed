@@ -10,7 +10,7 @@ use zeppelin_embed::ingest::{
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
 use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed_adversarial_oracle::diagnostics_health::{
-    DiagnosticsInput, DiagnosticsObserved,
+    self as oracle, DiagnosticsInput, DiagnosticsObserved,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,6 +271,21 @@ fn observe_recovery(seed: u64) -> Result<(DiagnosticsInput, DiagnosticsObserved)
     ))
 }
 
+fn clean_control_passed(invariant: &DiagnosticsInvariantEvidence) -> bool {
+    match invariant {
+        DiagnosticsInvariantEvidence::I63 { input, observed } => {
+            oracle::compare_i63(input, observed)
+        }
+        DiagnosticsInvariantEvidence::I64 { input, observed } => {
+            oracle::compare_i64(input, observed)
+        }
+        DiagnosticsInvariantEvidence::I65 { input, observed } => {
+            oracle::compare_i65(input, observed)
+        }
+    }
+    .is_ok()
+}
+
 pub fn run_diagnostics_operation(
     operation: DiagnosticsOperationKind,
     seed: u64,
@@ -305,10 +320,11 @@ pub fn run_diagnostics_operation(
         })
         .into_iter()
         .collect();
+    let clean_control_passed = clean_control_passed(&invariant);
     Ok(DiagnosticsOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 

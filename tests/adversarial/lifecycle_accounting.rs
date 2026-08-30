@@ -10,7 +10,9 @@ use zeppelin_embed::lifecycle::{
 };
 use zeppelin_embed::scan::{F32Rows, ScanOptions, ScanQuery, ScanRequest, ScanRows};
 use zeppelin_embed::vfs::StdVfs;
-use zeppelin_embed_adversarial_oracle::lifecycle_accounting::{LifecycleInput, LifecycleObserved};
+use zeppelin_embed_adversarial_oracle::lifecycle_accounting::{
+    self as oracle, LifecycleInput, LifecycleObserved,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleOperationKind {
@@ -317,6 +319,17 @@ fn observe_worker_panic() -> Result<bool, String> {
     ))
 }
 
+fn clean_control_passed(invariant: &LifecycleInvariantEvidence) -> bool {
+    match invariant {
+        LifecycleInvariantEvidence::I54 { input, observed } => oracle::compare_i54(input, observed),
+        LifecycleInvariantEvidence::I55 { input, observed } => oracle::compare_i55(input, observed),
+        LifecycleInvariantEvidence::I56 { input, observed } => oracle::compare_i56(input, observed),
+        LifecycleInvariantEvidence::I57 { input, observed } => oracle::compare_i57(input, observed),
+        LifecycleInvariantEvidence::I58 { input, observed } => oracle::compare_i58(input, observed),
+    }
+    .is_ok()
+}
+
 pub fn run_lifecycle_operation(
     operation: LifecycleOperationKind,
     fault: Option<LifecycleFaultKind>,
@@ -353,10 +366,11 @@ pub fn run_lifecycle_operation(
         })
         .into_iter()
         .collect();
+    let clean_control_passed = clean_control_passed(&invariant);
     Ok(LifecycleOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 

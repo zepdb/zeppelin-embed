@@ -4,7 +4,7 @@ use std::ffi::CStr;
 use std::mem::size_of;
 
 use tempfile::tempdir;
-use zeppelin_embed_adversarial_oracle::ffi_bindings::{FfiInput, FfiObserved};
+use zeppelin_embed_adversarial_oracle::ffi_bindings::{self as oracle, FfiInput, FfiObserved};
 use zeppelin_embed_ffi::{
     ZE_ABI_VERSION, ZeDocId, ZeErrorCode, ZeHandle, ZeIngestDocument, ZeIngestRequest,
     ZeMutationReport, ZeOpenRequest, ZeSearchRequest, ZeSearchResult, ZeStateReport,
@@ -300,6 +300,17 @@ fn observe_parity() -> Result<FfiObserved, String> {
     Ok(observed)
 }
 
+fn clean_control_passed(invariant: &FfiInvariantEvidence) -> bool {
+    match invariant {
+        FfiInvariantEvidence::I66 { input, observed } => oracle::compare_i66(input, observed),
+        FfiInvariantEvidence::I67 { input, observed } => oracle::compare_i67(input, observed),
+        FfiInvariantEvidence::I68 { input, observed } => oracle::compare_i68(input, observed),
+        FfiInvariantEvidence::I69 { input, observed } => oracle::compare_i69(input, observed),
+        FfiInvariantEvidence::I70 { input, observed } => oracle::compare_i70(input, observed),
+    }
+    .is_ok()
+}
+
 pub fn run_ffi_operation(
     operation: FfiOperationKind,
     fault: Option<FfiFaultKind>,
@@ -341,10 +352,11 @@ pub fn run_ffi_operation(
         })
         .into_iter()
         .collect();
+    let clean_control_passed = clean_control_passed(&invariant);
     Ok(FfiOperationEvidence {
         invariant,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 

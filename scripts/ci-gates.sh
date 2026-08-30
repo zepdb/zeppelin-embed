@@ -6,6 +6,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+if grep -R -n -E 'clean_control_passed[[:space:]]*(:|=)[[:space:]]*true' tests/adversarial/*.rs; then
+    echo "family clean controls must be measured, not literals" >&2
+    exit 1
+fi
+
 if grep -R -n -E 'sync_(all|data)' crates/zeppelin-embed/src; then
     echo "forbidden direct file synchronization under crates/zeppelin-embed/src" >&2
     exit 1

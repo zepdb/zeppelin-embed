@@ -851,6 +851,22 @@ fn exercise_fault(
     }
 }
 
+pub(crate) fn clean_control_passed(invariants: &[GraphInvariantEvidence]) -> bool {
+    invariants.iter().all(|invariant| {
+        match invariant {
+            GraphInvariantEvidence::I28 { input, observed } => oracle::compare_i28(input, observed),
+            GraphInvariantEvidence::I29 { input, observed } => oracle::compare_i29(input, observed),
+            GraphInvariantEvidence::I30 { input, observed } => oracle::compare_i30(input, observed),
+            GraphInvariantEvidence::I31 { input, observed } => oracle::compare_i31(input, observed),
+            GraphInvariantEvidence::I32 { input, observed } => oracle::compare_i32(input, observed),
+            GraphInvariantEvidence::I33 { input, observed } => oracle::compare_i33(input, observed),
+            GraphInvariantEvidence::I34 { input, observed } => oracle::compare_i34(input, observed),
+            GraphInvariantEvidence::I35 { input, observed } => oracle::compare_i35(input, observed),
+        }
+        .is_ok()
+    })
+}
+
 pub fn run_graph_operation(
     operation: GraphOperationKind,
     seed: u64,
@@ -879,6 +895,7 @@ pub fn run_graph_operation(
             vec![GraphInvariantEvidence::I35 { input, observed }]
         }
     };
+    let clean_control_passed = clean_control_passed(&invariants);
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         let observed = match invariants.first() {
@@ -906,7 +923,7 @@ pub fn run_graph_operation(
         operation,
         invariants,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 

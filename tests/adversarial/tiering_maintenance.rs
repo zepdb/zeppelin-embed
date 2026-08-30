@@ -669,6 +669,18 @@ fn exercise_fault(seed: u64, fault: TierFaultKind, observed: &TierObserved) -> R
     }
 }
 
+pub(crate) fn clean_control_passed(invariants: &[TierInvariantEvidence]) -> bool {
+    invariants.iter().all(|invariant| {
+        match invariant {
+            TierInvariantEvidence::I50 { input, observed } => oracle::compare_i50(input, observed),
+            TierInvariantEvidence::I51 { input, observed } => oracle::compare_i51(input, observed),
+            TierInvariantEvidence::I52 { input, observed } => oracle::compare_i52(input, observed),
+            TierInvariantEvidence::I53 { input, observed } => oracle::compare_i53(input, observed),
+        }
+        .is_ok()
+    })
+}
+
 pub fn run_tier_operation(
     operation: TierOperationKind,
     seed: u64,
@@ -686,6 +698,7 @@ pub fn run_tier_operation(
         TierOperationKind::Budget => vec![TierInvariantEvidence::I52 { input, observed }],
         TierOperationKind::Publication => vec![TierInvariantEvidence::I53 { input, observed }],
     };
+    let clean_control_passed = clean_control_passed(&invariants);
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         let observed = match invariants.first() {
@@ -708,7 +721,7 @@ pub fn run_tier_operation(
     Ok(TierOperationEvidence {
         invariants,
         receipts,
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 

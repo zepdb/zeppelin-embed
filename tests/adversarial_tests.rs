@@ -27,6 +27,207 @@ use zeppelin_embed::meta::Schema;
 use zeppelin_embed::vfs::StdVfs;
 
 #[test]
+fn no_family_sets_clean_control_passed_as_a_literal() {
+    let source_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial");
+    let mut violations = Vec::new();
+    for entry in std::fs::read_dir(&source_directory).expect("read adversarial sources") {
+        let path = entry.expect("read adversarial source entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read adversarial source");
+        for (line_index, line) in source.lines().enumerate() {
+            if line.contains("clean_control_passed: true")
+                || line.contains("clean_control_passed = true")
+            {
+                violations.push(format!(
+                    "{}:{}:{}",
+                    path.display(),
+                    line_index.saturating_add(1),
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "family clean controls must be measured, not literals: {violations:?}"
+    );
+}
+
+#[test]
+fn clean_control_helper_runs_the_clean_leg_without_any_scheduled_event() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let event = FaultEvent {
+        id: "clean-control-must-not-see-schedule".to_owned(),
+        op_index: 17,
+        site: FaultSite::Append,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        path_contains: Some("wal.ze".to_owned()),
+        fired: false,
+        path: None,
+    };
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture")
+        .with_fault(event, 17);
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |store| {
+            let document = zeppelin_embed::ingest::IngestDocument::new(
+                zeppelin_embed::ingest::DocumentVersion::new(
+                    zeppelin_embed::ingest::DocId::new(1),
+                    zeppelin_embed::ingest::Revision::new(1),
+                ),
+                vec![1.0],
+            );
+            store
+                .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+        |store| {
+            let document = zeppelin_embed::ingest::IngestDocument::new(
+                zeppelin_embed::ingest::DocumentVersion::new(
+                    zeppelin_embed::ingest::DocId::new(1),
+                    zeppelin_embed::ingest::Revision::new(1),
+                ),
+                vec![1.0],
+            );
+            store
+                .ingest(zeppelin_embed::ingest::IngestBatch::new(vec![document]))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .expect("materialize clean-control pair");
+
+    assert!(outcome.clean.is_ok(), "plain clean VFS saw the fault");
+    assert!(outcome.faulted.is_err(), "faulted VFS did not refuse");
+    assert!(
+        outcome.fault_event.is_some_and(|event| event.fired),
+        "faulted schedule did not fire"
+    );
+}
+
+#[test]
+fn clean_control_helper_reports_false_when_the_clean_leg_disagrees_with_the_oracle() {
+    let source = tempfile::tempdir().expect("clean-control source fixture");
+    let store = Store::open(source.path(), OpenOptions::default()).expect("open source fixture");
+    store.close().expect("close source fixture");
+    let fixture = adversarial::runner::FrozenStoreFixture::capture(source.path())
+        .expect("capture source fixture");
+    let outcome = adversarial::runner::run_with_clean_control(
+        &fixture,
+        |_store| Err::<(), _>("family oracle disagreed".to_owned()),
+        |_store| Ok(()),
+    )
+    .expect("materialize clean-control pair");
+
+    assert_eq!(outcome.clean, Err("family oracle disagreed".to_owned()));
+    assert!(
+        !outcome.same_seed_control_passed,
+        "oracle disagreement was counted as a passing clean control"
+    );
+}
+
+#[test]
+fn tiering_control_goes_false_under_a_planted_product_mutation() {
+    let evidence = adversarial::tiering_maintenance::run_tier_operation(
+        adversarial::tiering_maintenance::TierOperationKind::Policy,
+        2,
+        None,
+    )
+    .expect("tiering clean control");
+    assert!(
+        adversarial::tiering_maintenance::clean_control_passed(&evidence.invariants),
+        "tiering clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn fts_control_goes_false_under_a_planted_product_mutation() {
+    let evidence =
+        adversarial::fts::run_fts_operation(adversarial::fts::FtsOperationKind::Bm25, 1, None)
+            .expect("FTS clean control");
+    assert!(
+        adversarial::fts::clean_control_passed(&evidence.invariants),
+        "FTS clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn vamana_control_goes_false_under_a_planted_product_mutation() {
+    let evidence = adversarial::vamana_graph::run_graph_operation(
+        adversarial::vamana_graph::GraphOperationKind::FilteredSearch,
+        7,
+        None,
+    )
+    .expect("Vamana clean control");
+    assert!(
+        adversarial::vamana_graph::clean_control_passed(&evidence.invariants),
+        "Vamana clean control disagreed with its independent oracle"
+    );
+}
+
+#[test]
+fn runner_counts_qualifying_controls_from_the_helper_for_every_family() {
+    for campaign in CampaignKind::FEATURES {
+        let (seed, selected) = (0..128)
+            .find_map(|seed| {
+                let program = Program::generate_for(campaign, seed);
+                let plan =
+                    FaultPlan::for_program(campaign, seed, FaultProfile::Full, &program, None);
+                (!plan.feature.is_empty()).then_some((seed, plan.feature.len()))
+            })
+            .unwrap_or_else(|| panic!("{campaign} has no selected feature-fault seed"));
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("helper accounting test binary"),
+        )
+        .args(["runner_helper_accounting_child", "--ignored", "--exact"])
+        .env("ZE_ADV_HELPER_CAMPAIGN", campaign.key())
+        .env("ZE_ADV_HELPER_SEED", seed.to_string())
+        .env("ZE_ADV_HELPER_SELECTED", selected.to_string())
+        .output()
+        .expect("run helper accounting child");
+        assert!(
+            output.status.success(),
+            "{campaign} helper accounting child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+#[ignore = "isolated child for helper accounting across process-global family tests"]
+fn runner_helper_accounting_child() {
+    let campaign_key = std::env::var("ZE_ADV_HELPER_CAMPAIGN").expect("helper campaign");
+    let campaign = CampaignKind::FEATURES
+        .into_iter()
+        .find(|campaign| campaign.key() == campaign_key)
+        .expect("known helper campaign");
+    let seed = std::env::var("ZE_ADV_HELPER_SEED")
+        .expect("helper seed")
+        .parse::<u64>()
+        .expect("numeric helper seed");
+    let selected = std::env::var("ZE_ADV_HELPER_SELECTED")
+        .expect("helper selected count")
+        .parse::<u64>()
+        .expect("numeric helper selected count");
+    let artifacts = tempfile::tempdir().expect("helper accounting artifacts");
+    let outcome =
+        adversarial::runner::run_program_for(campaign, seed, FaultProfile::Full, artifacts.path())
+            .unwrap_or_else(|error| panic!("{campaign} seed {seed}: {error}"));
+    assert_eq!(
+        outcome.same_seed_clean_controls, selected,
+        "{campaign} did not count helper-qualified controls"
+    );
+}
+
+#[test]
 fn campaign_registry_is_complete_unique_and_smoke_bounded() {
     let specs = CampaignSpec::catalog();
     let keys = specs

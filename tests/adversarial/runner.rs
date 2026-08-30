@@ -104,6 +104,200 @@ const NUMERIC_COLUMN: ColumnId = ColumnId::new(1);
 const BOOLEAN_COLUMN: ColumnId = ColumnId::new(2);
 const STRING_COLUMN: ColumnId = ColumnId::new(3);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FrozenFixtureFile {
+    pub(crate) relative_path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FrozenStoreFixture {
+    files: Vec<FrozenFixtureFile>,
+    open_options: OpenOptions,
+    fault_event: Option<FaultEvent>,
+    current_operation: usize,
+}
+
+pub(crate) struct IsolatedStoreDirectories {
+    pub(crate) clean: TempDir,
+    pub(crate) faulted: TempDir,
+}
+
+#[derive(Debug)]
+pub(crate) struct ControlOutcome<T> {
+    pub(crate) clean: Result<T, String>,
+    pub(crate) faulted: Result<T, String>,
+    pub(crate) same_seed_control_passed: bool,
+    pub(crate) fault_event: Option<FaultEvent>,
+}
+
+impl FrozenStoreFixture {
+    pub(crate) fn capture(root: &Path) -> Result<Self, String> {
+        fn collect(
+            root: &Path,
+            directory: &Path,
+            files: &mut Vec<FrozenFixtureFile>,
+        ) -> Result<(), String> {
+            let mut entries = std::fs::read_dir(directory)
+                .map_err(|error| format!("read frozen Store fixture directory: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("enumerate frozen Store fixture directory: {error}"))?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let file_type = entry
+                    .file_type()
+                    .map_err(|error| format!("read frozen Store fixture file type: {error}"))?;
+                let path = entry.path();
+                if file_type.is_dir() {
+                    collect(root, &path, files)?;
+                } else if file_type.is_file() {
+                    let relative_path = path
+                        .strip_prefix(root)
+                        .map_err(|error| format!("relativize frozen Store fixture file: {error}"))?
+                        .to_path_buf();
+                    let bytes = std::fs::read(&path).map_err(|error| {
+                        format!("read frozen Store fixture file {}: {error}", path.display())
+                    })?;
+                    files.push(FrozenFixtureFile {
+                        relative_path,
+                        bytes,
+                    });
+                } else {
+                    return Err(format!(
+                        "frozen Store fixture contains non-file {}",
+                        path.display()
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        let mut files = Vec::new();
+        collect(root, root, &mut files)?;
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        if files.is_empty() {
+            return Err("frozen Store fixture contains no files".to_owned());
+        }
+        Ok(Self {
+            files,
+            open_options: OpenOptions::default(),
+            fault_event: None,
+            current_operation: usize::MAX,
+        })
+    }
+
+    pub(crate) fn with_open_options(mut self, open_options: OpenOptions) -> Self {
+        self.open_options = open_options;
+        self
+    }
+
+    pub(crate) fn with_fault(mut self, event: FaultEvent, current_operation: usize) -> Self {
+        self.fault_event = Some(event);
+        self.current_operation = current_operation;
+        self
+    }
+
+    fn for_control(event: Option<FaultEvent>, current_operation: usize) -> Result<Self, String> {
+        let source = tempfile::tempdir()
+            .map_err(|error| format!("create clean-control source directory: {error}"))?;
+        let store = Store::open(source.path(), OpenOptions::default())
+            .map_err(|error| format!("open clean-control source Store: {error}"))?;
+        store
+            .close()
+            .map_err(|error| format!("close clean-control source Store: {error}"))?;
+        let fixture = Self::capture(source.path())?;
+        Ok(match event {
+            Some(event) => fixture.with_fault(event, current_operation),
+            None => fixture,
+        })
+    }
+
+    pub(crate) fn files(&self) -> &[FrozenFixtureFile] {
+        &self.files
+    }
+
+    fn materialize(&self) -> Result<TempDir, String> {
+        let directory = tempfile::tempdir()
+            .map_err(|error| format!("create frozen Store fixture directory: {error}"))?;
+        for file in &self.files {
+            let path = directory.path().join(&file.relative_path);
+            let parent = path
+                .parent()
+                .ok_or_else(|| "frozen Store fixture file has no parent".to_owned())?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create frozen Store fixture parent: {error}"))?;
+            std::fs::write(&path, &file.bytes).map_err(|error| {
+                format!(
+                    "write frozen Store fixture file {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+        let captured = Self::capture(directory.path())?;
+        if captured.files != self.files {
+            return Err("materialized Store fixture bytes differ from frozen source".to_owned());
+        }
+        Ok(directory)
+    }
+
+    pub(crate) fn isolated_pair(&self) -> Result<IsolatedStoreDirectories, String> {
+        let clean = self.materialize()?;
+        let faulted = self.materialize()?;
+        if clean.path() == faulted.path() {
+            return Err("clean and faulted Store fixtures share one directory".to_owned());
+        }
+        Ok(IsolatedStoreDirectories { clean, faulted })
+    }
+}
+
+fn finish_control_leg<T>(store: Store, result: Result<T, String>) -> Result<T, String> {
+    let closed = store.close().map_err(|error| error.to_string());
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+pub(crate) fn run_with_clean_control<T: PartialEq + std::fmt::Debug>(
+    fixture: &FrozenStoreFixture,
+    clean: impl FnOnce(&Store) -> Result<T, String>,
+    faulted: impl FnOnce(&Store) -> Result<T, String>,
+) -> Result<ControlOutcome<T>, String> {
+    let directories = fixture.isolated_pair()?;
+    let clean_result = Store::open_with_test_dependencies(
+        directories.clean.path(),
+        fixture.open_options.clone(),
+        StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock)),
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|store| {
+        let result = clean(&store);
+        finish_control_leg(store, result)
+    });
+
+    // Stage 01 replaces only this construction site when ScheduledVfs gains
+    // its per-operation event list. The clean leg above remains plain StdVfs.
+    let scheduled = Arc::new(fault_vfs::std_scheduled(fixture.fault_event.clone()));
+    scheduled.set_operation(fixture.current_operation);
+    let faulted_result = Store::open_with_test_dependencies(
+        directories.faulted.path(),
+        fixture.open_options.clone(),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|store| {
+        let result = faulted(&store);
+        finish_control_leg(store, result)
+    });
+    let fault_event = scheduled.event();
+    Ok(ControlOutcome {
+        same_seed_control_passed: clean_result.is_ok(),
+        clean: clean_result,
+        faulted: faulted_result,
+        fault_event,
+    })
+}
+
 fn adversarial_schema() -> Schema {
     Schema::new(vec![
         ColumnDefinition::new(NUMERIC_COLUMN, "number", ColumnType::U64, true),
@@ -2089,9 +2283,7 @@ fn run_program_for_with_clock(
             Op::Feature(operation) => {
                 let record_start = oracle_records.len();
                 let control_start = control_records.len();
-                let result = run_campaign_operation(
-                    &mut engine,
-                    &model,
+                let result = run_campaign_operation_with_clean_control(
                     *operation,
                     CampaignOperationContext {
                         selected_faults: &selected_feature_faults,
@@ -2121,33 +2313,10 @@ fn run_program_for_with_clock(
                         });
                     }
                 }
-                result.and_then(|receipts| {
+                result.and_then(|operation_outcome| {
                     if !selected_feature_faults.is_empty() {
                         let observed_controls = control_records.len().saturating_sub(control_start);
-                        let qualifying_controls = if campaign
-                            == CampaignKind::MetadataFilterPlanner
-                        {
-                            control_records
-                                .get(control_start..)
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|record| {
-                                    zeppelin_embed_bench::harness_json::from_str::<
-                                        zeppelin_embed_bench::harness_json::Value,
-                                    >(record)
-                                    .map_err(|error| {
-                                        format!(
-                                            "parse metadata same-seed control evidence: {error}"
-                                        )
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, _>>()?
-                                .iter()
-                                .filter(|record| record["fault"].as_str().is_some())
-                                .count()
-                        } else {
-                            observed_controls
-                        };
+                        let qualifying_controls = operation_outcome.qualifying_controls;
                         if qualifying_controls != selected_feature_faults.len() {
                             return Err(format!(
                                 "feature operation {} produced {qualifying_controls} qualifying same-seed controls ({observed_controls} total) for {} selected faults",
@@ -2160,7 +2329,7 @@ fn run_program_for_with_clock(
                                 .map_err(|_| "same-seed control count exceeds u64".to_owned())?,
                         );
                     }
-                    for receipt in receipts {
+                    for receipt in operation_outcome.receipts {
                     if receipt.campaign() != campaign.key()
                         || receipt.operation() != operation.key()
                         || receipt.site().is_empty()
@@ -2743,6 +2912,11 @@ struct CampaignOperationContext<'a> {
     mutation_records: &'a mut Vec<String>,
     family_artifact_records: &'a mut BTreeMap<&'static str, Vec<String>>,
     coverage: &'a mut CoverageRegistry,
+}
+
+struct CampaignOperationOutcome {
+    receipts: Vec<ProductionFeatureReceipt>,
+    qualifying_controls: usize,
 }
 
 enum ProductionFeatureReceipt {
@@ -3332,9 +3506,132 @@ fn metadata_product_execution_receipt_json(receipt: &MetadataExecutionReceipt) -
     )
 }
 
+fn run_campaign_operation_with_clean_control(
+    operation: super::campaign::FeatureOperation,
+    context: CampaignOperationContext<'_>,
+) -> Result<CampaignOperationOutcome, String> {
+    let CampaignOperationContext {
+        selected_faults,
+        generic_fault,
+        storage_episode,
+        hybrid_episode,
+        seed,
+        profile,
+        op_index,
+        oracle_records,
+        control_records,
+        mutation_records,
+        family_artifact_records,
+        coverage,
+    } = context;
+    if selected_faults.is_empty() {
+        return run_campaign_operation(
+            operation,
+            CampaignOperationContext {
+                selected_faults,
+                generic_fault,
+                storage_episode,
+                hybrid_episode,
+                seed,
+                profile,
+                op_index,
+                oracle_records,
+                control_records,
+                mutation_records,
+                family_artifact_records,
+                coverage,
+            },
+        )
+        .map(|receipts| CampaignOperationOutcome {
+            receipts,
+            qualifying_controls: 0,
+        });
+    }
+
+    let fixture = FrozenStoreFixture::for_control(generic_fault.cloned(), op_index)?;
+    let mut clean_oracle_records = Vec::new();
+    let mut clean_control_records = Vec::new();
+    let mut clean_mutation_records = Vec::new();
+    let mut clean_family_artifact_records = BTreeMap::new();
+    let mut clean_coverage = CoverageRegistry::default();
+    let faulted_receipts = std::cell::RefCell::new(None);
+    let control = run_with_clean_control(
+        &fixture,
+        |_store| {
+            run_campaign_operation(
+                operation,
+                CampaignOperationContext {
+                    selected_faults: &[],
+                    generic_fault: None,
+                    storage_episode,
+                    hybrid_episode,
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records: &mut clean_oracle_records,
+                    control_records: &mut clean_control_records,
+                    mutation_records: &mut clean_mutation_records,
+                    family_artifact_records: &mut clean_family_artifact_records,
+                    coverage: &mut clean_coverage,
+                },
+            )?;
+            if clean_oracle_records.is_empty() {
+                return Err(format!(
+                    "clean control for {}/{} emitted no family oracle record",
+                    operation.campaign().key(),
+                    operation.key()
+                ));
+            }
+            if let Some(failed) = clean_oracle_records.iter().find(|record| !record.passed) {
+                return Err(format!(
+                    "clean control for {}/{} disagreed with {}: {}",
+                    operation.campaign().key(),
+                    operation.key(),
+                    failed.checker_id,
+                    failed.detail
+                ));
+            }
+            Ok(())
+        },
+        |_store| {
+            let receipts = run_campaign_operation(
+                operation,
+                CampaignOperationContext {
+                    selected_faults,
+                    generic_fault,
+                    storage_episode,
+                    hybrid_episode,
+                    seed,
+                    profile,
+                    op_index,
+                    oracle_records,
+                    control_records,
+                    mutation_records,
+                    family_artifact_records,
+                    coverage,
+                },
+            )?;
+            faulted_receipts.replace(Some(receipts));
+            Ok(())
+        },
+    )?;
+    if !control.same_seed_control_passed {
+        return Err(control
+            .clean
+            .err()
+            .unwrap_or_else(|| "same-seed clean control failed without an error".to_owned()));
+    }
+    control.faulted?;
+    let receipts = faulted_receipts
+        .into_inner()
+        .ok_or_else(|| "faulted family leg emitted no receipt result".to_owned())?;
+    Ok(CampaignOperationOutcome {
+        receipts,
+        qualifying_controls: selected_faults.len(),
+    })
+}
+
 fn run_campaign_operation(
-    engine: &mut impl Engine,
-    model: &Model,
     operation: super::campaign::FeatureOperation,
     context: CampaignOperationContext<'_>,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
@@ -3496,8 +3793,6 @@ fn run_campaign_operation(
         }
     }
     let _ = (
-        engine,
-        model,
         seed,
         profile,
         op_index,

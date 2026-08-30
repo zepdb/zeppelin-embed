@@ -19,8 +19,8 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed_adversarial_oracle::fts::{
-    DocumentFact, DocumentTokens, FtsInput, FtsObserved, PhoneticFact, ScoreFact, SnippetFact,
-    StructuredFact, TokenFact,
+    self as oracle, DocumentFact, DocumentTokens, FtsInput, FtsObserved, PhoneticFact, ScoreFact,
+    SnippetFact, StructuredFact, TokenFact,
 };
 
 const VOCABULARY: [&str; 40] = [
@@ -771,6 +771,19 @@ fn exercise_fault(seed: u64, fault: FtsFaultKind) -> Result<(), String> {
     }
 }
 
+pub(crate) fn clean_control_passed(invariants: &[FtsInvariantEvidence]) -> bool {
+    invariants.iter().all(|invariant| {
+        match invariant {
+            FtsInvariantEvidence::I40 { input, observed } => oracle::compare_i40(input, observed),
+            FtsInvariantEvidence::I41 { input, observed } => oracle::compare_i41(input, observed),
+            FtsInvariantEvidence::I42 { input, observed } => oracle::compare_i42(input, observed),
+            FtsInvariantEvidence::I43 { input, observed } => oracle::compare_i43(input, observed),
+            FtsInvariantEvidence::I44 { input, observed } => oracle::compare_i44(input, observed),
+        }
+        .is_ok()
+    })
+}
+
 pub fn run_fts_operation(
     operation: FtsOperationKind,
     seed: u64,
@@ -787,6 +800,7 @@ pub fn run_fts_operation(
         FtsOperationKind::Pruning => vec![FtsInvariantEvidence::I43 { input, observed }],
         FtsOperationKind::Extras => vec![FtsInvariantEvidence::I44 { input, observed }],
     };
+    let clean_control_passed = clean_control_passed(&invariants);
     let mut receipts = Vec::new();
     if let Some(fault) = fault {
         exercise_fault(seed, fault)?;
@@ -800,9 +814,7 @@ pub fn run_fts_operation(
     Ok(FtsOperationEvidence {
         invariants,
         receipts,
-        // Existing receipt machinery requires this field. A second-directory
-        // digest control remains outside this bounded rebuild.
-        clean_control_passed: true,
+        clean_control_passed,
     })
 }
 
