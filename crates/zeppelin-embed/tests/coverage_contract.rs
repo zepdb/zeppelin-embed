@@ -17,6 +17,7 @@ use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, QueryError, Store, StoreError, StoreTestDependencies,
     SystemMonotonicClock,
 };
+use zeppelin_embed::manifest::io::MANIFEST_FILE;
 use zeppelin_embed::meta::{
     AliveSet, BuildError, ColumnDefinition, ColumnId, ColumnType, DictionaryError, DocBitmap,
     Schema, SchemaError, TIMESTAMP_COLUMN,
@@ -308,7 +309,15 @@ fn read_only_and_closed_maintenance_paths_fail_closed_without_writes() {
 fn public_seal_cancellation_preserves_the_uncommitted_active_rows() {
     let directory = tempdir().expect("seal cancellation directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
-    assert!(matches!(store.seal(), Err(StoreError::EmptyActiveSegment)));
+    assert_eq!(store.seal().expect("empty seal no-op"), 0);
+    assert!(
+        store
+            .snapshot()
+            .expect("empty snapshot")
+            .segments()
+            .is_empty()
+    );
+    assert!(!directory.path().join(MANIFEST_FILE).exists());
     let version = DocumentVersion::new(DocId::new(71), Revision::new(1));
     store
         .ingest(IngestBatch::new(vec![IngestDocument::new(

@@ -376,6 +376,9 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   and advances from the authoritative active generation. It never builds a
   graph. Task 10-C now stamps the canonical `ts` clustering-key range at this
   existing seal boundary without adding another payload pass.
+- Sealing an empty active segment is an idempotent no-op that returns the
+  current generation without writing a segment or manifest. Lifecycle,
+  writer-ownership, and cancellation checks still run first.
 - Task-10 sealed rows carry optional region kind 12 / family 13 with exact
   24-byte little-endian `(doc_id:u128, revision:u64)` records. Existing task-07
   segments omit it and continue to return no application document identity.

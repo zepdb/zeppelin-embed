@@ -1855,13 +1855,18 @@ impl Engine for RealEngine {
     }
 
     fn seal(&mut self) -> Result<MutationAck, String> {
-        let generation = self
-            .store()?
+        let store = self.store()?;
+        let changed = store
+            .stats()
+            .map_err(|error| error.to_string())?
+            .active_row_count
+            > 0;
+        let generation = store
             .seal_with_cancel(&CancelToken::new())
             .map_err(|error| error.to_string())?;
         Ok(MutationAck {
             generation,
-            changed: true,
+            changed,
         })
     }
 
@@ -3849,17 +3854,15 @@ fn run_program_for_with_clock(
                 {
                     break;
                 } else if simulated_crash_recovered
-                    && ((matches!(op, Op::Seal)
-                        && !model.has_active_documents()
-                        && error.contains("active segment is empty"))
-                        || (matches!(
-                            op,
-                            Op::Search {
-                                kind: SearchKind::Graph,
-                                ..
-                            }
-                        ) && model.sealed_document_count() < graph_rows
-                            && error.contains("has no graph region")))
+                    && matches!(
+                        op,
+                        Op::Search {
+                            kind: SearchKind::Graph,
+                            ..
+                        }
+                    )
+                    && model.sealed_document_count() < graph_rows
+                    && error.contains("has no graph region")
                 {
                     operation_succeeded = true;
                 } else if persisted_content_fault_preceded(&scheduled_vfs.events(), op_index)
@@ -17467,17 +17470,10 @@ fn recover_and_retry_faulted_operation(
             model.delete(*doc_id);
             Ok(Some(ack))
         }
-        Op::Seal => match engine.seal() {
-            Ok(ack) => {
-                model.seal();
-                Ok(Some(ack))
-            }
-            Err(error) if error.contains("active segment is empty") => {
-                model.seal();
-                Ok(None)
-            }
-            Err(error) => Err(error),
-        },
+        Op::Seal => engine.seal().map(|ack| {
+            model.seal();
+            Some(ack)
+        }),
         Op::DropPartition { start, end } => {
             let ack = engine.drop_partition(*start, *end)?;
             model.drop_partition(*start, *end);

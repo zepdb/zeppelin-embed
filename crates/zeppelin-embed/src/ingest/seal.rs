@@ -21,11 +21,16 @@ use super::ActiveState;
 
 impl Store {
     /// Seals the current active segment into one appended immutable segment.
+    ///
+    /// An empty active segment is an idempotent no-op that returns the current
+    /// generation without publishing a manifest or segment.
     pub fn seal(&self) -> Result<u64, StoreError> {
         self.seal_inner(None, self.vfs.as_ref())
     }
 
     /// Seals explicitly unless caller cancellation wins before manifest commit.
+    ///
+    /// Cancellation is checked before the empty-segment no-op.
     pub fn seal_with_cancel(&self, cancel: &CancelToken) -> Result<u64, StoreError> {
         self.seal_inner(Some(cancel), self.vfs.as_ref())
     }
@@ -76,7 +81,9 @@ impl Store {
             })?;
         let current = active.as_ref().ok_or(StoreError::Closed)?;
         if current.segment.is_empty() {
-            return Err(StoreError::EmptyActiveSegment);
+            // A crash-restart after a durably committed seal leaves a correctly
+            // empty active segment; retrying seal is a replay of that commit.
+            return Ok(current.generation);
         }
         let generation = current
             .generation

@@ -20,6 +20,102 @@ use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segmen
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
 #[test]
+fn seal_of_an_empty_active_segment_is_an_idempotent_no_op_returning_the_current_generation() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+
+    assert_eq!(store.seal().expect("seal empty active segment"), 0);
+    let empty_snapshot = store.snapshot().expect("empty snapshot");
+    assert_eq!(empty_snapshot.generation(), 0);
+    assert!(empty_snapshot.segments().is_empty());
+    assert!(!directory.path().join(MANIFEST_FILE).exists());
+    drop(empty_snapshot);
+
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest row");
+    let first_generation = store.seal().expect("seal active row");
+    assert!(first_generation > 0);
+
+    assert_eq!(
+        store.seal().expect("repeat seal of empty active segment"),
+        first_generation
+    );
+    let repeated_snapshot = store.snapshot().expect("snapshot after repeat seal");
+    assert_eq!(repeated_snapshot.generation(), first_generation);
+    assert_eq!(repeated_snapshot.segments().len(), 1);
+}
+
+#[test]
+fn seal_retried_after_a_restart_that_already_committed_the_seal_is_a_no_op() {
+    let directory = tempdir().expect("store directory");
+    let expected = [
+        DocumentVersion::new(DocId::new(11), Revision::new(1)),
+        DocumentVersion::new(DocId::new(12), Revision::new(2)),
+        DocumentVersion::new(DocId::new(13), Revision::new(3)),
+    ];
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(expected[0], vec![1.0, 0.0]).with_timestamp(101),
+            IngestDocument::new(expected[1], vec![0.0, 1.0]).with_timestamp(102),
+            IngestDocument::new(expected[2], vec![-1.0, 0.0]).with_timestamp(103),
+        ]))
+        .expect("ingest rows");
+    let first_generation = store.seal().expect("seal rows");
+    store.close().expect("close sealed store");
+
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+    let outcome = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            expected.len(),
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search reopened sealed rows");
+    let mut actual = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+
+    let manifest_before = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), u64::MAX)
+        .expect("load manifest before retried seal");
+    assert_eq!(
+        reopened.seal().expect("retry already committed seal"),
+        first_generation
+    );
+    let snapshot = reopened.snapshot().expect("snapshot after retried seal");
+    assert_eq!(snapshot.generation(), first_generation);
+    assert_eq!(snapshot.segments().len(), 1);
+    let manifest_after = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), u64::MAX)
+        .expect("load manifest after retried seal");
+    assert_eq!(manifest_after.generation, manifest_before.generation);
+    assert_eq!(
+        manifest_after.segments.len(),
+        manifest_before.segments.len()
+    );
+
+    reopened
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(14), Revision::new(1)),
+                vec![0.5, 0.5],
+            )
+            .with_timestamp(104),
+        ]))
+        .expect("ingest row after retried seal");
+    let second_generation = reopened.seal().expect("seal new active row");
+    assert!(second_generation > first_generation);
+}
+
+#[test]
 fn seal_publishes_an_immutable_segment_and_empties_the_active_segment() {
     let directory = tempdir().expect("store directory");
     let existing_id = SegmentId::new(0x0102_0304_0506, [0x11; 10]);
