@@ -27,7 +27,7 @@ pub use retention_fault::{
     PartialBatchAppendVfs, PurgeUnlinkErrorVfs,
 };
 
-pub(crate) use active::{ActiveSegment, ActiveState, StoreWal};
+pub(crate) use active::{ActiveSegment, ActiveState, SealedTombstoneDemand, StoreWal};
 
 /// Stable application document identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

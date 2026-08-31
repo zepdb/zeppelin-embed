@@ -1774,6 +1774,8 @@ pub enum StoreError {
     SealCancelled,
     /// A write-only lifecycle operation was requested from a read-only handle.
     ReadOnly,
+    /// WAL replay requires sealed tombstone repair that a read-only open cannot publish.
+    SealedTombstoneRecoveryRequired,
     /// A prepared segment was accounted to a different store handle.
     ForeignPreparedSegment,
     /// The current snapshot generation cannot be incremented.
@@ -1920,6 +1922,9 @@ impl std::fmt::Display for StoreError {
             Self::EmptyActiveSegment => formatter.write_str("active segment is empty"),
             Self::SealCancelled => formatter.write_str("seal was cancelled before commit"),
             Self::ReadOnly => formatter.write_str("store handle is read-only"),
+            Self::SealedTombstoneRecoveryRequired => formatter.write_str(
+                "store requires writable sealed-tombstone recovery before reads are safe",
+            ),
             Self::ForeignPreparedSegment => {
                 formatter.write_str("prepared segment belongs to another store")
             }
@@ -2055,7 +2060,7 @@ impl StoreError {
             | Self::QueryPoolCapacity { .. } => StoreErrorKind::Internal,
             Self::EmptyActiveSegment => StoreErrorKind::EmptyBatch,
             Self::SealCancelled | Self::ReadCancelled => StoreErrorKind::Cancelled,
-            Self::ReadOnly => StoreErrorKind::ReadOnly,
+            Self::ReadOnly | Self::SealedTombstoneRecoveryRequired => StoreErrorKind::ReadOnly,
             Self::Closing => StoreErrorKind::Closing,
             Self::Closed => StoreErrorKind::Closed,
             Self::BackgroundThreadPanicked | Self::QueryPoolThreadPanicked => StoreErrorKind::Panic,
@@ -2099,6 +2104,7 @@ impl std::error::Error for StoreError {
             | Self::EmptyActiveSegment
             | Self::SealCancelled
             | Self::ReadOnly
+            | Self::SealedTombstoneRecoveryRequired
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
             | Self::PartitionBytesOverflow
@@ -2320,7 +2326,7 @@ impl Store {
         }
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
-        let (active, recovered_wal) = crate::ingest::ActiveState::recover(
+        let (active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
             vfs.as_ref(),
             &wal_path,
             snapshot.generation(),
@@ -2437,6 +2443,7 @@ impl Store {
             .map_err(|error| StoreError::PurgeRecovery {
                 detail: error.to_string(),
             })?;
+        store.recover_sealed_tombstones(&sealed_tombstones)?;
         if options.access_mode == AccessMode::ReadWrite {
             let reachable_segments = store
                 .snapshot

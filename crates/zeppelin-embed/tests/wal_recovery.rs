@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -28,11 +28,25 @@ use std::process::{Command, Stdio};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tempfile::tempdir;
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::search::GraphSearchProfile;
+use zeppelin_embed::ingest::{
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    SearchRequest,
+};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::lock::{STORE_LOCK_FILE, StoreLock};
+use zeppelin_embed::lifecycle::{
+    CancelToken, GraphSearchOptions, OpenOptions as StoreOpenOptions, QueryControl, SearchOptions,
+    SearchTier, Store, StoreError, StoreTestDependencies, SystemMonotonicClock,
+};
 use zeppelin_embed::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
 use zeppelin_embed::manifest::{Manifest, ManifestError, encode_manifest};
-use zeppelin_embed::meta::Schema;
+use zeppelin_embed::meta::{Predicate, PredicateValue, Schema, TIMESTAMP_COLUMN};
+use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
 #[cfg(unix)]
@@ -55,6 +69,8 @@ mod crash_support;
 use crash_support::{CrashOperation, CrashStateClass, CrashStateKind, CrashVfs, MemoryVfs};
 
 const WAL_PATH: &str = "/wal-recovery/wal.ze";
+const SEALED_RECOVERY_DIMS: usize = 128;
+const SEALED_RECOVERY_ROWS: usize = 8;
 
 fn policy(tier: CommitTier) -> DurabilityPolicy {
     DurabilityPolicy::new(DurabilityMode::Durable, tier).expect("supported policy")
@@ -86,6 +102,80 @@ struct BlockingAppendVfsFile {
     append_calls: Arc<AtomicUsize>,
     blocked: Arc<Barrier>,
     release: Arc<Barrier>,
+}
+
+#[derive(Clone)]
+struct FailNextManifestRenameVfs {
+    inner: Arc<dyn Vfs>,
+    armed: Arc<AtomicBool>,
+}
+
+impl FailNextManifestRenameVfs {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(StdVfs),
+            armed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    fn is_armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+}
+
+impl Vfs for FailNextManifestRenameVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.inner.open_append(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if to.file_name().is_some_and(|name| name == MANIFEST_FILE)
+            && self.armed.swap(false, Ordering::AcqRel)
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
+        self.inner.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.inner.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.delete(path)
+    }
 }
 
 impl<V: Clone> Clone for BlockingAppendVfs<V> {
@@ -1927,6 +2017,271 @@ fn flush_waits_for_records_staged_behind_an_in_flight_sync() {
         (2, 0, Some(LogSeq::new(2))),
         "flush must return only after every record visible at its call is completed"
     );
+}
+
+fn sealed_recovery_epoch() -> StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "wal-sealed-recovery".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![0x09],
+        dims: SEALED_RECOVERY_DIMS as u32,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
+fn sealed_recovery_vector(row: usize) -> Vec<f32> {
+    let mut vector = vec![0.0; SEALED_RECOVERY_DIMS];
+    vector[0] = row as f32;
+    vector[1] = (row.saturating_mul(row)) as f32;
+    vector
+}
+
+fn maintain_sealed_recovery_graph(store: &Store) -> zeppelin_embed::tier::MaintenanceReport {
+    store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: SEALED_RECOVERY_ROWS as u32,
+        },
+    )
+}
+
+#[test]
+fn wal_committed_delete_of_sealed_document_stays_gone_after_manifest_commit_crash() {
+    let directory = tempdir().expect("sealed-delete recovery directory");
+    let epoch = sealed_recovery_epoch();
+    let vfs = Arc::new(FailNextManifestRenameVfs::new());
+    let dependencies = StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock));
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        StoreOpenOptions::default().with_epoch(epoch.clone()),
+        dependencies,
+    )
+    .expect("open sealed-delete recovery Store");
+    let documents = (0..SEALED_RECOVERY_ROWS)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new((row + 1) as u128), Revision::new(1)),
+                sealed_recovery_vector(row),
+            )
+            .with_timestamp(100 + row as i64)
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest sealed-delete recovery fixture");
+    store.seal().expect("seal delete recovery fixture");
+    let maintenance = maintain_sealed_recovery_graph(&store);
+    assert!(matches!(maintenance.status, MaintenanceStatus::Complete));
+    assert_eq!(maintenance.graphs_built, 1);
+
+    let deleted = DocId::new(4);
+    let wal_path = directory.path().join("wal.ze");
+    let wal_before = std::fs::metadata(&wal_path)
+        .expect("WAL before sealed delete")
+        .len();
+    vfs.arm();
+    let error = store
+        .delete(DeleteBatch::new(vec![deleted]))
+        .expect_err("manifest commit fault must fail sealed delete");
+    match error {
+        IngestError::Store(StoreError::Manifest(ManifestError::Io { source, .. })) => {
+            assert_eq!(source.raw_os_error(), Some(libc::EIO));
+        }
+        other => panic!("unexpected sealed-delete failure: {other}"),
+    }
+    assert!(!vfs.is_armed(), "manifest rename fault did not fire");
+    let wal_after = std::fs::metadata(&wal_path)
+        .expect("WAL after sealed delete")
+        .len();
+    assert!(
+        wal_after > wal_before,
+        "delete WAL record was not durable before manifest failure"
+    );
+    store.close().expect("close sealed-delete crash state");
+
+    let read_only_error = match Store::open(
+        directory.path(),
+        StoreOpenOptions::read_only().with_epoch(epoch.clone()),
+    ) {
+        Ok(read_only) => {
+            read_only.close().expect("close unsafe read-only Store");
+            panic!("read-only open served an unreconciled sealed tombstone");
+        }
+        Err(error) => error,
+    };
+    assert!(matches!(
+        read_only_error,
+        StoreError::SealedTombstoneRecoveryRequired
+    ));
+
+    let reopened = Store::open(
+        directory.path(),
+        StoreOpenOptions::default().with_epoch(epoch),
+    )
+    .expect("reopen sealed-delete crash state");
+    let maintenance = maintain_sealed_recovery_graph(&reopened);
+    assert!(matches!(maintenance.status, MaintenanceStatus::Complete));
+    let query = sealed_recovery_vector(3);
+    let graph = reopened
+        .search(
+            SearchRequest::new(&query),
+            SEALED_RECOVERY_ROWS,
+            SearchOptions::default().with_tier(SearchTier::Graph(GraphSearchOptions::new(
+                GraphSearchProfile::SiftClass,
+            ))),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("graph search after sealed-delete recovery");
+    assert!(
+        graph
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .all(|version| version.doc_id() != deleted),
+        "deleted document was resurrected by graph search"
+    );
+    let exact = reopened
+        .search(
+            SearchRequest::new(&query),
+            SEALED_RECOVERY_ROWS,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("exact search after sealed-delete recovery");
+    assert!(
+        exact
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .all(|version| version.doc_id() != deleted),
+        "deleted document was resurrected by exact search"
+    );
+    let filtered = reopened
+        .search_filtered(
+            SearchRequest::new(&query),
+            &Predicate::Eq {
+                column: TIMESTAMP_COLUMN,
+                value: PredicateValue::I64(103),
+            },
+            SEALED_RECOVERY_ROWS,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("timestamp search after sealed-delete recovery");
+    assert!(
+        filtered
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.document())
+            .all(|version| version.doc_id() != deleted),
+        "deleted document was resurrected by timestamp search"
+    );
+    reopened.close().expect("close recovered delete Store");
+}
+
+#[test]
+fn wal_committed_supersede_leaves_no_stale_sealed_revision_after_manifest_commit_crash() {
+    let directory = tempdir().expect("sealed-revision recovery directory");
+    let epoch = sealed_recovery_epoch();
+    let vfs = Arc::new(FailNextManifestRenameVfs::new());
+    let dependencies = StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock));
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        StoreOpenOptions::default().with_epoch(epoch.clone()),
+        dependencies,
+    )
+    .expect("open sealed-revision recovery Store");
+    let documents = (0..SEALED_RECOVERY_ROWS)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new((row + 1) as u128), Revision::new(1)),
+                sealed_recovery_vector(row),
+            )
+            .with_timestamp(100 + row as i64)
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest sealed-revision recovery fixture");
+    store.seal().expect("seal revision recovery fixture");
+    let maintenance = maintain_sealed_recovery_graph(&store);
+    assert!(matches!(maintenance.status, MaintenanceStatus::Complete));
+    assert_eq!(maintenance.graphs_built, 1);
+
+    let revised = DocId::new(4);
+    let revised_version = DocumentVersion::new(revised, Revision::new(2));
+    let revised_vector = sealed_recovery_vector(20);
+    let wal_path = directory.path().join("wal.ze");
+    let wal_before = std::fs::metadata(&wal_path)
+        .expect("WAL before sealed revision")
+        .len();
+    vfs.arm();
+    let error = store
+        .ingest(
+            IngestBatch::new(vec![
+                IngestDocument::new(revised_version, revised_vector.clone()).with_timestamp(203),
+            ])
+            .with_epoch(epoch.identity()),
+        )
+        .expect_err("manifest commit fault must fail sealed revision");
+    match error {
+        IngestError::Store(StoreError::Manifest(ManifestError::Io { source, .. })) => {
+            assert_eq!(source.raw_os_error(), Some(libc::EIO));
+        }
+        other => panic!("unexpected sealed-revision failure: {other}"),
+    }
+    assert!(!vfs.is_armed(), "manifest rename fault did not fire");
+    let wal_after = std::fs::metadata(&wal_path)
+        .expect("WAL after sealed revision")
+        .len();
+    assert!(
+        wal_after > wal_before,
+        "revision WAL record was not durable before manifest failure"
+    );
+    store.close().expect("close sealed-revision crash state");
+
+    let reopened = Store::open(
+        directory.path(),
+        StoreOpenOptions::default().with_epoch(epoch),
+    )
+    .expect("reopen sealed-revision crash state");
+    let exact = reopened
+        .search(
+            SearchRequest::new(&revised_vector),
+            SEALED_RECOVERY_ROWS + 1,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("exact search after sealed-revision recovery");
+    let returned_revisions = exact
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .filter(|version| version.doc_id() == revised)
+        .map(DocumentVersion::revision)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        returned_revisions,
+        vec![Revision::new(2)],
+        "superseded sealed revision was resurrected"
+    );
+    reopened.close().expect("close recovered revision Store");
 }
 
 // Keep the path types imported above available to the standalone test-support

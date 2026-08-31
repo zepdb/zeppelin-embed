@@ -25,6 +25,39 @@ pub(crate) struct ActiveState {
     pub(crate) segment: Arc<ActiveSegment>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SealedTombstoneDemand {
+    doc_id: DocId,
+    below: Option<Revision>,
+}
+
+impl SealedTombstoneDemand {
+    const fn delete(doc_id: DocId) -> Self {
+        Self {
+            doc_id,
+            below: None,
+        }
+    }
+
+    const fn upsert(version: DocumentVersion) -> Self {
+        Self {
+            doc_id: version.doc_id(),
+            below: Some(version.revision()),
+        }
+    }
+
+    pub(crate) const fn doc_id(self) -> DocId {
+        self.doc_id
+    }
+
+    pub(crate) fn matches(self, version: DocumentVersion) -> bool {
+        version.doc_id() == self.doc_id
+            && self
+                .below
+                .is_none_or(|revision| version.revision() < revision)
+    }
+}
+
 impl ActiveState {
     pub(crate) fn empty(generation: u64) -> Self {
         Self {
@@ -40,18 +73,18 @@ impl ActiveState {
         absorbed_through: u64,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
-    ) -> Result<(Self, Option<CleanWalReader>), StoreError> {
+    ) -> Result<(Self, Option<CleanWalReader>, Vec<SealedTombstoneDemand>), StoreError> {
         match vfs.open(path) {
-            Ok(0) => Ok((Self::empty(generation), None)),
+            Ok(0) => Ok((Self::empty(generation), None, Vec::new())),
             Ok(_) => {
                 let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-                let active =
+                let (active, sealed_tombstones) =
                     Self::replay(generation, absorbed_through, &clean, accounting, schema)?;
-                Ok((active, Some(clean)))
+                Ok((active, Some(clean), sealed_tombstones))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok((Self::empty(generation), None))
+                Ok((Self::empty(generation), None, Vec::new()))
             }
             Err(error) => Err(StoreError::Wal(WalReadError::Io(error))),
         }
@@ -63,8 +96,9 @@ impl ActiveState {
         recovered: &CleanWalReader,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<(Self, Vec<SealedTombstoneDemand>), StoreError> {
         let mut segment = ActiveSegment::empty();
+        let mut sealed_tombstones = Vec::new();
         for record in recovered.records() {
             if record.seq.get() <= absorbed_through {
                 continue;
@@ -84,7 +118,11 @@ impl ActiveState {
                 MutationPayload::Upsert(document) => {
                     super::validate_document_columns(schema, &document)
                         .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
-                    apply_recovered_upsert(&segment, &document, record.seq, record.op, accounting)?
+                    let next = apply_recovered_upsert(
+                        &segment, &document, record.seq, record.op, accounting,
+                    )?;
+                    sealed_tombstones.push(SealedTombstoneDemand::upsert(document.version()));
+                    next
                 }
                 MutationPayload::Delete(doc_ids) => {
                     let (mut next, rows) = segment
@@ -93,6 +131,8 @@ impl ActiveState {
                     for row in rows {
                         next.set_sequence(row, record.seq)?;
                     }
+                    sealed_tombstones
+                        .extend(doc_ids.iter().copied().map(SealedTombstoneDemand::delete));
                     next
                 }
                 MutationPayload::MetadataEdit(_) => {
@@ -106,10 +146,13 @@ impl ActiveState {
                 .checked_add(1)
                 .ok_or(StoreError::GenerationOverflow)?;
         }
-        Ok(Self {
-            generation,
-            segment: Arc::new(segment),
-        })
+        Ok((
+            Self {
+                generation,
+                segment: Arc::new(segment),
+            },
+            sealed_tombstones,
+        ))
     }
 }
 

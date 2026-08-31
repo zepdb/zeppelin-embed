@@ -27,7 +27,7 @@ use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
 use crate::wal::LogSeq;
 
-use super::{DocId, IngestDocument, wal_payload};
+use super::{ActiveState, DocId, IngestDocument, SealedTombstoneDemand, wal_payload};
 
 const PURGE_INTENT_FILE: &str = "purge.ze";
 const PURGE_INTENT_TEMP_FILE: &str = ".purge.ze.tmp";
@@ -368,6 +368,136 @@ struct PurgeIntent {
 }
 
 impl Store {
+    pub(crate) fn recover_sealed_tombstones(
+        &self,
+        demands: &[SealedTombstoneDemand],
+    ) -> Result<(), StoreError> {
+        if demands.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        let requested = demands
+            .iter()
+            .map(|demand| demand.doc_id())
+            .collect::<Vec<_>>();
+        let sealed = sealed_document_matches(&snapshot, &requested)?;
+        let mut surviving = Vec::new();
+        for matched in sealed {
+            if !demands.iter().any(|demand| demand.matches(matched.version)) {
+                continue;
+            }
+            let segment = snapshot
+                .segments()
+                .get(matched.segment_index)
+                .ok_or(StoreError::ActiveRowOverflow)?;
+            let row = u32::try_from(matched.row).map_err(|_| StoreError::ActiveRowOverflow)?;
+            if segment.alive().map_err(StoreError::Segment)?.is_alive(row) {
+                surviving.push(matched);
+            }
+        }
+        if surviving.is_empty() {
+            return Ok(());
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(StoreError::Closing),
+            StoreState::Closed => return Err(StoreError::Closed),
+        }
+        let writer_lock = self
+            .writer_lock
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "writer lock",
+            })?;
+        if writer_lock.is_none() {
+            return Err(StoreError::SealedTombstoneRecoveryRequired);
+        }
+        let mut wal = self
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?;
+        let writer = wal
+            .as_mut()
+            .ok_or(StoreError::SealedTombstoneRecoveryRequired)?;
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let current = active.as_ref().ok_or(StoreError::Closed)?;
+        let generation = current
+            .generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationOverflow)?;
+        let active_segment = Arc::clone(&current.segment);
+        let mut ids = surviving
+            .iter()
+            .map(|matched| matched.version.doc_id())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        let prepared = prepare_sealed_tombstones(
+            self.vfs.as_ref(),
+            &self.directory,
+            &snapshot,
+            &surviving,
+            &ids,
+            writer.durable_end(),
+            generation,
+            writer.durable_end().saturating_add(1),
+            self.durability_policy,
+            &self.accounting,
+        )?;
+        let Some(prepared) = prepared else {
+            return Ok(());
+        };
+        let (remapped, replaced_paths) = prepared.commit(
+            self,
+            self.vfs.as_ref(),
+            &self.directory,
+            self.durability_policy,
+        )?;
+        let mut published = self
+            .snapshot
+            .write()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?;
+        let previous = published.replace(Arc::new(remapped));
+        *active = Some(ActiveState {
+            generation,
+            segment: active_segment,
+        });
+        drop(published);
+        drop(previous);
+        unlink_replaced_segments(
+            self.vfs.as_ref(),
+            &self.directory,
+            &replaced_paths,
+            self.durability_policy,
+        )?;
+        drop(active);
+        drop(wal);
+        drop(writer_lock);
+        drop(state);
+        Ok(())
+    }
+
     /// Schedules a physical purge and returns before artifact rewriting begins.
     pub fn purge(&self, ids: &[DocId]) -> Result<PurgeToken, PurgeError> {
         let available = available_disk_bytes(&self.directory).map_err(|source| {
