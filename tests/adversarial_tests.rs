@@ -2729,6 +2729,29 @@ fn reproduction_line_omits_profile_unless_overridden() {
 }
 
 #[test]
+fn crash_fired_during_acked_op_is_recovered_not_reported_as_i1() {
+    // Seed 2011 schedules a Crash fault at the drop_partition unlink site.
+    // The engine swallows that post-publish unlink failure by design, so the
+    // op returns Ok while the simulated machine is down. The runner must
+    // recover the crash on the Ok path too; before the fix every later
+    // mutation failed with a latched "WAL writer failed ... simulated crash"
+    // and was misreported as an I1 violation.
+    let root = tempfile::tempdir().expect("acked-op crash replay root");
+    let outcome = adversarial::runner::run_program_for(
+        CampaignKind::StorageDurability,
+        2011,
+        FaultProfile::Crash,
+        root.path(),
+    )
+    .expect("acked-op crash episode");
+    assert!(
+        outcome.violations.is_empty(),
+        "violations: {:?}",
+        outcome.violations
+    );
+}
+
+#[test]
 fn run_with_seed_only_replays_the_campaign_episode_byte_identically() {
     let campaign = CampaignKind::Fts;
     for seed in 0..8 {

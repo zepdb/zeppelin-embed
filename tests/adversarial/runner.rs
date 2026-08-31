@@ -3983,6 +3983,41 @@ fn run_program_for_with_clock(
         }
         if operation_succeeded {
             record_successful_operation_coverage(&mut coverage, op);
+            if fired_at_operation
+                .iter()
+                .any(|event| event.layer == fault_vfs::Layer::Crash)
+                && !matches!(op, Op::Crash { .. })
+            {
+                // The Crash fault fired at a site whose failure the engine
+                // legitimately swallows after publication (for example the
+                // drop_partition post-commit unlink), so the operation was
+                // acknowledged while the simulated machine went down. The
+                // acked state is durable; restart the crashed VFS and reopen
+                // instead of letting every later operation fail against the
+                // latched crash and be misreported as an I1 violation.
+                engine.recover_from_simulated_crash()?;
+                reconcile_recovered_locations(&mut engine, &mut model)?;
+                simulated_crash_recovered = true;
+                let recovered_generation = engine.generation()?;
+                if recovered_generation < last_generation {
+                    violations.push(violation(
+                        Invariant::I4,
+                        seed,
+                        profile,
+                        op_index,
+                        format!(
+                            "simulated crash recovery regressed durable generation from {last_generation} to {recovered_generation}"
+                        ),
+                    ));
+                }
+                last_generation = last_generation.max(recovered_generation);
+                let observed = full_scan(&mut engine, &model, seed)?;
+                if let Some(violation) =
+                    durability_prefix_violation(seed, profile, op_index, &model, &observed)
+                {
+                    violations.push(violation);
+                }
+            }
         }
     }
 
