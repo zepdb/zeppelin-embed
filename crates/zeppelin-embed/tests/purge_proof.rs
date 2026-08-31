@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 #[cfg(unix)]
@@ -23,8 +24,8 @@ use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreTestDependencies,
     SystemMonotonicClock,
 };
-use zeppelin_embed::manifest::Manifest;
-use zeppelin_embed::manifest::io::commit_manifest;
+use zeppelin_embed::manifest::io::{MANIFEST_TEMP_FILE, commit_manifest};
+use zeppelin_embed::manifest::{Manifest, ManifestError};
 use zeppelin_embed::meta::{
     AliveSet, Column, ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType,
     ColumnValue, Schema,
@@ -547,6 +548,91 @@ fn active_only_purge_compacts_rows_preserves_tombstones_and_reopens() {
 }
 
 #[test]
+fn purge_keeps_acked_wal_after_failed_seal_commit() {
+    let directory = tempdir().expect("failed-seal purge directory");
+    let first_v2 = DocumentVersion::new(DocId::new(901), Revision::new(2));
+    let second_v2 = DocumentVersion::new(DocId::new(902), Revision::new(2));
+    let purged = DocId::new(903);
+    let vfs = Arc::new(FailNextManifestTempWriteVfs::new());
+    let dependencies = StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock));
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open failed-seal purge store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(first_v2.doc_id(), Revision::new(1)),
+                vec![1.0, 0.0],
+            ),
+            IngestDocument::new(
+                DocumentVersion::new(second_v2.doc_id(), Revision::new(1)),
+                vec![0.0, 1.0],
+            ),
+        ]))
+        .expect("ingest first revisions");
+    store.seal().expect("seal first revisions");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(first_v2, vec![2.0, 0.0]),
+            IngestDocument::new(second_v2, vec![0.0, 2.0]),
+        ]))
+        .expect("ingest second revisions");
+
+    vfs.arm();
+    let seal_error = store
+        .seal()
+        .expect_err("manifest temp write fault unexpectedly sealed revisions");
+    assert!(
+        matches!(
+            &seal_error,
+            StoreError::Manifest(ManifestError::Io { path, source })
+                if path.file_name().is_some_and(|name| name == MANIFEST_TEMP_FILE)
+                    && source.raw_os_error() == Some(libc::EIO)
+        ),
+        "wrong failed-seal error: {seal_error:?}"
+    );
+    assert!(!vfs.is_armed(), "manifest temp write fault did not fire");
+
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(purged, Revision::new(1)),
+            vec![-1.0, 0.0],
+        )]))
+        .expect("ingest purge target");
+    store
+        .delete(DeleteBatch::new(vec![purged]))
+        .expect("delete purge target");
+    let token = store.purge(&[purged]).expect("schedule active purge");
+    if let Err(error) = store.await_physical_purge(token)
+        && !matches!(error, PurgeError::WalRewriteWouldDropAcked { .. })
+    {
+        panic!("unexpected physical-purge refusal: {error}");
+    }
+    store.close().expect("close failed-seal purge store");
+
+    let reopened = Store::open(directory.path(), OpenOptions::default())
+        .expect("reopen failed-seal purge store");
+    let visible = reopened
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            8,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query after failed-seal purge")
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    assert!(visible.contains(&first_v2), "first revision was lost");
+    assert!(visible.contains(&second_v2), "second revision was lost");
+    assert!(
+        visible.iter().all(|version| version.doc_id() != purged),
+        "purged document remained visible"
+    );
+}
+
+#[test]
 fn bl_135_purge_persists_acked_generation_with_nonempty_wal() {
     let directory = tempdir().expect("BL-135 purge directory");
     let removed = DocId::new(851);
@@ -851,6 +937,80 @@ fn search_one(store: &Store, vector: &[f32]) -> zeppelin_embed::ingest::SearchCa
         .first()
         .copied()
         .expect("one survivor")
+}
+
+#[derive(Clone)]
+struct FailNextManifestTempWriteVfs {
+    armed: Arc<AtomicBool>,
+}
+
+impl FailNextManifestTempWriteVfs {
+    fn new() -> Self {
+        Self {
+            armed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    fn is_armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+}
+
+impl Vfs for FailNextManifestTempWriteVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        StdVfs.ensure_directory(path, create)
+    }
+
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        StdVfs.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        StdVfs.open_for_map(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        StdVfs.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        StdVfs.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        if path
+            .file_name()
+            .is_some_and(|name| name == MANIFEST_TEMP_FILE)
+            && self.armed.swap(false, Ordering::AcqRel)
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
+        StdVfs.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        StdVfs.open_append(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        StdVfs.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        StdVfs.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        StdVfs.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        StdVfs.delete(path)
+    }
 }
 
 fn publish_graph_segment(directory: &Path, removed: DocId) {

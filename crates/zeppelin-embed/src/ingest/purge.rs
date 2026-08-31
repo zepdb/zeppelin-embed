@@ -317,6 +317,11 @@ pub enum PurgeError {
     IntentDecode(String),
     /// Re-encoding the surviving active state violated the WAL payload contract.
     WalPayload(wal_payload::PayloadError),
+    /// Rewriting the WAL would discard an acknowledged, unabsorbed mutation.
+    WalRewriteWouldDropAcked {
+        /// First retained sequence not covered by the surviving active state.
+        seq: LogSeq,
+    },
 }
 
 impl std::fmt::Display for PurgeError {
@@ -338,6 +343,11 @@ impl std::fmt::Display for PurgeError {
             Self::IntentFormat(error) => write!(formatter, "purge intent: {error}"),
             Self::IntentDecode(detail) => write!(formatter, "purge intent decode failed: {detail}"),
             Self::WalPayload(error) => write!(formatter, "purge WAL payload: {error}"),
+            Self::WalRewriteWouldDropAcked { seq } => write!(
+                formatter,
+                "purge WAL rewrite would drop acknowledged WAL sequence {}",
+                seq.get()
+            ),
         }
     }
 }
@@ -351,7 +361,8 @@ impl std::error::Error for PurgeError {
             Self::InsufficientTempSpace { .. }
             | Self::PurgeInProgress
             | Self::UnknownToken { .. }
-            | Self::IntentDecode(_) => None,
+            | Self::IntentDecode(_)
+            | Self::WalRewriteWouldDropAcked { .. } => None,
         }
     }
 }
@@ -879,6 +890,15 @@ impl Store {
                 .checked_add(1)
                 .ok_or(StoreError::GenerationOverflow)?,
         );
+        if writer.durable_end() >= first_seq.get() {
+            ensure_wal_rewrite_covers_retained(
+                vfs,
+                &self.directory,
+                first_seq,
+                &intent.ids,
+                &next_active,
+            )?;
+        }
         writer.rewrite(
             vfs,
             &self.directory,
@@ -1524,6 +1544,55 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
     Ok((records, tombstoned))
 }
 
+fn ensure_wal_rewrite_covers_retained(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    first_seq: LogSeq,
+    purged_ids: &[DocId],
+    next_active: &super::ActiveSegment,
+) -> Result<(), PurgeError> {
+    let wal_path = directory.join("wal.ze");
+    let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
+    let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
+    for record in clean
+        .records()
+        .iter()
+        .filter(|record| record.seq >= first_seq)
+    {
+        let payload = record.payload().map_err(|source| StoreError::WalRecord {
+            seq: record.seq,
+            source,
+        })?;
+        let mutation = wal_payload::decode_mutation(record.op, payload).map_err(|source| {
+            StoreError::WalMutation {
+                seq: record.seq,
+                op: record.op,
+                source,
+            }
+        })?;
+        let covered = match mutation {
+            super::wal_payload::MutationPayload::Upsert(document) => {
+                let version = document.version();
+                purged_ids.contains(&version.doc_id())
+                    || next_active
+                        .existing(version.doc_id())
+                        .is_some_and(|(_, existing, _)| existing.revision() >= version.revision())
+            }
+            super::wal_payload::MutationPayload::Delete(ids) => ids.iter().all(|id| {
+                purged_ids.contains(id)
+                    || next_active
+                        .existing(*id)
+                        .is_some_and(|(row, _, _)| next_active.is_tombstoned(row))
+            }),
+            super::wal_payload::MutationPayload::MetadataEdit(_) => false,
+        };
+        if !covered {
+            return Err(PurgeError::WalRewriteWouldDropAcked { seq: record.seq });
+        }
+    }
+    Ok(())
+}
+
 fn purge_ingest_error(error: super::IngestError) -> PurgeError {
     match error {
         super::IngestError::Store(error) => PurgeError::Store(error),
@@ -1624,6 +1693,7 @@ mod tests {
     use crate::lifecycle::StoreError;
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::vfs::StdVfs;
+    use crate::wal::LogSeq;
 
     #[test]
     fn purge_tokens_reports_and_errors_preserve_their_contract_values() {
@@ -1665,6 +1735,9 @@ mod tests {
             PurgeError::IntentFormat(format),
             PurgeError::IntentDecode("bad payload".to_owned()),
             PurgeError::WalPayload(wal_payload::PayloadError::Truncated),
+            PurgeError::WalRewriteWouldDropAcked {
+                seq: LogSeq::new(45),
+            },
         ];
         for error in errors {
             assert!(!error.to_string().is_empty());

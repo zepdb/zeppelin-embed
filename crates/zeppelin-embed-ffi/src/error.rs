@@ -97,7 +97,9 @@ impl FfiError {
             PurgeError::InsufficientTempSpace { .. } => ZeErrorCode::ZeErrBudgetExceeded,
             PurgeError::PurgeInProgress => ZeErrorCode::ZeErrBusy,
             PurgeError::UnknownToken { .. } => ZeErrorCode::ZeErrInvalidArgument,
-            PurgeError::IntentFormat(_) | PurgeError::IntentDecode(_) => ZeErrorCode::ZeErrCorrupt,
+            PurgeError::IntentFormat(_)
+            | PurgeError::IntentDecode(_)
+            | PurgeError::WalRewriteWouldDropAcked { .. } => ZeErrorCode::ZeErrCorrupt,
             PurgeError::WalPayload(_) => ZeErrorCode::ZeErrInvalidArgument,
         };
         Self::new(code, message)

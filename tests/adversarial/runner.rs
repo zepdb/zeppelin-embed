@@ -2904,6 +2904,7 @@ fn run_program_for_with_clock(
     let mut pending_busy_child = None::<BusyChildProcess>;
     let mut simulated_crash_recovered = false;
     let mut seal_precondition_lost_to_crash = false;
+    let mut purge_refusal_after_fault = false;
 
     for (op_index, op) in program.ops.iter().enumerate() {
         executed_operations = executed_operations.saturating_add(1);
@@ -3683,6 +3684,7 @@ fn run_program_for_with_clock(
 
         if let Err(error) = busy_hook_result
             && !persisted_content_fault_before(&scheduled_vfs.events(), op_index)
+            && !purge_refusal_after_fault
         {
             if !runner_records_error(
                 &scheduled_vfs.events(),
@@ -3786,6 +3788,14 @@ fn run_program_for_with_clock(
                             }
                         }
                         Err(recovery_error) => {
+                            if wal_rewrite_refusal(&recovery_error) {
+                                coverage.hit("purge.recovery_refused_after_crash");
+                                purge_refusal_after_fault = true;
+                                if campaign == CampaignKind::Overall {
+                                    break;
+                                }
+                                continue;
+                            }
                             if persisted_content_fault_preceded(&scheduled_vfs.events(), op_index) {
                                 coverage.hit("crash.recovery_refused_after_content_write");
                                 if campaign == CampaignKind::Overall {
@@ -3823,9 +3833,27 @@ fn run_program_for_with_clock(
                     && error.contains("has no graph region")
                 {
                     operation_succeeded = true;
+                } else if simulated_crash_recovered && wal_rewrite_refusal(&error) {
+                    if matches!(op, Op::Purge { .. }) {
+                        coverage.hit("purge.refused_after_crash");
+                    } else {
+                        coverage.hit("purge.recovery_refused_after_crash");
+                    }
+                    purge_refusal_after_fault = true;
+                    if campaign == CampaignKind::Overall {
+                        break;
+                    }
+                    continue;
                 } else if persisted_content_fault_preceded(&scheduled_vfs.events(), op_index)
+                    || purge_refusal_after_fault
                     || !runner_records_operation_error(&scheduled_vfs.events(), op_index)
                 {
+                    if matches!(op, Op::Purge { .. })
+                        && error
+                            .starts_with("purge WAL rewrite would drop acknowledged WAL sequence ")
+                    {
+                        coverage.hit("purge.refused_after_content_write");
+                    }
                     // A persisted content mutation may be impossible to clear.
                     // The typed refusal itself satisfies I7. Feature campaigns
                     // keep executing so an independently materialized family
@@ -3897,6 +3925,14 @@ fn run_program_for_with_clock(
                                         }
                                     }
                                     Err(crash_recovery_error) => {
+                                        if wal_rewrite_refusal(&crash_recovery_error) {
+                                            coverage.hit("purge.recovery_refused_after_crash");
+                                            purge_refusal_after_fault = true;
+                                            if campaign == CampaignKind::Overall {
+                                                break;
+                                            }
+                                            continue;
+                                        }
                                         if persisted_content_fault_preceded(
                                             &scheduled_vfs.events(),
                                             op_index,
@@ -17411,6 +17447,10 @@ fn persisted_content_fault_before(events: &[FaultEvent], op_index: usize) -> boo
     op_index
         .checked_sub(1)
         .is_some_and(|previous| persisted_content_fault_preceded(events, previous))
+}
+
+fn wal_rewrite_refusal(error: &str) -> bool {
+    error.contains("purge WAL rewrite would drop acknowledged WAL sequence ")
 }
 
 fn recover_and_retry_faulted_operation(
