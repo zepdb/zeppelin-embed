@@ -57,6 +57,7 @@ pub struct DropPartitionReport {
     manifest_committed: bool,
     segments_dropped: Vec<SegmentId>,
     bytes_reclaimed: u64,
+    orphaned_segments: Vec<SegmentId>,
     straddlers_skipped: Vec<SegmentId>,
 }
 
@@ -83,6 +84,12 @@ impl DropPartitionReport {
     #[must_use]
     pub const fn bytes_reclaimed(&self) -> u64 {
         self.bytes_reclaimed
+    }
+
+    /// Returns dropped segments whose post-commit unlink failed.
+    #[must_use]
+    pub fn orphaned_segments(&self) -> &[SegmentId] {
+        &self.orphaned_segments
     }
 
     /// Returns overlapping segments retained because they crossed a boundary.
@@ -249,6 +256,7 @@ impl Store {
         drop(previous);
 
         let mut bytes_reclaimed = selection.bytes_reclaimed;
+        let mut orphaned_segments = Vec::new();
         for segment in &selection.dropped {
             let path = self.directory.join(segment.id.file_name());
             // The manifest omission is already committed, so an unlink failure
@@ -259,14 +267,14 @@ impl Store {
             // is released, so their in-flight reads remain valid.
             if vfs.delete(&path).is_err() {
                 bytes_reclaimed = bytes_reclaimed.saturating_sub(segment.file_size);
+                orphaned_segments.push(segment.id);
             }
         }
         if let SyncRequirement::Sync(kind) = self.durability_policy.directory_sync() {
-            vfs.sync(&self.directory, kind)
-                .map_err(|source| StoreError::Io {
-                    path: self.directory.clone(),
-                    source,
-                })?;
+            // The manifest commit already crossed its durable directory-sync
+            // boundary. This later sync only persists orphan cleanup and must
+            // not deny the generation already published.
+            let _ = vfs.sync(&self.directory, kind);
         }
         let dropped_ids = selection.dropped.iter().map(|segment| segment.id).collect();
         drop(active);
@@ -278,6 +286,7 @@ impl Store {
             manifest_committed: true,
             segments_dropped: dropped_ids,
             bytes_reclaimed,
+            orphaned_segments,
             straddlers_skipped: selection.straddlers,
         })
     }
@@ -289,6 +298,7 @@ fn no_op_report(generation: u64, straddlers_skipped: Vec<SegmentId>) -> DropPart
         manifest_committed: false,
         segments_dropped: Vec::new(),
         bytes_reclaimed: 0,
+        orphaned_segments: Vec::new(),
         straddlers_skipped,
     }
 }

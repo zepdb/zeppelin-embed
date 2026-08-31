@@ -1103,7 +1103,7 @@ impl Store {
             &self.directory,
             &replaced_paths,
             self.durability_policy,
-        )?;
+        );
         drop(active);
         drop(wal);
         drop(state);
@@ -1217,7 +1217,7 @@ impl Store {
             &self.directory,
             &replaced_paths,
             self.durability_policy,
-        )?;
+        );
         Ok(IngestAck { seq, generation })
     }
 }

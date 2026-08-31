@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use tempfile::tempdir;
 use zeppelin_embed::ingest::{
@@ -8,6 +9,7 @@ use zeppelin_embed::ingest::{
     IngestRetentionFaultController, IngestRetentionTestFault, RetentionPolicy, Revision,
     SearchRequest,
 };
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, Store, StoreTestDependencies, SystemMonotonicClock,
 };
@@ -191,11 +193,23 @@ enum DropEvent {
 #[derive(Clone, Default)]
 struct EventVfs {
     events: Arc<Mutex<Vec<DropEvent>>>,
+    fail_segment_delete: Arc<AtomicBool>,
+    fail_sync_after_segment_delete: Arc<AtomicBool>,
+    segment_delete_attempted: Arc<AtomicBool>,
 }
 
 impl EventVfs {
     fn events(&self) -> Vec<DropEvent> {
         self.events.lock().expect("event mutex").clone()
+    }
+
+    fn fail_segment_deletes(&self) {
+        self.fail_segment_delete.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_directory_sync_after_segment_delete(&self) {
+        self.fail_sync_after_segment_delete
+            .store(true, Ordering::SeqCst);
     }
 }
 
@@ -240,6 +254,15 @@ impl Vfs for EventVfs {
     }
 
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        if self.segment_delete_attempted.load(Ordering::SeqCst)
+            && self
+                .fail_sync_after_segment_delete
+                .swap(false, Ordering::SeqCst)
+        {
+            return Err(std::io::Error::other(
+                "injected post-unlink directory sync failure",
+            ));
+        }
         StdVfs.sync(path, kind)
     }
 
@@ -248,6 +271,16 @@ impl Vfs for EventVfs {
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
+        let is_segment = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"));
+        if is_segment {
+            self.segment_delete_attempted.store(true, Ordering::SeqCst);
+            if self.fail_segment_delete.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("injected segment unlink failure"));
+            }
+        }
         StdVfs.delete(path)?;
         self.events
             .lock()
@@ -255,6 +288,161 @@ impl Vfs for EventVfs {
             .push(DropEvent::Unlink);
         Ok(())
     }
+}
+
+#[test]
+fn drop_partition_reports_committed_ok_when_a_post_commit_unlink_fails() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    seal_partition(&store, 750, &[0, 9]);
+    let segment = store.snapshot().expect("sealed snapshot").segments()[0]
+        .meta()
+        .clone();
+    let path = directory.path().join(segment.id.file_name());
+    let vfs = EventVfs::default();
+    vfs.fail_segment_deletes();
+
+    let report = store
+        .drop_partition_on_vfs(0..10, &vfs)
+        .expect("ack committed partition drop");
+
+    assert!(!report.is_no_op());
+    assert_eq!(report.segments_dropped(), &[segment.id]);
+    assert_eq!(report.bytes_reclaimed(), 0);
+    assert_eq!(report.orphaned_segments(), &[segment.id]);
+    assert!(
+        path.exists(),
+        "failed unlink must leave the orphan in place"
+    );
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            10,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query after committed drop");
+    assert!(outcome.candidates.is_empty());
+}
+
+#[test]
+fn a_reopen_after_a_failed_unlink_sweeps_the_orphaned_segment_file() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    seal_partition(&store, 775, &[0, 9]);
+    let segment_id = store.snapshot().expect("sealed snapshot").segments()[0]
+        .meta()
+        .id;
+    let path = directory.path().join(segment_id.file_name());
+    let vfs = EventVfs::default();
+    vfs.fail_segment_deletes();
+    let report = store
+        .drop_partition_on_vfs(0..10, &vfs)
+        .expect("ack committed partition drop");
+    assert_eq!(report.orphaned_segments(), &[segment_id]);
+    assert!(path.exists(), "failed unlink must leave an orphan to sweep");
+    store.close().expect("close dropped store");
+
+    let reopened =
+        Store::open(directory.path(), OpenOptions::default()).expect("reopen and sweep orphan");
+
+    assert!(
+        !path.exists(),
+        "open-time orphan sweep missed dropped segment"
+    );
+    let outcome = reopened
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            10,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query reopened store");
+    assert!(outcome.candidates.is_empty());
+}
+
+#[test]
+fn drop_partition_stays_ok_when_the_post_commit_directory_sync_fails() {
+    let directory = tempdir().expect("store directory");
+    let options =
+        OpenOptions::default().with_durability(DurabilityMode::Durable, CommitTier::Durable);
+    let store = Store::open(directory.path(), options).expect("open durable store");
+    seal_partition(&store, 790, &[0, 9]);
+    let segment = store.snapshot().expect("sealed snapshot").segments()[0]
+        .meta()
+        .clone();
+    let path = directory.path().join(segment.id.file_name());
+    let vfs = EventVfs::default();
+    vfs.fail_directory_sync_after_segment_delete();
+
+    let report = store
+        .drop_partition_on_vfs(0..10, &vfs)
+        .expect("ack drop after post-commit directory sync failure");
+
+    assert!(!report.is_no_op());
+    assert_eq!(report.segments_dropped(), &[segment.id]);
+    assert_eq!(report.bytes_reclaimed(), segment.file_size);
+    assert!(report.orphaned_segments().is_empty());
+    assert!(
+        !path.exists(),
+        "segment unlink completed before sync failed"
+    );
+}
+
+#[test]
+fn ingest_ack_survives_a_failed_replaced_segment_unlink() {
+    let directory = tempdir().expect("store directory");
+    let vfs = Arc::new(EventVfs::default());
+    let dependencies = StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock));
+    let store =
+        Store::open_with_test_dependencies(directory.path(), OpenOptions::default(), dependencies)
+            .expect("open store");
+    let doc_id = DocId::new(795);
+    let old = DocumentVersion::new(doc_id, Revision::new(1));
+    let replacement = DocumentVersion::new(doc_id, Revision::new(2));
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            old,
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest original revision");
+    store.seal().expect("seal original revision");
+    let original_id = store.snapshot().expect("sealed snapshot").segments()[0]
+        .meta()
+        .id;
+    let original_path = directory.path().join(original_id.file_name());
+    vfs.fail_segment_deletes();
+
+    let ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            replacement,
+            vec![0.0, 1.0],
+        )]))
+        .expect("ack replacement after old-segment unlink failure");
+
+    assert_eq!(
+        store.snapshot().expect("replacement snapshot").generation(),
+        ack.generation()
+    );
+    assert!(
+        original_path.exists(),
+        "injected unlink did not leave an orphan"
+    );
+    let outcome = store
+        .search(
+            SearchRequest::new(&[0.0, 1.0]),
+            10,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query acknowledged replacement");
+    let versions = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    assert!(versions.contains(&replacement));
+    assert!(!versions.contains(&old));
 }
 
 #[test]

@@ -1087,17 +1087,16 @@ pub(crate) fn unlink_replaced_segments(
     directory: &Path,
     replaced_paths: &[PathBuf],
     policy: DurabilityPolicy,
-) -> Result<(), StoreError> {
+) {
     for path in replaced_paths {
-        vfs.delete(path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        // The replacement manifest and snapshot are already published. A
+        // failed unlink leaves an unreachable orphan for open-time cleanup;
+        // it cannot roll back or deny the acknowledged mutation.
+        let _ = vfs.delete(path);
     }
     if !replaced_paths.is_empty() {
-        sync_directory(vfs, directory, policy)?;
+        let _ = sync_directory(vfs, directory, policy);
     }
-    Ok(())
 }
 
 fn cleanup_replacement_segments(
