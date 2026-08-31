@@ -2903,6 +2903,7 @@ fn run_program_for_with_clock(
     let mut rejected_dropped_epoch_rollbacks = 0_usize;
     let mut pending_busy_child = None::<BusyChildProcess>;
     let mut simulated_crash_recovered = false;
+    let mut last_graph_publishing_maintain_op = None;
     let mut seal_precondition_lost_to_crash = false;
     let mut purge_refusal_after_fault = false;
 
@@ -3716,6 +3717,9 @@ fn run_program_for_with_clock(
                 } else {
                     operation_succeeded = true;
                     if ack.changed {
+                        if matches!(op, Op::Maintain { .. }) {
+                            last_graph_publishing_maintain_op = Some(op_index);
+                        }
                         if let Some(generation) =
                             generation_violation(seed, profile, op_index, last_generation, ack)
                         {
@@ -3829,9 +3833,17 @@ fn run_program_for_with_clock(
                             ..
                         }
                     )
-                    && model.sealed_document_count() < graph_rows
+                    && (model.sealed_document_count() < graph_rows
+                        || graph_build_crash_preceded(
+                            &scheduled_vfs.events(),
+                            op_index,
+                            last_graph_publishing_maintain_op,
+                        ))
                     && error.contains("has no graph region")
                 {
+                    if model.sealed_document_count() >= graph_rows {
+                        coverage.hit("crash.graph_build_interrupted_refusal");
+                    }
                     operation_succeeded = true;
                 } else if simulated_crash_recovered && wal_rewrite_refusal(&error) {
                     if matches!(op, Op::Purge { .. }) {
@@ -17440,6 +17452,23 @@ fn persisted_content_fault_preceded(events: &[FaultEvent], op_index: usize) -> b
                 event.site,
                 fault_vfs::FaultSite::Append | fault_vfs::FaultSite::Write
             )
+    })
+}
+
+fn graph_build_crash_preceded(
+    events: &[FaultEvent],
+    op_index: usize,
+    since: Option<usize>,
+) -> bool {
+    events.iter().any(|event| {
+        event.fired
+            && event.layer == fault_vfs::Layer::Crash
+            && event.op_index < op_index
+            && since.is_none_or(|since| event.op_index > since)
+            && event
+                .path
+                .as_ref()
+                .is_some_and(|path| path.to_string_lossy().contains(".graph.checkpoint"))
     })
 }
 

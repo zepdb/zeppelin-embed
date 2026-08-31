@@ -2795,6 +2795,26 @@ fn crash_fired_during_acked_op_is_recovered_not_reported_as_i1() {
 }
 
 #[test]
+fn graph_search_refusal_after_crashed_graph_checkpoint_is_not_a_violation() {
+    // Seed 2307: crash fires mid-write on .tier-<id>.graph.checkpoint.tmp
+    // during op 14 maintain; op 17 explicit graph search must be a typed
+    // refusal, not an I1 violation.
+    let root = tempfile::tempdir().expect("crashed graph checkpoint replay root");
+    let outcome = adversarial::runner::run_program_for(
+        CampaignKind::DiagnosticsHealth,
+        2307,
+        FaultProfile::Crash,
+        root.path(),
+    )
+    .expect("crashed graph checkpoint episode");
+    assert!(
+        outcome.violations.is_empty(),
+        "violations: {:?}",
+        outcome.violations
+    );
+}
+
+#[test]
 fn run_with_seed_only_replays_the_campaign_episode_byte_identically() {
     let campaign = CampaignKind::Fts;
     for seed in 0..8 {
