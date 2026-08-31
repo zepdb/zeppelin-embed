@@ -431,7 +431,10 @@ impl std::fmt::Display for FusionError {
                 "{leg:?} candidate at rank {rank} repeats a common document identity"
             ),
             Self::Timeout { partial } => {
-                write!(formatter, "hybrid query timed out (partial={partial})")
+                write!(
+                    formatter,
+                    "hybrid query deadline expired (partial={partial})"
+                )
             }
             Self::Cancelled { partial } => {
                 write!(formatter, "hybrid query was cancelled (partial={partial})")
