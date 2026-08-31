@@ -2858,7 +2858,12 @@ impl Store {
         drop(pool_slot);
         drop(state);
 
-        let result = pool.execute(request, k, options, control, SnapshotLease::new(snapshot));
+        let result = pool
+            .execute(request, k, options, control, SnapshotLease::new(snapshot))
+            .map(|mut outcome| {
+                outcome.candidates.truncate(k);
+                outcome
+            });
         drop(active);
         result
     }
@@ -5087,7 +5092,7 @@ fn scan_squared_l2(
             .total_cmp(&left.score)
             .then_with(|| left.row_id.cmp(&right.row_id))
     });
-    candidates.truncate(k);
+    crate::scan::truncate_to_k_with_score_ties(&mut candidates, k, |candidate| candidate.score);
     let dims = u64::try_from(query.len())
         .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
     let dims_touched = scored_rows

@@ -211,6 +211,15 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   exactly accounted scratch. Concurrent or later queries never inherit a
   competitive distance.
 
+## Exact top-k tie invariant
+
+- Per-segment exact cuts retain every candidate tied with the k-th score.
+  Document-presenting paths discard ties only through
+  `compare_search_candidates`, after document identity has been joined.
+- Physical seams remain exact-k and preserve descending score then ascending
+  row id: `scan::top_k` and `Store::top_k_with_options` truncate boundary ties
+  before returning.
+
 ## Task 08 Part A WAL invariants
 
 - Every synchronization names `SyncKind`; Darwin maps barrier/full to

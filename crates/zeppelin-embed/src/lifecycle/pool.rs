@@ -410,7 +410,7 @@ fn merge_partitions(
         }
     }
     Ok(ScanOutcome {
-        candidates: merged.into_sorted(),
+        candidates: merged.into_sorted_with_ties(),
         stats: ScanStats {
             dims_touched,
             bytes_read,

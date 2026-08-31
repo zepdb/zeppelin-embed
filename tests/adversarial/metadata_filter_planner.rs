@@ -2878,8 +2878,8 @@ fn expected_graph_case(
             0,
             3,
         ),
-        independent::FallbackReasonDto::VisitedBudget => (2, 80, 0, 2, 80, 3),
-        independent::FallbackReasonDto::CandidateShortfall => (4, 80, 4, 4, 80, 10),
+        independent::FallbackReasonDto::VisitedBudget => (2, 80, 0, 2, 80, GRAPH_ROWS as u64),
+        independent::FallbackReasonDto::CandidateShortfall => (4, 80, 4, 4, 80, GRAPH_ROWS as u64),
     };
     independent::I39ExpectedCase {
         key: independent::QuerySourceKey {
@@ -6454,11 +6454,12 @@ fn run_execution(
             budget: 1,
             filter_cardinality: GRAPH_ROWS as u64,
             exact_rows_examined: GRAPH_ROWS as u64,
-            returned: 3,
+            returned: GRAPH_ROWS as u64,
             reason: independent::FallbackReasonDto::VisitedBudget,
             effect: format!(
-                "source={:?} visited=2 budget=1 filter_cardinality={} exact_rows_examined={} returned=3 reason=VisitedBudget",
+                "source={:?} visited=2 budget=1 filter_cardinality={} exact_rows_examined={} returned={} reason=VisitedBudget",
                 RowSource::Sealed(graph_id),
+                GRAPH_ROWS,
                 GRAPH_ROWS,
                 GRAPH_ROWS,
             ),

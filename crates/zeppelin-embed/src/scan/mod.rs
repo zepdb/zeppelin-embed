@@ -57,6 +57,35 @@ pub struct ScanCandidate {
     pub score: f32,
 }
 
+/// Truncates a best-first candidate list without splitting the k-th score tie.
+///
+/// Candidates must already be sorted by descending score.
+pub(crate) fn truncate_to_k_with_score_ties<T>(
+    candidates: &mut Vec<T>,
+    k: usize,
+    score: impl Fn(&T) -> f32,
+) {
+    if k == 0 {
+        candidates.clear();
+        return;
+    }
+    if candidates.len() <= k {
+        return;
+    }
+    let Some(boundary_score) = candidates.get(k.saturating_sub(1)).map(&score) else {
+        candidates.truncate(k);
+        return;
+    };
+    let mut keep = k;
+    for candidate in candidates.iter().skip(k) {
+        if score(candidate).total_cmp(&boundary_score).is_ne() {
+            break;
+        }
+        keep = keep.saturating_add(1);
+    }
+    candidates.truncate(keep);
+}
+
 /// Per-row affine reconstruction factors for signed-byte scan rows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
@@ -279,13 +308,24 @@ impl From<QuantError> for ScanError {
 ///
 /// Scores are ordered descending. Equal scores are always ordered by ascending
 /// row id. This is a permanent public contract shared by row-major and parallel
-/// implementations.
+/// implementations. Store-internal document-presenting paths retain score ties
+/// until document identity is available.
 ///
 /// # Errors
 ///
 /// Returns [`ScanError`] for invalid shapes, non-finite inputs, or non-finite
 /// scores.
 pub fn top_k(request: ScanRequest<'_>, k: usize) -> Result<Vec<ScanCandidate>, ScanError> {
+    let mut candidates = top_k_with_ties(request, k)?;
+    candidates.truncate(k);
+    Ok(candidates)
+}
+
+/// Returns the exact best candidates, including every k-th-score boundary tie.
+pub(crate) fn top_k_with_ties(
+    request: ScanRequest<'_>,
+    k: usize,
+) -> Result<Vec<ScanCandidate>, ScanError> {
     scan_top_k(request, k)
 }
 
@@ -351,7 +391,7 @@ fn scan_faulted_range(
         }
         selected.push(candidate);
     }
-    Ok((selected.into_sorted(), scored_rows))
+    Ok((selected.into_sorted_with_ties(), scored_rows))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -788,7 +828,7 @@ pub(crate) fn gather_top_k(
         .into_iter()
         .collect::<Vec<_>>();
     Ok(ScanOutcome {
-        candidates: selected.into_sorted(),
+        candidates: selected.into_sorted_with_ties(),
         stats: ScanStats {
             dims_touched,
             bytes_read,
@@ -970,7 +1010,7 @@ fn scan_f32_rows(
         }
         selected.push(ScanCandidate { row_id, score });
     }
-    Ok(selected.into_sorted())
+    Ok(selected.into_sorted_with_ties())
 }
 
 fn scan_f16(
@@ -1016,7 +1056,7 @@ fn scan_f16_rows(
         }
         selected.push(ScanCandidate { row_id, score });
     }
-    Ok(selected.into_sorted())
+    Ok(selected.into_sorted_with_ties())
 }
 
 fn scan_int8(
@@ -1078,7 +1118,7 @@ fn scan_int8_rows(
         }
         selected.push(ScanCandidate { row_id, score });
     }
-    Ok(selected.into_sorted())
+    Ok(selected.into_sorted_with_ties())
 }
 
 fn scan_bit4(
@@ -1160,7 +1200,7 @@ fn scan_bit4_rows(
         }
         batch_start = batch_end;
     }
-    Ok(selected.into_sorted())
+    Ok(selected.into_sorted_with_ties())
 }
 
 #[cfg(test)]
@@ -1201,8 +1241,9 @@ mod tests {
 
     #[test]
     fn all_identical_vectors_tie_by_ascending_row_id() {
+        let (_directory, store) = query_store();
         let query = [1.0_f32, -2.0];
-        let rows = F32Rows::new(vec![1.0_f32, -2.0, 1.0, -2.0, 1.0, -2.0]);
+        let rows = F32Rows::new(vec![1.0_f32, -2.0, 1.0, -2.0, 1.0, -2.0, 1.0, -2.0]);
         let request = ScanRequest {
             query: ScanQuery::F32(&query),
             rows: ScanRows::F32RowMajor(&rows),
@@ -1215,6 +1256,43 @@ mod tests {
             hits.iter().map(|hit| hit.row_id).collect::<Vec<_>>(),
             [0, 1, 2]
         );
+        let pooled = pooled_top_k(&store, request, 3, ScanOptions { thread_budget: 2 })
+            .expect("valid pooled scan");
+        assert_eq!(
+            pooled
+                .candidates
+                .iter()
+                .map(|hit| hit.row_id)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn truncate_helper_keeps_only_the_kth_total_cmp_score_tie() {
+        let mut short = vec![2.0_f32];
+        super::truncate_to_k_with_score_ties(&mut short, 2, |score| *score);
+        assert_eq!(short, [2.0]);
+
+        let mut no_tie = vec![3.0_f32, 2.0, 1.0];
+        super::truncate_to_k_with_score_ties(&mut no_tie, 2, |score| *score);
+        assert_eq!(no_tie, [3.0, 2.0]);
+
+        let mut boundary_tie = vec![3.0_f32, 2.0, 2.0, 2.0, 1.0];
+        super::truncate_to_k_with_score_ties(&mut boundary_tie, 2, |score| *score);
+        assert_eq!(boundary_tie, [3.0, 2.0, 2.0, 2.0]);
+
+        let mut all_tied = vec![1.0_f32; 4];
+        super::truncate_to_k_with_score_ties(&mut all_tied, 1, |score| *score);
+        assert_eq!(all_tied.len(), 4);
+
+        let mut signed_zero = vec![0.0_f32, -0.0];
+        super::truncate_to_k_with_score_ties(&mut signed_zero, 1, |score| *score);
+        assert_eq!(signed_zero.len(), 1);
+        assert_eq!(signed_zero[0].to_bits(), 0.0_f32.to_bits());
+
+        super::truncate_to_k_with_score_ties(&mut signed_zero, 0, |score| *score);
+        assert!(signed_zero.is_empty());
     }
 
     #[test]

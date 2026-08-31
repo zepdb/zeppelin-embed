@@ -713,7 +713,7 @@ fn graph_reader_validates_every_node_after_forgeable_checksums() {
 }
 
 #[test]
-fn corrupt_graph_region_surfaces_typed_error_and_exact_scan_fallback() {
+fn corrupt_graph_fallback_retains_the_complete_boundary_tie_set() {
     let layout = GraphNodeLayout::new(2, 128, 2).expect("layout");
     let mut codes = [[0_u8; 64]; 3];
     codes[1][0] = 0x10;
@@ -748,7 +748,7 @@ fn corrupt_graph_region_surfaces_typed_error_and_exact_scan_fallback() {
         nodes: &graph_nodes,
     };
     let segment_codes = [0x00_u8, 0x10_u8, 0x20_u8];
-    let exact_values = vec![1.0_f32, 0.0, 0.0, 1.0, -1.0, 0.0];
+    let exact_values = vec![1.0_f32, 0.0, 0.0, 1.0, 0.0, 1.0];
     let columns = empty_columns(3);
     let alive = AliveSet::new(3);
     let id = SegmentId::new(19, [3; 10]);
@@ -809,6 +809,10 @@ fn corrupt_graph_region_surfaces_typed_error_and_exact_scan_fallback() {
                     },
                     ScanCandidate {
                         row_id: 1,
+                        score: 0.0,
+                    },
+                    ScanCandidate {
+                        row_id: 2,
                         score: 0.0,
                     },
                 ]

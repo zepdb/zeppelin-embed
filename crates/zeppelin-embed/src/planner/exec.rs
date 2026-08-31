@@ -1831,7 +1831,7 @@ fn finish_squared_l2_rows(
             .total_cmp(&left.score)
             .then_with(|| left.row.cmp(&right.row))
     });
-    candidates.truncate(k);
+    crate::scan::truncate_to_k_with_score_ties(&mut candidates, k, |candidate| candidate.score);
     let dimensions =
         u64::try_from(dimensions).map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?;
     let dims_touched = scored_rows

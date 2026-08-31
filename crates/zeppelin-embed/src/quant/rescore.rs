@@ -324,6 +324,8 @@ pub fn rescore_top_k(
             for (row_id, &score) in pool.coarse_scores.iter().enumerate() {
                 coarse_top_k.push(ScanCandidate { row_id, score });
             }
+            // Dense rescore consumes exactly `candidate_count` positions, so
+            // this physical drain deliberately discards boundary extras.
             Some(coarse_top_k.into_sorted())
         }
         PoolWidth::Retained => None,

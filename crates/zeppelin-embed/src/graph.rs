@@ -207,7 +207,7 @@ pub enum GraphLoadOutcome<'a> {
     ExactScanFallback {
         /// Typed graph/segment failure retained for diagnostics and callers.
         error: SegmentError,
-        /// Complete exact-scan result; the failure never reduces result count silently.
+        /// Exact candidates including every k-th-score boundary tie.
         candidates: Vec<ScanCandidate>,
     },
 }
@@ -248,7 +248,7 @@ pub fn load_graph_or_exact_scan<'a>(
 ) -> Result<GraphLoadOutcome<'a>, GraphQueryError> {
     match reader.graph_node_blocks() {
         Ok(graph) => Ok(GraphLoadOutcome::Graph(graph)),
-        Err(error) => crate::scan::top_k(exact_request, k)
+        Err(error) => crate::scan::top_k_with_ties(exact_request, k)
             .map(|candidates| GraphLoadOutcome::ExactScanFallback { error, candidates })
             .map_err(GraphQueryError::ExactScan),
     }
