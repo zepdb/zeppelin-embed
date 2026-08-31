@@ -10,7 +10,7 @@ use crate::graph::block::{
     NODE_BLOCK_TRAILER_LEN, decode_node_blocks, encode_node_blocks,
 };
 use crate::lifecycle::QueryCancellation;
-use crate::lifecycle::durability::DurabilityPolicy;
+use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent};
 use crate::lifecycle::{QueryControl, SnapshotLease, Store, StoreError};
 use crate::quant::{Bit4Factors, QuantError, est_dot_bit4, prepare_bit4_query};
@@ -331,6 +331,7 @@ impl std::error::Error for GraphBuildError {
 
 struct GraphBuildSession<'a> {
     vfs: &'a dyn Vfs,
+    policy: DurabilityPolicy,
     vectors: SegmentVectors<'a>,
     params: GraphParams,
     seed: u64,
@@ -340,6 +341,7 @@ struct GraphBuildSession<'a> {
 }
 
 impl<'a> GraphBuildSession<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         vfs: &'a dyn Vfs,
         reader: &'a SegmentReader,
@@ -347,6 +349,7 @@ impl<'a> GraphBuildSession<'a> {
         seed: u64,
         passes: GraphBuildPasses,
         checkpoint_path: &Path,
+        policy: DurabilityPolicy,
         accounting: Option<&std::sync::Arc<Accounting>>,
     ) -> Result<Self, GraphBuildError> {
         let vectors = SegmentVectors::new(reader)?;
@@ -373,6 +376,7 @@ impl<'a> GraphBuildSession<'a> {
         };
         Ok(Self {
             vfs,
+            policy,
             vectors,
             params,
             seed,
@@ -413,6 +417,7 @@ impl<'a> GraphBuildSession<'a> {
             };
             let written = write_checkpoint(
                 self.vfs,
+                self.policy,
                 &self.checkpoint_path,
                 &self.vectors,
                 self.params,
@@ -573,6 +578,7 @@ pub fn build_graph_checkpointed(
         request.seed,
         request.passes,
         request.checkpoint_path,
+        store.durability_policy,
         Some(&store.accounting),
     )?;
     let started_rows = session.completed_work_rows()?;
@@ -980,8 +986,10 @@ fn checkpoint_temp_path(path: &Path) -> PathBuf {
     PathBuf::from(temporary)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_checkpoint(
     vfs: &dyn Vfs,
+    policy: DurabilityPolicy,
     path: &Path,
     vectors: &SegmentVectors<'_>,
     params: GraphParams,
@@ -989,6 +997,13 @@ fn write_checkpoint(
     passes: GraphBuildPasses,
     state: &BuildState,
 ) -> Result<(), GraphBuildError> {
+    let directory = path.parent().ok_or_else(|| GraphBuildError::CheckpointIo {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "checkpoint path has no parent directory",
+        ),
+    })?;
     let slot_bytes = state
         .adjacency
         .slots
@@ -1052,6 +1067,15 @@ fn write_checkpoint(
             source,
         });
     }
+    if let SyncRequirement::Sync(kind) = policy.data_file_sync()
+        && let Err(source) = vfs.sync(&temporary, kind)
+    {
+        let _ = vfs.delete(&temporary);
+        return Err(GraphBuildError::CheckpointIo {
+            path: temporary,
+            source,
+        });
+    }
     if let Err(source) = vfs.rename(&temporary, path) {
         let _ = vfs.delete(&temporary);
         return Err(GraphBuildError::CheckpointIo {
@@ -1059,7 +1083,16 @@ fn write_checkpoint(
             source,
         });
     }
-    Ok(())
+    match policy.directory_sync() {
+        SyncRequirement::Skip => Ok(()),
+        SyncRequirement::Sync(kind) => {
+            vfs.sync(directory, kind)
+                .map_err(|source| GraphBuildError::CheckpointIo {
+                    path: directory.to_path_buf(),
+                    source,
+                })
+        }
+    }
 }
 
 fn checkpoint_encoded_bytes(state: &BuildState) -> Result<usize, GraphBuildError> {
@@ -2111,6 +2144,42 @@ mod tests {
         store.close().expect("close checkpoint store");
     }
 
+    #[test]
+    fn graph_checkpoint_publish_syncs_the_temp_file_and_its_directory() {
+        let segment_directory = tempfile::tempdir().expect("checkpoint segment directory");
+        let reader = fixture_reader(segment_directory.path(), 4);
+        let store_directory = tempfile::tempdir().expect("checkpoint store directory");
+        let checkpoint = store_directory.path().join("graph-build.checkpoint");
+        let vfs = Arc::new(CountingVfs::new(StdVfs));
+        let store = Store::open_with_test_dependencies(
+            store_directory.path(),
+            OpenOptions::default().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("durable checkpoint store");
+        let lease = store.snapshot().expect("checkpoint snapshot");
+        let params = GraphParams::new(2, 3, 1.0, 1.0, 3, 1).expect("checkpoint params");
+        let control = QueryControl::Cancel(CancelToken::new());
+
+        vfs.reset();
+        let interrupted = build_graph_checkpointed(
+            &store,
+            &reader,
+            CheckpointedGraphBuild::new(params, 0x03, GraphBuildPasses::One, &checkpoint, &control)
+                .with_max_work_rows(1),
+            &lease,
+        );
+        assert!(matches!(
+            interrupted,
+            Err(GraphBuildError::BudgetExhausted { rows_completed: 1 })
+        ));
+        assert!(
+            vfs.full_sync_calls() >= 2,
+            "checkpoint publish skipped syncs"
+        );
+        assert!(vfs.rename_calls() >= 1, "checkpoint publish skipped rename");
+    }
+
     fn checkpoint_with_mutation(
         mut bytes: Vec<u8>,
         mutation: impl FnOnce(&mut Vec<u8>),
@@ -2261,6 +2330,8 @@ mod tests {
         let lease = store.snapshot().expect("checkpoint lease");
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived policy");
         let mut session = GraphBuildSession::new(
             &StdVfs,
             &reader,
@@ -2268,6 +2339,7 @@ mod tests {
             0x0001_9000_3c0d_ec01,
             GraphBuildPasses::Two,
             &checkpoint,
+            policy,
             None,
         )
         .expect("checkpoint session");
@@ -2497,6 +2569,8 @@ mod tests {
         let store = Store::open(store_directory.path(), OpenOptions::default()).expect("store");
         let lease = store.snapshot().expect("typed failure lease");
         let cancellation = QueryCancellation::new(&control, &lease);
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived policy");
 
         let unfinished = GraphBuildSession::new(
             &StdVfs,
@@ -2505,6 +2579,7 @@ mod tests {
             0x0001_9000_3100_0001,
             GraphBuildPasses::Two,
             &directory.path().join("unfinished.checkpoint"),
+            policy,
             None,
         )
         .expect("unfinished session");
@@ -2521,6 +2596,7 @@ mod tests {
                 0x0001_9000_3100_0001,
                 GraphBuildPasses::Two,
                 directory.path(),
+                policy,
                 None,
             ),
             Err(GraphBuildError::CheckpointIo { .. })
@@ -2534,6 +2610,7 @@ mod tests {
             0x0001_9000_3100_0001,
             GraphBuildPasses::Two,
             &missing_parent,
+            policy,
             None,
         )
         .expect("unwritable session starts before checkpoint write");
@@ -2584,6 +2661,8 @@ mod tests {
         let token = CancelToken::new();
         let control = QueryControl::Cancel(token.clone());
         let cancellation = QueryCancellation::new(&control, &lease);
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived policy");
         let mut session = GraphBuildSession::new(
             &StdVfs,
             &reader,
@@ -2591,6 +2670,7 @@ mod tests {
             0x19_0003,
             GraphBuildPasses::Two,
             &checkpoint,
+            policy,
             None,
         )
         .expect("build session");
@@ -2628,6 +2708,8 @@ mod tests {
         let lease = store.snapshot().expect("snapshot lease");
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("derived policy");
         let mut interrupted = GraphBuildSession::new(
             &StdVfs,
             &reader,
@@ -2635,6 +2717,7 @@ mod tests {
             0x19_0003_00c0_ffee,
             GraphBuildPasses::Two,
             &checkpoint,
+            policy,
             None,
         )
         .expect("interrupted session");
@@ -2652,6 +2735,7 @@ mod tests {
             0x19_0003_00c0_ffee,
             GraphBuildPasses::Two,
             &checkpoint,
+            policy,
             None,
         )
         .expect("resumed session");
