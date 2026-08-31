@@ -1253,17 +1253,7 @@ fn busy_child_helper_exits_zero_and_never_touches_the_store() {
 }
 
 #[test]
-fn spawn_in_flight_lock_inheritance_can_fire() {
-    let retried = adversarial::runner::spawn_in_flight_reopen_for_test()
-        .expect("SpawnInFlight CAN-FIRE probe");
-    assert!(
-        retried,
-        "SpawnInFlight did not engage the inherited writer lock"
-    );
-}
-
-#[test]
-fn spawn_in_flight_reopen_matches_the_p2_contract() {
+fn spawn_in_flight_reopen_records_first_attempt_success() {
     let artifacts = tempfile::tempdir().expect("spawn-in-flight artifacts");
     let (seed, outcome) = (0..256)
         .filter(|seed| {
@@ -1281,14 +1271,15 @@ fn spawn_in_flight_reopen_matches_the_p2_contract() {
             let outcome =
                 adversarial::runner::run_program(seed, FaultProfile::Full, artifacts.path())
                     .unwrap_or_else(|error| panic!("SpawnInFlight seed {seed}: {error}"));
-            (outcome.coverage.count("fault.busy.spawn.retried") > 0).then_some((seed, outcome))
+            (outcome.coverage.count("fault.busy.spawn.first-attempt") > 0)
+                .then_some((seed, outcome))
         })
         .expect("no planned SpawnInFlight event reached Reopen");
-    let retried = outcome.coverage.count("fault.busy.spawn.retried");
-    println!("SPAWN_IN_FLIGHT_SEED={seed} disposition=retried");
+    let first_attempt = outcome.coverage.count("fault.busy.spawn.first-attempt");
+    println!("SPAWN_IN_FLIGHT_SEED={seed} disposition=first-attempt");
     assert_eq!(
-        retried, 1,
-        "SpawnInFlight did not engage the inherited writer lock exactly once"
+        first_attempt, 1,
+        "SpawnInFlight did not reopen on the first attempt exactly once"
     );
     assert!(
         outcome.violations.is_empty(),
@@ -1298,14 +1289,9 @@ fn spawn_in_flight_reopen_matches_the_p2_contract() {
 }
 
 #[test]
-#[ignore = "P2 undecided: fix contract"]
 fn spawn_in_flight_reopen_matches_the_fix_contract() {
-    let retried = adversarial::runner::spawn_in_flight_reopen_for_test()
-        .expect("fixed Reopen contract must succeed");
-    assert!(
-        !retried,
-        "fixed Reopen returned StoreBusy before succeeding"
-    );
+    adversarial::runner::spawn_in_flight_reopen_for_test()
+        .expect("fixed Reopen contract must succeed on the first attempt");
 }
 
 #[test]
@@ -1443,9 +1429,9 @@ fn busy_layer_full_family_gate() {
     .into_iter()
     .map(|operation| coverage.count(&format!("fault.busy.second-opener.{operation}")))
     .sum::<usize>();
-    let spawn_retried = coverage.count("fault.busy.spawn.retried");
+    let spawn_first_attempt = coverage.count("fault.busy.spawn.first-attempt");
     println!(
-        "BUSY_FAMILY campaign={} episodes=48 violations={violations} busy_layer={} second_opener={second_openers} spawn_retried={spawn_retried}",
+        "BUSY_FAMILY campaign={} episodes=48 violations={violations} busy_layer={} second_opener={second_openers} spawn_first_attempt={spawn_first_attempt}",
         config.campaign,
         coverage.count("fault.layer.busy")
     );
@@ -1453,8 +1439,8 @@ fn busy_layer_full_family_gate() {
     assert!(coverage.count("fault.layer.busy") > 0);
     assert!(second_openers > 0, "no second-opener busy event fired");
     assert!(
-        spawn_retried > 0,
-        "no SpawnInFlight event engaged the inherited writer lock"
+        spawn_first_attempt > 0,
+        "no SpawnInFlight event reopened on the first attempt"
     );
 }
 

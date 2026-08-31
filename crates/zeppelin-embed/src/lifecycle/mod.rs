@@ -1654,12 +1654,12 @@ pub enum StoreError {
         /// Invalid store path.
         path: PathBuf,
     },
-    /// Another writer owns the store's descriptor-scoped lock.
+    /// Another writer owns the store's process or kernel lock.
     StoreBusy {
         /// Busy store directory.
         path: PathBuf,
     },
-    /// The kernel-owned writer lock could not be opened or acquired.
+    /// The writer lock could not be opened or acquired.
     Lock(StoreLockError),
     /// The selected durability mode/tier is unsupported.
     Durability(DurabilityPolicyError),

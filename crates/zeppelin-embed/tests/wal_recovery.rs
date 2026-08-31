@@ -1404,10 +1404,19 @@ fn tier_name(tier: CommitTier) -> &'static str {
 }
 
 #[cfg(unix)]
-fn flock(file: &std::fs::File, operation: libc::c_int) -> std::io::Result<()> {
+fn fcntl_lock(file: &std::fs::File, lock_type: libc::c_short) -> std::io::Result<()> {
+    let mut lock = unsafe {
+        // SAFETY: all-zero is a valid `flock` value before named fields are set.
+        std::mem::zeroed::<libc::flock>()
+    };
+    lock.l_type = lock_type;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    lock.l_start = 0;
+    lock.l_len = 0;
     let result = unsafe {
-        // SAFETY: `file` owns a live descriptor for the duration of the call.
-        libc::flock(file.as_raw_fd(), operation)
+        // SAFETY: `file` owns a live descriptor and `lock` remains valid for
+        // the duration of this non-blocking `F_SETLK` call.
+        libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock)
     };
     if result == -1 {
         Err(std::io::Error::last_os_error())
@@ -1631,7 +1640,7 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
             .write(true)
             .open(directory.path().join(STORE_LOCK_FILE))
             .expect("reopen stale lock path");
-        if flock(&lock, libc::LOCK_EX | libc::LOCK_NB).is_err() {
+        if fcntl_lock(&lock, libc::F_WRLCK as libc::c_short).is_err() {
             manual_cleanup = manual_cleanup.saturating_add(1);
         }
         let acknowledged = read_acknowledged_sequences(&directory.path().join("progress"));
@@ -1671,13 +1680,16 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
                     .eq(acknowledged.iter().copied().take(sequences.len())),
             "iteration={iteration} tier={tier:?} recovered {sequences:?} is not a prefix of acknowledged {acknowledged:?}"
         );
-        flock(&lock, libc::LOCK_UN).expect("unlock parent fd");
+        fcntl_lock(&lock, libc::F_UNLCK as libc::c_short).expect("unlock parent fd");
     }
 
     eprintln!(
         "kill9 iterations={iterations} manual_cleanup={manual_cleanup} recovered_count_distribution={recovered_counts:?} recovered_count_distribution_by_tier={recovered_counts_by_tier:?}"
     );
-    assert_eq!(manual_cleanup, 0, "stale flock required manual cleanup");
+    assert_eq!(
+        manual_cleanup, 0,
+        "stale fcntl lock required manual cleanup"
+    );
 }
 
 #[test]

@@ -286,9 +286,13 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Checked recovery returns only the trusted sequence prefix and preserves its
   exact replay terminator for diagnostics. `WalReader` and `WalWriter` are the
   real `DurableLog` implementations used by manifest ahead-of-log rejection.
-- Single-writer ownership is `flock` on a held open descriptor. The lock file
-  may remain after death; kernel lock ownership must not, so deletion is never
-  a recovery prerequisite.
+- Single-writer ownership pairs an `fcntl(F_SETLK)` record lock with an
+  in-process registry keyed by the store directory inode. Record locks are not
+  inherited across `fork`; the registry preserves same-process exclusion.
+  Because closing any descriptor for `writer.lock` releases the process's
+  record lock, no code outside `StoreLock` may open that file. The file may
+  remain after death; kernel lock ownership must not, so deletion is never a
+  recovery prerequisite.
 - Do not add `F_PREALLOCATE` until WAL rotation defines a finite full extent;
   allocating an arbitrary amount does not turn an unbounded append into an
   overwrite, despite the bounded crash model's 54-to-34 state reduction.

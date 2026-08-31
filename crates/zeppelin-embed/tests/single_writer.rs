@@ -5,11 +5,155 @@ mod lifecycle_support;
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+#[cfg(unix)]
+use std::process::{Command, Stdio};
+
 use lifecycle_support::{published_store, test_guard};
 use tempfile::tempdir;
 #[cfg(unix)]
 use zeppelin_embed::lifecycle::lock::{STORE_LOCK_FILE, StoreLock};
 use zeppelin_embed::lifecycle::{OpenOptions, Store, StoreError};
+
+#[cfg(target_os = "macos")]
+fn descriptor_path(raw_fd: i32) -> Option<std::path::PathBuf> {
+    unsafe extern "C" {
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
+    }
+    const F_GETPATH: i32 = 50;
+    const MAX_PATH_BYTES: usize = 1_024;
+    let mut path = [0_i8; MAX_PATH_BYTES];
+    let status = unsafe {
+        // SAFETY: F_GETPATH writes a NUL-terminated path into this fixed-size
+        // buffer and does not retain the pointer.
+        fcntl(raw_fd, F_GETPATH, path.as_mut_ptr())
+    };
+    if status == -1 {
+        return None;
+    }
+    let path = unsafe {
+        // SAFETY: successful F_GETPATH initialized a NUL-terminated string.
+        std::ffi::CStr::from_ptr(path.as_ptr())
+    };
+    use std::os::unix::ffi::OsStrExt as _;
+    Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        path.to_bytes(),
+    )))
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(raw_fd: i32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{raw_fd}")).ok()
+}
+
+#[cfg(unix)]
+fn store_lock_descriptor(directory: &std::path::Path) -> i32 {
+    let lock_path =
+        std::fs::canonicalize(directory.join(STORE_LOCK_FILE)).expect("resolve writer lock path");
+    (3..256)
+        .find(|raw_fd| descriptor_path(*raw_fd).as_deref() == Some(lock_path.as_path()))
+        .expect("open writer-lock descriptor")
+}
+
+#[test]
+#[cfg(unix)]
+fn reopen_succeeds_on_first_attempt_while_a_spawned_child_holds_an_inherited_lock_descriptor() {
+    let _guard = test_guard();
+    let directory = tempdir().expect("store directory");
+    let mut store = Store::open(directory.path(), OpenOptions::default()).expect("initial writer");
+    let lock_fd = store_lock_descriptor(directory.path());
+    let mut command = Command::new("/bin/cat");
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        // SAFETY: this closure performs only the async-signal-safe `dup2`
+        // between fork and exec. The Store keeps `lock_fd` live through spawn.
+        command.pre_exec(move || {
+            if libc::dup2(lock_fd, 198) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let mut child = command.spawn().expect("spawn lock descriptor child");
+
+    for cycle in 0..8 {
+        store.close().expect("close writer while child is live");
+        store = Store::open(directory.path(), OpenOptions::default()).unwrap_or_else(|error| {
+            panic!("reopen cycle {cycle} failed on its first attempt: {error}")
+        });
+    }
+
+    drop(child.stdin.take());
+    assert!(
+        child
+            .wait()
+            .expect("wait for lock descriptor child")
+            .success()
+    );
+    store.close().expect("close final writer");
+}
+
+#[test]
+#[ignore = "subprocess-only helper selected by the parent lock probe"]
+#[cfg(unix)]
+fn lock_probe_child() {
+    let directory = std::env::var_os("ZE_LOCK_PROBE_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("lock probe directory");
+    let exit_code = match StoreLock::acquire(&directory) {
+        Err(zeppelin_embed::lifecycle::lock::StoreLockError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            0
+        }
+        Ok(lock) => {
+            drop(lock);
+            2
+        }
+        Err(error) => panic!("lock probe returned an unexpected error: {error}"),
+    };
+    std::process::exit(exit_code);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_refused_in_process_second_acquire_does_not_release_the_kernel_lock() {
+    fn probe(directory: &std::path::Path) -> std::process::ExitStatus {
+        Command::new(std::env::current_exe().expect("single-writer test executable"))
+            .args(["--exact", "lock_probe_child", "--ignored"])
+            .env("ZE_LOCK_PROBE_DIR", directory)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn lock probe child")
+    }
+
+    let _guard = test_guard();
+    let directory = tempdir().expect("store directory");
+    let first = StoreLock::acquire(directory.path()).expect("first writer lock");
+    let second = StoreLock::acquire(directory.path()).expect_err("second writer lock refused");
+    let second_kind = match second {
+        zeppelin_embed::lifecycle::lock::StoreLockError::Io { source, .. } => source.kind(),
+    };
+    assert_eq!(second_kind, std::io::ErrorKind::WouldBlock);
+
+    assert_eq!(
+        probe(directory.path()).code(),
+        Some(0),
+        "refused same-process acquire released the kernel lock"
+    );
+    drop(first);
+    assert_eq!(
+        probe(directory.path()).code(),
+        Some(2),
+        "dropping the owner did not release the kernel lock"
+    );
+}
 
 #[test]
 fn second_write_open_returns_typed_store_busy_immediately() {

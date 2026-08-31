@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Read as _, Write as _};
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -1454,31 +1454,22 @@ fn descriptor_path(raw_fd: i32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{raw_fd}")).ok()
 }
 
-fn duplicate_store_lock_descriptor(directory: &Path) -> Result<OwnedFd, String> {
+fn store_lock_descriptor(directory: &Path) -> Result<i32, String> {
     let lock_path = std::fs::canonicalize(directory.join("writer.lock"))
         .map_err(|error| format!("resolve writer lock: {error}"))?;
     for raw_fd in 3..256 {
-        if descriptor_path(raw_fd).as_deref() != Some(lock_path.as_path()) {
-            continue;
+        if descriptor_path(raw_fd).as_deref() == Some(lock_path.as_path()) {
+            return Ok(raw_fd);
         }
-        let borrowed = unsafe {
-            // SAFETY: `descriptor_path` succeeded for this live descriptor and
-            // the borrow ends before the owning Store can be closed.
-            BorrowedFd::borrow_raw(raw_fd)
-        };
-        return borrowed
-            .try_clone_to_owned()
-            .map_err(|error| format!("duplicate writer lock descriptor: {error}"));
     }
     Err("open writer-lock descriptor was not found".to_owned())
 }
 
 fn spawn_busy_child(engine: &RealEngine) -> Result<BusyChildProcess, String> {
-    let lock = duplicate_store_lock_descriptor(&engine.directory)?;
+    let lock_fd = store_lock_descriptor(&engine.directory)?;
     let (read, release) =
         UnixStream::pair().map_err(|error| format!("create busy child pipe: {error}"))?;
     let read: OwnedFd = read.into();
-    let lock_fd = lock.as_raw_fd();
     const CHILD_LOCK_FD: i32 = 198;
     unsafe extern "C" {
         fn dup2(source: i32, destination: i32) -> i32;
@@ -1492,7 +1483,7 @@ fn spawn_busy_child(engine: &RealEngine) -> Result<BusyChildProcess, String> {
         .stderr(Stdio::piped());
     unsafe {
         // SAFETY: this closure performs only the async-signal-safe `dup2`
-        // between fork and exec. `lock` remains live through `spawn`.
+        // between fork and exec. The Store keeps `lock_fd` live through spawn.
         command.pre_exec(move || {
             if dup2(lock_fd, CHILD_LOCK_FD) == -1 {
                 Err(std::io::Error::last_os_error())
@@ -1504,7 +1495,6 @@ fn spawn_busy_child(engine: &RealEngine) -> Result<BusyChildProcess, String> {
     let child = command
         .spawn()
         .map_err(|error| format!("spawn busy child: {error}"))?;
-    drop(lock);
     Ok(BusyChildProcess {
         child: Some(child),
         release: Some(release),
@@ -1528,7 +1518,7 @@ pub fn busy_child_from_env() -> Result<(), String> {
         .parse::<i32>()
         .map_err(|_| "ZE_ADV_BUSY_CHILD_LOCK_FD is not an integer".to_owned())?;
     let lock = unsafe {
-        // SAFETY: the parent maps its live duplicated lock descriptor to this
+        // SAFETY: the parent maps its live Store lock descriptor to this
         // numeric descriptor before exec and keeps no child-side Rust owner.
         BorrowedFd::borrow_raw(lock_fd)
     };
@@ -1542,13 +1532,7 @@ pub fn busy_child_from_env() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BusyReopenAttempt {
-    Opened,
-    StoreBusy,
-}
-
-fn reopen_once_for_busy(engine: &mut RealEngine) -> Result<BusyReopenAttempt, String> {
+fn reopen_after_spawn(engine: &mut RealEngine) -> Result<(), String> {
     if let Some(store) = engine.store.take() {
         store.close().map_err(|error| error.to_string())?;
     }
@@ -1559,43 +1543,27 @@ fn reopen_once_for_busy(engine: &mut RealEngine) -> Result<BusyReopenAttempt, St
     ) {
         Ok(store) => {
             engine.store = Some(store);
-            Ok(BusyReopenAttempt::Opened)
+            Ok(())
         }
-        Err(StoreError::StoreBusy { .. }) => Ok(BusyReopenAttempt::StoreBusy),
+        Err(StoreError::StoreBusy { .. }) => Err(
+            "SpawnInFlight: Reopen returned StoreBusy on first attempt; lock leaked across spawn"
+                .to_owned(),
+        ),
         Err(error) => Err(format!("Reopen returned a non-busy error: {error}")),
     }
 }
 
-fn retry_reopen_after_busy(engine: &mut RealEngine) -> Result<(), String> {
-    const HOST_REOPEN_ATTEMPTS: usize = 8;
-    for _ in 0..HOST_REOPEN_ATTEMPTS {
-        match reopen_once_for_busy(engine)? {
-            BusyReopenAttempt::Opened => return Ok(()),
-            BusyReopenAttempt::StoreBusy => std::thread::yield_now(),
-        }
-    }
-    Err(format!(
-        "I8: Reopen remained StoreBusy after {HOST_REOPEN_ATTEMPTS} host retries"
-    ))
-}
-
-pub(crate) fn spawn_in_flight_reopen_for_test() -> Result<bool, String> {
+pub(crate) fn spawn_in_flight_reopen_for_test() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
     engine.open()?;
     let child = spawn_busy_child(&engine)?;
-    let first = reopen_once_for_busy(&mut engine);
+    let first = reopen_after_spawn(&mut engine);
     child.finish()?;
-    let retried = match first? {
-        BusyReopenAttempt::Opened => false,
-        BusyReopenAttempt::StoreBusy => {
-            retry_reopen_after_busy(&mut engine)?;
-            true
-        }
-    };
+    first?;
     engine.stats()?;
     engine.close()?;
-    Ok(retried)
+    Ok(())
 }
 
 fn run_cancel_aware_query<T, E: std::fmt::Display>(
@@ -3538,20 +3506,10 @@ fn run_program_for_with_clock(
                         .ok_or_else(|| "SpawnInFlight reached Reopen without a child".to_owned())?;
                     scheduled_vfs
                         .fire_runner_event(op_index, fault_vfs::FaultMode::SpawnInFlight)?;
-                    let first = reopen_once_for_busy(&mut engine);
+                    let first = reopen_after_spawn(&mut engine);
                     child.finish()?;
-                    match first? {
-                        BusyReopenAttempt::Opened => {
-                            return Err(
-                                "SpawnInFlight did not engage the inherited writer lock".to_owned()
-                            );
-                        }
-                        BusyReopenAttempt::StoreBusy => {
-                            retry_reopen_after_busy(&mut engine)?;
-                        }
-                    }
-                    // A clean first attempt means lock inheritance failed; it is not coverage.
-                    coverage.hit("fault.busy.spawn.retried");
+                    first?;
+                    coverage.hit("fault.busy.spawn.first-attempt");
                     match engine.stats() {
                         Ok(stats) => {
                             if let Some(violation) =
