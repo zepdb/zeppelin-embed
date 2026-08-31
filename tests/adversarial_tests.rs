@@ -1789,6 +1789,49 @@ fn clock_tick_does_not_consume_or_surface_a_product_read_fault() {
     assert_eq!(scheduled.events()[0].fire_count, 1);
 }
 
+#[test]
+fn clock_events_fire_independently_of_the_armed_read_count() {
+    let outcomes = (1..=6)
+        .map(|read_count| {
+            let manual_clock = Arc::new(ManualMonotonicClock::new());
+            let scheduled = Arc::new(ScheduledVfs::new_with_clock(
+                StdVfs,
+                FaultSchedule::single(FaultEvent {
+                    id: format!("clock-read-count-{read_count}"),
+                    op_index: 0,
+                    layer: Layer::Clock,
+                    site: FaultSite::Clock,
+                    mode: FaultMode::ClockJump { seconds: 1 },
+                    nth_match: 1,
+                    expected_matches: None,
+                    deadline_budget_seconds: Some(4),
+                    path_contains: None,
+                    fired: false,
+                    fire_count: 0,
+                    path: None,
+                }),
+                manual_clock.clone(),
+            ));
+            let clock = ScheduledQueryClock::new(manual_clock, scheduled.clone());
+            scheduled.set_operation(0);
+            clock.arm_query();
+            for _ in 0..read_count {
+                let _ = zeppelin_embed::lifecycle::MonotonicClock::now(&clock);
+            }
+            clock.finish_query().expect("finish scheduled clock reads");
+            let event = scheduled.events().remove(0);
+            (read_count, event.fired, event.fire_count)
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, fired, fire_count)| *fired && *fire_count == 1),
+        "clock event outcomes changed with armed read count: {outcomes:?}"
+    );
+}
+
 fn run_clock_filtered_query(
     event: FaultEvent,
 ) -> (

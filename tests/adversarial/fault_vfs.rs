@@ -543,7 +543,6 @@ pub struct ScheduledQueryClock<V> {
 #[derive(Default)]
 struct QueryClockState {
     armed: bool,
-    skip_checks: usize,
     error: Option<String>,
 }
 
@@ -560,7 +559,6 @@ impl<V> ScheduledQueryClock<V> {
     pub fn arm_query(&self) {
         let mut state = self.state.lock().expect("query clock mutex was poisoned");
         state.armed = true;
-        state.skip_checks = 1;
         state.error = None;
     }
 
@@ -574,15 +572,8 @@ impl<V> ScheduledQueryClock<V> {
 impl<V: Vfs> MonotonicClock for ScheduledQueryClock<V> {
     fn now(&self) -> std::time::Instant {
         let should_read = {
-            let mut state = self.state.lock().expect("query clock mutex was poisoned");
-            if !state.armed {
-                false
-            } else if state.skip_checks > 0 {
-                state.skip_checks = state.skip_checks.saturating_sub(1);
-                false
-            } else {
-                true
-            }
+            let state = self.state.lock().expect("query clock mutex was poisoned");
+            state.armed
         };
         if should_read {
             match self.vfs.action(FaultSite::Clock, Path::new("clock")) {
@@ -1776,7 +1767,9 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             } else if layer == Layer::Busy {
                 1
             } else if layer == Layer::Clock {
-                clock_rng.random_range(1..=4)
+                // Later reads count scheduling-dependent condvar wakeups; only #1 is deterministic.
+                let _ = clock_rng.random_range(1..=4);
+                1
             } else {
                 cancel_nth_match.unwrap_or_else(|| rng.random_range(1..=4))
             };
