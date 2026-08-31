@@ -1024,7 +1024,7 @@ fn scheduled_open_fault_reaches_a_sealed_segment_open() {
 }
 
 #[test]
-fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
+fn torn_graph_checkpoint_refuses_once_then_the_next_maintain_rebuilds() {
     let program = Program::generate_for(CampaignKind::VamanaGraph, 6);
     let maintain = program
         .ops
@@ -1133,7 +1133,39 @@ fn torn_graph_checkpoint_then_reopen_rebuilds_or_refuses() {
         "reopen accepted a torn graph-build checkpoint: {:?}",
         refused.status
     );
-    reopened.close().expect("close refused checkpoint store");
+    let retained_checkpoints = std::fs::read_dir(directory.path())
+        .expect("list checkpoint store")
+        .map(|entry| entry.expect("read checkpoint store entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| {
+                    name.starts_with(".tier-") && name.ends_with(".graph.checkpoint")
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        retained_checkpoints.is_empty(),
+        "refused maintenance retained poisoned checkpoints: {retained_checkpoints:?}"
+    );
+
+    let rebuilt = reopened.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes: u64::MAX,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(rebuilt.status, MaintenanceStatus::Complete),
+        "fresh maintenance did not complete: {:?}",
+        rebuilt.status
+    );
+    assert!(
+        rebuilt.graphs_built >= 1,
+        "fresh maintenance built no graph: {rebuilt:?}"
+    );
+    reopened.close().expect("close rebuilt checkpoint store");
 }
 
 #[test]

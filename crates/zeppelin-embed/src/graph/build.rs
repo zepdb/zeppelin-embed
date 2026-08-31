@@ -221,7 +221,7 @@ pub enum GraphBuildError {
         /// Underlying filesystem failure.
         source: std::io::Error,
     },
-    /// Checkpoint bytes failed their closed structural or identity contract.
+    /// Checkpoint bytes failed their closed contract and were removed for a fresh retry.
     CheckpointCorrupt(String),
     /// A caller work limit stopped after atomically checkpointing completed batches.
     BudgetExhausted {
@@ -351,7 +351,16 @@ impl<'a> GraphBuildSession<'a> {
     ) -> Result<Self, GraphBuildError> {
         let vectors = SegmentVectors::new(reader)?;
         let state = match vfs.read(checkpoint_path) {
-            Ok(bytes) => decode_checkpoint(&bytes, &vectors, params, seed, passes, accounting)?,
+            Ok(bytes) => {
+                match decode_checkpoint(&bytes, &vectors, params, seed, passes, accounting) {
+                    Ok(state) => state,
+                    Err(error @ GraphBuildError::CheckpointCorrupt(_)) => {
+                        remove_checkpoint(vfs, checkpoint_path)?;
+                        return Err(error);
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 BuildState::new(&vectors, params, seed, accounting)?
             }
@@ -547,6 +556,8 @@ impl<'a> CheckpointedGraphBuild<'a> {
 ///
 /// The checkpoint is replaced atomically after every completed batch. No graph
 /// artifact is returned on cancellation, timeout, or store-close cancellation.
+/// A corrupt checkpoint is reported once and removed; the next invocation starts
+/// a fresh build.
 pub fn build_graph_checkpointed(
     store: &Store,
     reader: &SegmentReader,
@@ -2341,6 +2352,139 @@ mod tests {
             ),
             Err(GraphBuildError::CheckpointCorrupt(_))
         ));
+    }
+
+    #[test]
+    fn corrupt_checkpoint_refuses_once_clears_the_file_and_the_next_session_starts_fresh() {
+        let directory = tempfile::tempdir().expect("corrupt checkpoint directory");
+        let reader = fixture_reader(directory.path(), 16);
+        let checkpoint = directory.path().join("corrupt.checkpoint");
+        let temporary = super::checkpoint_temp_path(&checkpoint);
+        let params = GraphParams::new(4, 6, 1.0, 1.2, 8, 4).expect("checkpoint params");
+        let store_directory = tempfile::tempdir().expect("checkpoint store directory");
+        let store = Store::open(store_directory.path(), OpenOptions::default()).expect("store");
+        let lease = store.snapshot().expect("checkpoint lease");
+        let control = QueryControl::Cancel(CancelToken::new());
+        let cancellation = QueryCancellation::new(&control, &lease);
+        let mut session = GraphBuildSession::new(
+            &StdVfs,
+            &reader,
+            params,
+            0x0001_9000_c077_0001,
+            GraphBuildPasses::Two,
+            &checkpoint,
+            None,
+        )
+        .expect("checkpoint session");
+        assert!(
+            !session
+                .advance_batch(&cancellation)
+                .expect("checkpoint batch")
+        );
+        drop(session);
+
+        let mut corrupt = StdVfs.read(&checkpoint).expect("valid checkpoint bytes");
+        corrupt[40] ^= 1;
+        StdVfs
+            .write(&checkpoint, &corrupt)
+            .expect("write corrupt checkpoint");
+        StdVfs
+            .write(&temporary, b"stale temporary checkpoint")
+            .expect("write stale temporary checkpoint");
+
+        assert!(matches!(
+            GraphBuildSession::new(
+                &StdVfs,
+                &reader,
+                params,
+                0x0001_9000_c077_0001,
+                GraphBuildPasses::Two,
+                &checkpoint,
+                None,
+            ),
+            Err(GraphBuildError::CheckpointCorrupt(_))
+        ));
+        assert_eq!(
+            StdVfs
+                .read(&checkpoint)
+                .expect_err("corrupt checkpoint was retained")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            StdVfs
+                .read(&temporary)
+                .expect_err("stale checkpoint temporary was retained")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        let fresh = GraphBuildSession::new(
+            &StdVfs,
+            &reader,
+            params,
+            0x0001_9000_c077_0001,
+            GraphBuildPasses::Two,
+            &checkpoint,
+            None,
+        )
+        .expect("next session starts fresh");
+        assert_eq!(fresh.completed_work_rows().expect("fresh work rows"), 0);
+    }
+
+    #[test]
+    fn accounting_rejection_on_resume_preserves_the_valid_checkpoint() {
+        let directory = tempfile::tempdir().expect("accounting checkpoint directory");
+        let reader = fixture_reader(directory.path(), 16);
+        let checkpoint = directory.path().join("accounting.checkpoint");
+        let params = GraphParams::new(4, 6, 1.0, 1.2, 8, 4).expect("checkpoint params");
+        let store_directory = tempfile::tempdir().expect("checkpoint store directory");
+        let store = Store::open(store_directory.path(), OpenOptions::default()).expect("store");
+        let lease = store.snapshot().expect("checkpoint lease");
+        let control = QueryControl::Cancel(CancelToken::new());
+        let cancellation = QueryCancellation::new(&control, &lease);
+        let mut session = GraphBuildSession::new(
+            &StdVfs,
+            &reader,
+            params,
+            0x0001_9000_acc0_0001,
+            GraphBuildPasses::Two,
+            &checkpoint,
+            None,
+        )
+        .expect("checkpoint session");
+        assert!(
+            !session
+                .advance_batch(&cancellation)
+                .expect("checkpoint batch")
+        );
+        drop(session);
+        let valid = StdVfs.read(&checkpoint).expect("valid checkpoint bytes");
+
+        let refused_directory = tempfile::tempdir().expect("refused store directory");
+        let refused = Store::open(
+            refused_directory.path(),
+            OpenOptions::default().with_max_temp_bytes(1),
+        )
+        .expect("refused store");
+        assert!(matches!(
+            GraphBuildSession::new(
+                &StdVfs,
+                &reader,
+                params,
+                0x0001_9000_acc0_0001,
+                GraphBuildPasses::Two,
+                &checkpoint,
+                Some(&refused.accounting),
+            ),
+            Err(GraphBuildError::Store(_))
+        ));
+        assert_eq!(
+            StdVfs
+                .read(&checkpoint)
+                .expect("accounting rejection removed the valid checkpoint"),
+            valid
+        );
     }
 
     #[test]
