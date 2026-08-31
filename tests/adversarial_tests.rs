@@ -5198,7 +5198,7 @@ fn ingest_retention_old_summary_without_oracle_attestation_is_rejected() {
             ("mutations".to_owned(), stream(0)),
         ]),
     };
-    let summary = campaign_attestation_json(&config, 1, &counters, Some(merged), None)
+    let summary = campaign_attestation_json(&config, 1, 1, &counters, Some(merged), None)
         .expect("ingest-retention campaign owns an attestation");
 
     assert!(
@@ -6871,9 +6871,14 @@ fn feature_replay_ledger_rejects_a_digest_mismatch() {
     std::fs::write(root.path().join("replayed-seeds.jsonl"), format!("{row}\n"))
         .expect("write planted replay ledger");
 
-    let error =
-        validate_feature_replay_ledger(root.path(), CampaignKind::MetadataFilterPlanner, 0, 1)
-            .expect_err("mismatched replay digest was accepted");
+    let error = validate_feature_replay_ledger(
+        root.path(),
+        CampaignKind::MetadataFilterPlanner,
+        0,
+        1,
+        &BTreeSet::new(),
+    )
+    .expect_err("mismatched replay digest was accepted");
     assert!(error.contains("digest"), "{error}");
 }
 
@@ -9865,6 +9870,77 @@ fn campaign_records_failed_seeds_continues_and_fails_qualification_at_the_end() 
 }
 
 #[test]
+fn feature_campaign_with_failed_episodes_still_reaches_a_verdict() {
+    // Execution-error and panic episodes never append a replay ledger row.
+    // The final summary must still validate and deliver a qualification
+    // verdict instead of rejecting its own attestation (the stage-09 soak
+    // panic at validate_completed_campaign_summary).
+    let artifacts = tempfile::tempdir().expect("failed feature campaign artifacts");
+    let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
+        .args(["campaign", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN_TEST_MODE", "1")
+        .env("ZE_ADV_CAMPAIGN", "storage-durability")
+        .env("ZE_ADV_QUALIFICATION", "exploratory")
+        .env("ZE_ADV_MIN_SECONDS", "0")
+        .env("ZE_ADV_MIN_EPISODES", "5")
+        .env("ZE_ADV_RETAIN_SUCCESSFUL", "1")
+        .env("ZE_ADV_CAMPAIGN_START_SEED", "1000")
+        .env(
+            "ZE_ADV_CAMPAIGN_TEST_FAILURES",
+            "1001:error,1002:panic,1003:violation",
+        )
+        .env("ZE_ADV_ARTIFACTS", artifacts.path())
+        .output()
+        .expect("run failed feature campaign probe");
+    let transcript = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "a feature campaign with failed seeds must fail qualification: {transcript}"
+    );
+    assert!(
+        !transcript.contains("campaign summary attestation rejected"),
+        "the final summary rejected its own attestation: {transcript}"
+    );
+    assert!(
+        transcript.contains("ADV_CAMPAIGN_COMPLETE episodes=5 qualification=failed"),
+        "the campaign did not reach a final verdict: {transcript}"
+    );
+
+    let summary: zeppelin_embed_bench::harness_json::Value =
+        zeppelin_embed_bench::harness_json::from_slice(
+            &std::fs::read(artifacts.path().join("campaign-summary.json"))
+                .expect("completed campaign summary"),
+        )
+        .expect("valid campaign summary JSON");
+    assert_eq!(summary["complete"], true, "{transcript}");
+    assert_eq!(summary["qualification_passed"], false, "{transcript}");
+    assert_eq!(summary["episodes"], 5, "{transcript}");
+    assert_eq!(summary["failed_episodes"], 3, "{transcript}");
+    assert_eq!(summary["execution_errors"], 2, "{transcript}");
+    assert_eq!(summary["violations"], 1, "{transcript}");
+    // The two execution-error episodes are excluded from replay accounting;
+    // the invariant-violation episode still replayed.
+    let storage = &summary["attestation"]["storage_oracle_attestation"];
+    assert_eq!(storage["completed_seeds"], 3, "{transcript}");
+    assert_eq!(storage["replayed_seeds"], 3, "{transcript}");
+    let ledger = std::fs::read_to_string(artifacts.path().join("replayed-seeds.jsonl"))
+        .expect("durable replay ledger");
+    let replayed = ledger
+        .lines()
+        .map(|line| {
+            let row: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("replay ledger row");
+            row["seed"].as_u64().expect("replay ledger seed")
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(replayed, BTreeSet::from([1000, 1003, 1004]), "{transcript}");
+}
+
+#[test]
 fn exploratory_feature_campaign_reports_missing_coverage_and_fails_qualification() {
     let artifacts = tempfile::tempdir().expect("exploratory campaign artifacts");
     let campaign = CampaignKind::StorageDurability;
@@ -11808,7 +11884,7 @@ fn campaign_attestation_binds_every_merged_core_stream() {
         .map(|name| (name.to_owned(), stream(name)))
         .collect(),
     };
-    let attestation = campaign_attestation_json(&config, 1, &counters, Some(merged), None)
+    let attestation = campaign_attestation_json(&config, 1, 1, &counters, Some(merged), None)
         .expect("feature attestation");
 
     for field in ["program", "faults", "violations", "coverage"] {
@@ -11881,7 +11957,7 @@ fn storage_campaign_attestation_embeds_the_strict_family_ledger() {
         coverage.hit(key);
     }
     let attestation =
-        campaign_attestation_json(&config, 1, &counters, Some(merged), Some(&coverage))
+        campaign_attestation_json(&config, 1, 1, &counters, Some(merged), Some(&coverage))
             .expect("storage feature attestation");
     assert_eq!(
         attestation["oracle_contract_versions"]["storage-durability"].as_str(),
@@ -12075,7 +12151,7 @@ fn vector_campaign_attestation_embeds_the_exact_family_ledger() {
         coverage.hit(format!("kernel.backend.{}", backend.backend_id().as_str()));
     }
     let attestation =
-        campaign_attestation_json(&config, 1, &counters, Some(merged), Some(&coverage))
+        campaign_attestation_json(&config, 1, 1, &counters, Some(merged), Some(&coverage))
             .expect("vector feature attestation");
     let vector = &attestation["vector_oracle_attestation"];
     validate_vector_oracle_attestation_shape(vector).expect("strict nested vector attestation");
@@ -12154,7 +12230,7 @@ fn metadata_campaign_attestation_reports_the_exact_family_ledger() {
             ),
         ]),
     };
-    let attestation = campaign_attestation_json(&config, 1, &counters, Some(merged), None)
+    let attestation = campaign_attestation_json(&config, 1, 1, &counters, Some(merged), None)
         .expect("metadata feature attestation");
     let metadata = &attestation["metadata_oracle_attestation"];
     assert_eq!(metadata["version"], 1);
@@ -16260,6 +16336,7 @@ fn metadata_oracle_attestation_json(
 fn campaign_attestation_json(
     config: &RunConfig,
     episodes: u64,
+    replay_completed_episodes: u64,
     counters: &CampaignAttestationCounters,
     merged: Option<adversarial::artifacts::MergedEvidenceStats>,
     coverage: Option<&CoverageRegistry>,
@@ -16309,16 +16386,36 @@ fn campaign_attestation_json(
         name.strip_prefix("family/")
             .map(|artifact| (format!("family/{artifact}"), stream.digest.clone()))
     }));
-    let storage_oracle_attestation = (config.campaign == CampaignKind::StorageDurability)
-        .then(|| storage_oracle_attestation_json(episodes, counters, &evidence_digests, coverage));
-    let vector_oracle_attestation = (config.campaign == CampaignKind::VectorExecution)
-        .then(|| vector_oracle_attestation_json(episodes, counters, &evidence_digests, coverage));
+    let storage_oracle_attestation =
+        (config.campaign == CampaignKind::StorageDurability).then(|| {
+            storage_oracle_attestation_json(
+                replay_completed_episodes,
+                counters,
+                &evidence_digests,
+                coverage,
+            )
+        });
+    let vector_oracle_attestation = (config.campaign == CampaignKind::VectorExecution).then(|| {
+        vector_oracle_attestation_json(
+            replay_completed_episodes,
+            counters,
+            &evidence_digests,
+            coverage,
+        )
+    });
     let metadata_oracle_attestation = (config.campaign == CampaignKind::MetadataFilterPlanner)
-        .then(|| metadata_oracle_attestation_json(episodes, counters, &evidence_digests, coverage));
+        .then(|| {
+            metadata_oracle_attestation_json(
+                replay_completed_episodes,
+                counters,
+                &evidence_digests,
+                coverage,
+            )
+        });
     let ingest_retention_oracle_attestation = (config.campaign == CampaignKind::IngestRetention)
         .then(|| {
             ingest_retention_oracle_attestation_json(
-                episodes,
+                replay_completed_episodes,
                 counters,
                 &evidence_digests,
                 coverage,
@@ -16527,9 +16624,19 @@ fn write_campaign_summary(
     } else {
         "running"
     };
+    // Episodes that failed with an execution error (runner error, runner
+    // panic, merge failure, or replay failure) never appended a replay
+    // ledger row; every other episode, including invariant violations, did.
+    let replay_completed_episodes = episodes.saturating_sub(
+        failures
+            .iter()
+            .filter(|failure| failure.kind == CampaignFailureKind::ExecutionError)
+            .count() as u64,
+    );
     let attestation = campaign_attestation_json(
         config,
         episodes,
+        replay_completed_episodes,
         attestation_counters,
         merged_evidence,
         Some(coverage),
@@ -17303,6 +17410,7 @@ fn validate_feature_replay_ledger(
     campaign: CampaignKind,
     start_seed: u64,
     episodes: u64,
+    replay_skipped_seeds: &BTreeSet<u64>,
 ) -> Result<u64, String> {
     let path = root.join("replayed-seeds.jsonl");
     let bytes =
@@ -17393,7 +17501,12 @@ fn validate_feature_replay_ledger(
     let end_seed = start_seed
         .checked_add(episodes)
         .ok_or_else(|| "feature replay seed range overflow".to_owned())?;
-    let expected_seeds = (start_seed..end_seed).collect::<BTreeSet<_>>();
+    // Episodes recorded in the failure ledger as execution errors never
+    // reached a successful replay, so the durable ledger legitimately has
+    // no row for them. Every other episode in the range must have one.
+    let expected_seeds = (start_seed..end_seed)
+        .filter(|seed| !replay_skipped_seeds.contains(seed))
+        .collect::<BTreeSet<_>>();
     if seeds != expected_seeds {
         return Err(format!(
             "feature replay seed ledger mismatch expected={expected_seeds:?} observed={seeds:?}"
@@ -17474,7 +17587,33 @@ fn verify_feature_summary_attestation(
     let start_seed = summary["start_seed"]
         .as_u64()
         .ok_or_else(|| "feature summary omitted start_seed".to_owned())?;
-    let replayed_seeds = validate_feature_replay_ledger(root, campaign, start_seed, episodes)?;
+    let replay_skipped_seeds = match summary["failures"].as_array() {
+        None => BTreeSet::new(),
+        Some(failures) => failures
+            .iter()
+            .map(|failure| {
+                let seed = failure["seed"]
+                    .as_u64()
+                    .ok_or_else(|| "campaign failure row omitted seed".to_owned())?;
+                let kind = failure["kind"]
+                    .as_str()
+                    .ok_or_else(|| "campaign failure row omitted kind".to_owned())?;
+                Ok((seed, kind == "execution_error"))
+            })
+            .filter_map(|row: Result<(u64, bool), String>| match row {
+                Ok((seed, true)) => Some(Ok(seed)),
+                Ok((_, false)) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?,
+    };
+    let replayed_seeds = validate_feature_replay_ledger(
+        root,
+        campaign,
+        start_seed,
+        episodes,
+        &replay_skipped_seeds,
+    )?;
     if campaign == CampaignKind::MetadataFilterPlanner
         && attestation["metadata_oracle_attestation"]["replayed_seeds"].as_u64()
             != Some(replayed_seeds)
