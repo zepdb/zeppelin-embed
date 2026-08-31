@@ -1,8 +1,16 @@
 pub type Rate = u8;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IoModeBias {
+    #[default]
+    Any,
+    EnospcOnly,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Environment {
     pub io: Rate,
+    pub io_mode: IoModeBias,
     pub content: Rate,
     pub crash: Rate,
     pub clock: Rate,
@@ -110,6 +118,7 @@ pub fn environment_for_profile(profile: FaultProfile, seed: u64) -> Environment 
         },
         FaultProfile::Disk => Environment {
             io: 64,
+            io_mode: IoModeBias::EnospcOnly,
             ..Environment::default()
         },
         FaultProfile::Clock => Environment {
@@ -118,6 +127,7 @@ pub fn environment_for_profile(profile: FaultProfile, seed: u64) -> Environment 
         },
         FaultProfile::Full => Environment {
             io: 32,
+            io_mode: IoModeBias::Any,
             content: 32,
             crash: 32,
             clock: 16,
@@ -128,6 +138,7 @@ pub fn environment_for_profile(profile: FaultProfile, seed: u64) -> Environment 
             let mut rng = test_support::seeded_rng("adversarial::environment", seed);
             Environment {
                 io: rng.random_range(0..=96),
+                io_mode: IoModeBias::Any,
                 content: rng.random_range(0..=96),
                 crash: rng.random_range(0..=96),
                 clock: rng.random_range(0..=96),

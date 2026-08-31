@@ -25,7 +25,9 @@ use adversarial::fault_vfs::{
     FaultEvent, FaultMode, FaultSchedule, FaultSite, LAST_MATCH, Layer, ScheduledQueryClock,
     ScheduledVfs, plan_schedule,
 };
-use adversarial::profiles::{Environment, FaultProfile, environment_for_profile, profile_for_seed};
+use adversarial::profiles::{
+    Environment, FaultProfile, IoModeBias, environment_for_profile, profile_for_seed,
+};
 use adversarial::program::{CrashBoundary, Op, PredicateKind, Program};
 use adversarial::runner::{Invariant, SelfTestBug};
 use zeppelin_embed::epoch::{
@@ -1576,6 +1578,67 @@ fn schedule_uses_drawn_nth_match_under_each_stage_01_fault_preset() {
         })
     });
     assert!(observed, "no preset planned a drawn nth_match in 2..=4");
+}
+
+#[test]
+fn disk_preset_plans_enospc_only_io_faults_while_io_errors_plans_a_mix() {
+    assert_eq!(
+        environment_for_profile(FaultProfile::Disk, 4).io_mode,
+        IoModeBias::EnospcOnly
+    );
+    assert_eq!(
+        environment_for_profile(FaultProfile::IoErrors, 1).io_mode,
+        IoModeBias::Any
+    );
+
+    let mut disk_io_events = 0_usize;
+    let mut disk_violations = Vec::new();
+    let mut io_errors_modes = BTreeSet::new();
+
+    for seed in 0..256 {
+        let program = Program::generate(seed);
+        for event in plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::Disk, seed),
+            &program,
+        )
+        .events
+        {
+            if event.layer == Layer::Io {
+                disk_io_events += 1;
+                if event.mode != FaultMode::Enospc {
+                    disk_violations.push((seed, event.id, event.mode));
+                }
+            }
+        }
+
+        for event in plan_schedule(
+            seed,
+            environment_for_profile(FaultProfile::IoErrors, seed),
+            &program,
+        )
+        .events
+        {
+            if event.layer == Layer::Io {
+                io_errors_modes.insert(event.mode.key());
+            }
+        }
+    }
+
+    assert!(
+        disk_io_events >= 50,
+        "Disk planned only {disk_io_events} io events"
+    );
+    assert!(
+        disk_violations.is_empty(),
+        "Disk planned non-ENOSPC io faults: {disk_violations:?}"
+    );
+    for mode in ["eio", "eacces", "enospc", "latency"] {
+        assert!(
+            io_errors_modes.contains(mode),
+            "IoErrors never planned {mode}: {io_errors_modes:?}"
+        );
+    }
 }
 
 #[test]

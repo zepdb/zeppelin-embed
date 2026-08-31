@@ -12,7 +12,7 @@ use zeppelin_embed::lifecycle::{ManualMonotonicClock, MonotonicClock};
 use zeppelin_embed::vfs::crash::{CrashStateKind, CrashVfs, MemoryVfs};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
-use super::profiles::Environment;
+use super::profiles::{Environment, IoModeBias};
 use super::program::{CrashBoundary, Op, Program};
 use super::test_support;
 
@@ -1640,7 +1640,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                     seed ^ op_seed.rotate_left(17) ^ layer_seed,
                 );
                 let site = sites[child_rng.random_range(0..sites.len())];
-                let modes = modes_for(operation, layer, site);
+                let modes = biased_modes(
+                    modes_for(operation, layer, site),
+                    layer,
+                    environment.io_mode,
+                );
                 if modes.is_empty() {
                     continue;
                 }
@@ -1715,7 +1719,11 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 };
                 (mode, Some(budget))
             } else {
-                let modes = modes_for(operation, layer, site);
+                let modes = biased_modes(
+                    modes_for(operation, layer, site),
+                    layer,
+                    environment.io_mode,
+                );
                 if modes.is_empty() {
                     continue;
                 }
@@ -1734,6 +1742,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                     let profile_offset = if environment
                         == (Environment {
                             io: 32,
+                            io_mode: IoModeBias::Any,
                             content: 32,
                             crash: 32,
                             clock: 16,
@@ -1744,6 +1753,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                     } else if environment
                         == (Environment {
                             content: 64,
+                            io_mode: IoModeBias::Any,
                             ..Environment::default()
                         })
                     {
@@ -2067,6 +2077,23 @@ fn modes_for(operation: &Op, layer: Layer, site: FaultSite) -> &'static [FaultMo
         },
         Layer::Crash => &[FaultMode::Crash],
         Layer::Clock | Layer::Cancel => &[],
+    }
+}
+
+fn biased_modes(
+    modes: &'static [FaultMode],
+    layer: Layer,
+    bias: IoModeBias,
+) -> &'static [FaultMode] {
+    match (layer, bias) {
+        (Layer::Io, IoModeBias::EnospcOnly) => {
+            if modes.contains(&FaultMode::Enospc) {
+                &[FaultMode::Enospc]
+            } else {
+                &[]
+            }
+        }
+        _ => modes,
     }
 }
 
