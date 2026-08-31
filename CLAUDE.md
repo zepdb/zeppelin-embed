@@ -115,6 +115,13 @@ is unchanged and adding to it remains an owner decision.
   failed run reproducible.
 - From Task 11 onward, use the seeded fault runner; every Task 12+ component
   extends its operations and invariants.
+- A product change that alters op ordering, concurrency, or failure surface
+  (e.g., turning a sequential step into a parallel one) must be checked
+  against the adversarial runner for required updates first: new fault
+  sites/modes and coverage-registry entries for the changed paths. Run the
+  adversarial suite both before and after the product change to prove the
+  runner still passes and still catches what it should, not just that it
+  compiles against the new code.
 - Gate deterministic performance counters with zero flake budget. Wall-clock
   gates require at least 2x headroom and remain supporting evidence.
 - Put every measured claim in `tasks/evidence/<task>-<topic>.md`, including

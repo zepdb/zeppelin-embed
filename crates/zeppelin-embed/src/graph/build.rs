@@ -2445,6 +2445,8 @@ mod tests {
             0x0001_9000_c077_0001,
             GraphBuildPasses::Two,
             &checkpoint,
+            DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                .expect("derived policy"),
             None,
         )
         .expect("checkpoint session");
@@ -2472,6 +2474,8 @@ mod tests {
                 0x0001_9000_c077_0001,
                 GraphBuildPasses::Two,
                 &checkpoint,
+                DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                    .expect("derived policy"),
                 None,
             ),
             Err(GraphBuildError::CheckpointCorrupt(_))
@@ -2498,6 +2502,8 @@ mod tests {
             0x0001_9000_c077_0001,
             GraphBuildPasses::Two,
             &checkpoint,
+            DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                .expect("derived policy"),
             None,
         )
         .expect("next session starts fresh");
@@ -2522,6 +2528,8 @@ mod tests {
             0x0001_9000_acc0_0001,
             GraphBuildPasses::Two,
             &checkpoint,
+            DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                .expect("derived policy"),
             None,
         )
         .expect("checkpoint session");
@@ -2547,6 +2555,8 @@ mod tests {
                 0x0001_9000_acc0_0001,
                 GraphBuildPasses::Two,
                 &checkpoint,
+                DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                    .expect("derived policy"),
                 Some(&refused.accounting),
             ),
             Err(GraphBuildError::Store(_))

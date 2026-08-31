@@ -490,7 +490,7 @@ impl Store {
             &self.directory,
             &replaced_paths,
             self.durability_policy,
-        )?;
+        );
         drop(active);
         drop(wal);
         drop(writer_lock);
