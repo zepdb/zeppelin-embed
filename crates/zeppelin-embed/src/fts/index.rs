@@ -566,6 +566,7 @@ impl SegmentIndex {
 pub struct LexicalIndex {
     segments: Vec<Arc<SealedSegment>>,
     live_counters: Vec<LiveSegmentCounters>,
+    live_rows: Vec<DocBitmap>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -600,6 +601,7 @@ impl LexicalIndex {
     }
 
     fn push_shared(&mut self, segment: Arc<SealedSegment>) {
+        self.live_rows.push(DocBitmap::full(segment.row_count()));
         self.live_counters.push(LiveSegmentCounters {
             documents: u64::from(segment.row_count()),
             tokens: segment.total_tokens(),
@@ -636,6 +638,7 @@ impl LexicalIndex {
         let counters = live_segment_counters(ordinal, &segment, live_rows)?;
         self.segments.push(segment);
         self.live_counters.push(counters);
+        self.live_rows.push(live_rows.clone());
         Ok(())
     }
 
@@ -691,19 +694,22 @@ impl LexicalIndex {
     ///
     /// Summed across every segment and every requested field. A document
     /// containing the term in two fields counts once, which is what makes
-    /// this a *document* frequency rather than a posting count. Each
-    /// segment answers from its sealed dictionary, where the cross-field
-    /// union was resolved at seal time, so this costs no decode.
-    ///
-    /// R05(iii) remains an open owner decision: this is deliberately the
-    /// all-postings `df`, not an exact live-document `df`. Live `N` and token
-    /// totals must not make this approximation look exact; exact live `df`
-    /// requires separate per-term tombstone maintenance.
+    /// this a *document* frequency rather than a posting count. Segments
+    /// without tombstones answer from their sealed dictionary.
+    /// Segments with tombstones decode document identifiers and count only
+    /// rows in the same live bitmap used for `N` and `avgdl`.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
         self.segments
             .iter()
-            .map(|segment| segment.document_frequency(term, fields))
+            .zip(&self.live_rows)
+            .map(|(segment, live_rows)| {
+                if live_rows.cardinality() == u64::from(segment.row_count()) {
+                    segment.document_frequency(term, fields)
+                } else {
+                    segment.live_document_frequency(term, fields, live_rows)
+                }
+            })
             .fold(0_u32, u32::saturating_add)
     }
 }
@@ -889,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn live_row_counters_exclude_tombstoned_lengths_without_changing_df() {
+    fn live_row_counters_and_document_frequency_exclude_tombstones() {
         let analyzer = code_analyzer();
         let sealed = SealedSegment::seal(&segment_of(
             &analyzer,
@@ -907,8 +913,8 @@ mod tests {
         assert_eq!(stats.total_tokens(), 1);
         assert_eq!(
             index.document_frequency(b"engine", &[DEFAULT_FIELD]),
-            2,
-            "R05(iii) keeps the explicit all-postings df approximation"
+            1,
+            "document frequency must use the same live rows as corpus stats"
         );
     }
 

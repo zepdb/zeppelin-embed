@@ -129,3 +129,45 @@ fn purging_already_deleted_rows_is_a_no_op_on_bm25_stats() {
         "purging a tombstoned row changed BM25 scores"
     );
 }
+
+#[test]
+fn tombstoned_term_rows_do_not_change_bm25_at_physical_purge() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open text store");
+    let documents = [
+        (1_u128, "common removed one"),
+        (2, "common removed two"),
+        (3, "common survivor"),
+        (4, "other survivor"),
+    ]
+    .into_iter()
+    .map(|(id, text)| {
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+            vec![id as f32, 1.0],
+        )
+        .with_text(text)
+    })
+    .collect();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest shared-term corpus");
+    store.seal().expect("seal shared-term corpus");
+
+    let removed = [DocId::new(1), DocId::new(2)];
+    store
+        .delete(DeleteBatch::new(removed.to_vec()))
+        .expect("tombstone shared-term rows");
+    let score_after_delete = query_scores(&store);
+
+    let token = store.purge(&removed).expect("schedule physical purge");
+    store
+        .await_physical_purge(token)
+        .expect("complete physical purge");
+
+    assert_eq!(
+        query_scores(&store),
+        score_after_delete,
+        "physical purge changed the surviving document's BM25 score"
+    );
+}
