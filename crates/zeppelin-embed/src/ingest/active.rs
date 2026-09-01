@@ -267,6 +267,52 @@ struct CachedActiveLexical {
     accounting: AccountedCounter,
 }
 
+struct GrownCapacities {
+    row: u32,
+    row_count: usize,
+    vector_count: usize,
+    row_stride: usize,
+    code_count: usize,
+    metadata_capacity: usize,
+}
+
+struct ScalarRowBuffers {
+    doc_ids: Accounted<Vec<DocId>>,
+    revisions: Accounted<Vec<Revision>>,
+    sequences: Accounted<Vec<LogSeq>>,
+    timestamps: Accounted<Vec<i64>>,
+}
+
+struct RetainedCapacities {
+    rows: usize,
+    dims: usize,
+    row_stride: usize,
+    vector_capacity: usize,
+    code_capacity: usize,
+    metadata_capacity: usize,
+    text_capacity: usize,
+    column_capacity: usize,
+    retained_tombstones: usize,
+}
+
+struct RetainedBuffers {
+    doc_ids: Accounted<Vec<DocId>>,
+    revisions: Accounted<Vec<Revision>>,
+    sequences: Accounted<Vec<LogSeq>>,
+    timestamps: Accounted<Vec<i64>>,
+    metadata_end_offsets: Accounted<Vec<u64>>,
+    metadata_bytes: Accounted<Vec<u8>>,
+    text_present: Accounted<Vec<u8>>,
+    text_end_offsets: Accounted<Vec<u64>>,
+    text_bytes: Accounted<Vec<u8>>,
+    column_end_offsets: Accounted<Vec<u64>>,
+    column_bytes: Accounted<Vec<u8>>,
+    vectors: Accounted<Vec<f32>>,
+    codes: Accounted<Vec<u8>>,
+    factors: Accounted<Vec<Bit4Factors>>,
+    tombstones: Accounted<Vec<u32>>,
+}
+
 impl ActiveSegment {
     fn empty() -> Self {
         Self {
@@ -298,48 +344,24 @@ impl ActiveSegment {
         accounting: &Arc<Accounting>,
         analyzer: &Analyzer,
     ) -> Result<Self, IngestError> {
-        if self.existing(document.version().doc_id()).is_some() {
-            return Err(IngestError::Store(StoreError::Synchronization {
-                component: "revision handling not yet admitted",
-            }));
-        }
+        let capacities = self.grown_row_capacities(document)?;
         let dims = document.vector().len();
-        if let Some(expected) = self.dims
-            && expected != dims
-        {
-            return Err(IngestError::Store(StoreError::DimensionMismatch {
-                expected,
-                actual: dims,
-            }));
-        }
-        if dims == 0 {
-            return Err(IngestError::Vector(crate::quant::QuantError::EmptyVector));
-        }
-        let row = u32::try_from(self.doc_ids.len())
-            .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let row_count = self
-            .doc_ids
-            .len()
-            .checked_add(1)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let vector_count = row_count
-            .checked_mul(dims)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let row_stride = dims.div_ceil(2);
-        let code_count = row_count
-            .checked_mul(row_stride)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut doc_ids = copy_accounted(accounting, &self.doc_ids, row_count)?;
-        let mut revisions = copy_accounted(accounting, &self.revisions, row_count)?;
-        let mut sequences = copy_accounted(accounting, &self.sequences, row_count)?;
-        let mut timestamps = copy_accounted(accounting, &self.timestamps, row_count)?;
+        let GrownCapacities {
+            row,
+            row_count,
+            vector_count,
+            row_stride,
+            code_count,
+            metadata_capacity,
+        } = capacities;
+        let ScalarRowBuffers {
+            mut doc_ids,
+            mut revisions,
+            mut sequences,
+            mut timestamps,
+        } = self.copy_scalar_rows(accounting, 1)?;
         let mut metadata_end_offsets =
             copy_accounted(accounting, &self.metadata_end_offsets, row_count)?;
-        let metadata_capacity = self
-            .metadata_bytes
-            .len()
-            .checked_add(document.metadata().len())
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let mut metadata_bytes =
             copy_accounted(accounting, &self.metadata_bytes, metadata_capacity)?;
         let (text_present, text_end_offsets, text_bytes) =
@@ -420,10 +442,12 @@ impl ActiveSegment {
             }));
         }
         let row_stride = dims.div_ceil(2);
-        let mut doc_ids = copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?;
-        let mut revisions = copy_accounted(accounting, &self.revisions, self.revisions.len())?;
-        let mut sequences = copy_accounted(accounting, &self.sequences, self.sequences.len())?;
-        let mut timestamps = copy_accounted(accounting, &self.timestamps, self.timestamps.len())?;
+        let ScalarRowBuffers {
+            mut doc_ids,
+            mut revisions,
+            mut sequences,
+            mut timestamps,
+        } = self.copy_scalar_rows(accounting, 0)?;
         let (metadata_end_offsets, metadata_bytes) =
             self.replaced_metadata(row, document.metadata(), accounting)?;
         let (text_present, text_end_offsets, text_bytes) =
@@ -435,20 +459,7 @@ impl ActiveSegment {
         let mut factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
         let row_u32 =
             u32::try_from(row).map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let tombstone_capacity = self
-            .tombstones
-            .len()
-            .saturating_sub(usize::from(self.tombstones.contains(&row_u32)));
-        let mut tombstones = Accounted::try_with_capacity(
-            accounting,
-            tombstone_capacity,
-            AllocationComponent::Active,
-        )?;
-        for tombstone in self.tombstones.iter().copied() {
-            if tombstone != row_u32 {
-                tombstones.push(tombstone)?;
-            }
-        }
+        let tombstones = self.copy_tombstones_excluding(accounting, row_u32)?;
 
         *doc_ids
             .as_mut_slice()
@@ -549,10 +560,12 @@ impl ActiveSegment {
         doc_ids: &[DocId],
         accounting: &Arc<Accounting>,
     ) -> Result<(Self, Vec<usize>), IngestError> {
-        let doc_ids_buffer = copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?;
-        let revisions = copy_accounted(accounting, &self.revisions, self.revisions.len())?;
-        let sequences = copy_accounted(accounting, &self.sequences, self.sequences.len())?;
-        let timestamps = copy_accounted(accounting, &self.timestamps, self.timestamps.len())?;
+        let ScalarRowBuffers {
+            doc_ids: doc_ids_buffer,
+            revisions,
+            sequences,
+            timestamps,
+        } = self.copy_scalar_rows(accounting, 0)?;
         let metadata_end_offsets = copy_accounted(
             accounting,
             &self.metadata_end_offsets,
@@ -646,104 +659,29 @@ impl ActiveSegment {
         if removed == 0 {
             return Ok((self.copy(accounting)?, 0));
         }
-        let rows = self.row_count().saturating_sub(removed);
-        let dims = self.dims.unwrap_or(0);
-        let row_stride = dims.div_ceil(2);
-        let vector_capacity = rows
-            .checked_mul(dims)
-            .ok_or(StoreError::ActiveRowOverflow)?;
-        let code_capacity = rows
-            .checked_mul(row_stride)
-            .ok_or(StoreError::ActiveRowOverflow)?;
-        let metadata_capacity = (0..self.row_count()).try_fold(0_usize, |total, row| {
-            let keep = self
-                .doc_ids
-                .get(row)
-                .is_some_and(|doc_id| !doc_ids.contains(doc_id));
-            if !keep {
-                return Ok(total);
-            }
-            let length = self
-                .metadata(row)
-                .ok_or(StoreError::ActiveRowOverflow)?
-                .len();
-            total
-                .checked_add(length)
-                .ok_or(StoreError::ActiveRowOverflow)
-        })?;
+        let capacities = self.retained_capacities(doc_ids, removed)?;
+        let rows = capacities.rows;
+        let dims = capacities.dims;
+        let row_stride = capacities.row_stride;
         let tracks_text = self.tracks_text();
         let tracks_columns = self.tracks_columns();
-        let text_capacity = if tracks_text {
-            self.retained_row_bytes_capacity(doc_ids, &self.text_end_offsets, &self.text_bytes)?
-        } else {
-            0
-        };
-        let column_capacity = if tracks_columns {
-            self.retained_row_bytes_capacity(doc_ids, &self.column_end_offsets, &self.column_bytes)?
-        } else {
-            0
-        };
-        let mut doc_id_rows =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let mut revisions =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let mut sequences =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let mut timestamps =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let mut metadata_end_offsets =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let mut metadata_bytes = Accounted::try_with_capacity(
-            accounting,
-            metadata_capacity,
-            AllocationComponent::Active,
-        )?;
-        let mut text_present = if tracks_text {
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
-        } else {
-            Accounted::unaccounted_empty()
-        };
-        let mut text_end_offsets = if tracks_text {
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
-        } else {
-            Accounted::unaccounted_empty()
-        };
-        let mut text_bytes = if tracks_text {
-            Accounted::try_with_capacity(accounting, text_capacity, AllocationComponent::Active)?
-        } else {
-            Accounted::unaccounted_empty()
-        };
-        let mut column_end_offsets = if tracks_columns {
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
-        } else {
-            Accounted::unaccounted_empty()
-        };
-        let mut column_bytes = if tracks_columns {
-            Accounted::try_with_capacity(accounting, column_capacity, AllocationComponent::Active)?
-        } else {
-            Accounted::unaccounted_empty()
-        };
-        let mut vectors =
-            Accounted::try_with_capacity(accounting, vector_capacity, AllocationComponent::Active)?;
-        let mut codes =
-            Accounted::try_with_capacity(accounting, code_capacity, AllocationComponent::Active)?;
-        let mut factors =
-            Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
-        let retained_tombstones = self
-            .tombstones
-            .iter()
-            .filter(|old_row| {
-                usize::try_from(**old_row)
-                    .ok()
-                    .and_then(|row| self.doc_ids.get(row))
-                    .is_some_and(|doc_id| !doc_ids.contains(doc_id))
-            })
-            .count();
-        let mut tombstones = Accounted::try_with_capacity(
-            accounting,
-            retained_tombstones,
-            AllocationComponent::Active,
-        )?;
+        let RetainedBuffers {
+            doc_ids: mut doc_id_rows,
+            mut revisions,
+            mut sequences,
+            mut timestamps,
+            mut metadata_end_offsets,
+            mut metadata_bytes,
+            mut text_present,
+            mut text_end_offsets,
+            mut text_bytes,
+            mut column_end_offsets,
+            mut column_bytes,
+            mut vectors,
+            mut codes,
+            mut factors,
+            mut tombstones,
+        } = allocate_retained_buffers(accounting, &capacities, tracks_text, tracks_columns)?;
         let mut lexical = SegmentIndex::new();
         let mut next_row = 0_u32;
         for row in 0..self.row_count() {
@@ -877,6 +815,175 @@ impl ActiveSegment {
             },
             removed,
         ))
+    }
+
+    fn grown_row_capacities(
+        &self,
+        document: &IngestDocument,
+    ) -> Result<GrownCapacities, IngestError> {
+        if self.existing(document.version().doc_id()).is_some() {
+            return Err(IngestError::Store(StoreError::Synchronization {
+                component: "revision handling not yet admitted",
+            }));
+        }
+        let dims = document.vector().len();
+        if let Some(expected) = self.dims
+            && expected != dims
+        {
+            return Err(IngestError::Store(StoreError::DimensionMismatch {
+                expected,
+                actual: dims,
+            }));
+        }
+        if dims == 0 {
+            return Err(IngestError::Vector(crate::quant::QuantError::EmptyVector));
+        }
+        let row = u32::try_from(self.doc_ids.len())
+            .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let row_count = self
+            .doc_ids
+            .len()
+            .checked_add(1)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let vector_count = row_count
+            .checked_mul(dims)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let row_stride = dims.div_ceil(2);
+        let code_count = row_count
+            .checked_mul(row_stride)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let metadata_capacity = self
+            .metadata_bytes
+            .len()
+            .checked_add(document.metadata().len())
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        Ok(GrownCapacities {
+            row,
+            row_count,
+            vector_count,
+            row_stride,
+            code_count,
+            metadata_capacity,
+        })
+    }
+
+    fn copy_scalar_rows(
+        &self,
+        accounting: &Arc<Accounting>,
+        extra_rows: usize,
+    ) -> Result<ScalarRowBuffers, IngestError> {
+        let doc_id_capacity = self
+            .doc_ids
+            .len()
+            .checked_add(extra_rows)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let doc_ids = copy_accounted(accounting, &self.doc_ids, doc_id_capacity)?;
+        let revision_capacity = self
+            .revisions
+            .len()
+            .checked_add(extra_rows)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let revisions = copy_accounted(accounting, &self.revisions, revision_capacity)?;
+        let sequence_capacity = self
+            .sequences
+            .len()
+            .checked_add(extra_rows)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let sequences = copy_accounted(accounting, &self.sequences, sequence_capacity)?;
+        let timestamp_capacity = self
+            .timestamps
+            .len()
+            .checked_add(extra_rows)
+            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
+        let timestamps = copy_accounted(accounting, &self.timestamps, timestamp_capacity)?;
+        Ok(ScalarRowBuffers {
+            doc_ids,
+            revisions,
+            sequences,
+            timestamps,
+        })
+    }
+
+    fn copy_tombstones_excluding(
+        &self,
+        accounting: &Arc<Accounting>,
+        row: u32,
+    ) -> Result<Accounted<Vec<u32>>, IngestError> {
+        let capacity = self
+            .tombstones
+            .len()
+            .saturating_sub(usize::from(self.tombstones.contains(&row)));
+        let mut tombstones =
+            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
+        for tombstone in self.tombstones.iter().copied() {
+            if tombstone != row {
+                tombstones.push(tombstone)?;
+            }
+        }
+        Ok(tombstones)
+    }
+
+    fn retained_capacities(
+        &self,
+        doc_ids: &[DocId],
+        removed: usize,
+    ) -> Result<RetainedCapacities, StoreError> {
+        let rows = self.row_count().saturating_sub(removed);
+        let dims = self.dims.unwrap_or(0);
+        let row_stride = dims.div_ceil(2);
+        let vector_capacity = rows
+            .checked_mul(dims)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let code_capacity = rows
+            .checked_mul(row_stride)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let metadata_capacity = (0..self.row_count()).try_fold(0_usize, |total, row| {
+            let keep = self
+                .doc_ids
+                .get(row)
+                .is_some_and(|doc_id| !doc_ids.contains(doc_id));
+            if !keep {
+                return Ok(total);
+            }
+            let length = self
+                .metadata(row)
+                .ok_or(StoreError::ActiveRowOverflow)?
+                .len();
+            total
+                .checked_add(length)
+                .ok_or(StoreError::ActiveRowOverflow)
+        })?;
+        let text_capacity = if self.tracks_text() {
+            self.retained_row_bytes_capacity(doc_ids, &self.text_end_offsets, &self.text_bytes)?
+        } else {
+            0
+        };
+        let column_capacity = if self.tracks_columns() {
+            self.retained_row_bytes_capacity(doc_ids, &self.column_end_offsets, &self.column_bytes)?
+        } else {
+            0
+        };
+        let retained_tombstones = self
+            .tombstones
+            .iter()
+            .filter(|old_row| {
+                usize::try_from(**old_row)
+                    .ok()
+                    .and_then(|row| self.doc_ids.get(row))
+                    .is_some_and(|doc_id| !doc_ids.contains(doc_id))
+            })
+            .count();
+        Ok(RetainedCapacities {
+            rows,
+            dims,
+            row_stride,
+            vector_capacity,
+            code_capacity,
+            metadata_capacity,
+            text_capacity,
+            column_capacity,
+            retained_tombstones,
+        })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -1574,6 +1681,92 @@ fn copy_accounted<T: Copy>(
         destination.push(*value)?;
     }
     Ok(destination)
+}
+
+fn allocate_retained_buffers(
+    accounting: &Arc<Accounting>,
+    capacities: &RetainedCapacities,
+    tracks_text: bool,
+    tracks_columns: bool,
+) -> Result<RetainedBuffers, StoreError> {
+    let rows = capacities.rows;
+    let doc_ids = Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let revisions = Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let sequences = Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let timestamps = Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let metadata_end_offsets =
+        Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let metadata_bytes = Accounted::try_with_capacity(
+        accounting,
+        capacities.metadata_capacity,
+        AllocationComponent::Active,
+    )?;
+    let text_present = if tracks_text {
+        Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+    } else {
+        Accounted::unaccounted_empty()
+    };
+    let text_end_offsets = if tracks_text {
+        Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+    } else {
+        Accounted::unaccounted_empty()
+    };
+    let text_bytes = if tracks_text {
+        Accounted::try_with_capacity(
+            accounting,
+            capacities.text_capacity,
+            AllocationComponent::Active,
+        )?
+    } else {
+        Accounted::unaccounted_empty()
+    };
+    let column_end_offsets = if tracks_columns {
+        Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?
+    } else {
+        Accounted::unaccounted_empty()
+    };
+    let column_bytes = if tracks_columns {
+        Accounted::try_with_capacity(
+            accounting,
+            capacities.column_capacity,
+            AllocationComponent::Active,
+        )?
+    } else {
+        Accounted::unaccounted_empty()
+    };
+    let vectors = Accounted::try_with_capacity(
+        accounting,
+        capacities.vector_capacity,
+        AllocationComponent::Active,
+    )?;
+    let codes = Accounted::try_with_capacity(
+        accounting,
+        capacities.code_capacity,
+        AllocationComponent::Active,
+    )?;
+    let factors = Accounted::try_with_capacity(accounting, rows, AllocationComponent::Active)?;
+    let tombstones = Accounted::try_with_capacity(
+        accounting,
+        capacities.retained_tombstones,
+        AllocationComponent::Active,
+    )?;
+    Ok(RetainedBuffers {
+        doc_ids,
+        revisions,
+        sequences,
+        timestamps,
+        metadata_end_offsets,
+        metadata_bytes,
+        text_present,
+        text_end_offsets,
+        text_bytes,
+        column_end_offsets,
+        column_bytes,
+        vectors,
+        codes,
+        factors,
+        tombstones,
+    })
 }
 
 pub(crate) struct StoreWal {

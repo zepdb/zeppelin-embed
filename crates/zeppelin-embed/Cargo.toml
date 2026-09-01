@@ -47,3 +47,7 @@ harness = false
 [[bench]]
 name = "lexical_queries"
 harness = false
+
+[[bench]]
+name = "ingest"
+harness = false
