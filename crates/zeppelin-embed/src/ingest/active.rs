@@ -1585,13 +1585,14 @@ pub(crate) struct StoreWal {
 
 impl StoreWal {
     pub(crate) fn create(
-        vfs: &dyn Vfs,
+        vfs: Arc<dyn Vfs>,
+        directory: &Path,
         path: &Path,
         policy: DurabilityPolicy,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
-        let writer =
-            WalWriter::create(vfs, path, LogSeq::new(1), policy).map_err(StoreError::WalWrite)?;
+        let writer = WalWriter::create_store_wal(vfs, directory, path, LogSeq::new(1), policy)
+            .map_err(StoreError::WalWrite)?;
         Ok(Self {
             writer,
             retained: AccountedCounter::new(accounting, AllocationComponent::Wal)?,

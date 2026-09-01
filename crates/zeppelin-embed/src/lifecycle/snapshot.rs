@@ -679,6 +679,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{InMemorySegment, InMemorySegmentFactors, PublishedSnapshot};
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::lifecycle::{
         ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
@@ -862,6 +863,46 @@ mod tests {
             sync_kinds,
             vec![SyncKind::Full; 4],
             "seal must preserve the opened policy's exact SyncKind sequence"
+        );
+        store.close().expect("close");
+    }
+
+    #[test]
+    fn first_durable_ingest_syncs_new_wal_directory_entry_before_ack() {
+        let directory = tempdir().expect("store directory");
+        let recorder = Arc::new(RecordingVfs::new(StdVfs));
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            StoreTestDependencies::new(recorder.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("durable store open");
+        let operations_before_ingest = recorder.operations().expect("open operations").len();
+
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 2.0, 3.0, 4.0],
+            )]))
+            .expect("durable ingest ack");
+
+        let syncs = recorder
+            .operations()
+            .expect("ingest operations")
+            .into_iter()
+            .skip(operations_before_ingest)
+            .filter_map(|operation| match operation {
+                CrashOperation::Sync { path, kind } => Some((path, kind)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            syncs,
+            vec![
+                (directory.path().join("wal.ze"), SyncKind::Full),
+                (directory.path().to_path_buf(), SyncKind::Full),
+            ],
+            "the first durable WAL group must sync its new directory entry before ack"
         );
         store.close().expect("close");
     }
