@@ -62,6 +62,7 @@ use super::postings::{
 };
 use super::search::FieldWeights;
 use crate::kernels::postings::{prefix_sum, unpack};
+use crate::meta::DocBitmap;
 
 const REGION_MAGIC: [u8; 4] = *b"ZFTS";
 const REGION_VERSION: u16 = 1;
@@ -815,6 +816,26 @@ impl SealedSegment {
                 union_count(&mut cursors)
             }
         }
+    }
+
+    pub(crate) fn live_document_frequency(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+        live_rows: &DocBitmap,
+    ) -> u32 {
+        let weights = FieldWeights::flat(fields);
+        let Some(mut stream) = TermStream::open(self, term, &weights) else {
+            return 0;
+        };
+        let mut count = 0_u32;
+        while let Some(row) = stream.current_row() {
+            if live_rows.contains(row) {
+                count = count.saturating_add(1);
+            }
+            stream.advance();
+        }
+        count
     }
 
     /// Opens a cursor over the span at `index`, scaled by `weight`.
