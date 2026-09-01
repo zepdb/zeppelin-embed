@@ -43,3 +43,7 @@ harness = false
 [[bench]]
 name = "query_pool"
 harness = false
+
+[[bench]]
+name = "lexical_queries"
+harness = false
