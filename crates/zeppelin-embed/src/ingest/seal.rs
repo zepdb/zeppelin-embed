@@ -19,6 +19,15 @@ use crate::wal::LogSeq;
 
 use super::ActiveState;
 
+struct SealPayloadBuffers<'a> {
+    postings: Option<Vec<u8>>,
+    metadata: Option<SegmentStoredMetadata<'a>>,
+    text: Option<SegmentStoredText<'a>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type TestSealStorage = (Vec<u8>, Vec<crate::segment::layout::Int8Factors>);
+
 impl Store {
     /// Seals the current active segment into one appended immutable segment.
     ///
@@ -43,6 +52,80 @@ impl Store {
         vfs: &dyn Vfs,
     ) -> Result<u64, StoreError> {
         self.seal_inner(Some(cancel), vfs)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn test_seal_storage(
+        &self,
+        current: &ActiveState,
+        dims: u32,
+    ) -> Result<Option<TestSealStorage>, StoreError> {
+        match self.vector_seal_scheme {
+            Some(crate::quant::QuantScheme::Int8) => {
+                let dimension = usize::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
+                let vectors = current.segment.vectors();
+                if dimension == 0 || !vectors.len().is_multiple_of(dimension) {
+                    return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                        format!(
+                            "Int8 seal vector length {} is not divisible by dimension {dimension}",
+                            vectors.len()
+                        ),
+                    )));
+                }
+                let mut signed_codes = vec![0_i8; vectors.len()];
+                let mut factors = Vec::with_capacity(vectors.len() / dimension);
+                for (row, codes) in vectors
+                    .chunks_exact(dimension)
+                    .zip(signed_codes.chunks_exact_mut(dimension))
+                {
+                    let (scale, offset) =
+                        crate::quant::quantize_int8(row, codes).map_err(|error| {
+                            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                                "Int8 seal quantization failed: {error}"
+                            )))
+                        })?;
+                    factors.push(crate::segment::layout::Int8Factors { scale, offset });
+                }
+                let codes = signed_codes
+                    .into_iter()
+                    .map(|code| code as u8)
+                    .collect::<Vec<_>>();
+                Ok(Some((codes, factors)))
+            }
+            Some(crate::quant::QuantScheme::Bit4) | None => Ok(None),
+            Some(scheme) => Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                format!("unsupported test vector seal scheme {scheme:?}"),
+            ))),
+        }
+    }
+
+    fn abort_seal(
+        &self,
+        vfs: &dyn Vfs,
+        id: SegmentId,
+        _invocation: Option<u64>,
+        _current: &ActiveState,
+        _absorbed_through: u64,
+    ) -> Result<(), StoreError> {
+        cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(invocation_id) = _invocation {
+            let active_rows = u64::try_from(_current.segment.row_count())
+                .map_err(|_| StoreError::ActiveRowOverflow)?;
+            if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+                controller
+                    .push_receipt(super::IngestRetentionFaultReceiptV1::seal_cancellation(
+                        invocation_id,
+                        active_rows,
+                        _absorbed_through,
+                        *id.as_bytes(),
+                    ))
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     fn seal_inner(&self, cancel: Option<&CancelToken>, vfs: &dyn Vfs) -> Result<u64, StoreError> {
@@ -106,45 +189,7 @@ impl Store {
         let dims = u32::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
         let id = seal_id(generation, absorbed_through);
         #[cfg(any(test, feature = "test-support"))]
-        let int8_storage = match self.vector_seal_scheme {
-            Some(crate::quant::QuantScheme::Int8) => {
-                let dimension = usize::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
-                let vectors = current.segment.vectors();
-                if dimension == 0 || !vectors.len().is_multiple_of(dimension) {
-                    return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
-                        format!(
-                            "Int8 seal vector length {} is not divisible by dimension {dimension}",
-                            vectors.len()
-                        ),
-                    )));
-                }
-                let mut signed_codes = vec![0_i8; vectors.len()];
-                let mut factors = Vec::with_capacity(vectors.len() / dimension);
-                for (row, codes) in vectors
-                    .chunks_exact(dimension)
-                    .zip(signed_codes.chunks_exact_mut(dimension))
-                {
-                    let (scale, offset) =
-                        crate::quant::quantize_int8(row, codes).map_err(|error| {
-                            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
-                                "Int8 seal quantization failed: {error}"
-                            )))
-                        })?;
-                    factors.push(crate::segment::layout::Int8Factors { scale, offset });
-                }
-                let codes = signed_codes
-                    .into_iter()
-                    .map(|code| code as u8)
-                    .collect::<Vec<_>>();
-                Some((codes, factors))
-            }
-            Some(crate::quant::QuantScheme::Bit4) | None => None,
-            Some(scheme) => {
-                return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
-                    format!("unsupported test vector seal scheme {scheme:?}"),
-                )));
-            }
-        };
+        let int8_storage = self.test_seal_storage(current, dims)?;
         #[cfg(any(test, feature = "test-support"))]
         let (scheme, codes, factors) = match int8_storage.as_ref() {
             Some((codes, factors)) => (
@@ -178,39 +223,19 @@ impl Store {
             doc_ids: current.segment.doc_ids(),
             revisions: current.segment.revisions(),
         };
-        let postings = if current.segment.has_text() {
-            let sealed = SealedSegment::seal(current.segment.lexical())
-                .map_err(SealedSegmentError::from)
-                .map_err(crate::segment::SegmentError::from)
-                .map_err(StoreError::Segment)?;
-            Some(
-                sealed
-                    .encode_region()
-                    .map_err(crate::segment::SegmentError::from)
-                    .map_err(StoreError::Segment)?,
-            )
-        } else {
-            None
-        };
-        let metadata =
-            (!current.segment.metadata_bytes().is_empty()).then_some(SegmentStoredMetadata {
-                end_offsets: current.segment.metadata_end_offsets(),
-                bytes: current.segment.metadata_bytes(),
-            });
-        let text = current.segment.has_text().then_some(SegmentStoredText {
-            present: current.segment.text_present(),
-            end_offsets: current.segment.text_end_offsets(),
-            bytes: current.segment.text_bytes(),
-        });
+        let payloads = build_seal_payloads(&current.segment)?;
         let written = write_segment_with_documents_payloads(
             vfs,
             &self.directory,
             build,
             SegmentPayloads {
                 documents,
-                metadata,
-                text,
-                postings: postings.as_deref().map(|bytes| SegmentPostings { bytes }),
+                metadata: payloads.metadata,
+                text: payloads.text,
+                postings: payloads
+                    .postings
+                    .as_deref()
+                    .map(|bytes| SegmentPostings { bytes }),
             },
             self.durability_policy,
         );
@@ -236,24 +261,7 @@ impl Store {
         #[cfg(not(any(test, feature = "test-support")))]
         let forced_late_cancellation: Option<u64> = None;
         if forced_late_cancellation.is_some() || check_cancelled(cancel).is_err() {
-            cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(invocation_id) = forced_late_cancellation {
-                let active_rows = u64::try_from(current.segment.row_count())
-                    .map_err(|_| StoreError::ActiveRowOverflow)?;
-                if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
-                    controller
-                        .push_receipt(super::IngestRetentionFaultReceiptV1::seal_cancellation(
-                            invocation_id,
-                            active_rows,
-                            absorbed_through,
-                            *id.as_bytes(),
-                        ))
-                        .map_err(|_| StoreError::Synchronization {
-                            component: "ingest-retention controller",
-                        })?;
-                }
-            }
+            self.abort_seal(vfs, id, forced_late_cancellation, current, absorbed_through)?;
             return Err(StoreError::SealCancelled);
         }
         let mut segments = manifest.segments;
@@ -295,6 +303,39 @@ impl Store {
         drop(state);
         Ok(generation)
     }
+}
+
+fn build_seal_payloads(
+    segment: &super::ActiveSegment,
+) -> Result<SealPayloadBuffers<'_>, StoreError> {
+    let postings = if segment.has_text() {
+        let sealed = SealedSegment::seal(segment.lexical())
+            .map_err(SealedSegmentError::from)
+            .map_err(crate::segment::SegmentError::from)
+            .map_err(StoreError::Segment)?;
+        Some(
+            sealed
+                .encode_region()
+                .map_err(crate::segment::SegmentError::from)
+                .map_err(StoreError::Segment)?,
+        )
+    } else {
+        None
+    };
+    let metadata = (!segment.metadata_bytes().is_empty()).then_some(SegmentStoredMetadata {
+        end_offsets: segment.metadata_end_offsets(),
+        bytes: segment.metadata_bytes(),
+    });
+    let text = segment.has_text().then_some(SegmentStoredText {
+        present: segment.text_present(),
+        end_offsets: segment.text_end_offsets(),
+        bytes: segment.text_bytes(),
+    });
+    Ok(SealPayloadBuffers {
+        postings,
+        metadata,
+        text,
+    })
 }
 
 fn load_current_manifest(

@@ -2187,6 +2187,114 @@ pub struct Store {
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
 }
 
+fn acquire_writer_lock(
+    path: &Path,
+    access_mode: AccessMode,
+) -> Result<Option<StoreLock>, StoreError> {
+    Ok(match access_mode {
+        AccessMode::ReadWrite => Some(StoreLock::acquire(path).map_err(|error| match error {
+            StoreLockError::Io { path, source }
+                if source.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                StoreError::StoreBusy { path }
+            }
+            StoreLockError::Io { path, source } => {
+                StoreError::Lock(StoreLockError::Io { path, source })
+            }
+        })?),
+        AccessMode::ReadOnly => None,
+    })
+}
+
+fn resolve_open_schema(
+    manifest_exists: bool,
+    snapshot: &PublishedSnapshot,
+    declared: Option<&crate::meta::Schema>,
+) -> Result<crate::meta::Schema, StoreError> {
+    if manifest_exists {
+        let persisted = snapshot.schema().clone();
+        if let Some(declared) = declared
+            && declared != &persisted
+        {
+            return Err(StoreError::SchemaMismatch {
+                persisted,
+                declared: declared.clone(),
+            });
+        }
+        Ok(snapshot.schema().clone())
+    } else {
+        Ok(declared
+            .cloned()
+            .unwrap_or_else(crate::meta::Schema::timestamp_only))
+    }
+}
+
+fn validate_epoch_identity(
+    persisted: Option<crate::epoch::EpochIdentity>,
+    declared: Option<crate::epoch::EpochIdentity>,
+    manifest_exists: bool,
+    access_mode: AccessMode,
+) -> Result<(), StoreError> {
+    match (persisted, declared) {
+        (Some(expected), Some(declared)) if expected != declared => {
+            Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
+                expected,
+                declared,
+            }))
+        }
+        (Some(_), None) => Err(StoreError::EpochUndeclared),
+        (None, Some(_)) if manifest_exists || access_mode == AccessMode::ReadOnly => {
+            Err(StoreError::EpochUnstamped)
+        }
+        (Some(_), Some(_)) | (None, Some(_)) | (None, None) => Ok(()),
+    }
+}
+
+fn validate_tokenizer_epoch(
+    expected: Option<crate::epoch::EpochIdentity>,
+    tokenizer: &crate::fts::tokenizer::Analyzer,
+) -> Result<(), StoreError> {
+    if let Some(expected) = expected
+        && tokenizer.epoch() != expected.tokenizer
+    {
+        return Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
+            expected,
+            declared: crate::epoch::EpochIdentity {
+                embedding: expected.embedding,
+                tokenizer: tokenizer.epoch(),
+            },
+        }));
+    }
+    Ok(())
+}
+
+fn cleanup_open_orphans(
+    store: &Store,
+) -> Result<crate::manifest::io::OrphanCleanupReport, StoreError> {
+    let reachable_segments = store
+        .snapshot
+        .read()
+        .map_err(|_| StoreError::Synchronization {
+            component: "published snapshot",
+        })?
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .all_segments()
+                .iter()
+                .map(|segment| store.directory.join(segment.meta().id.file_name()))
+                .collect::<HashSet<_>>()
+        })
+        .ok_or(StoreError::Closed)?;
+    crate::manifest::io::cleanup_store_orphans(
+        store.vfs.as_ref(),
+        &store.directory,
+        &reachable_segments,
+        store.durability_policy,
+    )
+    .map_err(StoreError::Manifest)
+}
+
 impl Store {
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
@@ -2280,21 +2388,7 @@ impl Store {
                 path: path.to_path_buf(),
             });
         }
-        let writer_lock = match options.access_mode {
-            AccessMode::ReadWrite => {
-                Some(StoreLock::acquire(path).map_err(|error| match error {
-                    StoreLockError::Io { path, source }
-                        if source.kind() == std::io::ErrorKind::WouldBlock =>
-                    {
-                        StoreError::StoreBusy { path }
-                    }
-                    StoreLockError::Io { path, source } => {
-                        StoreError::Lock(StoreLockError::Io { path, source })
-                    }
-                })?)
-            }
-            AccessMode::ReadOnly => None,
-        };
+        let writer_lock = acquire_writer_lock(path, options.access_mode)?;
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
         let manifest_exists = match vfs.open(&manifest_path) {
             Ok(_) => true,
@@ -2311,41 +2405,18 @@ impl Store {
         // manifest-only remaps deliberately skip this probe so their exact
         // zero-segment-read accounting contracts remain intact.
         let snapshot = PublishedSnapshot::load_for_open_on_vfs(path, &accounting, vfs.as_ref())?;
-        let schema = if manifest_exists {
-            let persisted = snapshot.schema().clone();
-            if let Some(declared) = options.schema.as_ref()
-                && declared != &persisted
-            {
-                return Err(StoreError::SchemaMismatch {
-                    persisted,
-                    declared: declared.clone(),
-                });
-            }
-            snapshot.schema().clone()
-        } else {
-            options
-                .schema
-                .clone()
-                .unwrap_or_else(crate::meta::Schema::timestamp_only)
-        };
+        let schema = resolve_open_schema(manifest_exists, &snapshot, options.schema.as_ref())?;
         let persisted_epoch = snapshot.epoch_alias();
         let declared_epoch = options
             .epoch
             .as_ref()
             .map(crate::epoch::StoreEpoch::identity);
-        match (persisted_epoch, declared_epoch) {
-            (Some(expected), Some(declared)) if expected != declared => {
-                return Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
-                    expected,
-                    declared,
-                }));
-            }
-            (Some(_), None) => return Err(StoreError::EpochUndeclared),
-            (None, Some(_)) if manifest_exists || options.access_mode == AccessMode::ReadOnly => {
-                return Err(StoreError::EpochUnstamped);
-            }
-            (Some(_), Some(_)) | (None, Some(_)) | (None, None) => {}
-        }
+        validate_epoch_identity(
+            persisted_epoch,
+            declared_epoch,
+            manifest_exists,
+            options.access_mode,
+        )?;
         let tokenizer = crate::fts::tokenizer::Analyzer::new(
             options
                 .tokenizer
@@ -2353,17 +2424,7 @@ impl Store {
                 .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
         )
         .map_err(StoreError::Tokenizer)?;
-        if let Some(expected) = persisted_epoch.or(declared_epoch)
-            && tokenizer.epoch() != expected.tokenizer
-        {
-            return Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
-                expected,
-                declared: crate::epoch::EpochIdentity {
-                    embedding: expected.embedding,
-                    tokenizer: tokenizer.epoch(),
-                },
-            }));
-        }
+        validate_tokenizer_epoch(persisted_epoch.or(declared_epoch), &tokenizer)?;
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
         let (active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
@@ -2488,28 +2549,7 @@ impl Store {
             })?;
         store.recover_sealed_tombstones(&sealed_tombstones)?;
         if options.access_mode == AccessMode::ReadWrite {
-            let reachable_segments = store
-                .snapshot
-                .read()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "published snapshot",
-                })?
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot
-                        .all_segments()
-                        .iter()
-                        .map(|segment| store.directory.join(segment.meta().id.file_name()))
-                        .collect::<HashSet<_>>()
-                })
-                .ok_or(StoreError::Closed)?;
-            let cleanup_report = crate::manifest::io::cleanup_store_orphans(
-                store.vfs.as_ref(),
-                &store.directory,
-                &reachable_segments,
-                store.durability_policy,
-            )
-            .map_err(StoreError::Manifest)?;
+            let cleanup_report = cleanup_open_orphans(&store)?;
             #[cfg(any(test, feature = "test-support"))]
             if let Some(controller) = storage_fault_controller.as_ref() {
                 controller.record_cleanup_report(cleanup_report);

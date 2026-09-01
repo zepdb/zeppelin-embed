@@ -16,6 +16,7 @@ use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::{SegmentError, SegmentId};
+use crate::vfs::Vfs;
 
 use super::SegmentTier;
 use super::TierThresholds;
@@ -179,20 +180,53 @@ impl Store {
     }
 }
 
+fn empty_report(status: MaintenanceStatus) -> MaintenanceReport {
+    MaintenanceReport {
+        graphs_built: 0,
+        bytes_consumed: 0,
+        checkpoints_resumed: 0,
+        promotion_deferrals: Vec::new(),
+        graph_profiles: Vec::new(),
+        status,
+    }
+}
+
+fn admit_maintenance_rows(
+    segment: &SegmentReader,
+    params: crate::graph::GraphParams,
+    remaining_bytes: u64,
+) -> Result<(u64, u64), MaintenanceError> {
+    let stride = graph_work_stride(segment, params)?;
+    let maximum_rows = remaining_bytes / stride;
+    let admitted_rows = if maximum_rows >= u64::from(segment.meta().row_count) {
+        u64::from(segment.meta().row_count)
+    } else {
+        maximum_rows / MAINTENANCE_CHECKPOINT_ROWS * MAINTENANCE_CHECKPOINT_ROWS
+    };
+    Ok((stride, admitted_rows))
+}
+
+fn probe_checkpoint_resume(
+    vfs: &dyn Vfs,
+    path: std::path::PathBuf,
+) -> Result<(std::path::PathBuf, bool), MaintenanceError> {
+    match vfs.open(&path) {
+        Ok(_) => Ok((path, true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((path, false)),
+        Err(source) => Err(MaintenanceError::Graph(GraphBuildError::CheckpointIo {
+            path,
+            source,
+        })),
+    }
+}
+
 fn maintain_one(
     store: &Store,
     budget: MaintenanceBudget,
     thresholds: Option<TierThresholds>,
 ) -> Result<MaintenanceReport, MaintenanceError> {
     if budget.wall_time.is_zero() || budget.bytes == 0 {
-        return Ok(MaintenanceReport {
-            graphs_built: 0,
-            bytes_consumed: 0,
-            checkpoints_resumed: 0,
-            promotion_deferrals: Vec::new(),
-            graph_profiles: Vec::new(),
-            status: MaintenanceStatus::BudgetExhausted,
-        });
+        return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
     }
     let _maintenance = store.maintenance.lock().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {
@@ -212,14 +246,7 @@ fn maintain_one(
     }
     let build_time = budget.wall_time.mul_f64(0.9);
     if build_time.is_zero() {
-        return Ok(MaintenanceReport {
-            graphs_built: 0,
-            bytes_consumed: 0,
-            checkpoints_resumed: 0,
-            promotion_deferrals: Vec::new(),
-            graph_profiles: Vec::new(),
-            status: MaintenanceStatus::BudgetExhausted,
-        });
+        return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
     }
     // Keep ten percent of the host's wall budget for completed-artifact and
     // manifest publication after construction stops consulting the deadline.
@@ -265,28 +292,15 @@ fn maintain_one(
             .with_checkpoint_batch_rows(MAINTENANCE_CHECKPOINT_ROWS as u32)
             .map_err(MaintenanceError::Parameters)?;
         let remaining_bytes = budget.bytes.saturating_sub(report.bytes_consumed);
-        let stride = graph_work_stride(segment, params)?;
-        let maximum_rows = remaining_bytes / stride;
-        let admitted_rows = if maximum_rows >= u64::from(segment.meta().row_count) {
-            u64::from(segment.meta().row_count)
-        } else {
-            maximum_rows / MAINTENANCE_CHECKPOINT_ROWS * MAINTENANCE_CHECKPOINT_ROWS
-        };
+        let (stride, admitted_rows) = admit_maintenance_rows(segment, params, remaining_bytes)?;
         if admitted_rows == 0 {
             report.status = MaintenanceStatus::BudgetExhausted;
             return Ok(report);
         }
-        let checkpoint = checkpoint_path(&store.directory, segment.meta().id);
-        let checkpoint_resumed = match store.vfs.open(&checkpoint) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(source) => {
-                return Err(MaintenanceError::Graph(GraphBuildError::CheckpointIo {
-                    path: checkpoint,
-                    source,
-                }));
-            }
-        };
+        let (checkpoint, checkpoint_resumed) = probe_checkpoint_resume(
+            store.vfs.as_ref(),
+            checkpoint_path(&store.directory, segment.meta().id),
+        )?;
         report.checkpoints_resumed = report
             .checkpoints_resumed
             .checked_add(u64::from(checkpoint_resumed))
