@@ -2955,23 +2955,15 @@ impl Store {
         )
     }
 
-    /// Runs an exact structured lexical query over active and sealed text.
-    pub fn search_lexical(
-        &self,
-        query: &crate::fts::search::TermQuery,
-        k: usize,
-        control: QueryControl,
-    ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
-        let control = control.with_clock(Arc::clone(&self.clock));
-        let started = std::time::Instant::now();
+    fn admit_lexical_query(&self) -> Result<AdmittedLexicalQuery<'_>, QueryError> {
         let state = self
             .state
             .lock()
             .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
         match *state {
             StoreState::Open => {}
-            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing).into()),
-            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed).into()),
+            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed)),
         }
         let active_guard = self.active.lock().map_err(|_| {
             QueryError::Store(StoreError::Synchronization {
@@ -3000,51 +2992,39 @@ impl Store {
         };
         drop(active_guard);
         drop(state);
+        Ok(AdmittedLexicalQuery {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        })
+    }
 
-        enum LexicalSource {
-            Sealed(usize),
-            Active,
-        }
+    /// Runs an exact structured lexical query over active and sealed text.
+    pub fn search_lexical(
+        &self,
+        query: &crate::fts::search::TermQuery,
+        k: usize,
+        control: QueryControl,
+    ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
+        let control = control.with_clock(Arc::clone(&self.clock));
+        let started = std::time::Instant::now();
+        let AdmittedLexicalQuery {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        } = self.admit_lexical_query()?;
+
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let mut index = crate::fts::index::LexicalIndex::new();
-        let mut alive_sets = Vec::new();
-        let mut sources = Vec::new();
-        for (ordinal, segment) in snapshot.segments().iter().enumerate() {
-            if let Some(postings) = segment.query_postings().map_err(QueryError::Store)? {
-                if postings.row_count() != 0
-                    && segment
-                        .document_version(0)
-                        .map_err(StoreError::Segment)
-                        .map_err(QueryError::Store)?
-                        .is_none()
-                {
-                    return Err(crate::ingest::StoreLexicalError::MissingDocumentIdentity {
-                        segment_id: segment.meta().id,
-                    });
-                }
-                let alive = segment.query_alive().map_err(QueryError::Store)?;
-                let live_rows = alive.alive_bitmap();
-                index
-                    .push_shared_with_live_rows(postings, live_rows)
-                    .map_err(crate::planner::LexicalFilterError::from)?;
-                alive_sets.push(alive);
-                sources.push(LexicalSource::Sealed(ordinal));
-            }
-        }
-        if active.has_text() {
-            let sealed = active
-                .sealed_lexical(&self.accounting)
-                .map_err(QueryError::Store)?;
-            let active_alive = Arc::new(active.alive().map_err(QueryError::Store)?);
-            let live_rows = active_alive.alive_bitmap();
-            index
-                .push_shared_with_live_rows(sealed, live_rows)
-                .map_err(crate::planner::LexicalFilterError::from)?;
-            alive_sets.push(active_alive);
-            sources.push(LexicalSource::Active);
-        }
+        let LexicalAssembly {
+            index,
+            alive_sets,
+            sources,
+        } = assemble_lexical_index(&snapshot, &active, &self.accounting, true, None)
+            .map_err(map_store_lexical_assembly_error)?;
         let allow_lists = alive_sets
             .iter()
             .map(|alive| alive.alive_bitmap())
@@ -3060,32 +3040,9 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let mut candidates = Vec::with_capacity(lexical.result.hits.len());
         for hit in &lexical.result.hits {
-            let source = usize::try_from(hit.doc.segment)
-                .ok()
-                .and_then(|slot| sources.get(slot))
+            let document = structured_lexical_document(&snapshot, &active, &sources, hit.doc, true)
+                .map_err(map_store_lexical_document_error)?
                 .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
-            let row = usize::try_from(hit.doc.row)
-                .map_err(|_| QueryError::Store(StoreError::ActiveRowOverflow))?;
-            let document = match source {
-                LexicalSource::Sealed(ordinal) => snapshot
-                    .segments()
-                    .get(*ordinal)
-                    .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?
-                    .document_version(row)
-                    .map_err(StoreError::Segment)
-                    .map_err(QueryError::Store)?
-                    .ok_or(crate::ingest::StoreLexicalError::MissingDocumentIdentity {
-                        segment_id: snapshot
-                            .segments()
-                            .get(*ordinal)
-                            .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?
-                            .meta()
-                            .id,
-                    })?,
-                LexicalSource::Active => active
-                    .document(row)
-                    .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?,
-            };
             candidates.push(crate::ingest::LexicalCandidate {
                 document,
                 score: hit.score,
@@ -3121,82 +3078,28 @@ impl Store {
     {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
-        match *state {
-            StoreState::Open => {}
-            StoreState::Closing => return Err(QueryError::Store(StoreError::Closing).into()),
-            StoreState::Closed => return Err(QueryError::Store(StoreError::Closed).into()),
-        }
-        let active_guard = self.active.lock().map_err(|_| {
-            QueryError::Store(StoreError::Synchronization {
-                component: "active segment",
-            })
-        })?;
-        let active_state = active_guard
-            .as_ref()
-            .ok_or(QueryError::Store(StoreError::Closed))?;
-        let generation = active_state.generation;
-        let active = Arc::clone(&active_state.segment);
-        let snapshot = self
-            .snapshot
-            .read()
-            .map_err(|_| {
-                QueryError::Store(StoreError::Synchronization {
-                    component: "published snapshot",
-                })
-            })?
-            .as_ref()
-            .cloned()
-            .ok_or(QueryError::Store(StoreError::Closed))?;
-        self.active_queries.fetch_add(1, Ordering::Relaxed);
-        let active_query = ActiveQuery {
-            count: &self.active_queries,
-        };
-        drop(active_guard);
-        drop(state);
+        let AdmittedLexicalQuery {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        } = self.admit_lexical_query()?;
 
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let mut index = crate::fts::index::LexicalIndex::new();
-        let mut alive_sets = Vec::new();
-        let mut sources = Vec::new();
-        for (ordinal, segment) in snapshot.segments().iter().enumerate() {
-            cancellation.check_graph().map_err(QueryError::Scan)?;
-            if let Some(postings) = segment.query_postings().map_err(QueryError::Store)? {
-                if postings.row_count() != 0
-                    && segment
-                        .document_version(0)
-                        .map_err(StoreError::Segment)
-                        .map_err(QueryError::Store)?
-                        .is_none()
-                {
-                    return Err(crate::ingest::StoreLexicalError::MissingDocumentIdentity {
-                        segment_id: segment.meta().id,
-                    });
-                }
-                let alive = segment.query_alive().map_err(QueryError::Store)?;
-                index
-                    .push_shared_with_live_rows(Arc::clone(&postings), alive.alive_bitmap())
-                    .map_err(crate::planner::LexicalFilterError::from)?;
-                alive_sets.push(alive);
-                sources.push(StructuredLexicalSource::Sealed(ordinal));
-            }
-        }
-        if active.has_text() {
-            let sealed = active
-                .sealed_lexical(&self.accounting)
-                .map_err(QueryError::Store)?;
-            let alive = Arc::new(active.alive().map_err(QueryError::Store)?);
-            index
-                .push_shared_with_live_rows(sealed, alive.alive_bitmap())
-                .map_err(crate::planner::LexicalFilterError::from)?;
-            alive_sets.push(alive);
-            sources.push(StructuredLexicalSource::Active);
-        }
+        let LexicalAssembly {
+            index,
+            alive_sets,
+            sources,
+        } = assemble_lexical_index(
+            &snapshot,
+            &active,
+            &self.accounting,
+            true,
+            Some(&cancellation),
+        )
+        .map_err(map_store_lexical_assembly_error)?;
         let vocabulary = crate::fts::query::vocabulary(index.terms());
         let expansions = crate::fts::query::expand(query, &vocabulary)?;
         let allow_lists = alive_sets
@@ -3224,28 +3127,8 @@ impl Store {
                 &allow_lists,
                 || cancellation.check_graph(),
             )
-            .map_err(|error| match error {
-                crate::fts::search::ControlledSearchError::Index(error) => {
-                    crate::ingest::StoreLexicalError::from(
-                        crate::planner::LexicalFilterError::from(error),
-                    )
-                }
-                crate::fts::search::ControlledSearchError::Control(error) => {
-                    crate::ingest::StoreLexicalError::from(QueryError::Scan(error))
-                }
-            })?;
-            counters.docs_evaluated = counters
-                .docs_evaluated
-                .saturating_add(scored.counters.docs_evaluated);
-            counters.postings_decoded = counters
-                .postings_decoded
-                .saturating_add(scored.counters.postings_decoded);
-            counters.blocks_decoded = counters
-                .blocks_decoded
-                .saturating_add(scored.counters.blocks_decoded);
-            counters.blocks_skipped = counters
-                .blocks_skipped
-                .saturating_add(scored.counters.blocks_skipped);
+            .map_err(map_store_controlled_lexical_error)?;
+            accumulate_search_counters(&mut counters, &scored.counters);
             let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
             for hit in scored.hits {
                 let entry = aggregate.entry(hit.doc).or_default();
@@ -3698,10 +3581,276 @@ enum StructuredLexicalSource {
     Active,
 }
 
+struct LexicalAssembly {
+    index: crate::fts::index::LexicalIndex,
+    alive_sets: Vec<Arc<crate::meta::AliveSet>>,
+    sources: Vec<StructuredLexicalSource>,
+}
+
+enum LexicalAssemblyError {
+    Store(StoreError),
+    Lexical(crate::fts::index::IndexError),
+    MissingDocumentIdentity(crate::segment::SegmentId),
+    Cancelled(crate::scan::ScanError),
+}
+
+fn assemble_lexical_index(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    accounting: &Arc<stats::Accounting>,
+    require_document_identity: bool,
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<LexicalAssembly, LexicalAssemblyError> {
+    let mut index = crate::fts::index::LexicalIndex::new();
+    let mut alive_sets = Vec::new();
+    let mut sources = Vec::new();
+    for (ordinal, segment) in snapshot.segments().iter().enumerate() {
+        if let Some(cancellation) = cancellation {
+            cancellation
+                .check_graph()
+                .map_err(LexicalAssemblyError::Cancelled)?;
+        }
+        if let Some(postings) = segment
+            .query_postings()
+            .map_err(LexicalAssemblyError::Store)?
+        {
+            if require_document_identity
+                && postings.row_count() != 0
+                && segment
+                    .document_version(0)
+                    .map_err(StoreError::Segment)
+                    .map_err(LexicalAssemblyError::Store)?
+                    .is_none()
+            {
+                return Err(LexicalAssemblyError::MissingDocumentIdentity(
+                    segment.meta().id,
+                ));
+            }
+            let alive = segment.query_alive().map_err(LexicalAssemblyError::Store)?;
+            index
+                .push_shared_with_live_rows(postings, alive.alive_bitmap())
+                .map_err(LexicalAssemblyError::Lexical)?;
+            alive_sets.push(alive);
+            sources.push(StructuredLexicalSource::Sealed(ordinal));
+        }
+    }
+    if active.has_text() {
+        let sealed = active
+            .sealed_lexical(accounting)
+            .map_err(LexicalAssemblyError::Store)?;
+        let alive = Arc::new(active.alive().map_err(LexicalAssemblyError::Store)?);
+        index
+            .push_shared_with_live_rows(sealed, alive.alive_bitmap())
+            .map_err(LexicalAssemblyError::Lexical)?;
+        alive_sets.push(alive);
+        sources.push(StructuredLexicalSource::Active);
+    }
+    Ok(LexicalAssembly {
+        index,
+        alive_sets,
+        sources,
+    })
+}
+
+fn map_store_lexical_assembly_error(
+    error: LexicalAssemblyError,
+) -> crate::ingest::StoreLexicalError {
+    match error {
+        LexicalAssemblyError::Store(error) => QueryError::Store(error).into(),
+        LexicalAssemblyError::Lexical(error) => {
+            crate::planner::LexicalFilterError::from(error).into()
+        }
+        LexicalAssemblyError::MissingDocumentIdentity(segment_id) => {
+            crate::ingest::StoreLexicalError::MissingDocumentIdentity { segment_id }
+        }
+        LexicalAssemblyError::Cancelled(error) => QueryError::Scan(error).into(),
+    }
+}
+
+fn map_fusion_lexical_assembly_error(error: LexicalAssemblyError) -> crate::fusion::FusionError {
+    match error {
+        LexicalAssemblyError::Store(error) => crate::fusion::FusionError::Leg {
+            leg: crate::fusion::FusionLeg::Lexical,
+            kind: crate::fusion::LegFailureKind::Store(error.kind()),
+            detail: error.to_string(),
+        },
+        LexicalAssemblyError::Lexical(error) => crate::fusion::FusionError::Leg {
+            leg: crate::fusion::FusionLeg::Lexical,
+            kind: crate::fusion::LegFailureKind::Lexical,
+            detail: error.to_string(),
+        },
+        LexicalAssemblyError::MissingDocumentIdentity(segment_id) => {
+            crate::fusion::FusionError::Leg {
+                leg: crate::fusion::FusionLeg::Lexical,
+                kind: crate::fusion::LegFailureKind::Invariant,
+                detail: format!("sealed lexical segment {segment_id} has no document identity"),
+            }
+        }
+        LexicalAssemblyError::Cancelled(error) => {
+            crate::fusion::FusionError::from(QueryError::Scan(error))
+        }
+    }
+}
+
+fn accumulate_search_counters(
+    total: &mut crate::fts::search::SearchCounters,
+    delta: &crate::fts::search::SearchCounters,
+) {
+    total.docs_evaluated = total.docs_evaluated.saturating_add(delta.docs_evaluated);
+    total.postings_decoded = total
+        .postings_decoded
+        .saturating_add(delta.postings_decoded);
+    total.blocks_decoded = total.blocks_decoded.saturating_add(delta.blocks_decoded);
+    total.blocks_skipped = total.blocks_skipped.saturating_add(delta.blocks_skipped);
+}
+
+fn map_store_controlled_lexical_error(
+    error: crate::fts::search::ControlledSearchError<crate::scan::ScanError>,
+) -> crate::ingest::StoreLexicalError {
+    match error {
+        crate::fts::search::ControlledSearchError::Index(error) => {
+            crate::planner::LexicalFilterError::from(error).into()
+        }
+        crate::fts::search::ControlledSearchError::Control(error) => QueryError::Scan(error).into(),
+    }
+}
+
+fn map_fusion_controlled_lexical_error(
+    error: crate::fts::search::ControlledSearchError<crate::scan::ScanError>,
+) -> crate::fusion::FusionError {
+    match error {
+        crate::fts::search::ControlledSearchError::Index(error) => {
+            crate::fusion::FusionError::Leg {
+                leg: crate::fusion::FusionLeg::Lexical,
+                kind: crate::fusion::LegFailureKind::Lexical,
+                detail: error.to_string(),
+            }
+        }
+        crate::fts::search::ControlledSearchError::Control(error) => {
+            crate::fusion::FusionError::from(QueryError::Scan(error))
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PinnedLexicalQuery<'a> {
     Term(&'a crate::fts::search::TermQuery),
     Structured(&'a crate::fts::query::LexicalQuery),
+}
+
+enum LexicalDocumentError {
+    SourceOrdinalOutOfRange,
+    RowOverflow,
+    SealedSourceAbsent,
+    Segment(crate::segment::SegmentError),
+    MissingDocumentIdentity(crate::segment::SegmentId),
+    ActiveRowAbsent,
+}
+
+fn structured_lexical_document(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    sources: &[StructuredLexicalSource],
+    doc: crate::fts::search::GlobalDocId,
+    require_document_identity: bool,
+) -> Result<Option<crate::ingest::DocumentVersion>, LexicalDocumentError> {
+    let source = usize::try_from(doc.segment)
+        .ok()
+        .and_then(|slot| sources.get(slot))
+        .ok_or(LexicalDocumentError::SourceOrdinalOutOfRange)?;
+    let row = usize::try_from(doc.row).map_err(|_| LexicalDocumentError::RowOverflow)?;
+    match source {
+        StructuredLexicalSource::Sealed(ordinal) => {
+            let segment = snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or(LexicalDocumentError::SealedSourceAbsent)?;
+            let document = segment
+                .document_version(row)
+                .map_err(LexicalDocumentError::Segment)?;
+            if require_document_identity && document.is_none() {
+                return Err(LexicalDocumentError::MissingDocumentIdentity(
+                    segment.meta().id,
+                ));
+            }
+            Ok(document)
+        }
+        StructuredLexicalSource::Active => {
+            let document = active.document(row);
+            if require_document_identity && document.is_none() {
+                return Err(LexicalDocumentError::ActiveRowAbsent);
+            }
+            Ok(document)
+        }
+    }
+}
+
+fn map_store_lexical_document_error(
+    error: LexicalDocumentError,
+) -> crate::ingest::StoreLexicalError {
+    match error {
+        LexicalDocumentError::SourceOrdinalOutOfRange
+        | LexicalDocumentError::RowOverflow
+        | LexicalDocumentError::SealedSourceAbsent
+        | LexicalDocumentError::ActiveRowAbsent => {
+            QueryError::Store(StoreError::ActiveRowOverflow).into()
+        }
+        LexicalDocumentError::Segment(error) => {
+            QueryError::Store(StoreError::Segment(error)).into()
+        }
+        LexicalDocumentError::MissingDocumentIdentity(segment_id) => {
+            crate::ingest::StoreLexicalError::MissingDocumentIdentity { segment_id }
+        }
+    }
+}
+
+fn map_fusion_lexical_document_error(
+    error: LexicalDocumentError,
+    invariant_kind: crate::fusion::LegFailureKind,
+    segment_kind: crate::fusion::LegFailureKind,
+) -> crate::fusion::FusionError {
+    let (kind, detail) = match error {
+        LexicalDocumentError::SourceOrdinalOutOfRange => (
+            invariant_kind,
+            "lexical source ordinal is out of range".to_owned(),
+        ),
+        LexicalDocumentError::RowOverflow => {
+            (invariant_kind, "lexical row exceeds usize".to_owned())
+        }
+        LexicalDocumentError::SealedSourceAbsent => {
+            (invariant_kind, "lexical sealed source is absent".to_owned())
+        }
+        LexicalDocumentError::Segment(error) => (segment_kind, error.to_string()),
+        LexicalDocumentError::MissingDocumentIdentity(segment_id) => (
+            invariant_kind,
+            format!("sealed lexical segment {segment_id} has no document identity"),
+        ),
+        LexicalDocumentError::ActiveRowAbsent => (
+            invariant_kind,
+            "lexical active source row is absent".to_owned(),
+        ),
+    };
+    crate::fusion::FusionError::Leg {
+        leg: crate::fusion::FusionLeg::Lexical,
+        kind,
+        detail,
+    }
+}
+
+fn map_structured_leg_document_error(error: LexicalDocumentError) -> crate::fusion::FusionError {
+    map_fusion_lexical_document_error(
+        error,
+        crate::fusion::LegFailureKind::Lexical,
+        crate::fusion::LegFailureKind::Lexical,
+    )
+}
+
+fn map_term_leg_document_error(error: LexicalDocumentError) -> crate::fusion::FusionError {
+    map_fusion_lexical_document_error(
+        error,
+        crate::fusion::LegFailureKind::Invariant,
+        crate::fusion::LegFailureKind::Segment,
+    )
 }
 
 fn structured_lexical_row<'a>(
@@ -3806,61 +3955,12 @@ fn exact_structured_lexical_leg(
         kind: crate::fusion::LegFailureKind::Lexical,
         detail,
     };
-    let mut index = crate::fts::index::LexicalIndex::new();
-    let mut alive_sets = Vec::new();
-    let mut sources = Vec::new();
-    for (ordinal, segment) in snapshot.segments().iter().enumerate() {
-        cancellation
-            .check_graph()
-            .map_err(QueryError::Scan)
-            .map_err(crate::fusion::FusionError::from)?;
-        if let Some(postings) =
-            segment
-                .query_postings()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?
-        {
-            let alive = segment
-                .query_alive()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?;
-            index
-                .push_shared_with_live_rows(postings, alive.alive_bitmap())
-                .map_err(|error| lexical_error(error.to_string()))?;
-            alive_sets.push(alive);
-            sources.push(StructuredLexicalSource::Sealed(ordinal));
-        }
-    }
-    if active.has_text() {
-        let sealed =
-            active
-                .sealed_lexical(accounting)
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?;
-        let alive = Arc::new(
-            active
-                .alive()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?,
-        );
-        index
-            .push_shared_with_live_rows(sealed, alive.alive_bitmap())
-            .map_err(|error| lexical_error(error.to_string()))?;
-        alive_sets.push(alive);
-        sources.push(StructuredLexicalSource::Active);
-    }
+    let LexicalAssembly {
+        index,
+        alive_sets,
+        sources,
+    } = assemble_lexical_index(snapshot, active, accounting, false, Some(cancellation))
+        .map_err(map_fusion_lexical_assembly_error)?;
     let vocabulary = crate::fts::query::vocabulary(index.terms());
     let expansions = crate::fts::query::expand(query, &vocabulary)
         .map_err(|error| lexical_error(error.to_string()))?;
@@ -3892,26 +3992,8 @@ fn exact_structured_lexical_leg(
             &allow_lists,
             || cancellation.check_graph(),
         )
-        .map_err(|error| match error {
-            crate::fts::search::ControlledSearchError::Index(error) => {
-                lexical_error(error.to_string())
-            }
-            crate::fts::search::ControlledSearchError::Control(error) => {
-                crate::fusion::FusionError::from(QueryError::Scan(error))
-            }
-        })?;
-        counters.docs_evaluated = counters
-            .docs_evaluated
-            .saturating_add(result.counters.docs_evaluated);
-        counters.postings_decoded = counters
-            .postings_decoded
-            .saturating_add(result.counters.postings_decoded);
-        counters.blocks_decoded = counters
-            .blocks_decoded
-            .saturating_add(result.counters.blocks_decoded);
-        counters.blocks_skipped = counters
-            .blocks_skipped
-            .saturating_add(result.counters.blocks_skipped);
+        .map_err(map_fusion_controlled_lexical_error)?;
+        accumulate_search_counters(&mut counters, &result.counters);
         let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
         for hit in result.hits {
             *aggregate.entry(hit.doc).or_default() += hit.score * boost;
@@ -3938,22 +4020,9 @@ fn exact_structured_lexical_leg(
     });
     let mut joined = Vec::with_capacity(scored.len());
     for (doc, score) in scored {
-        let source = usize::try_from(doc.segment)
-            .ok()
-            .and_then(|slot| sources.get(slot))
-            .ok_or_else(|| lexical_error("lexical source ordinal is out of range".to_owned()))?;
-        let row = usize::try_from(doc.row)
-            .map_err(|_| lexical_error("lexical row exceeds usize".to_owned()))?;
-        let document = match source {
-            StructuredLexicalSource::Sealed(ordinal) => snapshot
-                .segments()
-                .get(*ordinal)
-                .ok_or_else(|| lexical_error("lexical sealed source is absent".to_owned()))?
-                .document_version(row)
-                .map_err(|error| lexical_error(error.to_string()))?
-                .map(|version| version.doc_id()),
-            StructuredLexicalSource::Active => active.document(row).map(|version| version.doc_id()),
-        };
+        let document = structured_lexical_document(snapshot, active, &sources, doc, false)
+            .map_err(map_structured_leg_document_error)?
+            .map(|version| version.doc_id());
         joined.push(crate::fusion::LexicalCandidate::new(document, score));
     }
     Ok((joined, counters, expansions))
@@ -3985,76 +4054,12 @@ fn exact_lexical_leg(
     query: &crate::fts::search::TermQuery,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
-    enum Source {
-        Sealed(usize),
-        Active,
-    }
-    let mut index = crate::fts::index::LexicalIndex::new();
-    let mut alive_sets = Vec::new();
-    let mut sources = Vec::new();
-    for (ordinal, segment) in snapshot.segments().iter().enumerate() {
-        cancellation
-            .check_graph()
-            .map_err(QueryError::Scan)
-            .map_err(crate::fusion::FusionError::from)?;
-        if let Some(postings) =
-            segment
-                .query_postings()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?
-        {
-            let alive = segment
-                .query_alive()
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?;
-            let live_rows = alive.alive_bitmap();
-            index
-                .push_shared_with_live_rows(postings, live_rows)
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Lexical,
-                    detail: error.to_string(),
-                })?;
-            alive_sets.push(alive);
-            sources.push(Source::Sealed(ordinal));
-        }
-    }
-    if active.has_text() {
-        let sealed =
-            active
-                .sealed_lexical(accounting)
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                    detail: error.to_string(),
-                })?;
-        let active_alive =
-            Arc::new(
-                active
-                    .alive()
-                    .map_err(|error| crate::fusion::FusionError::Leg {
-                        leg: crate::fusion::FusionLeg::Lexical,
-                        kind: crate::fusion::LegFailureKind::Store(error.kind()),
-                        detail: error.to_string(),
-                    })?,
-            );
-        let live_rows = active_alive.alive_bitmap();
-        index
-            .push_shared_with_live_rows(sealed, live_rows)
-            .map_err(|error| crate::fusion::FusionError::Leg {
-                leg: crate::fusion::FusionLeg::Lexical,
-                kind: crate::fusion::LegFailureKind::Lexical,
-                detail: error.to_string(),
-            })?;
-        alive_sets.push(active_alive);
-        sources.push(Source::Active);
-    }
+    let LexicalAssembly {
+        index,
+        alive_sets,
+        sources,
+    } = assemble_lexical_index(snapshot, active, accounting, false, Some(cancellation))
+        .map_err(map_fusion_lexical_assembly_error)?;
     if index.segments().is_empty() {
         return Ok((
             Vec::new(),
@@ -4084,51 +4089,12 @@ fn exact_lexical_leg(
         &allow_lists,
         || cancellation.check_graph(),
     )
-    .map_err(|error| match error {
-        crate::fts::search::ControlledSearchError::Index(error) => {
-            crate::fusion::FusionError::Leg {
-                leg: crate::fusion::FusionLeg::Lexical,
-                kind: crate::fusion::LegFailureKind::Lexical,
-                detail: error.to_string(),
-            }
-        }
-        crate::fts::search::ControlledSearchError::Control(error) => {
-            crate::fusion::FusionError::from(QueryError::Scan(error))
-        }
-    })?;
+    .map_err(map_fusion_controlled_lexical_error)?;
     let mut joined = Vec::with_capacity(result.hits.len());
     for hit in result.hits {
-        let source = usize::try_from(hit.doc.segment)
-            .ok()
-            .and_then(|slot| sources.get(slot))
-            .ok_or_else(|| crate::fusion::FusionError::Leg {
-                leg: crate::fusion::FusionLeg::Lexical,
-                kind: crate::fusion::LegFailureKind::Invariant,
-                detail: "lexical source ordinal is out of range".to_owned(),
-            })?;
-        let row = usize::try_from(hit.doc.row).map_err(|_| crate::fusion::FusionError::Leg {
-            leg: crate::fusion::FusionLeg::Lexical,
-            kind: crate::fusion::LegFailureKind::Invariant,
-            detail: "lexical row exceeds usize".to_owned(),
-        })?;
-        let document = match source {
-            Source::Sealed(ordinal) => snapshot
-                .segments()
-                .get(*ordinal)
-                .ok_or_else(|| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Invariant,
-                    detail: "lexical sealed source is absent".to_owned(),
-                })?
-                .document_version(row)
-                .map_err(|error| crate::fusion::FusionError::Leg {
-                    leg: crate::fusion::FusionLeg::Lexical,
-                    kind: crate::fusion::LegFailureKind::Segment,
-                    detail: error.to_string(),
-                })?
-                .map(|version| version.doc_id()),
-            Source::Active => active.document(row).map(|version| version.doc_id()),
-        };
+        let document = structured_lexical_document(snapshot, active, &sources, hit.doc, false)
+            .map_err(map_term_leg_document_error)?
+            .map(|version| version.doc_id());
         joined.push(crate::fusion::LexicalCandidate::new(document, hit.score));
     }
     Ok((
@@ -5246,6 +5212,13 @@ pub(crate) fn reserve_global_candidates(
             component: "vector search global candidates",
         })
     })
+}
+
+struct AdmittedLexicalQuery<'a> {
+    generation: u64,
+    active: Arc<crate::ingest::ActiveSegment>,
+    snapshot: Arc<PublishedSnapshot>,
+    active_query: ActiveQuery<'a>,
 }
 
 struct AdmittedVectorSearch<'a> {
