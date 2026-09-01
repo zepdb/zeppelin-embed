@@ -529,7 +529,7 @@ fn empty_query_result(abi_size: u32) -> ZeQueryResult {
     }
 }
 
-fn publish_hits<T: Copy + 'static>(hits: Vec<T>) -> Result<(*mut T, usize), FfiError> {
+fn publish_hits<T: Copy + 'static>(hits: Vec<T>) -> Result<(*mut T, usize, u32), FfiError> {
     let mut hits = hits.into_boxed_slice();
     let hit_count = hits.len();
     let hit_pointer = if hits.is_empty() {
@@ -537,11 +537,11 @@ fn publish_hits<T: Copy + 'static>(hits: Vec<T>) -> Result<(*mut T, usize), FfiE
     } else {
         hits.as_mut_ptr()
     };
-    registry::register_result(hit_pointer, hit_count)?;
+    let allocation_generation = registry::register_result(hit_pointer, hit_count)?;
     if !hits.is_empty() {
         let _raw = Box::into_raw(hits);
     }
-    Ok((hit_pointer, hit_count))
+    Ok((hit_pointer, hit_count, allocation_generation))
 }
 
 fn fill_diagnostics(
@@ -1063,12 +1063,12 @@ pub extern "C" fn ze_search(
                         reserved_tail: 0,
                     });
                 }
-                let (hit_pointer, hit_count) = publish_hits(hits)?;
+                let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
                 marshal::write_output(
                     out_result,
                     ZeSearchResult {
                         abi_size,
-                        abi_reserved: 0,
+                        abi_reserved: allocation_generation,
                         hits: hit_pointer,
                         hit_count,
                         generation: outcome.generation,
@@ -1298,7 +1298,8 @@ pub extern "C" fn ze_query(
                         ));
                     }
                 }
-                let (hit_pointer, hit_count) = publish_hits(hits)?;
+                let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
+                result.abi_reserved = allocation_generation;
                 result.hits = hit_pointer;
                 result.hit_count = hit_count;
                 marshal::write_output(out_result, result);
@@ -1332,9 +1333,9 @@ pub extern "C" fn ze_query_result_free(result: *mut ZeQueryResult) -> ZeErrorCod
                         "zero-sized query result contains an allocation",
                     ));
                 }
-                let abi_size = marshal::validate_output(result)?;
+                marshal::validate_abi_size::<ZeQueryResult>(abi_size)?;
                 let current = marshal::read_value(result);
-                registry::take_result(current.hits, current.hit_count)?;
+                registry::take_result(current.hits, current.hit_count, current.abi_reserved)?;
                 marshal::write_output(result, empty_query_result(abi_size));
                 Ok(())
             })(),
@@ -1761,9 +1762,9 @@ pub extern "C" fn ze_search_result_free(result: *mut ZeSearchResult) -> ZeErrorC
                         "zero-sized search result contains an allocation",
                     ));
                 }
-                let abi_size = marshal::validate_output(result)?;
+                marshal::validate_abi_size::<ZeSearchResult>(abi_size)?;
                 let current = marshal::read_value(result);
-                registry::take_result(current.hits, current.hit_count)?;
+                registry::take_result(current.hits, current.hit_count, current.abi_reserved)?;
                 marshal::write_output(result, empty_search_result(abi_size));
                 Ok(())
             })(),

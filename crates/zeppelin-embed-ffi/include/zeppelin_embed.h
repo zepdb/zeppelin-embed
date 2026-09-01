@@ -780,7 +780,7 @@ typedef struct ZeSearchResult {
      */
     uint32_t abi_size;
     /*
-     Must be zero in ABI v1.
+     Caller sets zero; callee returns an opaque allocation generation.
      */
     uint32_t abi_reserved;
     /*
@@ -1014,7 +1014,7 @@ typedef struct ZeQueryResult {
      */
     uint32_t abi_size;
     /*
-     Must be zero in ABI v1.
+     Caller sets zero; callee returns an opaque allocation generation.
      */
     uint32_t abi_reserved;
     /*

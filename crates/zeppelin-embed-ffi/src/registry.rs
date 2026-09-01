@@ -35,11 +35,69 @@ fn cancels() -> &'static Mutex<Vec<CancelSlot>> {
 struct ResultAllocation {
     length: usize,
     element: std::any::TypeId,
+    generation: u32,
 }
 
-fn result_allocations() -> &'static Mutex<HashMap<usize, ResultAllocation>> {
-    static ALLOCATIONS: OnceLock<Mutex<HashMap<usize, ResultAllocation>>> = OnceLock::new();
-    ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+struct ResultAllocations {
+    allocations: HashMap<usize, ResultAllocation>,
+    next_generation: u32,
+}
+
+impl ResultAllocations {
+    fn new() -> Self {
+        Self {
+            allocations: HashMap::new(),
+            next_generation: 1,
+        }
+    }
+
+    fn register<T: 'static>(&mut self, pointer: *mut T, length: usize) -> Result<u32, FfiError> {
+        if self.allocations.contains_key(&(pointer as usize)) {
+            return Err(FfiError::invalid("result allocation is already registered"));
+        }
+        let generation = self.next_generation;
+        if generation == 0 {
+            return Err(FfiError::new(
+                ZeErrorCode::ZeErrOutOfMemory,
+                "result allocation generations are exhausted",
+            ));
+        }
+        bump_generation(&mut self.next_generation);
+        self.allocations.insert(
+            pointer as usize,
+            ResultAllocation {
+                length,
+                element: std::any::TypeId::of::<T>(),
+                generation,
+            },
+        );
+        Ok(generation)
+    }
+
+    fn take<T: 'static>(
+        &mut self,
+        pointer: *mut T,
+        length: usize,
+        generation: u32,
+    ) -> Result<(), FfiError> {
+        let expected = ResultAllocation {
+            length,
+            element: std::any::TypeId::of::<T>(),
+            generation,
+        };
+        if self.allocations.get(&(pointer as usize)) != Some(&expected) {
+            return Err(FfiError::invalid(
+                "result was already freed or was not allocated by this ABI",
+            ));
+        }
+        self.allocations.remove(&(pointer as usize));
+        Ok(())
+    }
+}
+
+fn result_allocations() -> &'static Mutex<ResultAllocations> {
+    static ALLOCATIONS: OnceLock<Mutex<ResultAllocations>> = OnceLock::new();
+    ALLOCATIONS.get_or_init(|| Mutex::new(ResultAllocations::new()))
 }
 
 fn global_error() -> &'static Mutex<String> {
@@ -237,9 +295,9 @@ pub(crate) fn free_cancel(handle: ZeCancelToken) -> Result<(), FfiError> {
     Ok(())
 }
 
-pub(crate) fn register_result<T: 'static>(pointer: *mut T, length: usize) -> Result<(), FfiError> {
+pub(crate) fn register_result<T: 'static>(pointer: *mut T, length: usize) -> Result<u32, FfiError> {
     if length == 0 {
-        return Ok(());
+        return Ok(0);
     }
     result_allocations()
         .lock()
@@ -249,41 +307,33 @@ pub(crate) fn register_result<T: 'static>(pointer: *mut T, length: usize) -> Res
                 "result allocation registry mutex is poisoned",
             )
         })?
-        .insert(
-            pointer as usize,
-            ResultAllocation {
-                length,
-                element: std::any::TypeId::of::<T>(),
-            },
-        );
-    Ok(())
+        .register(pointer, length)
 }
 
-pub(crate) fn take_result<T: 'static>(pointer: *mut T, length: usize) -> Result<(), FfiError> {
+pub(crate) fn take_result<T: 'static>(
+    pointer: *mut T,
+    length: usize,
+    generation: u32,
+) -> Result<(), FfiError> {
     if pointer.is_null() && length == 0 {
-        return Ok(());
+        return if generation == 0 {
+            Ok(())
+        } else {
+            Err(FfiError::invalid(
+                "empty result has a nonzero allocation generation",
+            ))
+        };
     }
     if pointer.is_null() || length == 0 {
         return Err(FfiError::invalid("result pointer and length disagree"));
     }
-    let expected = ResultAllocation {
-        length,
-        element: std::any::TypeId::of::<T>(),
-    };
     let mut allocations = result_allocations().lock().map_err(|_| {
         FfiError::new(
             ZeErrorCode::ZeErrSynchronization,
             "result allocation registry mutex is poisoned",
         )
     })?;
-    // Compare before removing: a mismatched free must leave the genuine
-    // registration in place so the correct free can still succeed.
-    if allocations.get(&(pointer as usize)) != Some(&expected) {
-        return Err(FfiError::invalid(
-            "result was already freed or was not allocated by this ABI",
-        ));
-    }
-    allocations.remove(&(pointer as usize));
+    allocations.take(pointer, length, generation)?;
     drop(allocations);
     let slice = std::ptr::slice_from_raw_parts_mut(pointer, length);
     unsafe { drop(Box::from_raw(slice)) };
@@ -329,10 +379,13 @@ mod tests {
 
     #[test]
     fn result_registry_preserves_a_valid_allocation_after_hostile_frees() {
-        register_result(std::ptr::null_mut::<u32>(), 0).expect("empty registration");
-        take_result(std::ptr::null_mut::<u32>(), 0).expect("empty free");
         assert_eq!(
-            take_result(std::ptr::null_mut::<u32>(), 1)
+            register_result(std::ptr::null_mut::<u32>(), 0).expect("empty registration"),
+            0
+        );
+        take_result(std::ptr::null_mut::<u32>(), 0, 0).expect("empty free");
+        assert_eq!(
+            take_result(std::ptr::null_mut::<u32>(), 1, 0)
                 .expect_err("null nonempty")
                 .code,
             ZeErrorCode::ZeErrInvalidArgument
@@ -341,24 +394,53 @@ mod tests {
         let values = vec![3_u32, 5, 8].into_boxed_slice();
         let length = values.len();
         let pointer = Box::into_raw(values).cast::<u32>();
-        register_result(pointer, length).expect("register result");
+        let generation = register_result(pointer, length).expect("register result");
         assert_eq!(
-            take_result(pointer, length - 1)
+            take_result(pointer, length - 1, generation)
                 .expect_err("wrong length")
                 .code,
             ZeErrorCode::ZeErrInvalidArgument
         );
         assert_eq!(
-            take_result(pointer.cast::<u8>(), length)
+            take_result(pointer.cast::<u8>(), length, generation)
                 .expect_err("wrong type")
                 .code,
             ZeErrorCode::ZeErrInvalidArgument
         );
-        take_result(pointer, length).expect("correct free");
+        take_result(pointer, length, generation).expect("correct free");
         assert_eq!(
-            take_result(pointer, length).expect_err("double free").code,
+            take_result(pointer, length, generation)
+                .expect_err("double free")
+                .code,
             ZeErrorCode::ZeErrInvalidArgument
         );
+    }
+
+    #[test]
+    fn stale_free_after_address_reuse_is_rejected() {
+        let first = vec![()].into_boxed_slice();
+        let length = first.len();
+        let pointer = Box::into_raw(first).cast::<()>();
+        let first_generation = register_result(pointer, length).expect("register first result");
+        take_result(pointer, length, first_generation).expect("free first result");
+
+        let reused = vec![()].into_boxed_slice();
+        let reused_pointer = Box::into_raw(reused).cast::<()>();
+        assert_eq!(
+            reused_pointer, pointer,
+            "ZST address is deterministically reused"
+        );
+        let reused_generation =
+            register_result(reused_pointer, length).expect("register reused result");
+        assert_ne!(reused_generation, first_generation);
+
+        assert_eq!(
+            take_result(pointer, length, first_generation)
+                .expect_err("reject stale free")
+                .code,
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        take_result(reused_pointer, length, reused_generation).expect("free reused result");
     }
 
     #[test]

@@ -312,7 +312,7 @@ pub struct ZeSearchHit {
 pub struct ZeSearchResult {
     /// Caller-provided structure size.
     pub abi_size: u32,
-    /// Must be zero in ABI v1.
+    /// Caller sets zero; callee returns an opaque allocation generation.
     pub abi_reserved: u32,
     /// Callee-owned hit array, or null when `hit_count` is zero.
     pub hits: *mut ZeSearchHit,
@@ -746,7 +746,7 @@ pub struct ZeQueryHit {
 pub struct ZeQueryResult {
     /// Caller-provided structure size.
     pub abi_size: u32,
-    /// Must be zero in ABI v1.
+    /// Caller sets zero; callee returns an opaque allocation generation.
     pub abi_reserved: u32,
     /// Callee-owned hit array, or null when `hit_count` is zero.
     pub hits: *mut ZeQueryHit,
