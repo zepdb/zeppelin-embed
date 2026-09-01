@@ -378,13 +378,8 @@ impl WalWriter {
         first_seq: LogSeq,
         policy: DurabilityPolicy,
     ) -> Result<Self, WalWriteError> {
-        let created = match vfs.open(path) {
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(WalWriteError::from_io(error)),
-        };
         let mut writer = Self::create(vfs.as_ref(), path, first_seq, policy)?;
-        if created && let SyncRequirement::Sync(kind) = policy.directory_sync() {
+        if let SyncRequirement::Sync(kind) = policy.directory_sync() {
             writer.created_directory_sync = Mutex::new(Some(CreatedDirectorySync {
                 vfs,
                 directory: directory.to_path_buf(),

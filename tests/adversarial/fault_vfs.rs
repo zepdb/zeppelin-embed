@@ -235,6 +235,14 @@ impl FaultEvent {
             self.fire_count
         )
     }
+
+    #[must_use]
+    pub fn is_wal_create_before_directory_sync(&self) -> bool {
+        self.layer == Layer::Crash
+            && self.site == FaultSite::Sync
+            && self.mode == FaultMode::Crash
+            && self.expected_matches == Some(2)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -249,6 +257,7 @@ struct Runtime {
 #[derive(Clone, Debug)]
 struct TrackedFile {
     durable_bytes: Option<Vec<u8>>,
+    directory_synced: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -315,14 +324,18 @@ impl<V: Vfs> SimulatedCrashVfs<V> {
         if self.lock_state()?.files.contains_key(path) {
             return Ok(());
         }
-        let durable_bytes = match self.inner.read(path) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        let (durable_bytes, directory_synced) = match self.inner.read(path) {
+            Ok(bytes) => (Some(bytes), true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
             Err(error) => return Err(error),
         };
-        self.lock_state()?
-            .files
-            .insert(path.to_path_buf(), TrackedFile { durable_bytes });
+        self.lock_state()?.files.insert(
+            path.to_path_buf(),
+            TrackedFile {
+                durable_bytes,
+                directory_synced,
+            },
+        );
         Ok(())
     }
 
@@ -339,6 +352,11 @@ impl<V: Vfs> SimulatedCrashVfs<V> {
                     delete.directory_synced = true;
                 }
             }
+            for (file_path, file) in &mut state.files {
+                if file_path.parent() == Some(path) {
+                    file.directory_synced = true;
+                }
+            }
             return Ok(());
         }
         let bytes = self.inner.read(path)?;
@@ -347,6 +365,7 @@ impl<V: Vfs> SimulatedCrashVfs<V> {
             .entry(path.to_path_buf())
             .or_insert_with(|| TrackedFile {
                 durable_bytes: None,
+                directory_synced: false,
             })
             .durable_bytes = Some(bytes);
         Ok(())
@@ -380,13 +399,13 @@ impl<V: Vfs> SimulatedCrashVfs<V> {
         }
 
         for (path, file) in files {
-            match file.durable_bytes {
-                Some(bytes) => self.inner.write(&path, &bytes)?,
-                None => match self.inner.delete(&path) {
+            match (file.directory_synced, file.durable_bytes) {
+                (false, _) | (true, None) => match self.inner.delete(&path) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 },
+                (true, Some(bytes)) => self.inner.write(&path, &bytes)?,
             }
         }
         for delete in deletes
@@ -398,6 +417,14 @@ impl<V: Vfs> SimulatedCrashVfs<V> {
         }
         self.lock_state()?.crashed = true;
         Ok(())
+    }
+
+    fn dirent_is_durable(&self, path: &Path) -> std::io::Result<bool> {
+        Ok(self
+            .lock_state()?
+            .files
+            .get(path)
+            .is_none_or(|file| file.directory_synced))
     }
 }
 
@@ -513,12 +540,17 @@ impl<V: Vfs + 'static> Vfs for SimulatedCrashVfs<V> {
         let bytes = self.inner.read(path)?;
         self.inner.delete(path)?;
         let mut state = self.lock_state()?;
-        state.files.remove(path);
-        state.deletes.push(TrackedDelete {
-            path: path.to_path_buf(),
-            bytes,
-            directory_synced: false,
-        });
+        let dirent_was_durable = state
+            .files
+            .remove(path)
+            .is_none_or(|file| file.directory_synced);
+        if dirent_was_durable {
+            state.deletes.push(TrackedDelete {
+                path: path.to_path_buf(),
+                bytes,
+                directory_synced: false,
+            });
+        }
         Ok(())
     }
 }
@@ -1289,6 +1321,14 @@ impl ScheduledVfs<SimulatedCrashVfs<StdVfs>> {
             Arc::clone(&self.clock),
         )
     }
+
+    pub fn simulate_crash(&self) -> std::io::Result<()> {
+        self.crash_now()
+    }
+
+    pub fn dirent_is_durable(&self, path: &Path) -> std::io::Result<bool> {
+        self.inner.dirent_is_durable(path)
+    }
 }
 
 struct ScheduledFile {
@@ -1773,12 +1813,21 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
             } else {
                 cancel_nth_match.unwrap_or_else(|| rng.random_range(1..=4))
             };
-            let known_matches = expected_matches(operation, site);
+            let first_wal_mutation =
+                is_wal_mutation(operation) && !program.ops[..op_index].iter().any(is_wal_mutation);
+            let known_matches = expected_matches(operation, site, first_wal_mutation);
             let (nth_match, expected_matches) = if layer == Layer::Busy {
                 (1, None)
             } else {
                 match (operation, known_matches) {
                     (Op::Crash { .. }, Some(count)) => (count, None),
+                    (_, Some(count)) if first_wal_mutation && site == FaultSite::Sync => {
+                        if drawn_nth_match > count {
+                            (LAST_MATCH, Some(count))
+                        } else {
+                            (drawn_nth_match, Some(count))
+                        }
+                    }
                     (_, Some(count)) if drawn_nth_match > count => (LAST_MATCH, Some(count)),
                     (_, Some(_)) | (_, None) => (drawn_nth_match, None),
                 }
@@ -1803,7 +1852,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
     FaultSchedule { events }
 }
 
-fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
+fn expected_matches(operation: &Op, site: FaultSite, first_wal_mutation: bool) -> Option<usize> {
     match (operation, site) {
         (
             Op::Crash {
@@ -1839,6 +1888,14 @@ fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
             | Op::Revise { .. }
             | Op::Delete { .. }
             | Op::Purge { .. },
+            FaultSite::Sync,
+        ) if first_wal_mutation => Some(2),
+        (
+            Op::Ingest { .. }
+            | Op::Upsert { .. }
+            | Op::Revise { .. }
+            | Op::Delete { .. }
+            | Op::Purge { .. },
             FaultSite::Append | FaultSite::Sync,
         ) => Some(1),
         (_, FaultSite::List) => Some(1),
@@ -1848,6 +1905,17 @@ fn expected_matches(operation: &Op, site: FaultSite) -> Option<usize> {
         // Generated programs select LAST_MATCH only on their final Seal.
         _ => None,
     }
+}
+
+fn is_wal_mutation(operation: &Op) -> bool {
+    matches!(
+        operation,
+        Op::Ingest { .. }
+            | Op::Upsert { .. }
+            | Op::Revise { .. }
+            | Op::Delete { .. }
+            | Op::Purge { .. }
+    )
 }
 
 fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
@@ -2181,6 +2249,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_unsynced_new_dirent_does_not_survive_a_crash() {
+        let directory = tempfile::tempdir().expect("simulated crash directory");
+        let path = directory.path().join("new-file");
+        let simulated = SimulatedCrashVfs::new(StdVfs);
+        simulated
+            .write(&path, b"durable bytes")
+            .expect("write file");
+        simulated
+            .sync(&path, SyncKind::Full)
+            .expect("sync file bytes");
+
+        simulated.crash().expect("simulate crash");
+
+        let error = StdVfs
+            .open(&path)
+            .expect_err("unsynced new directory entry survived crash");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
     fn simulated_crash_state_is_one_of_the_product_recorder_crash_states() {
         let directory = tempfile::tempdir().expect("simulated crash directory");
         let data = directory.path().join("data");
@@ -2193,6 +2281,9 @@ mod tests {
         simulated
             .sync(&data, SyncKind::Full)
             .expect("sync durable bytes");
+        simulated
+            .sync(directory.path(), SyncKind::Full)
+            .expect("sync durable data directory entry");
         let mut append = simulated.open_append(&data).expect("open append");
         append.append(b"tail").expect("append unsynced tail");
         simulated
@@ -2205,6 +2296,9 @@ mod tests {
         let recorder = CrashVfs::new(MemoryVfs::new()).expect("product crash recorder");
         recorder.write(&data, b"durable").expect("record write");
         recorder.sync(&data, SyncKind::Full).expect("record sync");
+        recorder
+            .sync(directory.path(), SyncKind::Full)
+            .expect("record directory sync");
         let mut recorded_append = recorder.open_append(&data).expect("record open append");
         recorded_append
             .append(b"tail")
@@ -2227,7 +2321,7 @@ mod tests {
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let expected_kind = CrashStateKind::Prefix {
-            completed_operations: 2,
+            completed_operations: 3,
         };
         let states = recorder.crash_states().expect("enumerate product states");
         let expected = states

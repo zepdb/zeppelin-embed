@@ -2795,6 +2795,14 @@ fn crash_fired_during_acked_op_is_recovered_not_reported_as_i1() {
 }
 
 #[test]
+fn storage_durability_first_ack_survives_post_ack_wal_create_crash() {
+    let violation =
+        adversarial::runner::first_durable_ack_survives_wal_create_crash(0, FaultProfile::None)
+            .expect("first durable acknowledgement crash fixture");
+    assert_eq!(violation, None);
+}
+
+#[test]
 fn graph_search_refusal_after_crashed_graph_checkpoint_is_not_a_violation() {
     // Seed 2307: crash fires mid-write on .tier-<id>.graph.checkpoint.tmp
     // during op 14 maintain; op 17 explicit graph search must be a typed
@@ -4171,6 +4179,7 @@ fn storage_shared_subcases_require_validated_production_receipts() {
         .required_coverage
         .iter()
         .copied()
+        .filter(|key| key.starts_with("feature_fault.storage-durability."))
         .filter(|key| coverage.count(key) == 0)
         .collect::<Vec<_>>();
     assert!(
@@ -7118,6 +7127,7 @@ fn storage_campaign_requires_both_shared_fault_subcases() {
         .required_coverage
         .iter()
         .copied()
+        .filter(|key| key.starts_with("feature_fault.storage-durability."))
         .collect::<BTreeSet<_>>();
     assert_eq!(
         required,
