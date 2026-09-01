@@ -884,29 +884,33 @@ impl Store {
             drop(published);
             drop(previous);
         }
-        let first_seq = LogSeq::new(
+        let retained_first_seq = LogSeq::new(
             manifest
                 .log_seq
                 .checked_add(1)
                 .ok_or(StoreError::GenerationOverflow)?,
         );
-        if writer.durable_end() >= first_seq.get() {
+        let durable_end = writer.durable_end();
+        if durable_end >= retained_first_seq.get() {
             ensure_wal_rewrite_covers_retained(
                 vfs,
                 &self.directory,
-                first_seq,
+                retained_first_seq,
                 &intent.ids,
                 &next_active,
             )?;
         }
+        let rewrite_first_seq = LogSeq::new(durable_end.checked_add(1).ok_or(
+            StoreError::WalWrite(crate::wal::WalWriteError::SequenceExhausted),
+        )?);
         writer.rewrite(
             vfs,
             &self.directory,
             self.durability_policy,
-            first_seq,
+            rewrite_first_seq,
             &records,
         )?;
-        assign_rewritten_sequences(&mut next_active, first_seq, &tombstoned)?;
+        assign_rewritten_sequences(&mut next_active, rewrite_first_seq, &tombstoned)?;
         active_state.segment = Arc::new(next_active);
         remove_intent(vfs, &self.directory, self.durability_policy)?;
         let generation = active_state.generation;
