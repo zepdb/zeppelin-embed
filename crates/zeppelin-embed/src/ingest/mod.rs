@@ -880,10 +880,16 @@ impl Store {
                 revise::RevisionDecision::Replace => {
                     let row = existing.and_then(|resolved| resolved.active_row);
                     let (next, row) = if let Some(row) = row {
-                        (segment.replace(row, document, &self.accounting)?, row)
+                        (
+                            segment.replace(row, document, &self.accounting, &self.tokenizer)?,
+                            row,
+                        )
                     } else {
                         let row = segment.row_count();
-                        (segment.insert(document, &self.accounting)?, row)
+                        (
+                            segment.insert(document, &self.accounting, &self.tokenizer)?,
+                            row,
+                        )
                     };
                     let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
@@ -898,7 +904,7 @@ impl Store {
                 }
                 revise::RevisionDecision::Insert => {
                     let row = segment.row_count();
-                    let next = segment.insert(document, &self.accounting)?;
+                    let next = segment.insert(document, &self.accounting, &self.tokenizer)?;
                     let (op, payload) = encode_persisted_upsert(document)?;
                     working = Some(next);
                     records.push((row, op, payload));

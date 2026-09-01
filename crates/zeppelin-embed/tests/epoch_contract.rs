@@ -209,6 +209,47 @@ fn reopening_a_store_declaring_a_different_tokenizer_epoch_alone_is_a_typed_erro
 }
 
 #[test]
+fn mismatched_analyzer_is_refused_not_silent() {
+    let directory = tempdir().expect("store directory");
+    let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new()
+            .with_epoch(declared.clone())
+            .with_tokenizer(TokenizerConfig::text_default()),
+    )
+    .expect("open store with matching analyzer");
+    let document = IngestDocument::new(
+        DocumentVersion::new(DocId::new(1), Revision::new(1)),
+        vec![1.0, 0.0, 0.0, 0.0],
+    )
+    .with_text("ParserConfig");
+    store
+        .ingest(IngestBatch::new(vec![document]).with_epoch(declared.identity()))
+        .expect("index text with matching analyzer");
+    store.close().expect("close store");
+
+    let error = Store::open(
+        directory.path(),
+        OpenOptions::new()
+            .with_epoch(declared)
+            .with_tokenizer(TokenizerConfig::code()),
+    )
+    .err()
+    .expect("mismatched analyzer must be refused");
+
+    let StoreError::EpochMismatch(EpochMismatch {
+        expected,
+        declared: actual,
+    }) = error
+    else {
+        panic!("wrong open error")
+    };
+    assert_eq!(expected.embedding, actual.embedding);
+    assert_ne!(expected.tokenizer, actual.tokenizer);
+}
+
+#[test]
 fn an_embedding_epoch_change_alone_is_a_typed_epoch_mismatch() {
     let directory = tempdir().expect("store directory");
     let declared = store_epoch("model-a", "1", TokenizerConfig::text_default());

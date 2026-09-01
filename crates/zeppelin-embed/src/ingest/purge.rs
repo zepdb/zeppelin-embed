@@ -848,7 +848,10 @@ impl Store {
             .iter()
             .any(|id| active_state.segment.existing(*id).is_some());
         let mut next_active = if active_has_target {
-            let (purged, removed) = active_state.segment.purge(&intent.ids, &self.accounting)?;
+            let (purged, removed) =
+                active_state
+                    .segment
+                    .purge(&intent.ids, &self.accounting, &self.tokenizer)?;
             if removed == 0 {
                 return Err(PurgeError::IntentDecode(
                     "active purge target disappeared during admission".to_owned(),
@@ -860,7 +863,10 @@ impl Store {
                 .ok_or(StoreError::GenerationOverflow)?;
             purged
         } else {
-            active_state.segment.purge(&[], &self.accounting)?.0
+            active_state
+                .segment
+                .purge(&[], &self.accounting, &self.tokenizer)?
+                .0
         };
         let (records, tombstoned) = active_wal_records(&next_active)?;
         if manifest.generation < active_state.generation {
