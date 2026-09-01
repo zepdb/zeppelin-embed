@@ -1298,19 +1298,8 @@ impl<'a> GraphSearcher<'a> {
         };
         self.scratch.pool.clear();
         self.scratch.frontier.clear();
-        if self.scratch.pool.capacity() < ef {
-            self.scratch.pool.try_reserve_exact(ef).map_err(|error| {
-                GraphSearchError::Geometry(format!("pool allocation failed: {error}"))
-            })?;
-        }
-        if self.scratch.frontier.capacity() < ef {
-            self.scratch
-                .frontier
-                .try_reserve_exact(ef)
-                .map_err(|error| {
-                    GraphSearchError::Geometry(format!("frontier allocation failed: {error}"))
-                })?;
-        }
+        reserve_exact_scratch(&mut self.scratch.pool, ef, "pool")?;
+        reserve_exact_scratch(&mut self.scratch.frontier, ef, "frontier")?;
         let mut candidate_sequence = request.trace_candidates.then(|| Vec::with_capacity(ef));
         let entries = self.entries;
         if request.prefetch.is_enabled() {
@@ -1411,26 +1400,37 @@ impl<'a> GraphSearcher<'a> {
                 group_start += group_count;
             }
         }
+        self.finalize_traversal(
+            request,
+            allow_list,
+            cancellation,
+            counters,
+            candidate_sequence,
+        )
+    }
+
+    fn finalize_traversal(
+        &mut self,
+        request: GraphSearchRequest<'_>,
+        allow_list: Option<&DocBitmap>,
+        cancellation: Option<&QueryCancellation<'_>>,
+        mut counters: GraphSearchCounters,
+        candidate_sequence: Option<Vec<u32>>,
+    ) -> Result<SearchInnerOutcome, GraphSearchError> {
         check_cancellation(cancellation)?;
         self.scratch.rescore_row_ids.clear();
         self.scratch.rescore_coarse_scores.clear();
         let retained = self.scratch.pool.len();
-        if self.scratch.rescore_row_ids.capacity() < retained {
-            self.scratch
-                .rescore_row_ids
-                .try_reserve_exact(retained)
-                .map_err(|error| {
-                    GraphSearchError::Geometry(format!("rescore row-id allocation failed: {error}"))
-                })?;
-        }
-        if self.scratch.rescore_coarse_scores.capacity() < retained {
-            self.scratch
-                .rescore_coarse_scores
-                .try_reserve_exact(retained)
-                .map_err(|error| {
-                    GraphSearchError::Geometry(format!("rescore score allocation failed: {error}"))
-                })?;
-        }
+        reserve_exact_scratch(
+            &mut self.scratch.rescore_row_ids,
+            retained,
+            "rescore row-id",
+        )?;
+        reserve_exact_scratch(
+            &mut self.scratch.rescore_coarse_scores,
+            retained,
+            "rescore score",
+        )?;
         for candidate in &self.scratch.pool {
             self.scratch.rescore_row_ids.push(candidate.row_id.raw());
             let score = -(candidate.distance as f32);
@@ -1642,6 +1642,19 @@ impl<'a> GraphSearcher<'a> {
         }
         Ok(())
     }
+}
+
+fn reserve_exact_scratch<T>(
+    buffer: &mut Vec<T>,
+    needed: usize,
+    what: &'static str,
+) -> Result<(), GraphSearchError> {
+    if buffer.capacity() < needed {
+        buffer.try_reserve_exact(needed).map_err(|error| {
+            GraphSearchError::Geometry(format!("{what} allocation failed: {error}"))
+        })?;
+    }
+    Ok(())
 }
 
 fn mark_visited(
