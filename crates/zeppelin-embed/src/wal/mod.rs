@@ -556,17 +556,12 @@ impl WalWriter {
             let record_start = offset;
             let record_end = offset.saturating_add(encoded_len);
             while offset < record_end {
-                let available = state
-                    .pending_groups
-                    .back()
-                    .map(|group| self.max_group_bytes.saturating_sub(group.encoded_bytes))
-                    .ok_or(WalWriteError::Poisoned("pending WAL group"))?;
+                let available = self
+                    .max_group_bytes
+                    .saturating_sub(Self::current_group_ref(&state)?.encoded_bytes);
                 if available == 0 {
                     if chunk_start < offset {
-                        let group = state
-                            .pending_groups
-                            .back_mut()
-                            .ok_or(WalWriteError::Poisoned("pending WAL group"))?;
+                        let group = Self::current_group(&mut state)?;
                         group.chunks.push(EncodedChunk {
                             encoded: Arc::clone(&encoded),
                             range: chunk_start..offset,
@@ -577,17 +572,11 @@ impl WalWriter {
                     continue;
                 }
                 let written = available.min(record_end.saturating_sub(offset));
-                let group = state
-                    .pending_groups
-                    .back_mut()
-                    .ok_or(WalWriteError::Poisoned("pending WAL group"))?;
+                let group = Self::current_group(&mut state)?;
                 group.encoded_bytes = group.encoded_bytes.saturating_add(written);
                 offset = offset.saturating_add(written);
             }
-            let group = state
-                .pending_groups
-                .back_mut()
-                .ok_or(WalWriteError::Poisoned("pending WAL group"))?;
+            let group = Self::current_group(&mut state)?;
             group.records = group.records.saturating_add(1);
             group.last_seq = Some(record_seq);
             state.retained_bytes = state.retained_bytes.saturating_add(encoded_len);
@@ -599,10 +588,7 @@ impl WalWriter {
             ));
             seq = seq.saturating_add(1);
         }
-        let group = state
-            .pending_groups
-            .back_mut()
-            .ok_or(WalWriteError::Poisoned("pending WAL group"))?;
+        let group = Self::current_group(&mut state)?;
         group.chunks.push(EncodedChunk {
             encoded,
             range: chunk_start..offset,
@@ -614,6 +600,22 @@ impl WalWriter {
             state.barrier_in_flight = true;
         }
         Ok((LogSeq::new(start)..LogSeq::new(end), leader))
+    }
+
+    #[inline(always)]
+    fn current_group(state: &mut WriterState) -> Result<&mut Group, WalWriteError> {
+        state
+            .pending_groups
+            .back_mut()
+            .ok_or(WalWriteError::Poisoned("pending WAL group"))
+    }
+
+    #[inline(always)]
+    fn current_group_ref(state: &WriterState) -> Result<&Group, WalWriteError> {
+        state
+            .pending_groups
+            .back()
+            .ok_or(WalWriteError::Poisoned("pending WAL group"))
     }
 
     fn ensure_pending_group(state: &mut WriterState) {

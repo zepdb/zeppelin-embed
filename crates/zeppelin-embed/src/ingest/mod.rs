@@ -9,9 +9,10 @@ mod revise;
 mod seal;
 pub mod wal_payload;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::lifecycle::{Store, StoreError, StoreState};
+use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
 use crate::meta::{ColumnId, ColumnInput, ColumnStoreBuilder, ColumnValue, PredicateValue, Schema};
 use crate::scan::ScanStats;
 use crate::segment::SegmentId;
@@ -721,6 +722,15 @@ struct ResolvedRevision {
     active_row: Option<usize>,
 }
 
+struct RevisionProgress {
+    working: Option<ActiveSegment>,
+    records: Vec<(usize, u16, Vec<u8>)>,
+    replay_seq: Option<LogSeq>,
+    #[cfg(any(test, feature = "test-support"))]
+    replay_count: usize,
+    sealed_tombstones: Vec<DocId>,
+}
+
 fn resolve_revision(
     active: &ActiveSegment,
     sealed: &[purge::SealedDocumentMatch],
@@ -804,6 +814,215 @@ impl Store {
             .map_err(StoreLexicalError::from)
     }
 
+    #[inline(always)]
+    fn apply_revision_decision(
+        &self,
+        current: &ActiveSegment,
+        sealed: &[purge::SealedDocumentMatch],
+        sealed_seq: LogSeq,
+        document: &IngestDocument,
+        progress: &mut RevisionProgress,
+    ) -> Result<(), IngestError> {
+        let segment = progress.working.as_ref().unwrap_or(current);
+        let existing = resolve_revision(segment, sealed, document.version().doc_id(), sealed_seq);
+        let action = revise::classify_revision(
+            existing.map(|resolved| (resolved.version, resolved.seq)),
+            document.version(),
+        );
+        match action {
+            revise::RevisionDecision::Replace => {
+                let row = existing.and_then(|resolved| resolved.active_row);
+                let (next, row) = if let Some(row) = row {
+                    (
+                        segment.replace(row, document, &self.accounting, &self.tokenizer)?,
+                        row,
+                    )
+                } else {
+                    let row = segment.row_count();
+                    (
+                        segment.insert(document, &self.accounting, &self.tokenizer)?,
+                        row,
+                    )
+                };
+                let (op, payload) = encode_persisted_upsert(document)?;
+                progress.working = Some(next);
+                progress.records.push((row, op, payload));
+                if sealed
+                    .iter()
+                    .any(|matched| matched.version.doc_id() == document.version().doc_id())
+                    && !progress
+                        .sealed_tombstones
+                        .contains(&document.version().doc_id())
+                {
+                    progress.sealed_tombstones.push(document.version().doc_id());
+                }
+            }
+            revise::RevisionDecision::Insert => {
+                let row = segment.row_count();
+                let next = segment.insert(document, &self.accounting, &self.tokenizer)?;
+                let (op, payload) = encode_persisted_upsert(document)?;
+                progress.working = Some(next);
+                progress.records.push((row, op, payload));
+            }
+            revise::RevisionDecision::Replay { seq } => {
+                progress.replay_seq = Some(
+                    progress
+                        .replay_seq
+                        .map_or(seq, |current: LogSeq| current.max(seq)),
+                );
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    progress.replay_count = progress.replay_count.saturating_add(1);
+                }
+            }
+            revise::RevisionDecision::Reject { current } => {
+                return Err(IngestError::StaleRevision {
+                    doc_id: document.version().doc_id(),
+                    current,
+                    attempted: document.version().revision(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_post_ack_retry_receipt(
+        &self,
+        batch: &IngestBatch,
+        replay_count: usize,
+        seq: LogSeq,
+        generation: u64,
+    ) -> Result<(), IngestError> {
+        if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+            let plan =
+                controller
+                    .post_ack_retry_plan()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    })?;
+            if let Some((invocation_id, first_ack_seq, first_ack_generation)) = plan
+                && first_ack_seq == seq.get()
+                && first_ack_generation == generation
+            {
+                let batch_count = u64::try_from(batch.documents.len())
+                    .map_err(|_| StoreError::ActiveRowOverflow)?;
+                let replay_count =
+                    u64::try_from(replay_count).map_err(|_| StoreError::ActiveRowOverflow)?;
+                controller
+                    .push_receipt(IngestRetentionFaultReceiptV1::post_ack_retry(
+                        invocation_id,
+                        batch_count,
+                        replay_count,
+                        seq.get(),
+                        generation,
+                    ))
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn recover_partial_batch_append(
+        &self,
+        writer: &mut StoreWal,
+        error: &StoreError,
+        partial_append_clean_wal: &Option<Vec<u8>>,
+        batch: &IngestBatch,
+        records: &[(usize, u16, Vec<u8>)],
+    ) -> Result<(), IngestError> {
+        if let Some(controller) = self.ingest_retention_fault_controller.as_ref()
+            && let Some(observation) =
+                controller
+                    .take_partial_batch_append_observation()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "ingest-retention controller",
+                    })?
+        {
+            let expected_detail = observation.detail.as_str();
+            match error {
+                StoreError::WalWrite(WalWriteError::Failed { kind, detail })
+                    if *kind == std::io::ErrorKind::Other && detail.as_ref() == expected_detail => {
+                }
+                _ => {
+                    return Err(StoreError::Synchronization {
+                        component: "partial-batch-append typed WAL error",
+                    }
+                    .into());
+                }
+            }
+            let clean_wal =
+                partial_append_clean_wal
+                    .as_deref()
+                    .ok_or(StoreError::Synchronization {
+                        component: "partial-batch-append clean WAL image",
+                    })?;
+            let wal_path = self.directory.join("wal.ze");
+            writer.restore_after_failed_append(
+                self.vfs.as_ref(),
+                &wal_path,
+                self.durability_policy,
+                clean_wal,
+            )?;
+            let submitted_count =
+                u64::try_from(batch.documents.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
+            let changed_records =
+                u64::try_from(records.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
+            let encoded_bytes = u64::try_from(observation.encoded_bytes)
+                .map_err(|_| StoreError::ActiveRowOverflow)?;
+            let prefix_bytes = u64::try_from(observation.prefix_bytes)
+                .map_err(|_| StoreError::ActiveRowOverflow)?;
+            controller
+                .push_receipt(IngestRetentionFaultReceiptV1::partial_batch_append(
+                    observation.invocation_id,
+                    submitted_count,
+                    changed_records,
+                    encoded_bytes,
+                    prefix_bytes,
+                    observation.detail,
+                ))
+                .map_err(|_| StoreError::Synchronization {
+                    component: "ingest-retention controller",
+                })?;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn publish_committed_active(
+        &self,
+        active: &mut Option<ActiveState>,
+        committed: Option<(PublishedSnapshot, Vec<PathBuf>)>,
+        generation: u64,
+        next: ActiveSegment,
+    ) -> Result<Vec<PathBuf>, StoreError> {
+        if let Some((remapped, replaced_paths)) = committed {
+            let mut published = self
+                .snapshot
+                .write()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let previous = published.replace(Arc::new(remapped));
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            drop(published);
+            drop(previous);
+            Ok(replaced_paths)
+        } else {
+            *active = Some(ActiveState {
+                generation,
+                segment: Arc::new(next),
+            });
+            Ok(Vec::new())
+        }
+    }
+
     /// Commits one active-segment upsert and returns its WAL/generation coordinates.
     pub fn ingest(&self, batch: IngestBatch) -> Result<IngestAck, IngestError> {
         let state = self
@@ -862,102 +1081,37 @@ impl Store {
             .collect::<Vec<_>>();
         let sealed = purge::sealed_document_matches(&snapshot, &requested_ids)?;
         let sealed_seq = LogSeq::new(snapshot.absorbed_through());
-        let mut working = None;
-        let mut records = Vec::new();
-        let mut replay_seq = None;
-        #[cfg(any(test, feature = "test-support"))]
-        let mut replay_count = 0_usize;
-        let mut sealed_tombstones = Vec::new();
+        let mut progress = RevisionProgress {
+            working: None,
+            records: Vec::new(),
+            replay_seq: None,
+            #[cfg(any(test, feature = "test-support"))]
+            replay_count: 0,
+            sealed_tombstones: Vec::new(),
+        };
         for document in &batch.documents {
-            let segment = working.as_ref().unwrap_or(current.segment.as_ref());
-            let existing =
-                resolve_revision(segment, &sealed, document.version().doc_id(), sealed_seq);
-            let action = revise::classify_revision(
-                existing.map(|resolved| (resolved.version, resolved.seq)),
-                document.version(),
-            );
-            match action {
-                revise::RevisionDecision::Replace => {
-                    let row = existing.and_then(|resolved| resolved.active_row);
-                    let (next, row) = if let Some(row) = row {
-                        (
-                            segment.replace(row, document, &self.accounting, &self.tokenizer)?,
-                            row,
-                        )
-                    } else {
-                        let row = segment.row_count();
-                        (
-                            segment.insert(document, &self.accounting, &self.tokenizer)?,
-                            row,
-                        )
-                    };
-                    let (op, payload) = encode_persisted_upsert(document)?;
-                    working = Some(next);
-                    records.push((row, op, payload));
-                    if sealed
-                        .iter()
-                        .any(|matched| matched.version.doc_id() == document.version().doc_id())
-                        && !sealed_tombstones.contains(&document.version().doc_id())
-                    {
-                        sealed_tombstones.push(document.version().doc_id());
-                    }
-                }
-                revise::RevisionDecision::Insert => {
-                    let row = segment.row_count();
-                    let next = segment.insert(document, &self.accounting, &self.tokenizer)?;
-                    let (op, payload) = encode_persisted_upsert(document)?;
-                    working = Some(next);
-                    records.push((row, op, payload));
-                }
-                revise::RevisionDecision::Replay { seq } => {
-                    replay_seq = Some(replay_seq.map_or(seq, |current: LogSeq| current.max(seq)));
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        replay_count = replay_count.saturating_add(1);
-                    }
-                }
-                revise::RevisionDecision::Reject { current } => {
-                    return Err(IngestError::StaleRevision {
-                        doc_id: document.version().doc_id(),
-                        current,
-                        attempted: document.version().revision(),
-                    });
-                }
-            }
+            self.apply_revision_decision(
+                current.segment.as_ref(),
+                &sealed,
+                sealed_seq,
+                document,
+                &mut progress,
+            )?;
         }
+        let RevisionProgress {
+            working,
+            records,
+            replay_seq,
+            #[cfg(any(test, feature = "test-support"))]
+            replay_count,
+            sealed_tombstones,
+        } = progress;
         let Some(mut next) = working else {
             let seq = replay_seq.ok_or(StoreError::Synchronization {
                 component: "nonempty ingest replay sequence",
             })?;
             #[cfg(any(test, feature = "test-support"))]
-            if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
-                let plan =
-                    controller
-                        .post_ack_retry_plan()
-                        .map_err(|_| StoreError::Synchronization {
-                            component: "ingest-retention controller",
-                        })?;
-                if let Some((invocation_id, first_ack_seq, first_ack_generation)) = plan
-                    && first_ack_seq == seq.get()
-                    && first_ack_generation == current.generation
-                {
-                    let batch_count = u64::try_from(batch.documents.len())
-                        .map_err(|_| StoreError::ActiveRowOverflow)?;
-                    let replay_count =
-                        u64::try_from(replay_count).map_err(|_| StoreError::ActiveRowOverflow)?;
-                    controller
-                        .push_receipt(IngestRetentionFaultReceiptV1::post_ack_retry(
-                            invocation_id,
-                            batch_count,
-                            replay_count,
-                            seq.get(),
-                            current.generation,
-                        ))
-                        .map_err(|_| StoreError::Synchronization {
-                            component: "ingest-retention controller",
-                        })?;
-                }
-            }
+            self.record_post_ack_retry_receipt(&batch, replay_count, seq, current.generation)?;
             return Ok(IngestAck {
                 seq,
                 generation: current.generation,
@@ -1009,59 +1163,13 @@ impl Store {
                     prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
                 }
                 #[cfg(any(test, feature = "test-support"))]
-                if let Some(controller) = self.ingest_retention_fault_controller.as_ref()
-                    && let Some(observation) = controller
-                        .take_partial_batch_append_observation()
-                        .map_err(|_| StoreError::Synchronization {
-                            component: "ingest-retention controller",
-                        })?
-                {
-                    let expected_detail = observation.detail.as_str();
-                    match &error {
-                        StoreError::WalWrite(WalWriteError::Failed { kind, detail })
-                            if *kind == std::io::ErrorKind::Other
-                                && detail.as_ref() == expected_detail => {}
-                        _ => {
-                            return Err(StoreError::Synchronization {
-                                component: "partial-batch-append typed WAL error",
-                            }
-                            .into());
-                        }
-                    }
-                    let clean_wal =
-                        partial_append_clean_wal
-                            .as_deref()
-                            .ok_or(StoreError::Synchronization {
-                                component: "partial-batch-append clean WAL image",
-                            })?;
-                    let wal_path = self.directory.join("wal.ze");
-                    writer.restore_after_failed_append(
-                        self.vfs.as_ref(),
-                        &wal_path,
-                        self.durability_policy,
-                        clean_wal,
-                    )?;
-                    let submitted_count = u64::try_from(batch.documents.len())
-                        .map_err(|_| StoreError::ActiveRowOverflow)?;
-                    let changed_records =
-                        u64::try_from(records.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
-                    let encoded_bytes = u64::try_from(observation.encoded_bytes)
-                        .map_err(|_| StoreError::ActiveRowOverflow)?;
-                    let prefix_bytes = u64::try_from(observation.prefix_bytes)
-                        .map_err(|_| StoreError::ActiveRowOverflow)?;
-                    controller
-                        .push_receipt(IngestRetentionFaultReceiptV1::partial_batch_append(
-                            observation.invocation_id,
-                            submitted_count,
-                            changed_records,
-                            encoded_bytes,
-                            prefix_bytes,
-                            observation.detail,
-                        ))
-                        .map_err(|_| StoreError::Synchronization {
-                            component: "ingest-retention controller",
-                        })?;
-                }
+                self.recover_partial_batch_append(
+                    writer,
+                    &error,
+                    &partial_append_clean_wal,
+                    &batch,
+                    &records,
+                )?;
                 return Err(error.into());
             }
         };
@@ -1082,28 +1190,8 @@ impl Store {
                 )
             })
             .transpose()?;
-        let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
-            let mut published = self
-                .snapshot
-                .write()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "published snapshot",
-                })?;
-            let previous = published.replace(Arc::new(remapped));
-            *active = Some(ActiveState {
-                generation,
-                segment: Arc::new(next),
-            });
-            drop(published);
-            drop(previous);
-            replaced_paths
-        } else {
-            *active = Some(ActiveState {
-                generation,
-                segment: Arc::new(next),
-            });
-            Vec::new()
-        };
+        let replaced_paths =
+            self.publish_committed_active(&mut active, committed, generation, next)?;
         purge::unlink_replaced_segments(
             self.vfs.as_ref(),
             &self.directory,
@@ -1196,28 +1284,8 @@ impl Store {
                 )
             })
             .transpose()?;
-        let replaced_paths = if let Some((remapped, replaced_paths)) = committed {
-            let mut published = self
-                .snapshot
-                .write()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "published snapshot",
-                })?;
-            let previous = published.replace(Arc::new(remapped));
-            *active = Some(ActiveState {
-                generation,
-                segment: Arc::new(next),
-            });
-            drop(published);
-            drop(previous);
-            replaced_paths
-        } else {
-            *active = Some(ActiveState {
-                generation,
-                segment: Arc::new(next),
-            });
-            Vec::new()
-        };
+        let replaced_paths =
+            self.publish_committed_active(&mut active, committed, generation, next)?;
         purge::unlink_replaced_segments(
             self.vfs.as_ref(),
             &self.directory,
