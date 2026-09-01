@@ -62,7 +62,7 @@ pub(crate) fn copy_nul_terminated(message: &str, output: *mut std::ffi::c_char) 
     }
 }
 
-fn validate_abi_size<T>(abi_size: u32) -> Result<(), MarshalError> {
+pub(crate) fn validate_abi_size<T>(abi_size: u32) -> Result<(), MarshalError> {
     if abi_size > ZE_ABI_MAX_STRUCT_SIZE {
         return Err(MarshalError("abi_size exceeds the 64 KiB ABI limit"));
     }
