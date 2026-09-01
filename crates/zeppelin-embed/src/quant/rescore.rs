@@ -236,29 +236,13 @@ impl std::fmt::Display for RescoreError {
 
 impl std::error::Error for RescoreError {}
 
-/// Selects a coarse frontier and exactly rescores its best `k` rows.
-///
-/// `rows` is a contiguous row-major f32 matrix. A dense pool contains one
-/// larger-is-better score per row and retains `min(row_count, k * oversample)`.
-/// A sparse graph pool names the already-retained rows and rescores all of them.
-/// Row index is the deterministic tie-breaker in both modes.
-///
-/// Byte counters measure stored row data: the coarse stage touches
-/// `coarse_rows_touched * coarse_bytes_per_row`; the exact stage touches
-/// `frontier * dimension * 4`. Query bytes and output metadata are deliberately
-/// excluded because they are shared across schemes and are not corpus-row I/O.
-///
-/// # Errors
-///
-/// Returns [`RescoreError`] for invalid shapes, zero controls, non-finite
-/// coarse scores, or arithmetic overflow.
-pub fn rescore_top_k(
+fn validate_rescore_request(
     query: &[f32],
     rows: &[f32],
     dimension: usize,
-    pool: RescorePool<'_>,
+    pool: &RescorePool<'_>,
     k: usize,
-) -> Result<RescoreResult, RescoreError> {
+) -> Result<(usize, usize), RescoreError> {
     if dimension == 0 {
         return Err(RescoreError::ZeroDimension);
     }
@@ -317,6 +301,33 @@ pub fn rescore_top_k(
     {
         return Err(RescoreError::NonFiniteCoarseScore { index });
     }
+    Ok((row_count, candidate_count))
+}
+
+/// Selects a coarse frontier and exactly rescores its best `k` rows.
+///
+/// `rows` is a contiguous row-major f32 matrix. A dense pool contains one
+/// larger-is-better score per row and retains `min(row_count, k * oversample)`.
+/// A sparse graph pool names the already-retained rows and rescores all of them.
+/// Row index is the deterministic tie-breaker in both modes.
+///
+/// Byte counters measure stored row data: the coarse stage touches
+/// `coarse_rows_touched * coarse_bytes_per_row`; the exact stage touches
+/// `frontier * dimension * 4`. Query bytes and output metadata are deliberately
+/// excluded because they are shared across schemes and are not corpus-row I/O.
+///
+/// # Errors
+///
+/// Returns [`RescoreError`] for invalid shapes, zero controls, non-finite
+/// coarse scores, or arithmetic overflow.
+pub fn rescore_top_k(
+    query: &[f32],
+    rows: &[f32],
+    dimension: usize,
+    pool: RescorePool<'_>,
+    k: usize,
+) -> Result<RescoreResult, RescoreError> {
+    let (row_count, candidate_count) = validate_rescore_request(query, rows, dimension, &pool, k)?;
 
     let candidates = match pool.width {
         PoolWidth::DenseOversample(_) => {
