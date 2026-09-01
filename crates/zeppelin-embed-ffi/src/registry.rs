@@ -165,10 +165,12 @@ pub(crate) fn insert_cancel(token: CancelToken) -> Result<ZeCancelToken, FfiErro
         .enumerate()
         .find(|(_, slot)| slot.token.is_none() && slot.generation != 0)
     {
+        let handle = encode(index, slot.generation)?;
         slot.token = Some(token);
-        return encode(index, slot.generation);
+        return Ok(handle);
     }
     let index = registry.len();
+    let handle = encode(index, 1)?;
     registry.try_reserve(1).map_err(|_| {
         FfiError::new(
             ZeErrorCode::ZeErrOutOfMemory,
@@ -179,7 +181,7 @@ pub(crate) fn insert_cancel(token: CancelToken) -> Result<ZeCancelToken, FfiErro
         generation: 1,
         token: Some(token),
     });
-    encode(index, 1)
+    Ok(handle)
 }
 
 pub(crate) fn lookup_cancel(handle: ZeCancelToken) -> Result<CancelToken, FfiError> {

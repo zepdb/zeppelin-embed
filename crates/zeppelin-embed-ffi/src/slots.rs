@@ -110,15 +110,28 @@ impl<S, P> SlotTable<S, P> {
             .enumerate()
             .find(|(_, slot)| slot.payload.is_none() && !slot.closing && slot.generation != 0)
         {
+            let handle = encode(index, slot.generation)?;
             slot.payload = Some(Arc::new(payload));
             slot.epoch = epoch;
             slot.writer = Arc::new(Mutex::new(()));
             slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
             slot.last_error.clear();
             slot.poisoned = false;
-            return encode(index, slot.generation);
+            return Ok(handle);
         }
         let index = self.slots.len();
+        self.insert_new_slot(payload, epoch, index)
+    }
+
+    /// Keeping the candidate index explicit lets the boundary test exercise
+    /// u32 exhaustion without allocating billions of preceding slots.
+    fn insert_new_slot(
+        &mut self,
+        payload: S,
+        epoch: Option<EpochIdentity>,
+        index: usize,
+    ) -> Result<u64, FfiError> {
+        let handle = encode(index, 1)?;
         self.slots.try_reserve(1).map_err(|_| {
             FfiError::new(
                 ZeErrorCode::ZeErrOutOfMemory,
@@ -135,7 +148,7 @@ impl<S, P> SlotTable<S, P> {
             poisoned: false,
             closing: false,
         });
-        encode(index, 1)
+        Ok(handle)
     }
 
     pub(crate) fn lookup(&self, handle: u64) -> Result<Access<S, P>, FfiError> {
@@ -283,6 +296,32 @@ mod tests {
         let mut generation = u32::MAX;
         bump_generation(&mut generation);
         assert_eq!(generation, 0);
+    }
+
+    #[test]
+    fn failed_insert_leaves_no_orphaned_entry() {
+        let mut table = SlotTable::<u32, ()>::new();
+        let live_before = table
+            .slots
+            .iter()
+            .filter(|slot| slot.payload.is_some())
+            .count();
+
+        assert_eq!(
+            table
+                .insert_new_slot(7, None, usize::MAX)
+                .expect_err("unrepresentable slot index")
+                .code,
+            ZeErrorCode::ZeErrOutOfMemory
+        );
+        assert_eq!(
+            table
+                .slots
+                .iter()
+                .filter(|slot| slot.payload.is_some())
+                .count(),
+            live_before
+        );
     }
 
     #[test]
