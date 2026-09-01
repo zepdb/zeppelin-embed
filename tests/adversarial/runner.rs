@@ -1665,6 +1665,27 @@ impl Engine for RealEngine {
             Err(error) => return Err(format!("epoch probe returned wrong typed error: {error}")),
             Ok(_) => return Err("epoch probe accepted a conflicting identity".to_owned()),
         }
+        let analyzer_probe = OpenOptions::read_only()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_schema(adversarial_schema())
+            .with_epoch(declared_store_epoch())
+            .with_tokenizer(TokenizerConfig::code());
+        match Store::open_with_test_dependencies(
+            &self.directory,
+            analyzer_probe,
+            StoreTestDependencies::new(self.vfs.clone(), self.clock.clone()),
+        ) {
+            Err(StoreError::EpochMismatch(_)) => {}
+            Err(error) => {
+                return Err(format!(
+                    "analyzer epoch probe returned wrong typed error: {error}"
+                ));
+            }
+            Ok(store) => {
+                store.close().map_err(|error| error.to_string())?;
+                return Err("analyzer epoch probe accepted a conflicting tokenizer".to_owned());
+            }
+        }
         let after = self.generation()?;
         if after != before {
             return Err(format!(

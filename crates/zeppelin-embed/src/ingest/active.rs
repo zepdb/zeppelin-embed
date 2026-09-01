@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use crate::fts::index::{Document as LexicalDocument, SegmentIndex};
-use crate::fts::tokenizer::{Analyzer, TokenizerConfig};
+use crate::fts::tokenizer::Analyzer;
 use crate::lifecycle::StoreError;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::{Accounted, AccountedCounter, Accounting, AllocationComponent};
@@ -73,14 +73,21 @@ impl ActiveState {
         absorbed_through: u64,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
+        analyzer: &Analyzer,
     ) -> Result<(Self, Option<CleanWalReader>, Vec<SealedTombstoneDemand>), StoreError> {
         match vfs.open(path) {
             Ok(0) => Ok((Self::empty(generation), None, Vec::new())),
             Ok(_) => {
                 let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-                let (active, sealed_tombstones) =
-                    Self::replay(generation, absorbed_through, &clean, accounting, schema)?;
+                let (active, sealed_tombstones) = Self::replay(
+                    generation,
+                    absorbed_through,
+                    &clean,
+                    accounting,
+                    schema,
+                    analyzer,
+                )?;
                 Ok((active, Some(clean), sealed_tombstones))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -96,6 +103,7 @@ impl ActiveState {
         recovered: &CleanWalReader,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
+        analyzer: &Analyzer,
     ) -> Result<(Self, Vec<SealedTombstoneDemand>), StoreError> {
         let mut segment = ActiveSegment::empty();
         let mut sealed_tombstones = Vec::new();
@@ -119,7 +127,7 @@ impl ActiveState {
                     super::validate_document_columns(schema, &document)
                         .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
                     let next = apply_recovered_upsert(
-                        &segment, &document, record.seq, record.op, accounting,
+                        &segment, &document, record.seq, record.op, accounting, analyzer,
                     )?;
                     sealed_tombstones.push(SealedTombstoneDemand::upsert(document.version()));
                     next
@@ -162,6 +170,7 @@ fn apply_recovered_upsert(
     seq: LogSeq,
     op: u16,
     accounting: &Arc<Accounting>,
+    analyzer: &Analyzer,
 ) -> Result<ActiveSegment, StoreError> {
     let (mut next, row) = match segment.existing(document.version().doc_id()) {
         Some((row, current, _)) => {
@@ -175,7 +184,7 @@ fn apply_recovered_upsert(
             }
             (
                 segment
-                    .replace(row, document, accounting)
+                    .replace(row, document, accounting, analyzer)
                     .map_err(|error| recovery_apply_error(seq, op, error))?,
                 row,
             )
@@ -184,7 +193,7 @@ fn apply_recovered_upsert(
             let row = segment.row_count();
             (
                 segment
-                    .insert(document, accounting)
+                    .insert(document, accounting, analyzer)
                     .map_err(|error| recovery_apply_error(seq, op, error))?,
                 row,
             )
@@ -287,6 +296,7 @@ impl ActiveSegment {
         &self,
         document: &IngestDocument,
         accounting: &Arc<Accounting>,
+        analyzer: &Analyzer,
     ) -> Result<Self, IngestError> {
         if self.existing(document.version().doc_id()).is_some() {
             return Err(IngestError::Store(StoreError::Synchronization {
@@ -368,7 +378,8 @@ impl ActiveSegment {
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let factor = quantize_bit4(document.vector(), encoded).map_err(IngestError::Vector)?;
         factors.push(factor)?;
-        let (lexical, lexical_bytes) = self.appended_lexical(document.text(), accounting)?;
+        let (lexical, lexical_bytes) =
+            self.appended_lexical(document.text(), accounting, analyzer)?;
         Ok(Self {
             dims: Some(dims),
             doc_ids,
@@ -397,6 +408,7 @@ impl ActiveSegment {
         row: usize,
         document: &IngestDocument,
         accounting: &Arc<Accounting>,
+        analyzer: &Analyzer,
     ) -> Result<Self, IngestError> {
         let dims = self
             .dims
@@ -484,7 +496,7 @@ impl ActiveSegment {
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = factor;
         let tracks_text = self.tracks_text() || document.text().is_some();
         let lexical = if tracks_text {
-            self.rebuild_lexical(Some((row, document.text())))?
+            self.rebuild_lexical(Some((row, document.text())), analyzer)?
         } else {
             SegmentIndex::new()
         };
@@ -624,6 +636,7 @@ impl ActiveSegment {
         &self,
         doc_ids: &[DocId],
         accounting: &Arc<Accounting>,
+        analyzer: &Analyzer,
     ) -> Result<(Self, usize), StoreError> {
         let removed = self
             .doc_ids
@@ -731,14 +744,6 @@ impl ActiveSegment {
             retained_tombstones,
             AllocationComponent::Active,
         )?;
-        let analyzer = tracks_text
-            .then(store_analyzer)
-            .transpose()
-            .map_err(|error| StoreError::WalMutation {
-                seq: LogSeq::new(0),
-                op: wal_payload::UPSERT_V2,
-                source: wal_payload::PayloadError::Lexical(error.to_string()),
-            })?;
         let mut lexical = SegmentIndex::new();
         let mut next_row = 0_u32;
         for row in 0..self.row_count() {
@@ -789,10 +794,7 @@ impl ActiveSegment {
                 let lexical_document =
                     text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
                 lexical
-                    .push_document(
-                        analyzer.as_ref().ok_or(StoreError::ActiveRowOverflow)?,
-                        &lexical_document,
-                    )
+                    .push_document(analyzer, &lexical_document)
                     .map_err(|error| StoreError::WalMutation {
                         seq: LogSeq::new(0),
                         op: wal_payload::UPSERT_V2,
@@ -1274,22 +1276,22 @@ impl ActiveSegment {
         &self,
         text: Option<&str>,
         accounting: &Arc<Accounting>,
+        analyzer: &Analyzer,
     ) -> Result<(SegmentIndex, Option<AccountedCounter>), IngestError> {
         if !self.tracks_text() && text.is_none() {
             return Ok((SegmentIndex::new(), None));
         }
-        let analyzer = store_analyzer()?;
         let mut lexical = self.lexical.clone();
         if !self.tracks_text() {
             for _ in 0..self.row_count() {
                 lexical
-                    .push_document(&analyzer, &LexicalDocument::new())
+                    .push_document(analyzer, &LexicalDocument::new())
                     .map_err(IngestError::Lexical)?;
             }
         }
         let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
         lexical
-            .push_document(&analyzer, &document)
+            .push_document(analyzer, &document)
             .map_err(IngestError::Lexical)?;
         let lexical_bytes = Some(account_lexical(accounting, &lexical)?);
         Ok((lexical, lexical_bytes))
@@ -1450,8 +1452,8 @@ impl ActiveSegment {
     fn rebuild_lexical(
         &self,
         replacement: Option<(usize, Option<&str>)>,
+        analyzer: &Analyzer,
     ) -> Result<SegmentIndex, IngestError> {
-        let analyzer = store_analyzer()?;
         let mut lexical = SegmentIndex::new();
         for row in 0..self.row_count() {
             let text = match replacement {
@@ -1460,7 +1462,7 @@ impl ActiveSegment {
             };
             let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
             lexical
-                .push_document(&analyzer, &document)
+                .push_document(analyzer, &document)
                 .map_err(IngestError::Lexical)?;
         }
         Ok(lexical)
@@ -1550,10 +1552,6 @@ fn row_bytes<'a>(offsets: &[u64], bytes: &'a [u8], row: usize) -> Option<&'a [u8
             .and_then(|value| usize::try_from(value).ok())?
     };
     bytes.get(start..end)
-}
-
-fn store_analyzer() -> Result<Analyzer, IngestError> {
-    Analyzer::new(TokenizerConfig::text_default()).map_err(IngestError::Tokenizer)
 }
 
 fn account_lexical(

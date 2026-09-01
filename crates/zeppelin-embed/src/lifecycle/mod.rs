@@ -1396,6 +1396,7 @@ pub struct OpenOptions {
     max_resident_bytes: u64,
     max_temp_bytes: u64,
     epoch: Option<crate::epoch::StoreEpoch>,
+    tokenizer: Option<crate::fts::tokenizer::TokenizerConfig>,
     schema: Option<crate::meta::Schema>,
 }
 
@@ -1420,6 +1421,7 @@ impl OpenOptions {
             max_resident_bytes: u64::MAX,
             max_temp_bytes: u64::MAX,
             epoch: None,
+            tokenizer: None,
             schema: None,
         }
     }
@@ -1435,6 +1437,7 @@ impl OpenOptions {
             max_resident_bytes: u64::MAX,
             max_temp_bytes: u64::MAX,
             epoch: None,
+            tokenizer: None,
             schema: None,
         }
     }
@@ -1478,9 +1481,23 @@ impl OpenOptions {
     }
 
     /// Declares the embedding and tokenizer identity used by this handle.
+    ///
+    /// The tokenizer configuration defaults to
+    /// [`crate::fts::tokenizer::TokenizerConfig::text_default`].
+    /// A non-default tokenizer epoch must be paired with [`Self::with_tokenizer`].
     #[must_use]
     pub fn with_epoch(mut self, epoch: crate::epoch::StoreEpoch) -> Self {
         self.epoch = Some(epoch);
+        self
+    }
+
+    /// Selects the tokenizer configuration used for indexing and queries.
+    ///
+    /// Open rejects this configuration when its epoch differs from the
+    /// declared or persisted store identity.
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: crate::fts::tokenizer::TokenizerConfig) -> Self {
+        self.tokenizer = Some(tokenizer);
         self
     }
 }
@@ -1667,6 +1684,8 @@ pub enum StoreError {
     Kernel(crate::kernels::KernelInitError),
     /// The committed manifest could not be loaded or validated.
     Manifest(crate::manifest::ManifestError),
+    /// The selected tokenizer configuration could not be compiled.
+    Tokenizer(crate::fts::tokenizer::TokenizerError),
     /// The caller's declared interpretation differs from the persisted one.
     EpochMismatch(crate::epoch::EpochMismatch),
     /// Persisted bytes name an epoch but the caller did not declare one.
@@ -1843,6 +1862,7 @@ impl std::fmt::Display for StoreError {
             Self::Durability(error) => error.fmt(formatter),
             Self::Kernel(error) => error.fmt(formatter),
             Self::Manifest(error) => error.fmt(formatter),
+            Self::Tokenizer(error) => write!(formatter, "store tokenizer: {error}"),
             Self::EpochMismatch(error) => error.fmt(formatter),
             Self::EpochUndeclared => {
                 formatter.write_str("store epoch is persisted but the caller declared none")
@@ -2028,7 +2048,7 @@ impl StoreError {
             | Self::QueryPoolStart { .. }
             | Self::WalWrite(_)
             | Self::WalRetire(_) => StoreErrorKind::Io,
-            Self::NotDirectory { .. } | Self::SchemaMismatch { .. } => {
+            Self::NotDirectory { .. } | Self::Tokenizer(_) | Self::SchemaMismatch { .. } => {
                 StoreErrorKind::InvalidArgument
             }
             Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
@@ -2077,6 +2097,7 @@ impl std::error::Error for StoreError {
             Self::Durability(error) => Some(error),
             Self::Kernel(error) => Some(error),
             Self::Manifest(error) => Some(error),
+            Self::Tokenizer(error) => Some(error),
             Self::EpochMismatch(error) => Some(error),
             Self::Segment(error) => Some(error),
             Self::Wal(error) => Some(error),
@@ -2145,6 +2166,7 @@ pub struct Store {
     pub(crate) active_queries: AtomicU64,
     pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
+    pub(crate) tokenizer: crate::fts::tokenizer::Analyzer,
     pub(crate) schema: crate::meta::Schema,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) ingest_retention_fault_controller:
@@ -2324,6 +2346,24 @@ impl Store {
             }
             (Some(_), Some(_)) | (None, Some(_)) | (None, None) => {}
         }
+        let tokenizer = crate::fts::tokenizer::Analyzer::new(
+            options
+                .tokenizer
+                .clone()
+                .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
+        )
+        .map_err(StoreError::Tokenizer)?;
+        if let Some(expected) = persisted_epoch.or(declared_epoch)
+            && tokenizer.epoch() != expected.tokenizer
+        {
+            return Err(StoreError::EpochMismatch(crate::epoch::EpochMismatch {
+                expected,
+                declared: crate::epoch::EpochIdentity {
+                    embedding: expected.embedding,
+                    tokenizer: tokenizer.epoch(),
+                },
+            }));
+        }
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
         let (active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
@@ -2333,6 +2373,7 @@ impl Store {
             absorbed_through,
             &accounting,
             &schema,
+            &tokenizer,
         )?;
         if options.access_mode == AccessMode::ReadWrite
             && !manifest_exists
@@ -2419,6 +2460,7 @@ impl Store {
             active_queries: AtomicU64::new(0),
             epoch_alias: crate::epoch::EpochAliasCell::new(persisted_epoch.or(declared_epoch)),
             epoch: options.epoch,
+            tokenizer,
             schema,
             #[cfg(any(test, feature = "test-support"))]
             ingest_retention_fault_controller,
@@ -3118,9 +3160,6 @@ impl Store {
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let analyzer = crate::fts::tokenizer::Analyzer::new(
-            crate::fts::tokenizer::TokenizerConfig::text_default(),
-        )?;
         let mut index = crate::fts::index::LexicalIndex::new();
         let mut alive_sets = Vec::new();
         let mut sources = Vec::new();
@@ -3217,7 +3256,7 @@ impl Store {
         for (doc, (score, provenance)) in aggregate {
             if let Some((terms, slop)) = query.phrase_constraint() {
                 let (text, _) = structured_lexical_row(&snapshot, &active, &sources, doc)?;
-                if !crate::fts::query::phrase_matches(&analyzer, text, terms, slop) {
+                if !crate::fts::query::phrase_matches(&self.tokenizer, text, terms, slop) {
                     continue;
                 }
             }
@@ -3239,12 +3278,17 @@ impl Store {
                 .iter()
                 .map(|entry| entry.term.clone())
                 .collect::<Vec<_>>();
-            let snippet =
-                crate::fts::snippet::best_window(&analyzer, text, &terms, snippet_bytes, true)?
-                    .ok_or(crate::ingest::StoreLexicalError::MissingSnippetMatch {
-                        segment: doc.segment,
-                        row: doc.row,
-                    })?;
+            let snippet = crate::fts::snippet::best_window(
+                &self.tokenizer,
+                text,
+                &terms,
+                snippet_bytes,
+                true,
+            )?
+            .ok_or(crate::ingest::StoreLexicalError::MissingSnippetMatch {
+                segment: doc.segment,
+                row: doc.row,
+            })?;
             let snippet_text = snippet
                 .text(text)
                 .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
@@ -3368,6 +3412,7 @@ impl Store {
                                 &admitted.snapshot,
                                 &admitted.active_segment,
                                 &self.accounting,
+                                &self.tokenizer,
                                 query,
                                 &cancellation,
                             ),
@@ -3751,6 +3796,7 @@ fn exact_structured_lexical_leg(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
     accounting: &Arc<stats::Accounting>,
+    analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
@@ -3871,15 +3917,11 @@ fn exact_structured_lexical_leg(
         }
     }
     if let Some((terms, slop)) = query.phrase_constraint() {
-        let analyzer = crate::fts::tokenizer::Analyzer::new(
-            crate::fts::tokenizer::TokenizerConfig::text_default(),
-        )
-        .map_err(|error| lexical_error(error.to_string()))?;
         let mut retained = BTreeMap::new();
         for (doc, score) in aggregate {
             let (text, _) = structured_lexical_row(snapshot, active, &sources, doc)
                 .map_err(|error| lexical_error(error.to_string()))?;
-            if crate::fts::query::phrase_matches(&analyzer, text, terms, slop) {
+            if crate::fts::query::phrase_matches(analyzer, text, terms, slop) {
                 retained.insert(doc, score);
             }
         }
