@@ -1936,6 +1936,11 @@ impl CampaignSpec {
             coverage.insert(format!("fault.site.{}", event.site.key()));
             coverage.insert(format!("fault.mode.{}", event.mode.key()));
             coverage.insert(format!("fault.layer.{}", event.layer.key()));
+            if event.is_wal_create_before_directory_sync() {
+                coverage.insert(
+                    "crash.boundary.wal_create_after_file_sync_before_directory_sync".to_owned(),
+                );
+            }
         }
         for count in 1..=layers.len().min(4) {
             coverage.insert(format!("fault.layer.count.{count}"));
@@ -2248,7 +2253,9 @@ const FFI_OPS: [&str; 5] = [
 ];
 
 const OVERALL_COVERAGE: [&str; 1] = ["op.open"];
-const STORAGE_COVERAGE: [&str; 4] = [
+const STORAGE_COVERAGE: [&str; 6] = [
+    "crash.boundary.wal_create_after_file_sync_before_directory_sync",
+    "crash.boundary.wal_create_post_ack",
     "feature_fault.storage-durability.list-delete-omission.site.delete",
     "feature_fault.storage-durability.list-delete-omission.site.list",
     "feature_fault.storage-durability.wrong-segment-object.site.family",
@@ -2264,7 +2271,8 @@ const STORAGE_OMISSION_COVERAGE: [&str; 6] = [
     "storage.omission.manifest-temporary.delete",
 ];
 
-const STORAGE_DERIVED_SMOKE_COVERAGE: [&str; 10] = [
+const STORAGE_DERIVED_SMOKE_COVERAGE: [&str; 11] = [
+    "crash.boundary.wal_create_after_file_sync_before_directory_sync",
     "feature_fault.storage-durability.list-delete-omission.site.delete",
     "feature_fault.storage-durability.list-delete-omission.site.list",
     "storage.omission.final-segment.list",

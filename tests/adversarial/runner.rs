@@ -1248,6 +1248,12 @@ impl RealEngine {
         self.open()
     }
 
+    fn wal_dirent_is_durable(&self) -> Result<bool, String> {
+        self.vfs
+            .dirent_is_durable(&self.directory.join("wal.ze"))
+            .map_err(|error| error.to_string())
+    }
+
     fn store(&self) -> Result<&Store, String> {
         self.store
             .as_ref()
@@ -2928,6 +2934,14 @@ fn run_program_for_with_clock(
     let mut seal_precondition_lost_to_crash = false;
     let mut purge_refusal_after_fault = false;
 
+    if campaign == CampaignKind::StorageDurability {
+        if let Some(violation) = first_durable_ack_survives_wal_create_crash(seed, profile)? {
+            violations.push(violation);
+        } else {
+            coverage.hit("crash.boundary.wal_create_post_ack");
+        }
+    }
+
     for (op_index, op) in program.ops.iter().enumerate() {
         executed_operations = executed_operations.saturating_add(1);
         coverage.hit(format!("attempt.op.{}", op.kind()));
@@ -3784,9 +3798,15 @@ fn run_program_for_with_clock(
                         .ok_or_else(|| {
                             "fired Crash event disappeared before recovery".to_owned()
                         })?;
+                    let wal_dirent_durable = engine.wal_dirent_is_durable()?;
                     match engine.recover_from_simulated_crash() {
                         Ok(()) => {
-                            reconcile_simulated_crash(&mut model, op, crash_event)?;
+                            reconcile_simulated_crash(
+                                &mut model,
+                                op,
+                                crash_event,
+                                wal_dirent_durable,
+                            )?;
                             reconcile_recovered_locations(&mut engine, &mut model)?;
                             simulated_crash_recovered = true;
                             if matches!(op, Op::Seal) {
@@ -3929,9 +3949,15 @@ fn run_program_for_with_clock(
                                     .ok_or_else(|| {
                                         "retry Crash event disappeared before recovery".to_owned()
                                     })?;
+                                let wal_dirent_durable = engine.wal_dirent_is_durable()?;
                                 match engine.recover_from_simulated_crash() {
                                     Ok(()) => {
-                                        reconcile_simulated_crash(&mut model, op, &crash_event)?;
+                                        reconcile_simulated_crash(
+                                            &mut model,
+                                            op,
+                                            &crash_event,
+                                            wal_dirent_durable,
+                                        )?;
                                         reconcile_recovered_locations(&mut engine, &mut model)?;
                                         simulated_crash_recovered = true;
                                         if matches!(op, Op::Seal) {
@@ -4104,6 +4130,9 @@ fn run_program_for_with_clock(
             coverage.hit(format!("fault.layer.{}", event.layer.key()));
             if event.layer == fault_vfs::Layer::Crash {
                 coverage.hit(format!("crash.simulated.{}", event.site.key()));
+            }
+            if event.is_wal_create_before_directory_sync() {
+                coverage.hit("crash.boundary.wal_create_after_file_sync_before_directory_sync");
             }
         }
     }
@@ -17576,7 +17605,12 @@ fn recover_and_retry_faulted_operation(
     }
 }
 
-fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> Result<(), String> {
+fn reconcile_simulated_crash(
+    model: &mut Model,
+    op: &Op,
+    crash: &FaultEvent,
+    wal_dirent_durable: bool,
+) -> Result<(), String> {
     if crash.layer != fault_vfs::Layer::Crash || crash.mode != fault_vfs::FaultMode::Crash {
         return Err("simulated crash recovery received a non-Crash event".to_owned());
     }
@@ -17589,7 +17623,7 @@ fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> 
         } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if crash_path_is(crash, "wal.ze") {
+                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
                     for doc_id in *first_id..first_id.saturating_add(*count) {
                         model.acknowledge(doc_id, *revision, *timestamp);
                     }
@@ -17611,7 +17645,7 @@ fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> 
         } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if crash_path_is(crash, "wal.ze") {
+                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
                     model.acknowledge(*doc_id, *revision, *timestamp);
                 }
             }
@@ -17625,7 +17659,7 @@ fn reconcile_simulated_crash(model: &mut Model, op: &Op, crash: &FaultEvent) -> 
         Op::Delete { doc_id } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if crash_path_is(crash, "wal.ze") {
+                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
                     model.delete(*doc_id);
                 }
             }
@@ -17745,7 +17779,7 @@ pub fn simulated_crash_torn_middle_counterexample() -> Violation {
         fire_count: 1,
         path: Some(PathBuf::from("wal.ze")),
     };
-    reconcile_simulated_crash(&mut model, &operation, &crash)
+    reconcile_simulated_crash(&mut model, &operation, &crash, true)
         .expect("synced ingest crash boundary is supported");
     let expected = model.expected_scan(&program::query(3), model.len());
     let hits = expected
@@ -17924,6 +17958,37 @@ fn full_scan(
     seed: u64,
 ) -> Result<SearchObservation, String> {
     engine.search(&program::query(3), model.len(), SearchKind::Scan, seed)
+}
+
+pub(crate) fn first_durable_ack_survives_wal_create_crash(
+    seed: u64,
+    profile: FaultProfile,
+) -> Result<Option<Violation>, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut engine = RealEngine::without_faults(directory.path().to_path_buf());
+    let document = DocMutation {
+        doc_id: 1,
+        revision: 1,
+        timestamp: 1,
+    };
+    let mut model = Model::default();
+    engine.open()?;
+    engine.reopen()?;
+    let ack = engine.ingest(&[document])?;
+    if !ack.changed {
+        return Err("first durable ingest returned an unchanged acknowledgement".to_owned());
+    }
+    model.acknowledge(document.doc_id, document.revision, document.timestamp);
+
+    engine
+        .vfs
+        .simulate_crash()
+        .map_err(|error| error.to_string())?;
+    engine.recover_from_simulated_crash()?;
+    let observed = full_scan(&mut engine, &model, seed)?;
+    let violation = durability_prefix_violation(seed, profile, 0, &model, &observed);
+    engine.close()?;
+    Ok(violation)
 }
 
 fn warm_cancel_query(
