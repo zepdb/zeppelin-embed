@@ -658,6 +658,48 @@ fn require_factor_count(expected: usize, actual: usize) -> Result<(), ScanError>
     Ok(())
 }
 
+fn query_dimensions(query: ScanQuery<'_>) -> usize {
+    match query {
+        ScanQuery::F32(query) => query.len(),
+        ScanQuery::F16(query) => query.len(),
+        ScanQuery::Int8(query) => query.len(),
+        ScanQuery::Bit4(query) => query.len(),
+    }
+}
+
+fn query_bytes_per_row(query: ScanQuery<'_>) -> Result<usize, ScanError> {
+    match query {
+        ScanQuery::F32(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(ScanError::ArithmeticOverflow),
+        ScanQuery::F16(query) => query
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or(ScanError::ArithmeticOverflow),
+        ScanQuery::Int8(query) => Ok(query.len()),
+        ScanQuery::Bit4(query) => Ok(query.len().div_ceil(2)),
+    }
+}
+
+fn partition_stat_counts(
+    scored_rows: usize,
+    query: ScanQuery<'_>,
+) -> Result<(u64, u64), ScanError> {
+    let dimensions =
+        u64::try_from(query_dimensions(query)).map_err(|_| ScanError::ArithmeticOverflow)?;
+    let dims_touched = u64::try_from(scored_rows)
+        .map_err(|_| ScanError::ArithmeticOverflow)?
+        .checked_mul(dimensions)
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    let bytes_per_row = query_bytes_per_row(query)?;
+    let bytes_read = scored_rows
+        .checked_mul(bytes_per_row)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(ScanError::ArithmeticOverflow)?;
+    Ok((dims_touched, bytes_read))
+}
+
 pub(crate) fn scan_partition(
     request: ScanRequest<'_>,
     k: usize,
@@ -724,33 +766,7 @@ pub(crate) fn scan_partition(
         ScanRows::Bit4RowMajor { .. } => range.end - range.start,
         _ => allowed_row_count(request.row_mask, range.clone(), cancellation)?,
     };
-    let dimensions = u64::try_from(match request.query {
-        ScanQuery::F32(query) => query.len(),
-        ScanQuery::F16(query) => query.len(),
-        ScanQuery::Int8(query) => query.len(),
-        ScanQuery::Bit4(query) => query.len(),
-    })
-    .map_err(|_| ScanError::ArithmeticOverflow)?;
-    let dims_touched = u64::try_from(scored_rows)
-        .map_err(|_| ScanError::ArithmeticOverflow)?
-        .checked_mul(dimensions)
-        .ok_or(ScanError::ArithmeticOverflow)?;
-    let bytes_per_row = match request.query {
-        ScanQuery::F32(query) => query
-            .len()
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(ScanError::ArithmeticOverflow)?,
-        ScanQuery::F16(query) => query
-            .len()
-            .checked_mul(std::mem::size_of::<u16>())
-            .ok_or(ScanError::ArithmeticOverflow)?,
-        ScanQuery::Int8(query) => query.len(),
-        ScanQuery::Bit4(query) => query.len().div_ceil(2),
-    };
-    let bytes_read = scored_rows
-        .checked_mul(bytes_per_row)
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(ScanError::ArithmeticOverflow)?;
+    let (dims_touched, bytes_read) = partition_stat_counts(scored_rows, request.query)?;
     Ok(PartitionScan {
         candidates,
         dims_touched,
@@ -794,35 +810,7 @@ pub(crate) fn gather_top_k(
                 .ok_or(ScanError::ArithmeticOverflow)?;
         }
     }
-    let dimensions = u64::try_from(match request.query {
-        ScanQuery::F32(query) => query.len(),
-        ScanQuery::F16(query) => query.len(),
-        ScanQuery::Int8(query) => query.len(),
-        ScanQuery::Bit4(query) => query.len(),
-    })
-    .map_err(|_| ScanError::ArithmeticOverflow)?;
-    let dims_touched = u64::try_from(scored_rows)
-        .map_err(|_| ScanError::ArithmeticOverflow)?
-        .checked_mul(dimensions)
-        .ok_or(ScanError::ArithmeticOverflow)?;
-    let bytes_per_row = match request.query {
-        ScanQuery::F32(query) => query
-            .len()
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(ScanError::ArithmeticOverflow)?,
-        ScanQuery::F16(query) => query
-            .len()
-            .checked_mul(std::mem::size_of::<u16>())
-            .ok_or(ScanError::ArithmeticOverflow)?,
-        ScanQuery::Int8(query) => query.len(),
-        ScanQuery::Bit4(query) => query.len().div_ceil(2),
-    };
-    let bytes_read = u64::try_from(
-        scored_rows
-            .checked_mul(bytes_per_row)
-            .ok_or(ScanError::ArithmeticOverflow)?,
-    )
-    .map_err(|_| ScanError::ArithmeticOverflow)?;
+    let (dims_touched, bytes_read) = partition_stat_counts(scored_rows, request.query)?;
     let worker_thread_ids = (scored_rows != 0)
         .then(|| std::thread::current().id())
         .into_iter()
