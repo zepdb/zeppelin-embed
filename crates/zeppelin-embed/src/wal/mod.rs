@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::io::IoSlice;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -235,11 +235,18 @@ struct Group {
 /// next byte-bounded group, which that leader issues immediately afterward.
 pub struct WalWriter {
     file: Mutex<Box<dyn VfsFile>>,
+    created_directory_sync: Mutex<Option<CreatedDirectorySync>>,
     state: Mutex<WriterState>,
     changed: Condvar,
     sync: SyncRequirement,
     max_group_bytes: usize,
     durable_progress: AtomicU64,
+}
+
+struct CreatedDirectorySync {
+    vfs: Arc<dyn Vfs>,
+    directory: PathBuf,
+    kind: SyncKind,
 }
 
 impl WalWriter {
@@ -276,6 +283,7 @@ impl WalWriter {
         let file = vfs.open_append(path).map_err(WalWriteError::from_io)?;
         Ok(Self {
             file: Mutex::new(file),
+            created_directory_sync: Mutex::new(None),
             state: Mutex::new(WriterState {
                 next_seq,
                 visible,
@@ -339,6 +347,7 @@ impl WalWriter {
         let recent_groups = VecDeque::with_capacity(RECENT_GROUP_LIMIT);
         Ok(Self {
             file: Mutex::new(file),
+            created_directory_sync: Mutex::new(None),
             state: Mutex::new(WriterState {
                 next_seq: first_seq.get(),
                 visible: VecDeque::new(),
@@ -360,6 +369,29 @@ impl WalWriter {
             max_group_bytes,
             durable_progress: AtomicU64::new(first_seq.get().saturating_sub(1)),
         })
+    }
+
+    pub(crate) fn create_store_wal(
+        vfs: Arc<dyn Vfs>,
+        directory: &Path,
+        path: &Path,
+        first_seq: LogSeq,
+        policy: DurabilityPolicy,
+    ) -> Result<Self, WalWriteError> {
+        let created = match vfs.open(path) {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(WalWriteError::from_io(error)),
+        };
+        let mut writer = Self::create(vfs.as_ref(), path, first_seq, policy)?;
+        if created && let SyncRequirement::Sync(kind) = policy.directory_sync() {
+            writer.created_directory_sync = Mutex::new(Some(CreatedDirectorySync {
+                vfs,
+                directory: directory.to_path_buf(),
+                kind,
+            }));
+        }
+        Ok(writer)
     }
 
     /// Makes one record visible and returns without waiting when another
@@ -890,7 +922,17 @@ impl WalWriter {
         match self.sync {
             SyncRequirement::Skip => Ok(()),
             SyncRequirement::Sync(kind) => file.sync(kind),
+        }?;
+        drop(file);
+        let mut created_directory_sync = self
+            .created_directory_sync
+            .lock()
+            .map_err(|_| std::io::Error::other("WAL directory-sync mutex poisoned"))?;
+        if let Some(sync) = created_directory_sync.as_ref() {
+            sync.vfs.sync(&sync.directory, sync.kind)?;
+            created_directory_sync.take();
         }
+        Ok(())
     }
 
     fn wait_until_durable(&self, seq: LogSeq) -> Result<(), WalWriteError> {

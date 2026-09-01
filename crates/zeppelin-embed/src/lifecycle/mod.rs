@@ -2373,7 +2373,8 @@ impl Store {
                     &accounting,
                 )?,
                 None => crate::ingest::StoreWal::create(
-                    vfs.as_ref(),
+                    Arc::clone(&vfs),
+                    path,
                     &wal_path,
                     durability_policy,
                     &accounting,
