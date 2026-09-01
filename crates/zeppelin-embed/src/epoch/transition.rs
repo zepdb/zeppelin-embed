@@ -11,6 +11,16 @@ use crate::vfs::Vfs;
 
 use super::{EpochId, EpochIdentity};
 
+struct EpochTransitionAdmission<'a> {
+    active: std::sync::MutexGuard<'a, Option<crate::ingest::ActiveState>>,
+    wal: std::sync::MutexGuard<'a, Option<crate::ingest::StoreWal>>,
+    writer_lock: std::sync::MutexGuard<'a, Option<crate::lifecycle::lock::StoreLock>>,
+    state: std::sync::MutexGuard<'a, StoreState>,
+    manifest: crate::manifest::Manifest,
+    _maintenance: std::sync::MutexGuard<'a, ()>,
+    _durable_end: u64,
+}
+
 /// Typed rejection from alias switching or explicit epoch reclamation.
 #[derive(Debug)]
 pub enum EpochTransitionError {
@@ -200,25 +210,15 @@ impl DropEpochReport {
 }
 
 impl Store {
-    /// Atomically publishes a registered epoch whose segments are retained.
-    pub fn switch_epoch_alias(
-        &self,
-        target: EpochIdentity,
-    ) -> Result<EpochAliasReport, EpochTransitionError> {
-        self.switch_epoch_alias_on_vfs(target, self.vfs.as_ref())
-    }
-
-    fn switch_epoch_alias_on_vfs(
-        &self,
-        target: EpochIdentity,
+    fn admit_epoch_transition<'a>(
+        &'a self,
         vfs: &dyn Vfs,
-    ) -> Result<EpochAliasReport, EpochTransitionError> {
-        let _maintenance = self
+        component: &'static str,
+    ) -> Result<EpochTransitionAdmission<'a>, EpochTransitionError> {
+        let maintenance = self
             .maintenance
             .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "epoch transition",
-            })?;
+            .map_err(|_| StoreError::Synchronization { component })?;
         let state = self
             .state
             .lock()
@@ -252,9 +252,43 @@ impl Store {
             })?;
         let active_state = active.as_mut().ok_or(StoreError::Closed)?;
         let manifest_path = self.directory.join(MANIFEST_FILE);
-        let mut manifest =
+        let manifest =
             load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
         require_absorbed(active_state.segment.row_count(), &manifest, durable_end)?;
+        Ok(EpochTransitionAdmission {
+            active,
+            wal,
+            writer_lock,
+            state,
+            manifest,
+            _maintenance: maintenance,
+            _durable_end: durable_end,
+        })
+    }
+
+    /// Atomically publishes a registered epoch whose segments are retained.
+    pub fn switch_epoch_alias(
+        &self,
+        target: EpochIdentity,
+    ) -> Result<EpochAliasReport, EpochTransitionError> {
+        self.switch_epoch_alias_on_vfs(target, self.vfs.as_ref())
+    }
+
+    fn switch_epoch_alias_on_vfs(
+        &self,
+        target: EpochIdentity,
+        vfs: &dyn Vfs,
+    ) -> Result<EpochAliasReport, EpochTransitionError> {
+        let EpochTransitionAdmission {
+            _maintenance,
+            state,
+            writer_lock,
+            wal,
+            mut active,
+            _durable_end: _,
+            mut manifest,
+        } = self.admit_epoch_transition(vfs, "epoch transition")?;
+        let active_state = active.as_mut().ok_or(StoreError::Closed)?;
         let previous = manifest
             .epoch_alias
             .ok_or(EpochTransitionError::EpochUnavailable { target })?;
@@ -340,48 +374,16 @@ impl Store {
         target: EpochId,
         vfs: &dyn Vfs,
     ) -> Result<DropEpochReport, EpochTransitionError> {
-        let _maintenance = self
-            .maintenance
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "drop epoch",
-            })?;
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| StoreError::Synchronization { component: "state" })?;
-        match *state {
-            StoreState::Open => {}
-            StoreState::Closing => return Err(StoreError::Closing.into()),
-            StoreState::Closed => return Err(StoreError::Closed.into()),
-        }
-        let writer_lock = self
-            .writer_lock
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "writer lock",
-            })?;
-        if writer_lock.is_none() {
-            return Err(StoreError::ReadOnly.into());
-        }
-        let wal = self
-            .wal_writer
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "WAL writer",
-            })?;
-        let durable_end = wal.as_ref().ok_or(StoreError::ReadOnly)?.durable_end();
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "active segment",
-            })?;
+        let EpochTransitionAdmission {
+            _maintenance,
+            state,
+            writer_lock,
+            wal,
+            mut active,
+            _durable_end: _,
+            mut manifest,
+        } = self.admit_epoch_transition(vfs, "drop epoch")?;
         let active_state = active.as_mut().ok_or(StoreError::Closed)?;
-        let manifest_path = self.directory.join(MANIFEST_FILE);
-        let mut manifest =
-            load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
-        require_absorbed(active_state.segment.row_count(), &manifest, durable_end)?;
         if manifest
             .epoch_alias
             .is_some_and(|identity| identity.embedding == target)
