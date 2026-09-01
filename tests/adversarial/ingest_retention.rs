@@ -1535,6 +1535,21 @@ fn run_i23_clean_from_fixture(fixture: I23FixtureV1) -> Result<I23Evidence, Stri
         .snapshot()
         .map_err(|error| format!("snapshot second reopened I23 Store: {error}"))?
         .generation();
+    let mut sequence_probe = fixture.survivor.clone();
+    sequence_probe.revision = sequence_probe
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| "I23 sequence-probe revision overflow".to_owned())?;
+    let post_purge_ack = second
+        .ingest(IngestBatch::new(vec![product_document(&sequence_probe)?]))
+        .map_err(|error| format!("ingest I23 post-purge sequence probe: {error}"))?;
+    if post_purge_ack.seq() <= delete_ack.seq() {
+        return Err(format!(
+            "I23 WAL sequence regressed across physical purge: prior={} post_purge={}",
+            delete_ack.seq().get(),
+            post_purge_ack.seq().get()
+        ));
+    }
     second
         .close()
         .map_err(|error| format!("close second reopened I23 Store: {error}"))?;

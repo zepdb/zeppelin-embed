@@ -667,6 +667,49 @@ fn bl_135_purge_persists_acked_generation_with_nonempty_wal() {
 }
 
 #[test]
+fn purge_does_not_reuse_acknowledged_sequence() {
+    let directory = tempdir().expect("purge sequence directory");
+    let revised = DocId::new(861);
+    let purged = DocId::new(862);
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let mut highest_acknowledged = 0;
+    for revision in 1..=5 {
+        let ack = store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(revised, Revision::new(revision)),
+                vec![1.0, 0.0],
+            )]))
+            .expect("ingest revised document");
+        highest_acknowledged = highest_acknowledged.max(ack.seq().get());
+    }
+    let purged_ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(purged, Revision::new(1)),
+            vec![0.0, 1.0],
+        )]))
+        .expect("ingest purge target");
+    highest_acknowledged = highest_acknowledged.max(purged_ack.seq().get());
+
+    let token = store.purge(&[purged]).expect("schedule active purge");
+    store
+        .await_physical_purge(token)
+        .expect("complete active purge");
+    let next_ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(revised, Revision::new(6)),
+            vec![1.0, 1.0],
+        )]))
+        .expect("ingest after purge");
+
+    assert!(
+        next_ack.seq().get() > highest_acknowledged,
+        "next ack after purge reissued sequence {}, already seen through ack {}",
+        next_ack.seq().get(),
+        highest_acknowledged
+    );
+}
+
+#[test]
 fn int8_physical_purge_preserves_surviving_codes_and_tombstones() {
     let directory = tempdir().expect("Int8 purge directory");
     let (first, removed, deleted) = publish_int8_document_segment(directory.path());
