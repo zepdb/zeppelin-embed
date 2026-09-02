@@ -6,14 +6,19 @@ use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
+use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::block::CACHE_LINE_BYTES;
 use zeppelin_embed::graph::build::GraphBuildPasses;
+use zeppelin_embed::graph::refine::{RefinementPass, refine_graph};
 use zeppelin_embed::graph::search::{
     GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher, QueryQosClass,
     TraversalPrefetch,
 };
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
+use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_bench::graph_recall::{
     CrossGraphArtifact, CrossGraphDataset, Sift1mPaths, open_cross_dataset_graph,
     read_cross_dataset_queries, read_cross_dataset_truth,
@@ -46,6 +51,7 @@ struct Config {
     run: usize,
     cache_directory: Option<PathBuf>,
     data_directory: PathBuf,
+    refinement_pass: Option<RefinementPass>,
 }
 
 fn graph_search_request<'a>(
@@ -66,23 +72,46 @@ fn graph_search_request<'a>(
 }
 
 enum CachedGraph {
-    Sift(SegmentReader),
-    Cross(CrossGraphArtifact),
+    Sift {
+        source: SegmentReader,
+        refined: Option<SegmentReader>,
+    },
+    Cross {
+        source: CrossGraphArtifact,
+        refined: Option<SegmentReader>,
+    },
 }
 
 impl CachedGraph {
     fn reader(&self) -> &SegmentReader {
         match self {
-            Self::Sift(reader) => reader,
-            Self::Cross(artifact) => artifact.reader(),
+            Self::Sift { source, refined } => refined.as_ref().unwrap_or(source),
+            Self::Cross { source, refined } => refined.as_ref().unwrap_or(source.reader()),
         }
     }
 
     fn zero_norm_rows(&self) -> &[u32] {
         match self {
-            Self::Sift(_) => &[],
-            Self::Cross(artifact) => artifact.metadata().zero_norm_rows(),
+            Self::Sift { .. } => &[],
+            Self::Cross { source, .. } => source.metadata().zero_norm_rows(),
         }
+    }
+
+    fn apply_refinement(
+        &mut self,
+        directory: &Path,
+        pass: Option<RefinementPass>,
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(pass) = pass else {
+            return Ok(());
+        };
+        let refined = refine_cached_graph(self.reader(), directory, pass)?;
+        match self {
+            Self::Sift { refined: slot, .. } | Self::Cross { refined: slot, .. } => {
+                *slot = Some(refined);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -105,6 +134,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         TraversalPrefetch::Enabled => "on",
         TraversalPrefetch::Disabled => "off",
     };
+    let refinement_label = config
+        .refinement_pass
+        .map_or("baseline", RefinementPass::label);
     let default_cache = match (config.dataset_name.as_str(), config.build_passes) {
         ("sift-128-euclidean", BuildPasses::One) => {
             PathBuf::from("/private/tmp/zeppelin-embed-m5-sift1m-one")
@@ -122,14 +154,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         )),
     };
     let cache_directory = config.cache_directory.as_deref().unwrap_or(&default_cache);
-    let (cached, queries, truth, dimensions, rows, metric_label) =
+    let (mut cached, queries, truth, dimensions, rows, metric_label) =
         if config.dataset_name == "sift-128-euclidean" {
             let paths = Sift1mPaths::in_directory(&config.data_directory);
             (
-                CachedGraph::Sift(open_cached_sift_graph(
-                    cache_directory,
-                    config.build_passes,
-                )?),
+                CachedGraph::Sift {
+                    source: open_cached_sift_graph(cache_directory, config.build_passes)?,
+                    refined: None,
+                },
                 read_f32_raw(&paths.queries)?,
                 read_i32_raw(&paths.ground_truth)?,
                 SIFT_DIMS,
@@ -148,12 +180,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                 BuildPasses::Two => GraphBuildPasses::Two,
             };
             (
-                CachedGraph::Cross(open_cross_dataset_graph(
-                    &dataset,
-                    cache_directory,
-                    passes,
-                    SEED,
-                )?),
+                CachedGraph::Cross {
+                    source: open_cross_dataset_graph(&dataset, cache_directory, passes, SEED)?,
+                    refined: None,
+                },
                 queries,
                 truth,
                 dimensions,
@@ -161,6 +191,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 metric_label,
             )
         };
+    cached.apply_refinement(cache_directory, config.refinement_pass)?;
     let reader = cached.reader();
     let zero_norm_rows = cached.zero_norm_rows();
     let zero_query_count = queries
@@ -187,7 +218,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "adaptive"
     };
     println!(
-        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_profile=bench opt_level={} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_profile=bench opt_level={} build_passes={build_passes_label} refinement_pass={refinement_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
         config.dataset_name,
         env!("ZEPPELIN_BENCH_OPT_LEVEL"),
         config.queries,
@@ -332,7 +363,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let denominator = (config.queries * TOP_K) as f64;
     let query_denominator = config.queries as f64;
     println!(
-        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_rescored={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class=Performance load1={} taint={}",
+        "GRAPH_SEARCH_RESULT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_passes={build_passes_label} refinement_pass={refinement_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} run={} p50_us={p50_us:.3} recall_at_100={:.6} mean_hops={:.3} mean_candidates={:.3} mean_rescored={:.3} mean_pushes={:.3} within_rsd_percent={within_rsd_percent:.3} zero_norm_rows={} zero_norm_queries={zero_query_count} node_stride_bytes={} scored_candidate_cache_lines={} qos_class={} qos_priority={} core_class=Performance load1={} taint={}",
         config.dataset_name,
         config.queries,
         config.run,
@@ -367,6 +398,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
         run: 0,
         cache_directory: None,
         data_directory: workspace.join("tasks/cross-benchmark/data"),
+        refinement_pass: None,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -404,12 +436,52 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
             "--run" => config.run = value.parse()?,
             "--cache-dir" => config.cache_directory = Some(PathBuf::from(value)),
             "--data-dir" => config.data_directory = PathBuf::from(value),
+            "--pass" => {
+                config.refinement_pass = match value.as_str() {
+                    "baseline" => None,
+                    _ => Some(RefinementPass::named(&value)?),
+                };
+            }
             _ => {
                 return Err(io::Error::other(format!("unknown argument {argument}")).into());
             }
         }
     }
     Ok(config)
+}
+
+fn refine_cached_graph(
+    source: &SegmentReader,
+    directory: &Path,
+    pass: RefinementPass,
+) -> Result<SegmentReader, Box<dyn Error>> {
+    let output_id = refinement_segment_id(pass);
+    let output_path = directory.join(output_id.file_name());
+    if output_path.exists() {
+        let reader = SegmentReader::open(&StdVfs, &output_path, output_id)?;
+        if !reader
+            .graph_node_blocks()?
+            .refinement_passes()
+            .contains(pass)
+        {
+            return Err(io::Error::other(format!(
+                "cached refinement {} is not stamped on {}",
+                pass.label(),
+                output_path.display()
+            ))
+            .into());
+        }
+        return Ok(reader);
+    }
+    let artifact = refine_graph(source, pass, GraphParams::sift_1m(), SEED)?;
+    let analyzer = Analyzer::new(TokenizerConfig::text_default())?;
+    let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?;
+    artifact.write_segment(&StdVfs, directory, source, output_id, &analyzer, policy)?;
+    SegmentReader::open(&StdVfs, &output_path, output_id).map_err(Into::into)
+}
+
+fn refinement_segment_id(pass: RefinementPass) -> SegmentId {
+    SegmentId::new(19, [0x40 + pass as u8; 10])
 }
 
 fn open_cached_sift_graph(

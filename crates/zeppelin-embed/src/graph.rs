@@ -6,6 +6,8 @@ pub mod block;
 pub mod build;
 /// Copy-on-write consolidation of sealed graph segments (Task 19-M8).
 pub mod consolidate;
+/// Copy-on-write post-consolidation graph refinement passes.
+pub mod refine;
 /// Single-core fixed-stride graph traversal.
 pub mod search;
 

@@ -16,6 +16,7 @@ use zeppelin_embed::epoch::{
 use zeppelin_embed::format::FormatFamily;
 use zeppelin_embed::format::frame::{FormatCheck, encode_artifact};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::refine::validate_refinement_checkpoint;
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{OpenOptions, Store};
@@ -58,6 +59,7 @@ enum Scenario {
     SegmentPublish,
     SegmentThenManifest,
     PhysicalPurge,
+    RefinementCheckpointPublish,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +68,7 @@ enum ExpectedOutcome {
     PreviousManifestAndAbsentOrValidSegment,
     NoManifestMayReferenceAMissingSegment,
     PurgeCompletesOrRestarts,
+    RefinementCheckpointAbsentOrValid,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,6 +103,12 @@ const CASES: &[CrashCase] = &[
         scenario: Scenario::PhysicalPurge,
         expected: ExpectedOutcome::PurgeCompletesOrRestarts,
         expected_operations: 16,
+    },
+    CrashCase {
+        name: "refinement_checkpoint_absent_or_valid",
+        scenario: Scenario::RefinementCheckpointPublish,
+        expected: ExpectedOutcome::RefinementCheckpointAbsentOrValid,
+        expected_operations: 4,
     },
 ];
 
@@ -626,6 +635,96 @@ fn write_segment_crash_matrix() {
 #[test]
 fn segment_then_manifest_crash_matrix() {
     run_combined_case(CASES[2]);
+}
+
+#[test]
+fn refinement_checkpoint_crash_matrix() {
+    let case = CASES[4];
+    assert_eq!(case.scenario, Scenario::RefinementCheckpointPublish);
+    assert_eq!(
+        case.expected,
+        ExpectedOutcome::RefinementCheckpointAbsentOrValid
+    );
+    let store = MemoryVfs::new();
+    let recorder = CrashVfs::new(store).expect("refinement checkpoint recorder");
+    let committed = directory().join(".tier-refinement.renumber.refine.checkpoint");
+    let temporary = directory().join(".tier-refinement.renumber.refine.checkpoint.tmp");
+    let bytes = valid_refinement_checkpoint_bytes();
+    validate_refinement_checkpoint(&bytes).expect("fixture refinement checkpoint validates");
+    recorder
+        .write(&temporary, &bytes)
+        .expect("refinement checkpoint temp write");
+    recorder
+        .sync(&temporary, SyncKind::Barrier)
+        .expect("refinement checkpoint temp sync");
+    recorder
+        .rename(&temporary, &committed)
+        .expect("refinement checkpoint rename");
+    recorder
+        .sync(directory(), SyncKind::Barrier)
+        .expect("refinement checkpoint directory sync");
+    let states = recorder
+        .crash_states()
+        .expect("refinement checkpoint crash states");
+    assert_full_uncapped_coverage(case, &recorder, &states);
+    for state in states.iter() {
+        match state.vfs().read(&committed) {
+            Ok(committed_bytes) => {
+                validate_refinement_checkpoint(&committed_bytes).unwrap_or_else(|error| {
+                    panic!(
+                        "{} {:?}: committed refinement checkpoint is invalid: {error}",
+                        case.name,
+                        state.kind()
+                    )
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!(
+                "{} {:?}: committed checkpoint read failed: {error}",
+                case.name,
+                state.kind()
+            ),
+        }
+    }
+}
+
+fn valid_refinement_checkpoint_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"ZEREFCP1");
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.push(0);
+    bytes.push(1);
+    bytes.push(1);
+    bytes.push(1);
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&19_u64.to_le_bytes());
+    bytes.extend_from_slice(&1.2_f32.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&[0x19; 16]);
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&7_u64.to_le_bytes());
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    bytes.extend_from_slice(&6_u64.to_le_bytes());
+    bytes.extend_from_slice(&33_u64.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.push(1);
+    bytes.push(0);
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.push(1);
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+    bytes.extend_from_slice(&0_f64.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&xxhash_rust::xxh3::xxh3_64(&bytes).to_le_bytes());
+    bytes
 }
 
 #[test]

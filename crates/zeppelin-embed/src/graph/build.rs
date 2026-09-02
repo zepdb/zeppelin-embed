@@ -7,7 +7,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::graph::GraphParams;
 use crate::graph::block::{
     GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeError, GraphNodeLayout,
-    NODE_BLOCK_TRAILER_LEN, decode_node_blocks, encode_node_blocks,
+    NODE_BLOCK_TRAILER_LEN, encode_node_blocks,
 };
 use crate::lifecycle::QueryCancellation;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
@@ -19,7 +19,7 @@ use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
     SegmentBuild, SegmentCopiedRegion, SegmentDocumentVersions, SegmentFactors,
-    write_segment_with_graph_and_copied_regions,
+    write_segment_with_encoded_graph_and_copied_regions,
 };
 use crate::segment::{SegmentError, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
@@ -118,95 +118,88 @@ impl GraphBuildArtifact {
         output_id: SegmentId,
         policy: DurabilityPolicy,
     ) -> Result<SegmentMeta, GraphBuildError> {
-        let decoded = decode_node_blocks(&self.encoded_region)?;
-        let mut blocks = Vec::with_capacity(decoded.node_count() as usize);
-        let mut neighbor_rows = Vec::with_capacity(decoded.node_count() as usize);
-        for node_id in 0..decoded.node_count() {
-            let block = decoded.block(node_id)?;
-            let neighbors = block
-                .neighbors_padded()
-                .take(usize::from(block.degree()))
-                .collect::<Vec<_>>();
-            blocks.push(block);
-            neighbor_rows.push(neighbors);
-        }
-        let mut nodes = Vec::with_capacity(decoded.node_count() as usize);
-        for (block, neighbors) in blocks.iter().zip(&neighbor_rows) {
-            nodes.push(GraphNodeBlockInput {
-                codes: block.codes(),
-                factors: block.factors(),
-                flags: block.flags(),
-                neighbors,
-            });
-        }
-        let columns = input.columns()?;
-        let alive = input.alive()?;
-        let factors = input.bit4_factors()?;
-        let mut doc_ids = Vec::with_capacity(input.meta().row_count as usize);
-        let mut revisions = Vec::with_capacity(input.meta().row_count as usize);
-        let mut has_documents = None;
-        for row in 0..input.meta().row_count as usize {
-            let document = input.document_version(row)?;
-            let present = document.is_some();
-            if has_documents.is_some_and(|expected| expected != present) {
-                return Err(GraphBuildError::Segment(SegmentError::Geometry(
-                    "document-version region is present for only part of the segment".to_owned(),
-                )));
-            }
-            has_documents = Some(present);
-            if let Some(document) = document {
-                doc_ids.push(document.doc_id());
-                revisions.push(document.revision());
-            }
-        }
-        let build = SegmentBuild {
-            id: output_id,
-            scheme: input.meta().scheme,
-            dims: input.meta().dims,
-            codes: input.bit4_codes()?,
-            factors: SegmentFactors::Bit4(factors),
-            rescore: input.rescore_f32()?,
-            columns: &columns,
-            alive: &alive,
-        };
-        let graph = GraphNodeBlockBuild {
-            layout: decoded.layout(),
-            nodes: &nodes,
-        };
-        let documents = (has_documents == Some(true)).then_some(SegmentDocumentVersions {
-            doc_ids: &doc_ids,
-            revisions: &revisions,
-        });
-        let mut copied_regions = Vec::new();
-        for entry in input.directory() {
-            match graph_rewrite_source_region(entry.kind) {
-                GraphRewriteRegion::CopyForward => {
-                    copied_regions.push(SegmentCopiedRegion {
-                        kind: entry.kind,
-                        version: entry.version,
-                        bytes: input.region_by_id(entry.kind)?,
-                    });
-                }
-                GraphRewriteRegion::Unsupported => {
-                    return Err(GraphBuildError::Segment(SegmentError::Geometry(format!(
-                        "graph rewrite cannot carry source region kind {}",
-                        entry.kind
-                    ))));
-                }
-                GraphRewriteRegion::Reencoded | GraphRewriteRegion::Replaced => {}
-            }
-        }
-        write_segment_with_graph_and_copied_regions(
+        write_segment_with_encoded_graph(
+            &self.encoded_region,
             vfs,
             directory,
-            build,
-            graph,
-            documents,
-            &copied_regions,
+            input,
+            output_id,
             policy,
         )
-        .map_err(GraphBuildError::Segment)
     }
+}
+
+pub(crate) fn write_segment_with_encoded_graph(
+    encoded_region: &[u8],
+    vfs: &dyn Vfs,
+    directory: &Path,
+    input: &SegmentReader,
+    output_id: SegmentId,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, GraphBuildError> {
+    let columns = input.columns()?;
+    let alive = input.alive()?;
+    let factors = input.bit4_factors()?;
+    let mut doc_ids = Vec::with_capacity(input.meta().row_count as usize);
+    let mut revisions = Vec::with_capacity(input.meta().row_count as usize);
+    let mut has_documents = None;
+    for row in 0..input.meta().row_count as usize {
+        let document = input.document_version(row)?;
+        let present = document.is_some();
+        if has_documents.is_some_and(|expected| expected != present) {
+            return Err(GraphBuildError::Segment(SegmentError::Geometry(
+                "document-version region is present for only part of the segment".to_owned(),
+            )));
+        }
+        has_documents = Some(present);
+        if let Some(document) = document {
+            doc_ids.push(document.doc_id());
+            revisions.push(document.revision());
+        }
+    }
+    let build = SegmentBuild {
+        id: output_id,
+        scheme: input.meta().scheme,
+        dims: input.meta().dims,
+        codes: input.bit4_codes()?,
+        factors: SegmentFactors::Bit4(factors),
+        rescore: input.rescore_f32()?,
+        columns: &columns,
+        alive: &alive,
+    };
+    let documents = (has_documents == Some(true)).then_some(SegmentDocumentVersions {
+        doc_ids: &doc_ids,
+        revisions: &revisions,
+    });
+    let mut copied_regions = Vec::new();
+    for entry in input.directory() {
+        match graph_rewrite_source_region(entry.kind) {
+            GraphRewriteRegion::CopyForward => {
+                copied_regions.push(SegmentCopiedRegion {
+                    kind: entry.kind,
+                    version: entry.version,
+                    bytes: input.region_by_id(entry.kind)?,
+                });
+            }
+            GraphRewriteRegion::Unsupported => {
+                return Err(GraphBuildError::Segment(SegmentError::Geometry(format!(
+                    "graph rewrite cannot carry source region kind {}",
+                    entry.kind
+                ))));
+            }
+            GraphRewriteRegion::Reencoded | GraphRewriteRegion::Replaced => {}
+        }
+    }
+    write_segment_with_encoded_graph_and_copied_regions(
+        vfs,
+        directory,
+        build,
+        encoded_region,
+        documents,
+        &copied_regions,
+        policy,
+    )
+    .map_err(GraphBuildError::Segment)
 }
 
 /// Typed failure from construction before any graph artifact is published.
@@ -1744,10 +1737,32 @@ fn robust_prune(
     alpha: f32,
     target: usize,
 ) -> Result<Vec<u32>, GraphBuildError> {
-    vectors.validate_node(owner)?;
+    robust_prune_rows(
+        vectors.rescore,
+        vectors.dimensions,
+        vectors.node_count,
+        owner,
+        candidates,
+        alpha,
+        target,
+    )
+}
+
+/// Applies the production alpha-prune rule to exact row-major vectors.
+pub(crate) fn robust_prune_rows(
+    rescore: &[f32],
+    dimensions: usize,
+    node_count: u32,
+    owner: u32,
+    candidates: &[u32],
+    alpha: f32,
+    target: usize,
+) -> Result<Vec<u32>, GraphBuildError> {
+    validate_exact_rows(rescore, dimensions, node_count)?;
+    validate_exact_node(owner, node_count)?;
     let mut remaining = Vec::with_capacity(candidates.len());
     for &candidate in candidates {
-        vectors.validate_node(candidate)?;
+        validate_exact_node(candidate, node_count)?;
         if candidate != owner && !remaining.contains(&candidate) {
             remaining.push(candidate);
         }
@@ -1755,12 +1770,10 @@ fn robust_prune(
     let mut owner_distances = remaining
         .iter()
         .map(|candidate| {
-            vectors
-                .exact_distance(owner, *candidate)
-                .map(|distance| ScoredNode {
-                    node_id: *candidate,
-                    distance,
-                })
+            exact_row_distance(rescore, dimensions, owner, *candidate).map(|distance| ScoredNode {
+                node_id: *candidate,
+                distance,
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     owner_distances.sort_unstable_by(scored_best_first);
@@ -1775,12 +1788,70 @@ fn robust_prune(
             if candidate.node_id == best.node_id {
                 return false;
             }
-            vectors
-                .exact_distance(best.node_id, candidate.node_id)
+            exact_row_distance(rescore, dimensions, best.node_id, candidate.node_id)
                 .map_or(true, |between| alpha_squared * between > candidate.distance)
         });
     }
     Ok(selected)
+}
+
+fn validate_exact_rows(
+    rescore: &[f32],
+    dimensions: usize,
+    node_count: u32,
+) -> Result<(), GraphBuildError> {
+    if dimensions == 0 {
+        return Err(GraphBuildError::Geometry(
+            "alpha prune requires non-zero dimensions".to_owned(),
+        ));
+    }
+    let expected = (node_count as usize)
+        .checked_mul(dimensions)
+        .ok_or_else(|| GraphBuildError::Geometry("exact row length overflow".to_owned()))?;
+    if rescore.len() != expected {
+        return Err(GraphBuildError::Geometry(format!(
+            "exact rows contain {} values, expected {expected}",
+            rescore.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_exact_node(node_id: u32, node_count: u32) -> Result<(), GraphBuildError> {
+    if node_id >= node_count {
+        return Err(GraphBuildError::NodeIdOutOfRange {
+            node_id,
+            node_count,
+        });
+    }
+    Ok(())
+}
+
+fn exact_row_distance(
+    rescore: &[f32],
+    dimensions: usize,
+    left: u32,
+    right: u32,
+) -> Result<f64, GraphBuildError> {
+    let row = |node_id: u32| {
+        let start = (node_id as usize)
+            .checked_mul(dimensions)
+            .ok_or_else(|| GraphBuildError::Geometry("exact row offset overflow".to_owned()))?;
+        let end = start
+            .checked_add(dimensions)
+            .ok_or_else(|| GraphBuildError::Geometry("exact row end overflow".to_owned()))?;
+        rescore
+            .get(start..end)
+            .ok_or_else(|| GraphBuildError::Geometry(format!("exact row {node_id} is unavailable")))
+    };
+    Ok(row(left)?
+        .iter()
+        .zip(row(right)?)
+        .map(|(left, right)| {
+            let difference = f64::from(*left) - f64::from(*right);
+            difference * difference
+        })
+        .sum())
 }
 
 fn add_reciprocal_edges(

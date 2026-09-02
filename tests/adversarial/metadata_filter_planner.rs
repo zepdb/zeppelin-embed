@@ -5804,10 +5804,10 @@ fn inspect_public_graph(
     if bytes.get(trailer..trailer.saturating_add(8)) != Some(b"ZEGRNB01".as_slice()) {
         return Err("metadata graph fixture magic is not ZEGRNB01".to_owned());
     }
-    if read_u16(&bytes, trailer + 8, "graph version")? != 1
-        || read_u16(&bytes, trailer + 10, "graph flags")? != 0
+    let refinement_passes = read_u16(&bytes, trailer + 10, "graph refinement passes")?;
+    if read_u16(&bytes, trailer + 8, "graph version")? != 1 || refinement_passes & !0b0000_1111 != 0
     {
-        return Err("metadata graph fixture version/flags are invalid".to_owned());
+        return Err("metadata graph fixture version/pass record is invalid".to_owned());
     }
     let dims = read_u32(&bytes, trailer + 12, "graph dimensions")?;
     let padded_dims = read_u32(&bytes, trailer + 16, "graph padded dimensions")?;

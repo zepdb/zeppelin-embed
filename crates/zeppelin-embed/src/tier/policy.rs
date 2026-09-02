@@ -1,6 +1,7 @@
 //! Pure per-segment tier decisions.
 
 use super::{SegmentTier, TierThresholds};
+use crate::graph::refine::{RefinementPass, RefinementPasses};
 
 /// Policy inputs derived from one segment and its currently published artifacts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +45,24 @@ pub enum StorePlan {
     Stay,
     /// Merge every published graph segment into one new sealed graph segment.
     Consolidate,
+}
+
+/// Pure per-graph decision for the next catalog-ordered refinement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefinementPlan {
+    /// Every M9 pass is already recorded on the graph.
+    Stay,
+    /// Apply the first catalog-ranked pass not yet recorded.
+    Apply(RefinementPass),
+}
+
+/// Selects the first unstamped M9 pass in catalog order.
+#[must_use]
+pub fn decide_refinement(applied: RefinementPasses) -> RefinementPlan {
+    RefinementPass::ALL
+        .into_iter()
+        .find(|pass| !applied.contains(*pass))
+        .map_or(RefinementPlan::Stay, RefinementPlan::Apply)
 }
 
 /// Decides whether the store's sealed graph segments should merge into one.

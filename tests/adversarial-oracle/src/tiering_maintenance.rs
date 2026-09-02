@@ -307,13 +307,8 @@ fn expected_ranked(input: &TierInput, fixture: &TierFixture) -> Vec<CandidateFac
     candidates
 }
 
-fn semantic(candidate: CandidateFact) -> (u64, u64, u32, u32) {
-    (
-        candidate.doc_id,
-        candidate.revision,
-        candidate.score_bits,
-        candidate.local_row,
-    )
+fn stable_semantic(candidate: CandidateFact) -> (u64, u64, u32) {
+    (candidate.doc_id, candidate.revision, candidate.score_bits)
 }
 
 pub fn compare_i50(input: &TierInput, observed: &TierObserved) -> Result<(), String> {
@@ -379,13 +374,16 @@ pub fn compare_i51(input: &TierInput, observed: &TierObserved) -> Result<(), Str
         .exact_after
         .iter()
         .copied()
-        .map(semantic)
+        .map(stable_semantic)
         .collect::<Vec<_>>();
-    let expected_semantic = expected.into_iter().map(semantic).collect::<Vec<_>>();
+    let expected_semantic = expected
+        .into_iter()
+        .map(stable_semantic)
+        .collect::<Vec<_>>();
     if after_semantic != expected_semantic {
         return fail(
             I51_CHECKER_ID,
-            "Exact after maintenance differs from f64 brute force or changed rows",
+            "Exact after maintenance differs from f64 brute force by stable identity or score",
         );
     }
     let promoted_plan = PlanFact {
@@ -424,7 +422,7 @@ fn expected_budget_steps(input: &TierInput) -> Vec<BudgetStep> {
         partial(0),
         partial(1),
         BudgetStep {
-            disposition: BudgetDisposition::Complete,
+            disposition: BudgetDisposition::BudgetExhausted,
             bytes_consumed: (u64::from(input.rows) - 2 * CHECKPOINT_ROWS) * input.stride
                 + NODE_BLOCK_TRAILER_BYTES,
             rows_advanced: u64::from(input.rows) - 2 * CHECKPOINT_ROWS,
@@ -577,7 +575,12 @@ mod tests {
     #[test]
     fn every_tier_checker_accepts_a_valid_observation() {
         for seed in [2, 3] {
-            let (input, observed) = pair(seed);
+            let (input, mut observed) = pair(seed);
+            for candidate in &mut observed.exact_after {
+                candidate.local_row = input.rows - candidate.local_row - 1;
+            }
+            observed.auto_after.clone_from(&observed.exact_after);
+            observed.reopened_auto.clone_from(&observed.exact_after);
             compare_i50(&input, &observed).unwrap();
             compare_i51(&input, &observed).unwrap();
             compare_i52(&input, &observed).unwrap();

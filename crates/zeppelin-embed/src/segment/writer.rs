@@ -8,7 +8,7 @@ use crate::format::frame::{
     FILE_HEADER_LEN, FILE_MAGIC, FILE_TRAILER_LEN, FormatCheck, FormatError,
 };
 use crate::format::{FormatFamily, FormatRegistry};
-use crate::graph::block::{GraphNodeBlockBuild, encode_node_blocks};
+use crate::graph::block::{GraphNodeBlockBuild, decode_node_blocks, encode_node_blocks};
 use crate::ingest::{DocId, Revision};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::meta::{AliveSet, ColumnStore};
@@ -898,34 +898,34 @@ pub fn write_segment_with_graph_and_documents(
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
-/// Writes graph blocks while copying opaque source regions without reinterpretation.
-pub(crate) fn write_segment_with_graph_and_copied_regions(
+/// Writes authenticated graph bytes while copying opaque source regions.
+pub(crate) fn write_segment_with_encoded_graph_and_copied_regions(
     vfs: &dyn Vfs,
     directory: &Path,
     build: SegmentBuild<'_>,
-    graph: GraphNodeBlockBuild<'_>,
+    graph_bytes: &[u8],
     documents: Option<SegmentDocumentVersions<'_>>,
     copied_regions: &[SegmentCopiedRegion<'_>],
     policy: DurabilityPolicy,
 ) -> Result<SegmentMeta, SegmentError> {
-    if graph.layout.dims() != build.dims {
+    let graph = decode_node_blocks(graph_bytes)?;
+    if graph.layout().dims() != build.dims {
         return Err(SegmentError::Geometry(format!(
             "graph dimensions {}, segment dimensions {}",
-            graph.layout.dims(),
+            graph.layout().dims(),
             build.dims
         )));
     }
-    if graph.nodes.len() != build.columns.row_count() as usize {
+    if graph.node_count() != build.columns.row_count() {
         return Err(SegmentError::Geometry(format!(
             "graph nodes {}, segment rows {}",
-            graph.nodes.len(),
+            graph.node_count(),
             build.columns.row_count()
         )));
     }
-    let graph_bytes = encode_node_blocks(graph)?.into_bytes();
     let bytes = encode_segment_inner(
         build,
-        Some(graph_bytes),
+        Some(graph_bytes.to_vec()),
         documents,
         None,
         None,

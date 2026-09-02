@@ -1598,6 +1598,41 @@ feature_fault_catalog![
         FeatureOperation::Tiering(TieringOperation::Budget)
     ),
     (
+        TierRefinementCheckpointCorruption,
+        TieringMaintenance,
+        "refinement-checkpoint-corruption",
+        "refinement checkpoint corruption",
+        FeatureOperation::Tiering(TieringOperation::Budget)
+    ),
+    (
+        TierRefinementRenumberCrash,
+        TieringMaintenance,
+        "refinement-renumber-crash",
+        "renumber phase crash",
+        FeatureOperation::Tiering(TieringOperation::Publication)
+    ),
+    (
+        TierRefinementAlphaRepruneCrash,
+        TieringMaintenance,
+        "refinement-alpha-reprune-crash",
+        "alpha re-prune phase crash",
+        FeatureOperation::Tiering(TieringOperation::Publication)
+    ),
+    (
+        TierRefinementSeedRefitCrash,
+        TieringMaintenance,
+        "refinement-seed-refit-crash",
+        "seed refit phase crash",
+        FeatureOperation::Tiering(TieringOperation::Publication)
+    ),
+    (
+        TierRefinementNeighborReorderCrash,
+        TieringMaintenance,
+        "refinement-neighbor-reorder-crash",
+        "neighbor reorder phase crash",
+        FeatureOperation::Tiering(TieringOperation::Publication)
+    ),
+    (
         TierStaleSource,
         TieringMaintenance,
         "stale-source",
@@ -2171,9 +2206,14 @@ const HYBRID_FAULTS: [FeatureFault; 7] = feature_faults![
     HybridNonfiniteScore,
     HybridCancelClose,
 ];
-const TIER_FAULTS: [FeatureFault; 6] = feature_faults![
+const TIER_FAULTS: [FeatureFault; 11] = feature_faults![
     TierBudgetExhaustion,
     TierCheckpointCorruption,
+    TierRefinementCheckpointCorruption,
+    TierRefinementRenumberCrash,
+    TierRefinementAlphaRepruneCrash,
+    TierRefinementSeedRefitCrash,
+    TierRefinementNeighborReorderCrash,
     TierStaleSource,
     TierEnospc,
     TierPublicationCrash,
@@ -2508,7 +2548,15 @@ const FILTER_COVERAGE: [&str; 33] = [
 ];
 const FTS_COVERAGE: [&str; 2] = ["store.lexical_search", "op.fts_extras_probe"];
 const HYBRID_COVERAGE: [&str; 2] = ["store.hybrid_search", "op.hybrid_search"];
-const TIER_COVERAGE: [&str; 2] = ["op.maintain", "search.auto"];
+const TIER_COVERAGE: [&str; 7] = [
+    "op.maintain",
+    "search.auto",
+    "tier.refine.checkpoint.decode",
+    "tier.refine.renumber.phase",
+    "tier.refine.alpha-reprune.phase",
+    "tier.refine.seed-refit.phase",
+    "tier.refine.neighbor-reorder.phase",
+];
 const LIFECYCLE_COVERAGE: [&str; 3] = ["op.deadline_probe", "op.close", "op.stats"];
 const DIAGNOSTIC_COVERAGE: [&str; 2] = ["op.stats", "op.search"];
 const FFI_COVERAGE: [&str; 1] = ["op.ffi_probe"];

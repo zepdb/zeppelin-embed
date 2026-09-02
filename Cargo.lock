@@ -850,6 +850,7 @@ dependencies = [
 name = "zeppelin-embed-workspace-tests"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "rand",
  "rand_chacha",
  "tempfile",

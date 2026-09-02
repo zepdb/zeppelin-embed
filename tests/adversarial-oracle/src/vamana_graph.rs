@@ -486,15 +486,24 @@ pub fn compare_i29(input: &GraphInput, observed: &GraphObserved) -> Result<(), S
             "entry-point minimum/cardinality guard failed",
         );
     }
-    let mut entries = BTreeSet::new();
+    let mut entry_rows = BTreeSet::new();
+    let mut entry_documents = BTreeSet::new();
     for (row, document) in observed.entry_rows.iter().zip(&observed.entry_documents) {
-        let Some(input_row) = input.rows.get(usize::try_from(*row).unwrap_or(usize::MAX)) else {
+        if usize::try_from(*row).map_or(true, |row| row >= input.rows.len())
+            || !entry_rows.insert(*row)
+        {
             return mismatch(I29_CHECKER_ID, format!("entry row {row} is out of range"));
-        };
-        if input_row.deleted || input_row.document != *document || !entries.insert(*row) {
+        }
+        let Some(input_row) = input.rows.iter().find(|input| input.document == *document) else {
             return mismatch(
                 I29_CHECKER_ID,
-                format!("entry row {row} is deleted, duplicated, or misbound"),
+                format!("entry row {row} names unknown document {document}"),
+            );
+        };
+        if input_row.deleted || !entry_documents.insert(*document) {
+            return mismatch(
+                I29_CHECKER_ID,
+                format!("entry row {row} is deleted or duplicates a document"),
             );
         }
     }

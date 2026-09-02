@@ -1094,7 +1094,7 @@ fn graph_node_block_decoder_rejects_each_malformed_field() {
     let cases = [
         (trailer, 0xff, "magic"),
         (trailer + 8, 0xff, "version"),
-        (trailer + 10, 0x01, "reserved flags"),
+        (trailer + 10, 0x10, "unknown refinement-pass bits"),
         (trailer + 21, 0x01, "degree padding"),
         (trailer + 32, 0x01, "xxh3-64"),
         (trailer + 40, 0x01, "reserved trailer"),

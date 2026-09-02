@@ -1,5 +1,6 @@
 //! Fixed-stride, cache-line-aligned graph node-block persistence.
 
+use crate::graph::refine::RefinementPasses;
 use crate::kernels::Bit4Row;
 use crate::quant::Bit4Factors;
 use xxhash_rust::xxh3::xxh3_64;
@@ -138,6 +139,7 @@ pub struct GraphNodeBlocks<'a> {
     layout: GraphNodeLayout,
     node_count: u32,
     block_bytes: usize,
+    refinement_passes: RefinementPasses,
 }
 
 /// Owned geometry retained after one complete immutable graph validation.
@@ -147,6 +149,7 @@ pub(crate) struct ValidatedGraphNodeBlocks {
     node_count: u32,
     block_bytes: usize,
     region_bytes: usize,
+    refinement_passes: RefinementPasses,
 }
 
 /// Dense node id whose fixed-stride byte offset was checked once.
@@ -176,12 +179,19 @@ impl GraphNodeBlocks<'_> {
         self.node_count
     }
 
+    /// Returns the authenticated record of post-consolidation passes applied.
+    #[must_use]
+    pub const fn refinement_passes(&self) -> RefinementPasses {
+        self.refinement_passes
+    }
+
     pub(crate) const fn validated_descriptor(&self) -> ValidatedGraphNodeBlocks {
         ValidatedGraphNodeBlocks {
             layout: self.layout,
             node_count: self.node_count,
             block_bytes: self.block_bytes,
             region_bytes: self.bytes.len(),
+            refinement_passes: self.refinement_passes,
         }
     }
 
@@ -340,6 +350,7 @@ impl ValidatedGraphNodeBlocks {
             layout: self.layout,
             node_count: self.node_count,
             block_bytes: self.block_bytes,
+            refinement_passes: self.refinement_passes,
         })
     }
 }
@@ -530,6 +541,14 @@ impl std::error::Error for GraphNodeError {}
 pub fn encode_node_blocks(
     build: GraphNodeBlockBuild<'_>,
 ) -> Result<EncodedNodeBlocks, GraphNodeError> {
+    encode_node_blocks_with_refinement_passes(build, RefinementPasses::default())
+}
+
+/// Encodes node blocks with an authenticated additive refinement-pass record.
+pub fn encode_node_blocks_with_refinement_passes(
+    build: GraphNodeBlockBuild<'_>,
+    refinement_passes: RefinementPasses,
+) -> Result<EncodedNodeBlocks, GraphNodeError> {
     let node_count = u32::try_from(build.nodes.len())
         .map_err(|_| GraphNodeError::Layout("node count exceeds u32".to_owned()))?;
     let block_bytes = usize::try_from(build.layout.stride)
@@ -544,7 +563,7 @@ pub fn encode_node_blocks(
         let node_id = u32::try_from(position).map_err(|_| GraphNodeError::ArithmeticOverflow)?;
         encode_node(build.layout, node_id, node, node_count, &mut output)?;
     }
-    encode_trailer(build.layout, node_count, &mut output);
+    encode_trailer(build.layout, node_count, refinement_passes, &mut output);
     Ok(EncodedNodeBlocks {
         bytes: output,
         layout: build.layout,
@@ -581,11 +600,12 @@ pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNode
             "version {version}, expected {NODE_BLOCK_VERSION}"
         )));
     }
-    if read_u16(trailer, 10, "flags")? != 0 {
-        return Err(GraphNodeError::InvalidHeader(
-            "reserved flags are non-zero".to_owned(),
-        ));
-    }
+    let refinement_bits = read_u16(trailer, 10, "refinement passes")?;
+    let refinement_passes = RefinementPasses::from_bits(refinement_bits).ok_or_else(|| {
+        GraphNodeError::InvalidHeader(format!(
+            "unknown refinement-pass bits {refinement_bits:#06x}"
+        ))
+    })?;
     let dims = read_u32(trailer, 12, "logical dimensions")?;
     let padded_dims = read_u32(trailer, 16, "padded dimensions")?;
     let max_degree = *trailer.get(20).ok_or(GraphNodeError::Truncated {
@@ -669,6 +689,7 @@ pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNode
         layout,
         node_count,
         block_bytes,
+        refinement_passes,
     })
 }
 
@@ -961,11 +982,16 @@ fn validate_code_padding(
     Ok(())
 }
 
-fn encode_trailer(layout: GraphNodeLayout, node_count: u32, output: &mut Vec<u8>) {
+fn encode_trailer(
+    layout: GraphNodeLayout,
+    node_count: u32,
+    refinement_passes: RefinementPasses,
+    output: &mut Vec<u8>,
+) {
     let start = output.len();
     output.extend_from_slice(&NODE_BLOCK_MAGIC);
     output.extend_from_slice(&NODE_BLOCK_VERSION.to_le_bytes());
-    output.extend_from_slice(&0_u16.to_le_bytes());
+    output.extend_from_slice(&refinement_passes.bits().to_le_bytes());
     output.extend_from_slice(&layout.dims.to_le_bytes());
     output.extend_from_slice(&layout.padded_dims.to_le_bytes());
     output.push(layout.max_degree);

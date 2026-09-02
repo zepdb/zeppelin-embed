@@ -5508,6 +5508,21 @@ fn tier_fault_kind(
         super::campaign::FeatureFault::TierCheckpointCorruption => {
             Ok(tier_adapter::TierFaultKind::CheckpointCorruption)
         }
+        super::campaign::FeatureFault::TierRefinementCheckpointCorruption => {
+            Ok(tier_adapter::TierFaultKind::RefinementCheckpointCorruption)
+        }
+        super::campaign::FeatureFault::TierRefinementRenumberCrash => {
+            Ok(tier_adapter::TierFaultKind::RefinementRenumberCrash)
+        }
+        super::campaign::FeatureFault::TierRefinementAlphaRepruneCrash => {
+            Ok(tier_adapter::TierFaultKind::RefinementAlphaRepruneCrash)
+        }
+        super::campaign::FeatureFault::TierRefinementSeedRefitCrash => {
+            Ok(tier_adapter::TierFaultKind::RefinementSeedRefitCrash)
+        }
+        super::campaign::FeatureFault::TierRefinementNeighborReorderCrash => {
+            Ok(tier_adapter::TierFaultKind::RefinementNeighborReorderCrash)
+        }
         super::campaign::FeatureFault::TierStaleSource => {
             Ok(tier_adapter::TierFaultKind::StaleSource)
         }
@@ -5624,6 +5639,9 @@ fn run_tier_campaign_operation(
                 .case_identity = Some(case_identity.clone());
         }
         let _ = control_records;
+        for receipt in &evidence.receipts {
+            coverage.hit(receipt.site);
+        }
         receipts.extend(
             evidence
                 .receipts
@@ -17838,8 +17856,25 @@ fn run_hybrid_search(
         return Ok(None);
     }
 
-    let expected_lexical = model.expected_lexical(query_slot, model.len());
-    let actual_lexical = engine.lexical_search(query_slot, model.len())?;
+    let mut expected_lexical = model
+        .expected_lexical(query_slot, model.len())
+        .into_iter()
+        .map(|hit| LexicalHit {
+            doc_id: hit.doc_id,
+            revision: hit.revision,
+            score: hit.score,
+        })
+        .collect::<Vec<_>>();
+    let mut actual_lexical = engine.lexical_search(query_slot, model.len())?;
+    let semantic_order = |left: &LexicalHit, right: &LexicalHit| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.doc_id.cmp(&right.doc_id))
+            .then_with(|| left.revision.cmp(&right.revision))
+    };
+    expected_lexical.sort_by(semantic_order);
+    actual_lexical.sort_by(semantic_order);
     let lexical_mismatch = (actual_lexical.len() != expected_lexical.len()
         || actual_lexical
             .iter()

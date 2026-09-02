@@ -5323,29 +5323,57 @@ fn graph_rescore_input(
     graph: &GraphFixture,
     tier: u8,
     outcome: &SearchOutcome,
-) -> independent::RescoreInput {
+) -> Result<independent::RescoreInput, String> {
     const GRAPH_DIMS: usize = 128;
     let document_base = u128::from(seed).wrapping_shl(64);
-    let rows = (0..usize::try_from(graph.rows).unwrap_or(0))
-        .flat_map(|row| {
-            let amplitude = row as f32 + 1.0;
-            (0..GRAPH_DIMS).map(move |dimension| {
-                if dimension.is_multiple_of(2) {
-                    amplitude
-                } else {
-                    -amplitude
-                }
-            })
-        })
-        .map(independent::F32::from_float)
-        .collect::<Vec<_>>();
+    let row_count = usize::try_from(graph.rows)
+        .map_err(|_| "graph rescore row count does not fit usize".to_owned())?;
+    let scalar_count = row_count
+        .checked_mul(GRAPH_DIMS)
+        .ok_or_else(|| "graph rescore scalar count overflow".to_owned())?;
+    let mut rows = vec![independent::F32::from_float(0.0); scalar_count];
+    let mut documents_by_row = vec![None; row_count];
+    for candidate in &outcome.candidates {
+        let local_row = usize::try_from(candidate.row_id().local_row())
+            .map_err(|_| "graph rescore local row does not fit usize".to_owned())?;
+        let document = candidate
+            .document()
+            .ok_or_else(|| "graph rescore candidate omitted its document".to_owned())?;
+        let ordinal = document
+            .doc_id()
+            .get()
+            .checked_sub(document_base)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|&value| value < row_count)
+            .ok_or_else(|| "graph rescore document is outside the fixture corpus".to_owned())?;
+        let start = local_row
+            .checked_mul(GRAPH_DIMS)
+            .ok_or_else(|| "graph rescore row offset overflow".to_owned())?;
+        let row = rows
+            .get_mut(start..start + GRAPH_DIMS)
+            .ok_or_else(|| "graph rescore local row is outside the segment".to_owned())?;
+        let amplitude = ordinal as f32 + 1.0;
+        for (dimension, value) in row.iter_mut().enumerate() {
+            *value = independent::F32::from_float(if dimension.is_multiple_of(2) {
+                amplitude
+            } else {
+                -amplitude
+            });
+        }
+        let slot = documents_by_row
+            .get_mut(local_row)
+            .ok_or_else(|| "graph rescore document row is outside the segment".to_owned())?;
+        if slot.replace(primitive_document(document)).is_some() {
+            return Err("graph rescore returned a duplicate physical row".to_owned());
+        }
+    }
     let retained = outcome
         .candidates
         .iter()
         .map(|candidate| candidate.row_id().local_row())
         .collect::<Vec<_>>();
     let retained_len = retained.len();
-    independent::RescoreInput {
+    Ok(independent::RescoreInput {
         case_id: seed.rotate_left(8) ^ 0x2603 ^ u64::from(tier),
         metric: independent::RescoreMetric::SquaredL2,
         query: graph
@@ -5365,13 +5393,11 @@ fn graph_rescore_input(
         coarse_bytes_per_row: GRAPH_DIMS.div_ceil(2) as u64 + 12,
         store: Some(independent::RescoreStoreInput {
             source: independent::PrimitiveSource::Sealed(*graph.segment.as_bytes()),
-            documents_by_row: (0..graph.rows)
-                .map(|row| Some(primitive_version(document_base | u128::from(row), 1)))
-                .collect(),
+            documents_by_row,
             tier,
             exact_rescore: true,
         }),
-    }
+    })
 }
 
 fn public_rescore_pair(
@@ -5501,7 +5527,7 @@ fn run_rescore(
     let graph_outcome = graph_search(&graph_store, &graph_evidence.query, seed, ROWS.len())
         .map_err(|error| format!("public Graph rescore evidence: {error}"))?;
     pairs.push(public_rescore_pair(
-        graph_rescore_input(seed, &graph_evidence, 3, &graph_outcome),
+        graph_rescore_input(seed, &graph_evidence, 3, &graph_outcome)?,
         Some(&graph_outcome),
     )?);
     let auto_outcome = search_vector(
@@ -5511,7 +5537,7 @@ fn run_rescore(
         ROWS.len(),
     )
     .map_err(|error| format!("public graph-ready Auto rescore evidence: {error}"))?;
-    let mut auto_input = graph_rescore_input(seed, &graph_evidence, 0, &auto_outcome);
+    let mut auto_input = graph_rescore_input(seed, &graph_evidence, 0, &auto_outcome)?;
     auto_input.case_id ^= 0x2600;
     pairs.push(public_rescore_pair(auto_input, Some(&auto_outcome))?);
     graph_store
@@ -5939,15 +5965,28 @@ fn build_identity_fixture(seed: u64) -> Result<IdentityFixture, String> {
             report.graph_profiles.len()
         ));
     }
-    for (source, profile) in first_promotion_sources.iter().zip(&report.graph_profiles) {
-        replace_identity_source(&mut mutations, *source, profile.segment_id)?;
+    let first_refined_outputs = published_segment_order(&store)?;
+    if first_refined_outputs.len() != first_promotion_sources.len() {
+        return Err(format!(
+            "identity first refinement published {} outputs for {} sources",
+            first_refined_outputs.len(),
+            first_promotion_sources.len()
+        ));
     }
-    let first_graph = report
-        .graph_profiles
+    for (source, replacement) in first_promotion_sources.iter().zip(&first_refined_outputs) {
+        replace_identity_source(&mut mutations, *source, *replacement)?;
+    }
+    let first_graph = first_refined_outputs
         .first()
-        .ok_or_else(|| "identity graph report omitted its output segment".to_owned())?
-        .segment_id;
+        .copied()
+        .ok_or_else(|| "identity refinement published no output segment".to_owned())?;
     public_schedule.push(independent::PublicStoreStep::PublishPreparedSegment);
+    let refinement_publications = usize::try_from(report.passes_applied)
+        .map_err(|_| "identity refinement count does not fit usize".to_owned())?;
+    public_schedule.extend(std::iter::repeat_n(
+        independent::PublicStoreStep::PublishPreparedSegment,
+        refinement_publications,
+    ));
     record_phase(2, true, 12, &mutations, &public_schedule)?;
 
     let replaced = base | 600;
@@ -6012,9 +6051,23 @@ fn build_identity_fixture(seed: u64) -> Result<IdentityFixture, String> {
             report.graph_profiles.len()
         ));
     }
-    for (source, profile) in second_promotion_sources.iter().zip(&report.graph_profiles) {
-        replace_identity_source(&mut mutations, *source, profile.segment_id)?;
+    let second_refined_outputs = published_segment_order(&store)?;
+    if second_refined_outputs.len() != second_promotion_sources.len() {
+        return Err(format!(
+            "identity second refinement published {} outputs for {} sources",
+            second_refined_outputs.len(),
+            second_promotion_sources.len()
+        ));
     }
+    for (source, replacement) in second_promotion_sources.iter().zip(&second_refined_outputs) {
+        replace_identity_source(&mut mutations, *source, *replacement)?;
+    }
+    let refinement_publications = usize::try_from(report.passes_applied)
+        .map_err(|_| "identity refinement count does not fit usize".to_owned())?;
+    public_schedule.extend(std::iter::repeat_n(
+        independent::PublicStoreStep::PublishPreparedSegment,
+        refinement_publications,
+    ));
     for document in [base | 1500, base | 1600] {
         ingest_identity(&store, &epoch, document, 1, &QUERY)?;
         mutations.push(independent::IdentityMutation::Ingest(primitive_version(

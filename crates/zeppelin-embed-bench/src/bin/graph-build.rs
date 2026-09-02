@@ -4,8 +4,15 @@ use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
+use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::block::CACHE_LINE_BYTES;
 use zeppelin_embed::graph::build::GraphBuildPasses;
+use zeppelin_embed::graph::refine::{RefinementPass, refine_graph};
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+use zeppelin_embed::segment::SegmentId;
+use zeppelin_embed::segment::reader::SegmentReader;
+use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_bench::graph_recall::{CrossGraphDataset, build_cross_dataset_graph};
 use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile;
 use zeppelin_embed_bench::platform::taint::{
@@ -21,6 +28,7 @@ struct Config {
     cache_directory: Option<PathBuf>,
     passes: GraphBuildPasses,
     seed: u64,
+    refinement_pass: Option<RefinementPass>,
 }
 
 fn main() {
@@ -50,9 +58,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         GraphBuildPasses::One => "one",
         GraphBuildPasses::Two => "two",
     };
+    let refinement_label = config
+        .refinement_pass
+        .map_or("baseline", RefinementPass::label);
     let taint = detect_taint(LOAD_LIMIT);
     println!(
-        "GRAPH_BUILD_CONTEXT dataset={} rows={} dims={} metric={} build_profile=bench opt_level={} build_passes={pass_label} r_target=32 r_max=44 alpha=1.0/1.2 l_build=100 seed={} cache_dir={} load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_BUILD_CONTEXT dataset={} rows={} dims={} metric={} build_profile=bench opt_level={} build_passes={pass_label} refinement_pass={refinement_label} r_target=32 r_max=44 alpha=1.0/1.2 l_build=100 seed={} cache_dir={} load_limit={LOAD_LIMIT:.2}",
         dataset.name(),
         dataset.rows(),
         dataset.dimensions(),
@@ -64,7 +75,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     print_taint_status(&taint, LOAD_LIMIT, "graph-build");
     let artifact =
         build_cross_dataset_graph(&dataset, &cache_directory, config.passes, config.seed)?;
-    let graph = artifact.reader().graph_node_blocks()?;
+    let refinement_started = std::time::Instant::now();
+    let refined = refine_cached_graph(
+        artifact.reader(),
+        &cache_directory,
+        config.refinement_pass,
+        config.seed,
+    )?;
+    let refinement_wall_seconds = refinement_started.elapsed().as_secs_f64();
+    let reader = refined.as_ref().unwrap_or_else(|| artifact.reader());
+    let graph = reader.graph_node_blocks()?;
     let layout = graph.layout();
     let score_bytes = layout
         .code_bytes()
@@ -73,7 +93,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let score_cache_lines = score_bytes.div_ceil(CACHE_LINE_BYTES);
     let metadata = artifact.metadata();
     println!(
-        "GRAPH_BUILD_RESULT dataset={} cache_hit={} build_passes={pass_label} build_wall_s={:.3} peak_rss_bytes={} zero_norm_rows={} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load1={} taint={}",
+        "GRAPH_BUILD_RESULT dataset={} cache_hit={} build_passes={pass_label} refinement_pass={refinement_label} build_wall_s={:.3} refinement_wall_s={refinement_wall_seconds:.3} peak_rss_bytes={} zero_norm_rows={} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load1={} taint={}",
         dataset.name(),
         metadata.cache_hit(),
         metadata.build_wall_seconds(),
@@ -97,6 +117,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut cache_directory = None;
     let mut passes = GraphBuildPasses::default();
     let mut seed = DEFAULT_SEED;
+    let mut refinement_pass = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         let value = arguments
@@ -119,6 +140,12 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
                 }
             }
             "--seed" => seed = value.parse()?,
+            "--pass" => {
+                refinement_pass = match value.as_str() {
+                    "baseline" => None,
+                    _ => Some(RefinementPass::named(&value)?),
+                };
+            }
             _ => {
                 return Err(io::Error::other(format!("unknown argument {argument}")).into());
             }
@@ -134,5 +161,46 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
         cache_directory,
         passes,
         seed,
+        refinement_pass,
     })
+}
+
+fn refine_cached_graph(
+    source: &SegmentReader,
+    directory: &Path,
+    pass: Option<RefinementPass>,
+    seed: u64,
+) -> Result<Option<SegmentReader>, Box<dyn Error>> {
+    let Some(pass) = pass else {
+        return Ok(None);
+    };
+    let output_id = refinement_segment_id(pass);
+    let output_path = directory.join(output_id.file_name());
+    if output_path.exists() {
+        let reader = SegmentReader::open(&StdVfs, &output_path, output_id)?;
+        if !reader
+            .graph_node_blocks()?
+            .refinement_passes()
+            .contains(pass)
+        {
+            return Err(io::Error::other(format!(
+                "cached refinement {} is not stamped on {}",
+                pass.label(),
+                output_path.display()
+            ))
+            .into());
+        }
+        return Ok(Some(reader));
+    }
+    let artifact = refine_graph(source, pass, GraphParams::sift_1m(), seed)?;
+    let analyzer = Analyzer::new(TokenizerConfig::text_default())?;
+    let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?;
+    artifact.write_segment(&StdVfs, directory, source, output_id, &analyzer, policy)?;
+    SegmentReader::open(&StdVfs, &output_path, output_id)
+        .map(Some)
+        .map_err(Into::into)
+}
+
+fn refinement_segment_id(pass: RefinementPass) -> SegmentId {
+    SegmentId::new(19, [0x40 + pass as u8; 10])
 }

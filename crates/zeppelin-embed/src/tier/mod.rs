@@ -6,9 +6,12 @@ pub mod thresholds;
 
 pub use maintain::{
     GraphBuildProfileReport, MaintenanceBudget, MaintenanceError, MaintenanceReport,
-    MaintenanceStatus,
+    MaintenanceStatus, RefinementPassCounters,
 };
-pub use policy::{SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_store};
+pub use policy::{
+    RefinementPlan, SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_refinement,
+    decide_store,
+};
 pub use thresholds::{PROVISIONAL_TIER_THRESHOLDS, TierThresholds};
 
 /// The query structure currently available for one segment.

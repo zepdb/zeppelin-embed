@@ -14,6 +14,9 @@ use crate::graph::consolidate::{
     consolidation_supports_region, merge_segments, merged_clustering,
     read_consolidation_checkpoint, remove_consolidation_checkpoint, write_consolidation_checkpoint,
 };
+use crate::graph::refine::{
+    CheckpointedRefinement, RefinementError, RefinementPass, refine_graph_checkpointed,
+};
 use crate::lifecycle::{
     Deadline, DeadlineError, PublishedSnapshot, QueryCancellation, QueryControl, SnapshotLease,
     Store, StoreError,
@@ -27,7 +30,8 @@ use crate::vfs::Vfs;
 use super::SegmentTier;
 use super::TierThresholds;
 use super::policy::{
-    SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_store, decide_with_thresholds,
+    RefinementPlan, SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_refinement,
+    decide_store, decide_with_thresholds,
 };
 
 const MAINTENANCE_SEED: u64 = 0x20_00c0_ffee;
@@ -129,6 +133,34 @@ pub struct GraphBuildProfileReport {
     pub profile: crate::graph::search::EpochGraphProfile,
 }
 
+/// Catalog-specific counts for post-consolidation refinement publications.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RefinementPassCounters {
+    /// Published Gorder-lite row-renumbering passes.
+    pub renumber: u64,
+    /// Published true-neighborhood alpha re-prunes.
+    pub alpha_reprune: u64,
+    /// Published exact-medoid entry-seed refits.
+    pub seed_refit: u64,
+    /// Published owner-distance neighbor reorders.
+    pub neighbor_reorder: u64,
+}
+
+impl RefinementPassCounters {
+    fn increment(&mut self, pass: RefinementPass) -> Result<(), MaintenanceError> {
+        let counter = match pass {
+            RefinementPass::Renumber => &mut self.renumber,
+            RefinementPass::AlphaReprune => &mut self.alpha_reprune,
+            RefinementPass::SeedRefit => &mut self.seed_refit,
+            RefinementPass::NeighborReorder => &mut self.neighbor_reorder,
+        };
+        *counter = counter
+            .checked_add(1)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        Ok(())
+    }
+}
+
 /// Deterministic work counters returned by one maintenance call.
 #[derive(Debug)]
 pub struct MaintenanceReport {
@@ -148,6 +180,12 @@ pub struct MaintenanceReport {
     pub consolidation_generation: Option<u64>,
     /// Due consolidations refused because an input region cannot be carried.
     pub consolidation_deferrals: Vec<MaintenanceDeferral>,
+    /// Post-consolidation refinement artifacts atomically published by this call.
+    pub passes_applied: u64,
+    /// Per-pass publication counts for this call.
+    pub pass_counters: RefinementPassCounters,
+    /// Manifest generation of the last refinement published by this call.
+    pub refinement_generation: Option<u64>,
     /// Final disposition of the call.
     pub status: MaintenanceStatus,
 }
@@ -199,6 +237,9 @@ fn empty_report(status: MaintenanceStatus) -> MaintenanceReport {
         consolidations: 0,
         consolidation_generation: None,
         consolidation_deferrals: Vec::new(),
+        passes_applied: 0,
+        pass_counters: RefinementPassCounters::default(),
+        refinement_generation: None,
         status,
     }
 }
@@ -374,7 +415,212 @@ fn maintain_one(
     }
     drop(lease);
     maintain_consolidation(store, budget, &control, &mut report)?;
+    if matches!(report.status, MaintenanceStatus::Complete) {
+        maintain_refinements(store, budget, &control, &mut report)?;
+    }
     Ok(report)
+}
+
+fn maintain_refinements(
+    store: &Store,
+    budget: MaintenanceBudget,
+    control: &QueryControl,
+    report: &mut MaintenanceReport,
+) -> Result<(), MaintenanceError> {
+    loop {
+        let lease = store.snapshot().map_err(MaintenanceError::Store)?;
+        let mut due = None;
+        for segment in lease.segments().iter().filter(|segment| has_graph(segment)) {
+            let graph = segment
+                .graph_node_blocks()
+                .map_err(StoreError::Segment)
+                .map_err(MaintenanceError::Store)?;
+            if let RefinementPlan::Apply(pass) = decide_refinement(graph.refinement_passes()) {
+                due = Some((segment, pass));
+                break;
+            }
+        }
+        let Some((segment, pass)) = due else {
+            return Ok(());
+        };
+        let profile = lease
+            .graph_profile()
+            .map_err(GraphBuildError::Profile)
+            .map_err(MaintenanceError::Graph)?;
+        let params = profile
+            .build_params()
+            .with_checkpoint_batch_rows(MAINTENANCE_CHECKPOINT_ROWS as u32)
+            .map_err(MaintenanceError::Parameters)?;
+        let remaining = budget.bytes.saturating_sub(report.bytes_consumed);
+        let (stride, total_work_rows) = refinement_work(segment, pass)?;
+        let maximum_rows = remaining / stride;
+        let admitted_rows = if maximum_rows >= total_work_rows {
+            total_work_rows
+        } else {
+            maximum_rows / MAINTENANCE_CHECKPOINT_ROWS * MAINTENANCE_CHECKPOINT_ROWS
+        };
+        if admitted_rows == 0 {
+            report.status = MaintenanceStatus::BudgetExhausted;
+            return Ok(());
+        }
+        let checkpoint = refinement_checkpoint_path(&store.directory, segment.meta().id, pass);
+        let (_, resumed) = probe_checkpoint_resume(store.vfs.as_ref(), checkpoint.clone())?;
+        report.checkpoints_resumed = report
+            .checkpoints_resumed
+            .checked_add(u64::from(resumed))
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        let output_id = refinement_segment_id(segment.meta().id, lease.generation(), pass);
+        let artifact = match refine_graph_checkpointed(
+            store,
+            segment,
+            CheckpointedRefinement::new(
+                pass,
+                params,
+                MAINTENANCE_SEED,
+                lease.generation(),
+                &checkpoint,
+                control,
+            )
+            .with_max_work_rows(admitted_rows),
+            &lease,
+        ) {
+            Ok(artifact) => artifact,
+            Err(RefinementError::Graph(GraphBuildError::BudgetExhausted { rows_completed })) => {
+                report.bytes_consumed = report
+                    .bytes_consumed
+                    .checked_add(
+                        rows_completed
+                            .checked_mul(stride)
+                            .ok_or(MaintenanceError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                report.status = MaintenanceStatus::BudgetExhausted;
+                return Ok(());
+            }
+            Err(RefinementError::Graph(GraphBuildError::Timeout { .. })) => {
+                report.status = MaintenanceStatus::BudgetExhausted;
+                return Ok(());
+            }
+            Err(error) => return Err(refinement_maintenance_error(error)),
+        };
+        let meta = artifact
+            .write_segment(
+                store.vfs.as_ref(),
+                &store.directory,
+                segment,
+                output_id,
+                &store.tokenizer,
+                store.durability_policy,
+            )
+            .map_err(refinement_maintenance_error)?;
+        let published = publish_transition(store, segment.meta().id, meta)?;
+        drop(lease);
+        if !published {
+            let path = store.directory.join(output_id.file_name());
+            match store.vfs.delete(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(MaintenanceError::Store(StoreError::Io { path, source }));
+                }
+            }
+            return Ok(());
+        }
+        let consumed = artifact
+            .work_rows_completed()
+            .checked_mul(stride)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        report.bytes_consumed = report
+            .bytes_consumed
+            .checked_add(consumed)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        report.passes_applied = report
+            .passes_applied
+            .checked_add(1)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        report.pass_counters.increment(pass)?;
+        report.refinement_generation =
+            Some(current_generation(store).map_err(MaintenanceError::Store)?);
+    }
+}
+
+fn refinement_maintenance_error(error: RefinementError) -> MaintenanceError {
+    match error {
+        RefinementError::Graph(error) => MaintenanceError::Graph(error),
+        RefinementError::NodeBlock(error) => {
+            MaintenanceError::Graph(GraphBuildError::NodeBlock(error))
+        }
+        RefinementError::Segment(error) => MaintenanceError::Store(StoreError::Segment(error)),
+        RefinementError::Store(error) => MaintenanceError::Store(error),
+        error @ (RefinementError::AlreadyApplied(_) | RefinementError::Geometry(_)) => {
+            MaintenanceError::Graph(GraphBuildError::Geometry(error.to_string()))
+        }
+    }
+}
+
+fn refinement_work(
+    segment: &SegmentReader,
+    pass: RefinementPass,
+) -> Result<(u64, u64), MaintenanceError> {
+    let node_count = u64::from(segment.meta().row_count);
+    match pass {
+        RefinementPass::Renumber => Ok((
+            segment
+                .meta()
+                .file_size
+                .checked_add(node_count.saturating_sub(1))
+                .ok_or(MaintenanceError::ArithmeticOverflow)?
+                / node_count.max(1),
+            node_count,
+        )),
+        RefinementPass::SeedRefit => {
+            let row_bytes = u64::from(segment.meta().dims)
+                .checked_mul(std::mem::size_of::<f32>() as u64)
+                .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            Ok((
+                row_bytes
+                    .checked_mul(node_count)
+                    .ok_or(MaintenanceError::ArithmeticOverflow)?,
+                node_count
+                    .checked_mul(node_count.min(4))
+                    .ok_or(MaintenanceError::ArithmeticOverflow)?,
+            ))
+        }
+        RefinementPass::AlphaReprune | RefinementPass::NeighborReorder => {
+            let graph = segment
+                .graph_node_blocks()
+                .map_err(StoreError::Segment)
+                .map_err(MaintenanceError::Store)?;
+            Ok((u64::from(graph.layout().stride()), node_count))
+        }
+    }
+}
+
+fn refinement_checkpoint_path(
+    directory: &Path,
+    segment_id: SegmentId,
+    pass: RefinementPass,
+) -> std::path::PathBuf {
+    directory.join(format!(
+        ".tier-{segment_id}.{}.refine.checkpoint",
+        pass.label()
+    ))
+}
+
+fn refinement_segment_id(source: SegmentId, generation: u64, pass: RefinementPass) -> SegmentId {
+    let mut bytes = [0_u8; 16];
+    if let Some(prefix) = bytes.get_mut(..8) {
+        prefix.copy_from_slice(&generation.saturating_add(1).to_be_bytes());
+    }
+    let hash = xxhash_rust::xxh3::xxh3_64_with_seed(source.as_bytes(), pass as u64).to_be_bytes();
+    if let Some(suffix) = bytes.get_mut(8..) {
+        suffix.copy_from_slice(&hash);
+    }
+    SegmentId::from_bytes(bytes)
+}
+
+fn current_generation(store: &Store) -> Result<u64, StoreError> {
+    store.snapshot().map(|snapshot| snapshot.generation())
 }
 
 /// Runs the store-level N-to-1 graph consolidation when it is due.

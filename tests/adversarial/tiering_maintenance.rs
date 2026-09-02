@@ -11,6 +11,7 @@ use zeppelin_embed::epoch::{
 };
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::build::GraphBuildError;
+use zeppelin_embed::graph::refine::RefinementPass;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource,
     SearchOutcome, SearchRequest,
@@ -64,6 +65,11 @@ pub enum TierFaultKind {
     Enospc,
     ProfileMismatch,
     PublicationCrash,
+    RefinementCheckpointCorruption,
+    RefinementRenumberCrash,
+    RefinementAlphaRepruneCrash,
+    RefinementSeedRefitCrash,
+    RefinementNeighborReorderCrash,
 }
 
 impl TierFaultKind {
@@ -76,16 +82,27 @@ impl TierFaultKind {
             Self::Enospc => "enospc",
             Self::ProfileMismatch => "profile-mismatch",
             Self::PublicationCrash => "publication-crash",
+            Self::RefinementCheckpointCorruption => "refinement-checkpoint-corruption",
+            Self::RefinementRenumberCrash => "refinement-renumber-crash",
+            Self::RefinementAlphaRepruneCrash => "refinement-alpha-reprune-crash",
+            Self::RefinementSeedRefitCrash => "refinement-seed-refit-crash",
+            Self::RefinementNeighborReorderCrash => "refinement-neighbor-reorder-crash",
         }
     }
 
     #[must_use]
     pub const fn operation(self) -> TierOperationKind {
         match self {
-            Self::BudgetExhaustion | Self::CheckpointCorruption | Self::StaleSource => {
-                TierOperationKind::Budget
-            }
-            Self::Enospc | Self::PublicationCrash => TierOperationKind::Publication,
+            Self::BudgetExhaustion
+            | Self::CheckpointCorruption
+            | Self::RefinementCheckpointCorruption
+            | Self::StaleSource => TierOperationKind::Budget,
+            Self::Enospc
+            | Self::PublicationCrash
+            | Self::RefinementRenumberCrash
+            | Self::RefinementAlphaRepruneCrash
+            | Self::RefinementSeedRefitCrash
+            | Self::RefinementNeighborReorderCrash => TierOperationKind::Publication,
             Self::ProfileMismatch => TierOperationKind::Policy,
         }
     }
@@ -99,6 +116,21 @@ impl TierFaultKind {
             Self::Enospc => "tier.segment.write",
             Self::ProfileMismatch => "tier.profile.validate",
             Self::PublicationCrash => "tier.manifest.rename",
+            Self::RefinementCheckpointCorruption => "tier.refine.checkpoint.decode",
+            Self::RefinementRenumberCrash => "tier.refine.renumber.phase",
+            Self::RefinementAlphaRepruneCrash => "tier.refine.alpha-reprune.phase",
+            Self::RefinementSeedRefitCrash => "tier.refine.seed-refit.phase",
+            Self::RefinementNeighborReorderCrash => "tier.refine.neighbor-reorder.phase",
+        }
+    }
+
+    const fn refinement_pass(self) -> Option<RefinementPass> {
+        match self {
+            Self::RefinementRenumberCrash => Some(RefinementPass::Renumber),
+            Self::RefinementAlphaRepruneCrash => Some(RefinementPass::AlphaReprune),
+            Self::RefinementSeedRefitCrash => Some(RefinementPass::SeedRefit),
+            Self::RefinementNeighborReorderCrash => Some(RefinementPass::NeighborReorder),
+            _ => None,
         }
     }
 }
@@ -288,11 +320,12 @@ fn budget_step(report: MaintenanceReport, checkpoint: &Path, stride: u64) -> Bud
 
 fn budget_sequence(store: &Store, input: &TierInput, directory: &Path) -> Vec<BudgetStep> {
     let checkpoint = checkpoint_path(directory, input.source_segment);
+    let final_graph_admission = u64::from(input.rows).saturating_mul(input.stride);
     [
         0,
         CHECKPOINT_ROWS * input.stride,
         CHECKPOINT_ROWS * input.stride,
-        u64::MAX,
+        final_graph_admission,
     ]
     .into_iter()
     .map(|bytes| {
@@ -659,6 +692,16 @@ fn scheduled_publication_fault(
     }
 }
 
+fn refinement_phase_crash(seed: u64, pass: RefinementPass) -> Result<(), String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    refinement_phase_crash_in(directory.path(), seed, pass)
+}
+
+fn refinement_checkpoint_corruption_refused(seed: u64) -> Result<(), String> {
+    let directory = tempdir().map_err(|error| error.to_string())?;
+    refinement_checkpoint_corruption_refused_in(directory.path(), seed)
+}
+
 fn exercise_fault(seed: u64, fault: TierFaultKind, observed: &TierObserved) -> Result<(), String> {
     match fault {
         TierFaultKind::BudgetExhaustion => match observed.budget_steps.get(1) {
@@ -682,6 +725,18 @@ fn exercise_fault(seed: u64, fault: TierFaultKind, observed: &TierObserved) -> R
         TierFaultKind::PublicationCrash => {
             scheduled_publication_fault(seed, FaultMode::Eio, FaultSite::Rename, "manifest.ze")
         }
+        TierFaultKind::RefinementCheckpointCorruption => {
+            refinement_checkpoint_corruption_refused(seed)
+        }
+        fault @ (TierFaultKind::RefinementRenumberCrash
+        | TierFaultKind::RefinementAlphaRepruneCrash
+        | TierFaultKind::RefinementSeedRefitCrash
+        | TierFaultKind::RefinementNeighborReorderCrash) => refinement_phase_crash(
+            seed,
+            fault
+                .refinement_pass()
+                .ok_or_else(|| "refinement fault omitted its pass".to_owned())?,
+        ),
     }
 }
 
@@ -915,6 +970,200 @@ fn scheduled_publication_fault_in(
     }
 }
 
+fn refinement_checkpoint_path(
+    directory: &Path,
+    source: SegmentId,
+    pass: RefinementPass,
+) -> PathBuf {
+    directory.join(format!(".tier-{source}.{}.refine.checkpoint", pass.label()))
+}
+
+fn refinement_phase_crash_in(
+    directory: &Path,
+    seed: u64,
+    pass: RefinementPass,
+) -> Result<(), String> {
+    let fixture = oracle::fixture(seed);
+    let path = directory.join(format!("refinement-{}-phase", pass.label()));
+    let epoch = epoch(fixture.dims, 1);
+    let path_filter = format!(".{}.refine.checkpoint", pass.label());
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(FaultEvent {
+        id: format!("tier-{seed}-{}-phase", pass.label()),
+        op_index: 0,
+        layer: Layer::Crash,
+        site: FaultSite::Rename,
+        mode: FaultMode::Crash,
+        nth_match: 1,
+        expected_matches: Some(1),
+        deadline_budget_seconds: None,
+        path_contains: Some(path_filter),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    })));
+    let store = Store::open_with_test_dependencies(
+        &path,
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .map_err(|error| error.to_string())?;
+    ingest_fixture(&store, &fixture, &epoch)?;
+    scheduled.set_operation(0);
+    let report = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    let events = scheduled.events();
+    let fired_once = events
+        .iter()
+        .any(|event| event.fired && event.fire_count == 1);
+    let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+    let [published] = snapshot.segments() else {
+        return Err(format!(
+            "refinement phase crash left {} published segments",
+            snapshot.segments().len()
+        ));
+    };
+    let target_missing = !published
+        .graph_node_blocks()
+        .map_err(|error| error.to_string())?
+        .refinement_passes()
+        .contains(pass);
+    let source_exists = path.join(published.meta().id.file_name()).is_file();
+    drop(snapshot);
+    store.close().map_err(|error| error.to_string())?;
+    if fired_once
+        && matches!(report.status, MaintenanceStatus::Failed(_))
+        && target_missing
+        && source_exists
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} phase crash was not fail-closed: fired={fired_once} target_missing={target_missing} source_exists={source_exists} report={report:?}",
+            pass.label()
+        ))
+    }
+}
+
+fn refinement_checkpoint_corruption_refused_in(directory: &Path, seed: u64) -> Result<(), String> {
+    let fixture = oracle::fixture(seed);
+    let path = directory.join("refinement-checkpoint-corruption");
+    let epoch = epoch(fixture.dims, 1);
+    let scheduled = Arc::new(std_scheduled(FaultSchedule::single(FaultEvent {
+        id: format!("tier-{seed}-refinement-setup"),
+        op_index: 0,
+        layer: Layer::Io,
+        site: FaultSite::Rename,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        expected_matches: Some(1),
+        deadline_budget_seconds: None,
+        path_contains: Some(".renumber.refine.checkpoint".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    })));
+    let store = Store::open_with_test_dependencies(
+        &path,
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .map_err(|error| error.to_string())?;
+    ingest_fixture(&store, &fixture, &epoch)?;
+    scheduled.set_operation(0);
+    let setup = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    if !matches!(setup.status, MaintenanceStatus::Failed(_)) {
+        return Err(format!(
+            "refinement corruption setup did not stop after promotion: {setup:?}"
+        ));
+    }
+    let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+    let [source] = snapshot.segments() else {
+        return Err("refinement corruption setup omitted its source".to_owned());
+    };
+    let source_id = source.meta().id;
+    let stride = source
+        .meta()
+        .file_size
+        .checked_add(u64::from(source.meta().row_count).saturating_sub(1))
+        .ok_or_else(|| "refinement stride overflow".to_owned())?
+        / u64::from(source.meta().row_count);
+    drop(snapshot);
+    let partial = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: CHECKPOINT_ROWS * stride,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    let checkpoint = refinement_checkpoint_path(&path, source_id, RefinementPass::Renumber);
+    if !matches!(partial.status, MaintenanceStatus::BudgetExhausted)
+        || partial.bytes_consumed != CHECKPOINT_ROWS * stride
+        || !checkpoint.is_file()
+    {
+        return Err(format!(
+            "refinement checkpoint setup differed: checkpoint={} {partial:?}",
+            checkpoint.display()
+        ));
+    }
+    let mut bytes = std::fs::read(&checkpoint).map_err(|error| error.to_string())?;
+    let byte = bytes
+        .get_mut(44)
+        .ok_or_else(|| "refinement checkpoint is too short".to_owned())?;
+    *byte ^= 0x80;
+    std::fs::write(&checkpoint, bytes).map_err(|error| error.to_string())?;
+    let corrupted = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    let refused = matches!(
+        corrupted.status,
+        MaintenanceStatus::Failed(MaintenanceError::Graph(GraphBuildError::CheckpointCorrupt(
+            _
+        )))
+    );
+    let cleared =
+        !checkpoint.exists() && !PathBuf::from(format!("{}.tmp", checkpoint.display())).exists();
+    let retry = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds {
+            graph_min_rows: fixture.rows,
+        },
+    );
+    store.close().map_err(|error| error.to_string())?;
+    if refused && cleared && matches!(retry.status, MaintenanceStatus::Complete) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refinement corruption did not refuse, clear, and retry: refused={refused} cleared={cleared} corrupted={corrupted:?} retry={retry:?}"
+        ))
+    }
+}
+
 fn exercise_fault_in_directory(
     directory: &Path,
     seed: u64,
@@ -950,6 +1199,19 @@ fn exercise_fault_in_directory(
             FaultMode::Eio,
             FaultSite::Rename,
             "manifest.ze",
+        ),
+        TierFaultKind::RefinementCheckpointCorruption => {
+            refinement_checkpoint_corruption_refused_in(directory, seed)
+        }
+        fault @ (TierFaultKind::RefinementRenumberCrash
+        | TierFaultKind::RefinementAlphaRepruneCrash
+        | TierFaultKind::RefinementSeedRefitCrash
+        | TierFaultKind::RefinementNeighborReorderCrash) => refinement_phase_crash_in(
+            directory,
+            seed,
+            fault
+                .refinement_pass()
+                .ok_or_else(|| "refinement fault omitted its pass".to_owned())?,
         ),
     }
 }
@@ -1016,6 +1278,11 @@ mod tests {
             TierFaultKind::Enospc,
             TierFaultKind::ProfileMismatch,
             TierFaultKind::PublicationCrash,
+            TierFaultKind::RefinementCheckpointCorruption,
+            TierFaultKind::RefinementRenumberCrash,
+            TierFaultKind::RefinementAlphaRepruneCrash,
+            TierFaultKind::RefinementSeedRefitCrash,
+            TierFaultKind::RefinementNeighborReorderCrash,
         ]
         .into_iter()
         .enumerate()
