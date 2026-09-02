@@ -4176,16 +4176,32 @@ fn search_pinned(
     >,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
     use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
-    use crate::quant::{prepare_bit4_query, prepare_int8_query};
+    use crate::quant::{QuantError, prepare_bit4_query};
     use crate::scan::{ScanQuery, ScanRequest, ScanRows, ScanStats};
 
     let scan_options = options.scan();
-    let bit4_query = prepare_bit4_query(request.vector(), 0)
+    let query = request.vector();
+    let quantized_query_validation = if query.is_empty() {
+        Err(QuantError::EmptyVector)
+    } else if query.len() > crate::kernels::MAX_DOT_I8_DIMENSION {
+        Err(QuantError::DimensionTooLarge {
+            actual: query.len(),
+            maximum: crate::kernels::MAX_DOT_I8_DIMENSION,
+        })
+    } else if let Some((index, _)) = query
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        Err(QuantError::NonFinite { index })
+    } else {
+        Ok(())
+    };
+    quantized_query_validation
         .map_err(crate::scan::ScanError::Quant)
         .map_err(QueryError::Scan)?;
-    let int8_query = prepare_int8_query(request.vector())
-        .map_err(crate::scan::ScanError::Quant)
-        .map_err(QueryError::Scan)?;
+    let bit4_query = std::cell::OnceCell::new();
+    let int8_query = std::cell::OnceCell::new();
     let mut candidates = Vec::new();
     let mut dims_touched = 0_u64;
     let mut bytes_read = 0_u64;
@@ -4244,10 +4260,15 @@ fn search_pinned(
                 let query_pool = pool.ok_or(QueryError::Store(StoreError::Synchronization {
                     component: "active scan-tier query pool",
                 }))?;
+                let bit4_query = bit4_query
+                    .get_or_init(|| prepare_bit4_query(request.vector(), 0))
+                    .as_ref()
+                    .map_err(|error| crate::scan::ScanError::Quant(error.clone()))
+                    .map_err(QueryError::Scan)?;
                 execute_store_scan(
                     query_pool,
                     ScanRequest {
-                        query: ScanQuery::Bit4(&bit4_query),
+                        query: ScanQuery::Bit4(bit4_query),
                         rows: ScanRows::Bit4RowMajor {
                             codes: active.codes(),
                             factors: active.factors(),
@@ -4895,8 +4916,8 @@ fn scan_sealed_segment(
     k: usize,
     scan_options: crate::scan::ScanOptions,
     control: &QueryControl,
-    bit4_query: &crate::quant::Bit4Query,
-    int8_query: &crate::quant::Int8Query,
+    bit4_query: &std::cell::OnceCell<Result<crate::quant::Bit4Query, crate::quant::QuantError>>,
+    int8_query: &std::cell::OnceCell<Result<crate::quant::Int8Query, crate::quant::QuantError>>,
     full_precision: bool,
     source: crate::ingest::RowSource,
     tier: SearchTier,
@@ -4962,7 +4983,13 @@ fn scan_sealed_segment(
         4 => execute_store_scan(
             query_pool,
             ScanRequest {
-                query: ScanQuery::Bit4(bit4_query),
+                query: ScanQuery::Bit4(
+                    bit4_query
+                        .get_or_init(|| crate::quant::prepare_bit4_query(request.vector(), 0))
+                        .as_ref()
+                        .map_err(|error| crate::scan::ScanError::Quant(error.clone()))
+                        .map_err(QueryError::Scan)?,
+                ),
                 rows: ScanRows::Bit4RowMajor {
                     codes: segment
                         .bit4_codes()
@@ -5002,7 +5029,13 @@ fn scan_sealed_segment(
             execute_store_scan(
                 query_pool,
                 ScanRequest {
-                    query: ScanQuery::Int8(int8_query),
+                    query: ScanQuery::Int8(
+                        int8_query
+                            .get_or_init(|| crate::quant::prepare_int8_query(request.vector()))
+                            .as_ref()
+                            .map_err(|error| crate::scan::ScanError::Quant(error.clone()))
+                            .map_err(QueryError::Scan)?,
+                    ),
                     rows: ScanRows::Int8RowMajor {
                         codes: segment
                             .int8_codes()
@@ -5509,9 +5542,71 @@ mod tests {
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
     use super::{
-        ManualMonotonicClock, OpenOptions, Store, StoreError, StoreTestDependencies,
+        CancelToken, GraphSearchOptions, ManualMonotonicClock, OpenOptions, QueryControl,
+        SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
         resolve_hybrid_leg_results,
     };
+
+    #[test]
+    fn exact_and_graph_tiers_preserve_quantizer_validation_errors() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let query = vec![0.0_f32; crate::kernels::MAX_DOT_I8_DIMENSION + 1];
+
+        for tier in [
+            SearchTier::Exact,
+            SearchTier::Graph(GraphSearchOptions::default()),
+        ] {
+            let error = store
+                .search(
+                    crate::ingest::SearchRequest::new(&query),
+                    1,
+                    SearchOptions::default().with_tier(tier),
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect_err("oversized quantized query must retain its error");
+            assert!(matches!(
+                error,
+                super::QueryError::Scan(crate::scan::ScanError::Quant(
+                    crate::quant::QuantError::DimensionTooLarge { actual, maximum }
+                )) if actual == query.len()
+                    && maximum == crate::kernels::MAX_DOT_I8_DIMENSION
+            ));
+        }
+    }
+
+    #[cfg(feature = "allocation-audit")]
+    #[test]
+    fn exact_tier_query_does_not_prepare_quantized_forms() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let query = [0.25_f32; 128];
+        let options = SearchOptions::default().with_tier(SearchTier::Exact);
+        let warm = store
+            .search(
+                crate::ingest::SearchRequest::new(&query),
+                1,
+                options,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("warm exact-tier search");
+        assert!(warm.candidates.is_empty());
+        let control = QueryControl::Cancel(CancelToken::new());
+
+        let (outcome, report) = crate::allocation_audit::audit_engine_path(|| {
+            store.search(
+                crate::ingest::SearchRequest::new(&query),
+                1,
+                options,
+                control,
+            )
+        });
+        let outcome = outcome.expect("audited exact-tier search");
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(report.allocations, 0, "Exact tier prepared quantized forms");
+        assert_eq!(report.attributed_bytes, 0);
+        assert_eq!(report.unattributed_bytes, 0);
+    }
 
     #[test]
     fn hybrid_dual_failure_precedence_is_independent_of_leg_completion_order() {
