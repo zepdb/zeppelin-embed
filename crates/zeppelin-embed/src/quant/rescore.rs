@@ -473,13 +473,26 @@ fn prefetch_f32_row(base: &[f32], row_id: usize, dimensions: usize) {
     };
     let address = std::ptr::from_ref(value);
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: the address points into the live immutable f32 rescore mapping.
-    unsafe {
-        std::arch::asm!(
-            "prfm pldl1keep, [{address}]",
-            address = in(reg) address,
-            options(readonly, nostack)
-        );
+    {
+        const CACHE_LINE_BYTES: usize = 128;
+        let Some(row_bytes) = dimensions.checked_mul(std::mem::size_of::<f32>()) else {
+            return;
+        };
+        let cache_line_count = row_bytes.div_ceil(CACHE_LINE_BYTES);
+        for cache_line in 0..cache_line_count {
+            let Some(byte_offset) = cache_line.checked_mul(CACHE_LINE_BYTES) else {
+                return;
+            };
+            let line_address = address.cast::<u8>().wrapping_add(byte_offset);
+            // SAFETY: the address points into the live immutable f32 rescore mapping.
+            unsafe {
+                std::arch::asm!(
+                    "prfm pldl1keep, [{line_address}]",
+                    line_address = in(reg) line_address,
+                    options(readonly, nostack)
+                );
+            }
+        }
     }
     #[cfg(not(target_arch = "aarch64"))]
     let _ = address;

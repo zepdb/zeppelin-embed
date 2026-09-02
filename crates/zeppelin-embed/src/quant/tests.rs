@@ -524,6 +524,50 @@ fn rescore_returns_exact_topk_when_oversample_covers() {
 }
 
 #[test]
+fn widened_row_prefetch_preserves_rescore_top_k_scores() {
+    const DIMENSION: usize = 129;
+    const ROW_COUNT: usize = 12;
+    const K: usize = 8;
+    let query = (0..DIMENSION)
+        .map(|index| (index as f32).mul_add(0.03125, -2.0))
+        .collect::<Vec<_>>();
+    let rows = (0..ROW_COUNT)
+        .flat_map(|row| {
+            (0..DIMENSION)
+                .map(move |column| ((row * DIMENSION + column) as f32).mul_add(0.015625, -11.0))
+        })
+        .collect::<Vec<_>>();
+    let row_indices = [8_u32, 1, 10, 3, 6, 11, 0, 9, 4, 7, 2, 5];
+    let coarse_scores = [
+        12.0_f32, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
+    ];
+    let pool = RescorePool::retained(
+        &row_indices,
+        &coarse_scores,
+        RescoreMetric::InnerProduct,
+        ROW_COUNT,
+        DIMENSION * std::mem::size_of::<f32>(),
+    );
+
+    let without_prefetch = rescore_top_k(&query, &rows, DIMENSION, pool.with_prefetch(false), K)
+        .expect("rescore without prefetch is valid");
+    let with_prefetch = rescore_top_k(&query, &rows, DIMENSION, pool.with_prefetch(true), K)
+        .expect("rescore with prefetch is valid");
+    let without_prefetch_scores = without_prefetch
+        .hits
+        .iter()
+        .map(|hit| (hit.row_index, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+    let with_prefetch_scores = with_prefetch
+        .hits
+        .iter()
+        .map(|hit| (hit.row_index, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(with_prefetch_scores, without_prefetch_scores);
+}
+
+#[test]
 fn retained_pool_rescore_uses_exact_squared_l2_and_original_row_ids() {
     let query = [0.0_f32, 0.0];
     let rows = [100.0_f32, 0.0, 2.0, 0.0, 0.0, 2.0];
