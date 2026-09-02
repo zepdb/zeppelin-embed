@@ -13,9 +13,10 @@ use rand::Rng;
 use crate::kernels::MAX_DOT_I8_DIMENSION;
 
 use super::{
-    Int8Vec, QuantError, QuantScheme, RescoreError, RescoreMetric, RescorePool, dequantize_bit4,
-    dequantize_int8, dot_int8_query, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query,
-    prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
+    Int8Vec, QuantError, QuantScheme, RescoreCheckError, RescoreError, RescoreMetric, RescorePool,
+    dequantize_bit4, dequantize_int8, dot_int8_query, est_dot_bit4, est_dot_bit4_batch,
+    prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
+    rescore_top_k_with_check,
 };
 
 fn fixture_f32(path: &str) -> Vec<f32> {
@@ -594,6 +595,40 @@ fn retained_pool_rescore_uses_exact_squared_l2_and_original_row_ids() {
     assert_eq!(result.candidates_rescored, 3);
     assert_eq!(result.bytes.coarse, 17 * 76);
     assert_eq!(result.bytes.rescore, 3 * 2 * 4);
+}
+
+#[test]
+fn rescore_cancellation_checkpoint_fires_before_row_sixty_four_is_scored() {
+    const ROW_COUNT: usize = 65;
+    let query = [0.0_f32];
+    let mut rows = vec![0.0_f32; ROW_COUNT];
+    rows[64] = f32::NAN;
+    let row_indices = (0_u32..ROW_COUNT as u32).collect::<Vec<_>>();
+    let coarse_scores = vec![0.0_f32; ROW_COUNT];
+    let pool = RescorePool::retained(&row_indices, &coarse_scores, RescoreMetric::SquaredL2, 0, 0);
+    let mut checkpoints = Vec::new();
+
+    let error = rescore_top_k_with_check(
+        &query,
+        &rows,
+        1,
+        pool,
+        ROW_COUNT,
+        |row_index, is_checkpoint| {
+            if is_checkpoint {
+                checkpoints.push(row_index);
+            }
+            if row_index == 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .expect_err("the row-64 checkpoint must stop exact scoring");
+
+    assert_eq!(error, RescoreCheckError::Check("cancelled"));
+    assert_eq!(checkpoints, vec![0, 64]);
 }
 
 #[test]

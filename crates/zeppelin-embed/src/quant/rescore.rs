@@ -1,5 +1,7 @@
 //! Deterministic two-stage coarse selection and exact f32 rescoring.
 
+use std::convert::Infallible;
+
 use crate::kernels::dot_f32;
 use crate::scan::ScanCandidate;
 use crate::scan::topk::BoundedTopK;
@@ -236,6 +238,18 @@ impl std::fmt::Display for RescoreError {
 
 impl std::error::Error for RescoreError {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RescoreCheckError<E> {
+    Rescore(RescoreError),
+    Check(E),
+}
+
+impl<E> From<RescoreError> for RescoreCheckError<E> {
+    fn from(error: RescoreError) -> Self {
+        Self::Rescore(error)
+    }
+}
+
 fn validate_rescore_request(
     query: &[f32],
     rows: &[f32],
@@ -327,6 +341,23 @@ pub fn rescore_top_k(
     pool: RescorePool<'_>,
     k: usize,
 ) -> Result<RescoreResult, RescoreError> {
+    match rescore_top_k_with_check(query, rows, dimension, pool, k, |_, _| {
+        Ok::<(), Infallible>(())
+    }) {
+        Ok(result) => Ok(result),
+        Err(RescoreCheckError::Rescore(error)) => Err(error),
+        Err(RescoreCheckError::Check(error)) => match error {},
+    }
+}
+
+pub(crate) fn rescore_top_k_with_check<E>(
+    query: &[f32],
+    rows: &[f32],
+    dimension: usize,
+    pool: RescorePool<'_>,
+    k: usize,
+    mut check: impl FnMut(usize, bool) -> Result<(), E>,
+) -> Result<RescoreResult, RescoreCheckError<E>> {
     let (row_count, candidate_count) = validate_rescore_request(query, rows, dimension, &pool, k)?;
 
     let candidates = match pool.width {
@@ -346,6 +377,7 @@ pub fn rescore_top_k(
     for position in 0..candidate_count {
         let row_id =
             selected_row_index(candidates.as_deref(), pool.row_indices, position, row_count)?;
+        check(row_id, position.is_multiple_of(64)).map_err(RescoreCheckError::Check)?;
         let ahead_position = position.saturating_add(4);
         if pool.prefetch && ahead_position < candidate_count {
             let ahead = selected_row_index(
@@ -371,7 +403,7 @@ pub fn rescore_top_k(
             RescoreMetric::SquaredL2 => -squared_l2_f64(query, row),
         };
         if !score.is_finite() {
-            return Err(RescoreError::NonFiniteExactScore { row_index: row_id });
+            return Err(RescoreError::NonFiniteExactScore { row_index: row_id }.into());
         }
         exact.push(RescoreHit {
             row_index: row_id,

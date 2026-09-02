@@ -5313,8 +5313,7 @@ fn scan_squared_l2(
             actual: vectors.len(),
         }));
     }
-    let mut candidates = Vec::new();
-    let mut scored_rows = 0_u64;
+    let mut row_indices = Vec::new();
     for row in 0..row_count {
         if row.is_multiple_of(64) {
             cancellation.check_graph().map_err(map_scan_error)?;
@@ -5324,42 +5323,67 @@ fn scan_squared_l2(
         if !alive.is_alive(local_row) {
             continue;
         }
-        let start = row
-            .checked_mul(query.len())
-            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-        let end = start
-            .checked_add(query.len())
-            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-        let vector = vectors.get(start..end).ok_or(QueryError::Scan(
-            crate::scan::ScanError::RowDataLength {
-                dimension: query.len(),
-                actual: vectors.len(),
-            },
-        ))?;
-        let distance = vector
-            .iter()
-            .zip(query)
-            .map(|(left, right)| {
-                let delta = f64::from(*left) - f64::from(*right);
-                delta * delta
-            })
-            .sum::<f64>();
-        let score = -(distance as f32);
-        if !score.is_finite() {
-            return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
-                row_id: row,
-            }));
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        if controller.is_some_and(|controller| controller.after_eligible_row(source, tier, row)) {
-            return Err(QueryError::Cancelled { partial: false });
-        }
-        candidates.push(crate::scan::ScanCandidate { row_id: row, score });
-        scored_rows = scored_rows
-            .checked_add(1)
-            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        row_indices.push(local_row);
     }
     cancellation.check_graph().map_err(map_scan_error)?;
+    if row_indices.is_empty() {
+        return Ok(crate::scan::ScanOutcome {
+            candidates: Vec::new(),
+            stats: crate::scan::ScanStats {
+                dims_touched: 0,
+                bytes_read: 0,
+                threads_used: 1,
+                worker_thread_ids: vec![std::thread::current().id()],
+            },
+        });
+    }
+
+    let coarse_scores = vec![0.0_f32; row_indices.len()];
+    let pool = crate::quant::RescorePool::retained(
+        &row_indices,
+        &coarse_scores,
+        crate::quant::RescoreMetric::SquaredL2,
+        0,
+        0,
+    )
+    .with_prefetch(true);
+    let rescored = crate::quant::rescore_top_k_with_check(
+        query,
+        vectors,
+        query.len(),
+        pool,
+        row_indices.len(),
+        |row, is_checkpoint| {
+            if is_checkpoint {
+                cancellation.check_graph().map_err(map_scan_error)?;
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            if controller.is_some_and(|controller| controller.after_eligible_row(source, tier, row))
+            {
+                return Err(QueryError::Cancelled { partial: false });
+            }
+            Ok(())
+        },
+    )
+    .map_err(|error| match error {
+        crate::quant::RescoreCheckError::Rescore(error) => map_l2_rescore_error(error),
+        crate::quant::RescoreCheckError::Check(error) => error,
+    })?;
+    cancellation.check_graph().map_err(map_scan_error)?;
+
+    let mut candidates = Vec::with_capacity(rescored.hits.len());
+    for hit in rescored.hits {
+        let score = hit.score as f32;
+        if !score.is_finite() {
+            return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
+                row_id: hit.row_index,
+            }));
+        }
+        candidates.push(crate::scan::ScanCandidate {
+            row_id: hit.row_index,
+            score,
+        });
+    }
     candidates.sort_unstable_by(|left, right| {
         right
             .score
@@ -5368,6 +5392,8 @@ fn scan_squared_l2(
     });
     crate::scan::truncate_to_k_with_score_ties(&mut candidates, k, |candidate| candidate.score);
     let dims = u64::try_from(query.len())
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let scored_rows = u64::try_from(rescored.candidates_rescored)
         .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
     let dims_touched = scored_rows
         .checked_mul(dims)
@@ -5384,6 +5410,42 @@ fn scan_squared_l2(
             worker_thread_ids: vec![std::thread::current().id()],
         },
     })
+}
+
+fn map_l2_rescore_error(error: crate::quant::RescoreError) -> QueryError {
+    let error = match error {
+        crate::quant::RescoreError::ZeroDimension => crate::scan::ScanError::ZeroDimension,
+        crate::quant::RescoreError::QueryDimension { expected, actual }
+        | crate::quant::RescoreError::CoarseScoreCount { expected, actual }
+        | crate::quant::RescoreError::CandidateRowCount { expected, actual } => {
+            crate::scan::ScanError::RowDataLength {
+                dimension: expected,
+                actual,
+            }
+        }
+        crate::quant::RescoreError::RowDataLength { dimension, actual } => {
+            crate::scan::ScanError::RowDataLength { dimension, actual }
+        }
+        crate::quant::RescoreError::CandidateRowOutOfRange {
+            row_index,
+            row_count,
+            ..
+        } => crate::scan::ScanError::RowDataLength {
+            dimension: row_count,
+            actual: row_index,
+        },
+        crate::quant::RescoreError::NonFiniteCoarseScore { index }
+        | crate::quant::RescoreError::NonFiniteExactScore { row_index: index } => {
+            crate::scan::ScanError::NonFiniteScore { row_id: index }
+        }
+        crate::quant::RescoreError::ZeroK
+        | crate::quant::RescoreError::ZeroOversample
+        | crate::quant::RescoreError::InsufficientCandidates { .. }
+        | crate::quant::RescoreError::ArithmeticOverflow => {
+            crate::scan::ScanError::ArithmeticOverflow
+        }
+    };
+    QueryError::Scan(error)
 }
 
 fn map_scan_error(error: crate::scan::ScanError) -> QueryError {

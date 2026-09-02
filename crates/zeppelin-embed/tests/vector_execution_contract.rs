@@ -835,6 +835,93 @@ fn cancel_after_exact_active_rows_has_no_partial_result_and_retry_matches_contro
 }
 
 #[test]
+fn exact_tier_scores_are_bit_identical_to_the_previous_loop() {
+    let directory = tempdir().expect("exact score golden fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open exact fixture");
+    ingest_rows(
+        &store,
+        &[
+            (61, [0.1, -0.2, 0.3]),
+            (62, [1.25, -1.5, 0.75]),
+            (63, [3.0, -2.0, 1.0]),
+            (64, [-0.7, 0.8, -0.9]),
+            (65, QUERY),
+        ],
+    );
+
+    let active = search(&store, SearchTier::Exact, 5).expect("active exact search");
+    store.seal().expect("seal exact fixture");
+    let sealed = search(&store, SearchTier::Exact, 5).expect("sealed exact search");
+
+    assert!(
+        active
+            .candidates
+            .iter()
+            .all(|candidate| candidate.row_id().source() == RowSource::Active)
+    );
+    assert!(
+        sealed
+            .candidates
+            .iter()
+            .all(|candidate| matches!(candidate.row_id().source(), RowSource::Sealed(_)))
+    );
+    let signature = |outcome: &SearchOutcome| {
+        (
+            outcome
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate
+                            .document()
+                            .expect("fixture candidate has a document")
+                            .doc_id()
+                            .get(),
+                        candidate.row_id().local_row(),
+                        candidate.score().to_bits(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            outcome.stats.dims_touched,
+            outcome.stats.bytes_read,
+            outcome.stats.threads_used,
+            outcome.stats.worker_thread_ids.len(),
+        )
+    };
+    let actual = (signature(&active), signature(&sealed));
+
+    let expected = (
+        (
+            vec![
+                (65, 4, 2_147_483_648),
+                (62, 1, 3_200_253_952),
+                (61, 0, 3_216_947_282),
+                (63, 2, 3_232_235_520),
+                (64, 3, 3_238_097_060),
+            ],
+            15,
+            60,
+            1,
+            1,
+        ),
+        (
+            vec![
+                (65, 4, 2_147_483_648),
+                (62, 1, 3_200_253_952),
+                (61, 0, 3_216_947_282),
+                (63, 2, 3_232_235_520),
+                (64, 3, 3_238_097_060),
+            ],
+            15,
+            60,
+            1,
+            1,
+        ),
+    );
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn vector_allocation_denial_hits_candidate_reserve() {
     let source = tempdir().expect("allocation fixture");
     let fixture =
