@@ -49,6 +49,7 @@ thread_local! {
 struct SegmentCostCounters {
     identity_hash_bytes: AtomicU64,
     rescore_hash_bytes: AtomicU64,
+    int8_factor_decode_bytes: AtomicU64,
     postings_hash_bytes: AtomicU64,
     postings_decode_bytes: AtomicU64,
     columns_hash_bytes: AtomicU64,
@@ -65,6 +66,8 @@ pub struct SegmentCostSnapshot {
     pub identity_hash_bytes: u64,
     /// Bytes hashed while validating exact-rescore rows.
     pub rescore_hash_bytes: u64,
+    /// Int8 factor bytes decoded for scan validation.
+    pub int8_factor_decode_bytes: u64,
     /// Bytes hashed while validating sealed postings.
     pub postings_hash_bytes: u64,
     /// Sealed-postings bytes heap-decoded into query-ready state.
@@ -123,6 +126,10 @@ impl SegmentCostAudit {
         SegmentCostSnapshot {
             identity_hash_bytes: self.counters.identity_hash_bytes.load(Ordering::Relaxed),
             rescore_hash_bytes: self.counters.rescore_hash_bytes.load(Ordering::Relaxed),
+            int8_factor_decode_bytes: self
+                .counters
+                .int8_factor_decode_bytes
+                .load(Ordering::Relaxed),
             postings_hash_bytes: self.counters.postings_hash_bytes.load(Ordering::Relaxed),
             postings_decode_bytes: self.counters.postings_decode_bytes.load(Ordering::Relaxed),
             columns_hash_bytes: self.counters.columns_hash_bytes.load(Ordering::Relaxed),
@@ -162,6 +169,7 @@ fn account_region_decode(kind: RegionKind, bytes: usize) {
             return;
         };
         let counter = match kind {
+            RegionKind::VectorFactors => &counters.int8_factor_decode_bytes,
             RegionKind::Postings => &counters.postings_decode_bytes,
             RegionKind::Columns => &counters.columns_decode_bytes,
             RegionKind::Alive => &counters.alive_decode_bytes,
@@ -318,6 +326,7 @@ pub struct SegmentReader {
     document_versions_validation: OnceLock<Result<(), DocumentVersionValidationError>>,
     rescore_valid_chunks: Mutex<Box<[u64]>>,
     query_accounting: Option<Arc<crate::lifecycle::stats::Accounting>>,
+    int8_factors_cache: OnceLock<CachedQueryValue<Arc<Vec<crate::scan::Int8Factors>>>>,
     postings_cache: OnceLock<CachedQueryValue<Arc<crate::fts::sealed::SealedSegment>>>,
     columns_cache: OnceLock<CachedQueryValue<Arc<ColumnStore>>>,
     alive_cache: OnceLock<CachedQueryValue<Arc<AliveSet>>>,
@@ -468,6 +477,7 @@ impl SegmentReader {
             document_versions_validation: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: None,
+            int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
             alive_cache: OnceLock::new(),
@@ -535,6 +545,7 @@ impl SegmentReader {
             document_versions_validation: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: Some(Arc::clone(accounting)),
+            int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
             alive_cache: OnceLock::new(),
@@ -575,6 +586,13 @@ impl SegmentReader {
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn retained_query_view_bytes(&self) -> u64 {
+        let int8_factors = self.int8_factors_cache.get().and_then(|cached| {
+            cached
+                .value
+                .capacity()
+                .checked_mul(std::mem::size_of::<crate::scan::Int8Factors>())
+                .and_then(arc_resident_bytes::<Vec<crate::scan::Int8Factors>>)
+        });
         let postings = self.postings_cache.get().and_then(|cached| {
             cached
                 .value
@@ -594,8 +612,9 @@ impl SegmentReader {
                 .resident_bytes()
                 .and_then(arc_resident_bytes::<AliveSet>)
         });
-        postings
+        int8_factors
             .into_iter()
+            .chain(postings)
             .chain(columns)
             .chain(alive)
             .fold(0_u64, |total, bytes| {
@@ -823,7 +842,50 @@ impl SegmentReader {
                 header.factor_stride_bytes
             )));
         }
+        #[cfg(any(test, feature = "test-support"))]
+        account_region_decode(RegionKind::VectorFactors, payload.len());
         cast_slice::<Int8Factors>(payload, self.meta.row_count as usize, "Int8 factors")
+    }
+
+    pub(crate) fn query_int8_factors(
+        &self,
+    ) -> Result<Arc<Vec<crate::scan::Int8Factors>>, crate::lifecycle::StoreError> {
+        if let Some(cached) = self.int8_factors_cache.get() {
+            return Ok(Arc::clone(&cached.value));
+        }
+        let factors = self
+            .int8_factors()
+            .map_err(crate::lifecycle::StoreError::Segment)?
+            .iter()
+            .map(|factor| crate::scan::Int8Factors::new(factor.scale, factor.offset))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                crate::lifecycle::StoreError::Segment(SegmentError::Geometry(
+                    "Int8 factor is not finite and non-negative".to_owned(),
+                ))
+            })?;
+        let resident_bytes = factors
+            .capacity()
+            .checked_mul(std::mem::size_of::<crate::scan::Int8Factors>())
+            .and_then(arc_resident_bytes::<Vec<crate::scan::Int8Factors>>)
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        let cached = CachedQueryValue {
+            value: Arc::new(factors),
+            _accounting: self.account_query_cache(resident_bytes)?,
+        };
+        if self.int8_factors_cache.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.int8_factors_cache
+            .get()
+            .map(|cached| Arc::clone(&cached.value))
+            .ok_or(crate::lifecycle::StoreError::Synchronization {
+                component: "Int8 factors query cache",
+            })
     }
 
     /// Casts validated f32 exact-rescore rows directly from the mmap.

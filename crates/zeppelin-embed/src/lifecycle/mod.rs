@@ -4925,7 +4925,7 @@ fn scan_sealed_segment(
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
-    use crate::scan::{Int8Factors, ScanQuery, ScanRequest, ScanRows};
+    use crate::scan::{ScanQuery, ScanRequest, ScanRows};
 
     if full_precision {
         let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
@@ -5014,18 +5014,7 @@ fn scan_sealed_segment(
             vector_fault_tier(tier),
         ),
         2 => {
-            let factors = segment
-                .int8_factors()
-                .map_err(StoreError::Segment)
-                .map_err(QueryError::Store)?
-                .iter()
-                .map(|factor| Int8Factors::new(factor.scale, factor.offset))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| {
-                    QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
-                        "Int8 factor is not finite and non-negative".to_owned(),
-                    )))
-                })?;
+            let factors = segment.query_int8_factors().map_err(QueryError::Store)?;
             execute_store_scan(
                 query_pool,
                 ScanRequest {
@@ -5041,7 +5030,7 @@ fn scan_sealed_segment(
                             .int8_codes()
                             .map_err(StoreError::Segment)
                             .map_err(QueryError::Store)?,
-                        factors: &factors,
+                        factors: factors.as_slice(),
                     },
                     row_mask: Some(alive.scan_mask()),
                 },

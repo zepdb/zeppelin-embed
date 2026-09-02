@@ -28,6 +28,7 @@ use zeppelin_embed::scan::vector_fault::{
 use zeppelin_embed::scan::{ScanError, ScanOptions};
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::layout::Int8Factors;
+use zeppelin_embed::segment::reader::{SegmentCostAudit, SegmentReader};
 use zeppelin_embed::vfs::StdVfs;
 
 const QUERY: [f32; 3] = [1.0, -1.0, 0.5];
@@ -249,6 +250,74 @@ fn sealed_int8_fixture(path: &std::path::Path) -> (SegmentId, FrozenStoreFixture
     store.seal_snapshot(prepared).expect("seal Int8 fixture");
     store.close().expect("close Int8 fixture");
     (segment_id, FrozenStoreFixture::capture(path))
+}
+
+#[test]
+fn int8_scan_results_are_bit_identical_with_factor_cache() {
+    let source = tempdir().expect("Int8 result fixture");
+    let (segment, frozen) = sealed_int8_fixture(source.path());
+    let directory = frozen.materialize();
+    let store =
+        Store::open(directory.path(), OpenOptions::default()).expect("open Int8 result Store");
+    let outcome = search(&store, SearchTier::Scan, 3).expect("public Int8 result scan");
+    let observed = outcome
+        .candidates
+        .iter()
+        .map(|candidate| {
+            assert_eq!(candidate.row_id().source(), RowSource::Sealed(segment));
+            (candidate.row_id().local_row(), candidate.score().to_bits())
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        observed,
+        vec![(0, 0x4010_40c2), (1, 0x3f90_40c2), (2, 0xc010_40c2)]
+    );
+    store.close().expect("close Int8 result Store");
+}
+
+#[test]
+fn int8_factor_validation_runs_once_per_segment() {
+    let source = tempdir().expect("Int8 factor-cache fixture");
+    let (_segment, frozen) = sealed_int8_fixture(source.path());
+    let directory = frozen.materialize();
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("open Int8 factor-cache Store");
+    let before = store.stats().expect("stats before Int8 factor validation");
+    let audit = SegmentCostAudit::new();
+
+    audit.measure(|| {
+        search(&store, SearchTier::Scan, 3).expect("first public Int8 factor-cache scan");
+    });
+    let first = audit.snapshot();
+    assert_eq!(
+        first.int8_factor_decode_bytes,
+        3 * std::mem::size_of::<Int8Factors>() as u64
+    );
+
+    audit.measure(|| {
+        search(&store, SearchTier::Scan, 3).expect("second public Int8 factor-cache scan");
+    });
+    assert_eq!(
+        audit.snapshot().int8_factor_decode_bytes,
+        first.int8_factor_decode_bytes,
+        "the identical segment must not revalidate Int8 factors"
+    );
+
+    let snapshot = store.snapshot().expect("Int8 factor-cache snapshot");
+    let retained = snapshot
+        .segments()
+        .iter()
+        .map(SegmentReader::retained_query_view_bytes)
+        .sum::<u64>();
+    drop(snapshot);
+    let after = store.stats().expect("stats after Int8 factor validation");
+    assert_eq!(
+        after.snapshot_bytes - before.snapshot_bytes,
+        retained,
+        "every retained Int8 factor-cache byte must reach snapshot accounting"
+    );
+    store.close().expect("close Int8 factor-cache Store");
 }
 
 #[test]
