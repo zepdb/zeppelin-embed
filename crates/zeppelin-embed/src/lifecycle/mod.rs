@@ -4749,7 +4749,7 @@ fn traverse_segment_graph<'a>(
     }
     let mut scratch = segment
         .graph_search_cache
-        .checkout(graph, scratch_ef, accounting)
+        .checkout(graph, scratch_ef, accounting, &cancellation)
         .map_err(map_graph_cache_error)?;
     let entry_seed_discovered = prepared_entry_seed_discovered || scratch.entry_seed_discovered();
     let entries = scratch.entries();

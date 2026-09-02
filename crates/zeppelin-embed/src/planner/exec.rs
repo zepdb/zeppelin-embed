@@ -1045,7 +1045,7 @@ fn execute_filtered_graph(
     )?;
     let mut scratch = segment
         .graph_search_cache
-        .checkout(graph, scratch_capacity, accounting)
+        .checkout(graph, scratch_capacity, accounting, cancellation)
         .map_err(map_graph_cache_error)?;
     let entry_seed_discovered = entry_seed_discovered_before
         || prepared.entry_seed_discovered

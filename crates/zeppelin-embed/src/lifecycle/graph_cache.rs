@@ -1,6 +1,7 @@
 //! Per-segment reusable graph-search state bound without borrowing the mapping.
 
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use crate::graph::block::{GraphNodeBlocks, ValidatedGraphNodeBlocks};
 use crate::graph::search::{
@@ -10,6 +11,8 @@ use crate::segment::reader::SegmentReader;
 
 use super::stats::{AccountedCounter, Accounting, AllocationComponent};
 use super::{QueryCancellation, StoreError};
+
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 struct CachedScratch {
     scratch: GraphSearchScratch,
@@ -22,8 +25,8 @@ struct CacheState {
     graph: Option<ValidatedGraphNodeBlocks>,
     entries: Option<[u32; 4]>,
     norm_range: Option<GraphSegmentNormRange>,
-    scratch: Option<CachedScratch>,
-    checked_out: bool,
+    available: Vec<CachedScratch>,
+    checked_out: usize,
 }
 
 pub(crate) struct SegmentGraphSearchCache {
@@ -38,8 +41,8 @@ impl SegmentGraphSearchCache {
                 graph: None,
                 entries: None,
                 norm_range: None,
-                scratch: None,
-                checked_out: false,
+                available: Vec::new(),
+                checked_out: 0,
             }),
             changed: Condvar::new(),
         }
@@ -114,18 +117,46 @@ impl SegmentGraphSearchCache {
         graph: GraphNodeBlocks<'_>,
         ef: usize,
         accounting: &Arc<Accounting>,
+        cancellation: &QueryCancellation<'_>,
     ) -> Result<GraphScratchLease<'a>, GraphCacheError> {
+        let capacity = crate::scan::physical_thread_capacity()
+            .map_err(GraphSearchError::Scan)
+            .map_err(GraphCacheError::Search)?;
+        self.checkout_with_capacity(graph, ef, accounting, cancellation, capacity)
+    }
+
+    fn checkout_with_capacity<'a>(
+        &'a self,
+        graph: GraphNodeBlocks<'_>,
+        ef: usize,
+        accounting: &Arc<Accounting>,
+        cancellation: &QueryCancellation<'_>,
+        capacity: usize,
+    ) -> Result<GraphScratchLease<'a>, GraphCacheError> {
+        if capacity == 0 {
+            return Err(GraphCacheError::Search(GraphSearchError::Geometry(
+                "graph scratch pool capacity is zero".to_owned(),
+            )));
+        }
         let mut state = self.state.lock().map_err(|_| {
             GraphCacheError::Store(StoreError::Synchronization {
                 component: "graph search cache",
             })
         })?;
-        while state.checked_out {
-            state = self.changed.wait(state).map_err(|_| {
-                GraphCacheError::Store(StoreError::Synchronization {
-                    component: "graph search cache",
-                })
-            })?;
+        loop {
+            check_cancellation(cancellation)?;
+            if !state.available.is_empty() || state.checked_out < capacity {
+                break;
+            }
+            let waited = self
+                .changed
+                .wait_timeout(state, WAIT_POLL_INTERVAL)
+                .map_err(|_| {
+                    GraphCacheError::Store(StoreError::Synchronization {
+                        component: "graph search cache",
+                    })
+                })?;
+            state = waited.0;
         }
 
         let entry_seed_discovered = state.entries.is_none();
@@ -141,10 +172,16 @@ impl SegmentGraphSearchCache {
         let node_count = graph.node_count();
         let max_degree = graph.layout().max_degree();
         let reusable = state
-            .scratch
-            .as_ref()
+            .available
+            .last()
             .is_some_and(|cached| cached.scratch.supports(node_count, max_degree, ef));
-        if !reusable {
+        let scratch = if reusable {
+            state.available.pop().ok_or_else(|| {
+                GraphCacheError::Search(GraphSearchError::Geometry(
+                    "graph scratch pool lost an available scratch".to_owned(),
+                ))
+            })?
+        } else {
             let requested = GraphSearchScratch::allocation_bytes(node_count, max_degree, ef)?;
             let mut memory = AccountedCounter::new(accounting, AllocationComponent::Cache)?;
             memory.set(requested)?;
@@ -157,18 +194,18 @@ impl SegmentGraphSearchCache {
                     ),
                 )));
             }
-            state.scratch = Some(CachedScratch {
+            let _replaced = state.available.pop();
+            CachedScratch {
                 scratch,
                 _memory: memory,
-            });
-        }
-
-        let scratch = state.scratch.take().ok_or_else(|| {
+            }
+        };
+        let checked_out = state.checked_out.checked_add(1).ok_or_else(|| {
             GraphCacheError::Search(GraphSearchError::Geometry(
-                "graph scratch cache is unavailable".to_owned(),
+                "graph scratch checkout count overflowed".to_owned(),
             ))
         })?;
-        state.checked_out = true;
+        state.checked_out = checked_out;
         drop(state);
         Ok(GraphScratchLease {
             cache: self,
@@ -176,6 +213,22 @@ impl SegmentGraphSearchCache {
             entries,
             entry_seed_discovered,
         })
+    }
+}
+
+fn check_cancellation(cancellation: &QueryCancellation<'_>) -> Result<(), GraphSearchError> {
+    match cancellation.check_graph() {
+        Ok(()) => Ok(()),
+        Err(crate::scan::ScanError::Cancelled { partial }) => {
+            Err(GraphSearchError::Cancelled { partial })
+        }
+        Err(crate::scan::ScanError::Timeout { partial }) => {
+            Err(GraphSearchError::Timeout { partial })
+        }
+        Err(crate::scan::ScanError::ReadCancelled { partial }) => {
+            Err(GraphSearchError::ReadCancelled { partial })
+        }
+        Err(error) => Err(GraphSearchError::Scan(error)),
     }
 }
 
@@ -233,8 +286,183 @@ impl Drop for GraphScratchLease<'_> {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         };
-        state.scratch = self.scratch.take();
-        state.checked_out = false;
+        if let Some(scratch) = self.scratch.take() {
+            state.available.push(scratch);
+        }
+        state.checked_out -= 1;
         self.cache.changed.notify_one();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
+
+    use super::{GraphCacheError, SegmentGraphSearchCache};
+    use crate::graph::block::{
+        EncodedNodeBlocks, GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout,
+        decode_node_blocks, encode_node_blocks,
+    };
+    use crate::graph::search::{GraphSearchError, GraphSearchScratch};
+    use crate::lifecycle::stats::Accounting;
+    use crate::lifecycle::{
+        CancelToken, Deadline, OpenOptions, QueryCancellation, QueryControl, Store,
+    };
+    use crate::quant::Bit4Factors;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CheckoutOutcome {
+        Acquired,
+        Timeout,
+        OtherError,
+    }
+
+    fn graph_fixture() -> EncodedNodeBlocks {
+        let layout = GraphNodeLayout::new(128, 128, 0).expect("graph cache fixture layout");
+        let codes = [0_u8; 64];
+        let node = GraphNodeBlockInput {
+            codes: &codes,
+            factors: Bit4Factors::from_persisted(1.0, 0.0, 0.0),
+            flags: 1,
+            neighbors: &[],
+        };
+        encode_node_blocks(GraphNodeBlockBuild {
+            layout,
+            nodes: &[node; 4],
+        })
+        .expect("graph cache fixture encodes")
+    }
+
+    fn checkout_outcome(
+        result: Result<super::GraphScratchLease<'_>, GraphCacheError>,
+    ) -> CheckoutOutcome {
+        match result {
+            Ok(_lease) => CheckoutOutcome::Acquired,
+            Err(GraphCacheError::Search(GraphSearchError::Timeout { partial: false })) => {
+                CheckoutOutcome::Timeout
+            }
+            Err(_) => CheckoutOutcome::OtherError,
+        }
+    }
+
+    #[test]
+    fn two_graph_queries_on_one_segment_run_concurrently() {
+        let encoded = graph_fixture();
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("graph cache fixture decodes");
+        let cache = SegmentGraphSearchCache::new();
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let directory = tempfile::tempdir().expect("temporary store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("store opens");
+        let first = {
+            let first_lease = store.snapshot().expect("first snapshot lease");
+            let first_control = QueryControl::Cancel(CancelToken::new());
+            let cancellation = QueryCancellation::new(&first_control, &first_lease);
+            match cache.checkout_with_capacity(graph, 1, &accounting, &cancellation, 2) {
+                Ok(first) => first,
+                Err(_) => panic!("first scratch checkout failed"),
+            }
+        };
+        let second_lease = store.snapshot().expect("second snapshot lease");
+        let second_control = QueryControl::Cancel(CancelToken::new());
+        let start = Arc::new(Barrier::new(2));
+        let (sender, receiver) = mpsc::sync_channel(1);
+
+        let timely = std::thread::scope(|scope| {
+            let worker_start = Arc::clone(&start);
+            let cache = &cache;
+            let accounting = Arc::clone(&accounting);
+            scope.spawn(move || {
+                let cancellation = QueryCancellation::new(&second_control, &second_lease);
+                worker_start.wait();
+                let outcome = checkout_outcome(cache.checkout_with_capacity(
+                    graph,
+                    1,
+                    &accounting,
+                    &cancellation,
+                    2,
+                ));
+                sender.send(outcome).expect("report second checkout");
+            });
+            start.wait();
+            let timely = receiver.recv_timeout(Duration::from_millis(250));
+            drop(first);
+            if timely.is_err() {
+                let _ = receiver.recv_timeout(Duration::from_secs(1));
+            }
+            timely
+        });
+
+        store.close().expect("close store");
+        assert_eq!(timely, Ok(CheckoutOutcome::Acquired));
+        let scratch_bytes = u64::try_from(
+            GraphSearchScratch::allocation_bytes(
+                graph.node_count(),
+                graph.layout().max_degree(),
+                1,
+            )
+            .expect("scratch allocation bytes"),
+        )
+        .expect("scratch allocation bytes fit u64");
+        assert_eq!(
+            accounting.audit().expect("accounting audit").cache_bytes,
+            scratch_bytes
+                .checked_mul(2)
+                .expect("two scratch byte counts")
+        );
+    }
+
+    #[test]
+    fn a_waiting_graph_query_observes_its_deadline_while_blocked() {
+        let encoded = graph_fixture();
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("graph cache fixture decodes");
+        let cache = SegmentGraphSearchCache::new();
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let directory = tempfile::tempdir().expect("temporary store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("store opens");
+        let first = {
+            let first_lease = store.snapshot().expect("first snapshot lease");
+            let first_control = QueryControl::Cancel(CancelToken::new());
+            let cancellation = QueryCancellation::new(&first_control, &first_lease);
+            match cache.checkout_with_capacity(graph, 1, &accounting, &cancellation, 1) {
+                Ok(first) => first,
+                Err(_) => panic!("capacity-filling scratch checkout failed"),
+            }
+        };
+        let waiting_lease = store.snapshot().expect("waiting snapshot lease");
+        let start = Arc::new(Barrier::new(2));
+        let (sender, receiver) = mpsc::sync_channel(1);
+
+        let timely = std::thread::scope(|scope| {
+            let worker_start = Arc::clone(&start);
+            let cache = &cache;
+            let accounting = Arc::clone(&accounting);
+            scope.spawn(move || {
+                worker_start.wait();
+                let control = QueryControl::Deadline(
+                    Deadline::after(Duration::from_millis(10)).expect("short deadline"),
+                );
+                let cancellation = QueryCancellation::new(&control, &waiting_lease);
+                let outcome = checkout_outcome(cache.checkout_with_capacity(
+                    graph,
+                    1,
+                    &accounting,
+                    &cancellation,
+                    1,
+                ));
+                sender.send(outcome).expect("report waiting checkout");
+            });
+            start.wait();
+            let timely = receiver.recv_timeout(Duration::from_millis(250));
+            drop(first);
+            if timely.is_err() {
+                let _ = receiver.recv_timeout(Duration::from_secs(1));
+            }
+            timely
+        });
+
+        store.close().expect("close store");
+        assert_eq!(timely, Ok(CheckoutOutcome::Timeout));
     }
 }
