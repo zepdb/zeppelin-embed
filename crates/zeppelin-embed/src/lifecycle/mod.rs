@@ -1799,6 +1799,13 @@ pub enum StoreError {
     ForeignPreparedSegment,
     /// The current snapshot generation cannot be incremented.
     GenerationOverflow,
+    /// The active generation changed while a serialized writer prepared a commit.
+    ConcurrentActiveMutation {
+        /// Generation snapshotted before preparing the mutation.
+        expected_generation: u64,
+        /// Generation found when the writer re-acquired the active state.
+        actual_generation: u64,
+    },
     /// Exact reclaimed-byte reporting overflowed its u64 contract.
     PartitionBytesOverflow,
     /// A durable physical-purge intent could not be resumed during open.
@@ -1949,6 +1956,13 @@ impl std::fmt::Display for StoreError {
                 formatter.write_str("prepared segment belongs to another store")
             }
             Self::GenerationOverflow => formatter.write_str("store snapshot generation overflow"),
+            Self::ConcurrentActiveMutation {
+                expected_generation,
+                actual_generation,
+            } => write!(
+                formatter,
+                "active generation changed from {expected_generation} to {actual_generation} while preparing a commit"
+            ),
             Self::PartitionBytesOverflow => {
                 formatter.write_str("partition reclaimed-byte count overflow")
             }
@@ -2073,6 +2087,7 @@ impl StoreError {
             Self::EpochUnstamped => StoreErrorKind::EpochUnstamped,
             Self::ActiveRowOverflow
             | Self::GenerationOverflow
+            | Self::ConcurrentActiveMutation { .. }
             | Self::PartitionBytesOverflow
             | Self::ForeignPreparedSegment
             | Self::BackgroundHandshake
@@ -2128,6 +2143,7 @@ impl std::error::Error for StoreError {
             | Self::SealedTombstoneRecoveryRequired
             | Self::ForeignPreparedSegment
             | Self::GenerationOverflow
+            | Self::ConcurrentActiveMutation { .. }
             | Self::PartitionBytesOverflow
             | Self::PurgeRecovery { .. }
             | Self::Closing

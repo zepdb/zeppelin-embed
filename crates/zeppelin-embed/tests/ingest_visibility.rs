@@ -2,7 +2,8 @@
 
 use std::error::Error as _;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 use tempfile::tempdir;
 use zeppelin_embed::ingest::wal_payload::PayloadError;
 use zeppelin_embed::ingest::{
@@ -24,6 +25,7 @@ use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::StdVfs;
+use zeppelin_embed::vfs::fault::BlockingVfs;
 use zeppelin_embed::wal::header::{WAL_HEADER_LEN, WalHeaderError};
 use zeppelin_embed::wal::record::{RECORD_HEADER_LEN, RecordError};
 use zeppelin_embed::wal::replay::{CorruptionLocation, CorruptionReason};
@@ -56,6 +58,68 @@ fn committed_write_is_visible_to_next_query() {
     assert_eq!(ack.seq().get(), 1);
     assert_eq!(outcome.candidates.len(), 1);
     assert_eq!(outcome.candidates[0].document(), Some(version));
+}
+
+#[test]
+fn queries_admit_while_a_durable_commit_is_in_flight() {
+    let directory = tempdir().expect("store directory");
+    let blocking = BlockingVfs::new(StdVfs);
+    let dependencies =
+        StoreTestDependencies::new(Arc::new(blocking.clone()), Arc::new(SystemMonotonicClock));
+    let options = OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable);
+    let store = Arc::new(
+        Store::open_with_test_dependencies(directory.path(), options, dependencies)
+            .expect("open durable store"),
+    );
+    blocking.block_next_syncs(1).expect("arm WAL sync");
+
+    let ingest_store = Arc::clone(&store);
+    let ingest = std::thread::spawn(move || {
+        ingest_store.ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(2), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+    });
+    blocking
+        .wait_until_blocked(1)
+        .expect("ingest reached WAL sync");
+
+    let (query_returned_tx, query_returned_rx) = mpsc::channel();
+    let query_store = Arc::clone(&store);
+    let query = std::thread::spawn(move || {
+        let outcome = query_store.search(
+            SearchRequest::new(&[1.0, 0.0]),
+            1,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        );
+        query_returned_tx.send(()).expect("report query return");
+        outcome
+    });
+    let query_returned_before_release = query_returned_rx
+        .recv_timeout(Duration::from_secs(1))
+        .is_ok();
+
+    blocking.release_syncs(1).expect("release WAL sync");
+    let ack = ingest
+        .join()
+        .expect("ingest thread")
+        .expect("durable ingest");
+    let outcome = query
+        .join()
+        .expect("query thread")
+        .expect("query during commit");
+
+    assert!(
+        query_returned_before_release,
+        "query admission waited for the in-flight WAL sync"
+    );
+    assert!(
+        outcome.candidates.is_empty(),
+        "query observed the unpublished ingest working copy"
+    );
+    assert_eq!(ack.seq().get(), 1);
+    assert_eq!(ack.generation(), 1);
 }
 
 #[test]

@@ -771,6 +771,19 @@ fn resolve_revision(
     resolved
 }
 
+fn validate_republish_generation(
+    expected_generation: u64,
+    actual_generation: u64,
+) -> Result<(), StoreError> {
+    if actual_generation != expected_generation {
+        return Err(StoreError::ConcurrentActiveMutation {
+            expected_generation,
+            actual_generation,
+        });
+    }
+    Ok(())
+}
+
 impl Store {
     /// Returns exact live corpus statistics for store-backed lexical scoring.
     ///
@@ -1058,6 +1071,7 @@ impl Store {
             StoreState::Closing => return Err(StoreError::Closing.into()),
             StoreState::Closed => return Err(StoreError::Closed.into()),
         }
+        drop(state);
         match (self.epoch_identity(), batch.epoch) {
             (Some(expected), Some(declared)) if expected != declared => {
                 return Err(IngestError::EpochMismatch(crate::epoch::EpochMismatch {
@@ -1096,13 +1110,16 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "active segment",
-            })?;
-        let current = active.as_ref().ok_or(StoreError::Closed)?;
+        let (current_generation, current_segment) = {
+            let active = self
+                .active
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "active segment",
+                })?;
+            let current = active.as_ref().ok_or(StoreError::Closed)?;
+            (current.generation, Arc::clone(&current.segment))
+        };
         let snapshot = self
             .snapshot
             .read()
@@ -1133,7 +1150,7 @@ impl Store {
                 .get(index..)
                 .ok_or(StoreError::ActiveRowOverflow)?;
             self.apply_revision_decision(
-                current.segment.as_ref(),
+                current_segment.as_ref(),
                 &sealed,
                 sealed_seq,
                 document,
@@ -1154,14 +1171,13 @@ impl Store {
                 component: "nonempty ingest replay sequence",
             })?;
             #[cfg(any(test, feature = "test-support"))]
-            self.record_post_ack_retry_receipt(&batch, replay_count, seq, current.generation)?;
+            self.record_post_ack_retry_receipt(&batch, replay_count, seq, current_generation)?;
             return Ok(IngestAck {
                 seq,
-                generation: current.generation,
+                generation: current_generation,
             });
         };
-        let generation = current
-            .generation
+        let generation = current_generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
         let prepared = purge::prepare_sealed_tombstones(
@@ -1233,17 +1249,24 @@ impl Store {
                 )
             })
             .transpose()?;
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let actual_generation = active.as_ref().ok_or(StoreError::Closed)?.generation;
+        validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        drop(active);
         purge::unlink_replaced_segments(
             self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,
             self.durability_policy,
         );
-        drop(active);
         drop(wal);
-        drop(state);
         Ok(IngestAck { seq, generation })
     }
 
@@ -1261,6 +1284,7 @@ impl Store {
             StoreState::Closing => return Err(StoreError::Closing.into()),
             StoreState::Closed => return Err(StoreError::Closed.into()),
         }
+        drop(state);
         let mut wal = self
             .wal_writer
             .lock()
@@ -1268,13 +1292,16 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "active segment",
-            })?;
-        let current = active.as_ref().ok_or(StoreError::Closed)?;
+        let (current_generation, current_segment) = {
+            let active = self
+                .active
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "active segment",
+                })?;
+            let current = active.as_ref().ok_or(StoreError::Closed)?;
+            (current.generation, Arc::clone(&current.segment))
+        };
         let snapshot = self
             .snapshot
             .read()
@@ -1285,13 +1312,10 @@ impl Store {
             .cloned()
             .ok_or(StoreError::Closed)?;
         let sealed = purge::sealed_document_matches(&snapshot, &batch.doc_ids)?;
-        let generation = current
-            .generation
+        let generation = current_generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        let (mut next, rows) = current
-            .segment
-            .tombstone(&batch.doc_ids, &self.accounting)?;
+        let (mut next, rows) = current_segment.tombstone(&batch.doc_ids, &self.accounting)?;
         let prepared = purge::prepare_sealed_tombstones(
             self.vfs.as_ref(),
             &self.directory,
@@ -1327,8 +1351,17 @@ impl Store {
                 )
             })
             .transpose()?;
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let actual_generation = active.as_ref().ok_or(StoreError::Closed)?.generation;
+        validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        drop(active);
         purge::unlink_replaced_segments(
             self.vfs.as_ref(),
             &self.directory,
@@ -1387,6 +1420,22 @@ mod vector_order_tests {
             std::cmp::Ordering::Less,
             "documented-vs-legacy order fell back to physical row identity"
         );
+    }
+}
+
+#[cfg(test)]
+mod active_publish_tests {
+    use super::*;
+
+    #[test]
+    fn mismatched_active_generation_on_republish_is_a_typed_error() {
+        assert!(matches!(
+            validate_republish_generation(4, 5),
+            Err(StoreError::ConcurrentActiveMutation {
+                expected_generation: 4,
+                actual_generation: 5,
+            })
+        ));
     }
 }
 
