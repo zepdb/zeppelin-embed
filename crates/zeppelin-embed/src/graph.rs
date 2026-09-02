@@ -85,6 +85,28 @@ impl GraphParams {
         }
     }
 
+    /// Returns the Task 19-M10 angular construction contract.
+    #[must_use]
+    pub const fn angular() -> Self {
+        Self {
+            // M10's owner-approved angular mechanism profile.
+            r_target: 48,
+            // M10 reserves sixteen slots above the normal pruned degree for
+            // reverse-edge stitching and hub densification.
+            r_max: 64,
+            // M10 retains the shipped one-pass build pending the deferred
+            // external-dataset alpha sweep.
+            alpha_build: 1.0,
+            // Existing explicit refinement arm used by the M9 machinery.
+            alpha_refine: 1.2,
+            // No external-dataset build-width sweep is in this mechanism pass;
+            // retain the existing validated construction width.
+            l_build: 100,
+            // Preserve the established resumable checkpoint discipline.
+            checkpoint_batch_rows: 65_536,
+        }
+    }
+
     /// Selects a different positive checkpoint batch size without changing graph quality.
     pub fn with_checkpoint_batch_rows(
         self,
@@ -264,7 +286,7 @@ mod params_tests {
     use super::{GraphParams, GraphParamsError, MIN_GRAPH_ROWS};
 
     #[test]
-    fn sift_params_and_graph_crossover_are_literal() {
+    fn profile_params_and_graph_crossover_are_literal() {
         let params = GraphParams::sift_1m();
         assert_eq!(params.r_target(), 32);
         assert_eq!(params.r_max(), 44);
@@ -281,6 +303,14 @@ mod params_tests {
         );
         assert!(!params.should_build(MIN_GRAPH_ROWS - 1));
         assert!(params.should_build(MIN_GRAPH_ROWS));
+
+        let angular = GraphParams::angular();
+        assert_eq!(angular.r_target(), 48);
+        assert_eq!(angular.r_max(), 64);
+        assert_eq!(angular.alpha_build(), 1.0);
+        assert_eq!(angular.alpha_refine(), 1.2);
+        assert_eq!(angular.l_build(), 100);
+        assert_eq!(angular.checkpoint_batch_rows(), 65_536);
     }
 
     #[test]

@@ -1060,6 +1060,20 @@ impl Store {
         if batch.documents.is_empty() {
             return Err(IngestError::EmptyBatch);
         }
+        if self.epoch.as_ref().is_some_and(|epoch| {
+            epoch.embedding.document.normalization == crate::epoch::Normalization::L2
+        }) {
+            for document in &batch.documents {
+                if let Some(squared_norm) =
+                    crate::graph::search::non_unit_squared_norm(document.vector())
+                {
+                    return Err(IngestError::Vector(crate::quant::QuantError::NonUnitNorm {
+                        squared_norm_bits: squared_norm.to_bits(),
+                        tolerance_bits: crate::graph::search::UNIT_NORM_SQUARED_TOLERANCE.to_bits(),
+                    }));
+                }
+            }
+        }
         for document in &batch.documents {
             validate_document_columns(&self.schema, document)?;
         }

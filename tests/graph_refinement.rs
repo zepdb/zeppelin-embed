@@ -71,6 +71,13 @@ fn sift_epoch() -> StoreEpoch {
     }
 }
 
+fn angular_epoch() -> StoreEpoch {
+    let mut epoch = sift_epoch();
+    epoch.embedding.document.normalization = Normalization::L2;
+    epoch.embedding.query.normalization = Normalization::L2;
+    epoch
+}
+
 fn refinement_fixture(directory: &std::path::Path) -> SegmentReader {
     let rows = 8_usize;
     let vectors = (0..rows)
@@ -164,9 +171,11 @@ fn property_fixture(directory: &std::path::Path, values: &[i16]) -> SegmentReade
     let alive = AliveSet::new(rows as u32);
     let adjacency = (0..rows)
         .map(|owner| {
-            [3_usize, 1, 2]
-                .into_iter()
-                .map(|offset| ((owner + offset) % rows) as u32)
+            let component_start = owner / 4 * 4;
+            let component_end = (component_start + 4).min(rows);
+            (component_start..component_end)
+                .filter(|neighbor| *neighbor != owner)
+                .map(|neighbor| neighbor as u32)
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -359,6 +368,77 @@ fn every_refinement_pass_is_deterministic_bounded_and_row_preserving() {
     }
 }
 
+fn reachable_rows(graph: zeppelin_embed::graph::block::GraphNodeBlocks<'_>) -> BTreeSet<u32> {
+    let entry = (0..graph.node_count())
+        .find(|row| graph.block(*row).expect("entry row").flags() & 1 != 0)
+        .expect("graph entry");
+    let mut reached = BTreeSet::from([entry]);
+    let mut pending = vec![entry];
+    while let Some(owner) = pending.pop() {
+        let block = graph.block(owner).expect("reachable row");
+        for neighbor in block.neighbors_padded().take(usize::from(block.degree())) {
+            if reached.insert(neighbor) {
+                pending.push(neighbor);
+            }
+        }
+    }
+    reached
+}
+
+#[test]
+fn connectivity_repair_is_deterministic_connected_bounded_and_persisted() {
+    let directory = tempfile::tempdir().expect("connectivity repair directory");
+    let source = property_fixture(directory.path(), &[0, 1, 2, 3, 10, 11, 12, 13, 20]);
+    let params = GraphParams::new(3, 4, 1.0, 1.2, 4, 2).expect("repair params");
+    let pass = RefinementPass::named("connectivity-repair").expect("connectivity repair pass");
+
+    let first = refine_graph(&source, pass, params, 0x19_000a).expect("first repair");
+    let second = refine_graph(&source, pass, params, 0x19_000a).expect("second repair");
+    assert_eq!(first.encoded_region(), second.encoded_region());
+    let repaired = decode_node_blocks(first.encoded_region()).expect("repaired graph");
+    assert!(repaired.refinement_passes().contains(pass));
+    assert_eq!(reachable_rows(repaired), BTreeSet::from_iter(0..9));
+    let hubs = (0..repaired.node_count())
+        .filter(|row| repaired.block(*row).expect("hub row").flags() & 2 != 0)
+        .collect::<Vec<_>>();
+    assert!(!hubs.is_empty());
+    for owner in 0..repaired.node_count() {
+        let block = repaired.block(owner).expect("bounded repair row");
+        assert!(block.degree() <= params.r_max());
+        if block.flags() & 2 != 0 {
+            assert_eq!(block.degree(), params.r_max().min(8));
+        }
+    }
+
+    let output_id = SegmentId::new(30, [0xb0; 10]);
+    let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("default analyzer");
+    first
+        .write_segment(
+            &StdVfs,
+            directory.path(),
+            &source,
+            output_id,
+            &analyzer,
+            DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                .expect("repair policy"),
+        )
+        .expect("persist repaired graph");
+    let reopened = SegmentReader::open(
+        &StdVfs,
+        &directory.path().join(output_id.file_name()),
+        output_id,
+    )
+    .expect("reopen repaired graph");
+    let reopened_graph = reopened.graph_node_blocks().expect("reopened graph blocks");
+    assert_eq!(reachable_rows(reopened_graph), BTreeSet::from_iter(0..9));
+    assert_eq!(
+        (0..reopened_graph.node_count())
+            .filter(|row| reopened_graph.block(*row).expect("reopened row").flags() & 2 != 0)
+            .collect::<Vec<_>>(),
+        hubs
+    );
+}
+
 fn seeded_recall_hits(reader: &SegmentReader, queries: &[f32]) -> usize {
     let graph = reader
         .graph_node_blocks()
@@ -419,7 +499,9 @@ fn interrupted_refinement_resumes_byte_identically_and_corruption_clears() {
     let generation = store.snapshot().expect("generation snapshot").generation();
     let control = QueryControl::Cancel(CancelToken::new());
 
-    for pass in RefinementPass::ALL {
+    let connectivity =
+        RefinementPass::named("connectivity-repair").expect("connectivity repair pass");
+    for pass in RefinementPass::ALL.into_iter().chain([connectivity]) {
         let checkpoint = directory
             .path()
             .join(format!("{}.checkpoint", pass.label()));
@@ -575,6 +657,20 @@ proptest! {
                 prop_assert_eq!(remapped.len(), values.len());
             }
         }
+        let repair = RefinementPass::named("connectivity-repair")
+            .expect("connectivity repair pass");
+        let repaired = refine_graph(&source, repair, params, 0x19_000a)
+            .expect("property connectivity repair");
+        let graph = decode_node_blocks(repaired.encoded_region())
+            .expect("property repaired graph decodes");
+        prop_assert_eq!(reachable_rows(graph).len(), values.len());
+        for owner in 0..graph.node_count() {
+            let block = graph.block(owner).expect("property repair row");
+            prop_assert!(block.degree() <= params.r_max());
+            if block.flags() & 2 != 0 {
+                prop_assert_eq!(block.degree(), params.r_max().min(graph.node_count().saturating_sub(1) as u8));
+            }
+        }
     }
 }
 
@@ -664,6 +760,53 @@ fn maintenance_applies_every_due_refinement_after_consolidation() {
             .is_empty()
     );
     store.close().expect("close refined store");
+}
+
+#[test]
+fn maintenance_publishes_connectivity_repair_only_for_angular_graphs() {
+    let directory = tempfile::tempdir().expect("angular maintenance directory");
+    let epoch = angular_epoch();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+    )
+    .expect("open angular maintenance store");
+    let documents = (0..8_u64)
+        .map(|row| {
+            let mut vector = vec![0.0_f32; DIMS];
+            vector[row as usize] = 1.0;
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(row + 1)), Revision::new(1)),
+                vector,
+            )
+            .with_timestamp(row as i64)
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest angular maintenance rows");
+    store.seal().expect("seal angular maintenance rows");
+
+    let report = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: std::time::Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        TierThresholds { graph_min_rows: 1 },
+    );
+
+    assert_eq!(report.graphs_built, 1);
+    assert_eq!(report.passes_applied, 5);
+    assert_eq!(report.pass_counters.connectivity_repair, 1);
+    let snapshot = store.snapshot().expect("published angular repair snapshot");
+    let graph = snapshot.segments()[0]
+        .graph_node_blocks()
+        .expect("published angular repair graph");
+    let pass = RefinementPass::named("connectivity-repair").expect("connectivity repair pass");
+    assert!(graph.refinement_passes().contains(pass));
+    assert_eq!(reachable_rows(graph), BTreeSet::from_iter(0..8));
+    drop(snapshot);
+    store.close().expect("close angular maintenance store");
 }
 
 fn published_row_facts(store: &Store) -> BTreeMap<u128, (u64, i64, String)> {

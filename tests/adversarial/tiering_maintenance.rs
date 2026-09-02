@@ -70,6 +70,7 @@ pub enum TierFaultKind {
     RefinementAlphaRepruneCrash,
     RefinementSeedRefitCrash,
     RefinementNeighborReorderCrash,
+    RefinementConnectivityRepairCrash,
 }
 
 impl TierFaultKind {
@@ -87,6 +88,7 @@ impl TierFaultKind {
             Self::RefinementAlphaRepruneCrash => "refinement-alpha-reprune-crash",
             Self::RefinementSeedRefitCrash => "refinement-seed-refit-crash",
             Self::RefinementNeighborReorderCrash => "refinement-neighbor-reorder-crash",
+            Self::RefinementConnectivityRepairCrash => "refinement-connectivity-repair-crash",
         }
     }
 
@@ -102,7 +104,8 @@ impl TierFaultKind {
             | Self::RefinementRenumberCrash
             | Self::RefinementAlphaRepruneCrash
             | Self::RefinementSeedRefitCrash
-            | Self::RefinementNeighborReorderCrash => TierOperationKind::Publication,
+            | Self::RefinementNeighborReorderCrash
+            | Self::RefinementConnectivityRepairCrash => TierOperationKind::Publication,
             Self::ProfileMismatch => TierOperationKind::Policy,
         }
     }
@@ -121,6 +124,7 @@ impl TierFaultKind {
             Self::RefinementAlphaRepruneCrash => "tier.refine.alpha-reprune.phase",
             Self::RefinementSeedRefitCrash => "tier.refine.seed-refit.phase",
             Self::RefinementNeighborReorderCrash => "tier.refine.neighbor-reorder.phase",
+            Self::RefinementConnectivityRepairCrash => "tier.refine.connectivity-repair.phase",
         }
     }
 
@@ -130,6 +134,7 @@ impl TierFaultKind {
             Self::RefinementAlphaRepruneCrash => Some(RefinementPass::AlphaReprune),
             Self::RefinementSeedRefitCrash => Some(RefinementPass::SeedRefit),
             Self::RefinementNeighborReorderCrash => Some(RefinementPass::NeighborReorder),
+            Self::RefinementConnectivityRepairCrash => Some(RefinementPass::ConnectivityRepair),
             _ => None,
         }
     }
@@ -190,6 +195,59 @@ fn epoch(dims: u32, tag: u8) -> StoreEpoch {
         },
         tokenizer: TokenizerConfig::text_default().epoch(),
     }
+}
+
+fn angular_epoch(dims: u32, tag: u8) -> StoreEpoch {
+    let mut epoch = epoch(dims, tag);
+    epoch.embedding.query.normalization = Normalization::L2;
+    epoch.embedding.document.normalization = Normalization::L2;
+    epoch
+}
+
+fn normalized(vector: &[f32]) -> Result<Vec<f32>, String> {
+    let squared_norm = vector
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>();
+    if !squared_norm.is_finite() || squared_norm <= 0.0 {
+        return Err("tier angular fixture contains a non-normalizable vector".to_owned());
+    }
+    let scale = squared_norm.sqrt() as f32;
+    Ok(vector.iter().map(|value| *value / scale).collect())
+}
+
+fn ingest_angular_fixture(
+    store: &Store,
+    fixture: &TierFixture,
+    epoch: &StoreEpoch,
+) -> Result<(), String> {
+    let documents = fixture
+        .documents
+        .iter()
+        .map(|document| {
+            Ok(IngestDocument::new(
+                DocumentVersion::new(DocId::new(u128::from(document.doc_id)), Revision::new(1)),
+                normalized(&document.vector)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .map_err(|error| error.to_string())?;
+    store.seal().map_err(|error| error.to_string())?;
+    let deleted = fixture
+        .documents
+        .iter()
+        .filter(|document| document.deleted)
+        .map(|document| DocId::new(u128::from(document.doc_id)))
+        .collect::<Vec<_>>();
+    if deleted.is_empty() {
+        return Err("tier fixture omitted seeded deletions".to_owned());
+    }
+    store
+        .delete(DeleteBatch::new(deleted))
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn ingest_fixture(store: &Store, fixture: &TierFixture, epoch: &StoreEpoch) -> Result<(), String> {
@@ -731,7 +789,8 @@ fn exercise_fault(seed: u64, fault: TierFaultKind, observed: &TierObserved) -> R
         fault @ (TierFaultKind::RefinementRenumberCrash
         | TierFaultKind::RefinementAlphaRepruneCrash
         | TierFaultKind::RefinementSeedRefitCrash
-        | TierFaultKind::RefinementNeighborReorderCrash) => refinement_phase_crash(
+        | TierFaultKind::RefinementNeighborReorderCrash
+        | TierFaultKind::RefinementConnectivityRepairCrash) => refinement_phase_crash(
             seed,
             fault
                 .refinement_pass()
@@ -985,7 +1044,12 @@ fn refinement_phase_crash_in(
 ) -> Result<(), String> {
     let fixture = oracle::fixture(seed);
     let path = directory.join(format!("refinement-{}-phase", pass.label()));
-    let epoch = epoch(fixture.dims, 1);
+    let angular = pass == RefinementPass::ConnectivityRepair;
+    let epoch = if angular {
+        angular_epoch(fixture.dims, 1)
+    } else {
+        epoch(fixture.dims, 1)
+    };
     let path_filter = format!(".{}.refine.checkpoint", pass.label());
     let scheduled = Arc::new(std_scheduled(FaultSchedule::single(FaultEvent {
         id: format!("tier-{seed}-{}-phase", pass.label()),
@@ -1007,7 +1071,11 @@ fn refinement_phase_crash_in(
         StoreTestDependencies::new(scheduled.clone(), Arc::new(SystemMonotonicClock)),
     )
     .map_err(|error| error.to_string())?;
-    ingest_fixture(&store, &fixture, &epoch)?;
+    if angular {
+        ingest_angular_fixture(&store, &fixture, &epoch)?;
+    } else {
+        ingest_fixture(&store, &fixture, &epoch)?;
+    }
     scheduled.set_operation(0);
     let report = store.maintain_with_test_thresholds(
         MaintenanceBudget {
@@ -1206,7 +1274,8 @@ fn exercise_fault_in_directory(
         fault @ (TierFaultKind::RefinementRenumberCrash
         | TierFaultKind::RefinementAlphaRepruneCrash
         | TierFaultKind::RefinementSeedRefitCrash
-        | TierFaultKind::RefinementNeighborReorderCrash) => refinement_phase_crash_in(
+        | TierFaultKind::RefinementNeighborReorderCrash
+        | TierFaultKind::RefinementConnectivityRepairCrash) => refinement_phase_crash_in(
             directory,
             seed,
             fault
@@ -1283,6 +1352,7 @@ mod tests {
             TierFaultKind::RefinementAlphaRepruneCrash,
             TierFaultKind::RefinementSeedRefitCrash,
             TierFaultKind::RefinementNeighborReorderCrash,
+            TierFaultKind::RefinementConnectivityRepairCrash,
         ]
         .into_iter()
         .enumerate()
@@ -1293,5 +1363,11 @@ mod tests {
             assert_eq!(evidence.receipts[0].fault, fault);
             assert_eq!(evidence.receipts[0].cardinality, 1);
         }
+    }
+
+    #[test]
+    fn connectivity_repair_phase_crash_fires_once() {
+        refinement_phase_crash(21, RefinementPass::ConnectivityRepair)
+            .expect("connectivity repair phase crash");
     }
 }

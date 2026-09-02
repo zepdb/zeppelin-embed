@@ -13,7 +13,9 @@ use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, Durabili
 use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::vfs::StdVfs;
-use zeppelin_embed_bench::graph_recall::{CrossGraphDataset, build_cross_dataset_graph};
+use zeppelin_embed_bench::graph_recall::{
+    CrossGraphDataset, build_angular_dataset_graph, build_cross_dataset_graph,
+};
 use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile;
 use zeppelin_embed_bench::platform::taint::{
     detect_taint, format_load1, format_taint_labels, print_taint_status,
@@ -22,6 +24,28 @@ use zeppelin_embed_bench::platform::taint::{
 const DEFAULT_SEED: u64 = 0x19_0003_51f7_1a00;
 const LOAD_LIMIT: f64 = 1.0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildProfile {
+    SiftClass,
+    Angular,
+}
+
+impl BuildProfile {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::SiftClass => "sift",
+            Self::Angular => "angular",
+        }
+    }
+
+    const fn params(self) -> GraphParams {
+        match self {
+            Self::SiftClass => GraphParams::sift_1m(),
+            Self::Angular => GraphParams::angular(),
+        }
+    }
+}
+
 struct Config {
     dataset_name: String,
     data_directory: PathBuf,
@@ -29,6 +53,7 @@ struct Config {
     passes: GraphBuildPasses,
     seed: u64,
     refinement_pass: Option<RefinementPass>,
+    profile: BuildProfile,
 }
 
 fn main() {
@@ -42,18 +67,25 @@ fn run() -> Result<(), Box<dyn Error>> {
     verify_bench_profile()?;
     let config = parse_config()?;
     let dataset = CrossGraphDataset::named(&config.dataset_name, &config.data_directory)?;
-    let cache_directory = config
-        .cache_directory
-        .unwrap_or_else(|| match config.passes {
-            GraphBuildPasses::One => PathBuf::from(format!(
-                "/private/tmp/zeppelin-embed-m5-{}-one",
+    let cache_directory = config.cache_directory.unwrap_or_else(|| {
+        if config.profile == BuildProfile::Angular {
+            PathBuf::from(format!(
+                "/private/tmp/zeppelin-embed-m10-{}-angular",
                 dataset.name()
-            )),
-            GraphBuildPasses::Two => PathBuf::from(format!(
-                "/private/tmp/zeppelin-embed-m4b-{}",
-                dataset.name()
-            )),
-        });
+            ))
+        } else {
+            match config.passes {
+                GraphBuildPasses::One => PathBuf::from(format!(
+                    "/private/tmp/zeppelin-embed-m5-{}-one",
+                    dataset.name()
+                )),
+                GraphBuildPasses::Two => PathBuf::from(format!(
+                    "/private/tmp/zeppelin-embed-m4b-{}",
+                    dataset.name()
+                )),
+            }
+        }
+    });
     let pass_label = match config.passes {
         GraphBuildPasses::One => "one",
         GraphBuildPasses::Two => "two",
@@ -62,24 +94,38 @@ fn run() -> Result<(), Box<dyn Error>> {
         .refinement_pass
         .map_or("baseline", RefinementPass::label);
     let taint = detect_taint(LOAD_LIMIT);
+    let params = config.profile.params();
     println!(
-        "GRAPH_BUILD_CONTEXT dataset={} rows={} dims={} metric={} build_profile=bench opt_level={} build_passes={pass_label} refinement_pass={refinement_label} r_target=32 r_max=44 alpha=1.0/1.2 l_build=100 seed={} cache_dir={} load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_BUILD_CONTEXT dataset={} rows={} dims={} metric={} graph_profile={} build_profile=bench opt_level={} build_passes={pass_label} refinement_pass={refinement_label} r_target={} r_max={} alpha={}/{} l_build={} seed={} cache_dir={} load_limit={LOAD_LIMIT:.2}",
         dataset.name(),
         dataset.rows(),
         dataset.dimensions(),
         dataset.metric().label(),
+        config.profile.label(),
         env!("ZEPPELIN_BENCH_OPT_LEVEL"),
+        params.r_target(),
+        params.r_max(),
+        params.alpha_build(),
+        params.alpha_refine(),
+        params.l_build(),
         config.seed,
         cache_directory.display(),
     );
     print_taint_status(&taint, LOAD_LIMIT, "graph-build");
-    let artifact =
-        build_cross_dataset_graph(&dataset, &cache_directory, config.passes, config.seed)?;
+    let artifact = match config.profile {
+        BuildProfile::SiftClass => {
+            build_cross_dataset_graph(&dataset, &cache_directory, config.passes, config.seed)?
+        }
+        BuildProfile::Angular => {
+            build_angular_dataset_graph(&dataset, &cache_directory, config.passes, config.seed)?
+        }
+    };
     let refinement_started = std::time::Instant::now();
     let refined = refine_cached_graph(
         artifact.reader(),
         &cache_directory,
         config.refinement_pass,
+        params,
         config.seed,
     )?;
     let refinement_wall_seconds = refinement_started.elapsed().as_secs_f64();
@@ -118,6 +164,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut passes = GraphBuildPasses::default();
     let mut seed = DEFAULT_SEED;
     let mut refinement_pass = None;
+    let mut profile = BuildProfile::SiftClass;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         let value = arguments
@@ -140,6 +187,18 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
                 }
             }
             "--seed" => seed = value.parse()?,
+            "--profile" => {
+                profile = match value.as_str() {
+                    "sift" => BuildProfile::SiftClass,
+                    "angular" => BuildProfile::Angular,
+                    _ => {
+                        return Err(io::Error::other(format!(
+                            "--profile must be sift or angular, got {value}"
+                        ))
+                        .into());
+                    }
+                }
+            }
             "--pass" => {
                 refinement_pass = match value.as_str() {
                     "baseline" => None,
@@ -162,6 +221,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
         passes,
         seed,
         refinement_pass,
+        profile,
     })
 }
 
@@ -169,6 +229,7 @@ fn refine_cached_graph(
     source: &SegmentReader,
     directory: &Path,
     pass: Option<RefinementPass>,
+    params: GraphParams,
     seed: u64,
 ) -> Result<Option<SegmentReader>, Box<dyn Error>> {
     let Some(pass) = pass else {
@@ -192,7 +253,7 @@ fn refine_cached_graph(
         }
         return Ok(Some(reader));
     }
-    let artifact = refine_graph(source, pass, GraphParams::sift_1m(), seed)?;
+    let artifact = refine_graph(source, pass, params, seed)?;
     let analyzer = Analyzer::new(TokenizerConfig::text_default())?;
     let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?;
     artifact.write_segment(&StdVfs, directory, source, output_id, &analyzer, policy)?;

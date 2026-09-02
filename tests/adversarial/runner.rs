@@ -5523,6 +5523,9 @@ fn tier_fault_kind(
         super::campaign::FeatureFault::TierRefinementNeighborReorderCrash => {
             Ok(tier_adapter::TierFaultKind::RefinementNeighborReorderCrash)
         }
+        super::campaign::FeatureFault::TierRefinementConnectivityRepairCrash => {
+            Ok(tier_adapter::TierFaultKind::RefinementConnectivityRepairCrash)
+        }
         super::campaign::FeatureFault::TierStaleSource => {
             Ok(tier_adapter::TierFaultKind::StaleSource)
         }

@@ -5,11 +5,17 @@ use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use zeppelin_embed::epoch::{
+    ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+};
+use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::build::{
     CheckpointedGraphBuild, GraphBuildArtifact, GraphBuildPasses, build_graph_checkpointed,
 };
-use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearchScratch, GraphSearcher};
+use zeppelin_embed::graph::search::{
+    GraphSearchProfile, GraphSearchRequest, GraphSearchScratch, GraphSearcher,
+};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
@@ -25,6 +31,21 @@ const QUERIES: usize = 10_000;
 const TOP_K: usize = 100;
 const CROSS_GRAPH_MARKER_VERSION: &str = "m4b-v1";
 const CROSS_INPUT_MARKER_VERSION: &str = "m4b-input-v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CrossGraphBuildProfile {
+    SiftClass,
+    Angular,
+}
+
+impl CrossGraphBuildProfile {
+    const fn params(self) -> GraphParams {
+        match self {
+            Self::SiftClass => GraphParams::sift_1m(),
+            Self::Angular => GraphParams::angular(),
+        }
+    }
+}
 fn input_id() -> SegmentId {
     SegmentId::new(19, [0x31; 10])
 }
@@ -303,8 +324,45 @@ pub fn build_cross_dataset_graph(
     passes: GraphBuildPasses,
     seed: u64,
 ) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
+    build_cross_dataset_graph_with_profile(
+        dataset,
+        cache_directory,
+        passes,
+        seed,
+        CrossGraphBuildProfile::SiftClass,
+    )
+}
+
+/// Builds one angular dataset with the M10 construction parameters.
+pub fn build_angular_dataset_graph(
+    dataset: &CrossGraphDataset,
+    cache_directory: &Path,
+    passes: GraphBuildPasses,
+    seed: u64,
+) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
+    if dataset.metric() != GraphDistanceMetric::Cosine {
+        return Err(io::Error::other("the angular graph profile requires a cosine dataset").into());
+    }
+    build_cross_dataset_graph_with_profile(
+        dataset,
+        cache_directory,
+        passes,
+        seed,
+        CrossGraphBuildProfile::Angular,
+    )
+}
+
+fn build_cross_dataset_graph_with_profile(
+    dataset: &CrossGraphDataset,
+    cache_directory: &Path,
+    passes: GraphBuildPasses,
+    seed: u64,
+    profile: CrossGraphBuildProfile,
+) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
     fs::create_dir_all(cache_directory)?;
-    if let Ok(cached) = open_cross_dataset_graph(dataset, cache_directory, passes, seed) {
+    if let Ok(cached) =
+        open_cross_dataset_graph_with_profile(dataset, cache_directory, passes, seed, profile)
+    {
         return Ok(cached);
     }
 
@@ -312,23 +370,33 @@ pub fn build_cross_dataset_graph(
     let (input, zero_norm_rows) = prepare_cross_input_segment(dataset, cache_directory)?;
     let control = QueryControl::Cancel(CancelToken::new());
     let store_directory = cache_directory.join("cancellation-store");
-    let store = Store::open(
-        &store_directory,
-        OpenOptions::default()
-            .with_max_resident_bytes(u64::MAX)
-            .with_max_temp_bytes(u64::MAX),
-    )?;
+    let mut options = OpenOptions::default()
+        .with_max_resident_bytes(u64::MAX)
+        .with_max_temp_bytes(u64::MAX);
+    if profile == CrossGraphBuildProfile::Angular {
+        options = options.with_epoch(cross_graph_epoch(dataset));
+    }
+    let store = Store::open(&store_directory, options)?;
     let lease = store.snapshot()?;
+    let profile_label = match profile {
+        CrossGraphBuildProfile::SiftClass => "sift",
+        CrossGraphBuildProfile::Angular => "angular",
+    };
     let checkpoint = cache_directory.join(match passes {
-        GraphBuildPasses::One => format!("{}-alpha-1.checkpoint", dataset.name()),
+        GraphBuildPasses::One => {
+            format!("{}-{profile_label}-alpha-1.checkpoint", dataset.name())
+        }
         GraphBuildPasses::Two => {
-            format!("{}-alpha-1-then-1_2.checkpoint", dataset.name())
+            format!(
+                "{}-{profile_label}-alpha-1-then-1_2.checkpoint",
+                dataset.name()
+            )
         }
     });
     let artifact = build_graph_checkpointed(
         &store,
         &input,
-        CheckpointedGraphBuild::new(GraphParams::sift_1m(), seed, passes, &checkpoint, &control),
+        CheckpointedGraphBuild::new(profile.params(), seed, passes, &checkpoint, &control),
         &lease,
     )?;
     publish_graph(&artifact, &input, cache_directory)?;
@@ -340,7 +408,7 @@ pub fn build_cross_dataset_graph(
         zero_norm_rows,
         cache_hit: false,
     };
-    write_cross_graph_marker(dataset, cache_directory, passes, seed, &metadata)?;
+    write_cross_graph_marker(dataset, cache_directory, passes, seed, profile, &metadata)?;
     drop(lease);
     drop(store);
     let reader = SegmentReader::open(
@@ -358,6 +426,41 @@ pub fn open_cross_dataset_graph(
     passes: GraphBuildPasses,
     seed: u64,
 ) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
+    open_cross_dataset_graph_with_profile(
+        dataset,
+        cache_directory,
+        passes,
+        seed,
+        CrossGraphBuildProfile::SiftClass,
+    )
+}
+
+/// Opens an exact cached M10 angular build without starting a rebuild.
+pub fn open_angular_dataset_graph(
+    dataset: &CrossGraphDataset,
+    cache_directory: &Path,
+    passes: GraphBuildPasses,
+    seed: u64,
+) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
+    if dataset.metric() != GraphDistanceMetric::Cosine {
+        return Err(io::Error::other("the angular graph profile requires a cosine dataset").into());
+    }
+    open_cross_dataset_graph_with_profile(
+        dataset,
+        cache_directory,
+        passes,
+        seed,
+        CrossGraphBuildProfile::Angular,
+    )
+}
+
+fn open_cross_dataset_graph_with_profile(
+    dataset: &CrossGraphDataset,
+    cache_directory: &Path,
+    passes: GraphBuildPasses,
+    seed: u64,
+    profile: CrossGraphBuildProfile,
+) -> Result<CrossGraphArtifact, Box<dyn std::error::Error>> {
     let marker_path = cross_graph_marker_path(dataset, cache_directory);
     let marker = fs::read_to_string(&marker_path).map_err(|error| {
         io::Error::new(
@@ -372,7 +475,7 @@ pub fn open_cross_dataset_graph(
     let identity = lines
         .next()
         .ok_or_else(|| io::Error::other("cached graph marker has no identity line"))?;
-    let expected_identity = cross_graph_identity(dataset, passes, seed);
+    let expected_identity = cross_graph_identity(dataset, passes, seed, profile);
     if identity != expected_identity {
         return Err(io::Error::other(format!(
             "cached graph identity mismatch: got {identity:?}, expected {expected_identity:?}"
@@ -649,6 +752,29 @@ fn cross_graph_marker_path(dataset: &CrossGraphDataset, directory: &Path) -> Pat
     directory.join(format!("{}-graph-build.meta", dataset.name()))
 }
 
+fn cross_graph_epoch(dataset: &CrossGraphDataset) -> StoreEpoch {
+    let tower = EmbeddingTower {
+        model_id: dataset.name().to_owned(),
+        model_version: "m10-angular".to_owned(),
+        weights_digest: vec![0x19, 0x10],
+        dims: dataset.dimensions() as u32,
+        normalization: Normalization::L2,
+        prompt_prefix: String::new(),
+        max_tokens: 0,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: tower.clone(),
+            document: tower,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
 fn cross_input_marker_path(dataset: &CrossGraphDataset, directory: &Path) -> PathBuf {
     directory.join(format!("{}-input.meta", dataset.name()))
 }
@@ -657,15 +783,26 @@ fn cross_graph_identity(
     dataset: &CrossGraphDataset,
     passes: GraphBuildPasses,
     seed: u64,
+    profile: CrossGraphBuildProfile,
 ) -> String {
-    format!(
-        "{CROSS_GRAPH_MARKER_VERSION} dataset={} pass={} seed={seed} rows={} dims={} metric={} r=32/44 alpha=1.0/1.2 l=100",
-        dataset.name(),
-        graph_pass_label(passes),
-        dataset.rows(),
-        dataset.dimensions(),
-        dataset.metric().label(),
-    )
+    match profile {
+        CrossGraphBuildProfile::SiftClass => format!(
+            "{CROSS_GRAPH_MARKER_VERSION} dataset={} pass={} seed={seed} rows={} dims={} metric={} r=32/44 alpha=1.0/1.2 l=100",
+            dataset.name(),
+            graph_pass_label(passes),
+            dataset.rows(),
+            dataset.dimensions(),
+            dataset.metric().label(),
+        ),
+        CrossGraphBuildProfile::Angular => format!(
+            "m10-angular-v1 dataset={} pass={} seed={seed} rows={} dims={} metric={} r=48/64 alpha=1.0/1.2 l=100",
+            dataset.name(),
+            graph_pass_label(passes),
+            dataset.rows(),
+            dataset.dimensions(),
+            dataset.metric().label(),
+        ),
+    }
 }
 
 fn cross_input_identity(dataset: &CrossGraphDataset) -> String {
@@ -690,9 +827,10 @@ fn write_cross_graph_marker(
     cache_directory: &Path,
     passes: GraphBuildPasses,
     seed: u64,
+    profile: CrossGraphBuildProfile,
     metadata: &CrossGraphBuildMetadata,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let identity = cross_graph_identity(dataset, passes, seed);
+    let identity = cross_graph_identity(dataset, passes, seed, profile);
     let zero_rows = format_zero_rows(&metadata.zero_norm_rows);
     let marker = format!(
         "{identity}\nbuild_wall_s={:.9} peak_rss_bytes={} zero_rows={zero_rows}\n",
@@ -801,6 +939,36 @@ pub fn measure_sift1m_recall(
         },
         ef_values,
         seed,
+        GraphSearchProfile::SiftClass,
+    )
+}
+
+/// Sweeps recall for one frozen cross-dataset graph.
+pub fn measure_cross_dataset_recall(
+    reader: &SegmentReader,
+    dataset: &CrossGraphDataset,
+    ef_values: &[usize],
+    seed: u64,
+) -> Result<Vec<RecallPoint>, Box<dyn std::error::Error>> {
+    let queries = read_cross_dataset_queries(dataset)?;
+    let truth = read_cross_dataset_truth(dataset)?;
+    let profile = match dataset.metric() {
+        GraphDistanceMetric::SquaredL2 => GraphSearchProfile::SiftClass,
+        GraphDistanceMetric::Cosine => GraphSearchProfile::Angular,
+    };
+    measure_recall_values(
+        reader,
+        &queries,
+        &truth,
+        RecallShape {
+            dimensions: dataset.dimensions(),
+            query_count: dataset.query_count(),
+            top_k: TOP_K,
+            max_ef: reader.meta().row_count as usize,
+        },
+        ef_values,
+        seed,
+        profile,
     )
 }
 
@@ -819,6 +987,7 @@ fn measure_recall(
     shape: RecallShape,
     ef_values: &[usize],
     seed: u64,
+    profile: GraphSearchProfile,
 ) -> Result<Vec<RecallPoint>, Box<dyn std::error::Error>> {
     if ef_values
         .iter()
@@ -836,6 +1005,24 @@ fn measure_recall(
         .ok_or_else(|| io::Error::other("recall truth geometry overflow"))?;
     let queries = read_f32_raw(query_path, query_values)?;
     let truth = read_i32_raw(truth_path, truth_values)?;
+    measure_recall_values(reader, &queries, &truth, shape, ef_values, seed, profile)
+}
+
+fn measure_recall_values(
+    reader: &SegmentReader,
+    queries: &[f32],
+    truth: &[i32],
+    shape: RecallShape,
+    ef_values: &[usize],
+    seed: u64,
+    profile: GraphSearchProfile,
+) -> Result<Vec<RecallPoint>, Box<dyn std::error::Error>> {
+    if ef_values
+        .iter()
+        .any(|ef| *ef < shape.top_k || *ef > shape.max_ef)
+    {
+        return Err(format!("every ef must be in {}..={}", shape.top_k, shape.max_ef).into());
+    }
     let graph = reader.graph_node_blocks()?;
     let base = reader.rescore_f32()?;
     let mut scratch = GraphSearchScratch::new(graph.node_count(), graph.layout().max_degree())?;
@@ -853,7 +1040,9 @@ fn measure_recall(
             .ok_or("truth row missing")?;
         for (total, ef) in totals.iter_mut().zip(ef_values) {
             let result = searcher.search(
-                GraphSearchRequest::new(query, shape.top_k, seed ^ query_index as u64).with_ef(*ef),
+                GraphSearchRequest::new(query, shape.top_k, seed ^ query_index as u64)
+                    .with_profile(profile)
+                    .with_ef(*ef),
                 None,
             )?;
             *total += result
@@ -863,7 +1052,7 @@ fn measure_recall(
                 .count() as u64;
         }
     }
-    let denominator = truth_values as f64;
+    let denominator = truth.len() as f64;
     Ok(ef_values
         .iter()
         .zip(totals)
@@ -924,15 +1113,23 @@ fn read_raw_words<T>(
 #[cfg(test)]
 mod cross_dataset_tests {
     use super::{
-        CrossGraphDataset, GraphDistanceMetric, RecallShape, Sift1mPaths,
-        build_cross_dataset_graph, build_sift1m_graph, cross_graph_marker_path, graph_marker,
-        measure_recall, measure_sift1m_recall, normalize_cosine_rows, open_cross_dataset_graph,
+        CrossGraphDataset, GraphDistanceMetric, GraphSearchProfile, RecallShape, Sift1mPaths,
+        build_angular_dataset_graph, build_cross_dataset_graph, build_sift1m_graph,
+        cross_graph_marker_path, graph_marker, measure_cross_dataset_recall, measure_recall,
+        measure_sift1m_recall, normalize_cosine_rows, open_cross_dataset_graph,
         prepare_cross_input_segment, prepare_input_segment_for_shape, read_cross_dataset_queries,
         read_cross_dataset_truth,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
+    use zeppelin_embed::graph::GraphParams;
     use zeppelin_embed::graph::build::GraphBuildPasses;
+    use zeppelin_embed::graph::refine::{RefinementPass, refine_graph};
+    use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+    use zeppelin_embed::segment::SegmentId;
+    use zeppelin_embed::segment::reader::SegmentReader;
+    use zeppelin_embed::vfs::StdVfs;
 
     #[test]
     fn cross_graph_dataset_contracts_are_exact() {
@@ -1062,6 +1259,7 @@ mod cross_dataset_tests {
             },
             &[2, 4],
             SEED,
+            GraphSearchProfile::Angular,
         )
         .expect("small recall sweep");
         assert_eq!(
@@ -1089,6 +1287,7 @@ mod cross_dataset_tests {
                 },
                 &[1],
                 SEED,
+                GraphSearchProfile::Angular,
             )
             .is_err()
         );
@@ -1150,6 +1349,162 @@ mod cross_dataset_tests {
         assert!(open_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::One, SEED).is_err());
         fs::write(&marker_path, valid_marker).expect("restore valid marker");
         assert!(open_cross_dataset_graph(&dataset, &cache, GraphBuildPasses::Two, SEED).is_err());
+    }
+
+    fn repaired_angular_graph(
+        dataset: &CrossGraphDataset,
+        cache: &Path,
+        seed: u64,
+    ) -> SegmentReader {
+        let source = build_angular_dataset_graph(dataset, cache, GraphBuildPasses::One, seed)
+            .expect("angular graph build");
+        let pass = RefinementPass::ConnectivityRepair;
+        let output_id = SegmentId::new(19, [0x4a; 10]);
+        let output_path = cache.join(output_id.file_name());
+        if let Ok(reader) = SegmentReader::open(&StdVfs, &output_path, output_id)
+            && reader
+                .graph_node_blocks()
+                .expect("cached repaired graph")
+                .refinement_passes()
+                .contains(pass)
+        {
+            return reader;
+        }
+        let repaired = refine_graph(source.reader(), pass, GraphParams::angular(), seed)
+            .expect("angular connectivity repair");
+        repaired
+            .write_segment(
+                &StdVfs,
+                cache,
+                source.reader(),
+                output_id,
+                &Analyzer::new(TokenizerConfig::text_default()).expect("default analyzer"),
+                DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+                    .expect("derived durability"),
+            )
+            .expect("persist repaired angular graph");
+        SegmentReader::open(&StdVfs, &output_path, output_id).expect("open repaired angular graph")
+    }
+
+    fn seeded_unit_rows(rows: usize, dimensions: usize, seed: u64) -> Vec<f32> {
+        let mut output = Vec::with_capacity(rows * dimensions);
+        for row in 0..rows {
+            let mut state = seed ^ (row as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut vector = Vec::with_capacity(dimensions);
+            for _ in 0..dimensions {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let value = (state >> 40) as f32 / ((1_u32 << 24) - 1) as f32 * 2.0 - 1.0;
+                vector.push(value);
+            }
+            let norm = vector
+                .iter()
+                .map(|value| f64::from(*value) * f64::from(*value))
+                .sum::<f64>()
+                .sqrt() as f32;
+            output.extend(vector.into_iter().map(|value| value / norm));
+        }
+        output
+    }
+
+    fn exact_truth(base: &[f32], queries: &[f32], dimensions: usize) -> Vec<i32> {
+        let mut truth = Vec::new();
+        for query in queries.chunks_exact(dimensions) {
+            let mut distances = base
+                .chunks_exact(dimensions)
+                .enumerate()
+                .map(|(row, vector)| {
+                    let distance = query
+                        .iter()
+                        .zip(vector)
+                        .map(|(left, right)| {
+                            let delta = f64::from(*left) - f64::from(*right);
+                            delta * delta
+                        })
+                        .sum::<f64>();
+                    (row as i32, distance)
+                })
+                .collect::<Vec<_>>();
+            distances.sort_unstable_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            truth.extend(distances.into_iter().take(100).map(|(row, _)| row));
+        }
+        truth
+    }
+
+    fn wilson_lower_bound(successes: usize, trials: usize) -> f64 {
+        let z = 1.959_963_984_540_054_f64;
+        let n = trials as f64;
+        let proportion = successes as f64 / n;
+        let z_squared = z * z;
+        let center = proportion + z_squared / (2.0 * n);
+        let margin = z * ((proportion * (1.0 - proportion) + z_squared / (4.0 * n)) / n).sqrt();
+        (center - margin) / (1.0 + z_squared / n)
+    }
+
+    #[test]
+    fn small_seeded_angular_recall_at_100_lower_bound_reaches_090() {
+        const ROWS: usize = 512;
+        const DIMS: usize = 32;
+        const QUERIES: usize = 20;
+        const SEED: u64 = 0x19_0010_a11c_1a00;
+
+        let directory = tempfile::tempdir().expect("angular recall directory");
+        let base = seeded_unit_rows(ROWS, DIMS, SEED);
+        let queries = base[..QUERIES * DIMS].to_vec();
+        let truth = exact_truth(&base, &queries, DIMS);
+        let dataset = CrossGraphDataset {
+            name: "angular-ci",
+            rows: ROWS,
+            dimensions: DIMS,
+            query_count: QUERIES,
+            metric: GraphDistanceMetric::Cosine,
+            base: directory.path().join("angular-ci-base.f32bin"),
+            queries: directory.path().join("angular-ci-query.f32bin"),
+            ground_truth: directory.path().join("angular-ci-gt.i32bin"),
+        };
+        write_f32_words(&dataset.base, &base);
+        write_f32_words(&dataset.queries, &queries);
+        write_i32_words(&dataset.ground_truth, &truth);
+
+        let cache = directory.path().join("cache");
+        let reader = repaired_angular_graph(&dataset, &cache, SEED);
+        let point = measure_cross_dataset_recall(&reader, &dataset, &[400], SEED)
+            .expect("small angular recall")
+            .into_iter()
+            .next()
+            .expect("one recall point");
+        let trials = QUERIES * 100;
+        let successes = (point.recall_at_100 * trials as f64).round() as usize;
+        let lower_bound = wilson_lower_bound(successes, trials);
+        assert!(
+            lower_bound >= 0.90,
+            "small angular recall {:.6} has 95% lower bound {lower_bound:.6}",
+            point.recall_at_100
+        );
+    }
+
+    #[test]
+    #[ignore = "needs the full glove-100-angular fixture and multi-hour graph build"]
+    fn glove_angular_recall_at_100_reaches_090_after_connectivity_repair() {
+        const SEED: u64 = 0x19_0010_610e_1a00;
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let data = workspace.join("tasks/cross-benchmark/data");
+        let dataset =
+            CrossGraphDataset::named("glove-100-angular", &data).expect("frozen glove dataset");
+        let cache = Path::new("/private/tmp/zeppelin-embed-m10-glove-angular");
+        let reader = repaired_angular_graph(&dataset, cache, SEED);
+        let sweep = measure_cross_dataset_recall(&reader, &dataset, &[200, 400, 800, 1_200], SEED)
+            .expect("full glove angular recall sweep");
+        assert!(
+            sweep.iter().any(|point| point.recall_at_100 >= 0.90),
+            "glove recall gate not met: {sweep:?}"
+        );
     }
 
     #[test]

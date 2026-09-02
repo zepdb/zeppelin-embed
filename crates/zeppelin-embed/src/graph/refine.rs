@@ -50,6 +50,8 @@ pub enum RefinementPass {
     SeedRefit = 2,
     /// Order each adjacency list by Bit4 distance to its owner.
     NeighborReorder = 3,
+    /// Stitch unreachable components and densify the resulting hubs.
+    ConnectivityRepair = 4,
 }
 
 impl RefinementPass {
@@ -73,6 +75,7 @@ impl RefinementPass {
             Self::AlphaReprune => "alpha-reprune",
             Self::SeedRefit => "seed-refit",
             Self::NeighborReorder => "neighbor-reorder",
+            Self::ConnectivityRepair => "connectivity-repair",
         }
     }
 
@@ -83,6 +86,7 @@ impl RefinementPass {
             "alpha-reprune" => Ok(Self::AlphaReprune),
             "seed-refit" => Ok(Self::SeedRefit),
             "neighbor-reorder" => Ok(Self::NeighborReorder),
+            "connectivity-repair" => Ok(Self::ConnectivityRepair),
             _ => Err(RefinementError::Geometry(format!(
                 "unknown refinement pass {label:?}"
             ))),
@@ -95,7 +99,7 @@ impl RefinementPass {
 pub struct RefinementPasses(u16);
 
 impl RefinementPasses {
-    pub(crate) const KNOWN_BITS: u16 = (1_u16 << RefinementPass::ALL.len()) - 1;
+    pub(crate) const KNOWN_BITS: u16 = (1_u16 << 5) - 1;
 
     /// Returns whether the named pass is stamped on this graph artifact.
     #[must_use]
@@ -305,6 +309,8 @@ enum RefinementPhase {
     Rows,
     SeedMedoid,
     SeedSpread,
+    ConnectivityTraverse,
+    ConnectivityDensify,
     Complete,
 }
 
@@ -397,45 +403,67 @@ impl RefinementState {
         let source = reader.graph_node_blocks()?;
         let graph = OwnedGraph::read(source)?;
         let node_count = graph.neighbors.len();
-        let (phase, permutation, queue, seen) = if pass == RefinementPass::Renumber {
-            let mut roots = graph
-                .flags
-                .iter()
-                .enumerate()
-                .filter_map(|(node, flags)| {
-                    (*flags & ENTRY_FLAG != 0)
-                        .then(|| u32::try_from(node).ok())
-                        .flatten()
-                })
-                .collect::<Vec<_>>();
-            if roots.is_empty() {
-                return Err(RefinementError::Geometry(
-                    "renumbering requires at least one persisted entry seed".to_owned(),
-                ));
+        let (phase, permutation, queue, seen) = match pass {
+            RefinementPass::Renumber => {
+                let mut roots = graph
+                    .flags
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(node, flags)| {
+                        (*flags & ENTRY_FLAG != 0)
+                            .then(|| u32::try_from(node).ok())
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>();
+                if roots.is_empty() {
+                    return Err(RefinementError::Geometry(
+                        "renumbering requires at least one persisted entry seed".to_owned(),
+                    ));
+                }
+                sort_by_degree(&mut roots, &graph)?;
+                let mut queue = VecDeque::with_capacity(node_count);
+                let mut seen = vec![0_u8; node_count];
+                for root in roots {
+                    mark_and_enqueue_byte(root, &mut seen, &mut queue)?;
+                }
+                (
+                    RefinementPhase::Rows,
+                    Vec::with_capacity(node_count),
+                    queue,
+                    seen,
+                )
             }
-            sort_by_degree(&mut roots, &graph)?;
-            let mut queue = VecDeque::with_capacity(node_count);
-            let mut seen = vec![0_u8; node_count];
-            for root in roots {
+            RefinementPass::ConnectivityRepair => {
+                if graph.layout.max_degree() != params.r_max() {
+                    return Err(RefinementError::Geometry(format!(
+                        "graph max degree {}, profile max degree {}",
+                        graph.layout.max_degree(),
+                        params.r_max()
+                    )));
+                }
+                let root = first_entry(&graph)?;
+                let mut queue = VecDeque::with_capacity(node_count);
+                let mut seen = vec![0_u8; node_count];
                 mark_and_enqueue_byte(root, &mut seen, &mut queue)?;
+                (
+                    RefinementPhase::ConnectivityTraverse,
+                    Vec::new(),
+                    queue,
+                    seen,
+                )
             }
-            (
-                RefinementPhase::Rows,
-                Vec::with_capacity(node_count),
-                queue,
-                seen,
-            )
-        } else {
-            (
-                if pass == RefinementPass::SeedRefit {
-                    RefinementPhase::SeedMedoid
-                } else {
-                    RefinementPhase::Rows
-                },
+            RefinementPass::SeedRefit => (
+                RefinementPhase::SeedMedoid,
                 Vec::new(),
                 VecDeque::new(),
                 Vec::new(),
-            )
+            ),
+            RefinementPass::AlphaReprune | RefinementPass::NeighborReorder => (
+                RefinementPhase::Rows,
+                Vec::new(),
+                VecDeque::new(),
+                Vec::new(),
+            ),
         };
         let mut state = Self {
             graph,
@@ -535,6 +563,7 @@ impl RefinementState {
                 }
                 RefinementPass::SeedRefit => self.advance_seed(reader)?,
                 RefinementPass::NeighborReorder => self.advance_reorder(reader, seed)?,
+                RefinementPass::ConnectivityRepair => self.advance_connectivity(params)?,
             }
         }
         check_refinement_cancellation(cancellation)?;
@@ -591,6 +620,56 @@ impl RefinementState {
             let old_to_new = invert_permutation(&self.permutation, node_count)?;
             apply_renumber(&mut self.graph, &self.permutation, &old_to_new)?;
             self.phase = RefinementPhase::Complete;
+        }
+        Ok(())
+    }
+
+    fn advance_connectivity(&mut self, params: GraphParams) -> Result<(), RefinementError> {
+        let node_count = u32::try_from(self.graph.neighbors.len())
+            .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?;
+        match self.phase {
+            RefinementPhase::ConnectivityTraverse => {
+                if let Some(owner) = self.queue.pop_front() {
+                    let neighbors = self
+                        .graph
+                        .neighbors
+                        .get(node_index(owner, node_count)?)
+                        .ok_or_else(|| {
+                            RefinementError::Geometry(format!(
+                                "neighbors for repair node {owner} are unavailable"
+                            ))
+                        })?
+                        .clone();
+                    for neighbor in neighbors {
+                        mark_and_enqueue_byte(neighbor, &mut self.seen, &mut self.queue)?;
+                    }
+                    self.work_rows = self.work_rows.checked_add(1).ok_or_else(|| {
+                        RefinementError::Geometry("connectivity work overflow".to_owned())
+                    })?;
+                } else if let Some(unseen) = self.seen.iter().position(|marker| *marker == 0) {
+                    let target = u32::try_from(unseen).map_err(|_| {
+                        RefinementError::Geometry("unreachable row exceeds u32".to_owned())
+                    })?;
+                    stitch_component(&mut self.graph, &self.seen, target, params.r_max())?;
+                    mark_and_enqueue_byte(target, &mut self.seen, &mut self.queue)?;
+                } else {
+                    self.phase = RefinementPhase::ConnectivityDensify;
+                    self.next_row = 0;
+                }
+            }
+            RefinementPhase::ConnectivityDensify => {
+                let owner = self.next_row;
+                densify_hub(&mut self.graph, owner, params.r_max())?;
+                self.finish_row(node_count, "connectivity densification")?;
+            }
+            RefinementPhase::Rows
+            | RefinementPhase::SeedMedoid
+            | RefinementPhase::SeedSpread
+            | RefinementPhase::Complete => {
+                return Err(RefinementError::Geometry(
+                    "connectivity repair entered an invalid phase".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -715,7 +794,10 @@ impl RefinementState {
                         })?
                 }
             }
-            RefinementPhase::Rows | RefinementPhase::Complete => {
+            RefinementPhase::Rows
+            | RefinementPhase::ConnectivityTraverse
+            | RefinementPhase::ConnectivityDensify
+            | RefinementPhase::Complete => {
                 return Err(RefinementError::Geometry(
                     "seed refit entered an invalid phase".to_owned(),
                 ));
@@ -729,7 +811,13 @@ impl RefinementState {
             (RefinementPhase::SeedSpread, Some(best)) => {
                 score > self.best_score || (score == self.best_score && candidate < best)
             }
-            (RefinementPhase::Rows | RefinementPhase::Complete, Some(_)) => false,
+            (
+                RefinementPhase::Rows
+                | RefinementPhase::ConnectivityTraverse
+                | RefinementPhase::ConnectivityDensify
+                | RefinementPhase::Complete,
+                Some(_),
+            ) => false,
         };
         if better {
             self.best_node = Some(candidate);
@@ -796,6 +884,210 @@ fn mark_and_enqueue_byte(
     if *marker == 0 {
         *marker = 1;
         queue.push_back(node);
+    }
+    Ok(())
+}
+
+fn first_entry(graph: &OwnedGraph) -> Result<u32, RefinementError> {
+    graph
+        .flags
+        .iter()
+        .position(|flags| *flags & ENTRY_FLAG != 0)
+        .ok_or_else(|| {
+            RefinementError::Geometry(
+                "connectivity repair requires at least one persisted entry seed".to_owned(),
+            )
+        })
+        .and_then(|node| {
+            u32::try_from(node)
+                .map_err(|_| RefinementError::Geometry("entry row exceeds u32".to_owned()))
+        })
+}
+
+fn stitch_component(
+    graph: &mut OwnedGraph,
+    seen: &[u8],
+    target: u32,
+    r_max: u8,
+) -> Result<(), RefinementError> {
+    let maximum = usize::from(r_max);
+    if maximum == 0 {
+        return Err(RefinementError::Geometry(
+            "connectivity repair requires positive maximum degree".to_owned(),
+        ));
+    }
+    let (source, replacement) = connectivity_source(graph, seen, maximum)?;
+    set_or_append_neighbor(graph, source, target, maximum, replacement)?;
+    let target_index = node_index(
+        target,
+        u32::try_from(graph.neighbors.len())
+            .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?,
+    )?;
+    let target_neighbors = graph.neighbors.get_mut(target_index).ok_or_else(|| {
+        RefinementError::Geometry(format!(
+            "neighbors for stitch target {target} are unavailable"
+        ))
+    })?;
+    if !target_neighbors.contains(&source) {
+        if target_neighbors.len() < maximum {
+            target_neighbors.push(source);
+        } else {
+            let slot = target_neighbors.len().saturating_sub(1);
+            let destination = target_neighbors.get_mut(slot).ok_or_else(|| {
+                RefinementError::Geometry("full stitch target has no replaceable edge".to_owned())
+            })?;
+            *destination = source;
+        }
+    }
+    let source_flag = graph.flags.get_mut(source as usize).ok_or_else(|| {
+        RefinementError::Geometry(format!("flags for stitch source {source} are unavailable"))
+    })?;
+    *source_flag |= HUB_FLAG;
+    Ok(())
+}
+
+fn connectivity_source(
+    graph: &OwnedGraph,
+    seen: &[u8],
+    maximum: usize,
+) -> Result<(u32, Option<usize>), RefinementError> {
+    for required_flag in [HUB_FLAG, ENTRY_FLAG, 0] {
+        for (owner, marker) in seen.iter().enumerate() {
+            let flags = graph.flags.get(owner).copied().ok_or_else(|| {
+                RefinementError::Geometry("repair flags are shorter than seen state".to_owned())
+            })?;
+            let neighbors = graph.neighbors.get(owner).ok_or_else(|| {
+                RefinementError::Geometry("repair rows are shorter than seen state".to_owned())
+            })?;
+            if *marker != 0
+                && neighbors.len() < maximum
+                && (required_flag == 0 || flags & required_flag != 0)
+            {
+                return u32::try_from(owner)
+                    .map(|owner| (owner, None))
+                    .map_err(|_| {
+                        RefinementError::Geometry("repair source exceeds u32".to_owned())
+                    });
+            }
+        }
+    }
+    replaceable_non_tree_edge(graph, seen).map(|(owner, slot)| (owner, Some(slot)))
+}
+
+fn replaceable_non_tree_edge(
+    graph: &OwnedGraph,
+    seen: &[u8],
+) -> Result<(u32, usize), RefinementError> {
+    let node_count = u32::try_from(graph.neighbors.len())
+        .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?;
+    let root = first_entry(graph)?;
+    let mut parents = vec![u32::MAX; graph.neighbors.len()];
+    let root_index = node_index(root, node_count)?;
+    *parents.get_mut(root_index).ok_or_else(|| {
+        RefinementError::Geometry("repair root parent is unavailable".to_owned())
+    })? = root;
+    let mut queue = VecDeque::from([root]);
+    while let Some(owner) = queue.pop_front() {
+        let neighbors = graph
+            .neighbors
+            .get(node_index(owner, node_count)?)
+            .ok_or_else(|| {
+                RefinementError::Geometry(format!("repair tree row {owner} is unavailable"))
+            })?;
+        for neighbor in neighbors {
+            let index = node_index(*neighbor, node_count)?;
+            if seen.get(index).copied() == Some(1) && parents.get(index).copied() == Some(u32::MAX)
+            {
+                *parents.get_mut(index).ok_or_else(|| {
+                    RefinementError::Geometry("repair parent row is unavailable".to_owned())
+                })? = owner;
+                queue.push_back(*neighbor);
+            }
+        }
+    }
+    for (owner, marker) in seen.iter().enumerate() {
+        if *marker == 0 {
+            continue;
+        }
+        let owner_u32 = u32::try_from(owner)
+            .map_err(|_| RefinementError::Geometry("repair owner exceeds u32".to_owned()))?;
+        let neighbors = graph.neighbors.get(owner).ok_or_else(|| {
+            RefinementError::Geometry("repair source row is unavailable".to_owned())
+        })?;
+        for (slot, neighbor) in neighbors.iter().enumerate().rev() {
+            let neighbor_index = node_index(*neighbor, node_count)?;
+            if parents.get(neighbor_index).copied() != Some(owner_u32) {
+                return Ok((owner_u32, slot));
+            }
+        }
+    }
+    Err(RefinementError::Geometry(
+        "connected component has no spare or non-tree edge for stitching".to_owned(),
+    ))
+}
+
+fn set_or_append_neighbor(
+    graph: &mut OwnedGraph,
+    owner: u32,
+    target: u32,
+    maximum: usize,
+    replacement: Option<usize>,
+) -> Result<(), RefinementError> {
+    let node_count = u32::try_from(graph.neighbors.len())
+        .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?;
+    let neighbors = graph
+        .neighbors
+        .get_mut(node_index(owner, node_count)?)
+        .ok_or_else(|| {
+            RefinementError::Geometry(format!(
+                "neighbors for stitch source {owner} are unavailable"
+            ))
+        })?;
+    if neighbors.contains(&target) {
+        return Ok(());
+    }
+    if neighbors.len() < maximum {
+        neighbors.push(target);
+        return Ok(());
+    }
+    let slot = replacement.ok_or_else(|| {
+        RefinementError::Geometry(format!("full stitch source {owner} has no replacement"))
+    })?;
+    let destination = neighbors.get_mut(slot).ok_or_else(|| {
+        RefinementError::Geometry(format!("stitch replacement {slot} is unavailable"))
+    })?;
+    *destination = target;
+    Ok(())
+}
+
+fn densify_hub(graph: &mut OwnedGraph, owner: u32, r_max: u8) -> Result<(), RefinementError> {
+    let node_count = u32::try_from(graph.neighbors.len())
+        .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?;
+    let owner_index = node_index(owner, node_count)?;
+    if graph.flags.get(owner_index).copied().ok_or_else(|| {
+        RefinementError::Geometry(format!("flags for repair row {owner} are unavailable"))
+    })? & HUB_FLAG
+        == 0
+    {
+        return Ok(());
+    }
+    let target_degree = usize::from(r_max).min(graph.neighbors.len().saturating_sub(1));
+    let neighbors = graph.neighbors.get_mut(owner_index).ok_or_else(|| {
+        RefinementError::Geometry(format!("neighbors for repair hub {owner} are unavailable"))
+    })?;
+    for candidate in 0..node_count {
+        if neighbors.len() >= target_degree {
+            break;
+        }
+        if candidate != owner && !neighbors.contains(&candidate) {
+            neighbors.push(candidate);
+        }
+    }
+    if neighbors.len() != target_degree {
+        return Err(RefinementError::Geometry(format!(
+            "repair hub {owner} densified to {}, expected {target_degree}",
+            neighbors.len()
+        )));
     }
     Ok(())
 }
@@ -1327,6 +1619,7 @@ fn refinement_scratch_bytes(
         RefinementPass::NeighborReorder => r_max
             .checked_mul(std::mem::size_of::<(u32, f64)>())
             .ok_or_else(|| RefinementError::Geometry("reorder scratch overflow".to_owned())),
+        RefinementPass::ConnectivityRepair => Ok(0),
     }
 }
 
@@ -1419,12 +1712,27 @@ pub fn validate_refinement_checkpoint(bytes: &[u8]) -> Result<(), RefinementErro
             "stored shape, alpha, progress, or pass record is invalid",
         ));
     }
-    if phase == RefinementPhase::SeedMedoid || phase == RefinementPhase::SeedSpread {
-        if pass != RefinementPass::SeedRefit {
-            return Err(checkpoint_corrupt("non-seed pass has a seed phase"));
+    let phase_matches_pass = match pass {
+        RefinementPass::SeedRefit => matches!(
+            phase,
+            RefinementPhase::SeedMedoid | RefinementPhase::SeedSpread | RefinementPhase::Complete
+        ),
+        RefinementPass::ConnectivityRepair => matches!(
+            phase,
+            RefinementPhase::ConnectivityTraverse
+                | RefinementPhase::ConnectivityDensify
+                | RefinementPhase::Complete
+        ),
+        RefinementPass::Renumber
+        | RefinementPass::AlphaReprune
+        | RefinementPass::NeighborReorder => {
+            matches!(phase, RefinementPhase::Rows | RefinementPhase::Complete)
         }
-    } else if pass == RefinementPass::SeedRefit && phase == RefinementPhase::Rows {
-        return Err(checkpoint_corrupt("seed pass has a row phase"));
+    };
+    if !phase_matches_pass {
+        return Err(checkpoint_corrupt(
+            "refinement phase does not match its pass",
+        ));
     }
     let node_count_usize = node_count as usize;
     let expected_graph = node_count_usize
@@ -1577,6 +1885,16 @@ fn validate_refinement_aux(
         if permutation > node_count || queue_first + queue_second > node_count || entries != 0 {
             return Err(checkpoint_corrupt("renumber auxiliary state is invalid"));
         }
+    } else if pass == RefinementPass::ConnectivityRepair {
+        if permutation != 0
+            || queue_first + queue_second > node_count
+            || seen_len != node_count
+            || entries != 0
+        {
+            return Err(checkpoint_corrupt(
+                "connectivity-repair auxiliary state is invalid",
+            ));
+        }
     } else if permutation != 0 || queue_first != 0 || queue_second != 0 || seen_len != 0 {
         return Err(checkpoint_corrupt(
             "non-renumber pass carries renumber state",
@@ -1663,6 +1981,8 @@ fn refinement_phase_code(phase: RefinementPhase) -> u8 {
         RefinementPhase::SeedMedoid => 2,
         RefinementPhase::SeedSpread => 3,
         RefinementPhase::Complete => 4,
+        RefinementPhase::ConnectivityTraverse => 5,
+        RefinementPhase::ConnectivityDensify => 6,
     }
 }
 
@@ -1672,6 +1992,8 @@ fn decode_refinement_phase(value: u8) -> Result<RefinementPhase, RefinementError
         2 => Ok(RefinementPhase::SeedMedoid),
         3 => Ok(RefinementPhase::SeedSpread),
         4 => Ok(RefinementPhase::Complete),
+        5 => Ok(RefinementPhase::ConnectivityTraverse),
+        6 => Ok(RefinementPhase::ConnectivityDensify),
         _ => Err(checkpoint_corrupt(format!(
             "unknown refinement phase {value}"
         ))),
@@ -1684,6 +2006,7 @@ fn decode_refinement_pass(value: u8) -> Result<RefinementPass, RefinementError> 
         1 => Ok(RefinementPass::AlphaReprune),
         2 => Ok(RefinementPass::SeedRefit),
         3 => Ok(RefinementPass::NeighborReorder),
+        4 => Ok(RefinementPass::ConnectivityRepair),
         _ => Err(checkpoint_corrupt(format!(
             "unknown refinement pass {value}"
         ))),
@@ -1778,15 +2101,23 @@ pub fn refine_graph(
             neighbor_reorder(&mut graph, reader, node_count, seed)?;
             (None, None)
         }
+        RefinementPass::ConnectivityRepair => {
+            connectivity_repair(&mut graph, params)?;
+            (None, None)
+        }
     };
     graph.passes = graph.passes.with(pass);
     let encoded_region = encode_owned_graph(reader, &graph, new_to_old.as_deref())?;
-    let work_rows_completed = if pass == RefinementPass::SeedRefit {
-        u64::from(node_count)
+    let work_rows_completed = match pass {
+        RefinementPass::SeedRefit => u64::from(node_count)
             .checked_mul(u64::from(node_count.min(ENTRY_POINT_COUNT as u32)))
-            .ok_or_else(|| RefinementError::Geometry("seed work rows overflow".to_owned()))?
-    } else {
-        u64::from(node_count)
+            .ok_or_else(|| RefinementError::Geometry("seed work rows overflow".to_owned()))?,
+        RefinementPass::ConnectivityRepair => u64::from(node_count)
+            .checked_mul(2)
+            .ok_or_else(|| RefinementError::Geometry("repair work rows overflow".to_owned()))?,
+        RefinementPass::Renumber
+        | RefinementPass::AlphaReprune
+        | RefinementPass::NeighborReorder => u64::from(node_count),
     };
     Ok(RefinementArtifact {
         pass,
@@ -2080,6 +2411,49 @@ fn neighbor_reorder(
             RefinementError::Geometry(format!("neighbors for node {owner} are unavailable"))
         })?;
         reorder_neighbors_bit4(reader, owner, neighbors, seed)?;
+    }
+    Ok(())
+}
+
+fn connectivity_repair(graph: &mut OwnedGraph, params: GraphParams) -> Result<(), RefinementError> {
+    if graph.layout.max_degree() != params.r_max() {
+        return Err(RefinementError::Geometry(format!(
+            "graph max degree {}, profile max degree {}",
+            graph.layout.max_degree(),
+            params.r_max()
+        )));
+    }
+    let node_count = u32::try_from(graph.neighbors.len())
+        .map_err(|_| RefinementError::Geometry("graph rows exceed u32".to_owned()))?;
+    let root = first_entry(graph)?;
+    let mut seen = vec![0_u8; graph.neighbors.len()];
+    let mut queue = VecDeque::with_capacity(graph.neighbors.len());
+    mark_and_enqueue_byte(root, &mut seen, &mut queue)?;
+    loop {
+        while let Some(owner) = queue.pop_front() {
+            let neighbors = graph
+                .neighbors
+                .get(node_index(owner, node_count)?)
+                .ok_or_else(|| {
+                    RefinementError::Geometry(format!(
+                        "neighbors for repair node {owner} are unavailable"
+                    ))
+                })?
+                .clone();
+            for neighbor in neighbors {
+                mark_and_enqueue_byte(neighbor, &mut seen, &mut queue)?;
+            }
+        }
+        let Some(unseen) = seen.iter().position(|marker| *marker == 0) else {
+            break;
+        };
+        let target = u32::try_from(unseen)
+            .map_err(|_| RefinementError::Geometry("unreachable row exceeds u32".to_owned()))?;
+        stitch_component(graph, &seen, target, params.r_max())?;
+        mark_and_enqueue_byte(target, &mut seen, &mut queue)?;
+    }
+    for owner in 0..node_count {
+        densify_hub(graph, owner, params.r_max())?;
     }
     Ok(())
 }

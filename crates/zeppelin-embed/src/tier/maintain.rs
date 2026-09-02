@@ -144,6 +144,8 @@ pub struct RefinementPassCounters {
     pub seed_refit: u64,
     /// Published owner-distance neighbor reorders.
     pub neighbor_reorder: u64,
+    /// Published angular connectivity repairs.
+    pub connectivity_repair: u64,
 }
 
 impl RefinementPassCounters {
@@ -153,6 +155,7 @@ impl RefinementPassCounters {
             RefinementPass::AlphaReprune => &mut self.alpha_reprune,
             RefinementPass::SeedRefit => &mut self.seed_refit,
             RefinementPass::NeighborReorder => &mut self.neighbor_reorder,
+            RefinementPass::ConnectivityRepair => &mut self.connectivity_repair,
         };
         *counter = counter
             .checked_add(1)
@@ -429,13 +432,27 @@ fn maintain_refinements(
 ) -> Result<(), MaintenanceError> {
     loop {
         let lease = store.snapshot().map_err(MaintenanceError::Store)?;
+        let selected_profile = lease.graph_profile();
         let mut due = None;
         for segment in lease.segments().iter().filter(|segment| has_graph(segment)) {
             let graph = segment
                 .graph_node_blocks()
                 .map_err(StoreError::Segment)
                 .map_err(MaintenanceError::Store)?;
-            if let RefinementPlan::Apply(pass) = decide_refinement(graph.refinement_passes()) {
+            let pass = match decide_refinement(graph.refinement_passes()) {
+                RefinementPlan::Apply(pass) => Some(pass),
+                RefinementPlan::Stay
+                    if selected_profile
+                        == Ok(crate::graph::search::EpochGraphProfile::AngularClass)
+                        && !graph
+                            .refinement_passes()
+                            .contains(RefinementPass::ConnectivityRepair) =>
+                {
+                    Some(RefinementPass::ConnectivityRepair)
+                }
+                RefinementPlan::Stay => None,
+            };
+            if let Some(pass) = pass {
                 due = Some((segment, pass));
                 break;
             }
@@ -443,8 +460,7 @@ fn maintain_refinements(
         let Some((segment, pass)) = due else {
             return Ok(());
         };
-        let profile = lease
-            .graph_profile()
+        let profile = selected_profile
             .map_err(GraphBuildError::Profile)
             .map_err(MaintenanceError::Graph)?;
         let params = profile
@@ -592,6 +608,18 @@ fn refinement_work(
                 .map_err(StoreError::Segment)
                 .map_err(MaintenanceError::Store)?;
             Ok((u64::from(graph.layout().stride()), node_count))
+        }
+        RefinementPass::ConnectivityRepair => {
+            let graph = segment
+                .graph_node_blocks()
+                .map_err(StoreError::Segment)
+                .map_err(MaintenanceError::Store)?;
+            Ok((
+                u64::from(graph.layout().stride()),
+                node_count
+                    .checked_mul(2)
+                    .ok_or(MaintenanceError::ArithmeticOverflow)?,
+            ))
         }
     }
 }

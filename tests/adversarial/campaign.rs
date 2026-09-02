@@ -1633,6 +1633,13 @@ feature_fault_catalog![
         FeatureOperation::Tiering(TieringOperation::Publication)
     ),
     (
+        TierRefinementConnectivityRepairCrash,
+        TieringMaintenance,
+        "refinement-connectivity-repair-crash",
+        "connectivity repair phase crash",
+        FeatureOperation::Tiering(TieringOperation::Publication)
+    ),
+    (
         TierStaleSource,
         TieringMaintenance,
         "stale-source",
@@ -2206,7 +2213,7 @@ const HYBRID_FAULTS: [FeatureFault; 7] = feature_faults![
     HybridNonfiniteScore,
     HybridCancelClose,
 ];
-const TIER_FAULTS: [FeatureFault; 11] = feature_faults![
+const TIER_FAULTS: [FeatureFault; 12] = feature_faults![
     TierBudgetExhaustion,
     TierCheckpointCorruption,
     TierRefinementCheckpointCorruption,
@@ -2214,6 +2221,7 @@ const TIER_FAULTS: [FeatureFault; 11] = feature_faults![
     TierRefinementAlphaRepruneCrash,
     TierRefinementSeedRefitCrash,
     TierRefinementNeighborReorderCrash,
+    TierRefinementConnectivityRepairCrash,
     TierStaleSource,
     TierEnospc,
     TierPublicationCrash,
@@ -2548,7 +2556,7 @@ const FILTER_COVERAGE: [&str; 33] = [
 ];
 const FTS_COVERAGE: [&str; 2] = ["store.lexical_search", "op.fts_extras_probe"];
 const HYBRID_COVERAGE: [&str; 2] = ["store.hybrid_search", "op.hybrid_search"];
-const TIER_COVERAGE: [&str; 7] = [
+const TIER_COVERAGE: [&str; 8] = [
     "op.maintain",
     "search.auto",
     "tier.refine.checkpoint.decode",
@@ -2556,6 +2564,7 @@ const TIER_COVERAGE: [&str; 7] = [
     "tier.refine.alpha-reprune.phase",
     "tier.refine.seed-refit.phase",
     "tier.refine.neighbor-reorder.phase",
+    "tier.refine.connectivity-repair.phase",
 ];
 const LIFECYCLE_COVERAGE: [&str; 3] = ["op.deadline_probe", "op.close", "op.stats"];
 const DIAGNOSTIC_COVERAGE: [&str; 2] = ["op.stats", "op.search"];

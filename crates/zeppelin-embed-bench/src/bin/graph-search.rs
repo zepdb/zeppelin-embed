@@ -20,8 +20,8 @@ use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_bench::graph_recall::{
-    CrossGraphArtifact, CrossGraphDataset, Sift1mPaths, open_cross_dataset_graph,
-    read_cross_dataset_queries, read_cross_dataset_truth,
+    CrossGraphArtifact, CrossGraphDataset, Sift1mPaths, open_angular_dataset_graph,
+    open_cross_dataset_graph, read_cross_dataset_queries, read_cross_dataset_truth,
 };
 use zeppelin_embed_bench::platform::memory_graph::{calibrate_core, verify_bench_profile};
 use zeppelin_embed_bench::platform::taint::{
@@ -42,6 +42,28 @@ enum BuildPasses {
     Two,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildProfile {
+    SiftClass,
+    Angular,
+}
+
+impl BuildProfile {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::SiftClass => "sift",
+            Self::Angular => "angular",
+        }
+    }
+
+    const fn params(self) -> GraphParams {
+        match self {
+            Self::SiftClass => GraphParams::sift_1m(),
+            Self::Angular => GraphParams::angular(),
+        }
+    }
+}
+
 struct Config {
     dataset_name: String,
     build_passes: BuildPasses,
@@ -52,6 +74,7 @@ struct Config {
     cache_directory: Option<PathBuf>,
     data_directory: PathBuf,
     refinement_pass: Option<RefinementPass>,
+    profile: BuildProfile,
 }
 
 fn graph_search_request<'a>(
@@ -101,11 +124,12 @@ impl CachedGraph {
         &mut self,
         directory: &Path,
         pass: Option<RefinementPass>,
+        params: GraphParams,
     ) -> Result<(), Box<dyn Error>> {
         let Some(pass) = pass else {
             return Ok(());
         };
-        let refined = refine_cached_graph(self.reader(), directory, pass)?;
+        let refined = refine_cached_graph(self.reader(), directory, pass, params)?;
         match self {
             Self::Sift { refined: slot, .. } | Self::Cross { refined: slot, .. } => {
                 *slot = Some(refined);
@@ -137,61 +161,87 @@ fn run() -> Result<(), Box<dyn Error>> {
     let refinement_label = config
         .refinement_pass
         .map_or("baseline", RefinementPass::label);
-    let default_cache = match (config.dataset_name.as_str(), config.build_passes) {
-        ("sift-128-euclidean", BuildPasses::One) => {
+    let default_cache = match (
+        config.dataset_name.as_str(),
+        config.build_passes,
+        config.profile,
+    ) {
+        (_, _, BuildProfile::Angular) => PathBuf::from(format!(
+            "/private/tmp/zeppelin-embed-m10-{}-angular",
+            config.dataset_name
+        )),
+        ("sift-128-euclidean", BuildPasses::One, BuildProfile::SiftClass) => {
             PathBuf::from("/private/tmp/zeppelin-embed-m5-sift1m-one")
         }
-        ("sift-128-euclidean", BuildPasses::Two) => {
+        ("sift-128-euclidean", BuildPasses::Two, BuildProfile::SiftClass) => {
             PathBuf::from("/private/tmp/zeppelin-embed-m3-sift1m")
         }
-        (_, BuildPasses::One) => PathBuf::from(format!(
+        (_, BuildPasses::One, BuildProfile::SiftClass) => PathBuf::from(format!(
             "/private/tmp/zeppelin-embed-m5-{}-one",
             config.dataset_name
         )),
-        (_, BuildPasses::Two) => PathBuf::from(format!(
+        (_, BuildPasses::Two, BuildProfile::SiftClass) => PathBuf::from(format!(
             "/private/tmp/zeppelin-embed-m4b-{}",
             config.dataset_name
         )),
     };
     let cache_directory = config.cache_directory.as_deref().unwrap_or(&default_cache);
-    let (mut cached, queries, truth, dimensions, rows, metric_label) =
-        if config.dataset_name == "sift-128-euclidean" {
-            let paths = Sift1mPaths::in_directory(&config.data_directory);
-            (
-                CachedGraph::Sift {
-                    source: open_cached_sift_graph(cache_directory, config.build_passes)?,
-                    refined: None,
-                },
-                read_f32_raw(&paths.queries)?,
-                read_i32_raw(&paths.ground_truth)?,
-                SIFT_DIMS,
-                SIFT_ROWS,
-                "l2",
-            )
-        } else {
-            let dataset = CrossGraphDataset::named(&config.dataset_name, &config.data_directory)?;
-            let queries = read_cross_dataset_queries(&dataset)?;
-            let truth = read_cross_dataset_truth(&dataset)?;
-            let dimensions = dataset.dimensions();
-            let rows = dataset.rows();
-            let metric_label = dataset.metric().label();
-            let passes = match config.build_passes {
-                BuildPasses::One => GraphBuildPasses::One,
-                BuildPasses::Two => GraphBuildPasses::Two,
-            };
-            (
-                CachedGraph::Cross {
-                    source: open_cross_dataset_graph(&dataset, cache_directory, passes, SEED)?,
-                    refined: None,
-                },
-                queries,
-                truth,
-                dimensions,
-                rows,
-                metric_label,
-            )
+    let (mut cached, queries, truth, dimensions, rows, metric_label) = if config.dataset_name
+        == "sift-128-euclidean"
+    {
+        if config.profile == BuildProfile::Angular {
+            return Err(
+                io::Error::other("the angular build profile requires an angular dataset").into(),
+            );
+        }
+        let paths = Sift1mPaths::in_directory(&config.data_directory);
+        (
+            CachedGraph::Sift {
+                source: open_cached_sift_graph(cache_directory, config.build_passes)?,
+                refined: None,
+            },
+            read_f32_raw(&paths.queries)?,
+            read_i32_raw(&paths.ground_truth)?,
+            SIFT_DIMS,
+            SIFT_ROWS,
+            "l2",
+        )
+    } else {
+        let dataset = CrossGraphDataset::named(&config.dataset_name, &config.data_directory)?;
+        let queries = read_cross_dataset_queries(&dataset)?;
+        let truth = read_cross_dataset_truth(&dataset)?;
+        let dimensions = dataset.dimensions();
+        let rows = dataset.rows();
+        let metric_label = dataset.metric().label();
+        let passes = match config.build_passes {
+            BuildPasses::One => GraphBuildPasses::One,
+            BuildPasses::Two => GraphBuildPasses::Two,
         };
-    cached.apply_refinement(cache_directory, config.refinement_pass)?;
+        let source = match config.profile {
+            BuildProfile::SiftClass => {
+                open_cross_dataset_graph(&dataset, cache_directory, passes, SEED)?
+            }
+            BuildProfile::Angular => {
+                open_angular_dataset_graph(&dataset, cache_directory, passes, SEED)?
+            }
+        };
+        (
+            CachedGraph::Cross {
+                source,
+                refined: None,
+            },
+            queries,
+            truth,
+            dimensions,
+            rows,
+            metric_label,
+        )
+    };
+    cached.apply_refinement(
+        cache_directory,
+        config.refinement_pass,
+        config.profile.params(),
+    )?;
     let reader = cached.reader();
     let zero_norm_rows = cached.zero_norm_rows();
     let zero_query_count = queries
@@ -218,8 +268,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "adaptive"
     };
     println!(
-        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} build_profile=bench opt_level={} build_passes={build_passes_label} refinement_pass={refinement_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
+        "GRAPH_SEARCH_CONTEXT dataset={} rows={rows} dims={dimensions} metric={metric_label} graph_profile={} build_profile=bench opt_level={} build_passes={build_passes_label} refinement_pass={refinement_label} prefetch={prefetch_label} ef={effective_ef} ef_source={ef_source} k={TOP_K} queries={} warmup_queries={WARMUP_QUERIES} run={} single_core=true zero_norm_rows={} zero_norm_queries={zero_query_count} padded_dims={} node_stride_bytes={} node_stride_cache_lines={} scored_candidate_bytes={} scored_candidate_cache_lines={} load_limit={LOAD_LIMIT:.2}",
         config.dataset_name,
+        config.profile.label(),
         env!("ZEPPELIN_BENCH_OPT_LEVEL"),
         config.queries,
         config.run,
@@ -399,6 +450,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
         cache_directory: None,
         data_directory: workspace.join("tasks/cross-benchmark/data"),
         refinement_pass: None,
+        profile: BuildProfile::SiftClass,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -436,6 +488,18 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
             "--run" => config.run = value.parse()?,
             "--cache-dir" => config.cache_directory = Some(PathBuf::from(value)),
             "--data-dir" => config.data_directory = PathBuf::from(value),
+            "--profile" => {
+                config.profile = match value.as_str() {
+                    "sift" => BuildProfile::SiftClass,
+                    "angular" => BuildProfile::Angular,
+                    _ => {
+                        return Err(io::Error::other(format!(
+                            "--profile must be sift or angular, got {value}"
+                        ))
+                        .into());
+                    }
+                }
+            }
             "--pass" => {
                 config.refinement_pass = match value.as_str() {
                     "baseline" => None,
@@ -454,6 +518,7 @@ fn refine_cached_graph(
     source: &SegmentReader,
     directory: &Path,
     pass: RefinementPass,
+    params: GraphParams,
 ) -> Result<SegmentReader, Box<dyn Error>> {
     let output_id = refinement_segment_id(pass);
     let output_path = directory.join(output_id.file_name());
@@ -473,7 +538,7 @@ fn refine_cached_graph(
         }
         return Ok(reader);
     }
-    let artifact = refine_graph(source, pass, GraphParams::sift_1m(), SEED)?;
+    let artifact = refine_graph(source, pass, params, SEED)?;
     let analyzer = Analyzer::new(TokenizerConfig::text_default())?;
     let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)?;
     artifact.write_segment(&StdVfs, directory, source, output_id, &analyzer, policy)?;

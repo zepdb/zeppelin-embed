@@ -3230,8 +3230,8 @@ fn campaign_registry_is_complete_unique_and_smoke_bounded() {
             spec.kind.key()
         );
         assert!(
-            spec.feature_faults.len() < 12,
-            "{} has no clean slot in its 12-seed smoke cycle",
+            spec.feature_faults.len() < 13,
+            "{} exceeds the 13-seed feature-fault rotation",
             spec.kind.key()
         );
         for fault in spec.feature_faults {
@@ -4022,7 +4022,8 @@ fn feature_fault_plan_has_a_clean_slot_and_full_has_two_distinct_faults() {
         );
         let mut selected = std::collections::BTreeSet::new();
         let mut clean = 0;
-        for seed in 0..12 {
+        let seed_count = 12_usize.max(spec.feature_faults.len() + 1);
+        for seed in 0..seed_count as u64 {
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(
                 campaign,
@@ -4556,8 +4557,10 @@ fn storage_observation_stream_retains_child_and_cleanup_intermediate_facts() {
 #[test]
 fn every_feature_fault_can_fire_once_at_its_declared_operation() {
     for campaign in CampaignKind::FEATURES {
+        let spec = CampaignSpec::for_kind(campaign);
         let mut fired = BTreeSet::new();
-        for seed in 0..12 {
+        let seed_count = 12_usize.max(spec.feature_faults.len() + 1);
+        for seed in 0..seed_count as u64 {
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(
                 campaign,
@@ -4587,8 +4590,7 @@ fn every_feature_fault_can_fire_once_at_its_declared_operation() {
         }
         assert_eq!(
             fired,
-            CampaignSpec::for_kind(campaign)
-                .feature_faults
+            spec.feature_faults
                 .iter()
                 .map(|fault| fault.key())
                 .collect(),

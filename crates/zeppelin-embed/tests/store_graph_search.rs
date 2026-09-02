@@ -10,11 +10,15 @@ use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::graph::GraphParams;
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
 use zeppelin_embed::graph::build::{
-    CheckpointedGraphBuild, GraphBuildPasses, build_graph_checkpointed,
+    CheckpointedGraphBuild, GraphBuildError, GraphBuildPasses, build_graph_checkpointed,
 };
-use zeppelin_embed::graph::search::{GraphSearchProfile, GraphSearchScratch};
+use zeppelin_embed::graph::search::{
+    EpochGraphProfile, GraphDistanceMetric, GraphProfileError, GraphSearchProfile,
+    GraphSearchScratch, select_epoch_graph_profile,
+};
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource, SearchRequest,
+    DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision, RowSource,
+    SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
@@ -28,6 +32,7 @@ use zeppelin_embed::meta::{
     TIMESTAMP_COLUMN,
 };
 use zeppelin_embed::planner::{PlanFallback, SegmentBranch, SegmentTier};
+use zeppelin_embed::quant::QuantError;
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::reader::SegmentReader;
@@ -79,6 +84,14 @@ fn fixture_vectors(rows: usize) -> Vec<f32> {
     vectors
 }
 
+fn unit_fixture_vectors(rows: usize) -> Vec<f32> {
+    let mut vectors = vec![0.0_f32; rows * DIMS];
+    for row in 0..rows {
+        vectors[row * DIMS + row] = 1.0;
+    }
+    vectors
+}
+
 fn quantize_rows(vectors: &[f32], rows: usize) -> (Vec<u8>, Vec<Bit4Factors>) {
     let row_bytes = DIMS.div_ceil(2);
     let mut codes = vec![0_u8; rows * row_bytes];
@@ -100,7 +113,13 @@ fn publish_graph_fixture_with_epoch(alive: AliveSet, epoch: Option<&StoreEpoch>)
     let directory = tempdir().expect("graph store directory");
     let input_id = SegmentId::new(0x0001_9000_0000, [0x30; 10]);
     let id = SegmentId::new(0x0001_9000_0001, [0x31; 10]);
-    let vectors = fixture_vectors(ROWS);
+    let vectors = if epoch
+        .is_some_and(|declared| declared.embedding.document.normalization == Normalization::L2)
+    {
+        unit_fixture_vectors(ROWS)
+    } else {
+        fixture_vectors(ROWS)
+    };
     let (codes, factors) = quantize_rows(&vectors, ROWS);
     let columns = columns(ROWS);
     alive.debug_assert_consistent();
@@ -193,33 +212,159 @@ fn auto_profile_follows_epoch_normalization() {
     )
     .expect("open normalized graph store");
 
-    let error = store
+    let outcome = store
         .search(
-            SearchRequest::new(&query(0.0)),
+            SearchRequest::new(&unit_fixture_vectors(1)),
             1,
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .expect_err("normalized epoch has no owner-approved graph profile");
+        .expect("normalized epoch selects the angular graph profile");
+
+    assert_eq!(
+        outcome.diagnostics.plan[0].graph_profile,
+        Some(GraphSearchProfile::Angular)
+    );
+    store.close().expect("close normalized graph store");
+}
+
+#[test]
+fn epoch_profile_selection_admits_matching_towers_and_refuses_mixed_towers() {
+    let sift = graph_epoch(Normalization::None);
+    let angular = graph_epoch(Normalization::L2);
+    let sift_meta = (&sift).into();
+    let angular_meta = (&angular).into();
+
+    assert_eq!(
+        select_epoch_graph_profile(&sift_meta, GraphDistanceMetric::SquaredL2),
+        Ok(EpochGraphProfile::SiftClass)
+    );
+    let angular_profile = select_epoch_graph_profile(&angular_meta, GraphDistanceMetric::SquaredL2)
+        .expect("matching L2 towers select angular");
+    assert_eq!(
+        angular_profile.search_profile(),
+        GraphSearchProfile::Angular
+    );
+    assert_eq!(angular_profile.build_params().r_target(), 48);
+    assert_eq!(angular_profile.build_params().r_max(), 64);
+
+    for (document, query) in [
+        (Normalization::L2, Normalization::None),
+        (Normalization::None, Normalization::L2),
+    ] {
+        let mut mixed = graph_epoch(document);
+        mixed.embedding.query.normalization = query;
+        let mixed_meta = (&mixed).into();
+        assert!(matches!(
+            select_epoch_graph_profile(&mixed_meta, GraphDistanceMetric::SquaredL2),
+            Err(GraphProfileError::UnrecognizedEpochShape { .. })
+        ));
+    }
+}
+
+#[test]
+fn angular_ingest_refuses_a_non_unit_document_before_mutation() {
+    let epoch = graph_epoch(Normalization::L2);
+    let directory = tempdir().expect("angular ingest directory");
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+    )
+    .expect("open angular ingest store");
+    let before = store.snapshot().expect("pre-ingest snapshot").generation();
+    let mut vector = vec![0.0_f32; DIMS];
+    vector[0] = 2.0;
+
+    let error = store
+        .ingest(
+            IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vector,
+            )])
+            .with_epoch(epoch.identity()),
+        )
+        .expect_err("finite non-unit angular document must be refused");
 
     assert!(matches!(
         error,
-        QueryError::Graph(
-            zeppelin_embed::graph::search::GraphSearchError::Profile(
-            zeppelin_embed::graph::search::GraphProfileError::UnrecognizedEpochShape {
-                epoch: reported,
-                shape: zeppelin_embed::graph::search::GraphProfileShape {
-                    document_dims: 128,
-                    document_normalization: Normalization::L2,
-                    query_dims: 128,
-                    query_normalization: Normalization::L2,
-                    metric: zeppelin_embed::graph::search::GraphDistanceMetric::SquaredL2,
-                },
-            }
-            )
-        ) if reported == epoch.identity()
+        IngestError::Vector(QuantError::NonUnitNorm {
+            squared_norm_bits,
+            ..
+        }) if f64::from_bits(squared_norm_bits) == 4.0
     ));
-    store.close().expect("close normalized graph store");
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("post-refusal snapshot")
+            .generation(),
+        before
+    );
+    store.close().expect("close angular ingest store");
+}
+
+#[test]
+fn angular_graph_build_refuses_a_non_unit_persisted_row() {
+    let epoch = graph_epoch(Normalization::L2);
+    let directory = tempdir().expect("angular graph-build directory");
+    let input_id = SegmentId::new(0x0001_9000_0010, [0x40; 10]);
+    let vectors = fixture_vectors(ROWS);
+    let (codes, factors) = quantize_rows(&vectors, ROWS);
+    let columns = columns(ROWS);
+    let mut input_meta = write_segment(
+        &StdVfs,
+        directory.path(),
+        SegmentBuild {
+            id: input_id,
+            scheme: 4,
+            dims: DIMS as u32,
+            codes: &codes,
+            factors: SegmentFactors::Bit4(&factors),
+            rescore: &vectors,
+            columns: &columns,
+            alive: &AliveSet::new(ROWS as u32),
+        },
+        policy(),
+    )
+    .expect("write non-unit angular input");
+    input_meta.epoch_id = Some(epoch.identity().embedding);
+    commit_with_epoch(&directory, &columns, input_meta, 1, Some(&epoch));
+    let store = Store::open(directory.path(), OpenOptions::default().with_epoch(epoch))
+        .expect("open non-unit angular input");
+    let lease = store.snapshot().expect("angular build snapshot");
+    let input = lease.segments().first().expect("angular build input");
+    let checkpoint = directory.path().join("angular.graph.checkpoint");
+    let control = QueryControl::Cancel(CancelToken::new());
+
+    let result = build_graph_checkpointed(
+        &store,
+        input,
+        CheckpointedGraphBuild::new(
+            GraphParams::angular()
+                .with_checkpoint_batch_rows(ROWS as u32)
+                .expect("angular fixture batch"),
+            0x0019_000a,
+            GraphBuildPasses::One,
+            &checkpoint,
+            &control,
+        ),
+        &lease,
+    );
+    let error = match result {
+        Ok(_) => panic!("non-unit persisted angular row must be refused"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        GraphBuildError::UnitNorm {
+            row_id: 0,
+            squared_norm: 0.0,
+            ..
+        }
+    ));
+    assert!(!checkpoint.exists());
+    drop(lease);
+    store.close().expect("close angular build store");
 }
 
 #[test]

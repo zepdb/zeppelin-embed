@@ -24,9 +24,22 @@ const SIFT_RESEARCH_ABSOLUTE_FLOOR: usize = 140;
 const SIFT_SHIPPED_EF_PER_K: usize = 2;
 /// Owner-specified angular floor from research section 3.1. The full M4b
 /// measurement in `tasks/evidence/19-M4b-cross-dataset-graphs.md` shows that
-/// `2 * k` is insufficient on glove; `4 * k` remains a provisional floor for
-/// M10 rather than a measured sufficient operating point.
+/// `2 * k` is insufficient on glove. M10 ships the `4 * k` mechanism while
+/// the real glove/nytimes acceptance sweep remains deliberately deferred.
 const ANGULAR_EF_PER_K: usize = 4;
+/// Absolute tolerance on squared L2 norm for caller-declared unit vectors.
+pub const UNIT_NORM_SQUARED_TOLERANCE: f64 = 1.0e-3;
+
+pub(crate) fn non_unit_squared_norm(vector: &[f32]) -> Option<f64> {
+    if vector.is_empty() || vector.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let squared_norm = vector
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>();
+    ((squared_norm - 1.0).abs() > UNIT_NORM_SQUARED_TOLERANCE).then_some(squared_norm)
+}
 
 /// Dataset-shape profile used when the caller leaves `ef` adaptive.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -34,7 +47,7 @@ pub enum GraphSearchProfile {
     /// SIFT-class Euclidean data, shipping at the first measured passing curve arm.
     #[default]
     SiftClass,
-    /// Angular data, using the section-3.1 provisional `4 * k` floor.
+    /// Angular data, using M10's section-3.1 `4 * k` floor.
     Angular,
 }
 
@@ -73,6 +86,8 @@ pub struct GraphProfileShape {
 pub enum EpochGraphProfile {
     /// The measured 128-dimensional, unnormalized, squared-L2 SIFT class.
     SiftClass,
+    /// L2-normalized document and query towers scored by squared L2.
+    AngularClass,
 }
 
 impl EpochGraphProfile {
@@ -81,6 +96,7 @@ impl EpochGraphProfile {
     pub const fn search_profile(self) -> GraphSearchProfile {
         match self {
             Self::SiftClass => GraphSearchProfile::SiftClass,
+            Self::AngularClass => GraphSearchProfile::Angular,
         }
     }
 
@@ -89,6 +105,7 @@ impl EpochGraphProfile {
     pub const fn build_params(self) -> crate::graph::GraphParams {
         match self {
             Self::SiftClass => crate::graph::GraphParams::sift_1m(),
+            Self::AngularClass => crate::graph::GraphParams::angular(),
         }
     }
 }
@@ -140,10 +157,7 @@ impl std::fmt::Display for GraphProfileError {
 
 impl std::error::Error for GraphProfileError {}
 
-/// Selects the single measured graph profile for one persisted epoch.
-///
-/// Normalized/angular data is intentionally not admitted here: whether it is
-/// a supported v1 metric surface remains an owner decision.
+/// Selects the supported graph profile for one persisted epoch.
 pub fn select_epoch_graph_profile(
     epoch: &crate::manifest::EpochMeta,
     metric: GraphDistanceMetric,
@@ -161,12 +175,6 @@ pub fn select_epoch_graph_profile(
     };
     // The refusal axis is NORMALIZATION and METRIC, not dimension count.
     //
-    // `SiftClass` is the one measured profile, and what it is measured on is
-    // unnormalized data scored by squared Euclidean distance. Handing that
-    // profile to L2-normalized (angular) data is the silent mis-profiling R06
-    // exists to stop, and whether angular is a supported v1 metric surface is
-    // an open owner decision, so a normalized epoch is refused here.
-    //
     // Dimension is deliberately NOT a refusal axis. The profile's parameters
     // are graph degree, alpha and ef, which track intrinsic dimensionality and
     // corpus size rather than the raw dimension count, and refusing on an
@@ -177,18 +185,23 @@ pub fn select_epoch_graph_profile(
     //
     // Mismatched document and query towers are refused: a graph built in one
     // space and queried from another is not a profile question.
-    if shape.document_dims == shape.query_dims
-        && shape.document_normalization == crate::epoch::Normalization::None
-        && shape.query_normalization == crate::epoch::Normalization::None
-        && shape.metric == GraphDistanceMetric::SquaredL2
-    {
-        Ok(EpochGraphProfile::SiftClass)
-    } else {
-        Err(GraphProfileError::UnrecognizedEpochShape {
-            epoch: identity,
-            shape,
-        })
+    if shape.document_dims == shape.query_dims && shape.metric == GraphDistanceMetric::SquaredL2 {
+        match (shape.document_normalization, shape.query_normalization) {
+            (crate::epoch::Normalization::None, crate::epoch::Normalization::None) => {
+                return Ok(EpochGraphProfile::SiftClass);
+            }
+            (crate::epoch::Normalization::L2, crate::epoch::Normalization::L2) => {
+                // On the unit sphere, squared-L2 and cosine induce the same
+                // ordering, so M10 needs no new persisted metric or kernel.
+                return Ok(EpochGraphProfile::AngularClass);
+            }
+            _ => {}
+        }
     }
+    Err(GraphProfileError::UnrecognizedEpochShape {
+        epoch: identity,
+        shape,
+    })
 }
 
 /// Typed rejection while resolving an adaptive or explicit `ef`.

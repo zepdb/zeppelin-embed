@@ -221,6 +221,15 @@ pub enum GraphBuildError {
         /// Rows advanced by this invocation and persisted in the checkpoint.
         rows_completed: u64,
     },
+    /// An angular segment carried a finite f32 row outside the unit-norm band.
+    UnitNorm {
+        /// Dense segment-local row that violated the epoch declaration.
+        row_id: u32,
+        /// Squared L2 norm computed from the persisted f32 row.
+        squared_norm: f64,
+        /// Absolute permitted deviation from a squared norm of one.
+        tolerance: f64,
+    },
     /// Caller cancellation stopped a batch without publishing partial results.
     Cancelled {
         /// Permanently false: graph builds never return partial artifacts.
@@ -273,6 +282,14 @@ impl std::fmt::Display for GraphBuildError {
                 formatter,
                 "graph build work budget exhausted after {rows_completed} checkpointed rows"
             ),
+            Self::UnitNorm {
+                row_id,
+                squared_norm,
+                tolerance,
+            } => write!(
+                formatter,
+                "angular graph row {row_id} has squared norm {squared_norm}; expected 1 within {tolerance}"
+            ),
             Self::Cancelled { partial } => {
                 write!(formatter, "graph build was cancelled (partial={partial})")
             }
@@ -313,6 +330,7 @@ impl std::error::Error for GraphBuildError {
             Self::Store(error) => Some(error),
             Self::CheckpointCorrupt(_)
             | Self::BudgetExhausted { .. }
+            | Self::UnitNorm { .. }
             | Self::Cancelled { .. }
             | Self::Timeout { .. }
             | Self::ReadCancelled { .. }
@@ -564,6 +582,9 @@ pub fn build_graph_checkpointed(
 ) -> Result<GraphBuildArtifact, GraphBuildError> {
     let cancellation = QueryCancellation::new(request.control, lease);
     check_cancellation(&cancellation)?;
+    if lease.graph_profile() == Ok(crate::graph::search::EpochGraphProfile::AngularClass) {
+        validate_angular_rows(reader)?;
+    }
     let mut session = GraphBuildSession::new(
         store.vfs.as_ref(),
         reader,
@@ -595,6 +616,22 @@ pub fn build_graph_checkpointed(
             });
         }
     }
+}
+
+fn validate_angular_rows(reader: &SegmentReader) -> Result<(), GraphBuildError> {
+    let dimensions = reader.meta().dims as usize;
+    for (row, vector) in reader.rescore_f32()?.chunks_exact(dimensions).enumerate() {
+        if let Some(squared_norm) = crate::graph::search::non_unit_squared_norm(vector) {
+            return Err(GraphBuildError::UnitNorm {
+                row_id: u32::try_from(row).map_err(|_| {
+                    GraphBuildError::Geometry("angular row id exceeds u32".to_owned())
+                })?,
+                squared_norm,
+                tolerance: crate::graph::search::UNIT_NORM_SQUARED_TOLERANCE,
+            });
+        }
+    }
+    Ok(())
 }
 
 struct SegmentVectors<'a> {

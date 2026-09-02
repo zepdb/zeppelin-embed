@@ -2440,6 +2440,9 @@ fn quant_status(error: QuantError) -> independent::PrimitiveStatus {
         QuantError::NonZeroPadding { byte, mask } => {
             independent::PrimitiveStatus::NonZeroPadding { byte, mask }
         }
+        error @ QuantError::NonUnitNorm { .. } => independent::PrimitiveStatus::SegmentGeometry {
+            detail: error.to_string(),
+        },
     }
 }
 

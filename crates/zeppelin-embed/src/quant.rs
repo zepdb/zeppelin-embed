@@ -33,6 +33,13 @@ pub enum QuantError {
         /// Zero-based coordinate of the first rejected value.
         index: usize,
     },
+    /// A caller-declared L2-normalized vector was outside the unit-norm band.
+    NonUnitNorm {
+        /// Computed squared L2 norm as IEEE binary64 bits.
+        squared_norm_bits: u64,
+        /// Absolute permitted deviation from one as IEEE binary64 bits.
+        tolerance_bits: u64,
+    },
     /// A caller-owned output buffer had the wrong byte length.
     OutputLength {
         /// Required byte count.
@@ -70,6 +77,15 @@ impl std::fmt::Display for QuantError {
                     "quantization input is non-finite at coordinate {index}"
                 )
             }
+            Self::NonUnitNorm {
+                squared_norm_bits,
+                tolerance_bits,
+            } => write!(
+                formatter,
+                "declared L2-normalized vector has squared norm {}; expected 1 within {}",
+                f64::from_bits(*squared_norm_bits),
+                f64::from_bits(*tolerance_bits)
+            ),
             Self::OutputLength { expected, actual } => write!(
                 formatter,
                 "quantization output length mismatch: expected {expected}, got {actual}"
