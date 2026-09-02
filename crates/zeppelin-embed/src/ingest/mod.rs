@@ -833,6 +833,7 @@ impl Store {
         sealed: &[purge::SealedDocumentMatch],
         sealed_seq: LogSeq,
         document: &IngestDocument,
+        remaining: &[IngestDocument],
         progress: &mut RevisionProgress,
     ) -> Result<(), IngestError> {
         let segment = progress.working.as_ref().unwrap_or(current);
@@ -844,20 +845,23 @@ impl Store {
         match action {
             revise::RevisionDecision::Replace => {
                 let row = existing.and_then(|resolved| resolved.active_row);
-                let (next, row) = if let Some(row) = row {
-                    (
-                        segment.replace(row, document, &self.accounting, &self.tokenizer)?,
-                        row,
-                    )
+                if progress.working.is_none() {
+                    progress.working =
+                        Some(current.copy_for_batch(document, remaining, &self.accounting)?);
+                }
+                let working = progress
+                    .working
+                    .as_mut()
+                    .ok_or(StoreError::Synchronization {
+                        component: "batch working segment",
+                    })?;
+                let row = if let Some(row) = row {
+                    working.replace_in_place(row, document, &self.accounting, &self.tokenizer)?;
+                    row
                 } else {
-                    let row = segment.row_count();
-                    (
-                        segment.insert(document, &self.accounting, &self.tokenizer)?,
-                        row,
-                    )
+                    working.insert_in_place(document, &self.accounting, &self.tokenizer)?
                 };
                 let (op, payload) = encode_persisted_upsert(document)?;
-                progress.working = Some(next);
                 progress.records.push((row, op, payload));
                 if sealed
                     .iter()
@@ -870,10 +874,18 @@ impl Store {
                 }
             }
             revise::RevisionDecision::Insert => {
-                let row = segment.row_count();
-                let next = segment.insert(document, &self.accounting, &self.tokenizer)?;
+                if progress.working.is_none() {
+                    progress.working =
+                        Some(current.copy_for_batch(document, remaining, &self.accounting)?);
+                }
+                let working = progress
+                    .working
+                    .as_mut()
+                    .ok_or(StoreError::Synchronization {
+                        component: "batch working segment",
+                    })?;
+                let row = working.insert_in_place(document, &self.accounting, &self.tokenizer)?;
                 let (op, payload) = encode_persisted_upsert(document)?;
-                progress.working = Some(next);
                 progress.records.push((row, op, payload));
             }
             revise::RevisionDecision::Replay { seq } => {
@@ -1115,12 +1127,17 @@ impl Store {
             replay_count: 0,
             sealed_tombstones: Vec::new(),
         };
-        for document in &batch.documents {
+        for (index, document) in batch.documents.iter().enumerate() {
+            let remaining = batch
+                .documents
+                .get(index..)
+                .ok_or(StoreError::ActiveRowOverflow)?;
             self.apply_revision_decision(
                 current.segment.as_ref(),
                 &sealed,
                 sealed_seq,
                 document,
+                remaining,
                 &mut progress,
             )?;
         }
@@ -1369,6 +1386,46 @@ mod vector_order_tests {
             compare_search_candidates(&documented, &legacy),
             std::cmp::Ordering::Less,
             "documented-vs-legacy order fell back to physical row identity"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "allocation-audit"))]
+#[allow(clippy::expect_used)]
+mod batch_working_copy_tests {
+    use tempfile::tempdir;
+
+    use crate::lifecycle::OpenOptions;
+
+    use super::*;
+
+    #[test]
+    fn batch_ingest_clones_the_active_segment_at_most_once() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .expect("seed active segment");
+        let documents = (2_u128..=25)
+            .map(|doc_id| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(doc_id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (result, report) = crate::allocation_audit::audit_engine_path(|| {
+            store.ingest(IngestBatch::new(documents))
+        });
+
+        result.expect("ingest audited batch");
+        assert_eq!(
+            report.full_segment_clones, 1,
+            "one ingest batch made more than one full active-segment clone"
         );
     }
 }

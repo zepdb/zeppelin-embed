@@ -412,6 +412,69 @@ impl<T> Accounted<Vec<T>> {
         Ok(())
     }
 
+    pub(crate) fn extend_from_slice(&mut self, values: &[T]) -> Result<(), StoreError>
+    where
+        T: Clone,
+    {
+        let new_len =
+            self.value
+                .len()
+                .checked_add(values.len())
+                .ok_or(StoreError::AllocationFailed {
+                    needed: u64::MAX,
+                    component: "accounted vector capacity",
+                })?;
+        let accounted_elements = self.element_limit.unwrap_or(usize::MAX);
+        if new_len > accounted_elements || new_len > self.value.capacity() {
+            return Err(StoreError::AllocationFailed {
+                needed: u64::try_from(new_len).unwrap_or(u64::MAX),
+                component: "accounted vector capacity",
+            });
+        }
+        self.value.extend_from_slice(values);
+        Ok(())
+    }
+
+    pub(crate) fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        replacement: &[T],
+    ) -> Result<(), StoreError>
+    where
+        T: Copy + Default,
+    {
+        let old_len = self.value.len();
+        if range.start > range.end || range.end > old_len {
+            return Err(StoreError::ActiveRowOverflow);
+        }
+        let removed = range.end.saturating_sub(range.start);
+        let new_len = old_len
+            .checked_sub(removed)
+            .and_then(|length| length.checked_add(replacement.len()))
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let accounted_elements = self.element_limit.unwrap_or(usize::MAX);
+        if new_len > accounted_elements || new_len > self.value.capacity() {
+            return Err(StoreError::AllocationFailed {
+                needed: u64::try_from(new_len).unwrap_or(u64::MAX),
+                component: "accounted vector capacity",
+            });
+        }
+        if new_len > old_len {
+            self.value.resize(new_len, T::default());
+        }
+        let replacement_end = range
+            .start
+            .checked_add(replacement.len())
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        self.value.copy_within(range.end..old_len, replacement_end);
+        self.value
+            .get_mut(range.start..replacement_end)
+            .ok_or(StoreError::ActiveRowOverflow)?
+            .copy_from_slice(replacement);
+        self.value.truncate(new_len);
+        Ok(())
+    }
+
     pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
         self.value.as_mut_slice()
     }

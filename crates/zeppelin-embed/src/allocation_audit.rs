@@ -9,6 +9,7 @@ thread_local! {
     static ATTRIBUTED_BYTES: Cell<u64> = const { Cell::new(0) };
     static UNATTRIBUTED_BYTES: Cell<u64> = const { Cell::new(0) };
     static ALLOCATION_COUNT: Cell<u64> = const { Cell::new(0) };
+    static FULL_SEGMENT_CLONES: Cell<u64> = const { Cell::new(0) };
 }
 
 struct AuditingAllocator;
@@ -103,6 +104,7 @@ pub(crate) struct AuditReport {
     /// Bytes answer "is this accounted"; the count answers "does this loop
     /// allocate per item", which is the query-path gate in plan P0.4.
     pub(crate) allocations: u64,
+    pub(crate) full_segment_clones: u64,
 }
 
 #[cfg(test)]
@@ -111,20 +113,31 @@ pub(crate) fn audit_engine_path<T>(operation: impl FnOnce() -> T) -> (T, AuditRe
     ATTRIBUTED_BYTES.with(|bytes| bytes.set(0));
     UNATTRIBUTED_BYTES.with(|bytes| bytes.set(0));
     ALLOCATION_COUNT.with(|count| count.set(0));
+    FULL_SEGMENT_CLONES.with(|count| count.set(0));
     let engine = DepthGuard::enter(&ENGINE_DEPTH);
     let result = operation();
     drop(engine);
     let attributed_bytes = ATTRIBUTED_BYTES.with(Cell::get);
     let unattributed_bytes = UNATTRIBUTED_BYTES.with(Cell::get);
     let allocations = ALLOCATION_COUNT.with(Cell::get);
+    let full_segment_clones = FULL_SEGMENT_CLONES.with(Cell::get);
     (
         result,
         AuditReport {
             attributed_bytes,
             unattributed_bytes,
             allocations,
+            full_segment_clones,
         },
     )
+}
+
+pub(crate) fn record_full_segment_clone() {
+    ENGINE_DEPTH.with(|depth| {
+        if depth.get() > 0 {
+            FULL_SEGMENT_CLONES.with(|count| count.set(count.get().saturating_add(1)));
+        }
+    });
 }
 
 pub(crate) fn attributed<T>(operation: impl FnOnce() -> T) -> T {
