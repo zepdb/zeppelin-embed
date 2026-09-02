@@ -233,10 +233,11 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   consolidation in flight), refused-and-cleared on any validation failure,
   never read by queries. A resumed merge revalidates the intermediate's
   xxh3-64 against the checkpoint before skipping the merge pass.
-- The mutation returns the generation it changed through
-  `MaintenanceReport.consolidation_generation`; the merge is admitted whole
-  against the byte budget (charged as the sum of input file sizes) and the
-  graph phase resumes through the existing graph checkpoint.
+- A call that publishes a consolidation returns its final generation after any
+  same-call refinements through `MaintenanceReport.consolidation_generation`;
+  the merge is admitted whole against the byte budget (charged as the sum of
+  input file sizes) and the graph phase resumes through the existing graph
+  checkpoint.
 
 ## Exact top-k tie invariant
 

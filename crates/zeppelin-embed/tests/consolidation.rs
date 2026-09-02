@@ -16,7 +16,9 @@ use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
+};
 use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceReport, MaintenanceStatus, TierThresholds,
@@ -115,7 +117,7 @@ fn vector_results(store: &Store, amplitude: f32, k: usize) -> Vec<(DocumentVersi
         .search(
             SearchRequest::new(&fixture_vector(amplitude)),
             k,
-            SearchOptions::default(),
+            SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("vector search")

@@ -179,7 +179,7 @@ pub struct MaintenanceReport {
     pub graph_profiles: Vec<GraphBuildProfileReport>,
     /// N-to-1 graph-segment consolidations atomically published by this call.
     pub consolidations: u64,
-    /// Manifest generation of the last consolidation published by this call.
+    /// Final manifest generation of this call when it published a consolidation.
     pub consolidation_generation: Option<u64>,
     /// Due consolidations refused because an input region cannot be carried.
     pub consolidation_deferrals: Vec<MaintenanceDeferral>,
@@ -187,7 +187,7 @@ pub struct MaintenanceReport {
     pub passes_applied: u64,
     /// Per-pass publication counts for this call.
     pub pass_counters: RefinementPassCounters,
-    /// Manifest generation of the last refinement published by this call.
+    /// Final manifest generation of this call when it published a refinement.
     pub refinement_generation: Option<u64>,
     /// Final disposition of the call.
     pub status: MaintenanceStatus,
@@ -555,8 +555,11 @@ fn maintain_refinements(
             .checked_add(1)
             .ok_or(MaintenanceError::ArithmeticOverflow)?;
         report.pass_counters.increment(pass)?;
-        report.refinement_generation =
-            Some(current_generation(store).map_err(MaintenanceError::Store)?);
+        let generation = current_generation(store).map_err(MaintenanceError::Store)?;
+        report.refinement_generation = Some(generation);
+        if report.consolidation_generation.is_some() {
+            report.consolidation_generation = Some(generation);
+        }
     }
 }
 

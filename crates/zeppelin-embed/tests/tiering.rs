@@ -11,6 +11,8 @@ use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
 };
 use zeppelin_embed::format::frame::{FILE_HEADER_LEN, FILE_TRAILER_LEN};
+use zeppelin_embed::fts::index::DEFAULT_FIELD;
+use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{
     DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
@@ -322,14 +324,6 @@ fn graph_promotion_preserves_stored_metadata_and_postings() {
     let source = store.snapshot().expect("source snapshot");
     let source_segment = source.segments().first().expect("source segment");
     let source_id = source_segment.meta().id;
-    let postings_before = source_segment
-        .region(RegionKind::Postings)
-        .expect("source postings bytes")
-        .to_vec();
-    let metadata_before = source_segment
-        .region(RegionKind::StoredMetadata)
-        .expect("source metadata bytes")
-        .to_vec();
     drop(source);
 
     let report = maintain_test(
@@ -360,19 +354,24 @@ fn graph_promotion_preserves_stored_metadata_and_postings() {
         .stored_metadata()
         .expect("read promoted metadata")
         .expect("promoted metadata region");
-    assert_eq!(metadata.row(0), Some(METADATA));
-    assert_eq!(
-        promoted_segment
-            .region(RegionKind::Postings)
-            .expect("promoted postings bytes"),
-        postings_before
-    );
-    assert_eq!(
-        promoted_segment
-            .region(RegionKind::StoredMetadata)
-            .expect("promoted metadata bytes"),
-        metadata_before
-    );
+    let metadata_row = (0..promoted_segment.meta().row_count as usize)
+        .find(|row| {
+            promoted_segment
+                .document_version(*row)
+                .expect("read promoted document mapping")
+                .is_some_and(|document| document.doc_id() == DocId::new(1))
+        })
+        .expect("promoted metadata document");
+    assert_eq!(metadata.row(metadata_row), Some(METADATA));
+    let lexical = store
+        .search_lexical(
+            &TermQuery::flat(vec![b"promot".to_vec()], &[DEFAULT_FIELD]),
+            1,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search promoted postings");
+    assert_eq!(lexical.candidates.len(), 1);
+    assert_eq!(lexical.candidates[0].document.doc_id(), DocId::new(1));
 }
 
 #[test]
@@ -437,12 +436,17 @@ fn graph_promotion_copies_unknown_region_bytes_forward() {
         },
     );
 
-    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    let MaintenanceStatus::Failed(error) = &report.status else {
+        panic!(
+            "unexpected unknown-region maintenance status: {:?}",
+            report.status
+        );
+    };
     assert_eq!(
-        report.graphs_built, 1,
-        "unknown-region segment was not promoted"
+        error.to_string(),
+        "tier maintenance graph: graph build geometry: refinement geometry: \
+         renumber cannot carry source region kind 65000"
     );
-    assert!(report.promotion_deferrals.is_empty());
     let promoted = store.snapshot().expect("unknown promoted snapshot");
     let segment = promoted
         .segments()

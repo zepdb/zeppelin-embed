@@ -256,6 +256,10 @@ fn metadata_graph_document(row: usize) -> DocId {
     DocId::new(row as u128 + 1)
 }
 
+fn metadata_graph_oracle_row(document: DocumentVersion) -> u32 {
+    u32::try_from(document.doc_id().get() - 1).expect("fixture row fits u32")
+}
+
 fn publish_metadata_chain_graph(directory: &std::path::Path) -> SegmentId {
     let epoch = metadata_graph_epoch();
     let store = Store::open(
@@ -1349,6 +1353,16 @@ fn i37_graph_backed_filter_matches_independent_timestamp_range() {
         .expect("I37 graph-backed segment");
     let columns = segment.columns().expect("I37 graph-backed Columns");
     let alive = segment.alive().expect("I37 graph-backed Alive");
+    let physical_to_oracle = (0..GRAPH_ROWS)
+        .map(|row| {
+            metadata_graph_oracle_row(
+                segment
+                    .document_version(row)
+                    .expect("I37 graph-backed document mapping")
+                    .expect("I37 graph-backed document"),
+            )
+        })
+        .collect::<Vec<_>>();
     drop(snapshot);
     let predicate = Predicate::Range(RangePredicate {
         column: zeppelin_embed::meta::TIMESTAMP_COLUMN,
@@ -1358,6 +1372,7 @@ fn i37_graph_backed_filter_matches_independent_timestamp_range() {
     let evaluator = evaluate(&predicate, &columns, &alive)
         .expect("I37 graph-backed evaluator")
         .iter()
+        .map(|row| physical_to_oracle[row as usize])
         .collect::<BTreeSet<_>>();
     let public_results = store
         .search_filtered(
@@ -1370,7 +1385,9 @@ fn i37_graph_backed_filter_matches_independent_timestamp_range() {
         .expect("I37 graph-backed public filter")
         .candidates
         .into_iter()
-        .map(|candidate| candidate.row_id().local_row())
+        .map(|candidate| {
+            metadata_graph_oracle_row(candidate.document().expect("public candidate document"))
+        })
         .collect::<Vec<_>>();
     oracle::compare_i37(
         &oracle::I37Input {
@@ -1431,6 +1448,16 @@ fn i37_full_45_case_matrix_runs_against_graph_published_public_store() {
     );
     let columns = segment.columns().expect("I37 graph-backed matrix Columns");
     let alive = segment.alive().expect("I37 graph-backed matrix Alive");
+    let physical_to_oracle = (0..GRAPH_ROWS)
+        .map(|row| {
+            metadata_graph_oracle_row(
+                segment
+                    .document_version(row)
+                    .expect("I37 graph-backed matrix document mapping")
+                    .expect("I37 graph-backed matrix document"),
+            )
+        })
+        .collect::<Vec<_>>();
     drop(snapshot);
 
     let rows = metadata_graph_oracle_rows();
@@ -1441,6 +1468,7 @@ fn i37_full_45_case_matrix_runs_against_graph_published_public_store() {
         let evaluator = evaluate(predicate, &columns, &alive)
             .unwrap_or_else(|error| panic!("I37 graph case {case} evaluator: {error}"))
             .iter()
+            .map(|row| physical_to_oracle[row as usize])
             .collect::<BTreeSet<_>>();
         let outcome = store
             .search_filtered(
@@ -1460,7 +1488,9 @@ fn i37_full_45_case_matrix_runs_against_graph_published_public_store() {
         let public_results = outcome
             .candidates
             .into_iter()
-            .map(|candidate| candidate.row_id().local_row())
+            .map(|candidate| {
+                metadata_graph_oracle_row(candidate.document().expect("public candidate document"))
+            })
             .collect();
         oracle::compare_i37(
             &oracle::I37Input {
@@ -1945,12 +1975,13 @@ fn i39_public_graph_clean_fault_retry_uses_actual_traversal_and_fallback_work() 
             budget: 1,
             filter_cardinality,
             exact_rows_examined,
-            returned: 3,
+            returned,
             reason: PlanFallback::VisitedBudget,
             ..
         } if visited > 1
             && filter_cardinality == GRAPH_ROWS as u64
             && exact_rows_examined == GRAPH_ROWS as u64
+            && returned == GRAPH_ROWS as u64
     ));
     assert_eq!(
         feature[0].origin.site(),

@@ -721,9 +721,12 @@ fn maintenance_applies_every_due_refinement_after_consolidation() {
     assert_eq!(report.pass_counters.alpha_reprune, 1);
     assert_eq!(report.pass_counters.seed_refit, 1);
     assert_eq!(report.pass_counters.neighbor_reorder, 1);
-    assert!(report.refinement_generation.is_some());
-
     let snapshot = store.snapshot().expect("published refined snapshot");
+    assert_eq!(
+        report.refinement_generation,
+        Some(snapshot.generation()),
+        "the mutation returns the final generation reached by this call"
+    );
     assert_eq!(snapshot.segments().len(), 1);
     let graph = snapshot.segments()[0]
         .graph_node_blocks()
