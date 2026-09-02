@@ -954,9 +954,14 @@ impl crate::lifecycle::Store {
                     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                         continue;
                     };
-                    if !name.starts_with(".tier-") || !name.ends_with(".graph.checkpoint") {
-                        continue;
-                    }
+                    let expected_magic: &[u8] =
+                        if name.starts_with(".tier-") && name.ends_with(".graph.checkpoint") {
+                            b"ZEVAMCP1"
+                        } else if name == ".consolidate.checkpoint" {
+                            b"ZECONCP1"
+                        } else {
+                            continue;
+                        };
                     let artifact = ArtifactRef::Checkpoint {
                         name: name.to_owned(),
                     };
@@ -964,7 +969,7 @@ impl crate::lifecycle::Store {
                     match self.vfs.read(&path) {
                         Ok(bytes) => {
                             let valid = bytes.len() >= 16
-                                && bytes.get(..8) == Some(b"ZEVAMCP1".as_slice())
+                                && bytes.get(..8) == Some(expected_magic)
                                 && bytes
                                     .len()
                                     .checked_sub(8)

@@ -113,6 +113,7 @@ impl FfiError {
             MaintenanceError::Store(error) => Self::store(error).code,
             MaintenanceError::Parameters(_) => ZeErrorCode::ZeErrInvalidArgument,
             MaintenanceError::Graph(_) => ZeErrorCode::ZeErrCorrupt,
+            MaintenanceError::Consolidate(_) => ZeErrorCode::ZeErrCorrupt,
             MaintenanceError::Deadline(_) => ZeErrorCode::ZeErrInvalidArgument,
             MaintenanceError::ArithmeticOverflow => ZeErrorCode::ZeErrInternal,
         };

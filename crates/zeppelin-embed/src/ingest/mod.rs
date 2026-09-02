@@ -2,6 +2,18 @@
 
 mod active;
 mod purge;
+
+/// Survivor-rewrite helpers shared with graph-segment consolidation.
+///
+/// Purge's per-segment gathers are re-exported unchanged so consolidation
+/// concatenates their survivor-order output across N inputs without forking
+/// the rewrite logic; purge's own behavior stays byte-identical.
+pub(crate) mod purge_support {
+    pub(crate) use super::purge::{
+        OwnedFactors, append_survivor_columns, clustering_range, gather_survivor_codes,
+        gather_survivor_documents, gather_survivor_rescore,
+    };
+}
 mod retention;
 #[cfg(any(test, feature = "test-support"))]
 mod retention_fault;

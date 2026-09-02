@@ -55,7 +55,7 @@ use zeppelin_embed::planner::{
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::segment::SegmentError;
 use zeppelin_embed::tier::{
-    MaintenanceBudget, MaintenanceError, MaintenanceStatus, TierThresholds,
+    MaintenanceBudget, MaintenanceError, MaintenanceReport, MaintenanceStatus, TierThresholds,
 };
 use zeppelin_embed::vfs::{StdVfs, Vfs};
 
@@ -1168,6 +1168,303 @@ fn torn_graph_checkpoint_refuses_once_then_the_next_maintain_rebuilds() {
         "fresh maintenance built no graph: {rebuilt:?}"
     );
     reopened.close().expect("close rebuilt checkpoint store");
+}
+
+/// Consolidation fault fixture: three published graph segments staged the
+/// way 19-M8's e2e suite stages them (a dominant 256-row graph plus two
+/// 32-row graphs, the third promotion budget-capped before the merge), so
+/// the next `maintain` call performs exactly one N-to-1 consolidation.
+fn staged_consolidation_store(
+    scheduled: Arc<ScheduledVfs<StdVfs>>,
+    clock: Arc<ManualMonotonicClock>,
+    directory: &std::path::Path,
+    tag: u8,
+) -> (Store, StoreEpoch) {
+    let document = EmbeddingTower {
+        model_id: format!("m8-consolidation-fixture-{tag}"),
+        model_version: "1".to_owned(),
+        weights_digest: vec![tag],
+        dims: 128,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 512,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let epoch = StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    };
+    let store = Store::open_with_test_dependencies(
+        directory,
+        OpenOptions::default().with_epoch(epoch.clone()),
+        StoreTestDependencies::new(scheduled, clock),
+    )
+    .expect("open staged consolidation store");
+    let maintain = |bytes: u64| {
+        store.maintain_with_test_thresholds(
+            MaintenanceBudget {
+                wall_time: Duration::from_secs(600),
+                bytes,
+            },
+            TierThresholds { graph_min_rows: 32 },
+        )
+    };
+    let mut first_doc = 1_u128;
+    for (batch, rows) in [(0_u32, 256_u128), (1, 32), (2, 32)] {
+        let documents = (0..rows)
+            .map(|row| {
+                let doc = first_doc + row;
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(doc), Revision::new(1)),
+                    (0..128)
+                        .map(|dimension| {
+                            if dimension % 2 == 0 {
+                                doc as f32
+                            } else {
+                                -(doc as f32)
+                            }
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        first_doc += rows;
+        store
+            .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+            .expect("ingest consolidation batch");
+        store.seal().expect("seal consolidation batch");
+        let budget = if batch == 2 { 32_000 } else { u64::MAX };
+        let report = maintain(budget);
+        assert_eq!(report.graphs_built, 1, "staging promotion {batch}");
+        assert_eq!(report.consolidations, 0, "staging must not consolidate");
+    }
+    assert_eq!(
+        store.snapshot().expect("staged snapshot").segments().len(),
+        3,
+        "staging must leave three published graph segments"
+    );
+    (store, epoch)
+}
+
+fn consolidation_maintain(store: &Store, bytes: u64) -> MaintenanceReport {
+    store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(600),
+            bytes,
+        },
+        TierThresholds { graph_min_rows: 32 },
+    )
+}
+
+#[test]
+fn consolidation_merge_enospc_is_typed_and_publishes_nothing() {
+    let event = FaultEvent {
+        id: "m8-merge-temp-enospc".to_owned(),
+        op_index: 9,
+        site: FaultSite::Write,
+        layer: Layer::Io,
+        mode: FaultMode::Enospc,
+        nth_match: 1,
+        expected_matches: None,
+        deadline_budget_seconds: None,
+        path_contains: Some(".zseg.tmp".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let directory = tempfile::tempdir().expect("merge enospc directory");
+    let (store, _epoch) =
+        staged_consolidation_store(scheduled.clone(), clock, directory.path(), 0x51);
+
+    scheduled.set_operation(9);
+    let faulted = consolidation_maintain(&store, u64::MAX);
+    assert!(
+        matches!(
+            &faulted.status,
+            MaintenanceStatus::Failed(MaintenanceError::Consolidate(
+                zeppelin_embed::graph::consolidate::ConsolidateError::Segment(_)
+            ))
+        ),
+        "merge ENOSPC was not a typed consolidation failure: {:?}",
+        faulted.status
+    );
+    assert_eq!(faulted.consolidations, 0);
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("post-fault snapshot")
+            .segments()
+            .len(),
+        3,
+        "a failed merge must leave the old segments published"
+    );
+
+    scheduled.set_operation(usize::MAX);
+    let recovered = consolidation_maintain(&store, u64::MAX);
+    assert!(
+        matches!(recovered.status, MaintenanceStatus::Complete),
+        "clean retry did not complete: {:?}",
+        recovered.status
+    );
+    assert_eq!(recovered.consolidations, 1);
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("recovered snapshot")
+            .segments()
+            .len(),
+        1
+    );
+    store.close().expect("close merge enospc store");
+}
+
+#[test]
+fn torn_consolidation_checkpoint_restarts_the_merge_instead_of_resuming() {
+    let event = FaultEvent {
+        id: "m8-torn-consolidation-checkpoint".to_owned(),
+        op_index: 9,
+        site: FaultSite::Write,
+        layer: Layer::Content,
+        mode: FaultMode::TornWrite,
+        nth_match: 1,
+        expected_matches: None,
+        deadline_budget_seconds: None,
+        path_contains: Some(".consolidate.checkpoint.tmp".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let directory = tempfile::tempdir().expect("torn consolidation directory");
+    let (store, _epoch) =
+        staged_consolidation_store(scheduled.clone(), clock, directory.path(), 0x52);
+    let merge_charge = store
+        .snapshot()
+        .expect("charge snapshot")
+        .segments()
+        .iter()
+        .map(|segment| segment.meta().file_size)
+        .sum::<u64>();
+
+    scheduled.set_operation(9);
+    let interrupted = consolidation_maintain(&store, merge_charge + 4_000);
+    assert!(
+        matches!(interrupted.status, MaintenanceStatus::BudgetExhausted),
+        "budget cap after the merge did not hold: {:?}",
+        interrupted.status
+    );
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
+    assert!(
+        directory.path().join(".consolidate.checkpoint").exists(),
+        "the torn checkpoint bytes must have been renamed into place"
+    );
+
+    scheduled.set_operation(usize::MAX);
+    let recovered = consolidation_maintain(&store, u64::MAX);
+    assert!(
+        matches!(recovered.status, MaintenanceStatus::Complete),
+        "recovery from a torn checkpoint did not complete: {:?}",
+        recovered.status
+    );
+    assert_eq!(recovered.consolidations, 1);
+    assert_eq!(
+        recovered.checkpoints_resumed, 0,
+        "a torn checkpoint must restart the merge, never resume it"
+    );
+    assert!(!directory.path().join(".consolidate.checkpoint").exists());
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("recovered snapshot")
+            .segments()
+            .len(),
+        1
+    );
+    store.close().expect("close torn consolidation store");
+}
+
+#[test]
+fn consolidation_unlink_failure_after_commit_is_swept_on_reopen() {
+    let event = FaultEvent {
+        id: "m8-input-unlink-eio".to_owned(),
+        op_index: 9,
+        site: FaultSite::Delete,
+        layer: Layer::Io,
+        mode: FaultMode::Eio,
+        nth_match: 1,
+        expected_matches: None,
+        deadline_budget_seconds: None,
+        path_contains: Some("segment-".to_owned()),
+        fired: false,
+        fire_count: 0,
+        path: None,
+    };
+    let scheduled = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let directory = tempfile::tempdir().expect("unlink fault directory");
+    let (store, epoch) =
+        staged_consolidation_store(scheduled.clone(), clock.clone(), directory.path(), 0x53);
+
+    scheduled.set_operation(9);
+    let faulted = consolidation_maintain(&store, u64::MAX);
+    assert!(
+        matches!(
+            &faulted.status,
+            MaintenanceStatus::Failed(MaintenanceError::Store(_))
+        ),
+        "input unlink EIO was not surfaced as a typed failure: {:?}",
+        faulted.status
+    );
+    assert!(scheduled.events().into_iter().any(|event| event.fired));
+    // The manifest commit preceded the unlink: the merged segment is the
+    // published truth even though the failed call reports the error.
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("post-commit snapshot")
+            .segments()
+            .len(),
+        1,
+        "commit-then-unlink must leave the merged segment published"
+    );
+    store.close().expect("close before sweep reopen");
+
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch),
+        StoreTestDependencies::new(scheduled, clock),
+    )
+    .expect("reopen after unlink failure");
+    let mut segment_files = std::fs::read_dir(directory.path())
+        .expect("list swept store")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
+        .collect::<Vec<_>>();
+    segment_files.sort();
+    assert_eq!(
+        segment_files.len(),
+        1,
+        "reopen must sweep the unreachable input segments: {segment_files:?}"
+    );
+    let follow_up = consolidation_maintain(&reopened, u64::MAX);
+    assert!(
+        matches!(follow_up.status, MaintenanceStatus::Complete),
+        "maintenance after the sweep did not settle: {:?}",
+        follow_up.status
+    );
+    assert_eq!(follow_up.consolidations, 0);
+    reopened.close().expect("close swept store");
 }
 
 #[test]

@@ -15,9 +15,56 @@ pub struct SegmentStats {
     pub scheme: u16,
 }
 
-/// Store-wide inputs reserved for workload-aware policy without adding I/O.
+/// Store-wide inputs derived from manifest metadata without segment I/O.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct StoreStats;
+pub struct StoreStats {
+    /// Published-alias sealed segments that already carry a graph.
+    pub graph_segment_count: u32,
+    /// Total dense rows across those graph segments.
+    pub total_graph_rows: u64,
+    /// Dense rows of the largest single graph segment (manifest metadata only).
+    pub largest_graph_segment_rows: u64,
+}
+
+/// Graph segment count at which consolidation is always due.
+///
+/// Owner policy A4 (2026-08-22 amendment recorded in
+/// `tasks/19-vector-graph-tier.md`): multi-segment shared-bound search is a
+/// transition state, not the steady state.
+pub const CONSOLIDATE_MIN_SEGMENTS: u32 = 3;
+
+/// At exactly two graph segments, consolidate unless one segment already
+/// holds at least this many tenths of the total graph rows.
+pub const CONSOLIDATE_DOMINANT_TENTHS: u128 = 7;
+
+/// Pure store-level policy result for graph-segment consolidation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorePlan {
+    /// Keep the published graph segment set.
+    Stay,
+    /// Merge every published graph segment into one new sealed graph segment.
+    Consolidate,
+}
+
+/// Decides whether the store's sealed graph segments should merge into one.
+///
+/// Consolidation is due at [`CONSOLIDATE_MIN_SEGMENTS`] or more graph
+/// segments, or at exactly two when neither segment holds at least 70% of
+/// the total graph rows. The decision consults manifest metadata only.
+#[must_use]
+pub const fn decide_store(store: StoreStats) -> StorePlan {
+    if store.graph_segment_count >= CONSOLIDATE_MIN_SEGMENTS {
+        return StorePlan::Consolidate;
+    }
+    if store.graph_segment_count == 2 {
+        let largest = store.largest_graph_segment_rows as u128;
+        let total = store.total_graph_rows as u128;
+        if largest * 10 < total * CONSOLIDATE_DOMINANT_TENTHS {
+            return StorePlan::Consolidate;
+        }
+    }
+    StorePlan::Stay
+}
 
 /// Pure policy result for one segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +109,7 @@ pub(crate) const fn decide_with_thresholds(
 
 #[cfg(test)]
 mod tests {
-    use super::{SegmentStats, StoreStats, TierPlan, decide};
+    use super::{SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_store};
     use crate::tier::{PROVISIONAL_TIER_THRESHOLDS, SegmentTier};
 
     #[test]
@@ -80,11 +127,11 @@ mod tests {
         };
 
         assert_eq!(
-            decide(below, StoreStats),
+            decide(below, StoreStats::default()),
             TierPlan::Stay(SegmentTier::SealedScan)
         );
         assert_eq!(
-            decide(above, StoreStats),
+            decide(above, StoreStats::default()),
             TierPlan::Transition {
                 from: SegmentTier::SealedScan,
                 to: SegmentTier::SealedGraph,
@@ -102,8 +149,78 @@ mod tests {
         };
 
         assert_eq!(
-            decide(segment, StoreStats),
+            decide(segment, StoreStats::default()),
             TierPlan::Stay(SegmentTier::SealedGraph)
+        );
+    }
+
+    #[test]
+    fn store_policy_consolidates_at_three_or_more_graph_segments() {
+        for (count, expected) in [
+            (0, StorePlan::Stay),
+            (1, StorePlan::Stay),
+            (3, StorePlan::Consolidate),
+            (4, StorePlan::Consolidate),
+            (100, StorePlan::Consolidate),
+        ] {
+            assert_eq!(
+                decide_store(StoreStats {
+                    graph_segment_count: count,
+                    total_graph_rows: 1_000_000,
+                    largest_graph_segment_rows: 999_999,
+                }),
+                expected,
+                "graph_segment_count={count}"
+            );
+        }
+    }
+
+    #[test]
+    fn store_policy_at_two_segments_consolidates_only_without_a_dominant_segment() {
+        // 50/50 split: no segment holds 70%, so the pair merges.
+        assert_eq!(
+            decide_store(StoreStats {
+                graph_segment_count: 2,
+                total_graph_rows: 1_000,
+                largest_graph_segment_rows: 500,
+            }),
+            StorePlan::Consolidate
+        );
+        // 699/1000: still below the 70% dominance line.
+        assert_eq!(
+            decide_store(StoreStats {
+                graph_segment_count: 2,
+                total_graph_rows: 1_000,
+                largest_graph_segment_rows: 699,
+            }),
+            StorePlan::Consolidate
+        );
+        // Exactly 70%: dominant, the pair stays.
+        assert_eq!(
+            decide_store(StoreStats {
+                graph_segment_count: 2,
+                total_graph_rows: 1_000,
+                largest_graph_segment_rows: 700,
+            }),
+            StorePlan::Stay
+        );
+        // 95/5: a fresh small graph beside one consolidated graph stays.
+        assert_eq!(
+            decide_store(StoreStats {
+                graph_segment_count: 2,
+                total_graph_rows: 1_000,
+                largest_graph_segment_rows: 950,
+            }),
+            StorePlan::Stay
+        );
+        // Row counts near u64::MAX must not overflow the tenths comparison.
+        assert_eq!(
+            decide_store(StoreStats {
+                graph_segment_count: 2,
+                total_graph_rows: u64::MAX,
+                largest_graph_segment_rows: u64::MAX / 2,
+            }),
+            StorePlan::Consolidate
         );
     }
 }

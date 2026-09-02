@@ -4,6 +4,8 @@
 pub mod block;
 /// Deterministic, checkpointable flat Vamana construction.
 pub mod build;
+/// Copy-on-write consolidation of sealed graph segments (Task 19-M8).
+pub mod consolidate;
 /// Single-core fixed-stride graph traversal.
 pub mod search;
 

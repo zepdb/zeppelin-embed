@@ -212,6 +212,40 @@ fn successful_checkpoint_scope_revalidation_clears_a_removed_fault() {
 }
 
 #[test]
+fn self_check_examines_the_consolidation_checkpoint_like_a_graph_checkpoint() {
+    let directory = tempdir().expect("store directory");
+    let checkpoint = directory.path().join(".consolidate.checkpoint");
+    std::fs::write(&checkpoint, b"not-a-checkpoint").expect("write damaged checkpoint");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+
+    assert_eq!(
+        store.self_check(0, 0x6b).health_status,
+        HealthStatus::Unhealthy
+    );
+    let artifact = ArtifactRef::Checkpoint {
+        name: ".consolidate.checkpoint".to_owned(),
+    };
+    assert!(
+        store
+            .health()
+            .expect("faulted health")
+            .unresolved_faults
+            .keys()
+            .any(|key| key.artifact == artifact)
+    );
+
+    let mut valid = b"ZECONCP1".to_vec();
+    let checksum = xxhash_rust::xxh3::xxh3_64(&valid);
+    valid.extend_from_slice(&checksum.to_le_bytes());
+    std::fs::write(&checkpoint, valid).expect("write checksummed checkpoint");
+    assert_eq!(
+        store.self_check(0, 0x6c).health_status,
+        HealthStatus::Healthy
+    );
+    store.close().expect("close store");
+}
+
+#[test]
 fn self_check_validates_a_good_checkpoint_and_attributes_independent_artifact_damage() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");

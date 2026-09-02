@@ -211,6 +211,33 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   exactly accounted scratch. Concurrent or later queries never inherit a
   competitive distance.
 
+## Task 19-M8 consolidation invariants
+
+- Consolidation is a segment merge, never a cross-segment graph: live rows
+  from every published sealed graph segment are copied into one new segment
+  with new dense row ids, then one graph is built over the union. No second
+  graph id space exists; the output is an ordinary task-07 segment.
+- The store-level policy is pure manifest metadata: merge at three or more
+  graph segments, or at exactly two when the largest holds under 70% of the
+  total rows. Scan-tier segments are excluded from merges in v1.
+- Postings are never copy-forwarded across a merge. Region kind 6 is rebuilt
+  from carried stored text through the store's frozen tokenizer, exactly as
+  seal builds it; an input carrying postings without stored text defers the
+  consolidation with a typed report.
+- The N-to-1 manifest commit precedes every unlink. The merge intermediate
+  is an unpublished `segment-*.zseg` orphan until then, reclaimed by the
+  existing open-time reachability sweep, and readers holding the old
+  snapshot keep their mmaps through the lease mechanism.
+- `.consolidate.checkpoint` is the only new persisted artifact: a private
+  `ZECONCP1` resumability file (fixed name, one writer, at most one
+  consolidation in flight), refused-and-cleared on any validation failure,
+  never read by queries. A resumed merge revalidates the intermediate's
+  xxh3-64 against the checkpoint before skipping the merge pass.
+- The mutation returns the generation it changed through
+  `MaintenanceReport.consolidation_generation`; the merge is admitted whole
+  against the byte budget (charged as the sum of input file sizes) and the
+  graph phase resumes through the existing graph checkpoint.
+
 ## Exact top-k tie invariant
 
 - Per-segment exact cuts retain every candidate tied with the k-th score.

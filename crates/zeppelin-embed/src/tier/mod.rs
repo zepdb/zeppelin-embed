@@ -8,7 +8,7 @@ pub use maintain::{
     GraphBuildProfileReport, MaintenanceBudget, MaintenanceError, MaintenanceReport,
     MaintenanceStatus,
 };
-pub use policy::{SegmentStats, StoreStats, TierPlan, decide};
+pub use policy::{SegmentStats, StorePlan, StoreStats, TierPlan, decide, decide_store};
 pub use thresholds::{PROVISIONAL_TIER_THRESHOLDS, TierThresholds};
 
 /// The query structure currently available for one segment.

@@ -1273,7 +1273,7 @@ fn survivor_rows(reader: &SegmentReader, ids: &[DocId]) -> Result<Vec<usize>, Pu
     Ok(survivors)
 }
 
-enum OwnedFactors {
+pub(crate) enum OwnedFactors {
     Bit4(Vec<Bit4Factors>),
     Int8(Vec<Int8Factors>),
 }
@@ -1287,7 +1287,7 @@ impl OwnedFactors {
     }
 }
 
-fn gather_survivor_codes(
+pub(crate) fn gather_survivor_codes(
     reader: &SegmentReader,
     survivors: &[usize],
     dims: usize,
@@ -1354,7 +1354,7 @@ fn gather_survivor_codes(
     }
 }
 
-fn gather_survivor_rescore(
+pub(crate) fn gather_survivor_rescore(
     reader: &SegmentReader,
     survivors: &[usize],
     dims: usize,
@@ -1394,7 +1394,7 @@ fn gather_survivor_alive(
     Ok(alive)
 }
 
-fn gather_survivor_documents(
+pub(crate) fn gather_survivor_documents(
     reader: &SegmentReader,
     survivors: &[usize],
 ) -> Result<(Vec<DocId>, Vec<super::Revision>), StoreError> {
@@ -1543,6 +1543,17 @@ fn rewrite_segment(
 
 fn rewrite_columns(source: &ColumnStore, survivors: &[usize]) -> Result<ColumnStore, StoreError> {
     let mut builder = ColumnStoreBuilder::new(source.schema().clone());
+    append_survivor_columns(&mut builder, source, survivors)?;
+    builder.finish().map_err(|source| {
+        StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
+    })
+}
+
+pub(crate) fn append_survivor_columns(
+    builder: &mut ColumnStoreBuilder,
+    source: &ColumnStore,
+    survivors: &[usize],
+) -> Result<(), StoreError> {
     for row in survivors {
         let row_u32 = u32::try_from(*row).map_err(|_| StoreError::ActiveRowOverflow)?;
         let timestamp = source.timestamp(row_u32).ok_or_else(|| {
@@ -1582,12 +1593,10 @@ fn rewrite_columns(source: &ColumnStore, survivors: &[usize]) -> Result<ColumnSt
             StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
         })?;
     }
-    builder.finish().map_err(|source| {
-        StoreError::Segment(crate::segment::SegmentError::Columns(source.to_string()))
-    })
+    Ok(())
 }
 
-fn clustering_range(
+pub(crate) fn clustering_range(
     columns: &ColumnStore,
     alive: &AliveSet,
 ) -> Result<ClusteringKeyRange, StoreError> {
