@@ -368,6 +368,20 @@ pub(crate) enum ControlledSearchError<Control> {
     Control(Control),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AllowListScoringBranch {
+    RowDriven,
+    PostingDriven,
+}
+
+fn allow_list_scoring_branch(allowed: u64, corpus: u64) -> AllowListScoringBranch {
+    if allowed.saturating_mul(crate::planner::LEXICAL_ALLOW_LIST_DIVISOR) <= corpus {
+        AllowListScoringBranch::RowDriven
+    } else {
+        AllowListScoringBranch::PostingDriven
+    }
+}
+
 /// Allow-list scorer with deterministic cancellation checkpoints at entry,
 /// exit, segment boundaries, and every 64 posting/document work units.
 pub(crate) fn search_allow_list_driven_controlled<Control>(
@@ -376,6 +390,31 @@ pub(crate) fn search_allow_list_driven_controlled<Control>(
     k: usize,
     params: Bm25Params,
     allow_lists: &[&crate::meta::DocBitmap],
+    checkpoint: impl FnMut() -> Result<(), Control>,
+) -> Result<SearchResult, ControlledSearchError<Control>> {
+    let allowed = allow_lists
+        .iter()
+        .map(|allow_list| allow_list.cardinality())
+        .fold(0_u64, u64::saturating_add);
+    let branch = allow_list_scoring_branch(allowed, index.document_count());
+    search_allow_list_driven_controlled_with_branch(
+        index,
+        query,
+        k,
+        params,
+        allow_lists,
+        branch,
+        checkpoint,
+    )
+}
+
+fn search_allow_list_driven_controlled_with_branch<Control>(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    allow_lists: &[&crate::meta::DocBitmap],
+    branch: AllowListScoringBranch,
     mut checkpoint: impl FnMut() -> Result<(), Control>,
 ) -> Result<SearchResult, ControlledSearchError<Control>> {
     checkpoint().map_err(ControlledSearchError::Control)?;
@@ -390,59 +429,147 @@ pub(crate) fn search_allow_list_driven_controlled<Control>(
     let mut accumulator = Vec::<(GlobalDocId, f64)>::new();
     let mut work_units = 0_u64;
 
-    for (ordinal, segment) in index.segments().iter().enumerate() {
-        checkpoint().map_err(ControlledSearchError::Control)?;
-        let Some(allow_list) = allow_lists.get(ordinal) else {
-            continue;
-        };
-        let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
-        let lengths = weighted_lengths(segment, &query.fields);
-        for row in allow_list.iter() {
-            let length = usize::try_from(row)
-                .ok()
-                .and_then(|slot| lengths.get(slot).copied())
-                .unwrap_or(0);
-            let mut total = 0.0_f64;
-            let mut matched = false;
-            for (slot, term) in query.terms.iter().enumerate() {
-                let df = frequencies.get(slot).copied().unwrap_or(0);
-                if df == 0 {
-                    continue;
-                }
-                let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
+    match branch {
+        AllowListScoringBranch::RowDriven => {
+            for (ordinal, segment) in index.segments().iter().enumerate() {
+                checkpoint().map_err(ControlledSearchError::Control)?;
+                let Some(allow_list) = allow_lists.get(ordinal) else {
                     continue;
                 };
-                stream.seek(row);
-                if stream.current_row() == Some(row) {
+                let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
+                let lengths = weighted_lengths(segment, &query.fields);
+                for row in allow_list.iter() {
+                    let length = usize::try_from(row)
+                        .ok()
+                        .and_then(|slot| lengths.get(slot).copied())
+                        .unwrap_or(0);
+                    let mut total = 0.0_f64;
+                    let mut matched = false;
+                    for (slot, term) in query.terms.iter().enumerate() {
+                        let df = frequencies.get(slot).copied().unwrap_or(0);
+                        if df == 0 {
+                            continue;
+                        }
+                        let Some(mut stream) = TermStream::open(segment, term, &query.fields)
+                        else {
+                            continue;
+                        };
+                        stream.seek(row);
+                        if stream.current_row() == Some(row) {
+                            work_units = work_units.saturating_add(1);
+                            if work_units.is_multiple_of(64) {
+                                checkpoint().map_err(ControlledSearchError::Control)?;
+                            }
+                            counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                            let tf = stream.current_tf().unwrap_or(0);
+                            total += TermScorer::new(Df(df), &stats, params)
+                                .score(Tf(tf), DocLen(length));
+                            matched = true;
+                        }
+                        counters.blocks_decoded = counters
+                            .blocks_decoded
+                            .saturating_add(stream.blocks_decoded());
+                        counters.blocks_skipped = counters
+                            .blocks_skipped
+                            .saturating_add(stream.blocks_skipped());
+                    }
                     work_units = work_units.saturating_add(1);
                     if work_units.is_multiple_of(64) {
                         checkpoint().map_err(ControlledSearchError::Control)?;
                     }
-                    counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                    let tf = stream.current_tf().unwrap_or(0);
-                    total += TermScorer::new(Df(df), &stats, params).score(Tf(tf), DocLen(length));
-                    matched = true;
+                    if matched {
+                        counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+                        accumulator.push((
+                            GlobalDocId {
+                                segment: segment_index,
+                                row,
+                            },
+                            total,
+                        ));
+                    }
                 }
-                counters.blocks_decoded = counters
-                    .blocks_decoded
-                    .saturating_add(stream.blocks_decoded());
-                counters.blocks_skipped = counters
-                    .blocks_skipped
-                    .saturating_add(stream.blocks_skipped());
             }
-            work_units = work_units.saturating_add(1);
-            if work_units.is_multiple_of(64) {
+        }
+        AllowListScoringBranch::PostingDriven => {
+            let largest_segment = index
+                .segments()
+                .iter()
+                .filter_map(|segment| usize::try_from(segment.row_count()).ok())
+                .max()
+                .unwrap_or(0);
+            let mut row_scores = vec![0.0_f64; largest_segment];
+            let mut touched = Vec::<u32>::new();
+
+            for (ordinal, segment) in index.segments().iter().enumerate() {
                 checkpoint().map_err(ControlledSearchError::Control)?;
-            }
-            if matched {
-                counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
-                accumulator.push((
-                    GlobalDocId {
-                        segment: segment_index,
-                        row,
-                    },
-                    total,
-                ));
+                let Some(allow_list) = allow_lists.get(ordinal) else {
+                    continue;
+                };
+                let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
+                let lengths = weighted_lengths(segment, &query.fields);
+
+                for (slot, term) in query.terms.iter().enumerate() {
+                    let df = frequencies.get(slot).copied().unwrap_or(0);
+                    if df == 0 {
+                        continue;
+                    }
+                    let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
+                        continue;
+                    };
+                    let scorer = TermScorer::new(Df(df), &stats, params);
+                    while let Some(row) = stream.current_row() {
+                        work_units = work_units.saturating_add(1);
+                        if work_units.is_multiple_of(64) {
+                            checkpoint().map_err(ControlledSearchError::Control)?;
+                        }
+                        counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                        if allow_list.contains(row) {
+                            let tf = stream.current_tf().unwrap_or(0);
+                            let length = usize::try_from(row)
+                                .ok()
+                                .and_then(|position| lengths.get(position).copied())
+                                .unwrap_or(0);
+                            let score = scorer.score(Tf(tf), DocLen(length));
+                            if let Ok(position) = usize::try_from(row)
+                                && let Some(entry) = row_scores.get_mut(position)
+                            {
+                                if *entry == 0.0 {
+                                    touched.push(row);
+                                }
+                                *entry += score;
+                            }
+                        }
+                        stream.advance();
+                    }
+                    counters.blocks_decoded = counters
+                        .blocks_decoded
+                        .saturating_add(stream.blocks_decoded());
+                    counters.blocks_skipped = counters
+                        .blocks_skipped
+                        .saturating_add(stream.blocks_skipped());
+                }
+
+                touched.sort_unstable();
+                touched.dedup();
+                for row in touched.drain(..) {
+                    let score = usize::try_from(row)
+                        .ok()
+                        .and_then(|position| row_scores.get_mut(position))
+                        .map(|entry| {
+                            let score = *entry;
+                            *entry = 0.0;
+                            score
+                        })
+                        .unwrap_or(0.0);
+                    counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+                    accumulator.push((
+                        GlobalDocId {
+                            segment: segment_index,
+                            row,
+                        },
+                        score,
+                    ));
+                }
             }
         }
     }
@@ -482,9 +609,15 @@ fn weighted_length(segment: &SealedSegment, row: u32, weights: &FieldWeights) ->
     clippy::unwrap_used
 )]
 mod tests {
+    use std::convert::Infallible;
+
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed, TestRunner};
+
     use super::*;
     use crate::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
     use crate::fts::tokenizer::{Analyzer, Profile};
+    use crate::meta::DocBitmap;
 
     fn analyzer() -> Analyzer {
         Analyzer::new(Profile::Code.config()).expect("valid config")
@@ -501,6 +634,176 @@ mod tests {
         let mut index = LexicalIndex::new();
         index.push_segment(segment).expect("seals");
         index
+    }
+
+    fn forced_allow_list_search(
+        index: &LexicalIndex,
+        query: &TermQuery,
+        k: usize,
+        allow_lists: &[&DocBitmap],
+        branch: AllowListScoringBranch,
+    ) -> SearchResult {
+        match search_allow_list_driven_controlled_with_branch(
+            index,
+            query,
+            k,
+            Bm25Params::default(),
+            allow_lists,
+            branch,
+            || Ok::<(), Infallible>(()),
+        ) {
+            Ok(result) => result,
+            Err(ControlledSearchError::Index(error)) => {
+                panic!("forced allow-list search failed: {error:?}")
+            }
+            Err(ControlledSearchError::Control(error)) => match error {},
+        }
+    }
+
+    #[test]
+    fn dense_allow_list_search_is_posting_driven() {
+        let analyzer = analyzer();
+        let mut segment = SegmentIndex::new();
+        for _ in 0..256 {
+            segment
+                .push_document(&analyzer, &Document::with_text("alpha beta"))
+                .expect("indexable");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(segment).expect("seals");
+        let query = TermQuery::flat(vec![b"alpha".to_vec(), b"beta".to_vec()], &[DEFAULT_FIELD]);
+        let allow_list = DocBitmap::full(256);
+        let result =
+            search_allow_list_driven(&index, &query, 256, Bm25Params::default(), &[&allow_list])
+                .expect("scores");
+
+        assert_eq!(result.hits.len(), 256);
+        assert_eq!(result.counters.blocks_decoded, 8);
+    }
+
+    #[test]
+    fn posting_driven_matches_row_driven_hit_for_hit() {
+        let name = "fts::search::tests::posting_driven_matches_row_driven_hit_for_hit";
+        let mut seeded = crate::test_support::seeded_rng(name);
+        let mut runner = TestRunner::new(Config {
+            cases: 128,
+            rng_seed: RngSeed::Fixed(seeded.next_u64()),
+            ..Config::default()
+        });
+        let cases = (
+            prop::collection::vec((0_u8..16, any::<bool>()), 2..130),
+            prop::collection::vec(0_u8..6, 1..7),
+            any::<u16>(),
+            any::<u8>(),
+        );
+
+        let result = runner.run(&cases, |(rows, query_terms, cut_seed, k_seed)| {
+            let analyzer = analyzer();
+            let cut = 1 + usize::from(cut_seed) % rows.len().saturating_sub(1);
+            let mut first = SegmentIndex::new();
+            let mut second = SegmentIndex::new();
+
+            for (position, (mask, _)) in rows.iter().enumerate() {
+                let mut words = Vec::new();
+                for (bit, term) in [(1_u8, "alpha"), (2, "beta"), (4, "gamma"), (8, "delta")] {
+                    if mask & bit != 0 {
+                        words.push(term);
+                        if position.is_multiple_of(3) {
+                            words.push(term);
+                        }
+                    }
+                }
+                if words.is_empty() {
+                    words.push("filler");
+                }
+                let document = Document::with_text(&words.join(" "));
+                if position < cut {
+                    first
+                        .push_document(&analyzer, &document)
+                        .expect("indexable first segment");
+                } else {
+                    second
+                        .push_document(&analyzer, &document)
+                        .expect("indexable second segment");
+                }
+            }
+
+            let mut index = LexicalIndex::new();
+            index.push_segment(first).expect("seals first segment");
+            index.push_segment(second).expect("seals second segment");
+            let terms = query_terms
+                .iter()
+                .map(|term| match term {
+                    0 => b"alpha".to_vec(),
+                    1 => b"beta".to_vec(),
+                    2 => b"gamma".to_vec(),
+                    3 => b"delta".to_vec(),
+                    4 => b"missing".to_vec(),
+                    _ => b"alpha".to_vec(),
+                })
+                .collect();
+            let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
+            let k = usize::from(k_seed) % rows.len().saturating_add(1);
+
+            for dense in [false, true] {
+                let mut first_allowed = Vec::new();
+                let mut second_allowed = Vec::new();
+                for (position, (_, selected)) in rows.iter().enumerate() {
+                    let allowed = if dense {
+                        *selected || !position.is_multiple_of(4)
+                    } else {
+                        *selected && position.is_multiple_of(16)
+                    };
+                    if allowed && position < cut {
+                        first_allowed.push(u32::try_from(position).unwrap_or(u32::MAX));
+                    } else if allowed {
+                        second_allowed
+                            .push(u32::try_from(position.saturating_sub(cut)).unwrap_or(u32::MAX));
+                    }
+                }
+                let first_allow_list = DocBitmap::from_ids(first_allowed);
+                let second_allow_list = DocBitmap::from_ids(second_allowed);
+                let allow_lists = [&first_allow_list, &second_allow_list];
+                let row_driven = forced_allow_list_search(
+                    &index,
+                    &query,
+                    k,
+                    &allow_lists,
+                    AllowListScoringBranch::RowDriven,
+                );
+                let posting_driven = forced_allow_list_search(
+                    &index,
+                    &query,
+                    k,
+                    &allow_lists,
+                    AllowListScoringBranch::PostingDriven,
+                );
+
+                prop_assert_eq!(row_driven.hits.len(), posting_driven.hits.len());
+                for (row_hit, posting_hit) in row_driven.hits.iter().zip(&posting_driven.hits) {
+                    prop_assert_eq!(row_hit.doc, posting_hit.doc);
+                    prop_assert_eq!(row_hit.score.to_bits(), posting_hit.score.to_bits());
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_ok(), "property result: {result:?}");
+    }
+
+    #[test]
+    fn divisor_rule_keeps_the_selective_boundary_row_driven() {
+        assert_eq!(
+            allow_list_scoring_branch(1, 64),
+            AllowListScoringBranch::RowDriven
+        );
+        assert_eq!(
+            allow_list_scoring_branch(2, 128),
+            AllowListScoringBranch::RowDriven
+        );
+        assert_eq!(
+            allow_list_scoring_branch(2, 127),
+            AllowListScoringBranch::PostingDriven
+        );
     }
 
     #[test]
