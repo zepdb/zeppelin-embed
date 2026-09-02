@@ -3140,7 +3140,7 @@ impl Store {
             Some(&cancellation),
         )
         .map_err(map_store_lexical_assembly_error)?;
-        let vocabulary = crate::fts::query::vocabulary(index.terms());
+        let vocabulary = crate::fts::query::vocabulary(query, index.terms());
         let expansions = crate::fts::query::expand(query, &vocabulary)?;
         let allow_lists = alive_sets
             .iter()
@@ -4005,7 +4005,7 @@ fn exact_structured_lexical_leg(
         sources,
     } = assemble_lexical_index(snapshot, active, accounting, false, Some(cancellation))
         .map_err(map_fusion_lexical_assembly_error)?;
-    let vocabulary = crate::fts::query::vocabulary(index.terms());
+    let vocabulary = crate::fts::query::vocabulary(query, index.terms());
     let expansions = crate::fts::query::expand(query, &vocabulary)
         .map_err(|error| lexical_error(error.to_string()))?;
     if index.segments().is_empty() || expansions.is_empty() {

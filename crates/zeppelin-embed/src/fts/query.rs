@@ -183,8 +183,16 @@ impl std::fmt::Display for LexicalQueryError {
 
 impl std::error::Error for LexicalQueryError {}
 
-pub(crate) fn vocabulary<'a>(terms: impl Iterator<Item = &'a [u8]>) -> BTreeSet<Vec<u8>> {
-    terms.map(<[u8]>::to_vec).collect()
+pub(crate) fn vocabulary<'a>(
+    query: &LexicalQuery,
+    terms: impl Iterator<Item = &'a [u8]>,
+) -> BTreeSet<Vec<u8>> {
+    match query {
+        LexicalQuery::Prefix { .. }
+        | LexicalQuery::Fuzzy { .. }
+        | LexicalQuery::Phonetic { .. } => terms.map(<[u8]>::to_vec).collect(),
+        LexicalQuery::Term(_) | LexicalQuery::Phrase { .. } => BTreeSet::new(),
+    }
 }
 
 pub(crate) fn expand(
@@ -343,19 +351,124 @@ mod tests {
         FieldId(7)
     }
 
+    #[cfg(feature = "allocation-audit")]
+    #[test]
+    fn term_query_expansion_builds_no_vocabulary() {
+        let source_terms = [
+            b"cat".to_vec(),
+            b"cats".to_vec(),
+            b"cut".to_vec(),
+            b"dog".to_vec(),
+            b"night".to_vec(),
+            b"nite".to_vec(),
+        ];
+        let query = LexicalQuery::term(TermQuery::flat(vec![b"cat".to_vec()], &[field()]));
+        let empty_vocabulary = BTreeSet::new();
+        drop(expand(&query, &empty_vocabulary).expect("warm term expansion"));
+        let (_, baseline) =
+            crate::allocation_audit::audit_engine_path(|| expand(&query, &empty_vocabulary));
+
+        let (expansions, report) = crate::allocation_audit::audit_engine_path(|| {
+            let vocabulary = vocabulary(&query, source_terms.iter().map(Vec::as_slice));
+            expand(&query, &vocabulary)
+        });
+
+        assert_eq!(
+            expansions.expect("term expansion"),
+            vec![LexicalExpansion {
+                term: b"cat".to_vec(),
+                boost_thousandths: 1_000,
+                kind: LexicalMatchKind::Term,
+            }]
+        );
+        assert_eq!(
+            report.allocations, baseline.allocations,
+            "Term expansion built the index vocabulary"
+        );
+    }
+
+    #[test]
+    fn vocabulary_expansions_preserve_terms_and_order() {
+        let terms = [
+            b"cat".as_slice(),
+            b"cats",
+            b"cut",
+            b"dog",
+            b"nite",
+            b"night",
+        ];
+        let prefix = LexicalQuery::prefix(b"ca".to_vec(), field());
+        let prefix_vocabulary = vocabulary(&prefix, terms.iter().copied());
+
+        assert_eq!(
+            expand(&prefix, &prefix_vocabulary).expect("prefix expansion"),
+            vec![
+                LexicalExpansion {
+                    term: b"cat".to_vec(),
+                    boost_thousandths: 1_000,
+                    kind: LexicalMatchKind::Prefix,
+                },
+                LexicalExpansion {
+                    term: b"cats".to_vec(),
+                    boost_thousandths: 1_000,
+                    kind: LexicalMatchKind::Prefix,
+                },
+            ]
+        );
+        let fuzzy = LexicalQuery::fuzzy(b"cat".to_vec(), 1, field());
+        let fuzzy_vocabulary = vocabulary(&fuzzy, terms.iter().copied());
+        assert_eq!(
+            expand(&fuzzy, &fuzzy_vocabulary).expect("fuzzy expansion"),
+            vec![
+                LexicalExpansion {
+                    term: b"cat".to_vec(),
+                    boost_thousandths: 1_000,
+                    kind: LexicalMatchKind::Fuzzy { distance: 0 },
+                },
+                LexicalExpansion {
+                    term: b"cats".to_vec(),
+                    boost_thousandths: 500,
+                    kind: LexicalMatchKind::Fuzzy { distance: 1 },
+                },
+                LexicalExpansion {
+                    term: b"cut".to_vec(),
+                    boost_thousandths: 500,
+                    kind: LexicalMatchKind::Fuzzy { distance: 1 },
+                },
+            ]
+        );
+        let phonetic = LexicalQuery::phonetic(b"night".to_vec(), field());
+        let phonetic_vocabulary = vocabulary(&phonetic, terms.iter().copied());
+        assert_eq!(
+            expand(&phonetic, &phonetic_vocabulary).expect("phonetic expansion"),
+            vec![
+                LexicalExpansion {
+                    term: b"night".to_vec(),
+                    boost_thousandths: 250,
+                    kind: LexicalMatchKind::Phonetic,
+                },
+                LexicalExpansion {
+                    term: b"nite".to_vec(),
+                    boost_thousandths: 250,
+                    kind: LexicalMatchKind::Phonetic,
+                },
+            ]
+        );
+    }
+
     #[test]
     fn structured_query_validation_and_expansion_are_exhaustive() {
-        let vocabulary = vocabulary(
-            [
-                b"cat".as_slice(),
-                b"cats",
-                b"cut",
-                b"dog",
-                b"nite",
-                b"night",
-            ]
-            .into_iter(),
-        );
+        let vocabulary = [
+            b"cat".as_slice(),
+            b"cats",
+            b"cut",
+            b"dog",
+            b"nite",
+            b"night",
+        ]
+        .into_iter()
+        .map(<[u8]>::to_vec)
+        .collect();
         let term = LexicalQuery::term(TermQuery::flat(vec![b"cat".to_vec()], &[field()]));
         assert_eq!(term.fields(), FieldWeights::flat(&[field()]));
         assert!(term.phrase_constraint().is_none());
