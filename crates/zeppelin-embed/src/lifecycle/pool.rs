@@ -240,6 +240,214 @@ impl Drop for QueryPool {
     }
 }
 
+type LexicalJob = Box<dyn FnOnce() + Send + 'static>;
+
+enum LexicalWorkerMessage {
+    Run(LexicalWorkItem),
+    Stop,
+}
+
+struct LexicalWorkItem {
+    run: LexicalJob,
+    report_panic: LexicalJob,
+}
+
+struct LexicalWorkerThread {
+    sender: mpsc::Sender<LexicalWorkerMessage>,
+    handle: Option<JoinHandle<()>>,
+}
+
+enum LexicalReply<R> {
+    Completed(R),
+    Panicked,
+}
+
+pub(crate) struct PendingLexical<R> {
+    receiver: Option<mpsc::Receiver<LexicalReply<R>>>,
+}
+
+impl<R> PendingLexical<R> {
+    pub(crate) fn wait(mut self) -> Result<R, crate::fusion::FusionError> {
+        let receiver =
+            self.receiver
+                .take()
+                .ok_or_else(|| crate::fusion::FusionError::LegThreadStart {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    detail: "pooled lexical worker result was already consumed".to_owned(),
+                })?;
+        match receiver.recv() {
+            Ok(LexicalReply::Completed(result)) => Ok(result),
+            Ok(LexicalReply::Panicked) => Err(crate::fusion::FusionError::LegPanic {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: "lexical hybrid leg panicked",
+            }),
+            Err(_) => Err(crate::fusion::FusionError::LegThreadStart {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: "pooled lexical worker disconnected before reporting a result".to_owned(),
+            }),
+        }
+    }
+}
+
+impl<R> Drop for PendingLexical<R> {
+    fn drop(&mut self) {
+        if let Some(receiver) = self.receiver.take() {
+            let _ = receiver.recv();
+        }
+    }
+}
+
+/// Lazily started persistent worker for one store's hybrid lexical leg.
+pub(crate) struct LexicalWorker {
+    worker: Mutex<Option<LexicalWorkerThread>>,
+}
+
+impl LexicalWorker {
+    pub(crate) fn start() -> Result<Self, crate::fusion::FusionError> {
+        let (sender, receiver) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let handle = std::thread::Builder::new()
+            .name("zeppelin-fts".to_owned())
+            .spawn(move || {
+                if ready_tx.send(()).is_err() {
+                    return;
+                }
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        LexicalWorkerMessage::Run(work) => {
+                            let result = std::panic::catch_unwind(AssertUnwindSafe(work.run));
+                            if result.is_err() {
+                                (work.report_panic)();
+                            }
+                        }
+                        LexicalWorkerMessage::Stop => return,
+                    }
+                }
+            })
+            .map_err(|error| crate::fusion::FusionError::LegThreadStart {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: error.to_string(),
+            })?;
+        if ready_rx.recv().is_err() {
+            let _ = sender.send(LexicalWorkerMessage::Stop);
+            let _ = handle.join();
+            return Err(crate::fusion::FusionError::LegThreadStart {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: "pooled lexical worker startup handshake failed".to_owned(),
+            });
+        }
+        Ok(Self {
+            worker: Mutex::new(Some(LexicalWorkerThread {
+                sender,
+                handle: Some(handle),
+            })),
+        })
+    }
+
+    pub(crate) fn submit<'scope, F, R>(
+        &self,
+        work: F,
+    ) -> Result<PendingLexical<R>, crate::fusion::FusionError>
+    where
+        F: FnOnce() -> R + Send + 'scope,
+        R: Send + 'scope,
+    {
+        let worker =
+            self.worker
+                .lock()
+                .map_err(|_| crate::fusion::FusionError::LegThreadStart {
+                    leg: crate::fusion::FusionLeg::Lexical,
+                    detail: "pooled lexical worker synchronization was poisoned".to_owned(),
+                })?;
+        let sender = worker
+            .as_ref()
+            .map(|worker| worker.sender.clone())
+            .ok_or_else(|| crate::fusion::FusionError::LegThreadStart {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: "pooled lexical worker was stopped".to_owned(),
+            })?;
+        drop(worker);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        let completed_tx = response_tx.clone();
+        let run: Box<dyn FnOnce() + Send + 'scope> = Box::new(move || {
+            let result = work();
+            let _ = completed_tx.send(LexicalReply::Completed(result));
+        });
+        let report_panic: Box<dyn FnOnce() + Send + 'scope> = Box::new(move || {
+            let _ = response_tx.send(LexicalReply::Panicked);
+        });
+        let run = unsafe {
+            // SAFETY: `PendingLexical` waits during normal return and in Drop.
+            // The response send therefore completes or disconnects before any
+            // value borrowed by this scoped job can leave its caller's scope.
+            std::mem::transmute::<Box<dyn FnOnce() + Send + 'scope>, LexicalJob>(run)
+        };
+        let report_panic = unsafe {
+            // SAFETY: this callback has the same scoped lifetime and completion
+            // handshake as `run`; it owns no borrow beyond that scope.
+            std::mem::transmute::<Box<dyn FnOnce() + Send + 'scope>, LexicalJob>(report_panic)
+        };
+        sender
+            .send(LexicalWorkerMessage::Run(LexicalWorkItem {
+                run,
+                report_panic,
+            }))
+            .map_err(|_| crate::fusion::FusionError::LegThreadStart {
+                leg: crate::fusion::FusionLeg::Lexical,
+                detail: "pooled lexical worker disconnected during submission".to_owned(),
+            })?;
+        Ok(PendingLexical {
+            receiver: Some(response_rx),
+        })
+    }
+
+    pub(crate) fn stop_and_join(&self) -> Result<(), StoreError> {
+        let mut slot = self
+            .worker
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "pooled lexical worker",
+            })?;
+        let Some(mut worker) = slot.take() else {
+            return Ok(());
+        };
+        drop(slot);
+        let _ = worker.sender.send(LexicalWorkerMessage::Stop);
+        if let Some(handle) = worker.handle.take() {
+            handle
+                .join()
+                .map_err(|_| StoreError::QueryPoolThreadPanicked)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_best_effort(&self) {
+        let mut slot = match self.worker.try_lock() {
+            Ok(slot) => slot,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        if let Some(mut worker) = slot.take() {
+            let _ = worker.sender.send(LexicalWorkerMessage::Stop);
+            drop(worker.handle.take());
+        }
+    }
+}
+
+impl Drop for LexicalWorker {
+    fn drop(&mut self) {
+        let slot = match self.worker.get_mut() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(mut worker) = slot.take() {
+            let _ = worker.sender.send(LexicalWorkerMessage::Stop);
+            drop(worker.handle.take());
+        }
+    }
+}
+
 fn stop_workers_best_effort(workers: &mut [Worker]) {
     for worker in &*workers {
         let _ = worker.sender.send(WorkerMessage::Stop);

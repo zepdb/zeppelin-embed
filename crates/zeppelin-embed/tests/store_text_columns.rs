@@ -767,6 +767,75 @@ fn store_owned_hybrid_runs_both_legs_and_names_the_lexical_thread() {
 }
 
 #[test]
+fn hybrid_lexical_leg_reuses_one_pooled_thread_across_queries() {
+    const CHILD_PROCESS: &str = "ZE_TEST_HYBRID_LEXICAL_POOL_CHILD";
+    if std::env::var_os(CHILD_PROCESS).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg("hybrid_lexical_leg_reuses_one_pooled_thread_across_queries")
+            .arg("--exact")
+            .env(CHILD_PROCESS, "1")
+            .status()
+            .expect("run isolated thread-census test");
+        assert!(status.success(), "isolated thread-census test failed");
+        return;
+    }
+
+    let (_directory, store) = hybrid_store();
+    let vector = [0.0_f32, 0.0_f32];
+    let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    store
+        .search(
+            SearchRequest::new(&vector),
+            2,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("warm vector query pool");
+    let before = os_thread_ids().expect("census before first hybrid query");
+
+    store
+        .search_hybrid(
+            SearchRequest::new(&vector),
+            &lexical,
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("first hybrid query");
+    let after_first = os_thread_ids().expect("census after first hybrid query");
+    let started = after_first.difference(&before).copied().collect::<Vec<_>>();
+    assert_eq!(
+        started.len(),
+        1,
+        "first hybrid query did not leave exactly one lexical worker: {started:?}"
+    );
+
+    store
+        .search_hybrid(
+            SearchRequest::new(&vector),
+            &lexical,
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("second hybrid query");
+    let after_second = os_thread_ids().expect("census after second hybrid query");
+    let newly_started = after_second
+        .difference(&after_first)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        newly_started.is_empty(),
+        "second hybrid query started new OS threads: {newly_started:?}"
+    );
+    assert!(
+        started.iter().all(|thread| after_second.contains(thread)),
+        "first hybrid query's lexical worker was not reused: {started:?}"
+    );
+    store.close().expect("close store");
+}
+
+#[test]
 fn lexical_leg_panic_is_typed_and_the_store_remains_usable() {
     let directory = tempdir().expect("store directory");
     let dependencies = StoreTestDependencies::new(
@@ -915,4 +984,74 @@ fn physical_purge_remaps_the_postings_region_with_survivors() {
     assert_eq!(text.row(0), Some(Some("zeppelin survivor")));
     drop(snapshot);
     store.close().expect("close store");
+}
+
+#[cfg(target_os = "macos")]
+fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
+    unsafe extern "C" {
+        static mach_task_self_: libc::mach_port_t;
+        fn mach_port_deallocate(
+            task: libc::mach_port_t,
+            name: libc::mach_port_t,
+        ) -> libc::kern_return_t;
+    }
+
+    let task = unsafe {
+        // SAFETY: libSystem initializes the current-task port before Rust `main`.
+        mach_task_self_
+    };
+    let mut threads = std::ptr::null_mut();
+    let mut count = 0_u32;
+    let result = unsafe {
+        // SAFETY: the two out pointers are valid writable storage for Mach's allocated array.
+        libc::task_threads(task, &raw mut threads, &raw mut count)
+    };
+    if result != libc::KERN_SUCCESS {
+        return Err(std::io::Error::other(format!(
+            "task_threads failed with Mach code {result}"
+        )));
+    }
+    let count_usize =
+        usize::try_from(count).map_err(|_| std::io::Error::other("thread count exceeds usize"))?;
+    let ports = unsafe {
+        // SAFETY: successful `task_threads` returned `count` initialized port names.
+        std::slice::from_raw_parts(threads, count_usize)
+    };
+    let ids = ports.iter().map(|port| u64::from(*port)).collect();
+    for port in ports {
+        let _ = unsafe {
+            // SAFETY: each name is a send right returned by `task_threads` to this task.
+            mach_port_deallocate(task, *port)
+        };
+    }
+    let bytes = count_usize
+        .checked_mul(std::mem::size_of::<libc::thread_t>())
+        .ok_or_else(|| std::io::Error::other("thread array byte length overflow"))?;
+    let address = threads as libc::vm_address_t;
+    let size = libc::vm_size_t::try_from(bytes)
+        .map_err(|_| std::io::Error::other("thread array byte length exceeds vm_size_t"))?;
+    let release = unsafe {
+        // SAFETY: this is the exact task-allocated array returned by `task_threads`.
+        libc::vm_deallocate(task, address, size)
+    };
+    if release != libc::KERN_SUCCESS {
+        return Err(std::io::Error::other(format!(
+            "vm_deallocate failed with Mach code {release}"
+        )));
+    }
+    Ok(ids)
+}
+
+#[cfg(target_os = "linux")]
+fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
+    std::fs::read_dir("/proc/self/task")?
+        .map(|entry| {
+            let entry = entry?;
+            entry
+                .file_name()
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(std::io::Error::other)
+        })
+        .collect()
 }

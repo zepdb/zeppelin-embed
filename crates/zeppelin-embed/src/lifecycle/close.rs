@@ -218,6 +218,16 @@ impl Store {
         let stopped_query_pool = query_pool.take();
         drop(query_pool);
         let query_pool_result = stopped_query_pool.map_or(Ok(()), |pool| pool.stop_and_join());
+        let mut lexical_worker =
+            self.lexical_worker
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "pooled lexical worker",
+                })?;
+        let stopped_lexical_worker = lexical_worker.take();
+        drop(lexical_worker);
+        let lexical_worker_result =
+            stopped_lexical_worker.map_or(Ok(()), |worker| worker.stop_and_join());
         drop(released_snapshot);
 
         let mut active = self
@@ -256,7 +266,9 @@ impl Store {
             .map_err(|_| StoreError::Synchronization { component: "state" })?;
         *state = StoreState::Closed;
         self.state_changed.notify_all();
-        background_result.and(query_pool_result)
+        background_result
+            .and(query_pool_result)
+            .and(lexical_worker_result)
     }
 
     /// Runs close ordering during `Drop` without propagating failures or
@@ -295,6 +307,13 @@ impl Store {
         };
         if let Some(pool) = query_pool_slot.take() {
             let _ = pool.stop_and_join();
+        }
+        let lexical_worker_slot = match self.lexical_worker.get_mut() {
+            Ok(worker) => worker,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(worker) = lexical_worker_slot.take() {
+            worker.stop_best_effort();
         }
         drop(released_snapshot);
 
