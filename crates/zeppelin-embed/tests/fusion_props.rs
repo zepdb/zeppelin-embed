@@ -7,9 +7,10 @@ use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::RngCore;
 use zeppelin_embed::fusion::{
     DEFAULT_ALPHA, DEFAULT_MAX_ROUNDS, DegenerateKind, DegenerateLeg, FusionError, FusionLeg,
-    FusionMethod, FusionRule, FusionTermination, HybridQuery, LEXICAL_RULE_ALPHA, LegFailureKind,
-    LexicalCandidate, RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision,
-    VectorCandidate, execute_hybrid, fuse,
+    FusionMethod, FusionRule, FusionTermination, HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K,
+    HybridQuery, LEXICAL_RULE_ALPHA, LegFailureKind, LexicalCandidate,
+    RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision, VectorCandidate,
+    execute_hybrid, fuse,
 };
 
 fn proptest_cases() -> u32 {
@@ -20,10 +21,11 @@ fn proptest_cases() -> u32 {
 }
 
 /// Pins the fusion policy so a value change cannot masquerade as a
-/// refactor. `DEFAULT_ALPHA` and the rules-off default are measured
-/// (`tasks/evidence/17-fusion.md`); the rule constants are opt-in values
-/// measured harmful on SciFact; `RRF_K` and `DEFAULT_MAX_ROUNDS` remain
-/// unmeasured placeholders.
+/// refactor. `DEFAULT_ALPHA`, `HYBRID_WINDOW_FLOOR`, and the rules-off
+/// default are measured (`tasks/evidence/17-fusion.md`, PLAN.md §A.2); the
+/// rule constants are opt-in values measured harmful on SciFact; `RRF_K`,
+/// `DEFAULT_MAX_ROUNDS`, and `HYBRID_WINDOW_PER_K` remain unmeasured
+/// placeholders.
 #[test]
 fn fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values() {
     assert_eq!(DEFAULT_ALPHA.to_bits(), 0.7_f64.to_bits());
@@ -31,6 +33,8 @@ fn fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values() 
     assert_eq!(RARE_DOCUMENT_FREQUENCY_THRESHOLD, 5);
     assert_eq!(RRF_K, 60);
     assert_eq!(DEFAULT_MAX_ROUNDS, 8);
+    assert_eq!(HYBRID_WINDOW_FLOOR, 50);
+    assert_eq!(HYBRID_WINDOW_PER_K, 5);
     assert_eq!(zeppelin_embed::fusion::ALPHA_POLICY_VERSION, 2);
     assert!(
         !HybridQuery::new(1).rules_enabled,

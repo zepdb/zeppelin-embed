@@ -41,6 +41,21 @@ pub const RRF_K: u32 = 60;
 /// The fallback preserves correctness; this value affects work and reporting.
 pub const DEFAULT_MAX_ROUNDS: usize = 8;
 
+/// MEASURED (`tasks/hybrid-search-optimization/PLAN.md` §A.2, BEIR SciFact
+/// with Cohere embed-english-v3 vectors): with exact anchors and cross-filled
+/// windows, a 50-wide window reproduces the full-list fused top-10 in 300/300
+/// judged queries and the stability bound proves it in 299/300. Twenty and
+/// thirty reproduce only 283 and 293. The engine's own window measurement is
+/// recorded in `tasks/evidence/R04-hybrid-window.md`.
+pub const HYBRID_WINDOW_FLOOR: usize = 50;
+
+/// PLACEHOLDER -- NOT YET MEASURED.
+///
+/// Per-result window growth, so a large `k` keeps a window wider than the
+/// requested result count. Correctness never depends on it: an unproven
+/// window widens and a window covering the corpus is the full-list fusion.
+pub const HYBRID_WINDOW_PER_K: usize = 5;
+
 /// Whether a vector score is safe to blend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScorePrecision {

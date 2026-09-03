@@ -6,6 +6,7 @@ mod clock;
 mod close;
 pub mod durability;
 pub(crate) mod graph_cache;
+mod hybrid;
 pub mod lock;
 mod pool;
 #[cfg(test)]
