@@ -10,6 +10,12 @@ __pycache__/
 .venv/
 tools/embed-harness/.venv/
 tools/embed-harness/models/
+tools/embed-harness/control.json
+tools/embed-harness/results/
+tools/embed-harness/towers/
+tools/embed-harness/vectors/
+tools/embed-harness/data/*
+!tools/embed-harness/data/.gitkeep
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
