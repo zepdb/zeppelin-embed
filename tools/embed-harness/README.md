@@ -94,10 +94,31 @@ $H -m embed_harness.convert \
   --prompt-prefix "$PREFIX" \
   --normalize
 
+# The two multi-million-document corpora use one fixed comparison subset.
+# Every positive test qrel is retained; the remainder is selected by a
+# seed-derived SHA-256 rank.  Each output carries source and output hashes.
+$H -m embed_harness.evalir subset-beir \
+  --source /private/tmp/beir/hotpotqa \
+  --out data/beir-subsets/hotpotqa \
+  --max-documents 50000 \
+  --seed 20260903
+$H -m embed_harness.evalir subset-beir \
+  --source /private/tmp/beir/dbpedia-entity \
+  --out data/beir-subsets/dbpedia-entity \
+  --max-documents 50000 \
+  --seed 20260903
+
 $H -m embed_harness.encode length-distribution \
   --model "models/$MODEL_ID" \
   --backend mlx \
-  --corpus /private/tmp/beir/scifact/corpus.jsonl \
+  --corpus \
+    /private/tmp/beir/scifact/corpus.jsonl \
+    /private/tmp/beir/nfcorpus/corpus.jsonl \
+    /private/tmp/beir/fiqa/corpus.jsonl \
+    /private/tmp/beir/trec-covid/corpus.jsonl \
+    /private/tmp/beir/scidocs/corpus.jsonl \
+    data/beir-subsets/hotpotqa/corpus.jsonl \
+    data/beir-subsets/dbpedia-entity/corpus.jsonl \
   --out data/length-dist.json
 
 $H -m embed_harness.encode latency \

@@ -1,9 +1,10 @@
+import json
 import tempfile
 from pathlib import Path
 
 import numpy as np
 
-from embed_harness.evalir import encode_beir, load_beir
+from embed_harness.evalir import build_beir_subset, encode_beir, load_beir
 from tests.synthetic import write_beir
 
 
@@ -39,3 +40,41 @@ def a_beir_encoding_never_submits_more_than_the_requested_batch_size():
 
         assert encoder.document_batches == [7, 7, 6]
         assert encoder.query_batches == [7, 7, 6]
+
+
+def a_beir_subset_keeps_all_judged_documents_and_is_reproducible():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source = write_beir(root)
+        (source / "qrels" / "test.tsv").write_text(
+            "query-id\tcorpus-id\tscore\n"
+            "q0\td0\t1\n"
+            "q1\td1\t1\n"
+            "q2\td2\t1\n"
+            "q3\td2\t0\n",
+            encoding="utf-8",
+        )
+
+        first = build_beir_subset(
+            source, root / "subset-first", max_documents=7, seed=20260903
+        )
+        second = build_beir_subset(
+            source, root / "subset-second", max_documents=7, seed=20260903
+        )
+
+        corpus_ids = {
+            json.loads(line)["_id"]
+            for line in (root / "subset-first" / "corpus.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        }
+        query_ids = [
+            json.loads(line)["_id"]
+            for line in (root / "subset-first" / "queries.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert first["documents"] == 7
+        assert {"d0", "d1", "d2"} <= corpus_ids
+        assert query_ids == ["q0", "q1", "q2", "q3"]
+        assert first["outputs"] == second["outputs"]

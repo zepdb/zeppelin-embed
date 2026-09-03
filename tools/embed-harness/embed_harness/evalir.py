@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import hashlib
 import json
 import math
@@ -49,6 +50,124 @@ class BeirCorpus:
     @property
     def query_ids(self) -> list[str]:
         return [query.id for query in self.queries]
+
+
+def build_beir_subset(
+    source_dir: Path,
+    output_dir: Path,
+    *,
+    max_documents: int,
+    seed: int = 20260903,
+) -> dict[str, Any]:
+    """Write a deterministic BEIR subset that retains all positive qrels."""
+    if max_documents <= 0:
+        raise ValueError("max_documents must be positive")
+    corpus_path = source_dir / "corpus.jsonl"
+    queries_path = source_dir / "queries.jsonl"
+    qrels_path = source_dir / "qrels" / "test.tsv"
+    for path in (corpus_path, queries_path, qrels_path):
+        if not path.is_file():
+            raise FileNotFoundError(f"required BEIR file is absent: {path}")
+
+    qrel_rows: list[tuple[str, str, str]] = []
+    relevant_ids = set()
+    with qrels_path.open(encoding="utf-8") as source:
+        header = source.readline().rstrip("\n").split("\t")
+        if header != ["query-id", "corpus-id", "score"]:
+            raise ValueError(f"unexpected qrels header in {qrels_path}: {header}")
+        for line in source:
+            query_id, document_id, score = line.rstrip("\n").split("\t")
+            qrel_rows.append((query_id, document_id, score))
+            if int(score) > 0:
+                relevant_ids.add(document_id)
+    if len(relevant_ids) > max_documents:
+        raise ValueError(
+            f"{len(relevant_ids)} relevant documents exceed the "
+            f"{max_documents} document limit"
+        )
+
+    sample_count = max_documents - len(relevant_ids)
+    sampled: list[tuple[int, int, str, str]] = []
+    relevant_rows: list[tuple[int, str, str]] = []
+    with corpus_path.open(encoding="utf-8") as source:
+        for ordinal, line in enumerate(source):
+            document_id = str(json.loads(line)["_id"])
+            if document_id in relevant_ids:
+                relevant_rows.append((ordinal, line, document_id))
+                continue
+            if sample_count == 0:
+                continue
+            rank = int.from_bytes(
+                hashlib.sha256(f"{seed}\0{document_id}".encode()).digest(), "big"
+            )
+            item = (-rank, -ordinal, line, document_id)
+            if len(sampled) < sample_count:
+                heapq.heappush(sampled, item)
+            elif item > sampled[0]:
+                heapq.heapreplace(sampled, item)
+
+    found_relevant = {document_id for _, _, document_id in relevant_rows}
+    missing_relevant = relevant_ids - found_relevant
+    if missing_relevant:
+        example = sorted(missing_relevant)[0]
+        raise ValueError(
+            f"qrels reference {len(missing_relevant)} absent documents; "
+            f"first is {example}"
+        )
+    selected = relevant_rows + [
+        (-negative_ordinal, line, document_id)
+        for _, negative_ordinal, line, document_id in sampled
+    ]
+    selected.sort(key=lambda row: row[0])
+    selected_ids = {document_id for _, _, document_id in selected}
+    retained_qrels = [row for row in qrel_rows if row[1] in selected_ids]
+    retained_query_ids = {query_id for query_id, _, _ in retained_qrels}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "qrels").mkdir(parents=True, exist_ok=True)
+    output_corpus = output_dir / "corpus.jsonl"
+    output_queries = output_dir / "queries.jsonl"
+    output_qrels = output_dir / "qrels" / "test.tsv"
+    with output_corpus.open("w", encoding="utf-8") as output:
+        for _, line, _ in selected:
+            output.write(line if line.endswith("\n") else line + "\n")
+    query_count = 0
+    with queries_path.open(encoding="utf-8") as source, output_queries.open(
+        "w", encoding="utf-8"
+    ) as output:
+        for line in source:
+            if str(json.loads(line)["_id"]) in retained_query_ids:
+                output.write(line if line.endswith("\n") else line + "\n")
+                query_count += 1
+    with output_qrels.open("w", encoding="utf-8") as output:
+        output.write("query-id\tcorpus-id\tscore\n")
+        for query_id, document_id, score in retained_qrels:
+            output.write(f"{query_id}\t{document_id}\t{score}\n")
+
+    manifest: dict[str, Any] = {
+        "schema_version": "beir-subset-v1",
+        "seed": seed,
+        "max_documents": max_documents,
+        "documents": len(selected),
+        "relevant_documents": len(relevant_rows),
+        "sampled_documents": len(selected) - len(relevant_rows),
+        "queries": query_count,
+        "qrels": len(retained_qrels),
+        "source": {
+            "corpus_sha256": _sha256(corpus_path),
+            "queries_sha256": _sha256(queries_path),
+            "qrels_sha256": _sha256(qrels_path),
+        },
+        "outputs": {
+            "corpus_sha256": _sha256(output_corpus),
+            "queries_sha256": _sha256(output_queries),
+            "qrels_sha256": _sha256(output_qrels),
+        },
+    }
+    (output_dir / "subset-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return manifest
 
 
 def load_beir(corpus_dir: Path) -> BeirCorpus:
@@ -347,6 +466,11 @@ def main() -> None:
     hybrid.add_argument("--k", default=10, type=int)
     hybrid.add_argument("--time-searches", action="store_true")
     hybrid.add_argument("--out", required=True, type=Path)
+    subset = subparsers.add_parser("subset-beir")
+    subset.add_argument("--source", required=True, type=Path)
+    subset.add_argument("--out", required=True, type=Path)
+    subset.add_argument("--max-documents", required=True, type=int)
+    subset.add_argument("--seed", type=int, default=20260903)
     args = parser.parse_args()
     if args.command == "encode-beir":
         encoder = (
@@ -361,7 +485,7 @@ def main() -> None:
             batch_size=args.batch_size,
         )
         print(json.dumps(result, sort_keys=True))
-    else:
+    elif args.command == "hybrid":
         result = invoke_hybrid_alpha(
             args.binary,
             args.beir_dir,
@@ -374,6 +498,14 @@ def main() -> None:
         args.out.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+    else:
+        result = build_beir_subset(
+            args.source,
+            args.out,
+            max_documents=args.max_documents,
+            seed=args.seed,
+        )
+        print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":
