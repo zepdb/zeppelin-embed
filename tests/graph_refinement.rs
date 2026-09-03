@@ -490,6 +490,68 @@ fn seeded_recall_hits(reader: &SegmentReader, queries: &[f32]) -> usize {
 }
 
 #[test]
+fn a_valid_refinement_checkpoint_resumes_when_only_the_generation_moved() {
+    let directory = tempfile::tempdir().expect("generation-moved refinement directory");
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("open generation-moved refinement store");
+    let source = refinement_fixture(directory.path());
+    let params = GraphParams::new(3, 4, 1.0, 1.2, 4, 2).expect("refinement params");
+    let generation = store.snapshot().expect("generation snapshot").generation();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let checkpoint = directory.path().join("generation-moved.checkpoint");
+    let lease = store.snapshot().expect("refinement lease");
+
+    let interrupted = refine_graph_checkpointed(
+        &store,
+        &source,
+        CheckpointedRefinement::new(
+            RefinementPass::Renumber,
+            params,
+            0x19_0009,
+            generation,
+            &checkpoint,
+            &control,
+        )
+        .with_max_work_rows(2),
+        &lease,
+    );
+    assert!(matches!(
+        interrupted,
+        Err(RefinementError::Graph(
+            GraphBuildError::BudgetExhausted { rows_completed: 2 }
+        ))
+    ));
+    assert!(checkpoint.exists());
+    let bytes = std::fs::read(&checkpoint).expect("checkpoint persisted");
+    validate_refinement_checkpoint(&bytes).expect("checkpoint validates");
+
+    let resumed = refine_graph_checkpointed(
+        &store,
+        &source,
+        CheckpointedRefinement::new(
+            RefinementPass::Renumber,
+            params,
+            0x19_0009,
+            generation + 1,
+            &checkpoint,
+            &control,
+        ),
+        &lease,
+    )
+    .expect("valid checkpoint resumes after generation moves");
+    let uninterrupted = refine_graph(&source, RefinementPass::Renumber, params, 0x19_0009)
+        .expect("uninterrupted refinement");
+    assert_eq!(resumed.encoded_region(), uninterrupted.encoded_region());
+    assert!(!checkpoint.exists());
+
+    drop(lease);
+    drop(source);
+    store
+        .close()
+        .expect("close generation-moved refinement store");
+}
+
+#[test]
 fn interrupted_refinement_resumes_byte_identically_and_corruption_clears() {
     let directory = tempfile::tempdir().expect("checkpoint refinement directory");
     let store = Store::open(directory.path(), OpenOptions::default())

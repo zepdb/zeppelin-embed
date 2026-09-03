@@ -341,7 +341,8 @@ pub struct CheckpointedRefinement<'a> {
 }
 
 impl<'a> CheckpointedRefinement<'a> {
-    /// Creates one request whose checkpoint is bound to the published generation.
+    /// Creates one request whose published generation is stamped into the checkpoint
+    /// for provenance; resume identity deliberately excludes it (see the decoder).
     #[must_use]
     pub const fn new(
         pass: RefinementPass,
@@ -1117,7 +1118,6 @@ pub fn refine_graph_checkpointed(
             request.pass,
             request.params,
             request.seed,
-            request.generation,
             Some(&store.accounting),
         ) {
             Ok(state) => state,
@@ -1471,11 +1471,13 @@ fn decode_refinement_checkpoint(
     pass: RefinementPass,
     params: GraphParams,
     seed: u64,
-    generation: u64,
     accounting: Option<&std::sync::Arc<crate::lifecycle::stats::Accounting>>,
 ) -> Result<RefinementState, RefinementError> {
     validate_refinement_checkpoint(bytes)?;
     let source_graph = reader.graph_node_blocks()?;
+    // Store generation is provenance, not resume identity: live ingest advances per
+    // acknowledged batch, replay advances per unabsorbed WAL record, and maintenance
+    // can publish the counter without absorbing WAL, so it is not stable across reopen.
     if checkpoint_u8(bytes, 10, "pass")? != pass as u8
         || checkpoint_u8(bytes, 12, "target degree")? != params.r_target()
         || checkpoint_u8(bytes, 13, "maximum degree")? != params.r_max()
@@ -1486,7 +1488,6 @@ fn decode_refinement_checkpoint(
         || checkpoint_u32(bytes, 44, "refinement alpha")? != params.alpha_refine().to_bits()
         || bytes.get(48..64) != Some(reader.meta().id.as_bytes().as_slice())
         || checkpoint_u16(bytes, 64, "source passes")? != source_graph.refinement_passes().bits()
-        || checkpoint_u64(bytes, 68, "generation")? != generation
         || source_graph.layout().max_degree() != params.r_max()
     {
         return Err(checkpoint_corrupt(
