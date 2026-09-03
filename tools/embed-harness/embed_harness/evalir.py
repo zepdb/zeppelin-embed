@@ -9,6 +9,7 @@ import math
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -290,13 +291,35 @@ def category_retention(
     return retention, notes
 
 
+def _encode_batches(
+    texts: list[str], batch_size: int, encode: Callable[[list[str]], np.ndarray]
+) -> np.ndarray:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    batches = [
+        encode(texts[start : start + batch_size])
+        for start in range(0, len(texts), batch_size)
+    ]
+    if not batches:
+        raise ValueError("cannot encode an empty text collection")
+    return np.concatenate(batches, axis=0)
+
+
 def encode_beir(
-    encoder: NumpyBertEncoder, corpus: BeirCorpus, output: Path
+    encoder: NumpyBertEncoder,
+    corpus: BeirCorpus,
+    output: Path,
+    *,
+    batch_size: int = 32,
 ) -> dict[str, float]:
-    corpus_vectors = encoder.encode_documents(
-        [document.combined_text for document in corpus.documents]
+    corpus_vectors = _encode_batches(
+        [document.combined_text for document in corpus.documents],
+        batch_size,
+        encoder.encode_documents,
     )
-    query_vectors = encoder.encode_texts([query.text for query in corpus.queries])
+    query_vectors = _encode_batches(
+        [query.text for query in corpus.queries], batch_size, encoder.encode_texts
+    )
     write_ragbench_vectors(
         output, corpus_vectors, query_vectors, corpus.document_ids, corpus.query_ids
     )
@@ -315,6 +338,7 @@ def main() -> None:
     encode.add_argument("--beir-dir", required=True, type=Path)
     encode.add_argument("--corpus", required=True)
     encode.add_argument("--out", required=True, type=Path)
+    encode.add_argument("--batch-size", type=int, default=32)
     hybrid = subparsers.add_parser("hybrid")
     hybrid.add_argument("--binary", default="target/release/hybrid-alpha", type=Path)
     hybrid.add_argument("--beir-dir", required=True, type=Path)
@@ -330,7 +354,12 @@ def main() -> None:
             if args.backend == "mlx"
             else NumpyBertEncoder(args.model)
         )
-        result = encode_beir(encoder, load_beir(args.beir_dir / args.corpus), args.out)
+        result = encode_beir(
+            encoder,
+            load_beir(args.beir_dir / args.corpus),
+            args.out,
+            batch_size=args.batch_size,
+        )
         print(json.dumps(result, sort_keys=True))
     else:
         result = invoke_hybrid_alpha(
