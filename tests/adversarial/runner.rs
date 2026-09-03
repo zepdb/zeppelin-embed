@@ -3799,14 +3799,9 @@ fn run_program_for_with_clock(
                             "fired Crash event disappeared before recovery".to_owned()
                         })?;
                     let wal_dirent_durable = engine.wal_dirent_is_durable()?;
+                    reconcile_simulated_crash(&mut model, op, crash_event, wal_dirent_durable)?;
                     match engine.recover_from_simulated_crash() {
                         Ok(()) => {
-                            reconcile_simulated_crash(
-                                &mut model,
-                                op,
-                                crash_event,
-                                wal_dirent_durable,
-                            )?;
                             reconcile_recovered_locations(&mut engine, &mut model)?;
                             simulated_crash_recovered = true;
                             if matches!(op, Op::Seal) {
@@ -3950,14 +3945,14 @@ fn run_program_for_with_clock(
                                         "retry Crash event disappeared before recovery".to_owned()
                                     })?;
                                 let wal_dirent_durable = engine.wal_dirent_is_durable()?;
+                                reconcile_simulated_crash(
+                                    &mut model,
+                                    op,
+                                    &crash_event,
+                                    wal_dirent_durable,
+                                )?;
                                 match engine.recover_from_simulated_crash() {
                                     Ok(()) => {
-                                        reconcile_simulated_crash(
-                                            &mut model,
-                                            op,
-                                            &crash_event,
-                                            wal_dirent_durable,
-                                        )?;
                                         reconcile_recovered_locations(&mut engine, &mut model)?;
                                         simulated_crash_recovered = true;
                                         if matches!(op, Op::Seal) {

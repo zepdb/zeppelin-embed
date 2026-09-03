@@ -10082,6 +10082,27 @@ enum CampaignFailureKind {
 }
 
 #[test]
+fn a_refused_crash_recovery_still_reconciles_the_durably_synced_revise() {
+    let output = std::process::Command::new(std::env::current_exe().expect("adversarial test binary"))
+        .args(["run", "--ignored", "--exact", "--nocapture"])
+        .env("ZE_ADV_CAMPAIGN", "storage-durability")
+        .env("ZE_ADV_SEED", "8151")
+        .env("ZE_ADV_PROFILE", "random")
+        .output()
+        .expect("run refused crash-recovery regression seed");
+    let transcript = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success() && !transcript.contains("ADV_CAMPAIGN_FAILURE"),
+        "seed 8151 reported an adversarial violation: status={}; {transcript}",
+        output.status
+    );
+}
+
+#[test]
 fn campaign_executes_consecutive_seed_numbers() {
     let artifacts = tempfile::tempdir().expect("consecutive campaign artifacts");
     let output = std::process::Command::new(std::env::current_exe().expect("campaign test binary"))
