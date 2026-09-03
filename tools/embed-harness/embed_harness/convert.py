@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tokenizers import Tokenizer
 
 BERT_ARCHITECTURES = {"BertModel", "XLMRobertaModel", "RobertaModel"}
 MODERNBERT_ARCHITECTURES = {"ModernBertModel"}
@@ -176,6 +177,50 @@ def convert_model(
         config.get("max_tokens", config.get("max_position_embeddings", 512))
     )
     digest = sha256_file(safetensors_path)
+    runtime_config = {
+        key: config.get(key)
+        for key in (
+            "vocab_size",
+            "hidden_size",
+            "num_hidden_layers",
+            "num_attention_heads",
+            "intermediate_size",
+            "hidden_act",
+            "hidden_activation",
+            "layer_norm_eps",
+            "norm_eps",
+            "norm_bias",
+            "attention_bias",
+            "mlp_bias",
+            "max_position_embeddings",
+            "type_vocab_size",
+            "pad_token_id",
+            "layer_types",
+            "global_attn_every_n_layers",
+            "rope_parameters",
+            "global_rope_theta",
+            "local_rope_theta",
+            "local_attention",
+        )
+    }
+    tokenizer_config_path = source / "tokenizer_config.json"
+    tokenizer_path = source / "tokenizer.json"
+    if tokenizer_config_path.is_file() and tokenizer_path.is_file():
+        tokenizer_config = json.loads(
+            tokenizer_config_path.read_text(encoding="utf-8")
+        )
+        pad_token = tokenizer_config.get("pad_token")
+        if isinstance(pad_token, dict):
+            pad_token = pad_token.get("content")
+        if isinstance(pad_token, str):
+            tokenizer_pad_id = Tokenizer.from_file(str(tokenizer_path)).token_to_id(
+                pad_token
+            )
+            if tokenizer_pad_id is None:
+                raise ValueError(
+                    f"tokenizer pad token {pad_token!r} has no vocabulary id"
+                )
+            runtime_config["pad_token_id"] = tokenizer_pad_id
     meta: dict[str, Any] = {
         "source_safetensors_sha256": digest,
         "architecture": architecture,
@@ -195,32 +240,7 @@ def convert_model(
         "runtime": "mlx",
         "compute_units": "gpu",
         "os_build": platform.platform(),
-        "config": {
-            key: config.get(key)
-            for key in (
-                "vocab_size",
-                "hidden_size",
-                "num_hidden_layers",
-                "num_attention_heads",
-                "intermediate_size",
-                "hidden_act",
-                "hidden_activation",
-                "layer_norm_eps",
-                "norm_eps",
-                "norm_bias",
-                "attention_bias",
-                "mlp_bias",
-                "max_position_embeddings",
-                "type_vocab_size",
-                "pad_token_id",
-                "layer_types",
-                "global_attn_every_n_layers",
-                "rope_parameters",
-                "global_rope_theta",
-                "local_rope_theta",
-                "local_attention",
-            )
-        },
+        "config": runtime_config,
     }
     output.mkdir(parents=True, exist_ok=True)
     np.savez(output / "weights.npz", **numeric_tensors)
@@ -228,7 +248,14 @@ def convert_model(
     for artifact in source.iterdir():
         if artifact.is_file() and (
             artifact.name.startswith("tokenizer.")
-            or artifact.name in {"sentencepiece.bpe.model", "spiece.model"}
+            or artifact.name
+            in {
+                "added_tokens.json",
+                "sentencepiece.bpe.model",
+                "special_tokens_map.json",
+                "spiece.model",
+                "tokenizer_config.json",
+            }
         ):
             shutil.copy2(artifact, output / artifact.name)
             copied += 1

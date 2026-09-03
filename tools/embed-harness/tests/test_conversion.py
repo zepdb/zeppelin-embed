@@ -76,6 +76,30 @@ def a_conversion_records_the_explicit_model_identity_used_by_the_cell():
         assert meta["model_version"] == "0123456789abcdef"
 
 
+def a_conversion_uses_the_tokenizers_padding_identity():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source = write_tiny_bert(root)
+        config_path = source / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["pad_token_id"] = 7
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        (source / "tokenizer_config.json").write_text(
+            json.dumps({"pad_token": "[PAD]"}), encoding="utf-8"
+        )
+        converted = root / "converted"
+
+        meta = convert_model(
+            source,
+            converted,
+            model_id="example/tiny-bert",
+            model_version="test-fixture-v1",
+        )
+
+        assert meta["config"]["pad_token_id"] == 0
+        assert (converted / "tokenizer_config.json").is_file()
+
+
 def a_modernbert_conversion_preserves_its_runtime_contract():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
