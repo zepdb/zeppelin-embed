@@ -136,10 +136,7 @@ impl InterruptedManifestCommitVfs {
     }
 
     fn crash(&self) -> std::io::Result<()> {
-        if self
-            .manifest_rename_pending
-            .swap(false, Ordering::AcqRel)
-        {
+        if self.manifest_rename_pending.swap(false, Ordering::AcqRel) {
             self.inner.delete(&self.directory.join(MANIFEST_FILE))?;
         }
         Ok(())
@@ -2173,8 +2170,8 @@ fn maintain_sealed_recovery_graph(store: &Store) -> zeppelin_embed::tier::Mainte
 fn an_adopted_manifest_from_an_interrupted_commit_is_made_durable_at_open() {
     let directory = tempdir().expect("manifest adoption directory");
     let vfs = Arc::new(InterruptedManifestCommitVfs::new(directory.path()));
-    let options = StoreOpenOptions::new()
-        .with_durability(DurabilityMode::Durable, CommitTier::Durable);
+    let options =
+        StoreOpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable);
     let store = Store::open_with_test_dependencies(
         directory.path(),
         options.clone(),

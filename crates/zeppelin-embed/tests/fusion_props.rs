@@ -8,9 +8,9 @@ use rand::RngCore;
 use zeppelin_embed::fusion::{
     DEFAULT_ALPHA, DEFAULT_MAX_ROUNDS, DegenerateKind, DegenerateLeg, FusionError, FusionLeg,
     FusionMethod, FusionRule, FusionTermination, HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K,
-    HybridQuery, LEXICAL_RULE_ALPHA, LegFailureKind, LexicalCandidate,
-    RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision, VectorCandidate,
-    execute_hybrid, fuse,
+    HybridQuery, LEXICAL_RULE_ALPHA, LegBounds, LegFailureKind, LexicalBounds, LexicalCandidate,
+    RARE_DOCUMENT_FREQUENCY_THRESHOLD, RRF_K, RuleSignals, ScorePrecision, VectorBounds,
+    VectorCandidate, execute_hybrid, fuse, fuse_bounded,
 };
 
 fn proptest_cases() -> u32 {
@@ -40,6 +40,103 @@ fn fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values() 
         !HybridQuery::new(1).rules_enabled,
         "policy version 2: query-shape rules are opt-in"
     );
+}
+
+/// A bounded producer that contradicts its own window is a defect, not a
+/// range to be repaired: the normalization it feeds would be silently wrong
+/// for every hit. Each violation names the leg that supplied it.
+#[test]
+fn bounded_fusion_rejects_bounds_that_contradict_the_window() {
+    let vector = vec![
+        VectorCandidate::exact(1_u32, 0.25),
+        VectorCandidate::exact(2, 0.75),
+    ];
+    let lexical = vec![
+        LexicalCandidate::new(1_u32, 4.0),
+        LexicalCandidate::new(2, 1.0),
+    ];
+    let query = HybridQuery::new(2);
+    let sound_lexical = LexicalBounds {
+        max_bm25: 4.0,
+        min_bm25: 0.5,
+        next_unseen_bm25: Some(0.75),
+    };
+    let sound_vector = VectorBounds {
+        min_squared_l2: 0.25,
+        max_squared_l2: 2.0,
+        next_unseen_squared_l2: Some(1.5),
+    };
+    let cases: Vec<(LegBounds, FusionLeg, &str)> = vec![
+        (
+            LegBounds {
+                vector: Some(VectorBounds {
+                    max_squared_l2: f64::INFINITY,
+                    ..sound_vector
+                }),
+                lexical: Some(sound_lexical),
+            },
+            FusionLeg::Vector,
+            "a squared-L2 extreme is not finite",
+        ),
+        (
+            LegBounds {
+                // The window holds 0.75, which this range excludes.
+                vector: Some(VectorBounds {
+                    max_squared_l2: 0.5,
+                    ..sound_vector
+                }),
+                lexical: Some(sound_lexical),
+            },
+            FusionLeg::Vector,
+            "a window score lies outside the supplied extremes",
+        ),
+        (
+            LegBounds {
+                vector: Some(VectorBounds {
+                    next_unseen_squared_l2: Some(0.1),
+                    ..sound_vector
+                }),
+                lexical: Some(sound_lexical),
+            },
+            FusionLeg::Vector,
+            "the unseen bound lies outside the supplied extremes",
+        ),
+        (
+            LegBounds {
+                vector: Some(sound_vector),
+                lexical: Some(LexicalBounds {
+                    min_bm25: 6.0,
+                    ..sound_lexical
+                }),
+            },
+            FusionLeg::Lexical,
+            "the BM25 extremes are inverted",
+        ),
+        (
+            LegBounds {
+                vector: Some(sound_vector),
+                lexical: None,
+            },
+            FusionLeg::Lexical,
+            "a non-empty window supplied no extremes",
+        ),
+    ];
+    for (bounds, leg, detail) in cases {
+        assert_eq!(
+            fuse_bounded(
+                &query,
+                &vector,
+                &lexical,
+                bounds,
+                |id: &u32| Some(*id),
+                |id: &u32| Some(*id),
+            ),
+            Err::<zeppelin_embed::fusion::FusionOutcome<u32>, _>(FusionError::InvalidBounds {
+                leg,
+                detail
+            })
+        );
+    }
 }
 
 fn offline_cc(vector: &[(u32, f64)], lexical: &[(u32, f64)], alpha: f64, k: usize) -> Vec<u32> {

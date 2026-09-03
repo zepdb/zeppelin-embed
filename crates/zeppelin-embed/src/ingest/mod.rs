@@ -547,6 +547,10 @@ pub struct GraphSearchStats {
 pub struct SearchOutcome {
     /// Candidates merged across the active segment and the published epoch's sealed segments.
     pub candidates: Vec<SearchCandidate>,
+    /// Exact squared-L2 of the farthest alive row, present only when every
+    /// segment was scored exhaustively and exactly. Bounded hybrid producers
+    /// use it as the normalization anchor a truncated candidate list loses.
+    pub worst_squared_l2: Option<f64>,
     /// Aggregate work from all per-segment query-pool executions.
     pub stats: ScanStats,
     /// Graph-only deterministic work; fields are zero when no segment used a graph.

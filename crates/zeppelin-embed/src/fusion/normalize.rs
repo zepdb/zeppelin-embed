@@ -7,6 +7,13 @@ pub(crate) struct ScoreRange {
 }
 
 impl ScoreRange {
+    /// Builds a range from exact producer-supplied extremes. Equal extremes
+    /// are not a range: the leg is degenerate and falls back to rank fusion,
+    /// exactly as an all-equal complete list does.
+    pub(crate) fn explicit(minimum: f64, maximum: f64) -> Option<Self> {
+        (minimum != maximum).then_some(Self { minimum, maximum })
+    }
+
     pub(crate) fn vector(self, squared_l2: f64) -> f64 {
         (self.maximum - squared_l2) / (self.maximum - self.minimum)
     }

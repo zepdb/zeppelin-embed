@@ -486,7 +486,10 @@ fn retained_row_index(
     Ok(row_index)
 }
 
-fn squared_l2_f64(left: &[f32], right: &[f32]) -> f64 {
+/// The one exact squared-L2 definition. Every exact vector score in the
+/// engine, including a hybrid cross-fill, comes from here so a bounded leg
+/// and an unbounded one cannot disagree in the last bits.
+pub(crate) fn squared_l2_f64(left: &[f32], right: &[f32]) -> f64 {
     left.iter()
         .zip(right)
         .map(|(left, right)| {

@@ -817,6 +817,7 @@ pub(crate) fn gather_top_k(
         .collect::<Vec<_>>();
     Ok(ScanOutcome {
         candidates: selected.into_sorted_with_ties(),
+        worst_score: None,
         stats: ScanStats {
             dims_touched,
             bytes_read,

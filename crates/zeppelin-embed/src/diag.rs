@@ -82,6 +82,8 @@ pub struct QueryDiagnostics {
     pub exact_rescore: bool,
     /// Version 1 fusion report; absent when no hybrid fusion leg ran.
     pub fusion: Option<FusionReport>,
+    /// Bounded-producer facts; absent when no hybrid fusion leg ran.
+    pub hybrid: Option<HybridReport>,
     /// Requested result count.
     pub requested_k: usize,
     /// Result count actually returned.
@@ -112,6 +114,7 @@ impl PartialEq for QueryDiagnostics {
             approximate,
             exact_rescore,
             fusion,
+            hybrid,
             requested_k,
             returned,
             budget_exhausted,
@@ -128,6 +131,7 @@ impl PartialEq for QueryDiagnostics {
             && approximate == &other.approximate
             && exact_rescore == &other.exact_rescore
             && fusion == &other.fusion
+            && hybrid == &other.hybrid
             && requested_k == &other.requested_k
             && returned == &other.returned
             && budget_exhausted == &other.budget_exhausted
@@ -136,6 +140,25 @@ impl PartialEq for QueryDiagnostics {
             && tokenizer_epoch == &other.tokenizer_epoch
             && observed_qos == &other.observed_qos
     }
+}
+
+/// What the bounded hybrid producers were asked for and returned.
+///
+/// The window is the final width after any widening. Cross-fill counts are
+/// the documents one leg's window contributed to the other leg's exact
+/// scores, which is what makes a bounded fusion equal the full-list one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HybridReport {
+    /// Per-leg window width the producers were finally asked for.
+    pub window: usize,
+    /// Vector candidates handed to fusion.
+    pub vector_returned: usize,
+    /// Lexical candidates handed to fusion.
+    pub lexical_returned: usize,
+    /// Lexical-window documents given an exact squared-L2 they lacked.
+    pub cross_filled_vector: usize,
+    /// Vector-window documents given an exact BM25 they lacked.
+    pub cross_filled_lexical: usize,
 }
 
 /// Inputs for one vector-only diagnostics value.
@@ -175,6 +198,7 @@ pub(crate) struct HybridDiagnostics {
     pub graph: GraphSearchStats,
     pub lexical: SearchCounters,
     pub report: FusionReport,
+    pub hybrid: HybridReport,
     pub epoch: Option<crate::epoch::EpochIdentity>,
     pub elapsed: Duration,
 }
@@ -188,6 +212,7 @@ impl QueryDiagnostics {
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
             fusion: None,
+            hybrid: None,
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted: input.budget_exhausted,
@@ -211,6 +236,7 @@ impl QueryDiagnostics {
             approximate: false,
             exact_rescore: false,
             fusion: None,
+            hybrid: None,
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted: false,
@@ -240,6 +266,7 @@ impl QueryDiagnostics {
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
             fusion: Some(input.report),
+            hybrid: Some(input.hybrid),
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted,

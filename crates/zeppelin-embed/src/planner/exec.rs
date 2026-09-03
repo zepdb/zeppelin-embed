@@ -1633,6 +1633,7 @@ fn execute_scan_request(
         SegmentBranch::Pruned => finish_scan_request(
             crate::scan::ScanOutcome {
                 candidates: Vec::new(),
+                worst_score: None,
                 stats: ScanStats {
                     dims_touched: 0,
                     bytes_read: 0,
@@ -1671,6 +1672,7 @@ fn execute_scan_request(
             finish_scan_request(
                 crate::scan::ScanOutcome {
                     candidates: partition.candidates,
+                    worst_score: None,
                     stats: ScanStats {
                         dims_touched: partition.dims_touched,
                         bytes_read: partition.bytes_read,

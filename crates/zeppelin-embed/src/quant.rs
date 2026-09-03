@@ -11,7 +11,7 @@ pub use bits4::{
 pub use int8::{
     Int8Query, Int8Vec, dequantize_int8, dot_int8_query, prepare_int8_query, quantize_int8,
 };
-pub(crate) use rescore::{RescoreCheckError, rescore_top_k_with_check};
+pub(crate) use rescore::{RescoreCheckError, rescore_top_k_with_check, squared_l2_f64};
 pub use rescore::{
     RescoreError, RescoreHit, RescoreMetric, RescorePool, RescoreResult, SearchByteCounts,
     rescore_top_k,

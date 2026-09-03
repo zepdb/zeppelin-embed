@@ -5,7 +5,7 @@ use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::query::{LexicalMatchKind, LexicalQuery};
 use zeppelin_embed::fts::search::TermQuery;
-use zeppelin_embed::fusion::{FusionError, FusionLeg, HybridQuery};
+use zeppelin_embed::fusion::{FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, HybridQuery};
 use zeppelin_embed::ingest::SearchRequest;
 use zeppelin_embed::ingest::wal_payload::UPSERT_V2;
 use zeppelin_embed::ingest::{
@@ -693,6 +693,76 @@ fn store_level_hybrid_default_is_exact_and_populates_diagnostics() {
         .expect("default hybrid tier exactly scans a graphless sealed segment");
     assert_eq!(sealed.hits[0].key, DocId::new(51));
     assert!(sealed.diagnostics.exact_rescore);
+    store.close().expect("close store");
+}
+
+#[test]
+fn store_level_hybrid_requests_the_window_not_the_corpus() {
+    const ROWS: usize = 300;
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let documents = (0..ROWS)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vec![1.0 - row as f32 * 0.002, row as f32 * 0.002],
+            )
+            .with_text(if row % 3 == 0 {
+                "bronze zeppelin"
+            } else {
+                "silver airship"
+            })
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest a corpus wider than the hybrid window");
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(5),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("bounded hybrid search");
+    let report = outcome
+        .diagnostics
+        .hybrid
+        .expect("hybrid diagnostics report the bounded producers");
+    assert!(
+        report.window >= HYBRID_WINDOW_FLOOR && report.window < ROWS,
+        "k = 5 resolves to the window floor and widens by doubling, never to \
+         the corpus, got {}",
+        report.window
+    );
+    assert_eq!(
+        report.vector_returned,
+        report.window + report.cross_filled_vector,
+        "fusion saw the window plus its cross-fill, never the corpus"
+    );
+    assert!(
+        report.vector_returned <= 2 * report.window,
+        "a cross-filled window can at most double, got {}",
+        report.vector_returned
+    );
+    assert!(
+        report.lexical_returned <= 2 * report.window,
+        "a cross-filled window can at most double, got {}",
+        report.lexical_returned
+    );
+    assert!(
+        report.cross_filled_vector > 0,
+        "this fixture ranks matching rows outside the vector window, so cross-fill must fire"
+    );
+    assert_eq!(outcome.hits.len(), 5);
+    assert!(
+        outcome
+            .hits
+            .iter()
+            .all(|hit| hit.vector_squared_l2.is_some()),
+        "every fused hit carries the exact vector score its window supplied"
+    );
     store.close().expect("close store");
 }
 

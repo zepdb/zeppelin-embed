@@ -619,6 +619,7 @@ fn merge_partitions(
     }
     Ok(ScanOutcome {
         candidates: merged.into_sorted_with_ties(),
+        worst_score: None,
         stats: ScanStats {
             dims_touched,
             bytes_read,

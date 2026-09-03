@@ -3337,7 +3337,16 @@ impl Store {
         let admitted = self
             .admit_vector_search(options)
             .map_err(crate::fusion::FusionError::from)?;
-        let vector_k = hybrid_vector_candidate_limit(&admitted.snapshot, &admitted.active_segment)?;
+        let corpus_rows = hybrid::corpus_rows(&admitted.snapshot, &admitted.active_segment)?;
+        // Round zero asks each producer for the window plus one row, so the
+        // element just past the window is the stability bound's unseen value.
+        // A caller that disabled widening asks for the corpus at once, which
+        // is the complete-list fusion this path used to run unconditionally.
+        let mut width = if hybrid_query.max_rounds == 0 {
+            corpus_rows
+        } else {
+            hybrid::hybrid_window(hybrid_query.k, corpus_rows)?.width
+        };
         let panic_vector = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Vector);
         let panic_lexical = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Lexical);
         let lexical_worker = self.ensure_lexical_worker()?;
@@ -3372,8 +3381,7 @@ impl Store {
             })();
             (name, result)
         })?;
-        let vector_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            maybe_trigger_hybrid_leg_panic(panic_vector, "injected vector hybrid leg panic");
+        let run_vector_leg = |k: usize| {
             search_pinned(
                 admitted.pool.as_deref(),
                 &admitted.snapshot,
@@ -3382,7 +3390,7 @@ impl Store {
                 admitted.generation,
                 self.epoch_identity(),
                 vector_query,
-                vector_k,
+                k,
                 options,
                 control.clone(),
                 GraphBoundMode::Shared,
@@ -3391,6 +3399,10 @@ impl Store {
                 None,
             )
             .map_err(crate::fusion::FusionError::from)
+        };
+        let vector_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            maybe_trigger_hybrid_leg_panic(panic_vector, "injected vector hybrid leg panic");
+            run_vector_leg(width.saturating_add(1))
         }))
         .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
             leg: crate::fusion::FusionLeg::Vector,
@@ -3410,35 +3422,71 @@ impl Store {
         }
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = lexical_thread_name;
-        let (vector_outcome, (lexical, lexical_counters, lexical_expansions)) =
-            resolve_hybrid_leg_results(vector_result, lexical_result)?;
+        let (
+            mut vector_outcome,
+            (lexical_hits, lexical_sources, lexical_counters, lexical_expansions),
+        ) = resolve_hybrid_leg_results(vector_result, lexical_result)?;
+
+        let mut rounds = 1_usize;
+        let mut budget_exhausted = false;
+        let (fused, report_window) = loop {
+            let round = hybrid::build_round(
+                &admitted.snapshot,
+                &admitted.active_segment,
+                &lexical_sources,
+                vector_query.vector(),
+                &vector_outcome.candidates,
+                vector_outcome.worst_squared_l2,
+                &lexical_hits,
+                width,
+            )?;
+            let fused = crate::fusion::fuse_bounded(
+                hybrid_query,
+                &round.vector,
+                &round.lexical,
+                round.bounds,
+                |document: &Option<crate::ingest::DocId>| *document,
+                |document: &Option<crate::ingest::DocId>| *document,
+            )?;
+            if fused.report.termination != crate::fusion::FusionTermination::WindowUnproven
+                || width >= corpus_rows
+            {
+                break (
+                    fused,
+                    crate::diag::HybridReport {
+                        window: width,
+                        vector_returned: round.vector.len(),
+                        lexical_returned: round.lexical.len(),
+                        cross_filled_vector: round.cross_filled_vector,
+                        cross_filled_lexical: round.cross_filled_lexical,
+                    },
+                );
+            }
+            width = if rounds >= hybrid_query.max_rounds {
+                budget_exhausted = true;
+                corpus_rows
+            } else {
+                width.saturating_mul(2).min(corpus_rows)
+            };
+            rounds = rounds.saturating_add(1);
+            vector_outcome = run_vector_leg(width.saturating_add(1))?;
+        };
+
         let crate::ingest::SearchOutcome {
-            candidates,
+            candidates: _,
+            worst_squared_l2: _,
             stats: scan,
             graph_stats: graph,
             generation,
             epoch,
             diagnostics: vector_diagnostics,
         } = vector_outcome;
-        let vector = candidates
-            .into_iter()
-            .map(|candidate| {
-                let document = candidate.document().map(|version| version.doc_id());
-                let squared_l2 = -f64::from(candidate.score());
-                if candidate.exact_score() {
-                    crate::fusion::VectorCandidate::exact(document, squared_l2)
-                } else {
-                    crate::fusion::VectorCandidate::estimated(document, squared_l2)
-                }
-            })
-            .collect();
-        let fused = crate::fusion::execute_hybrid(
-            hybrid_query,
-            || Ok(vector),
-            || Ok(lexical),
-            |document: &Option<crate::ingest::DocId>| *document,
-            |document: &Option<crate::ingest::DocId>| *document,
-        )?;
+        let mut report = fused.report;
+        report.rounds = rounds;
+        if budget_exhausted {
+            report.budget_exhausted = true;
+            report.termination = crate::fusion::FusionTermination::BudgetFullMaterialization;
+        }
         let diagnostics = crate::diag::QueryDiagnostics::hybrid(crate::diag::HybridDiagnostics {
             snapshot_generation: vector_diagnostics.snapshot_generation,
             indexed_through_seq: vector_diagnostics.indexed_through_seq,
@@ -3450,7 +3498,8 @@ impl Store {
             scan,
             graph,
             lexical: lexical_counters,
-            report: fused.report,
+            report,
+            hybrid: report_window,
             epoch,
             elapsed: started.elapsed(),
         });
@@ -3649,7 +3698,7 @@ impl Store {
 }
 
 #[derive(Clone, Copy)]
-enum StructuredLexicalSource {
+pub(crate) enum StructuredLexicalSource {
     Sealed(usize),
     Active,
 }
@@ -3976,7 +4025,8 @@ fn structured_lexical_row<'a>(
 }
 
 type ExactLexicalLeg = (
-    Vec<crate::fusion::LexicalCandidate<Option<crate::ingest::DocId>>>,
+    Vec<hybrid::LexicalHit>,
+    Vec<StructuredLexicalSource>,
     crate::fts::search::SearchCounters,
     Vec<crate::fts::query::LexicalExpansion>,
 );
@@ -4040,6 +4090,7 @@ fn exact_structured_lexical_leg(
     if index.segments().is_empty() || expansions.is_empty() {
         return Ok((
             Vec::new(),
+            sources,
             crate::fts::search::SearchCounters::default(),
             expansions,
         ));
@@ -4096,28 +4147,13 @@ fn exact_structured_lexical_leg(
         let document = structured_lexical_document(snapshot, active, &sources, doc, false)
             .map_err(map_structured_leg_document_error)?
             .map(|version| version.doc_id());
-        joined.push(crate::fusion::LexicalCandidate::new(document, score));
+        joined.push(hybrid::LexicalHit {
+            doc,
+            document,
+            bm25: score,
+        });
     }
-    Ok((joined, counters, expansions))
-}
-
-fn hybrid_vector_candidate_limit(
-    snapshot: &PublishedSnapshot,
-    active: &crate::ingest::ActiveSegment,
-) -> Result<usize, crate::fusion::FusionError> {
-    snapshot
-        .segments()
-        .iter()
-        .try_fold(active.row_count(), |total, segment| {
-            usize::try_from(segment.meta().row_count)
-                .ok()
-                .and_then(|rows| total.checked_add(rows))
-                .ok_or_else(|| {
-                    crate::fusion::FusionError::from(QueryError::Scan(
-                        crate::scan::ScanError::ArithmeticOverflow,
-                    ))
-                })
-        })
+    Ok((joined, sources, counters, expansions))
 }
 
 fn exact_lexical_leg(
@@ -4136,6 +4172,7 @@ fn exact_lexical_leg(
     if index.segments().is_empty() {
         return Ok((
             Vec::new(),
+            sources,
             crate::fts::search::SearchCounters::default(),
             query
                 .terms
@@ -4168,10 +4205,15 @@ fn exact_lexical_leg(
         let document = structured_lexical_document(snapshot, active, &sources, hit.doc, false)
             .map_err(map_term_leg_document_error)?
             .map(|version| version.doc_id());
-        joined.push(crate::fusion::LexicalCandidate::new(document, hit.score));
+        joined.push(hybrid::LexicalHit {
+            doc: hit.doc,
+            document,
+            bm25: hit.score,
+        });
     }
     Ok((
         joined,
+        sources,
         result.counters,
         query
             .terms
@@ -4234,6 +4276,8 @@ fn search_pinned(
     let mut candidates = Vec::new();
     let mut dims_touched = 0_u64;
     let mut bytes_read = 0_u64;
+    let mut worst_squared_l2: Option<f64> = None;
+    let mut worst_exhaustive = true;
     let mut worker_thread_ids = Vec::new();
     let mut graph_stats = GraphSearchStats::default();
     let mut plans = Vec::new();
@@ -4332,6 +4376,7 @@ fn search_pinned(
                 )?
             }
         };
+        fold_worst_squared_l2(&mut worst_squared_l2, &mut worst_exhaustive, &outcome);
         merge_store_outcome(
             outcome,
             RowSource::Active,
@@ -4389,6 +4434,7 @@ fn search_pinned(
             SearchTier::Auto | SearchTier::Exact | SearchTier::Scan => None,
         };
         if let Some(graph_options) = graph_options {
+            worst_exhaustive = false;
             let competitive_distance = global_competitive_distance(&candidates, k);
             let MergedSegmentGraph {
                 plan,
@@ -4452,6 +4498,7 @@ fn search_pinned(
             vector_fault_controller,
         )?;
         let exact_score = full_precision || segment.meta().scheme == 0;
+        fold_worst_squared_l2(&mut worst_squared_l2, &mut worst_exhaustive, &outcome);
         merge_store_outcome(
             outcome,
             source,
@@ -4515,12 +4562,38 @@ fn search_pinned(
     });
     Ok(SearchOutcome {
         candidates,
+        worst_squared_l2: if worst_exhaustive {
+            worst_squared_l2
+        } else {
+            None
+        },
         stats,
         graph_stats,
         generation,
         epoch,
         diagnostics,
     })
+}
+
+/// Folds one segment's exhaustive worst score into the query-wide farthest
+/// distance. A scan that returned candidates without a worst score did not
+/// visit every allowed row, so the query-wide anchor is not available.
+fn fold_worst_squared_l2(
+    worst: &mut Option<f64>,
+    exhaustive: &mut bool,
+    outcome: &crate::scan::ScanOutcome,
+) {
+    match outcome.worst_score {
+        Some(score) => {
+            let squared_l2 = -f64::from(score);
+            *worst = Some(worst.map_or(squared_l2, |current: f64| current.max(squared_l2)));
+        }
+        None => {
+            if !outcome.candidates.is_empty() {
+                *exhaustive = false;
+            }
+        }
+    }
 }
 
 // Boxing the traversed variant would add an allocation to every graph segment.
@@ -5113,6 +5186,7 @@ fn execute_store_scan(
         .map_err(map_scan_error)?;
         return Ok(crate::scan::ScanOutcome {
             candidates: partition.candidates,
+            worst_score: None,
             stats: crate::scan::ScanStats {
                 dims_touched: partition.dims_touched,
                 bytes_read: partition.bytes_read,
@@ -5362,6 +5436,7 @@ fn scan_squared_l2(
     if row_indices.is_empty() {
         return Ok(crate::scan::ScanOutcome {
             candidates: Vec::new(),
+            worst_score: None,
             stats: crate::scan::ScanStats {
                 dims_touched: 0,
                 bytes_read: 0,
@@ -5423,6 +5498,10 @@ fn scan_squared_l2(
             .total_cmp(&left.score)
             .then_with(|| left.row_id.cmp(&right.row_id))
     });
+    // Every alive row was scored exactly, so the tail of the complete order
+    // is the farthest row: the hybrid normalization anchor, taken before the
+    // top-k cut throws it away.
+    let worst_score = candidates.last().map(|candidate| candidate.score);
     crate::scan::truncate_to_k_with_score_ties(&mut candidates, k, |candidate| candidate.score);
     let dims = u64::try_from(query.len())
         .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
@@ -5436,6 +5515,7 @@ fn scan_squared_l2(
         .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
     Ok(crate::scan::ScanOutcome {
         candidates,
+        worst_score,
         stats: crate::scan::ScanStats {
             dims_touched,
             bytes_read,

@@ -264,6 +264,43 @@ pub enum FusionTermination {
     ListsExhausted,
     /// The round cap fired, then full lists were materialized for correctness.
     BudgetFullMaterialization,
+    /// A bounded window could not be proved stable; the caller must widen it.
+    WindowUnproven,
+}
+
+/// Exact vector-leg extremes for one bounded window.
+///
+/// The extremes are corpus-wide, not window-wide: windowed min-max
+/// normalization measurably loses quality (PLAN.md §A.2), so a bounded
+/// producer supplies the true farthest row alongside its window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VectorBounds {
+    /// Exact squared-L2 of the nearest alive row.
+    pub min_squared_l2: f64,
+    /// Exact squared-L2 of the farthest alive row.
+    pub max_squared_l2: f64,
+    /// Exact squared-L2 of the (W+1)-th row, absent when the leg is complete.
+    pub next_unseen_squared_l2: Option<f64>,
+}
+
+/// Exact lexical-leg extremes for one bounded window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LexicalBounds {
+    /// Exact BM25 of the best matching document.
+    pub max_bm25: f64,
+    /// Exact BM25 of the worst matching document.
+    pub min_bm25: f64,
+    /// Exact BM25 of the (W+1)-th hit, absent when the leg is complete.
+    pub next_unseen_bm25: Option<f64>,
+}
+
+/// Per-leg exact ranges supplied by bounded producers, validated by fusion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LegBounds {
+    /// Vector-leg extremes, absent when the leg produced nothing.
+    pub vector: Option<VectorBounds>,
+    /// Lexical-leg extremes, absent when the leg produced nothing.
+    pub lexical: Option<LexicalBounds>,
 }
 
 /// Truthful deterministic report for one fusion.
@@ -334,6 +371,13 @@ pub enum FusionError {
     EstimatedVectorScore {
         /// Zero-based rank.
         rank: usize,
+    },
+    /// A bounded producer supplied a range its own window contradicts.
+    InvalidBounds {
+        /// Affected leg.
+        leg: FusionLeg,
+        /// Stable description of the violated bound.
+        detail: &'static str,
     },
     /// A supposedly ranked input list changed score direction.
     UnrankedInput {
@@ -430,6 +474,9 @@ impl std::fmt::Display for FusionError {
                     formatter,
                     "vector score at rank {rank} was not exactly rescored"
                 )
+            }
+            Self::InvalidBounds { leg, detail } => {
+                write!(formatter, "{leg:?} leg bounds are invalid: {detail}")
             }
             Self::UnrankedInput { leg, rank } => {
                 write!(
@@ -562,6 +609,55 @@ where
         query,
         &joined_vector,
         &joined_lexical,
+        effective_alpha,
+        applied_rules,
+    )
+}
+
+/// Fuses two bounded windows plus their exact per-leg ranges.
+///
+/// This is the seam for a bounded producer. It differs from [`fuse`] in
+/// exactly two ways: the normalization ranges come from `bounds` rather than
+/// from the ends of the supplied lists, and stability is decided against the
+/// supplied (W+1)-th values rather than against the next element of a
+/// complete list. It scores each window once; there is no geometric round
+/// loop, because widening means re-running the producers.
+///
+/// The caller must cross-fill: every document appearing in one window must
+/// also appear in the other with its exact score, or be absent from the other
+/// leg entirely. Under that contract every candidate this function can see
+/// carries complete information, so only a document outside both windows can
+/// still change the answer, and `bounds` decides whether one could.
+///
+/// Returns [`FusionTermination::WindowUnproven`] when it could not, which the
+/// caller answers by widening the window and producing again.
+///
+/// # Errors
+///
+/// Returns [`FusionError`] for the same leg violations as [`fuse`], plus
+/// [`FusionError::InvalidBounds`] when a supplied range is non-finite,
+/// inverted, or contradicted by its own window.
+pub fn fuse_bounded<K, V, L, VectorJoin, LexicalJoin>(
+    query: &HybridQuery,
+    vector_window: &[VectorCandidate<V>],
+    lexical_window: &[LexicalCandidate<L>],
+    bounds: LegBounds,
+    mut vector_join: VectorJoin,
+    mut lexical_join: LexicalJoin,
+) -> Result<FusionOutcome<K>, FusionError>
+where
+    K: Clone + Ord,
+    VectorJoin: FnMut(&V) -> Option<K>,
+    LexicalJoin: FnMut(&L) -> Option<K>,
+{
+    let (effective_alpha, applied_rules) = rules::effective_alpha(query)?;
+    let joined_vector = join_vector(vector_window, &mut vector_join)?;
+    let joined_lexical = join_lexical(lexical_window, &mut lexical_join)?;
+    cc::fuse_bounded_joined(
+        query,
+        &joined_vector,
+        &joined_lexical,
+        bounds,
         effective_alpha,
         applied_rules,
     )

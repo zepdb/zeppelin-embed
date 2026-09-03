@@ -33,6 +33,10 @@ pub struct ScanOutcome {
     pub candidates: Vec<super::ScanCandidate>,
     /// Deterministic work counters.
     pub stats: ScanStats,
+    /// Worst score over every scored row, before the top-k cut. Present only
+    /// where the scan visited every allowed row and scored it exactly, which
+    /// is what makes it usable as a normalization anchor.
+    pub worst_score: Option<f32>,
 }
 
 /// Returns the physical performance-core capacity used to cap scan workers.
