@@ -971,6 +971,9 @@ def main() -> None:
     throughput.add_argument("--lengths", required=True, type=Path)
     throughput.add_argument("--batch", default="32,128,512")
     throughput.add_argument("--batches", type=int, default=10)
+    throughput.add_argument("--control", required=True, type=Path)
+    throughput.add_argument("--control-model", required=True, type=Path)
+    throughput.add_argument("--control-queries", required=True, type=Path)
     distribution = subparsers.choices["length-distribution"]
     distribution.add_argument("--corpus", required=True, type=Path, nargs="+")
     args = parser.parse_args()
@@ -1018,13 +1021,36 @@ def main() -> None:
             n=args.n,
         )
     elif args.command == "throughput":
-        result = batched_throughput(
-            encoder,
-            _read_queries(args.queries),
-            args.lengths,
-            tuple(int(item) for item in args.batch.split(",")),
-            batches=args.batches,
+        control_data = json.loads(args.control.read_text(encoding="utf-8"))
+        control_encoder = MlxBertEncoder(args.control_model)
+        control_queries = _read_queries(args.control_queries)
+
+        def measure_control() -> float:
+            return single_query_latency(
+                control_encoder,
+                control_queries,
+                int(control_data["tokens"]),
+                warmups=100,
+                n=int(control_data["samples"]),
+            )["p50_ms"]
+
+        bracketed = run_bracketed_cell(
+            args.control,
+            measure_control,
+            lambda: batched_throughput(
+                encoder,
+                _read_queries(args.queries),
+                args.lengths,
+                tuple(int(item) for item in args.batch.split(",")),
+                batches=args.batches,
+            ),
+            measure_control,
         )
+        result = bracketed.pop("cell_result")
+        result["control"] = bracketed
+        result["void"] = bracketed["void"]
+        result["notes"] = bracketed["notes"]
+        args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

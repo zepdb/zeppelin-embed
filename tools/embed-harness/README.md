@@ -151,6 +151,9 @@ $H -m embed_harness.encode throughput \
   --queries /private/tmp/beir/scifact/queries.jsonl \
   --lengths data/length-dist.json \
   --batch 32,128,512 \
+  --control control.json \
+  --control-model models/m5 \
+  --control-queries /private/tmp/beir/scifact/queries.jsonl \
   --out "results/$MODEL_ID-throughput.json"
 
 $H -m embed_harness.evalir encode-beir \
