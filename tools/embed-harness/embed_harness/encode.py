@@ -99,6 +99,10 @@ def _softmax_numpy(values: np.ndarray) -> np.ndarray:
     return exponent / exponent.sum(axis=-1, keepdims=True)
 
 
+def _silu_numpy(values: np.ndarray) -> np.ndarray:
+    return values / (1.0 + np.exp(-values))
+
+
 class NumpyBertEncoder:
     """Single-thread reference BERT/XLM-R forward over converted weights."""
 
@@ -123,7 +127,12 @@ class NumpyBertEncoder:
         if self.hidden_size % self.heads:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
         self.layers = int(self.config["num_hidden_layers"])
-        word_suffix = "embeddings.word_embeddings.weight"
+        self.architecture = str(self.meta["architecture"])
+        word_suffix = (
+            "embeddings.tok_embeddings.weight"
+            if self.architecture == "ModernBertModel"
+            else "embeddings.word_embeddings.weight"
+        )
         matches = [name for name in self.weights if name.endswith(word_suffix)]
         if len(matches) != 1:
             raise ValueError(f"expected one {word_suffix} tensor, found {len(matches)}")
@@ -131,7 +140,12 @@ class NumpyBertEncoder:
 
     @property
     def vocab_size(self) -> int:
-        return int(self._weight("embeddings.word_embeddings.weight").shape[0])
+        suffix = (
+            "embeddings.tok_embeddings.weight"
+            if self.architecture == "ModernBertModel"
+            else "embeddings.word_embeddings.weight"
+        )
+        return int(self._weight(suffix).shape[0])
 
     @property
     def dims(self) -> int:
@@ -143,6 +157,9 @@ class NumpyBertEncoder:
             return self.weights[name]
         except KeyError as error:
             raise KeyError(f"converted model lacks tensor {name}") from error
+
+    def _optional_weight(self, suffix: str) -> np.ndarray | None:
+        return self.weights.get(self.base + suffix)
 
     def token_ids(self, text: str) -> list[int]:
         ids = self.tokenizer.encode(self.prefix + text, add_special_tokens=True).ids
@@ -210,6 +227,8 @@ class NumpyBertEncoder:
         )
 
     def forward(self, input_ids: np.ndarray, attention: np.ndarray) -> np.ndarray:
+        if self.architecture == "ModernBertModel":
+            return self._forward_modernbert(input_ids, attention)
         position_ids = self._position_ids(input_ids, attention)
         token_types = np.zeros_like(input_ids)
         hidden = self._weight("embeddings.word_embeddings.weight")[input_ids]
@@ -288,6 +307,140 @@ class NumpyBertEncoder:
             pooled = pooled / np.maximum(norms, np.finfo(np.float32).tiny)
         return pooled.astype(np.float32)
 
+    def _forward_modernbert(
+        self, input_ids: np.ndarray, attention: np.ndarray
+    ) -> np.ndarray:
+        batch, width = input_ids.shape
+        head_size = self.hidden_size // self.heads
+        if head_size % 2:
+            raise ValueError("ModernBERT attention head size must be even")
+        epsilon = float(self.config.get("norm_eps") or 1e-5)
+
+        def layer_norm(values: np.ndarray, suffix: str) -> np.ndarray:
+            bias = self._optional_weight(suffix + ".bias")
+            if bias is None:
+                bias = np.zeros(self.hidden_size, dtype=np.float32)
+            return _layer_norm_numpy(
+                values, self._weight(suffix + ".weight"), bias, epsilon
+            )
+
+        def linear(values: np.ndarray, suffix: str) -> np.ndarray:
+            result = values @ self._weight(suffix + ".weight").T
+            bias = self._optional_weight(suffix + ".bias")
+            return result if bias is None else result + bias
+
+        configured_types = self.config.get("layer_types")
+        if configured_types is None:
+            interval = int(self.config.get("global_attn_every_n_layers") or 3)
+            layer_types = [
+                "sliding_attention" if layer % interval else "full_attention"
+                for layer in range(self.layers)
+            ]
+        else:
+            layer_types = [str(value) for value in configured_types]
+        if len(layer_types) != self.layers:
+            raise ValueError("ModernBERT layer_types must match num_hidden_layers")
+
+        rope_parameters = self.config.get("rope_parameters") or {}
+
+        def rope_theta(layer_type: str) -> float:
+            parameters = rope_parameters.get(layer_type) or {}
+            if str(parameters.get("rope_type", "default")) != "default":
+                raise ValueError("only default ModernBERT rotary embeddings are supported")
+            if "rope_theta" in parameters:
+                return float(parameters["rope_theta"])
+            if layer_type == "full_attention":
+                return float(self.config.get("global_rope_theta") or 160000.0)
+            return float(self.config.get("local_rope_theta") or 10000.0)
+
+        positions = np.broadcast_to(
+            np.arange(width, dtype=np.float32), (batch, width)
+        )
+        hidden = self._weight("embeddings.tok_embeddings.weight")[input_ids]
+        hidden = layer_norm(hidden, "embeddings.norm")
+        key_mask = attention[:, None, None, :] > 0.0
+        query_positions = np.arange(width)[:, None]
+        key_positions = np.arange(width)[None, :]
+
+        for layer, layer_type in enumerate(layer_types):
+            base = f"layers.{layer}."
+            attention_input = (
+                hidden
+                if layer == 0
+                else layer_norm(hidden, base + "attn_norm")
+            )
+            qkv = linear(attention_input, base + "attn.Wqkv")
+            qkv = qkv.reshape(batch, width, 3, self.heads, head_size)
+            query, key, value = (
+                qkv[:, :, index].transpose(0, 2, 1, 3) for index in range(3)
+            )
+
+            theta = rope_theta(layer_type)
+            inv_frequency = 1.0 / (
+                theta
+                ** (
+                    np.arange(0, head_size, 2, dtype=np.float32)
+                    / float(head_size)
+                )
+            )
+            frequencies = positions[..., None] * inv_frequency[None, None, :]
+            rotary = np.concatenate((frequencies, frequencies), axis=-1)
+            cosine = np.cos(rotary).astype(np.float32)[:, None, :, :]
+            sine = np.sin(rotary).astype(np.float32)[:, None, :, :]
+
+            def rotate_half(values: np.ndarray) -> np.ndarray:
+                first, second = np.split(values, 2, axis=-1)
+                return np.concatenate((-second, first), axis=-1)
+
+            query = query * cosine + rotate_half(query) * sine
+            key = key * cosine + rotate_half(key) * sine
+            allowed = key_mask
+            if layer_type == "sliding_attention":
+                window = int(self.config.get("local_attention") or 128) // 2
+                local = np.abs(query_positions - key_positions) <= window
+                allowed = allowed & local[None, None, :, :]
+            elif layer_type != "full_attention":
+                raise ValueError(f"unsupported ModernBERT layer type: {layer_type}")
+            attention_bias = np.where(allowed, 0.0, -1.0e9).astype(np.float32)
+            scores = (query @ key.transpose(0, 1, 3, 2)) / math.sqrt(
+                float(head_size)
+            )
+            probabilities = _softmax_numpy(scores + attention_bias)
+            context = (
+                (probabilities @ value).transpose(0, 2, 1, 3).reshape(hidden.shape)
+            )
+            hidden = hidden + linear(context, base + "attn.Wo")
+
+            mlp_input = layer_norm(hidden, base + "mlp_norm")
+            projected = linear(mlp_input, base + "mlp.Wi")
+            inputs, gates = np.split(projected, 2, axis=-1)
+            activation = str(self.config.get("hidden_activation") or "gelu")
+            if activation == "gelu":
+                activated = _gelu_numpy(inputs)
+            elif activation in {"silu", "swish"}:
+                activated = _silu_numpy(inputs)
+            else:
+                raise ValueError(
+                    f"unsupported ModernBERT activation: {activation}"
+                )
+            hidden = hidden + linear(activated * gates, base + "mlp.Wo")
+
+        hidden = layer_norm(hidden, "final_norm")
+        if self.pooling == "mean":
+            mask = attention[..., None]
+            pooled = (hidden * mask).sum(axis=1) / np.maximum(mask.sum(axis=1), 1.0)
+        elif self.pooling == "cls":
+            pooled = hidden[:, 0]
+        elif self.pooling == "last-token":
+            last = np.maximum(attention.sum(axis=1).astype(np.int64) - 1, 0)
+            pooled = hidden[np.arange(len(hidden)), last]
+        else:
+            raise ValueError(f"unsupported pooling: {self.pooling}")
+        if self.normalize:
+            norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+            pooled = pooled / np.maximum(norms, np.finfo(np.float32).tiny)
+        return pooled.astype(np.float32)
+
     def encode_texts(
         self, texts: list[str], exact_length: int | None = None
     ) -> np.ndarray:
@@ -323,6 +476,13 @@ class MlxBertEncoder(NumpyBertEncoder):
         return self.mx_weights[self.base + suffix]
 
     def forward_mx(self, input_ids, attention, *, weights=None, layer_indices=None):
+        if self.architecture == "ModernBertModel":
+            return self._forward_modernbert_mx(
+                input_ids,
+                attention,
+                weights=weights,
+                layer_indices=layer_indices,
+            )
         mx = self.mx
         selected_weights = self.mx_weights if weights is None else weights
 
@@ -404,6 +564,159 @@ class MlxBertEncoder(NumpyBertEncoder):
                 weight(base + "output.LayerNorm.weight"),
                 weight(base + "output.LayerNorm.bias"),
             )
+        if self.pooling == "mean":
+            expanded = mask[..., None]
+            pooled = mx.sum(hidden * expanded, axis=1) / mx.maximum(
+                mx.sum(expanded, axis=1), 1.0
+            )
+        elif self.pooling == "cls":
+            pooled = hidden[:, 0]
+        elif self.pooling == "last-token":
+            last = np.maximum(mask_numpy.sum(axis=1).astype(np.int64) - 1, 0)
+            pooled = mx.stack(
+                [hidden[row, int(column)] for row, column in enumerate(last)]
+            )
+        else:
+            raise ValueError(f"unsupported pooling: {self.pooling}")
+        if self.normalize:
+            pooled = pooled / mx.maximum(
+                mx.sqrt(mx.sum(pooled * pooled, axis=1, keepdims=True)),
+                np.finfo(np.float32).tiny,
+            )
+        return pooled
+
+    def _forward_modernbert_mx(
+        self, input_ids, attention, *, weights=None, layer_indices=None
+    ):
+        mx = self.mx
+        selected_weights = self.mx_weights if weights is None else weights
+
+        def weight(suffix: str):
+            return selected_weights[self.base + suffix]
+
+        def optional_weight(suffix: str):
+            return selected_weights.get(self.base + suffix)
+
+        ids_numpy = np.asarray(input_ids, dtype=np.int64)
+        mask_numpy = np.asarray(attention, dtype=np.float32)
+        ids = mx.array(ids_numpy)
+        mask = mx.array(mask_numpy)
+        batch, width = ids_numpy.shape
+        head_size = self.hidden_size // self.heads
+        if head_size % 2:
+            raise ValueError("ModernBERT attention head size must be even")
+        epsilon = float(self.config.get("norm_eps") or 1e-5)
+
+        def layer_norm(values, suffix: str):
+            mean = mx.mean(values, axis=-1, keepdims=True)
+            variance = mx.mean((values - mean) ** 2, axis=-1, keepdims=True)
+            result = ((values - mean) / mx.sqrt(variance + epsilon)) * weight(
+                suffix + ".weight"
+            )
+            bias = optional_weight(suffix + ".bias")
+            return result if bias is None else result + bias
+
+        def linear(values, suffix: str):
+            result = values @ mx.transpose(weight(suffix + ".weight"))
+            bias = optional_weight(suffix + ".bias")
+            return result if bias is None else result + bias
+
+        configured_types = self.config.get("layer_types")
+        if configured_types is None:
+            interval = int(self.config.get("global_attn_every_n_layers") or 3)
+            layer_types = [
+                "sliding_attention" if layer % interval else "full_attention"
+                for layer in range(self.layers)
+            ]
+        else:
+            layer_types = [str(value) for value in configured_types]
+        if len(layer_types) != self.layers:
+            raise ValueError("ModernBERT layer_types must match num_hidden_layers")
+        rope_parameters = self.config.get("rope_parameters") or {}
+
+        def rope_theta(layer_type: str) -> float:
+            parameters = rope_parameters.get(layer_type) or {}
+            if str(parameters.get("rope_type", "default")) != "default":
+                raise ValueError("only default ModernBERT rotary embeddings are supported")
+            if "rope_theta" in parameters:
+                return float(parameters["rope_theta"])
+            if layer_type == "full_attention":
+                return float(self.config.get("global_rope_theta") or 160000.0)
+            return float(self.config.get("local_rope_theta") or 10000.0)
+
+        hidden = mx.take(weight("embeddings.tok_embeddings.weight"), ids, axis=0)
+        hidden = layer_norm(hidden, "embeddings.norm")
+        positions = mx.arange(width, dtype=mx.float32)[None, :]
+        key_mask = mask[:, None, None, :] > 0.0
+        query_positions = mx.arange(width)[:, None]
+        key_positions = mx.arange(width)[None, :]
+        selected_layers = range(self.layers) if layer_indices is None else layer_indices
+
+        for layer in selected_layers:
+            layer_type = layer_types[layer]
+            base = f"layers.{layer}."
+            attention_input = (
+                hidden
+                if layer == 0
+                else layer_norm(hidden, base + "attn_norm")
+            )
+            qkv = linear(attention_input, base + "attn.Wqkv")
+            qkv = mx.reshape(qkv, (batch, width, 3, self.heads, head_size))
+            query, key, value = (
+                mx.transpose(qkv[:, :, index], (0, 2, 1, 3))
+                for index in range(3)
+            )
+
+            theta = rope_theta(layer_type)
+            exponent = mx.arange(0, head_size, 2, dtype=mx.float32) / float(
+                head_size
+            )
+            inv_frequency = 1.0 / mx.power(mx.array(theta), exponent)
+            frequencies = positions[..., None] * inv_frequency[None, None, :]
+            rotary = mx.concatenate((frequencies, frequencies), axis=-1)
+            cosine = mx.cos(rotary)[:, None, :, :]
+            sine = mx.sin(rotary)[:, None, :, :]
+
+            def rotate_half(values):
+                first, second = mx.split(values, 2, axis=-1)
+                return mx.concatenate((-second, first), axis=-1)
+
+            query = query * cosine + rotate_half(query) * sine
+            key = key * cosine + rotate_half(key) * sine
+            allowed = key_mask
+            if layer_type == "sliding_attention":
+                window = int(self.config.get("local_attention") or 128) // 2
+                local = mx.abs(query_positions - key_positions) <= window
+                allowed = mx.logical_and(allowed, local[None, None, :, :])
+            elif layer_type != "full_attention":
+                raise ValueError(f"unsupported ModernBERT layer type: {layer_type}")
+            attention_bias = mx.where(allowed, 0.0, -1.0e9)
+            scores = (query @ mx.transpose(key, (0, 1, 3, 2))) / math.sqrt(
+                float(head_size)
+            )
+            probabilities = mx.softmax(scores + attention_bias, axis=-1)
+            context = mx.reshape(
+                mx.transpose(probabilities @ value, (0, 2, 1, 3)), hidden.shape
+            )
+            hidden = hidden + linear(context, base + "attn.Wo")
+
+            mlp_input = layer_norm(hidden, base + "mlp_norm")
+            projected = linear(mlp_input, base + "mlp.Wi")
+            inputs, gates = mx.split(projected, 2, axis=-1)
+            activation = str(self.config.get("hidden_activation") or "gelu")
+            if activation == "gelu":
+                activated = 0.5 * inputs * (
+                    1.0 + mx.erf(inputs / math.sqrt(2.0))
+                )
+            elif activation in {"silu", "swish"}:
+                activated = inputs / (1.0 + mx.exp(-inputs))
+            else:
+                raise ValueError(
+                    f"unsupported ModernBERT activation: {activation}"
+                )
+            hidden = hidden + linear(activated * gates, base + "mlp.Wo")
+
+        hidden = layer_norm(hidden, "final_norm")
         if self.pooling == "mean":
             expanded = mask[..., None]
             pooled = mx.sum(hidden * expanded, axis=1) / mx.maximum(

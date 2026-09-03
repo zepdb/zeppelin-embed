@@ -18,7 +18,12 @@ def shuffling_query_tokens_leaves_a_mean_pooled_table_encoder_bitwise_unchanged(
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         converted = root / "converted"
-        convert_model(write_tiny_bert(root), converted)
+        convert_model(
+            write_tiny_bert(root),
+            converted,
+            model_id="example/tiny-bert",
+            model_version="test-fixture-v1",
+        )
         teacher = NumpyBertEncoder(converted)
         token_rows = [teacher.token_ids("t1 t2 t3"), teacher.token_ids("t4 t5 t6")]
         shuffled = shuffle_token_rows(token_rows)

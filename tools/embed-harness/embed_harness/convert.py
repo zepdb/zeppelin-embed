@@ -1,4 +1,4 @@
-"""Convert a local Hugging Face safetensors BERT-class model to NPZ."""
+"""Convert a local Hugging Face safetensors encoder model to NPZ."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ import hashlib
 import json
 import platform
 import shutil
+import struct
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from safetensors.numpy import load_file
 
 BERT_ARCHITECTURES = {"BertModel", "XLMRobertaModel", "RobertaModel"}
+MODERNBERT_ARCHITECTURES = {"ModernBertModel"}
 
 
 def sha256_file(path: Path) -> str:
@@ -32,8 +33,8 @@ def _architecture(config: dict[str, Any]) -> str:
     lowered = architecture.lower()
     if architecture in BERT_ARCHITECTURES:
         return architecture
-    if "modernbert" in lowered:
-        raise NotImplementedError("ModernBERT: converter not implemented")
+    if architecture in MODERNBERT_ARCHITECTURES:
+        return architecture
     if "gemma3" in lowered or "gemma-3" in lowered:
         raise NotImplementedError("Gemma-3: converter not implemented")
     if "qwen3" in lowered:
@@ -53,10 +54,88 @@ def _required_source_files(source: Path) -> tuple[Path, Path]:
     return config, weights
 
 
+def _load_safetensors(path: Path) -> dict[str, np.ndarray]:
+    """Load standard numeric tensors, expanding BF16 without requiring PyTorch."""
+    file_size = path.stat().st_size
+    with path.open("rb") as source:
+        encoded_length = source.read(8)
+        if len(encoded_length) != 8:
+            raise ValueError(f"invalid safetensors header in {path}")
+        header_length = struct.unpack("<Q", encoded_length)[0]
+        if header_length > file_size - 8:
+            raise ValueError(f"invalid safetensors header length in {path}")
+        header = json.loads(source.read(header_length).decode("utf-8"))
+    if not isinstance(header, dict):
+        raise ValueError(f"invalid safetensors metadata in {path}")
+
+    dtypes = {
+        "BOOL": np.dtype("?"),
+        "U8": np.dtype("u1"),
+        "I8": np.dtype("i1"),
+        "U16": np.dtype("<u2"),
+        "I16": np.dtype("<i2"),
+        "U32": np.dtype("<u4"),
+        "I32": np.dtype("<i4"),
+        "U64": np.dtype("<u8"),
+        "I64": np.dtype("<i8"),
+        "F16": np.dtype("<f2"),
+        "F32": np.dtype("<f4"),
+        "F64": np.dtype("<f8"),
+    }
+    data_start = 8 + header_length
+    tensors: dict[str, np.ndarray] = {}
+    for name, descriptor in header.items():
+        if name == "__metadata__":
+            continue
+        if not isinstance(descriptor, dict):
+            raise ValueError(f"invalid descriptor for safetensors tensor {name}")
+        dtype_name = str(descriptor.get("dtype"))
+        shape = tuple(int(value) for value in descriptor.get("shape", []))
+        offsets = descriptor.get("data_offsets")
+        if not isinstance(offsets, list) or len(offsets) != 2:
+            raise ValueError(f"invalid offsets for safetensors tensor {name}")
+        start, end = (int(value) for value in offsets)
+        count = int(np.prod(shape, dtype=np.int64))
+        if start < 0 or end < start or data_start + end > file_size:
+            raise ValueError(f"out-of-range safetensors tensor {name}")
+        if dtype_name == "BF16":
+            if end - start != count * 2:
+                raise ValueError(f"invalid BF16 byte length for tensor {name}")
+            raw = np.memmap(
+                path,
+                mode="r",
+                dtype="<u2",
+                offset=data_start + start,
+                shape=(count,),
+            )
+            words = np.asarray(raw).astype(np.uint32)
+            tensors[name] = (words << 16).view(np.float32).reshape(shape)
+            continue
+        try:
+            dtype = dtypes[dtype_name]
+        except KeyError as error:
+            raise ValueError(
+                f"unsupported safetensors dtype {dtype_name} for tensor {name}"
+            ) from error
+        if end - start != count * dtype.itemsize:
+            raise ValueError(f"invalid byte length for safetensors tensor {name}")
+        raw = np.memmap(
+            path,
+            mode="r",
+            dtype=dtype,
+            offset=data_start + start,
+            shape=(count,),
+        )
+        tensors[name] = np.asarray(raw).reshape(shape).copy()
+    return tensors
+
+
 def convert_model(
     source: Path,
     output: Path,
     *,
+    model_id: str,
+    model_version: str,
     pooling: str | None = None,
     prompt_prefix: str | None = None,
     document_prefix: str | None = None,
@@ -67,7 +146,7 @@ def convert_model(
     config_path, safetensors_path = _required_source_files(source)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     architecture = _architecture(config)
-    tensors = load_file(safetensors_path)
+    tensors = _load_safetensors(safetensors_path)
     if not tensors:
         raise ValueError("model.safetensors contains no tensors")
     numeric_tensors: dict[str, np.ndarray] = {}
@@ -107,8 +186,8 @@ def convert_model(
             "document": selected_document_prefix,
         },
         "max_tokens": selected_max_tokens,
-        "model_id": config.get("_name_or_path") or source.name,
-        "model_version": config.get("model_version"),
+        "model_id": model_id,
+        "model_version": model_version,
         "weights_digest": digest,
         "normalization": "l2" if selected_normalize else "none",
         "prompt_prefix": selected_prefix,
@@ -125,10 +204,21 @@ def convert_model(
                 "num_attention_heads",
                 "intermediate_size",
                 "hidden_act",
+                "hidden_activation",
                 "layer_norm_eps",
+                "norm_eps",
+                "norm_bias",
+                "attention_bias",
+                "mlp_bias",
                 "max_position_embeddings",
                 "type_vocab_size",
                 "pad_token_id",
+                "layer_types",
+                "global_attn_every_n_layers",
+                "rope_parameters",
+                "global_rope_theta",
+                "local_rope_theta",
+                "local_attention",
             )
         },
     }
@@ -156,6 +246,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--model-id", required=True)
+    parser.add_argument("--model-version", required=True)
     parser.add_argument("--pooling", choices=("mean", "cls", "last-token"))
     parser.add_argument("--prompt-prefix")
     parser.add_argument("--document-prefix")
@@ -169,6 +261,8 @@ def main() -> None:
         meta = convert_model(
             args.source,
             args.out,
+            model_id=args.model_id,
+            model_version=args.model_version,
             pooling=args.pooling,
             prompt_prefix=args.prompt_prefix,
             document_prefix=args.document_prefix,

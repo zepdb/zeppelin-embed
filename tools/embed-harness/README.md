@@ -33,6 +33,8 @@ H=.venv/bin/python
 $H -m embed_harness.convert \
   --source "$LOCAL_MODELS/multilingual-e5-small" \
   --out models/m5 \
+  --model-id intfloat/multilingual-e5-small \
+  --model-version "$M5_REVISION" \
   --pooling mean \
   --prompt-prefix 'query: ' \
   --document-prefix 'passage: ' \
@@ -86,6 +88,8 @@ H=.venv/bin/python
 $H -m embed_harness.convert \
   --source "$LOCAL_MODEL" \
   --out "models/$MODEL_ID" \
+  --model-id "$HF_MODEL_ID" \
+  --model-version "$HF_MODEL_REVISION" \
   --pooling "$POOLING" \
   --prompt-prefix "$PREFIX" \
   --normalize

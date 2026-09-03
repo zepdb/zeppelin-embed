@@ -16,7 +16,12 @@ def a_deliberately_corrupted_table_drops_retention_below_the_q4_gate():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         converted = root / "converted"
-        convert_model(write_tiny_bert(root), converted)
+        convert_model(
+            write_tiny_bert(root),
+            converted,
+            model_id="example/tiny-bert",
+            model_version="test-fixture-v1",
+        )
         corpus = load_beir(write_beir(root))
         teacher = NumpyBertEncoder(converted)
         table = build_q4_table(teacher)
