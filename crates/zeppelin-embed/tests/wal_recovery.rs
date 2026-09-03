@@ -110,6 +110,102 @@ struct FailNextManifestRenameVfs {
     armed: Arc<AtomicBool>,
 }
 
+struct InterruptedManifestCommitVfs {
+    inner: StdVfs,
+    directory: PathBuf,
+    fault_armed: AtomicBool,
+    manifest_rename_pending: AtomicBool,
+}
+
+impl InterruptedManifestCommitVfs {
+    fn new(directory: &Path) -> Self {
+        Self {
+            inner: StdVfs,
+            directory: directory.to_path_buf(),
+            fault_armed: AtomicBool::new(false),
+            manifest_rename_pending: AtomicBool::new(false),
+        }
+    }
+
+    fn arm_manifest_directory_sync_fault(&self) {
+        self.fault_armed.store(true, Ordering::Release);
+    }
+
+    fn fault_is_armed(&self) -> bool {
+        self.fault_armed.load(Ordering::Acquire)
+    }
+
+    fn crash(&self) -> std::io::Result<()> {
+        if self
+            .manifest_rename_pending
+            .swap(false, Ordering::AcqRel)
+        {
+            self.inner.delete(&self.directory.join(MANIFEST_FILE))?;
+        }
+        Ok(())
+    }
+}
+
+impl Vfs for InterruptedManifestCommitVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        self.inner.ensure_directory(path, create)
+    }
+
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        self.inner.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.open_for_map(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.inner.open_append(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)?;
+        if to == self.directory.join(MANIFEST_FILE) {
+            self.manifest_rename_pending.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        if path == self.directory
+            && self.manifest_rename_pending.load(Ordering::Acquire)
+            && self.fault_armed.swap(false, Ordering::AcqRel)
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
+        self.inner.sync(path, kind)?;
+        if path == self.directory {
+            self.manifest_rename_pending.store(false, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.inner.list(directory)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.delete(path)
+    }
+}
+
 impl FailNextManifestRenameVfs {
     fn new() -> Self {
         Self {
@@ -2071,6 +2167,90 @@ fn maintain_sealed_recovery_graph(store: &Store) -> zeppelin_embed::tier::Mainte
             graph_min_rows: SEALED_RECOVERY_ROWS as u32,
         },
     )
+}
+
+#[test]
+fn an_adopted_manifest_from_an_interrupted_commit_is_made_durable_at_open() {
+    let directory = tempdir().expect("manifest adoption directory");
+    let vfs = Arc::new(InterruptedManifestCommitVfs::new(directory.path()));
+    let options = StoreOpenOptions::new()
+        .with_durability(DurabilityMode::Durable, CommitTier::Durable);
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        options.clone(),
+        StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .expect("open manifest adoption Store");
+    let first_ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest first manifest adoption document");
+    assert_eq!(first_ack.generation(), 1);
+
+    vfs.arm_manifest_directory_sync_fault();
+    let seal_error = store
+        .seal()
+        .expect_err("interrupted manifest commit must fail the seal");
+    match seal_error {
+        StoreError::Manifest(ManifestError::Io { source, .. }) => {
+            assert_eq!(source.raw_os_error(), Some(libc::EIO));
+        }
+        other => panic!("unexpected interrupted manifest failure: {other}"),
+    }
+    assert!(!vfs.fault_is_armed(), "manifest sync fault did not fire");
+    let wal_path = directory.path().join("wal.ze");
+    let manifest_path = directory.path().join(MANIFEST_FILE);
+    let wal = WalReader::open(vfs.as_ref(), &wal_path).expect("read WAL after failed seal");
+    let visible_manifest = load_manifest(vfs.as_ref(), &manifest_path, wal.durable_end())
+        .expect("renamed manifest must remain visible after directory sync failure");
+    assert_eq!(visible_manifest.generation, 2);
+    drop(store);
+
+    let reopened = Store::open_with_test_dependencies(
+        directory.path(),
+        options.clone(),
+        StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .expect("adopt visible manifest");
+    let acknowledged_generation = reopened
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(2), Revision::new(1)),
+            vec![0.0, 1.0],
+        )]))
+        .expect("ingest on adopted manifest")
+        .generation();
+    drop(reopened);
+
+    vfs.crash().expect("simulate manifest dirent rollback");
+    let recovered = Store::open_with_test_dependencies(
+        directory.path(),
+        options,
+        StoreTestDependencies::new(vfs, Arc::new(SystemMonotonicClock)),
+    )
+    .expect("recover after manifest dirent rollback");
+    let recovered_generation = recovered
+        .snapshot()
+        .expect("snapshot recovered generation")
+        .generation();
+    let next_generation = recovered
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(3), Revision::new(1)),
+            vec![1.0, 1.0],
+        )]))
+        .expect("ingest after crash recovery")
+        .generation();
+
+    assert_eq!(
+        (
+            recovered_generation >= acknowledged_generation,
+            next_generation > acknowledged_generation,
+        ),
+        (true, true),
+        "recovered generation {recovered_generation} regressed below acknowledged generation \
+         {acknowledged_generation}; next mutation acknowledged generation {next_generation}"
+    );
 }
 
 #[test]

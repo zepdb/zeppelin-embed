@@ -33,7 +33,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
-use durability::{CommitTier, DurabilityMode, DurabilityPolicy, DurabilityPolicyError};
+use durability::{
+    CommitTier, DurabilityMode, DurabilityPolicy, DurabilityPolicyError, SyncRequirement,
+};
 use lock::{StoreLock, StoreLockError};
 
 use self::close::BackgroundThread;
@@ -2453,6 +2455,20 @@ impl Store {
             &schema,
             &tokenizer,
         )?;
+        if options.access_mode == AccessMode::ReadWrite && manifest_exists {
+            // An adopted manifest may be the survivor of a commit interrupted
+            // between rename and directory sync. Make its dirent durable before
+            // any new generation is acknowledged on top of it.
+            match durability_policy.directory_sync() {
+                SyncRequirement::Skip => {}
+                SyncRequirement::Sync(kind) => {
+                    vfs.sync(path, kind).map_err(|source| StoreError::Io {
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                }
+            }
+        }
         if options.access_mode == AccessMode::ReadWrite
             && !manifest_exists
             && (options.epoch.is_some() || options.schema.is_some())
