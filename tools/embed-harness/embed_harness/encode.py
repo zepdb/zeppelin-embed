@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -835,29 +836,39 @@ def calibrate_control(
 
 
 def compute_length_distribution(
-    corpus_jsonl: Path, encoder: NumpyBertEncoder, output: Path
+    corpus_jsonl: list[Path], encoder: NumpyBertEncoder, output: Path
 ) -> dict[str, Any]:
-    if not corpus_jsonl.is_file():
-        raise FileNotFoundError(f"BEIR corpus is absent: {corpus_jsonl}")
     histogram: Counter[int] = Counter()
-    with corpus_jsonl.open(encoding="utf-8") as source:
-        for line in source:
-            row = json.loads(line)
-            text = " ".join(
-                part for part in (row.get("title", ""), row["text"]) if part
-            )
-            histogram[
-                min(
-                    len(encoder.document_token_ids(text)),
-                    int(encoder.meta["max_tokens"]),
+    sources = []
+    for corpus in corpus_jsonl:
+        if not corpus.is_file():
+            raise FileNotFoundError(f"BEIR corpus is absent: {corpus}")
+        documents = 0
+        with corpus.open(encoding="utf-8") as source:
+            for line in source:
+                row = json.loads(line)
+                text = " ".join(
+                    part for part in (row.get("title", ""), row["text"]) if part
                 )
-            ] += 1
+                histogram[
+                    min(
+                        len(encoder.document_token_ids(text)),
+                        int(encoder.meta["max_tokens"]),
+                    )
+                ] += 1
+                documents += 1
+        with corpus.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        sources.append(
+            {"path": str(corpus), "sha256": digest, "documents": documents}
+        )
     result = {
         "histogram": {
             str(length): count for length, count in sorted(histogram.items())
         },
         "documents": int(sum(histogram.values())),
-        "prompt_prefix": encoder.prefix,
+        "sources": sources,
+        "document_prefix": encoder.document_prefix,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -961,7 +972,7 @@ def main() -> None:
     throughput.add_argument("--batch", default="32,128,512")
     throughput.add_argument("--batches", type=int, default=10)
     distribution = subparsers.choices["length-distribution"]
-    distribution.add_argument("--corpus", required=True, type=Path)
+    distribution.add_argument("--corpus", required=True, type=Path, nargs="+")
     args = parser.parse_args()
     encoder = _encoder(args.model, args.backend)
     if args.command == "latency":
