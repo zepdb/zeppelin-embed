@@ -30,6 +30,8 @@
 )]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::File;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -43,8 +45,9 @@ use zeppelin_embed::ingest::{
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
 use zeppelin_embed_bench::beir::eval::{RunEntry, ndcg_at_k_for_query};
 use zeppelin_embed_bench::beir::loader::load_corpus;
+use zeppelin_embed_bench::platform::taint::{detect_taint, print_taint_status};
 
-const CORPUS: &str = "scifact";
+const DEFAULT_CORPUS: &str = "scifact";
 const DEFAULT_BEIR_DIR: &str = "/private/tmp/beir";
 const DEFAULT_VECTORS_DIR: &str =
     "/Users/aghatage/Documents/code/zeppelin-holdout/ragbench/data/scifact";
@@ -69,11 +72,23 @@ const PLACEHOLDER_DEFAULT_ALPHA: f64 = 0.7;
 struct Args {
     beir_dir: PathBuf,
     vectors_dir: PathBuf,
+    corpus: String,
     k: usize,
+    time_searches: bool,
+    time_passes: usize,
+    load_limit: f64,
+    out: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
     let mut k = 10_usize;
+    let mut corpus = String::from(DEFAULT_CORPUS);
+    let mut vectors_dir = std::env::var_os("ZE_SCIFACT_VECTORS")
+        .map_or_else(|| PathBuf::from(DEFAULT_VECTORS_DIR), PathBuf::from);
+    let mut time_searches = false;
+    let mut time_passes = 3_usize;
+    let mut load_limit = 3.0_f64;
+    let mut out = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -84,15 +99,76 @@ fn parse_args() -> Args {
                     .parse()
                     .expect("--k must be a positive integer");
             }
-            other => panic!("unknown argument {other:?}; only --k <n> is accepted"),
+            "--corpus" => corpus = args.next().expect("--corpus needs a value"),
+            "--vectors" => {
+                vectors_dir = PathBuf::from(args.next().expect("--vectors needs a value"));
+            }
+            "--time-searches" => time_searches = true,
+            "--time-passes" => {
+                time_passes = args
+                    .next()
+                    .expect("--time-passes needs a value")
+                    .parse()
+                    .expect("--time-passes must be a positive integer");
+            }
+            "--load-limit" => {
+                load_limit = args
+                    .next()
+                    .expect("--load-limit needs a value")
+                    .parse()
+                    .expect("--load-limit must be a number");
+            }
+            "--out" => {
+                out = Some(PathBuf::from(args.next().expect("--out needs a value")));
+            }
+            other => panic!(
+                "unknown argument {other:?}; accepted flags are --k, --corpus, --vectors, \
+                 --time-searches, --time-passes, --load-limit, and --out"
+            ),
         }
     }
+    assert!(k > 0, "--k must be positive");
+    assert!(time_passes > 0, "--time-passes must be positive");
+    assert!(
+        load_limit.is_finite() && load_limit >= 0.0,
+        "--load-limit must be finite and non-negative"
+    );
     Args {
         beir_dir: std::env::var_os("ZE_BEIR_DIR")
             .map_or_else(|| PathBuf::from(DEFAULT_BEIR_DIR), PathBuf::from),
-        vectors_dir: std::env::var_os("ZE_SCIFACT_VECTORS")
-            .map_or_else(|| PathBuf::from(DEFAULT_VECTORS_DIR), PathBuf::from),
+        vectors_dir,
+        corpus,
         k,
+        time_searches,
+        time_passes,
+        load_limit,
+        out,
+    }
+}
+
+struct LineTee(Option<File>);
+
+impl LineTee {
+    fn new(path: Option<&Path>) -> Self {
+        Self(path.map(|path| File::create(path).expect("create --out file")))
+    }
+
+    fn emit(&mut self, line: String) {
+        println!("{line}");
+        if [
+            "DATA ",
+            "BUILD ",
+            "HYBRID_ALPHA_RESULT ",
+            "BEST_ALPHA ",
+            "HYBRID_LATENCY ",
+            "HYBRID_STAGE ",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+            && let Some(output) = &mut self.0
+        {
+            writeln!(output, "{line}").expect("write --out file");
+        }
     }
 }
 
@@ -214,13 +290,151 @@ fn mean(values: &[f64]) -> f64 {
     values.iter().sum::<f64>() / values.len() as f64
 }
 
+fn percentile(sorted: &[f64], fraction: f64) -> Result<f64, Box<dyn std::error::Error>> {
+    if sorted.is_empty() {
+        return Err(io::Error::other("latency sample is empty").into());
+    }
+    let rank = (fraction * (sorted.len().saturating_sub(1)) as f64).round() as usize;
+    sorted
+        .get(rank.min(sorted.len().saturating_sub(1)))
+        .copied()
+        .ok_or_else(|| io::Error::other("latency percentile is unavailable").into())
+}
+
+#[derive(Default)]
+struct LatencySamples {
+    hybrid_us: Vec<f64>,
+    lexical_us: Vec<f64>,
+    vector_us: Vec<f64>,
+}
+
+fn run_search_pass(
+    store: &Store,
+    judged: &[Judged],
+    k: usize,
+    alpha: f64,
+    mut samples: Option<&mut LatencySamples>,
+) {
+    let hybrid = HybridQuery::new(k).with_alpha(alpha).without_rules();
+    for query in judged {
+        let term_query = TermQuery::flat(
+            query
+                .terms
+                .iter()
+                .map(|term| term.as_bytes().to_vec())
+                .collect(),
+            &[DEFAULT_FIELD],
+        );
+
+        let started = Instant::now();
+        store
+            .search_hybrid(
+                SearchRequest::new(&query.vector),
+                &term_query,
+                &hybrid,
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("timed hybrid search");
+        if let Some(observed) = &mut samples {
+            observed
+                .hybrid_us
+                .push(started.elapsed().as_secs_f64() * 1_000_000.0);
+        }
+
+        let started = Instant::now();
+        store
+            .search_lexical(&term_query, k, control())
+            .expect("timed lexical search");
+        if let Some(observed) = &mut samples {
+            observed
+                .lexical_us
+                .push(started.elapsed().as_secs_f64() * 1_000_000.0);
+        }
+
+        let started = Instant::now();
+        store
+            .search(
+                SearchRequest::new(&query.vector),
+                k,
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("timed vector search");
+        if let Some(observed) = &mut samples {
+            observed
+                .vector_us
+                .push(started.elapsed().as_secs_f64() * 1_000_000.0);
+        }
+    }
+}
+
+fn report_search_latencies(
+    store: &Store,
+    judged: &[Judged],
+    args: &Args,
+    best_alpha: f64,
+    tee: &mut LineTee,
+) {
+    run_search_pass(store, judged, args.k, best_alpha, None);
+    let taint = detect_taint(args.load_limit);
+    print_taint_status(&taint, args.load_limit, "hybrid latency");
+    println!(
+        "TAINT hybrid_latency labels={} direction=slower_only",
+        if taint.taints.is_empty() {
+            String::from("none")
+        } else {
+            taint
+                .taints
+                .iter()
+                .map(|item| item.label())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    );
+
+    let mut samples = LatencySamples::default();
+    for _ in 0..args.time_passes {
+        run_search_pass(store, judged, args.k, best_alpha, Some(&mut samples));
+    }
+    samples.hybrid_us.sort_by(f64::total_cmp);
+    samples.lexical_us.sort_by(f64::total_cmp);
+    samples.vector_us.sort_by(f64::total_cmp);
+    let hybrid_p50 = percentile(&samples.hybrid_us, 0.50).expect("hybrid p50");
+    let hybrid_p90 = percentile(&samples.hybrid_us, 0.90).expect("hybrid p90");
+    let hybrid_p95 = percentile(&samples.hybrid_us, 0.95).expect("hybrid p95");
+    let hybrid_p99 = percentile(&samples.hybrid_us, 0.99).expect("hybrid p99");
+    let lexical_p50 = percentile(&samples.lexical_us, 0.50).expect("lexical p50");
+    let lexical_p95 = percentile(&samples.lexical_us, 0.95).expect("lexical p95");
+    let vector_p50 = percentile(&samples.vector_us, 0.50).expect("vector p50");
+    let vector_p95 = percentile(&samples.vector_us, 0.95).expect("vector p95");
+    tee.emit(format!(
+        "HYBRID_LATENCY corpus={} shape=batched512 arm=current thread_budget=1 legs=serial \
+         queries={} passes={} samples={} alpha={best_alpha:.1} k={} p50_us={hybrid_p50:.6} \
+         p90_us={hybrid_p90:.6} p95_us={hybrid_p95:.6} p99_us={hybrid_p99:.6} \
+         processes=1 spread_pct=null",
+        args.corpus,
+        judged.len(),
+        args.time_passes,
+        samples.hybrid_us.len(),
+        args.k,
+    ));
+    tee.emit(format!(
+        "HYBRID_STAGE corpus={} arm=current vector_p50_us={vector_p50:.6} \
+         vector_p95_us={vector_p95:.6} lexical_p50_us={lexical_p50:.6} \
+         lexical_p95_us={lexical_p95:.6} join_wait_p50_us=null fusion_p50_us=null",
+        args.corpus,
+    ));
+}
+
 fn main() {
     let args = parse_args();
+    let mut tee = LineTee::new(args.out.as_deref());
     let k = args.k;
     let started = Instant::now();
 
     // ---- data ---------------------------------------------------------
-    let corpus = load_corpus(&args.beir_dir, CORPUS).expect("SciFact corpus loads");
+    let corpus = load_corpus(&args.beir_dir, &args.corpus).expect("BEIR corpus loads");
     let dims = dims_from_meta(&args.vectors_dir);
     let (corpus_ids, mut corpus_vectors) = read_matrix(
         &args.vectors_dir,
@@ -236,14 +450,14 @@ fn main() {
     );
     let (corpus_min_norm, corpus_max_norm) = normalize(&mut corpus_vectors);
     let (query_min_norm, query_max_norm) = normalize(&mut query_vectors);
-    println!(
+    tee.emit(format!(
         "DATA docs={} queries_total={} judged_queries={} dims={dims} \
          corpus_norm_range=[{corpus_min_norm:.6},{corpus_max_norm:.6}] \
          query_norm_range=[{query_min_norm:.6},{query_max_norm:.6}]",
         corpus.documents.len(),
         corpus.queries.len(),
         corpus.qrels.len()
-    );
+    ));
     assert_eq!(
         corpus_ids.len(),
         corpus.documents.len(),
@@ -323,10 +537,10 @@ fn main() {
         );
     }
     let ingest_ms = ingest_started.elapsed().as_millis() - seal_ms;
-    println!(
+    tee.emit(format!(
         "BUILD ingest_ms={ingest_ms} seal_ms={seal_ms} segments={} generation={generation}",
         corpus_ids.len().div_ceil(INGEST_BATCH)
-    );
+    ));
 
     // ---- judged queries -------------------------------------------------
     let query_row: HashMap<&str, usize> = query_ids
@@ -454,14 +668,14 @@ fn main() {
         "LEGS elapsed_ms={} vector_approximate_queries={approximate_seen}",
         leg_started.elapsed().as_millis()
     );
-    println!(
+    tee.emit(format!(
         "HYBRID_ALPHA_RESULT arm=lexical alpha=0.0 ndcg10={:.4} queries={queries}",
         mean(&lexical_scores)
-    );
-    println!(
+    ));
+    tee.emit(format!(
         "HYBRID_ALPHA_RESULT arm=vector alpha=1.0 ndcg10={:.4} queries={queries}",
         mean(&vector_scores)
-    );
+    ));
 
     // ---- fused arm over the alpha grid, per query -----------------------
     let fused_started = Instant::now();
@@ -496,10 +710,10 @@ fn main() {
                     .collect(),
             ));
         }
-        println!(
+        tee.emit(format!(
             "HYBRID_ALPHA_RESULT arm=hybrid alpha={alpha:.1} ndcg10={:.4} queries={queries}",
             mean(&scores)
-        );
+        ));
         per_query.push(scores);
     }
     println!(
@@ -520,10 +734,14 @@ fn main() {
             mean(&per_query[alpha_index(*left)]).total_cmp(&mean(&per_query[alpha_index(*right)]))
         })
         .expect("non-empty grid");
-    println!(
+    tee.emit(format!(
         "BEST_ALPHA alpha={best_alpha:.1} ndcg10={:.4}",
         mean(&per_query[alpha_index(best_alpha)])
-    );
+    ));
+
+    if args.time_searches {
+        report_search_latencies(&store, &judged, &args, best_alpha, &mut tee);
+    }
 
     // ---- rule sweep -----------------------------------------------------
     let mut defaults = vec![best_alpha];

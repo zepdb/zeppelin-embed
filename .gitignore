@@ -8,6 +8,8 @@ presentation/
 .DS_Store
 __pycache__/
 .venv/
+tools/embed-harness/.venv/
+tools/embed-harness/models/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
