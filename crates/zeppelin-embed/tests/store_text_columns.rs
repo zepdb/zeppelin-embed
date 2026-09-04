@@ -701,6 +701,49 @@ fn hybrid_store() -> (tempfile::TempDir, Store) {
 }
 
 #[test]
+fn exact_search_reports_the_norm_ball_ceiling_across_sealed_and_active_rows() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(61), Revision::new(1)),
+            vec![0.0, 2.0],
+        )]))
+        .expect("ingest maximum-norm sealed row");
+    store.seal().expect("seal maximum-norm row");
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(62), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect("ingest smaller active row");
+
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("exact search");
+    let ceiling = outcome
+        .vector_ceiling
+        .expect("an exact search reports its normalization ceiling");
+    assert!(
+        ceiling > 9.0 && ceiling < 9.000_01,
+        "the unit query and maximum row norm two produce an outward-rounded ceiling near nine, got {ceiling}"
+    );
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|candidate| -f64::from(candidate.score()) <= ceiling),
+        "the producer-supplied ceiling must enclose every exact result"
+    );
+    store.close().expect("close store");
+}
+
+#[test]
 fn store_level_hybrid_default_is_exact_and_populates_diagnostics() {
     let (_directory, store) = hybrid_store();
     let vector = SearchRequest::new(&[1.0, 0.0]);

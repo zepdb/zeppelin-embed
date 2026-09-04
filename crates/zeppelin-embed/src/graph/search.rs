@@ -803,6 +803,52 @@ pub(crate) struct GraphSegmentNormRange {
 }
 
 impl GraphSegmentNormRange {
+    pub(crate) fn from_factors(factors: &[crate::quant::Bit4Factors]) -> Self {
+        let mut minimum = f64::INFINITY;
+        let mut maximum = 0.0_f64;
+        for factors in factors {
+            let [scale, normalized_norm, _] = factors.persisted_fields();
+            if scale < 0.0 || normalized_norm < 0.0 {
+                return Self::unbounded();
+            }
+            let center = f64::from(scale) * f64::from(normalized_norm);
+            let normalized_ulp = f64::from(next_up_f32(normalized_norm) - normalized_norm);
+            let uncertainty = f64::from(scale) * normalized_ulp;
+            minimum = minimum.min((center - uncertainty).max(0.0));
+            maximum = maximum.max(center + uncertainty);
+        }
+        if !minimum.is_finite() || !maximum.is_finite() {
+            return Self::unbounded();
+        }
+        Self { minimum, maximum }
+    }
+
+    pub(crate) fn from_exact_rows(rows: &[f32], dimensions: usize) -> Self {
+        if dimensions == 0 || rows.is_empty() || !rows.len().is_multiple_of(dimensions) {
+            return Self::unbounded();
+        }
+        let relative_error = accumulation_relative_error(dimensions);
+        let mut maximum = 0.0_f64;
+        for row in rows.chunks_exact(dimensions) {
+            let squared_norm = row
+                .iter()
+                .map(|value| {
+                    let value = f64::from(*value);
+                    value * value
+                })
+                .sum::<f64>();
+            let norm = next_up_f64((squared_norm / (1.0 - relative_error)).max(0.0).sqrt());
+            maximum = maximum.max(norm);
+        }
+        if !maximum.is_finite() {
+            return Self::unbounded();
+        }
+        Self {
+            minimum: 0.0,
+            maximum,
+        }
+    }
+
     pub(crate) fn from_graph(
         graph: GraphNodeBlocks<'_>,
         cancellation: Option<&QueryCancellation<'_>>,

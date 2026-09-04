@@ -3375,12 +3375,27 @@ impl Store {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let mut options = options;
-        if options.explicit_tier().is_none() {
-            options = options.with_tier(SearchTier::Exact);
-        }
+        // Hybrid once forced SearchTier::Exact unconditionally, because
+        // fusion needs an anchor for unseen scores and only an exhaustive
+        // scan could name the farthest alive row. The deterministic
+        // ceiling now supplies that anchor on every tier, so hybrid
+        // follows the caller's tier and reaches the graph like the dense
+        // leg does.
+        //
+        // A segment with no published graph is different. There `Auto`
+        // resolves to the Bit4 scan, whose scores are estimates, and
+        // fusion may only fuse exactly rescored scores. Graph traversal
+        // rescores its retained pool exactly, so it is safe; the Bit4
+        // scan is not. When the caller stated no preference and no
+        // segment has earned a graph yet, hybrid therefore still selects
+        // Exact for itself. This is the adaptive ladder choosing the
+        // tier that can honour the contract, not a fallback hiding one.
         let admitted = self
             .admit_vector_search(options)
             .map_err(crate::fusion::FusionError::from)?;
+        if options.explicit_tier().is_none() && !snapshot_has_graph(&admitted.snapshot) {
+            options = options.with_tier(SearchTier::Exact);
+        }
         let corpus_rows = hybrid::corpus_rows(&admitted.snapshot, &admitted.active_segment)?;
         // Round zero asks each producer for the window plus one row, so the
         // element just past the window is the stability bound's unseen value.
@@ -3480,7 +3495,7 @@ impl Store {
                 &lexical_sources,
                 vector_query.vector(),
                 &vector_outcome.candidates,
-                vector_outcome.worst_squared_l2,
+                vector_outcome.vector_ceiling,
                 &lexical_hits,
                 width,
             )?;
@@ -3518,7 +3533,7 @@ impl Store {
 
         let crate::ingest::SearchOutcome {
             candidates: _,
-            worst_squared_l2: _,
+            vector_ceiling: _,
             stats: scan,
             graph_stats: graph,
             generation,
@@ -4606,17 +4621,87 @@ fn search_pinned(
     });
     Ok(SearchOutcome {
         candidates,
-        worst_squared_l2: if worst_exhaustive {
-            worst_squared_l2
-        } else {
-            None
-        },
+        // Every tier reports the same deterministic ceiling. A graph
+        // traversal cannot name the farthest alive row, and letting the
+        // anchor depend on the tier would let the tier change ranking,
+        // so the ceiling is the anchor everywhere.
+        vector_ceiling: Some(exact_vector_ceiling(snapshot, active, query)?),
         stats,
         graph_stats,
         generation,
         epoch,
         diagnostics,
     })
+}
+
+/// Reports whether any sealed segment has a published graph region.
+///
+/// Only a published artifact counts. A graph that policy says is due but
+/// that maintenance has not built yet is not usable by a query.
+fn snapshot_has_graph(snapshot: &PublishedSnapshot) -> bool {
+    snapshot.segments().iter().any(|segment| {
+        segment
+            .directory()
+            .iter()
+            .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id())
+    })
+}
+
+fn exact_vector_ceiling(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    query: &[f32],
+) -> Result<f64, QueryError> {
+    let mut ceiling = 0.0_f64;
+    if !active.is_empty() {
+        ceiling = fold_vector_ceiling(
+            ceiling,
+            crate::graph::search::GraphSegmentNormRange::from_factors(active.factors()),
+            query,
+        )?;
+    }
+    for segment in snapshot.segments() {
+        let range = match segment.meta().scheme {
+            4 => crate::graph::search::GraphSegmentNormRange::from_factors(
+                segment
+                    .bit4_factors()
+                    .map_err(StoreError::Segment)
+                    .map_err(QueryError::Store)?,
+            ),
+            0 | 2 => crate::graph::search::GraphSegmentNormRange::from_exact_rows(
+                segment
+                    .rescore_f32()
+                    .map_err(StoreError::Segment)
+                    .map_err(QueryError::Store)?,
+                segment.meta().dims as usize,
+            ),
+            scheme => {
+                return Err(QueryError::Store(StoreError::Segment(
+                    crate::segment::SegmentError::Geometry(format!(
+                        "vector norm enclosure does not support scheme {scheme}"
+                    )),
+                )));
+            }
+        };
+        ceiling = fold_vector_ceiling(ceiling, range, query)?;
+    }
+    Ok(ceiling)
+}
+
+fn fold_vector_ceiling(
+    current: f64,
+    range: crate::graph::search::GraphSegmentNormRange,
+    query: &[f32],
+) -> Result<f64, QueryError> {
+    let ceiling = range.squared_l2_upper_bound(query);
+    if !ceiling.is_finite() {
+        return Err(QueryError::Store(StoreError::Segment(
+            crate::segment::SegmentError::Geometry(
+                "vector norm enclosure did not produce a finite squared-L2 ceiling".to_owned(),
+            ),
+        )));
+    }
+    Ok(current.max(ceiling))
 }
 
 /// Folds one segment's exhaustive worst score into the query-wide farthest

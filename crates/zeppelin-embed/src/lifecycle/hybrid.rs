@@ -99,7 +99,7 @@ pub(crate) fn build_round(
     sources: &[StructuredLexicalSource],
     query: &[f32],
     vector: &[SearchCandidate],
-    worst_squared_l2: Option<f64>,
+    vector_ceiling: Option<f64>,
     lexical: &[LexicalHit],
     width: usize,
 ) -> Result<HybridRound, FusionError> {
@@ -165,7 +165,7 @@ pub(crate) fn build_round(
         None => None,
         Some(best) => {
             let minimum = candidate_squared_l2(best);
-            let maximum = match worst_squared_l2 {
+            let maximum = match vector_ceiling {
                 Some(maximum) => maximum,
                 None if vector_next.is_none() => {
                     vector_window.last().map_or(minimum, candidate_squared_l2)

@@ -25,6 +25,9 @@ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOp
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStatus};
 
 const CALLER_BITS: u32 = 96;
+/// Sequence length the bundled CoreML query tower is exported at.
+const DEFAULT_COREML_TOKENS: usize = 64;
+
 const CHUNK_BITS: u32 = 32;
 
 /// One caller-owned text revision.
@@ -249,7 +252,8 @@ impl TextStore {
         bundle_path: impl AsRef<Path>,
         options: TextOpenOptions,
     ) -> Result<Self, TextError> {
-        let bundle = Arc::new(Bundle::open(bundle_path)?);
+        let bundle_path = bundle_path.as_ref().to_path_buf();
+        let bundle = Arc::new(Bundle::open(&bundle_path)?);
         let analyzer =
             Analyzer::new(options.lexical.clone()).map_err(|error| TextError::Pipeline {
                 stage: "lexical analyzer",
@@ -276,7 +280,8 @@ impl TextStore {
             .map_err(TextError::Store)?,
         );
         let versions = load_versions(&store)?;
-        let runtime = RuntimeClient::start(Arc::clone(&bundle))?;
+        let runtime =
+            RuntimeClient::start(Arc::clone(&bundle), discover_query_coreml(&bundle_path))?;
         Ok(Self {
             store,
             bundle,
@@ -1120,6 +1125,27 @@ fn encode_chunk_id(id: u128, chunk: u32) -> Result<DocId, TextError> {
     Ok(DocId::new((id << CHUNK_BITS) | u128::from(chunk)))
 }
 
+/// Finds the compiled CoreML query tower that belongs to a bundle.
+///
+/// The Apple Neural Engine is the default query backend, so a compiled
+/// `<bundle stem>.mlmodelc` sitting beside the `.zem` is used without
+/// asking. `MLModel` refuses a raw `.mlpackage`, so only a compiled
+/// directory counts. `ZE_QUERY_COREML` overrides the path and
+/// `ZE_QUERY_COREML_TOKENS` its exported sequence length;
+/// `ZE_QUERY_COREML=off` forces MLX.
+fn discover_query_coreml(bundle_path: &std::path::Path) -> Option<(std::path::PathBuf, usize)> {
+    let tokens = std::env::var("ZE_QUERY_COREML_TOKENS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_COREML_TOKENS);
+    let model = match std::env::var("ZE_QUERY_COREML") {
+        Ok(value) if value == "off" => return None,
+        Ok(value) => std::path::PathBuf::from(value),
+        Err(_) => bundle_path.with_extension("mlmodelc"),
+    };
+    model.is_dir().then_some((model, tokens))
+}
+
 fn load_versions(store: &Store) -> Result<BTreeMap<DocId, Revision>, TextError> {
     let snapshot = store.snapshot().map_err(TextError::Store)?;
     let mut versions = BTreeMap::new();
@@ -1149,11 +1175,39 @@ enum RuntimeCommand {
     Close,
 }
 
+/// Which backend evaluates the query tower.
+///
+/// CoreML on the Apple Neural Engine is the default when a compiled
+/// model sits beside the bundle: at batch one the tower is bound by
+/// Metal dispatch count, so CoreML is far faster and far steadier while
+/// returning the same vectors. MLX is used when no compiled model is
+/// present.
+enum QueryRuntime {
+    Mlx(MlxRuntime),
+    #[cfg(target_os = "macos")]
+    CoreMl(Box<crate::runtime::coreml::CoreMlRuntime>),
+}
+
+impl QueryRuntime {
+    fn embed(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
+        match self {
+            Self::Mlx(runtime) => runtime.embed_batch(tokens),
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(runtime) => {
+                // A CoreML program is exported at one fixed sequence
+                // length, so the batch is padded to it exactly.
+                let padded = tokens.padded_to(runtime.sequence())?;
+                runtime.embed_batch(&padded)
+            }
+        }
+    }
+}
+
 enum RuntimeSet {
     Symmetric(MlxRuntime),
     Pair {
         document: MlxRuntime,
-        query: MlxRuntime,
+        query: QueryRuntime,
     },
 }
 
@@ -1167,7 +1221,7 @@ impl RuntimeSet {
             Self::Symmetric(runtime) => runtime.embed_batch(tokens),
             Self::Pair { document, query } => match role {
                 TowerRole::Document => document.embed_batch(tokens),
-                TowerRole::Query => query.embed_batch(tokens),
+                TowerRole::Query => query.embed(tokens),
             },
         }
     }
@@ -1180,7 +1234,10 @@ struct RuntimeClient {
 }
 
 impl RuntimeClient {
-    fn start(bundle: Arc<Bundle>) -> Result<Self, TextError> {
+    fn start(
+        bundle: Arc<Bundle>,
+        query_coreml: Option<(std::path::PathBuf, usize)>,
+    ) -> Result<Self, TextError> {
         let (sender, receiver) = mpsc::sync_channel::<RuntimeCommand>(2);
         let (init_sender, init_receiver) = mpsc::sync_channel(0);
         let thread = std::thread::Builder::new()
@@ -1188,12 +1245,32 @@ impl RuntimeClient {
             .spawn(move || {
                 let runtimes = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document).and_then(
                     |document| {
-                        if bundle.is_symmetric() {
-                            Ok(RuntimeSet::Symmetric(document))
-                        } else {
-                            MlxRuntime::load(bundle, TowerRole::Query)
-                                .map(|query| RuntimeSet::Pair { document, query })
+                        if bundle.is_symmetric() && query_coreml.is_none() {
+                            return Ok(RuntimeSet::Symmetric(document));
                         }
+                        let dims = bundle.query_tower().embedding.dims as usize;
+                        let query = match query_coreml {
+                            // A model that was found but will not load is a
+                            // broken artifact, not a reason to quietly run
+                            // something else.
+                            #[cfg(target_os = "macos")]
+                            Some((path, sequence)) => crate::runtime::coreml::CoreMlRuntime::load(
+                                &path,
+                                sequence,
+                                dims,
+                                crate::runtime::coreml::ComputeUnits::CpuAndNeuralEngine,
+                            )
+                            .map(|runtime| QueryRuntime::CoreMl(Box::new(runtime)))?,
+                            #[cfg(not(target_os = "macos"))]
+                            Some(_) => {
+                                return Err(RuntimeError::Mlx(
+                                    "CoreML is available on macOS only".to_owned(),
+                                ));
+                            }
+                            None => MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)
+                                .map(QueryRuntime::Mlx)?,
+                        };
+                        Ok(RuntimeSet::Pair { document, query })
                     },
                 );
                 let mut runtimes = match runtimes {

@@ -532,7 +532,7 @@ def parser() -> argparse.ArgumentParser:
     bake_parser.add_argument("--output", required=True)
     export = commands.add_parser("coreml-export")
     export.add_argument("--query", required=True)
-    export.add_argument("--tokens", type=int, choices=(1, 16, 32), default=32)
+    export.add_argument("--tokens", type=int, choices=(1, 16, 32, 64, 128, 256), default=32)
     export.add_argument("--output", required=True)
     run = commands.add_parser("coreml-run")
     run.add_argument("--model", required=True)
