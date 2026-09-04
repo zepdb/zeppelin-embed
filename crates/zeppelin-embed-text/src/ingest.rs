@@ -22,7 +22,7 @@ use zeppelin_embed::ingest::{
     SearchRequest,
 };
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
-use zeppelin_embed::tier::MaintenanceBudget;
+use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStatus};
 
 const CALLER_BITS: u32 = 96;
 const CHUNK_BITS: u32 = 32;
@@ -292,6 +292,23 @@ impl TextStore {
     #[must_use]
     pub const fn epoch(&self) -> EpochIdentity {
         self.epoch
+    }
+
+    /// Returns current store health without changing engine behavior.
+    pub fn health(&self) -> Result<zeppelin_embed::diag::Health, TextError> {
+        self.store.health().map_err(TextError::Store)
+    }
+
+    /// Runs due tier transitions within a host-supplied work budget.
+    pub fn maintain(&self, budget: MaintenanceBudget) -> Result<MaintenanceReport, TextError> {
+        let report = self.store.maintain(budget);
+        if let MaintenanceStatus::Failed(error) = &report.status {
+            return Err(TextError::Pipeline {
+                stage: "maintenance",
+                detail: error.to_string(),
+            });
+        }
+        Ok(report)
     }
 
     /// Runs bounded parallel tokenization, one MLX embed stream, caller-thread
@@ -700,11 +717,11 @@ impl TextStore {
             Legs::Lexical => self.lexical_hits(&term_query(), options.k),
             Legs::Dense => {
                 let embedded = self.query_vector(text)?;
-                self.dense_hits(embedded.values(), options.k)
+                self.dense_hits(embedded.values(), options.k, options.tier)
             }
             Legs::Hybrid => {
                 let embedded = self.query_vector(text)?;
-                self.hybrid_hits(embedded.values(), &term_query(), options.k)
+                self.hybrid_hits(embedded.values(), &term_query(), options.k, options.tier)
             }
         }
     }
@@ -722,13 +739,18 @@ impl TextStore {
         self.store.close().map_err(TextError::Store)
     }
 
-    fn dense_hits(&self, vector: &[f32], k: usize) -> Result<Vec<TextHit>, TextError> {
+    fn dense_hits(
+        &self,
+        vector: &[f32],
+        k: usize,
+        tier: Option<zeppelin_embed::lifecycle::SearchTier>,
+    ) -> Result<Vec<TextHit>, TextError> {
         let outcome = self
             .store
             .search(
                 SearchRequest::new(vector),
                 k,
-                SearchOptions::default(),
+                Self::search_options(tier),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Query)?;
@@ -770,6 +792,7 @@ impl TextStore {
         vector: &[f32],
         query: &TermQuery,
         k: usize,
+        tier: Option<zeppelin_embed::lifecycle::SearchTier>,
     ) -> Result<Vec<TextHit>, TextError> {
         let outcome = self
             .store
@@ -779,7 +802,7 @@ impl TextStore {
                 &HybridQuery::new(k)
                     .with_alpha(self.bundle.hybrid_alpha())
                     .with_epoch(self.document_epoch),
-                SearchOptions::default(),
+                Self::search_options(tier),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Hybrid)?;
@@ -803,6 +826,19 @@ impl TextStore {
                 )
             })
             .collect()
+    }
+
+    /// Applies an explicit tier only when the caller asked for one.
+    ///
+    /// An unset tier must stay unset: each leg has its own contract for
+    /// the no-preference case, and hybrid fusion selects
+    /// `SearchTier::Exact` for itself precisely because it needs exactly
+    /// rescored vector scores.
+    fn search_options(tier: Option<zeppelin_embed::lifecycle::SearchTier>) -> SearchOptions {
+        match tier {
+            Some(tier) => SearchOptions::default().with_tier(tier),
+            None => SearchOptions::default(),
+        }
     }
 
     fn make_hit(

@@ -31,3 +31,7 @@ pub use ingest::{
     TextOpenOptions, TextStore,
 };
 pub use query::{Legs, QueryOptions, TextHit};
+pub use zeppelin_embed::lifecycle::SearchTier;
+pub use zeppelin_embed::tier::{
+    MaintenanceBudget, MaintenanceReport, MaintenanceStatus, SegmentTier,
+};

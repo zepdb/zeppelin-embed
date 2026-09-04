@@ -3,7 +3,7 @@
 /// JSON artifact support for workspace harnesses.
 #[doc(hidden)]
 pub mod harness_json {
-    pub use serde_json::{Value, from_slice, from_str, json, to_vec, to_vec_pretty};
+    pub use serde_json::{Value, from_slice, from_str, json, to_string, to_vec, to_vec_pretty};
 }
 
 /// BEIR corpus loading and nDCG evaluation for the task 13 gate.
@@ -24,3 +24,5 @@ pub mod process_median;
 pub mod recall;
 /// Full scheme-level coarse-scoring benchmark support.
 pub mod scheme_level;
+/// Honest public-`TextStore` benchmark aggregation and report rendering.
+pub mod user_bench;

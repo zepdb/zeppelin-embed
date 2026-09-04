@@ -6,11 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+text = ["dep:zeppelin-embed-text"]
+
 [dependencies]
 libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0", features = ["test-support"] }
+zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.1.0", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -22,3 +27,8 @@ harness = false
 [[bin]]
 name = "wal-throughput"
 path = "src/bin/wal-throughput.rs"
+
+[[bin]]
+name = "text-user-bench"
+path = "src/bin/text-user-bench.rs"
+required-features = ["text"]

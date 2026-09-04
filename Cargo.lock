@@ -1270,6 +1270,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zeppelin-embed",
+ "zeppelin-embed-text",
 ]
 
 [[package]]

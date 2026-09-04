@@ -1,4 +1,5 @@
 use zeppelin_embed::epoch::EpochIdentity;
+use zeppelin_embed::lifecycle::SearchTier;
 
 /// Retrieval legs selected by a text query.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -18,6 +19,7 @@ pub enum Legs {
 pub struct QueryOptions {
     pub(crate) k: usize,
     pub(crate) legs: Legs,
+    pub(crate) tier: Option<SearchTier>,
 }
 
 impl QueryOptions {
@@ -27,6 +29,7 @@ impl QueryOptions {
         Self {
             k,
             legs: Legs::Hybrid,
+            tier: None,
         }
     }
 
@@ -34,6 +37,29 @@ impl QueryOptions {
     #[must_use]
     pub const fn with_legs(mut self, legs: Legs) -> Self {
         self.legs = legs;
+        self
+    }
+
+    /// Selects the vector-search tier used by dense and hybrid retrieval.
+    ///
+    /// Leaving this unset is not the same as selecting [`SearchTier::Auto`].
+    /// An unset tier lets each leg apply its own contract: hybrid fusion
+    /// requires exactly rescored vector scores and therefore selects
+    /// [`SearchTier::Exact`] for itself, while an explicit tier is honoured
+    /// as given.
+    #[must_use]
+    pub const fn with_tier(mut self, tier: SearchTier) -> Self {
+        self.tier = Some(tier);
+        self
+    }
+
+    /// Applies a tier only when the caller expressed one.
+    ///
+    /// `None` leaves the tier unset, which is distinct from
+    /// `Some(SearchTier::Auto)`.
+    #[must_use]
+    pub const fn with_optional_tier(mut self, tier: Option<SearchTier>) -> Self {
+        self.tier = tier;
         self
     }
 }
@@ -74,6 +100,7 @@ mod tests {
         let default = QueryOptions::default();
         assert_eq!(default.k, 10);
         assert_eq!(default.legs, Legs::Hybrid);
+        assert_eq!(default.tier, None);
         let dense = QueryOptions::new(3).with_legs(Legs::Dense);
         assert_eq!(dense.k, 3);
         assert_eq!(dense.legs, Legs::Dense);

@@ -2,7 +2,8 @@
 
 use tempfile::tempdir;
 use zeppelin_embed_text::{
-    ChunkPolicy, IngestOptions, Legs, QueryOptions, TextDocument, TextStore,
+    ChunkPolicy, IngestOptions, Legs, MaintenanceBudget, MaintenanceStatus, QueryOptions,
+    SearchTier, SegmentTier, TextDocument, TextStore,
 };
 
 mod common;
@@ -88,4 +89,150 @@ fn deleting_a_caller_id_deletes_every_chunk_row() {
         )
         .expect("query after delete");
     assert!(after.is_empty());
+}
+
+#[test]
+fn query_options_carry_an_explicit_search_tier_through_dense_and_hybrid_legs() {
+    let directory = tempdir().expect("store directory");
+    let bundle_path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&bundle_path);
+    let store = TextStore::open(
+        directory.path().join("store"),
+        bundle_path,
+        Default::default(),
+    )
+    .expect("open text store");
+    let documents = (0_u128..8)
+        .map(|id| TextDocument::new(id + 1, 1, format!("bronze zeppelin document {id}")))
+        .collect::<Vec<_>>();
+    store
+        .ingest_text(
+            &documents,
+            IngestOptions {
+                seal_every: 4,
+                maintenance_wall_time: std::time::Duration::ZERO,
+                ..Default::default()
+            },
+        )
+        .expect("ingest text");
+
+    // Dense and lexical honour every explicit tier and must agree, because
+    // the tier changes how a score is obtained, never which rows match.
+    for legs in [Legs::Dense, Legs::Lexical] {
+        let mut expected = store
+            .query_text(
+                "bronze zeppelin",
+                QueryOptions::new(8)
+                    .with_legs(legs)
+                    .with_tier(SearchTier::Auto),
+            )
+            .expect("auto query")
+            .into_iter()
+            .map(|hit| hit.doc_id)
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        for tier in [SearchTier::Exact, SearchTier::Scan] {
+            let mut actual = store
+                .query_text(
+                    "bronze zeppelin",
+                    QueryOptions::new(8).with_legs(legs).with_tier(tier),
+                )
+                .expect("explicit-tier query")
+                .into_iter()
+                .map(|hit| hit.doc_id)
+                .collect::<Vec<_>>();
+            actual.sort_unstable();
+            assert_eq!(actual, expected, "{legs:?} must preserve the result ids");
+        }
+    }
+
+    // Hybrid is different, and deliberately so. Fusion may only fuse vector
+    // scores that were exactly rescored, so the store selects
+    // `SearchTier::Exact` for itself whenever the caller states no
+    // preference. Leaving the tier unset must therefore equal asking for
+    // Exact, and asking for an estimating tier must fail loudly rather than
+    // silently fusing estimates.
+    let mut unset = store
+        .query_text(
+            "bronze zeppelin",
+            QueryOptions::new(8).with_legs(Legs::Hybrid),
+        )
+        .expect("hybrid with no tier preference")
+        .into_iter()
+        .map(|hit| hit.doc_id)
+        .collect::<Vec<_>>();
+    unset.sort_unstable();
+    let mut exact = store
+        .query_text(
+            "bronze zeppelin",
+            QueryOptions::new(8)
+                .with_legs(Legs::Hybrid)
+                .with_tier(SearchTier::Exact),
+        )
+        .expect("hybrid at explicit Exact")
+        .into_iter()
+        .map(|hit| hit.doc_id)
+        .collect::<Vec<_>>();
+    exact.sort_unstable();
+    assert_eq!(
+        unset, exact,
+        "an unset tier must resolve to Exact for the hybrid leg"
+    );
+
+    for tier in [SearchTier::Auto, SearchTier::Scan] {
+        let error = store
+            .query_text(
+                "bronze zeppelin",
+                QueryOptions::new(8).with_legs(Legs::Hybrid).with_tier(tier),
+            )
+            .expect_err("hybrid must refuse an estimating tier");
+        assert!(
+            error.to_string().contains("not exactly rescored"),
+            "{tier:?} must fail loudly on unrescored fusion input, got {error}"
+        );
+    }
+}
+
+#[test]
+fn health_reports_sealed_scan_segments_and_maintain_reports_complete_below_the_graph_threshold() {
+    let directory = tempdir().expect("store directory");
+    let bundle_path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&bundle_path);
+    let store = TextStore::open(
+        directory.path().join("store"),
+        bundle_path,
+        Default::default(),
+    )
+    .expect("open text store");
+    let documents = (0_u128..8)
+        .map(|id| TextDocument::new(id + 1, 1, format!("bronze zeppelin document {id}")))
+        .collect::<Vec<_>>();
+    store
+        .ingest_text(
+            &documents,
+            IngestOptions {
+                seal_every: 4,
+                maintenance_wall_time: std::time::Duration::ZERO,
+                ..Default::default()
+            },
+        )
+        .expect("ingest text");
+
+    let health = store.health().expect("read health");
+    assert!(!health.segments.is_empty());
+    assert!(
+        health
+            .segments
+            .iter()
+            .all(|segment| segment.tier == SegmentTier::SealedScan)
+    );
+    let report = store
+        .maintain(MaintenanceBudget {
+            wall_time: std::time::Duration::from_millis(25),
+            bytes: 8 * 1024 * 1024,
+        })
+        .expect("maintain below graph threshold");
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(report.graphs_built, 0);
+    assert!(report.promotion_deferrals.is_empty());
 }
