@@ -16,8 +16,9 @@ use super::{
     Int8Vec, QuantError, QuantScheme, RescoreCheckError, RescoreError, RescoreMetric, RescorePool,
     dequantize_bit4, dequantize_int8, dot_int8_query, est_dot_bit4, est_dot_bit4_batch,
     prepare_bit4_query, prepare_int8_query, quantize_bit4, quantize_int8, rescore_top_k,
-    rescore_top_k_with_check,
+    rescore_top_k_with_check, squared_l2_f64,
 };
+use super::rescore::squared_l2_f64_x4;
 
 fn fixture_f32(path: &str) -> Vec<f32> {
     path.split_ascii_whitespace()
@@ -477,6 +478,104 @@ fn prop_int8_rank_preservation() {
         int8_top1_matches * 100 >= TRIALS * 99,
         "int8 preserved top-1 in {int8_top1_matches}/{TRIALS} trials"
     );
+}
+
+/// Draws a value whose exponent spans twenty-four binades, so that any
+/// reassociation of a squared-L2 sum shows up in the low mantissa bits.
+fn wide_magnitude_f32(random: &mut impl Rng) -> f32 {
+    let exponent: i32 = random.random_range(-12..12);
+    let mantissa: f32 = random.random_range(-2.0_f32..2.0);
+    mantissa * (exponent as f32).exp2()
+}
+
+#[test]
+fn batched_squared_l2_is_bit_identical_to_the_single_row_definition() {
+    let mut random =
+        crate::test_support::seeded_rng("quant::batched_squared_l2_is_bit_identical_to_the_single_row_definition");
+    for dimension in [1_usize, 2, 3, 7, 8, 15, 129, 768] {
+        for _ in 0..8 {
+            let query = (0..dimension)
+                .map(|_| wide_magnitude_f32(&mut random))
+                .collect::<Vec<_>>();
+            let rows = (0..4)
+                .map(|_| {
+                    (0..dimension)
+                        .map(|_| wide_magnitude_f32(&mut random))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let batched =
+                squared_l2_f64_x4(&query, &rows[0], &rows[1], &rows[2], &rows[3]);
+            let batched = [batched.0, batched.1, batched.2, batched.3];
+            for (row, batched) in rows.iter().zip(batched) {
+                let single = squared_l2_f64(&query, row);
+                assert_eq!(
+                    batched.to_bits(),
+                    single.to_bits(),
+                    "dimension {dimension}: batched {batched:?} != single {single:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_squared_l2_rescore_matches_the_row_at_a_time_reference_bit_for_bit() {
+    const DIMENSION: usize = 133;
+    const ROW_COUNT: usize = 251;
+    let mut random = crate::test_support::seeded_rng(
+        "quant::retained_squared_l2_rescore_matches_the_row_at_a_time_reference_bit_for_bit",
+    );
+    let query = (0..DIMENSION)
+        .map(|_| wide_magnitude_f32(&mut random))
+        .collect::<Vec<_>>();
+    let rows = (0..ROW_COUNT * DIMENSION)
+        .map(|_| wide_magnitude_f32(&mut random))
+        .collect::<Vec<_>>();
+    // Retain every row in a shuffled order so the batch boundaries do not
+    // line up with the stored row order.
+    let mut row_indices = (0..ROW_COUNT as u32).collect::<Vec<_>>();
+    for index in (1..row_indices.len()).rev() {
+        let swap = random.random_range(0..=index);
+        row_indices.swap(index, swap);
+    }
+    let coarse_scores = vec![0.0_f32; ROW_COUNT];
+    let pool = RescorePool::retained(
+        &row_indices,
+        &coarse_scores,
+        RescoreMetric::SquaredL2,
+        0,
+        0,
+    );
+
+    for prefetch in [false, true] {
+        let result = rescore_top_k(&query, &rows, DIMENSION, pool.with_prefetch(prefetch), ROW_COUNT)
+            .expect("retained squared-L2 rescore is valid");
+
+        let mut reference = row_indices
+            .iter()
+            .map(|row_index| {
+                let row_index = *row_index as usize;
+                let start = row_index * DIMENSION;
+                let row = &rows[start..start + DIMENSION];
+                (row_index, -squared_l2_f64(&query, row))
+            })
+            .collect::<Vec<_>>();
+        reference.sort_unstable_by(|left, right| {
+            right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+        });
+
+        let observed = result
+            .hits
+            .iter()
+            .map(|hit| (hit.row_index, hit.score.to_bits()))
+            .collect::<Vec<_>>();
+        let expected = reference
+            .iter()
+            .map(|(row_index, score)| (*row_index, score.to_bits()))
+            .collect::<Vec<_>>();
+        assert_eq!(observed, expected, "prefetch = {prefetch}");
+    }
 }
 
 #[test]

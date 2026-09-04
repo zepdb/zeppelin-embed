@@ -374,41 +374,66 @@ pub(crate) fn rescore_top_k_with_check<E>(
     };
 
     let mut exact = Vec::with_capacity(candidate_count);
-    for position in 0..candidate_count {
-        let row_id =
-            selected_row_index(candidates.as_deref(), pool.row_indices, position, row_count)?;
-        check(row_id, position.is_multiple_of(64)).map_err(RescoreCheckError::Check)?;
-        let ahead_position = position.saturating_add(4);
-        if pool.prefetch && ahead_position < candidate_count {
-            let ahead = selected_row_index(
+    let mut batch: Vec<(usize, &[f32])> = Vec::with_capacity(ROW_BATCH);
+    let mut scores: Vec<f64> = Vec::with_capacity(ROW_BATCH);
+    let mut position = 0;
+    while position < candidate_count {
+        let batch_end = position.saturating_add(ROW_BATCH).min(candidate_count);
+        batch.clear();
+        // A malformed pool is reported at the position that names the bad
+        // row, exactly as the row-at-a-time loop did: the batch keeps only
+        // the rows before it and the error is raised after their checks.
+        let mut resolve_error = None;
+        for batch_position in position..batch_end {
+            match resolve_row(
                 candidates.as_deref(),
                 pool.row_indices,
-                ahead_position,
+                batch_position,
                 row_count,
-            )?;
-            prefetch_f32_row(rows, ahead, dimension);
+                rows,
+                dimension,
+            ) {
+                Ok(resolved) => batch.push(resolved),
+                Err(error) => {
+                    resolve_error = Some(error);
+                    break;
+                }
+            }
         }
-        let start = row_id
-            .checked_mul(dimension)
-            .ok_or(RescoreError::ArithmeticOverflow)?;
-        let end = start
-            .checked_add(dimension)
-            .ok_or(RescoreError::ArithmeticOverflow)?;
-        let row = rows.get(start..end).ok_or(RescoreError::RowDataLength {
-            dimension,
-            actual: rows.len(),
-        })?;
-        let score = match pool.metric {
-            RescoreMetric::InnerProduct => f64::from(dot_f32(query, row)),
-            RescoreMetric::SquaredL2 => -squared_l2_f64(query, row),
-        };
-        if !score.is_finite() {
-            return Err(RescoreError::NonFiniteExactScore { row_index: row_id }.into());
+        if pool.prefetch {
+            let ahead_end = batch_end.saturating_add(ROW_BATCH).min(candidate_count);
+            for ahead_position in batch_end..ahead_end {
+                if let Ok(ahead) = selected_row_index(
+                    candidates.as_deref(),
+                    pool.row_indices,
+                    ahead_position,
+                    row_count,
+                ) {
+                    prefetch_f32_row(rows, ahead, dimension);
+                }
+            }
         }
-        exact.push(RescoreHit {
-            row_index: row_id,
-            score,
-        });
+        // Scoring is pure, so hoisting the whole batch ahead of the checks
+        // is invisible: the checks, the non-finite rejection, and the pushes
+        // below still run in strict position order.
+        score_batch(query, &batch, pool.metric, &mut scores);
+        for (offset, ((row_id, _), score)) in batch.iter().zip(scores.iter()).enumerate() {
+            let row_id = *row_id;
+            let score = *score;
+            let scored_position = position.saturating_add(offset);
+            check(row_id, scored_position.is_multiple_of(64)).map_err(RescoreCheckError::Check)?;
+            if !score.is_finite() {
+                return Err(RescoreError::NonFiniteExactScore { row_index: row_id }.into());
+            }
+            exact.push(RescoreHit {
+                row_index: row_id,
+                score,
+            });
+        }
+        if let Some(error) = resolve_error {
+            return Err(error.into());
+        }
+        position = batch_end;
     }
     if exact.len() > k {
         let _ = exact.select_nth_unstable_by(k, rescore_hit_best_first);
@@ -437,6 +462,67 @@ pub(crate) fn rescore_top_k_with_check<E>(
             total,
         },
     })
+}
+
+/// Rows scored in one call so that four independent f64 accumulator chains
+/// overlap. One row's exact squared-L2 sum is a strictly sequential chain of
+/// dependent `fadd`s that no compiler may reassociate, so a single row cannot
+/// fill the floating-point pipeline; four rows can. Every row still
+/// accumulates its own terms left to right, so a batched score is bit-identical
+/// to the row-at-a-time definition.
+const ROW_BATCH: usize = 4;
+
+fn resolve_row<'a>(
+    selected: Option<&[ScanCandidate]>,
+    retained: Option<&[u32]>,
+    position: usize,
+    row_count: usize,
+    rows: &'a [f32],
+    dimension: usize,
+) -> Result<(usize, &'a [f32]), RescoreError> {
+    let row_id = selected_row_index(selected, retained, position, row_count)?;
+    let start = row_id
+        .checked_mul(dimension)
+        .ok_or(RescoreError::ArithmeticOverflow)?;
+    let end = start
+        .checked_add(dimension)
+        .ok_or(RescoreError::ArithmeticOverflow)?;
+    let row = rows.get(start..end).ok_or(RescoreError::RowDataLength {
+        dimension,
+        actual: rows.len(),
+    })?;
+    Ok((row_id, row))
+}
+
+fn score_batch(
+    query: &[f32],
+    batch: &[(usize, &[f32])],
+    metric: RescoreMetric,
+    scores: &mut Vec<f64>,
+) {
+    scores.clear();
+    match metric {
+        RescoreMetric::InnerProduct => {
+            for (_, row) in batch {
+                scores.push(f64::from(dot_f32(query, row)));
+            }
+        }
+        RescoreMetric::SquaredL2 => {
+            let mut rest = batch;
+            while let [(_, first), (_, second), (_, third), (_, fourth), tail @ ..] = rest {
+                let (first, second, third, fourth) =
+                    squared_l2_f64_x4(query, first, second, third, fourth);
+                scores.push(-first);
+                scores.push(-second);
+                scores.push(-third);
+                scores.push(-fourth);
+                rest = tail;
+            }
+            for (_, row) in rest {
+                scores.push(-squared_l2_f64(query, row));
+            }
+        }
+    }
 }
 
 fn selected_row_index(
@@ -497,6 +583,42 @@ pub(crate) fn squared_l2_f64(left: &[f32], right: &[f32]) -> f64 {
             delta * delta
         })
         .sum()
+}
+
+/// Four rows of the one squared-L2 definition above, scored together.
+///
+/// Each row keeps its own accumulator and adds its own terms in the same
+/// left-to-right order as `squared_l2_f64`, so every returned sum is bit
+/// identical to that definition applied to that row. Nothing is reassociated
+/// and nothing is contracted into a fused multiply-add: the only thing that
+/// changes is that four independent dependency chains are in flight instead
+/// of one, which is what lets the floating-point pipeline issue more than one
+/// add per chain latency.
+pub(crate) fn squared_l2_f64_x4(
+    query: &[f32],
+    first: &[f32],
+    second: &[f32],
+    third: &[f32],
+    fourth: &[f32],
+) -> (f64, f64, f64, f64) {
+    let mut first_sum = 0.0_f64;
+    let mut second_sum = 0.0_f64;
+    let mut third_sum = 0.0_f64;
+    let mut fourth_sum = 0.0_f64;
+    for ((((query, first), second), third), fourth) in
+        query.iter().zip(first).zip(second).zip(third).zip(fourth)
+    {
+        let query = f64::from(*query);
+        let first = query - f64::from(*first);
+        let second = query - f64::from(*second);
+        let third = query - f64::from(*third);
+        let fourth = query - f64::from(*fourth);
+        first_sum += first * first;
+        second_sum += second * second;
+        third_sum += third * third;
+        fourth_sum += fourth * fourth;
+    }
+    (first_sum, second_sum, third_sum, fourth_sum)
 }
 
 fn prefetch_f32_row(base: &[f32], row_id: usize, dimensions: usize) {
