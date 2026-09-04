@@ -25,6 +25,10 @@ pub enum FusionTerminationFact {
     StableBound,
     ListsExhausted,
     BudgetFullMaterialization,
+    /// The store widened to the whole corpus and still could not prove the
+    /// window stable. The oracle never predicts this; observing it is a
+    /// finding, not a pass.
+    WindowUnproven,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
