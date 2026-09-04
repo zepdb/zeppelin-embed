@@ -190,6 +190,26 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         name: "ze_search_result_free",
         coverage: AbiCoverage::InvalidProbe(probe_search_result_free),
     },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_open",
+        coverage: AbiCoverage::InvalidProbe(probe_text_open),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_ingest",
+        coverage: AbiCoverage::InvalidProbe(probe_text_ingest),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_query",
+        coverage: AbiCoverage::InvalidProbe(probe_text_query),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_query_result_free",
+        coverage: AbiCoverage::InvalidProbe(probe_text_query_result_free),
+    },
 ];
 
 fn expected_error(code: ZeErrorCode) -> CellResult {
@@ -828,6 +848,34 @@ fn probe_search_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_search_result_free(std::ptr::null_mut()))
 }
 
+#[cfg(feature = "text")]
+fn probe_text_open(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_open(std::ptr::null(), std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_ingest(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_ingest(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_query(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_query(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_query_result_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_query_result_free(std::ptr::null_mut()))
+}
+
 #[test]
 fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
     let exported = include_str!("../src/lib.rs")
@@ -836,6 +884,7 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
             line.trim_start()
                 .strip_prefix("pub extern \"C\" fn ")
                 .and_then(|tail| tail.split('(').next())
+                .filter(|name| cfg!(feature = "text") || !name.starts_with("ze_text_"))
                 .map(str::to_owned)
         })
         .collect::<std::collections::BTreeSet<_>>();

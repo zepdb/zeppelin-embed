@@ -7,12 +7,16 @@ use crate::arch::{bert, gte};
 use crate::bundle::{Bundle, TensorDtype};
 use crate::runtime::{EmbeddingBatch, ModelRuntime, RuntimeError, RuntimeIdentity};
 use crate::tower::{Architecture, TokenBatch, TowerRole, TowerSpec};
+use zeppelin_embed::epoch::ComputeUnits;
+
+const MAX_EVAL_ROWS: usize = 32;
 
 /// One tower evaluated on a single owned MLX GPU stream.
 pub struct MlxRuntime {
     tower: TowerSpec,
     tensors: BTreeMap<String, Array>,
     stream: Option<Stream>,
+    gpu: bool,
 }
 
 fn mlx_calls() -> &'static Mutex<()> {
@@ -21,8 +25,25 @@ fn mlx_calls() -> &'static Mutex<()> {
 }
 
 impl MlxRuntime {
+    /// Returns the hard ceiling for one Metal evaluation command buffer.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn max_eval_rows() -> usize {
+        MAX_EVAL_ROWS
+    }
+
     /// Loads one tower's tensors into MLX-managed unified memory.
     pub fn load(bundle: Arc<Bundle>, role: TowerRole) -> Result<Self, RuntimeError> {
+        Self::load_for_compute(bundle, role, ComputeUnits::CpuAndGpu)
+    }
+
+    /// Loads one tower on an explicit MLX CPU or GPU stream.
+    #[doc(hidden)]
+    pub fn load_for_compute(
+        bundle: Arc<Bundle>,
+        role: TowerRole,
+        compute_units: ComputeUnits,
+    ) -> Result<Self, RuntimeError> {
         let _call = mlx_calls()
             .lock()
             .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;
@@ -70,11 +91,21 @@ impl MlxRuntime {
                 })?;
             tensors.insert(name.to_owned(), Array::from_slice(&values, &shape));
         }
-        let device = Device::gpu();
+        let (device, gpu) = match compute_units {
+            ComputeUnits::Cpu => (Device::cpu(), false),
+            ComputeUnits::CpuAndGpu => (Device::gpu(), true),
+            ComputeUnits::CpuAndNeuralEngine | ComputeUnits::All => {
+                return Err(RuntimeError::Mlx(
+                    "MLX does not target the Neural Engine".to_owned(),
+                ));
+            }
+        };
+        let stream = Stream::new_with_device(&device);
         Ok(Self {
             tower,
             tensors,
-            stream: Some(Stream::new_with_device(&device)),
+            stream: Some(stream),
+            gpu,
         })
     }
 
@@ -100,18 +131,45 @@ impl ModelRuntime for MlxRuntime {
         let _call = mlx_calls()
             .lock()
             .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;
-        let output = match self.tower.architecture {
-            Architecture::Bert => bert::forward(self, tokens),
-            Architecture::Gte => gte::forward(self, tokens),
-        }?;
-        output
-            .eval()
-            .map_err(|error| RuntimeError::Mlx(error.to_string()))?;
-        let values = output
-            .try_as_slice::<f32>()
-            .map_err(|error| RuntimeError::Mlx(error.to_string()))?
-            .to_vec();
-        EmbeddingBatch::new(values, tokens.rows, self.tower.embedding.dims as usize)
+        if tokens.rows <= MAX_EVAL_ROWS {
+            return self.eval_chunk(tokens);
+        }
+        let dims = self.tower.embedding.dims as usize;
+        let capacity = tokens
+            .rows
+            .checked_mul(dims)
+            .ok_or_else(|| RuntimeError::Shape("embedding output size overflow".to_owned()))?;
+        let mut values = Vec::with_capacity(capacity);
+        let mut start = 0_usize;
+        while start < tokens.rows {
+            let end = start.saturating_add(MAX_EVAL_ROWS).min(tokens.rows);
+            let row_start = start.checked_mul(tokens.tokens_per_row).ok_or_else(|| {
+                RuntimeError::Shape("token batch chunk offset overflow".to_owned())
+            })?;
+            let row_end = end
+                .checked_mul(tokens.tokens_per_row)
+                .ok_or_else(|| RuntimeError::Shape("token batch chunk end overflow".to_owned()))?;
+            let token_ids = tokens
+                .token_ids
+                .get(row_start..row_end)
+                .ok_or_else(|| RuntimeError::Shape("token batch chunk is truncated".to_owned()))?
+                .to_vec();
+            let attention_mask = tokens
+                .attention_mask
+                .get(row_start..row_end)
+                .ok_or_else(|| RuntimeError::Shape("attention chunk is truncated".to_owned()))?
+                .to_vec();
+            let chunk = TokenBatch::new(
+                token_ids,
+                attention_mask,
+                end.saturating_sub(start),
+                tokens.tokens_per_row,
+            )
+            .map_err(|detail| RuntimeError::Shape(detail.to_owned()))?;
+            values.extend(self.eval_chunk(&chunk)?.into_values());
+            start = end;
+        }
+        EmbeddingBatch::new(values, tokens.rows, dims)
     }
 
     fn warm(&mut self) -> Result<(), RuntimeError> {
@@ -124,8 +182,25 @@ impl ModelRuntime for MlxRuntime {
     fn identity(&self) -> RuntimeIdentity {
         RuntimeIdentity {
             name: "mlx-c",
-            gpu: true,
+            gpu: self.gpu,
         }
+    }
+}
+
+impl MlxRuntime {
+    fn eval_chunk(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
+        let output = match self.tower.architecture {
+            Architecture::Bert => bert::forward(self, tokens),
+            Architecture::Gte => gte::forward(self, tokens),
+        }?;
+        output
+            .eval()
+            .map_err(|error| RuntimeError::Mlx(error.to_string()))?;
+        let values = output
+            .try_as_slice::<f32>()
+            .map_err(|error| RuntimeError::Mlx(error.to_string()))?
+            .to_vec();
+        EmbeddingBatch::new(values, tokens.rows, self.tower.embedding.dims as usize)
     }
 }
 

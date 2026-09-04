@@ -370,6 +370,17 @@ impl Bundle {
         )
     }
 
+    /// Applies the query prefix and tokenizer to a query batch.
+    #[doc(hidden)]
+    pub fn tokenize_queries(&self, texts: &[&str]) -> Result<TokenBatch, RuntimeError> {
+        let inputs = texts
+            .iter()
+            .map(|text| self.query_input(text))
+            .collect::<Vec<_>>();
+        self.tokenizer
+            .encode_batch(&inputs, self.query.embedding.max_tokens as usize)
+    }
+
     fn prefault_query(&self) -> Result<(), BundleError> {
         for tensor in self
             .tensors

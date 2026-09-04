@@ -307,6 +307,215 @@ def bake(args: argparse.Namespace) -> None:
     )
 
 
+def _linear(torch_module, tensors: dict[str, torch.Tensor], base: str):
+    weight = tensors[f"{base}.weight"]
+    bias = tensors.get(f"{base}.bias")
+    layer = torch_module.nn.Linear(
+        int(weight.shape[1]), int(weight.shape[0]), bias=bias is not None
+    )
+    layer.weight = torch_module.nn.Parameter(weight, requires_grad=False)
+    if bias is not None:
+        layer.bias = torch_module.nn.Parameter(bias, requires_grad=False)
+    return layer
+
+
+def _layer_norm(torch_module, tensors: dict[str, torch.Tensor], base: str, eps: float):
+    weight = tensors[f"{base}.weight"]
+    layer = torch_module.nn.LayerNorm(int(weight.shape[0]), eps=eps)
+    layer.weight = torch_module.nn.Parameter(weight, requires_grad=False)
+    layer.bias = torch_module.nn.Parameter(
+        tensors[f"{base}.bias"], requires_grad=False
+    )
+    return layer
+
+
+def _coreml_query_module(root: Path, sequence: int):
+    config = json_file(root / "config.json")
+    if config.get("model_type") != "bert":
+        raise ValueError("CoreML query export currently requires BERT")
+    tensors: dict[str, torch.Tensor] = {}
+    with safe_open(root / "model.safetensors", framework="pt", device="cpu") as source:
+        for name in source.keys():
+            tensors[name] = source.get_tensor(name).detach().to(dtype=torch.float32)
+    dense_path = root / "2_Dense" / "model.safetensors"
+    if not dense_path.is_file():
+        raise ValueError("CoreML query export requires the declared Dense head")
+    with safe_open(dense_path, framework="pt", device="cpu") as source:
+        tensors["dense.weight"] = source.get_tensor("linear.weight").to(
+            dtype=torch.float32
+        )
+        tensors["dense.bias"] = source.get_tensor("linear.bias").to(dtype=torch.float32)
+
+    heads = int(config["num_attention_heads"])
+    hidden = int(config["hidden_size"])
+    epsilon = float(config["layer_norm_eps"])
+
+    class Block(torch.nn.Module):
+        def __init__(self, layer: int) -> None:
+            super().__init__()
+            base = f"encoder.layer.{layer}"
+            self.query = _linear(torch, tensors, f"{base}.attention.self.query")
+            self.key = _linear(torch, tensors, f"{base}.attention.self.key")
+            self.value = _linear(torch, tensors, f"{base}.attention.self.value")
+            self.attention_output = _linear(
+                torch, tensors, f"{base}.attention.output.dense"
+            )
+            self.attention_norm = _layer_norm(
+                torch, tensors, f"{base}.attention.output.LayerNorm", epsilon
+            )
+            self.intermediate = _linear(
+                torch, tensors, f"{base}.intermediate.dense"
+            )
+            self.output = _linear(torch, tensors, f"{base}.output.dense")
+            self.output_norm = _layer_norm(
+                torch, tensors, f"{base}.output.LayerNorm", epsilon
+            )
+
+        def forward(self, states, attention_bias):
+            query = self.query(states).reshape(1, sequence, heads, hidden // heads)
+            key = self.key(states).reshape(1, sequence, heads, hidden // heads)
+            value = self.value(states).reshape(1, sequence, heads, hidden // heads)
+            query = query.transpose(1, 2)
+            key = key.transpose(1, 2)
+            value = value.transpose(1, 2)
+            scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(
+                hidden // heads
+            )
+            attended = torch.matmul(torch.softmax(scores + attention_bias, dim=-1), value)
+            attended = attended.transpose(1, 2).reshape(1, sequence, hidden)
+            states = self.attention_norm(states + self.attention_output(attended))
+            intermediate = torch.nn.functional.gelu(self.intermediate(states))
+            return self.output_norm(states + self.output(intermediate))
+
+    class QueryTower(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.word = torch.nn.Embedding.from_pretrained(
+                tensors["embeddings.word_embeddings.weight"], freeze=True
+            )
+            self.position = torch.nn.Embedding.from_pretrained(
+                tensors["embeddings.position_embeddings.weight"], freeze=True
+            )
+            self.token_type = torch.nn.Embedding.from_pretrained(
+                tensors["embeddings.token_type_embeddings.weight"], freeze=True
+            )
+            self.embedding_norm = _layer_norm(
+                torch, tensors, "embeddings.LayerNorm", epsilon
+            )
+            self.blocks = torch.nn.ModuleList(
+                Block(layer) for layer in range(int(config["num_hidden_layers"]))
+            )
+            self.dense = _linear(torch, tensors, "dense")
+            self.register_buffer(
+                "positions", torch.arange(sequence, dtype=torch.int32).reshape(1, sequence)
+            )
+
+        def forward(self, input_ids, attention_mask):
+            token_types = torch.zeros_like(input_ids)
+            states = self.embedding_norm(
+                self.word(input_ids)
+                + self.position(self.positions)
+                + self.token_type(token_types)
+            )
+            attention_bias = (attention_mask[:, None, None, :].to(torch.float32) - 1.0) * 1.0e9
+            for block in self.blocks:
+                states = block(states, attention_bias)
+            mask = attention_mask[:, :, None].to(torch.float32)
+            pooled = (states * mask).sum(dim=1) / mask.sum(dim=1)
+            return torch.nn.functional.normalize(self.dense(pooled), p=2, dim=1)
+
+    return QueryTower().eval()
+
+
+def coreml_export(args: argparse.Namespace) -> None:
+    try:
+        import coremltools as ct
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError("coreml-export requires coremltools in the tool venv") from error
+    root = Path(args.query).resolve()
+    sequence = args.tokens
+    module = _coreml_query_module(root, sequence)
+    input_ids = torch.ones((1, sequence), dtype=torch.int32)
+    attention_mask = torch.ones((1, sequence), dtype=torch.int32)
+    with torch.no_grad():
+        traced = torch.jit.trace(module, (input_ids, attention_mask), strict=True)
+    model = ct.convert(
+        traced,
+        convert_to="mlprogram",
+        inputs=[
+            ct.TensorType(name="input_ids", shape=(1, sequence), dtype=np.int32),
+            ct.TensorType(name="attention_mask", shape=(1, sequence), dtype=np.int32),
+        ],
+        outputs=[ct.TensorType(name="embedding")],
+        compute_precision=ct.precision.FLOAT16,
+        minimum_deployment_target=ct.target.macOS15,
+    )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    model.save(output)
+    print(json.dumps({"output": str(output), "tokens": sequence}, sort_keys=True))
+
+
+def coreml_run(args: argparse.Namespace) -> None:
+    try:
+        import coremltools as ct
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError("coreml-run requires coremltools in the tool venv") from error
+    compute_units = {
+        "cpu": ct.ComputeUnit.CPU_ONLY,
+        "cpu-and-gpu": ct.ComputeUnit.CPU_AND_GPU,
+        "cpu-and-neural-engine": ct.ComputeUnit.CPU_AND_NE,
+    }[args.compute_units]
+    raw = Path(args.input).read_bytes()
+    if len(raw) < 8:
+        raise ValueError("CoreML input header is truncated")
+    rows, tokens = struct.unpack_from("<II", raw)
+    values = rows * tokens
+    ids_end = 8 + values * 4
+    mask_end = ids_end + values * 4
+    if mask_end != len(raw):
+        raise ValueError("CoreML input payload length does not match its shape")
+    ids = np.frombuffer(raw[8:ids_end], dtype="<i4").reshape(rows, tokens)
+    mask = np.frombuffer(raw[ids_end:mask_end], dtype="<f4").reshape(rows, tokens)
+    clock = __import__("time")
+    load_started = clock.perf_counter_ns()
+    model = ct.models.MLModel(str(Path(args.model)), compute_units=compute_units)
+    load_ms = (clock.perf_counter_ns() - load_started) / 1.0e6
+    output = []
+    latencies = []
+    for row in range(rows):
+        prediction = None
+        row_latencies = []
+        for iteration in range(args.warm + args.repeat):
+            started = clock.perf_counter_ns()
+            prediction = model.predict(
+                {
+                    "input_ids": ids[row : row + 1].astype(np.int32),
+                    "attention_mask": mask[row : row + 1].astype(np.int32),
+                }
+            )["embedding"]
+            if iteration >= args.warm:
+                row_latencies.append(
+                    (clock.perf_counter_ns() - started) / 1.0e6
+                )
+        if prediction is None:
+            raise ValueError("CoreML repeat count must be non-zero")
+        latencies.append(row_latencies)
+        output.append(np.asarray(prediction, dtype="<f4").reshape(-1))
+    Path(args.output).write_bytes(np.concatenate(output).tobytes())
+    print(
+        json.dumps(
+            {
+                "compute_units": args.compute_units,
+                "model_load_ms": load_ms,
+                "latency_ms": latencies,
+            }
+        )
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="ze-model")
     commands = root.add_subparsers(dest="command", required=True)
@@ -321,6 +530,21 @@ def parser() -> argparse.ArgumentParser:
     bake_parser.add_argument("--alignment-digest", default="")
     bake_parser.add_argument("--alpha", type=float, default=0.5)
     bake_parser.add_argument("--output", required=True)
+    export = commands.add_parser("coreml-export")
+    export.add_argument("--query", required=True)
+    export.add_argument("--tokens", type=int, choices=(1, 16, 32), default=32)
+    export.add_argument("--output", required=True)
+    run = commands.add_parser("coreml-run")
+    run.add_argument("--model", required=True)
+    run.add_argument("--input", required=True)
+    run.add_argument(
+        "--compute-units",
+        choices=("cpu", "cpu-and-gpu", "cpu-and-neural-engine"),
+        required=True,
+    )
+    run.add_argument("--output", required=True)
+    run.add_argument("--warm", type=int, default=0)
+    run.add_argument("--repeat", type=int, default=1)
     return root
 
 
@@ -328,6 +552,12 @@ def main() -> None:
     args = parser().parse_args()
     if args.command == "fetch":
         print(snapshot_download(args.model))
+        return
+    if args.command == "coreml-export":
+        coreml_export(args)
+        return
+    if args.command == "coreml-run":
+        coreml_run(args)
         return
     if args.query and not args.query_id:
         raise ValueError("--query-id is required with --query")

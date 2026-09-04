@@ -14,5 +14,11 @@
   mutex serializes MLX creation, evaluation, and destruction because the
   pinned Rust binding documents task-local defaults but no cross-thread C ABI
   safety guarantee; the parallel public-path test otherwise crashes in MLX.
+- A single MLX evaluation covers at most 32 rows and completes before the next
+  chunk is built. This bounds Metal command-buffer lifetime below the macOS
+  watchdog on real, long-document batches.
+- MLX CPU/GPU and CoreML placement remain runtime epoch fields. CoreML exports
+  fixed-shape query towers through `tools/ze-model`; accepting backend drift
+  within tolerance remains an open owner decision.
 - Produced vectors are dimension-checked, truncated before normalization,
   materialized as f32, and checked for unit norm before core ingest.
