@@ -2188,6 +2188,10 @@ pub struct Store {
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) tokenizer: crate::fts::tokenizer::Analyzer,
     pub(crate) schema: crate::meta::Schema,
+    // Holds only `Weak` handles to the snapshot and active segment it was
+    // built from, so it never delays their release; see
+    // `CachedLexicalAssembly`.
+    lexical_index_cache: LexicalIndexCache,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) ingest_retention_fault_controller:
         Option<crate::ingest::IngestRetentionFaultController>,
@@ -2559,6 +2563,7 @@ impl Store {
             epoch: options.epoch,
             tokenizer,
             schema,
+            lexical_index_cache: LexicalIndexCache::new(),
             #[cfg(any(test, feature = "test-support"))]
             ingest_retention_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
@@ -3094,18 +3099,24 @@ impl Store {
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let LexicalAssembly {
-            index,
-            alive_sets,
-            sources,
-        } = assemble_lexical_index(&snapshot, &active, &self.accounting, true, None)
-            .map_err(map_store_lexical_assembly_error)?;
-        let allow_lists = alive_sets
+        let assembly = assemble_lexical_index(
+            LexicalInputs {
+                cache: &self.lexical_index_cache,
+                snapshot: &snapshot,
+                active: &active,
+                accounting: &self.accounting,
+            },
+            true,
+            None,
+        )
+        .map_err(map_store_lexical_assembly_error)?;
+        let allow_lists = assembly
+            .alive_sets
             .iter()
             .map(|alive| alive.alive_bitmap())
             .collect::<Vec<_>>();
         let lexical = crate::planner::search_lexical_filtered_refs(
-            &index,
+            &assembly.index,
             query,
             k,
             crate::fts::bm25::Bm25Params::beir(),
@@ -3115,9 +3126,10 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let mut candidates = Vec::with_capacity(lexical.result.hits.len());
         for hit in &lexical.result.hits {
-            let document = structured_lexical_document(&snapshot, &active, &sources, hit.doc, true)
-                .map_err(map_store_lexical_document_error)?
-                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            let document =
+                structured_lexical_document(&snapshot, &active, &assembly.sources, hit.doc, true)
+                    .map_err(map_store_lexical_document_error)?
+                    .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
             candidates.push(crate::ingest::LexicalCandidate {
                 document,
                 score: hit.score,
@@ -3207,21 +3219,23 @@ impl Store {
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let LexicalAssembly {
-            index,
-            alive_sets,
-            sources,
-        } = assemble_lexical_index(
-            &snapshot,
-            &active,
-            &self.accounting,
+        let assembly = assemble_lexical_index(
+            LexicalInputs {
+                cache: &self.lexical_index_cache,
+                snapshot: &snapshot,
+                active: &active,
+                accounting: &self.accounting,
+            },
             true,
             Some(&cancellation),
         )
         .map_err(map_store_lexical_assembly_error)?;
+        let index = &assembly.index;
+        let sources = &assembly.sources;
         let vocabulary = crate::fts::query::vocabulary(query, index.terms());
         let expansions = crate::fts::query::expand(query, &vocabulary)?;
-        let allow_lists = alive_sets
+        let allow_lists = assembly
+            .alive_sets
             .iter()
             .map(|alive| alive.alive_bitmap())
             .collect::<Vec<_>>();
@@ -3239,7 +3253,7 @@ impl Store {
                 fields: fields.clone(),
             };
             let scored = crate::fts::search::search_allow_list_driven_controlled(
-                &index,
+                index,
                 &term_query,
                 all_rows,
                 crate::fts::bm25::Bm25Params::beir(),
@@ -3258,7 +3272,7 @@ impl Store {
         let mut scored = Vec::with_capacity(aggregate.len());
         for (doc, (score, provenance)) in aggregate {
             if let Some((terms, slop)) = query.phrase_constraint() {
-                let (text, _) = structured_lexical_row(&snapshot, &active, &sources, doc)?;
+                let (text, _) = structured_lexical_row(&snapshot, &active, sources, doc)?;
                 if !crate::fts::query::phrase_matches(&self.tokenizer, text, terms, slop) {
                     continue;
                 }
@@ -3276,7 +3290,7 @@ impl Store {
         let mut candidates = Vec::with_capacity(scored.len());
         for (doc, score, provenance) in scored {
             cancellation.check_graph().map_err(QueryError::Scan)?;
-            let (text, document) = structured_lexical_row(&snapshot, &active, &sources, doc)?;
+            let (text, document) = structured_lexical_row(&snapshot, &active, sources, doc)?;
             let terms = provenance
                 .iter()
                 .map(|entry| entry.term.clone())
@@ -3417,6 +3431,12 @@ impl Store {
         let panic_vector = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Vector);
         let panic_lexical = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Lexical);
         let lexical_worker = self.ensure_lexical_worker()?;
+        let lexical_inputs = LexicalInputs {
+            cache: &self.lexical_index_cache,
+            snapshot: &admitted.snapshot,
+            active: &admitted.active_segment,
+            accounting: &self.accounting,
+        };
         let submit_lexical_leg = |bound| {
             lexical_worker.submit(|| {
                 let name = std::thread::current().name().map(str::to_owned);
@@ -3433,18 +3453,11 @@ impl Store {
                         .map_err(QueryError::Scan)
                         .map_err(crate::fusion::FusionError::from)?;
                     match lexical_query {
-                        PinnedLexicalQuery::Term(query) => exact_lexical_leg(
-                            &admitted.snapshot,
-                            &admitted.active_segment,
-                            &self.accounting,
-                            query,
-                            bound,
-                            &cancellation,
-                        ),
+                        PinnedLexicalQuery::Term(query) => {
+                            exact_lexical_leg(lexical_inputs, query, bound, &cancellation)
+                        }
                         PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
-                            &admitted.snapshot,
-                            &admitted.active_segment,
-                            &self.accounting,
+                            lexical_inputs,
                             &self.tokenizer,
                             query,
                             bound,
@@ -3626,6 +3639,20 @@ impl Store {
             generation,
             diagnostics,
         })
+    }
+
+    /// Returns `(hits, builds)` for the assembled-lexical-index cache.
+    ///
+    /// Exists so a test can prove the cache is actually reused, and actually
+    /// rebuilt when its inputs move, rather than inferring either from a
+    /// timing.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn lexical_index_cache_counters(&self) -> (u64, u64) {
+        (
+            self.lexical_index_cache.hits.load(Ordering::Relaxed),
+            self.lexical_index_cache.builds.load(Ordering::Relaxed),
+        )
     }
 
     fn consume_hybrid_test_fault(&self, leg: crate::fusion::FusionLeg) -> bool {
@@ -3828,6 +3855,31 @@ struct LexicalAssembly {
     sources: Vec<StructuredLexicalSource>,
 }
 
+impl LexicalAssembly {
+    /// Returns the bytes retaining this assembly costs, or `None` on
+    /// overflow.
+    ///
+    /// `owned_alive_bytes` is the active segment's alive set, which is built
+    /// per assembly rather than shared from a reader. Every other alive set
+    /// and every posting list is an `Arc` clone of a value its segment reader
+    /// already charged, so charging them here would double-count them.
+    fn owned_bytes(&self, owned_alive_bytes: usize) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(self.index.resident_bytes()?)?
+            .checked_add(
+                self.alive_sets
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Arc<crate::meta::AliveSet>>())?,
+            )?
+            .checked_add(
+                self.sources
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<StructuredLexicalSource>())?,
+            )?
+            .checked_add(owned_alive_bytes)
+    }
+}
+
 enum LexicalAssemblyError {
     Store(StoreError),
     Lexical(crate::fts::index::IndexError),
@@ -3835,16 +3887,239 @@ enum LexicalAssemblyError {
     Cancelled(crate::scan::ScanError),
 }
 
+/// One assembled lexical index, held for as long as the inputs it was built
+/// from are still the store's inputs.
+///
+/// Assembling an index walks every live row of every text-bearing segment
+/// twice -- once for the BM25 corpus counters and once to clone the live-row
+/// bitmap -- and clones a Roaring bitmap per segment. None of that work
+/// depends on the query, so a lexical query pays it once and a hybrid query
+/// pays it once per widening round.
+///
+/// Reusing it is safe because both inputs are copy-on-write behind an `Arc`
+/// and the borrow checker, not a convention, enforces that. A
+/// `PublishedSnapshot` is replaced wholesale in `Store::snapshot` when a
+/// generation is published, and `ActiveState::segment` is replaced with a
+/// freshly built `Arc<ActiveSegment>` on every mutation; neither is ever
+/// reached through `Arc::get_mut` or `Arc::make_mut`, so no shared value can
+/// be edited in place. Pointer identity is therefore exactly "the same
+/// inputs", and it is the same immutability that already lets
+/// `SegmentReader::query_postings`, `SegmentReader::query_alive` and
+/// `ActiveSegment::sealed_lexical` cache with no invalidation hook at all.
+/// A key derived from observable state instead -- the generation, a row
+/// count, a log sequence -- would have to enumerate every way the inputs can
+/// move; pointer identity cannot miss one.
+///
+/// The handles are `Weak`, not `Arc`, for two reasons. A strong reference
+/// would pin a retired snapshot's mappings and a retired active segment's
+/// buffers past the point the store released them. And a `Weak` still keeps
+/// the allocation reserved, so a dropped input's address can never be reused
+/// by a different value and compare equal here.
+struct CachedLexicalAssembly {
+    snapshot: std::sync::Weak<PublishedSnapshot>,
+    active: std::sync::Weak<crate::ingest::ActiveSegment>,
+    /// Set when this assembly was built, or has since been proven, under
+    /// `require_document_identity`. The hybrid legs do not require it and the
+    /// standalone paths do, so an entry one path built is never handed to the
+    /// other until the proof has actually run.
+    document_identity_verified: bool,
+    assembly: Arc<LexicalAssembly>,
+    _memory: stats::AccountedCounter,
+}
+
+impl CachedLexicalAssembly {
+    fn matches(
+        &self,
+        snapshot: &Arc<PublishedSnapshot>,
+        active: &Arc<crate::ingest::ActiveSegment>,
+    ) -> bool {
+        self.snapshot
+            .upgrade()
+            .is_some_and(|cached| Arc::ptr_eq(&cached, snapshot))
+            && self
+                .active
+                .upgrade()
+                .is_some_and(|cached| Arc::ptr_eq(&cached, active))
+    }
+}
+
+/// The store's single-entry cache of assembled lexical indexes.
+///
+/// One entry is enough for the access pattern it exists for: a hybrid query
+/// re-runs its lexical leg against unchanged inputs once per widening round,
+/// and consecutive queries between two ingests share their inputs exactly. A
+/// query whose inputs do not match simply builds its own, so the cache can
+/// only ever cost a miss, never a wrong answer.
+pub(crate) struct LexicalIndexCache {
+    entry: Mutex<Option<CachedLexicalAssembly>>,
+    #[cfg(any(test, feature = "test-support"))]
+    hits: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    builds: AtomicU64,
+}
+
+impl LexicalIndexCache {
+    pub(crate) const fn new() -> Self {
+        Self {
+            entry: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            hits: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            builds: AtomicU64::new(0),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_hit(&self) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    const fn record_hit(&self) {}
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_build(&self) {
+        self.builds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    const fn record_build(&self) {}
+
+    fn lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<CachedLexicalAssembly>>, LexicalAssemblyError>
+    {
+        self.entry.lock().map_err(|_| {
+            LexicalAssemblyError::Store(StoreError::Synchronization {
+                component: "lexical index cache",
+            })
+        })
+    }
+}
+
+/// Everything an assembled lexical index is built from, and the cache that
+/// holds the one built last. Grouped because the two hybrid legs and the two
+/// standalone paths all pass exactly this set through unchanged.
+#[derive(Clone, Copy)]
+struct LexicalInputs<'a> {
+    cache: &'a LexicalIndexCache,
+    snapshot: &'a Arc<PublishedSnapshot>,
+    active: &'a Arc<crate::ingest::ActiveSegment>,
+    accounting: &'a Arc<stats::Accounting>,
+}
+
 fn assemble_lexical_index(
+    inputs: LexicalInputs<'_>,
+    require_document_identity: bool,
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<Arc<LexicalAssembly>, LexicalAssemblyError> {
+    let LexicalInputs {
+        cache,
+        snapshot,
+        active,
+        accounting,
+    } = inputs;
+    let mut entry = cache.lock()?;
+    if let Some(cached) = entry.as_mut()
+        && cached.matches(snapshot, active)
+    {
+        if require_document_identity && !cached.document_identity_verified {
+            verify_document_identity(snapshot, cancellation)?;
+            cached.document_identity_verified = true;
+        }
+        let assembly = Arc::clone(&cached.assembly);
+        cache.record_hit();
+        return Ok(assembly);
+    }
+    // Release the entry and its reservation before building the replacement,
+    // so a store near its resident budget never has to hold both at once.
+    let stale = entry.take();
+    drop(entry);
+    drop(stale);
+
+    let (assembly, owned_bytes) = build_lexical_assembly(
+        snapshot,
+        active,
+        accounting,
+        require_document_identity,
+        cancellation,
+    )?;
+    cache.record_build();
+    let assembly = Arc::new(assembly);
+    let mut memory = stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
+        .map_err(LexicalAssemblyError::Store)?;
+    memory
+        .set(owned_bytes)
+        .map_err(LexicalAssemblyError::Store)?;
+    let mut entry = cache.lock()?;
+    // A concurrent builder may have installed its own entry. Last writer
+    // wins: every read validates by pointer identity, so the worst an
+    // overwritten entry can cost is the next query's miss.
+    *entry = Some(CachedLexicalAssembly {
+        snapshot: Arc::downgrade(snapshot),
+        active: Arc::downgrade(active),
+        document_identity_verified: require_document_identity,
+        assembly: Arc::clone(&assembly),
+        _memory: memory,
+    });
+    drop(entry);
+    Ok(assembly)
+}
+
+fn check_segment_document_identity(
+    segment: &crate::segment::reader::SegmentReader,
+    postings: &crate::fts::sealed::SealedSegment,
+) -> Result<(), LexicalAssemblyError> {
+    if postings.row_count() != 0
+        && segment
+            .document_version(0)
+            .map_err(StoreError::Segment)
+            .map_err(LexicalAssemblyError::Store)?
+            .is_none()
+    {
+        return Err(LexicalAssemblyError::MissingDocumentIdentity(
+            segment.meta().id,
+        ));
+    }
+    Ok(())
+}
+
+/// Proves document identity over a snapshot whose assembly was built without
+/// that requirement.
+///
+/// Every segment's postings were already decoded to build that assembly, so
+/// this reads the same cached values and adds no region decode.
+fn verify_document_identity(
+    snapshot: &PublishedSnapshot,
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<(), LexicalAssemblyError> {
+    for segment in snapshot.segments() {
+        if let Some(cancellation) = cancellation {
+            cancellation
+                .check_graph()
+                .map_err(LexicalAssemblyError::Cancelled)?;
+        }
+        if let Some(postings) = segment
+            .query_postings()
+            .map_err(LexicalAssemblyError::Store)?
+        {
+            check_segment_document_identity(segment, &postings)?;
+        }
+    }
+    Ok(())
+}
+
+fn build_lexical_assembly(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
     accounting: &Arc<stats::Accounting>,
     require_document_identity: bool,
     cancellation: Option<&QueryCancellation<'_>>,
-) -> Result<LexicalAssembly, LexicalAssemblyError> {
+) -> Result<(LexicalAssembly, usize), LexicalAssemblyError> {
     let mut index = crate::fts::index::LexicalIndex::new();
     let mut alive_sets = Vec::new();
     let mut sources = Vec::new();
+    let mut owned_alive_bytes = 0_usize;
     for (ordinal, segment) in snapshot.segments().iter().enumerate() {
         if let Some(cancellation) = cancellation {
             cancellation
@@ -3855,17 +4130,8 @@ fn assemble_lexical_index(
             .query_postings()
             .map_err(LexicalAssemblyError::Store)?
         {
-            if require_document_identity
-                && postings.row_count() != 0
-                && segment
-                    .document_version(0)
-                    .map_err(StoreError::Segment)
-                    .map_err(LexicalAssemblyError::Store)?
-                    .is_none()
-            {
-                return Err(LexicalAssemblyError::MissingDocumentIdentity(
-                    segment.meta().id,
-                ));
+            if require_document_identity {
+                check_segment_document_identity(segment, &postings)?;
             }
             let alive = segment.query_alive().map_err(LexicalAssemblyError::Store)?;
             index
@@ -3880,17 +4146,35 @@ fn assemble_lexical_index(
             .sealed_lexical(accounting)
             .map_err(LexicalAssemblyError::Store)?;
         let alive = Arc::new(active.alive().map_err(LexicalAssemblyError::Store)?);
+        owned_alive_bytes = alive
+            .resident_bytes()
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::meta::AliveSet>()))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or(LexicalAssemblyError::Store(StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "cache",
+            }))?;
         index
             .push_shared_with_live_rows(sealed, alive.alive_bitmap())
             .map_err(LexicalAssemblyError::Lexical)?;
         alive_sets.push(alive);
         sources.push(StructuredLexicalSource::Active);
     }
-    Ok(LexicalAssembly {
+    let assembly = LexicalAssembly {
         index,
         alive_sets,
         sources,
-    })
+    };
+    let owned_bytes =
+        assembly
+            .owned_bytes(owned_alive_bytes)
+            .ok_or(LexicalAssemblyError::Store(StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "cache",
+            }))?;
+    Ok((assembly, owned_bytes))
 }
 
 fn map_store_lexical_assembly_error(
@@ -4185,37 +4469,35 @@ fn resolve_hybrid_leg_results<Vector, Lexical>(
 }
 
 fn exact_structured_lexical_leg(
-    snapshot: &PublishedSnapshot,
-    active: &crate::ingest::ActiveSegment,
-    accounting: &Arc<stats::Accounting>,
+    inputs: LexicalInputs<'_>,
     analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
     bound: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
+    let (snapshot, active) = (inputs.snapshot, inputs.active);
     let lexical_error = |detail: String| crate::fusion::FusionError::Leg {
         leg: crate::fusion::FusionLeg::Lexical,
         kind: crate::fusion::LegFailureKind::Lexical,
         detail,
     };
-    let LexicalAssembly {
-        index,
-        alive_sets,
-        sources,
-    } = assemble_lexical_index(snapshot, active, accounting, false, Some(cancellation))
+    let assembly = assemble_lexical_index(inputs, false, Some(cancellation))
         .map_err(map_fusion_lexical_assembly_error)?;
+    let index = &assembly.index;
+    let sources = &assembly.sources;
     let vocabulary = crate::fts::query::vocabulary(query, index.terms());
     let expansions = crate::fts::query::expand(query, &vocabulary)
         .map_err(|error| lexical_error(error.to_string()))?;
     if index.segments().is_empty() || expansions.is_empty() {
         return Ok((
             Vec::new(),
-            sources,
+            sources.clone(),
             crate::fts::search::SearchCounters::default(),
             expansions,
         ));
     }
-    let allow_lists = alive_sets
+    let allow_lists = assembly
+        .alive_sets
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
@@ -4229,7 +4511,7 @@ fn exact_structured_lexical_leg(
             fields: fields.clone(),
         };
         let result =
-            exact_hybrid_lexical_search(&index, &term_query, k, &allow_lists, cancellation)?;
+            exact_hybrid_lexical_search(index, &term_query, k, &allow_lists, cancellation)?;
         accumulate_search_counters(&mut counters, &result.counters);
         let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
         for hit in result.hits {
@@ -4239,7 +4521,7 @@ fn exact_structured_lexical_leg(
     if let Some((terms, slop)) = query.phrase_constraint() {
         let mut retained = BTreeMap::new();
         for (doc, score) in aggregate {
-            let (text, _) = structured_lexical_row(snapshot, active, &sources, doc)
+            let (text, _) = structured_lexical_row(snapshot, active, sources, doc)
                 .map_err(|error| lexical_error(error.to_string()))?;
             if crate::fts::query::phrase_matches(analyzer, text, terms, slop) {
                 retained.insert(doc, score);
@@ -4258,7 +4540,7 @@ fn exact_structured_lexical_leg(
     scored.truncate(k);
     let mut joined = Vec::with_capacity(scored.len());
     for (doc, score) in scored {
-        let document = structured_lexical_document(snapshot, active, &sources, doc, false)
+        let document = structured_lexical_document(snapshot, active, sources, doc, false)
             .map_err(map_structured_leg_document_error)?
             .map(|version| version.doc_id());
         joined.push(hybrid::LexicalHit {
@@ -4267,27 +4549,24 @@ fn exact_structured_lexical_leg(
             bm25: score,
         });
     }
-    Ok((joined, sources, counters, expansions))
+    Ok((joined, sources.clone(), counters, expansions))
 }
 
 fn exact_lexical_leg(
-    snapshot: &PublishedSnapshot,
-    active: &crate::ingest::ActiveSegment,
-    accounting: &Arc<stats::Accounting>,
+    inputs: LexicalInputs<'_>,
     query: &crate::fts::search::TermQuery,
     bound: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
-    let LexicalAssembly {
-        index,
-        alive_sets,
-        sources,
-    } = assemble_lexical_index(snapshot, active, accounting, false, Some(cancellation))
+    let (snapshot, active) = (inputs.snapshot, inputs.active);
+    let assembly = assemble_lexical_index(inputs, false, Some(cancellation))
         .map_err(map_fusion_lexical_assembly_error)?;
+    let index = &assembly.index;
+    let sources = &assembly.sources;
     if index.segments().is_empty() {
         return Ok((
             Vec::new(),
-            sources,
+            sources.clone(),
             crate::fts::search::SearchCounters::default(),
             query
                 .terms
@@ -4302,14 +4581,15 @@ fn exact_lexical_leg(
         ));
     }
     let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
-    let allow_lists = alive_sets
+    let allow_lists = assembly
+        .alive_sets
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    let result = exact_hybrid_lexical_search(&index, query, k, &allow_lists, cancellation)?;
+    let result = exact_hybrid_lexical_search(index, query, k, &allow_lists, cancellation)?;
     let mut joined = Vec::with_capacity(result.hits.len());
     for hit in result.hits {
-        let document = structured_lexical_document(snapshot, active, &sources, hit.doc, false)
+        let document = structured_lexical_document(snapshot, active, sources, hit.doc, false)
             .map_err(map_term_leg_document_error)?
             .map(|version| version.doc_id());
         joined.push(hybrid::LexicalHit {
@@ -4320,7 +4600,7 @@ fn exact_lexical_leg(
     }
     Ok((
         joined,
-        sources,
+        sources.clone(),
         result.counters,
         query
             .terms

@@ -9,7 +9,7 @@ use zeppelin_embed::fusion::{FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, Hybrid
 use zeppelin_embed::ingest::SearchRequest;
 use zeppelin_embed::ingest::wal_payload::UPSERT_V2;
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
 };
 use zeppelin_embed::lifecycle::SearchOptions;
 use zeppelin_embed::lifecycle::{
@@ -1381,4 +1381,146 @@ fn stored_text_verifies_the_region_checksum_on_every_call_of_the_same_reader() {
         }
         other => panic!("second call must re-verify the region checksum, got {other:?}"),
     }
+}
+
+/// The assembled lexical index is cached per query-independent input set. The
+/// active segment is not immutable across ingests, so a cache keyed only on
+/// the published generation would answer a post-ingest query from a
+/// pre-ingest index. This walks every way the inputs can move underneath the
+/// cache -- an active-segment append, a seal that republishes the snapshot, an
+/// append after that seal, and a tombstone -- and it crosses the standalone
+/// path (which requires document identity) with the hybrid leg (which does
+/// not), so a cache entry built under one requirement cannot serve the other.
+#[test]
+fn lexical_index_cache_follows_the_active_segment_and_the_snapshot() {
+    fn zeppelin_doc_ids(store: &Store) -> Vec<DocId> {
+        let mut ids = store
+            .search_lexical(
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                16,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("lexical search")
+            .candidates
+            .iter()
+            .map(|candidate| candidate.document.doc_id())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn hybrid_doc_ids(store: &Store) -> Vec<DocId> {
+        let mut ids = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(16),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("hybrid search")
+            .hits
+            .iter()
+            .map(|hit| hit.key)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn ingest_one(store: &Store, id: u128) {
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("bronze zeppelin"),
+            ]))
+            .expect("ingest text row");
+    }
+
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+
+    ingest_one(&store, 11);
+    assert_eq!(zeppelin_doc_ids(&store), vec![DocId::new(11)]);
+    assert_eq!(store.lexical_index_cache_counters(), (0, 1));
+    assert_eq!(hybrid_doc_ids(&store), vec![DocId::new(11)]);
+    // The hybrid leg reuses the standalone path's assembly; it rebuilds
+    // nothing, and a widening round would reuse it again.
+    let (hits, builds) = store.lexical_index_cache_counters();
+    assert_eq!(builds, 1, "the hybrid leg rebuilt an unchanged assembly");
+    assert!(hits >= 1, "the hybrid leg did not reuse the assembly");
+    // A repeat of the same query over the same inputs must not rebuild.
+    assert_eq!(zeppelin_doc_ids(&store), vec![DocId::new(11)]);
+    assert_eq!(
+        store.lexical_index_cache_counters().1,
+        1,
+        "a repeated query over unchanged inputs rebuilt the assembly"
+    );
+
+    // An append to the active segment. The published generation does not move
+    // for an ingest that does not seal, so this is the case a
+    // generation-keyed cache gets wrong.
+    let builds_before_append = store.lexical_index_cache_counters().1;
+    ingest_one(&store, 22);
+    assert_eq!(
+        zeppelin_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22)],
+        "the standalone lexical path served a stale active segment"
+    );
+    assert_eq!(
+        hybrid_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22)],
+        "the hybrid lexical leg served a stale active segment"
+    );
+    assert!(
+        store.lexical_index_cache_counters().1 > builds_before_append,
+        "the append did not invalidate the cached assembly"
+    );
+
+    // A seal republishes the snapshot and empties the active segment. The row
+    // set is unchanged, so only the assembly's provenance moves.
+    store.seal().expect("seal text rows");
+    assert_eq!(
+        zeppelin_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22)],
+        "the standalone lexical path lost rows across a seal"
+    );
+    assert_eq!(
+        hybrid_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22)],
+        "the hybrid lexical leg lost rows across a seal"
+    );
+
+    // An append after the seal: sealed and active both carry text now.
+    ingest_one(&store, 33);
+    assert_eq!(
+        zeppelin_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22), DocId::new(33)],
+        "the standalone lexical path missed a row appended after a seal"
+    );
+    assert_eq!(
+        hybrid_doc_ids(&store),
+        vec![DocId::new(11), DocId::new(22), DocId::new(33)],
+        "the hybrid lexical leg missed a row appended after a seal"
+    );
+
+    // A tombstone against a sealed row. Live-row bitmaps and the BM25 corpus
+    // counters are part of the assembly, so this must move it too.
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(11)]))
+        .expect("delete a sealed row");
+    assert_eq!(
+        zeppelin_doc_ids(&store),
+        vec![DocId::new(22), DocId::new(33)],
+        "the standalone lexical path returned a tombstoned row"
+    );
+    assert_eq!(
+        hybrid_doc_ids(&store),
+        vec![DocId::new(22), DocId::new(33)],
+        "the hybrid lexical leg returned a tombstoned row"
+    );
+
+    store.close().expect("close store");
 }

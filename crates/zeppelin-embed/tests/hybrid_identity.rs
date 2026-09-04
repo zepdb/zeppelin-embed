@@ -20,6 +20,120 @@ use zeppelin_embed::segment::writer::{
 };
 use zeppelin_embed::vfs::StdVfs;
 
+/// Publishes a single sealed segment that carries postings but no
+/// document-identity region, and opens a store over it.
+fn identity_free_store(directory: &std::path::Path) -> (Store, SegmentId) {
+    let empty = Store::open(directory, OpenOptions::default()).expect("create store");
+    empty.close().expect("close empty store");
+
+    let schema = Schema::timestamp_only();
+    let mut columns = ColumnStoreBuilder::new(schema.clone());
+    columns.push_row(0, &[]).expect("timestamp row");
+    let columns = columns.finish().expect("columns");
+    let alive = AliveSet::new(1);
+    let vector = [1.0_f32, 0.0];
+    let codes = vector
+        .iter()
+        .flat_map(|value| value.to_bits().to_le_bytes())
+        .collect::<Vec<_>>();
+
+    let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+    let mut lexical = SegmentIndex::new();
+    lexical
+        .push_document(&analyzer, &Document::with_text("bronze zeppelin"))
+        .expect("index text");
+    let postings = SealedSegment::seal(&lexical)
+        .expect("seal text")
+        .encode_region()
+        .expect("encode postings region");
+    let id = SegmentId::new(17, [3; 10]);
+    let policy =
+        DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None).expect("test durability");
+    let meta = write_segment_with_postings(
+        &StdVfs,
+        directory,
+        SegmentBuild {
+            id,
+            scheme: 0,
+            dims: 2,
+            codes: &codes,
+            factors: SegmentFactors::F32,
+            rescore: &vector,
+            columns: &columns,
+            alive: &alive,
+        },
+        SegmentPostings { bytes: &postings },
+        policy,
+    )
+    .expect("write identity-free postings segment");
+    commit_manifest(
+        &StdVfs,
+        directory,
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: vec![meta],
+            epochs: Vec::new(),
+            epoch_alias: None,
+            schema,
+        },
+        policy,
+    )
+    .expect("publish identity-free segment");
+
+    let store = Store::open(directory, OpenOptions::default()).expect("open fixture store");
+    (store, id)
+}
+
+/// The hybrid legs assemble the lexical index without requiring document
+/// identity; the standalone lexical path requires it. Both share one
+/// assembly cache, so this runs the hybrid query first and then the
+/// standalone one over exactly the same snapshot and active segment. A cache
+/// entry built without the identity proof must never be handed to the path
+/// that demands it.
+#[test]
+fn a_hybrid_query_does_not_let_the_lexical_path_skip_the_identity_proof() {
+    let directory = tempdir().expect("store directory");
+    let (store, id) = identity_free_store(directory.path());
+    let term = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+
+    assert_eq!(
+        store
+            .search_hybrid(
+                SearchRequest::new(&[0.0, 0.0]),
+                &term,
+                &HybridQuery::new(1),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new())
+            )
+            .expect_err("identity-free hybrid query must fail"),
+        FusionError::MissingDocumentIdentity {
+            leg: FusionLeg::Vector,
+            rank: 0
+        }
+    );
+    assert!(
+        matches!(
+            store.search_lexical(&term, 1, QueryControl::Cancel(CancelToken::new())),
+            Err(StoreLexicalError::MissingDocumentIdentity { segment_id }) if segment_id == id
+        ),
+        "the standalone lexical path skipped the identity proof after a hybrid query"
+    );
+    assert!(
+        matches!(
+            store.search_lexical_structured(
+                &LexicalQuery::term(term.clone()),
+                1,
+                64,
+                QueryControl::Cancel(CancelToken::new())
+            ),
+            Err(StoreLexicalError::MissingDocumentIdentity { segment_id }) if segment_id == id
+        ),
+        "the structured lexical path skipped the identity proof after a hybrid query"
+    );
+    store.close().expect("close fixture store");
+}
+
 #[test]
 fn postings_segment_without_document_identity_is_a_typed_error() {
     let directory = tempdir().expect("store directory");

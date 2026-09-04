@@ -648,6 +648,35 @@ impl LexicalIndex {
         &self.segments
     }
 
+    /// Returns the bytes this index owns outright, or `None` on overflow.
+    ///
+    /// The segment handles are `Arc` clones of postings that were decoded and
+    /// charged by whoever owns the cache they came from, so only the pointer
+    /// array counts for them. The live-row bitmaps are clones this index
+    /// made, so they count in full. Callers that retain an index past a
+    /// single query use this to charge what retaining it costs.
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        let segments = self
+            .segments
+            .capacity()
+            .checked_mul(std::mem::size_of::<Arc<SealedSegment>>())?;
+        let counters = self
+            .live_counters
+            .capacity()
+            .checked_mul(std::mem::size_of::<LiveSegmentCounters>())?;
+        let spine = self
+            .live_rows
+            .capacity()
+            .checked_mul(std::mem::size_of::<DocBitmap>())?;
+        let bitmaps = self.live_rows.iter().try_fold(0_usize, |total, rows| {
+            total.checked_add(rows.resident_bytes()?)
+        })?;
+        segments
+            .checked_add(counters)?
+            .checked_add(spine)?
+            .checked_add(bitmaps)
+    }
+
     /// Iterates the analyzed vocabulary of every segment.
     ///
     /// Terms may repeat across segments; callers that expand a structured
