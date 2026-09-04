@@ -14,10 +14,23 @@
 # than one block boundary, so the cursor landed in the next block, decoded
 # it and asked the same question again.
 #
-#   blocks_decoded   2621 -> 21
-#   blocks_skipped      0 -> 2600
+#   blocks_decoded   2621 -> 23
+#   blocks_skipped      0 -> 2598
 #   docs_evaluated     63 -> 63
 #   postings_decoded  168 -> 168
+#
+# Two of those blocks are the price of the refinement's pre-test. The walk
+# costs two binary searches per live cursor per iteration, and on a corpus
+# whose impact pairs are near-uniform it can never condemn anything, so
+# every one of them is spent proving the same negative: 1.66x on FiQA's
+# long queries, with blocks_skipped still zero. The pre-test bounds the
+# pivot row by the block each cursor already sits in and by the whole-term
+# bound of the ones below it -- two O(1) reads -- and enters the walk only
+# when that sum cannot clear the threshold. It dominates the walk's own
+# first bound term for term, so it never admits a wrong skip; being looser
+# for the trailing cursors, it declines two condemnations here that the
+# unguarded walk would have found. Two blocks of 2,621, against a
+# refinement that is otherwise a net loss on real text.
 #
 # The two scoring counters not moving is the point: the same documents are
 # evaluated from the same postings, and the hits are bit-identical to the
@@ -25,6 +38,6 @@
 # changed is only how much of the segment had to be unpacked to reach
 # them -- 0.8% of the blocks instead of all of them.
 docs_evaluated = 63
-blocks_decoded = 21
-blocks_skipped = 2600
+blocks_decoded = 23
+blocks_skipped = 2598
 postings_decoded = 168

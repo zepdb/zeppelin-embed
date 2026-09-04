@@ -162,7 +162,67 @@ pub fn run(
         // asked the same question and stepped again. `blocks_decoded` was
         // the whole list at every `k` and `blocks_skipped` was structurally
         // zero: block-max WAND had become a slower way to skip documents.
-        if heap.is_full() {
+        //
+        // # The pre-test that keeps the walk from costing more than it saves
+        //
+        // The walk below pays two binary searches per live cursor per
+        // iteration. On a corpus whose impact pairs are near-uniform there
+        // is never anything to condemn, so every one of those searches is
+        // spent proving the same negative: measured at 1.66x on FiQA's
+        // long queries, with `blocks_skipped` still zero.
+        //
+        // Only a cursor at or below `pivot_row` can hold it. Bounding the
+        // ones sitting on it by the block they are already in, and the ones
+        // below by their whole-term bound, costs two O(1) reads and gives a
+        // sum that dominates the walk's own first bound term for term. So
+        // when it already clears the threshold the walk would break on its
+        // first pass, and skipping it changes no decision -- only the price
+        // of reaching the same one.
+        //
+        // `accumulated` is already the whole-term sum over positions
+        // `0..=pivot_position`, and `live` is sorted, so the only cursors
+        // it misses are ties sitting at `pivot_row` past the pivot. Rows
+        // equal to `pivot_row` are therefore one contiguous run, and
+        // walking it is the entire cost of the pre-test: one block read per
+        // cursor actually on the pivot, no second pass over `live`.
+        let condemnable = || {
+            let mut cheap = accumulated;
+            let mut position = pivot_position;
+            while let Some((row, slot)) = live.get(position).copied() {
+                if row != pivot_row {
+                    break;
+                }
+                if let Some(cursor) = cursors.get(slot) {
+                    cheap += cursor.current_block_max();
+                    if position <= pivot_position {
+                        cheap -= cursor.upper_bound;
+                    }
+                }
+                position = position.saturating_add(1);
+            }
+            let mut position = pivot_position;
+            while position > 0 {
+                position = position.saturating_sub(1);
+                let Some((row, slot)) = live.get(position).copied() else {
+                    break;
+                };
+                if row != pivot_row {
+                    break;
+                }
+                if let Some(cursor) = cursors.get(slot) {
+                    cheap += cursor.current_block_max();
+                    cheap -= cursor.upper_bound;
+                }
+            }
+            cheap <= threshold
+        };
+        // The refinement is worth asking only once the pivot set has
+        // gathered on the pivot row. Asking on every iteration -- including
+        // the ones whose whole job is to drag a trailing cursor forward --
+        // costs one BM25 evaluation per run per iteration, which on a
+        // seventeen-term query is most of the traversal and buys a skip
+        // only where the impact pairs are skewed enough to condemn one.
+        if heap.is_full() && first_row == pivot_row && condemnable() {
             let mut target = pivot_row;
             let mut condemned = false;
             loop {
