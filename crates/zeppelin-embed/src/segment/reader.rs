@@ -386,6 +386,11 @@ pub struct SegmentReader {
     // Inline cached graph metadata is covered by this reader's exactly
     // accounted snapshot slot; its heap-backed scratch is charged to Cache.
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
+    // Query-independent half of the fusion vector ceiling. The enclosure is a
+    // property of this sealed segment's immutable factor or rescore bytes, so
+    // it is walked once per reader and folded with each query's norm after.
+    // Two f64 held inline, covered by the accounted snapshot slot.
+    vector_ceiling_norm_range: OnceLock<crate::graph::search::GraphSegmentNormRange>,
 }
 
 struct CachedQueryValue<T> {
@@ -555,6 +560,7 @@ impl SegmentReader {
             alive_cache: OnceLock::new(),
             document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
+            vector_ceiling_norm_range: OnceLock::new(),
         })
     }
 
@@ -627,6 +633,7 @@ impl SegmentReader {
             alive_cache: OnceLock::new(),
             document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
+            vector_ceiling_norm_range: OnceLock::new(),
         })
     }
 
@@ -1074,6 +1081,28 @@ impl SegmentReader {
             &self.vector_factors_validated,
         )?;
         self.int8_factors_unchecked()
+    }
+
+    /// Returns this reader's remembered query-independent norm enclosure.
+    ///
+    /// `None` means no query has walked the region yet. The enclosure is
+    /// derived only from immutable sealed bytes, so a remembered value is the
+    /// same value any later walk would produce.
+    pub(crate) fn cached_vector_ceiling_norm_range(
+        &self,
+    ) -> Option<crate::graph::search::GraphSegmentNormRange> {
+        self.vector_ceiling_norm_range.get().copied()
+    }
+
+    /// Remembers the enclosure a query walked out of this segment's bytes.
+    pub(crate) fn remember_vector_ceiling_norm_range(
+        &self,
+        range: crate::graph::search::GraphSegmentNormRange,
+    ) {
+        if self.vector_ceiling_norm_range.set(range).is_err() {
+            // A concurrent walk won. It read the same immutable bytes with the
+            // same arithmetic, so its enclosure is this enclosure.
+        }
     }
 
     /// Validate-once twin of [`Self::bit4_factors`].

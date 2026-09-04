@@ -4809,8 +4809,49 @@ fn exact_vector_ceiling(
     active: &crate::ingest::ActiveSegment,
     query: &[f32],
 ) -> Result<f64, QueryError> {
+    fold_exact_vector_ceiling(
+        snapshot,
+        active,
+        query,
+        remembered_segment_vector_ceiling_norm_range,
+    )
+}
+
+/// Returns a sealed segment's norm enclosure, walking its region only once.
+///
+/// The enclosure is the query-independent half of the ceiling: it depends on
+/// the segment's immutable factor or rescore bytes alone. Every tier and every
+/// hybrid widening round would otherwise rewalk every factor record of every
+/// segment to reach the same two numbers.
+fn remembered_segment_vector_ceiling_norm_range(
+    segment: &crate::segment::reader::SegmentReader,
+) -> Result<crate::graph::search::GraphSegmentNormRange, QueryError> {
+    if let Some(range) = segment.cached_vector_ceiling_norm_range() {
+        return Ok(range);
+    }
+    let range = compute_segment_vector_ceiling_norm_range(segment)?;
+    segment.remember_vector_ceiling_norm_range(range);
+    Ok(range)
+}
+
+/// Folds every segment's norm enclosure into the query-wide ceiling.
+///
+/// `segment_range` supplies one sealed segment's query-independent enclosure.
+/// Production passes the remembering source; the differential test passes the
+/// recomputing one, so both walk identical fold arithmetic.
+fn fold_exact_vector_ceiling(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    query: &[f32],
+    mut segment_range: impl FnMut(
+        &crate::segment::reader::SegmentReader,
+    )
+        -> Result<crate::graph::search::GraphSegmentNormRange, QueryError>,
+) -> Result<f64, QueryError> {
     let mut ceiling = 0.0_f64;
     if !active.is_empty() {
+        // The active segment is the one mutable row source, so its enclosure
+        // is recomputed on every query and is never remembered.
         ceiling = fold_vector_ceiling(
             ceiling,
             crate::graph::search::GraphSegmentNormRange::from_factors(active.factors()),
@@ -4818,31 +4859,38 @@ fn exact_vector_ceiling(
         )?;
     }
     for segment in snapshot.segments() {
-        let range = match segment.meta().scheme {
-            4 => crate::graph::search::GraphSegmentNormRange::from_factors(
-                segment
-                    .query_bit4_factors()
-                    .map_err(StoreError::Segment)
-                    .map_err(QueryError::Store)?,
-            ),
-            0 | 2 => crate::graph::search::GraphSegmentNormRange::from_exact_rows(
+        let range = segment_range(segment)?;
+        ceiling = fold_vector_ceiling(ceiling, range, query)?;
+    }
+    Ok(ceiling)
+}
+
+/// Walks one sealed segment's factor or rescore region for its norm enclosure.
+fn compute_segment_vector_ceiling_norm_range(
+    segment: &crate::segment::reader::SegmentReader,
+) -> Result<crate::graph::search::GraphSegmentNormRange, QueryError> {
+    match segment.meta().scheme {
+        4 => Ok(crate::graph::search::GraphSegmentNormRange::from_factors(
+            segment
+                .query_bit4_factors()
+                .map_err(StoreError::Segment)
+                .map_err(QueryError::Store)?,
+        )),
+        0 | 2 => Ok(
+            crate::graph::search::GraphSegmentNormRange::from_exact_rows(
                 segment
                     .query_rescore_f32()
                     .map_err(StoreError::Segment)
                     .map_err(QueryError::Store)?,
                 segment.meta().dims as usize,
             ),
-            scheme => {
-                return Err(QueryError::Store(StoreError::Segment(
-                    crate::segment::SegmentError::Geometry(format!(
-                        "vector norm enclosure does not support scheme {scheme}"
-                    )),
-                )));
-            }
-        };
-        ceiling = fold_vector_ceiling(ceiling, range, query)?;
+        ),
+        scheme => Err(QueryError::Store(StoreError::Segment(
+            crate::segment::SegmentError::Geometry(format!(
+                "vector norm enclosure does not support scheme {scheme}"
+            )),
+        ))),
     }
-    Ok(ceiling)
 }
 
 fn fold_vector_ceiling(
@@ -6001,6 +6049,202 @@ mod tests {
         SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
         resolve_hybrid_leg_results,
     };
+
+    /// Vectors whose norms differ enough that the ceiling is not degenerate.
+    const CEILING_ROWS: [[f32; 4]; 3] = [
+        [0.5, -0.25, 0.75, 0.125],
+        [3.0, 1.5, -2.5, 0.25],
+        [0.0, 0.0, 0.0, 0.0],
+    ];
+
+    /// Publishes a scheme-0 segment that no seal path can produce.
+    fn publish_f32_segment(directory: &std::path::Path) {
+        let created = Store::open(directory, OpenOptions::default()).expect("create f32 store");
+        created.close().expect("close f32 store");
+
+        let schema = Schema::timestamp_only();
+        let mut columns = crate::meta::ColumnStoreBuilder::new(schema.clone());
+        for row in 0..CEILING_ROWS.len() {
+            columns
+                .push_row(i64::try_from(row).expect("row timestamp"), &[])
+                .expect("timestamp row");
+        }
+        let columns = columns.finish().expect("columns");
+        let alive =
+            crate::meta::AliveSet::new(u32::try_from(CEILING_ROWS.len()).expect("row count"));
+        let rescore = CEILING_ROWS.iter().flatten().copied().collect::<Vec<f32>>();
+        let codes = rescore
+            .iter()
+            .flat_map(|value| value.to_bits().to_le_bytes())
+            .collect::<Vec<u8>>();
+        let policy = DurabilityPolicy::new(DurabilityMode::Derived, CommitTier::None)
+            .expect("f32 fixture durability");
+        let meta = crate::segment::writer::write_segment(
+            &StdVfs,
+            directory,
+            crate::segment::writer::SegmentBuild {
+                id: crate::segment::SegmentId::new(11, [7; 10]),
+                scheme: 0,
+                dims: 4,
+                codes: &codes,
+                factors: crate::segment::writer::SegmentFactors::F32,
+                rescore: &rescore,
+                columns: &columns,
+                alive: &alive,
+            },
+            policy,
+        )
+        .expect("write scheme-0 segment");
+        commit_manifest(
+            &StdVfs,
+            directory,
+            &Manifest {
+                generation: 1,
+                log_seq: 0,
+                segments: vec![meta],
+                epochs: Vec::new(),
+                epoch_alias: None,
+                schema,
+            },
+            policy,
+        )
+        .expect("publish scheme-0 segment");
+    }
+
+    /// Ingests `CEILING_ROWS`, sealing every row except an optional tail that
+    /// stays in the mutable active segment.
+    fn ingest_ceiling_rows(store: &Store, keep_active: usize, one_segment_per_row: bool) {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+
+        let sealed = CEILING_ROWS.len() - keep_active;
+        for (index, row) in CEILING_ROWS.iter().enumerate() {
+            let version = DocumentVersion::new(
+                DocId::new(u128::try_from(index).expect("document id")),
+                Revision::new(1),
+            );
+            store
+                .ingest(IngestBatch::new(vec![IngestDocument::new(
+                    version,
+                    row.to_vec(),
+                )]))
+                .expect("ingest ceiling row");
+            let seal_here = if one_segment_per_row {
+                index < sealed
+            } else {
+                index + 1 == sealed
+            };
+            if seal_here {
+                store.seal().expect("seal ceiling rows");
+            }
+        }
+    }
+
+    /// Proves the remembered per-segment enclosure reproduces the ceiling
+    /// exactly, for one store, over several queries.
+    fn assert_remembered_ceiling_is_exact(store: &Store, expected_segments: usize) {
+        let queries: [Vec<f32>; 3] = [
+            vec![0.0, 0.0, 0.0, 0.0],
+            vec![1.0, -1.0, 0.5, 2.0],
+            vec![7.5, 0.25, -3.5, 0.125],
+        ];
+        let admitted = store
+            .admit_vector_search(SearchOptions::default())
+            .expect("admit ceiling query");
+        let snapshot = &admitted.snapshot;
+        let active = &admitted.active_segment;
+        assert_eq!(snapshot.segments().len(), expected_segments);
+        for segment in snapshot.segments() {
+            assert!(
+                segment.cached_vector_ceiling_norm_range().is_none(),
+                "a segment remembered an enclosure before any query walked it"
+            );
+        }
+
+        for query in &queries {
+            let cold = super::exact_vector_ceiling(snapshot, active, query).expect("cold ceiling");
+            for segment in snapshot.segments() {
+                let remembered = segment
+                    .cached_vector_ceiling_norm_range()
+                    .expect("a walked segment must remember its enclosure");
+                let recomputed = super::compute_segment_vector_ceiling_norm_range(segment)
+                    .expect("recomputed enclosure");
+                assert_eq!(
+                    remembered.endpoint_bits(),
+                    recomputed.endpoint_bits(),
+                    "remembered enclosure differs from the recomputed one"
+                );
+            }
+            let warm = super::exact_vector_ceiling(snapshot, active, query).expect("warm ceiling");
+            let recomputed = super::fold_exact_vector_ceiling(
+                snapshot,
+                active,
+                query,
+                super::compute_segment_vector_ceiling_norm_range,
+            )
+            .expect("recomputed ceiling");
+            assert_eq!(
+                cold.to_bits(),
+                warm.to_bits(),
+                "the remembered ceiling changed between queries"
+            );
+            assert_eq!(
+                cold.to_bits(),
+                recomputed.to_bits(),
+                "the remembered ceiling is not the recomputed ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn the_remembered_vector_ceiling_is_the_recomputed_ceiling_for_every_scheme() {
+        let bit4_directory = tempdir().expect("Bit4 ceiling store directory");
+        let bit4 = Store::open(bit4_directory.path(), OpenOptions::default())
+            .expect("open Bit4 ceiling store");
+        ingest_ceiling_rows(&bit4, 0, false);
+        assert_remembered_ceiling_is_exact(&bit4, 1);
+        bit4.close().expect("close Bit4 ceiling store");
+
+        let split_directory = tempdir().expect("multi-segment ceiling store directory");
+        let split = Store::open(split_directory.path(), OpenOptions::default())
+            .expect("open multi-segment ceiling store");
+        ingest_ceiling_rows(&split, 0, true);
+        assert_remembered_ceiling_is_exact(&split, CEILING_ROWS.len());
+        split.close().expect("close multi-segment ceiling store");
+
+        let int8_directory = tempdir().expect("Int8 ceiling store directory");
+        let int8 = Store::open_with_test_dependencies(
+            int8_directory.path(),
+            OpenOptions::default(),
+            StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(super::SystemMonotonicClock))
+                .with_vector_seal_scheme(crate::quant::QuantScheme::Int8),
+        )
+        .expect("open Int8 ceiling store");
+        ingest_ceiling_rows(&int8, 0, false);
+        assert_remembered_ceiling_is_exact(&int8, 1);
+        int8.close().expect("close Int8 ceiling store");
+
+        let f32_directory = tempdir().expect("F32 ceiling store directory");
+        publish_f32_segment(f32_directory.path());
+        let f32_store = Store::open(f32_directory.path(), OpenOptions::default())
+            .expect("open F32 ceiling store");
+        assert_remembered_ceiling_is_exact(&f32_store, 1);
+        f32_store.close().expect("close F32 ceiling store");
+
+        let active_directory = tempdir().expect("active ceiling store directory");
+        let active = Store::open(active_directory.path(), OpenOptions::default())
+            .expect("open active ceiling store");
+        ingest_ceiling_rows(&active, 2, false);
+        assert!(
+            !active
+                .admit_vector_search(SearchOptions::default())
+                .expect("admit active ceiling query")
+                .active_segment
+                .is_empty(),
+            "the active-segment case sealed every row"
+        );
+        assert_remembered_ceiling_is_exact(&active, 1);
+        active.close().expect("close active ceiling store");
+    }
 
     #[test]
     fn exact_and_graph_tiers_preserve_quantizer_validation_errors() {

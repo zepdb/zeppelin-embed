@@ -885,6 +885,12 @@ impl GraphSegmentNormRange {
         }
     }
 
+    /// Returns both enclosure endpoints as raw bits for exact comparison.
+    #[cfg(test)]
+    pub(crate) fn endpoint_bits(self) -> (u64, u64) {
+        (self.minimum.to_bits(), self.maximum.to_bits())
+    }
+
     /// Returns a conservative lower bound in the exact-rescore f64 arithmetic.
     ///
     /// The query norm interval covers positive f64 accumulation error for the
