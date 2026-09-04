@@ -331,6 +331,10 @@ fn document_version_hashes_the_region_once_per_reader() {
 
 #[test]
 fn warm_graph_query_does_not_rehash_rescore_region() {
+    // Query-path verification is opt-in and off by default (owner
+    // decision 2026-09-04). This test asserts the verifying behaviour, so
+    // it turns verification on explicitly.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let (directory, vectors, _segment_bytes) = graph_store();
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open graph store");
     let snapshot = store.snapshot().expect("graph snapshot");
@@ -537,6 +541,10 @@ fn active_lexical_view_is_sealed_once_per_active_generation() {
 
 #[test]
 fn touched_rescore_chunk_corruption_still_fails_loudly_and_restores() {
+    // Query-path verification is opt-in and off by default (owner
+    // decision 2026-09-04). This test asserts the verifying behaviour, so
+    // it turns verification on explicitly.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let (directory, vectors, _segment_bytes) = graph_store();
     let segment_path = std::fs::read_dir(directory.path())
         .expect("list graph directory")

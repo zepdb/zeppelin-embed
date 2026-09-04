@@ -505,6 +505,22 @@ impl<'a> StoredTextRows<'a> {
     }
 }
 
+/// Tri-state cache for query-path checksum verification: 0 unset,
+/// 1 disabled, 2 enabled. Read from `ZE_VERIFY_QUERY_CHECKSUMS` once.
+static QUERY_CHECKSUMS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Forces query-path checksum verification on or off.
+///
+/// Verification is opt-in and off by default, so a test that asserts the
+/// verifying behaviour must turn it on rather than assume it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_query_checksum_verification(enabled: bool) {
+    QUERY_CHECKSUMS.store(
+        if enabled { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 impl SegmentReader {
     /// Memory-maps a segment and validates only its bounded header/directory.
     pub fn open(vfs: &dyn Vfs, path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
@@ -849,13 +865,28 @@ impl SegmentReader {
 
     /// Casts validated full-precision code rows directly from the mapping.
     pub fn f32_codes(&self) -> Result<&[f32], SegmentError> {
+        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
+        self.f32_codes_from(header, payload)
+    }
+
+    /// Validate-once twin of [`Self::f32_codes`].
+    pub(crate) fn query_f32_codes(&self) -> Result<&[f32], SegmentError> {
+        self.validate_vector_region_once(RegionKind::VectorCodes, &self.vector_codes_validated)?;
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorCodes)?;
+        self.f32_codes_from(header, payload)
+    }
+
+    fn f32_codes_from<'a>(
+        &'a self,
+        header: super::layout::VectorHeader,
+        payload: &'a [u8],
+    ) -> Result<&[f32], SegmentError> {
         if self.meta.scheme != 0 {
             return Err(SegmentError::Geometry(format!(
                 "F32 codes requested for scheme {}",
                 self.meta.scheme
             )));
         }
-        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
         let expected = (self.meta.dims as usize)
             .checked_mul(self.meta.row_count as usize)
             .ok_or_else(|| SegmentError::Geometry("F32 code length overflow".to_owned()))?;
@@ -987,10 +1018,19 @@ impl SegmentReader {
     /// still verify unconditionally. Set `ZE_VERIFY_QUERY_CHECKSUMS=1`
     /// to restore per-reader verification on the query path.
     fn query_checksums_enabled() -> bool {
-        static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| {
-            std::env::var_os("ZE_VERIFY_QUERY_CHECKSUMS").is_some_and(|value| value != "0")
-        })
+        match QUERY_CHECKSUMS.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => {
+                let enabled =
+                    std::env::var_os("ZE_VERIFY_QUERY_CHECKSUMS").is_some_and(|value| value != "0");
+                QUERY_CHECKSUMS.store(
+                    if enabled { 2 } else { 1 },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                enabled
+            }
+            1 => false,
+            _ => true,
+        }
     }
 
     /// Verifies a vector region's checksum once per reader, then serves it

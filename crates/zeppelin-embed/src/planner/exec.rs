@@ -662,7 +662,7 @@ fn scan_sealed_filtered(
                 query: ScanQuery::F32(query),
                 rows: ScanRows::F32BorrowedRowMajor(
                     segment
-                        .f32_codes()
+                        .query_f32_codes()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                 ),

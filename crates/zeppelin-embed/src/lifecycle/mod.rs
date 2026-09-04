@@ -4113,7 +4113,7 @@ fn structured_lexical_row<'a>(
                 .get(*ordinal)
                 .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
             let text = segment
-                .stored_text()
+                .query_stored_text()
                 .map_err(StoreError::Segment)
                 .map_err(QueryError::Store)?
                 .and_then(|rows| rows.row(row).flatten())
@@ -4821,13 +4821,13 @@ fn exact_vector_ceiling(
         let range = match segment.meta().scheme {
             4 => crate::graph::search::GraphSegmentNormRange::from_factors(
                 segment
-                    .bit4_factors()
+                    .query_bit4_factors()
                     .map_err(StoreError::Segment)
                     .map_err(QueryError::Store)?,
             ),
             0 | 2 => crate::graph::search::GraphSegmentNormRange::from_exact_rows(
                 segment
-                    .rescore_f32()
+                    .query_rescore_f32()
                     .map_err(StoreError::Segment)
                     .map_err(QueryError::Store)?,
                 segment.meta().dims as usize,
@@ -5351,7 +5351,7 @@ fn scan_sealed_segment(
                 query: ScanQuery::F32(request.vector()),
                 rows: ScanRows::F32BorrowedRowMajor(
                     segment
-                        .f32_codes()
+                        .query_f32_codes()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                 ),
@@ -5380,11 +5380,11 @@ fn scan_sealed_segment(
                 ),
                 rows: ScanRows::Bit4RowMajor {
                     codes: segment
-                        .bit4_codes()
+                        .query_bit4_codes()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                     factors: segment
-                        .bit4_factors()
+                        .query_bit4_factors()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                 },
