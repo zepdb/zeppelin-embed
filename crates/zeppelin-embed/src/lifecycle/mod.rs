@@ -3440,6 +3440,7 @@ impl Store {
             })();
             (name, result)
         })?;
+        let caller_chose_tier = options.explicit_tier().is_some();
         let run_vector_leg = |k: usize| {
             search_pinned(
                 admitted.pool.as_deref(),
@@ -3450,7 +3451,22 @@ impl Store {
                 self.epoch_identity(),
                 vector_query,
                 k,
-                options,
+                // A graph traversal only pays for itself while its
+                // candidate pool is a small fraction of the segment. Once
+                // a widening round would visit more than
+                // `GRAPH_WIDENING_CAP_NUMERATOR/DENOMINATOR` of the rows,
+                // the traversal is a scan wearing a graph costume: it
+                // pays the graph's indirection and then reads most of the
+                // segment anyway. Such a round runs as Exact instead,
+                // which is both faster and exactly rescored.
+                // Only when the caller stated no preference. An explicit
+                // tier is a contract: honour it, and let fusion reject it
+                // loudly if it cannot supply exact scores.
+                if caller_chose_tier || graph_round_is_worth_it(k, corpus_rows) {
+                    options
+                } else {
+                    options.with_tier(SearchTier::Exact)
+                },
                 control.clone(),
                 GraphBoundMode::Shared,
                 started,
@@ -4638,6 +4654,29 @@ fn search_pinned(
 ///
 /// Only a published artifact counts. A graph that policy says is due but
 /// that maintenance has not built yet is not usable by a query.
+/// Widening rounds visit `ef` rows per segment, and `ef` grows with the
+/// requested `k`. Past this share of the corpus a traversal reads most of
+/// the segment anyway, so the round is cheaper and exact as a scan.
+const GRAPH_WIDENING_CAP_NUMERATOR: usize = 1;
+/// Denominator of [`GRAPH_WIDENING_CAP_NUMERATOR`]; the cap is 25%.
+const GRAPH_WIDENING_CAP_DENOMINATOR: usize = 4;
+
+/// Reports whether a widening round of width `k` should still use the graph.
+///
+/// `ef` follows `graph::search`: at least the SIFT floor, and otherwise a
+/// small multiple of `k`. The angular multiple is used so the cap is
+/// evaluated against the widest pool any profile would request, which
+/// keeps the decision independent of the distance metric in play.
+fn graph_round_is_worth_it(k: usize, corpus_rows: usize) -> bool {
+    if corpus_rows == 0 {
+        return true;
+    }
+    let ef = k.saturating_mul(4).max(140);
+    let cap =
+        corpus_rows.saturating_mul(GRAPH_WIDENING_CAP_NUMERATOR) / GRAPH_WIDENING_CAP_DENOMINATOR;
+    ef <= cap
+}
+
 fn snapshot_has_graph(snapshot: &PublishedSnapshot) -> bool {
     snapshot.segments().iter().any(|segment| {
         segment
