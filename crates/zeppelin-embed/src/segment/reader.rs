@@ -977,6 +977,22 @@ impl SegmentReader {
         cast_slice::<Int8Factors>(payload, self.meta.row_count as usize, "Int8 factors")
     }
 
+    /// Reports whether query paths verify region checksums at all.
+    ///
+    /// Owner decision 2026-09-04: verification is opt-in and off by
+    /// default. A sealed segment is immutable and its checksums are
+    /// written and verified at seal; re-verifying at query time defends
+    /// only against on-disk corruption after publication, which is what
+    /// `Store::health()` and the diagnostics paths are for. Those paths
+    /// still verify unconditionally. Set `ZE_VERIFY_QUERY_CHECKSUMS=1`
+    /// to restore per-reader verification on the query path.
+    fn query_checksums_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var_os("ZE_VERIFY_QUERY_CHECKSUMS").is_some_and(|value| value != "0")
+        })
+    }
+
     /// Verifies a vector region's checksum once per reader, then serves it
     /// from the mapping without re-hashing.
     ///
@@ -991,7 +1007,7 @@ impl SegmentReader {
         kind: RegionKind,
         gate: &OnceLock<()>,
     ) -> Result<(), SegmentError> {
-        if gate.get().is_some() {
+        if gate.get().is_some() || !Self::query_checksums_enabled() {
             return Ok(());
         }
         let _ = self.region(kind)?;
@@ -1624,7 +1640,7 @@ impl SegmentReader {
     /// later reads come from the mapping without re-verification. Nothing is
     /// retained beyond the validation fact, so there is nothing to account.
     pub(crate) fn query_stored_text(&self) -> Result<Option<StoredTextRows<'_>>, SegmentError> {
-        if self.stored_text_validated.get().is_some() {
+        if self.stored_text_validated.get().is_some() || !Self::query_checksums_enabled() {
             let Some(entry) = self
                 .entries
                 .iter()
@@ -1842,7 +1858,7 @@ impl SegmentReader {
                 "rescore byte range {start}..{end} exceeds {region_length}"
             )));
         }
-        if length == 0 {
+        if length == 0 || !Self::query_checksums_enabled() {
             return Ok(());
         }
         let first_chunk = start / CHECKSUM_CHUNK_BYTES;
