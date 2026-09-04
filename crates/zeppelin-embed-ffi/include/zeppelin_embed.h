@@ -554,6 +554,62 @@ typedef struct ZeMutationReport {
 } ZeMutationReport;
 
 /*
+ Host-bounded maintenance request.
+ */
+typedef struct ZeMaintainRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Maximum monotonic wall time in nanoseconds.
+     */
+    uint64_t wall_time_ns;
+    /*
+     Maximum graph work bytes.
+     */
+    uint64_t bytes;
+} ZeMaintainRequest;
+
+/*
+ Host-bounded maintenance report.
+ */
+typedef struct ZeMaintainReport {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Graph generations published.
+     */
+    uint64_t graphs_built;
+    /*
+     Graph work bytes consumed.
+     */
+    uint64_t bytes_consumed;
+    /*
+     Checkpointed graph builds resumed.
+     */
+    uint64_t checkpoints_resumed;
+    /*
+     `0` complete or `1` budget exhausted.
+     */
+    int32_t status;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeMaintainReport;
+
+/*
  Single-pass text query request.
  */
 typedef struct ZeTextQueryRequest {
@@ -1537,62 +1593,6 @@ typedef struct ZePurgeReport {
     uint32_t is_no_op;
 } ZePurgeReport;
 
-/*
- Host-bounded maintenance request.
- */
-typedef struct ZeMaintainRequest {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Maximum monotonic wall time in nanoseconds.
-     */
-    uint64_t wall_time_ns;
-    /*
-     Maximum graph work bytes.
-     */
-    uint64_t bytes;
-} ZeMaintainRequest;
-
-/*
- Host-bounded maintenance report.
- */
-typedef struct ZeMaintainReport {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Graph generations published.
-     */
-    uint64_t graphs_built;
-    /*
-     Graph work bytes consumed.
-     */
-    uint64_t bytes_consumed;
-    /*
-     Checkpointed graph builds resumed.
-     */
-    uint64_t checkpoints_resumed;
-    /*
-     `0` complete or `1` budget exhausted.
-     */
-    int32_t status;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-} ZeMaintainReport;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -1669,6 +1669,13 @@ ze_error_code ze_text_open(const struct ZeTextOpenRequest *request,
 ze_error_code ze_text_ingest(ze_handle handle,
                              const struct ZeTextIngestRequest *request,
                              struct ZeMutationReport *out_report);
+
+/*
+ Repeats bounded text-store maintenance slices until all due work completes.
+ */
+ze_error_code ze_text_maintain(ze_handle handle,
+                               const struct ZeMaintainRequest *request,
+                               struct ZeMaintainReport *out_report);
 
 /*
  Executes one dense, lexical, or hybrid text query and returns stored text on every hit.

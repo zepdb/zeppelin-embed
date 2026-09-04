@@ -343,7 +343,7 @@ fn execute_pinned(
                 0,
             )?;
             plans.push(
-                SegmentPlan::exact(source, tier, SegmentBranch::Pruned, 0)
+                SegmentPlan::exact(source, tier, SegmentBranch::Pruned, 0, None)
                     .with_predicate(predicate),
             );
             continue;
@@ -406,7 +406,9 @@ fn execute_pinned(
             allow_list.cardinality(),
             branch,
         )?;
-        let plan = SegmentPlan::exact(source, tier, branch, allow_list.cardinality())
+        let scan_reason = (tier == SegmentTier::SealedScan)
+            .then(|| sealed_scan_reason(segment, options.explicit_tier()));
+        let plan = SegmentPlan::exact(source, tier, branch, allow_list.cardinality(), scan_reason)
             .with_predicate(predicate);
         #[cfg(any(test, feature = "test-support"))]
         let receipt_context = metadata_execution_receipt_context(
@@ -463,6 +465,7 @@ fn execute_pinned(
     candidates.truncate(k);
     cancellation.check_graph().map_err(map_scan_error)?;
     let stats = stats.finish();
+    accounting.record_plans(&plans).map_err(QueryError::Store)?;
     let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
         snapshot_generation: generation,
         indexed_through_seq: active
@@ -556,6 +559,7 @@ fn execute_active_filtered(
         SegmentTier::ActiveScan,
         branch,
         allow_list.cardinality(),
+        Some(crate::planner::ScanReason::ActiveSegment),
     )
     .with_predicate(predicate);
     #[cfg(any(test, feature = "test-support"))]
@@ -672,7 +676,7 @@ fn scan_sealed_filtered(
         ),
         2 => {
             let factors = segment
-                .int8_factors()
+                .query_int8_factors_slice()
                 .map_err(StoreError::Segment)
                 .map_err(QueryError::Store)?
                 .iter()
@@ -689,7 +693,7 @@ fn scan_sealed_filtered(
                     query: ScanQuery::Int8(int8_query),
                     rows: ScanRows::Int8RowMajor {
                         codes: segment
-                            .int8_codes()
+                            .query_int8_codes()
                             .map_err(StoreError::Segment)
                             .map_err(QueryError::Store)?,
                         factors: &factors,
@@ -709,11 +713,11 @@ fn scan_sealed_filtered(
                 query: ScanQuery::Bit4(bit4_query),
                 rows: ScanRows::Bit4RowMajor {
                     codes: segment
-                        .bit4_codes()
+                        .query_bit4_codes()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                     factors: segment
-                        .bit4_factors()
+                        .query_bit4_factors()
                         .map_err(StoreError::Segment)
                         .map_err(QueryError::Store)?,
                 },
@@ -797,6 +801,7 @@ fn sealed_graph_filtered(
                 SegmentTier::SealedGraph,
                 SegmentBranch::Pruned,
                 allow_list.cardinality(),
+                None,
             )
             .with_predicate(predicate),
         );
@@ -872,6 +877,27 @@ fn sealed_graph_filtered(
     plans.push(plan);
     retain_global_top_k(candidates, k);
     Ok(SealedGraphOutcome::Executed)
+}
+
+fn sealed_scan_reason(
+    segment: &crate::segment::reader::SegmentReader,
+    requested_tier: Option<SearchTier>,
+) -> crate::planner::ScanReason {
+    use crate::planner::{ExplicitScanTier, ScanReason};
+
+    match requested_tier {
+        Some(SearchTier::Exact) => return ScanReason::ExplicitTier(ExplicitScanTier::Exact),
+        Some(SearchTier::Scan) => return ScanReason::ExplicitTier(ExplicitScanTier::Scan),
+        Some(SearchTier::Auto | SearchTier::Graph(_)) | None => {}
+    }
+    let rows = segment.meta().row_count;
+    let min_rows = crate::tier::thresholds::for_bucket(segment.meta().dims, segment.meta().scheme)
+        .graph_min_rows;
+    if rows < min_rows {
+        ScanReason::BelowGraphThreshold { rows, min_rows }
+    } else {
+        ScanReason::GraphPending
+    }
 }
 
 struct FilteredGraphExecution {

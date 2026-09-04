@@ -272,12 +272,12 @@ pub enum FusionTermination {
 ///
 /// The extremes are corpus-wide, not window-wide: windowed min-max
 /// normalization measurably loses quality (PLAN.md §A.2), so a bounded
-/// producer supplies the true farthest row alongside its window.
+/// producer supplies a deterministic ceiling that no alive row exceeds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VectorBounds {
     /// Exact squared-L2 of the nearest alive row.
     pub min_squared_l2: f64,
-    /// Exact squared-L2 of the farthest alive row.
+    /// Producer-supplied squared-L2 ceiling over every alive row.
     pub max_squared_l2: f64,
     /// Exact squared-L2 of the (W+1)-th row, absent when the leg is complete.
     pub next_unseen_squared_l2: Option<f64>,

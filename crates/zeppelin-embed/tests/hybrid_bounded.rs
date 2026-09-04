@@ -15,7 +15,8 @@ use tempfile::tempdir;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fusion::{
-    FusedHit, FusionTermination, HybridQuery, LexicalCandidate, VectorCandidate, fuse,
+    FusedHit, FusionTermination, HybridQuery, LegBounds, LexicalBounds, LexicalCandidate,
+    VectorBounds, VectorCandidate, fuse_bounded,
 };
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
@@ -34,9 +35,9 @@ fn corpus_cases() -> usize {
         .unwrap_or(12)
 }
 
-/// Fuses the two complete exact lists the pre-change hybrid path handed
-/// `fuse`: every alive row exactly scored, and every matching document with
-/// its exact BM25.
+/// Fuses complete exact lists with the same corpus-wide norm-ball bound used
+/// by every vector tier: every alive row is exactly scored, and every matching
+/// document carries its exact BM25.
 fn offline_full_list_fusion(
     store: &Store,
     vector: &[f32],
@@ -74,10 +75,28 @@ fn offline_full_list_fusion(
         .iter()
         .map(|candidate| LexicalCandidate::new(Some(candidate.document.doc_id()), candidate.score))
         .collect::<Vec<_>>();
-    fuse(
+    let bounds = LegBounds {
+        vector: vector_candidates.first().map(|best| VectorBounds {
+            min_squared_l2: best.squared_l2(),
+            max_squared_l2: vector_leg
+                .vector_ceiling
+                .expect("complete exact vector leg reports its norm-ball ceiling"),
+            next_unseen_squared_l2: None,
+        }),
+        lexical: lexical_candidates
+            .first()
+            .zip(lexical_candidates.last())
+            .map(|(best, worst)| LexicalBounds {
+                max_bm25: best.bm25(),
+                min_bm25: worst.bm25(),
+                next_unseen_bm25: None,
+            }),
+    };
+    fuse_bounded(
         &HybridQuery::new(k),
         &vector_candidates,
         &lexical_candidates,
+        bounds,
         |document: &Option<DocId>| *document,
         |document: &Option<DocId>| *document,
     )

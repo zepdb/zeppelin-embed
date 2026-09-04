@@ -8,6 +8,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::RngCore;
 use tempfile::tempdir;
+use zeppelin_embed::diag::HybridTierResolution;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fusion::HybridQuery;
@@ -21,6 +22,7 @@ use zeppelin_embed::lifecycle::{
 use zeppelin_embed::meta::{
     Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN,
 };
+use zeppelin_embed::planner::{ExplicitScanTier, ScanReason, ScanReasonCounter};
 
 fn diagnostics_v1_text(diagnostics: &zeppelin_embed::diag::QueryDiagnostics) -> String {
     use std::fmt::Write as _;
@@ -40,6 +42,7 @@ fn diagnostics_v1_text(diagnostics: &zeppelin_embed::diag::QueryDiagnostics) -> 
     for (index, plan) in diagnostics.plan.iter().enumerate() {
         let _ = writeln!(text, "plan.{index}.tier = {:?}", plan.tier);
         let _ = writeln!(text, "plan.{index}.branch = {:?}", plan.branch);
+        let _ = writeln!(text, "plan.{index}.scan_reason = {:?}", plan.scan_reason);
         let _ = writeln!(text, "plan.{index}.filter_mode = {:?}", plan.filter_mode);
         let _ = writeln!(
             text,
@@ -57,6 +60,11 @@ fn diagnostics_v1_text(diagnostics: &zeppelin_embed::diag::QueryDiagnostics) -> 
         } else {
             "none"
         }
+    );
+    let _ = writeln!(
+        text,
+        "hybrid_tier_resolution = {:?}",
+        diagnostics.hybrid_tier_resolution
     );
     let _ = writeln!(text, "requested_k = {}", diagnostics.requested_k);
     let _ = writeln!(text, "returned = {}", diagnostics.returned);
@@ -226,6 +234,152 @@ fn counters_are_consistent_and_move_by_known_deltas() {
     assert_eq!(
         after.diagnostics.counters.lexical,
         before.diagnostics.counters.lexical
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn scanned_segment_plans_have_typed_reasons() {
+    let (_directory, store) = populated_store();
+    let active = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query active segment");
+    assert_eq!(
+        active.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::ActiveSegment)
+    );
+
+    store.seal().expect("seal below-threshold segment");
+    let automatic = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query automatic sealed segment");
+    assert_eq!(
+        automatic.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::BelowGraphThreshold {
+            rows: 2,
+            min_rows: 30_000,
+        })
+    );
+
+    let explicit = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query explicit exact tier");
+    assert_eq!(
+        explicit.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::ExplicitTier(ExplicitScanTier::Exact))
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn eligible_unpublished_graph_reports_graph_pending() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let documents = (0_u128..30_000)
+        .map(|id| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id + 1), Revision::new(1)),
+                vec![1.0],
+            )
+        })
+        .collect::<Vec<_>>();
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest graph-eligible segment");
+    store.seal().expect("seal graph-eligible segment");
+
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0]),
+            1,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query graph-pending segment");
+    assert_eq!(
+        outcome.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::GraphPending)
+    );
+    let stats = store.stats().expect("stats after graph-pending scan");
+    assert_eq!(
+        stats.scans_by_reason[ScanReasonCounter::GraphPending.index()],
+        1
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn hybrid_without_a_tier_records_its_exact_resolution() {
+    let (_directory, store) = populated_store();
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(2),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query default hybrid tier");
+
+    assert_eq!(
+        outcome.diagnostics.hybrid_tier_resolution,
+        Some(HybridTierResolution::Exact)
+    );
+    assert_eq!(
+        outcome.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::ActiveSegment)
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn scan_reason_accounting_moves_by_executed_segment() {
+    let (_directory, store) = populated_store();
+    let before = store.stats().expect("stats before scans");
+
+    store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query active segment");
+    let after_active = store.stats().expect("stats after active scan");
+    assert_eq!(
+        after_active.scans_by_reason[ScanReasonCounter::ActiveSegment.index()],
+        before.scans_by_reason[ScanReasonCounter::ActiveSegment.index()] + 1
+    );
+    assert_eq!(after_active.graph_segments_served, 0);
+
+    store.seal().expect("seal below-threshold segment");
+    store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            2,
+            SearchOptions::default().with_tier(SearchTier::Scan),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query explicit scan tier");
+    let after_explicit = store.stats().expect("stats after explicit scan");
+    assert_eq!(
+        after_explicit.scans_by_reason[ScanReasonCounter::ExplicitScan.index()],
+        before.scans_by_reason[ScanReasonCounter::ExplicitScan.index()] + 1
     );
     store.close().expect("close store");
 }

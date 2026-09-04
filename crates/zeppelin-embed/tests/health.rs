@@ -32,7 +32,9 @@ fn flip_byte(path: &std::path::Path, offset: u64) {
 fn pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
-    assert_eq!(store.health().expect("initial health").pending_docs, 0);
+    let initial = store.health().expect("initial health");
+    assert_eq!(initial.pending_docs, 0);
+    assert_eq!(initial.graph_coverage, 1.0);
 
     let documents = (0..3)
         .map(|offset| {
@@ -47,6 +49,7 @@ fn pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest()
         .expect("ingest batch");
     let ingested = store.health().expect("ingested health");
     assert_eq!(ingested.pending_docs, 3);
+    assert_eq!(ingested.graph_coverage, 0.0);
     assert_eq!(ingested.segments.len(), 1);
     let active = ingested.segments.first().expect("active segment health");
     assert_eq!(active.tier, SegmentTier::ActiveScan);
@@ -55,6 +58,7 @@ fn pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest()
     store.seal().expect("seal active rows");
     let sealed = store.health().expect("sealed health");
     assert_eq!(sealed.pending_docs, 0);
+    assert_eq!(sealed.graph_coverage, 0.0);
     assert_eq!(sealed.segments.len(), 1);
     let immutable = sealed.segments.first().expect("sealed segment health");
     assert_eq!(immutable.tier, SegmentTier::SealedScan);

@@ -44,6 +44,8 @@ struct AccountingState {
     active_bytes: u64,
     query_pool_bytes: u64,
     mapped_bytes: u64,
+    scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
+    graph_segments_served: u64,
 }
 
 pub(crate) struct Accounting {
@@ -64,6 +66,8 @@ impl Accounting {
                 active_bytes: 0,
                 query_pool_bytes: 0,
                 mapped_bytes: 0,
+                scans_by_reason: [0; crate::planner::SCAN_REASON_COUNTER_COUNT],
+                graph_segments_served: 0,
             }),
         }
     }
@@ -126,7 +130,56 @@ impl Accounting {
             active_bytes: state.active_bytes,
             query_pool_bytes: state.query_pool_bytes,
             mapped_bytes: state.mapped_bytes,
+            scans_by_reason: state.scans_by_reason,
+            graph_segments_served: state.graph_segments_served,
         })
+    }
+
+    pub(crate) fn record_plans(
+        &self,
+        plans: &[crate::planner::SegmentPlan],
+    ) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "query plan accounting",
+        })?;
+        let mut scans_by_reason = state.scans_by_reason;
+        let mut graph_segments_served = state.graph_segments_served;
+        for plan in plans {
+            if let Some(reason) = plan.scan_reason {
+                let slot = reason.counter().index();
+                let counter =
+                    scans_by_reason
+                        .get_mut(slot)
+                        .ok_or_else(|| StoreError::Statistics {
+                            component: "scan reason counter",
+                            source: std::io::Error::other(
+                                "scan reason slot is outside the registry",
+                            ),
+                        })?;
+                *counter = counter
+                    .checked_add(1)
+                    .ok_or_else(|| StoreError::Statistics {
+                        component: "scan reason counter",
+                        source: std::io::Error::other("scan reason counter overflow"),
+                    })?;
+            }
+            if matches!(
+                plan.branch,
+                crate::planner::SegmentBranch::Graph | crate::planner::SegmentBranch::FilteredGraph
+            ) {
+                graph_segments_served =
+                    graph_segments_served
+                        .checked_add(1)
+                        .ok_or_else(|| StoreError::Statistics {
+                            component: "graph segment counter",
+                            source: std::io::Error::other("graph segment counter overflow"),
+                        })?;
+            }
+        }
+        state.scans_by_reason = scans_by_reason;
+        state.graph_segments_served = graph_segments_served;
+        drop(state);
+        Ok(())
     }
 
     pub(crate) fn track_mapping(
@@ -162,6 +215,8 @@ pub(crate) struct AccountingAudit {
     pub(crate) active_bytes: u64,
     pub(crate) query_pool_bytes: u64,
     pub(crate) mapped_bytes: u64,
+    pub(crate) scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
+    pub(crate) graph_segments_served: u64,
 }
 
 impl AccountingAudit {
@@ -548,6 +603,10 @@ pub struct Stats {
     /// Darwin's `TASK_VM_INFO` physical-footprint kernel counter, or `None` on
     /// platforms where that counter does not exist.
     pub phys_footprint: Option<u64>,
+    /// Monotonic count of successfully executed scan plans by typed reason.
+    pub scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
+    /// Monotonic count of segment plans served by graph traversal.
+    pub graph_segments_served: u64,
 }
 
 impl Store {
@@ -683,6 +742,8 @@ impl Store {
             active_queries,
             active_snapshot_leases,
             phys_footprint,
+            scans_by_reason: accounting.scans_by_reason,
+            graph_segments_served: accounting.graph_segments_served,
         })
     }
 

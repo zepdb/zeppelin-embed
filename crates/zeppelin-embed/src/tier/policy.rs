@@ -25,6 +25,12 @@ pub struct StoreStats {
     pub total_graph_rows: u64,
     /// Dense rows of the largest single graph segment (manifest metadata only).
     pub largest_graph_segment_rows: u64,
+    /// Published sealed segments that do not yet carry a graph.
+    pub scan_segment_count: u32,
+    /// Total dense rows across sealed scan segments.
+    pub total_scan_rows: u64,
+    /// Graph eligibility threshold for the scan-segment geometry.
+    pub scan_graph_min_rows: u32,
 }
 
 /// Graph segment count at which consolidation is always due.
@@ -45,6 +51,8 @@ pub enum StorePlan {
     Stay,
     /// Merge every published graph segment into one new sealed graph segment.
     Consolidate,
+    /// Merge sealed scan segments into one graph-eligible segment.
+    ConsolidateScan,
 }
 
 /// Pure per-graph decision for the next catalog-ordered refinement.
@@ -81,6 +89,12 @@ pub const fn decide_store(store: StoreStats) -> StorePlan {
         if largest * 10 < total * CONSOLIDATE_DOMINANT_TENTHS {
             return StorePlan::Consolidate;
         }
+    }
+    if store.scan_segment_count >= 2
+        && store.scan_graph_min_rows != 0
+        && store.total_scan_rows >= store.scan_graph_min_rows as u64
+    {
+        return StorePlan::ConsolidateScan;
     }
     StorePlan::Stay
 }
@@ -187,6 +201,7 @@ mod tests {
                     graph_segment_count: count,
                     total_graph_rows: 1_000_000,
                     largest_graph_segment_rows: 999_999,
+                    ..StoreStats::default()
                 }),
                 expected,
                 "graph_segment_count={count}"
@@ -202,6 +217,7 @@ mod tests {
                 graph_segment_count: 2,
                 total_graph_rows: 1_000,
                 largest_graph_segment_rows: 500,
+                ..StoreStats::default()
             }),
             StorePlan::Consolidate
         );
@@ -211,6 +227,7 @@ mod tests {
                 graph_segment_count: 2,
                 total_graph_rows: 1_000,
                 largest_graph_segment_rows: 699,
+                ..StoreStats::default()
             }),
             StorePlan::Consolidate
         );
@@ -220,6 +237,7 @@ mod tests {
                 graph_segment_count: 2,
                 total_graph_rows: 1_000,
                 largest_graph_segment_rows: 700,
+                ..StoreStats::default()
             }),
             StorePlan::Stay
         );
@@ -229,6 +247,7 @@ mod tests {
                 graph_segment_count: 2,
                 total_graph_rows: 1_000,
                 largest_graph_segment_rows: 950,
+                ..StoreStats::default()
             }),
             StorePlan::Stay
         );
@@ -238,8 +257,31 @@ mod tests {
                 graph_segment_count: 2,
                 total_graph_rows: u64::MAX,
                 largest_graph_segment_rows: u64::MAX / 2,
+                ..StoreStats::default()
             }),
             StorePlan::Consolidate
+        );
+    }
+
+    #[test]
+    fn store_policy_consolidates_scan_segments_only_after_graph_threshold() {
+        assert_eq!(
+            decide_store(StoreStats {
+                scan_segment_count: 7,
+                total_scan_rows: 28_672,
+                scan_graph_min_rows: 30_000,
+                ..StoreStats::default()
+            }),
+            StorePlan::Stay
+        );
+        assert_eq!(
+            decide_store(StoreStats {
+                scan_segment_count: 8,
+                total_scan_rows: 32_768,
+                scan_graph_min_rows: 30_000,
+                ..StoreStats::default()
+            }),
+            StorePlan::ConsolidateScan
         );
     }
 }

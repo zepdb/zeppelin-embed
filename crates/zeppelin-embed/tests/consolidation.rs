@@ -13,12 +13,14 @@ use zeppelin_embed::epoch::{
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::fusion::HybridQuery;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
 use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
 };
+use zeppelin_embed::planner::{ScanReason, ScanReasonCounter};
 use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceReport, MaintenanceStatus, TierThresholds,
@@ -218,6 +220,104 @@ fn one_maintain_call_promotes_three_batches_and_consolidates_them() {
     assert_eq!(report.graph_profiles.len(), 4);
     assert_eq!(published_segment_count(&store), 1);
     assert_eq!(segment_files(directory.path()).len(), 1);
+}
+
+#[test]
+fn scan_segments_consolidate_into_one_graph_when_their_total_is_eligible() {
+    let directory = tempdir().expect("scan consolidation directory");
+    let store = three_sealed_batches(directory.path());
+
+    let report = maintain(&store, u64::MAX, 100);
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(report.graphs_built, 0, "no input was individually eligible");
+    assert_eq!(report.consolidations, 1);
+    assert_eq!(published_segment_count(&store), 1);
+    let snapshot = store.snapshot().expect("scan consolidation snapshot");
+    let merged = snapshot.segments().first().expect("merged graph segment");
+    assert_eq!(merged.meta().row_count, 192);
+    assert!(
+        merged
+            .directory()
+            .iter()
+            .any(|entry| entry.kind == RegionKind::GraphNodeBlocks.id())
+    );
+    drop(snapshot);
+
+    let query = store
+        .search(
+            SearchRequest::new(&fixture_vector(96.0)),
+            3,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query consolidated scan segments");
+    assert!(query.diagnostics.approximate);
+    assert_eq!(query.diagnostics.plan.len(), 1);
+    assert_eq!(
+        query.diagnostics.plan[0].tier,
+        zeppelin_embed::planner::SegmentTier::SealedGraph
+    );
+    store.close().expect("close scan consolidation store");
+}
+
+#[test]
+fn hybrid_graph_cost_fallbacks_are_typed_and_counted() {
+    let directory = tempdir().expect("hybrid fallback directory");
+    let store = three_sealed_batches(directory.path());
+    let report = maintain(&store, u64::MAX, 100);
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    let query_vector = fixture_vector(96.0);
+    let vector = SearchRequest::new(&query_vector);
+    let lexical = TermQuery::flat(vec![b"shared".to_vec()], &[DEFAULT_FIELD]);
+    let before = store.stats().expect("stats before hybrid fallbacks");
+
+    let capped = store
+        .search_hybrid(
+            vector,
+            &lexical,
+            &HybridQuery::new(3),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid widening cap fallback");
+    assert_eq!(
+        capped.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::WideningCap { ef: 204, rows: 192 })
+    );
+    assert_eq!(
+        capped.diagnostics.hybrid_tier_resolution,
+        Some(zeppelin_embed::diag::HybridTierResolution::Auto)
+    );
+
+    let materialized = store
+        .search_hybrid(
+            vector,
+            &lexical,
+            &HybridQuery::new(3).with_max_rounds(0),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid full-materialization fallback");
+    assert_eq!(
+        materialized.diagnostics.plan[0].scan_reason,
+        Some(ScanReason::FullMaterialization)
+    );
+    assert_eq!(
+        materialized.diagnostics.hybrid_tier_resolution,
+        Some(zeppelin_embed::diag::HybridTierResolution::Auto)
+    );
+
+    let after = store.stats().expect("stats after hybrid fallbacks");
+    assert_eq!(
+        after.scans_by_reason[ScanReasonCounter::WideningCap.index()],
+        before.scans_by_reason[ScanReasonCounter::WideningCap.index()] + 1
+    );
+    assert_eq!(
+        after.scans_by_reason[ScanReasonCounter::FullMaterialization.index()],
+        before.scans_by_reason[ScanReasonCounter::FullMaterialization.index()] + 1
+    );
+    assert_eq!(after.graph_segments_served, before.graph_segments_served);
+    store.close().expect("close hybrid fallback store");
 }
 
 #[test]

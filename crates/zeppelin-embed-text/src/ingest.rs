@@ -27,6 +27,7 @@ use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStat
 const CALLER_BITS: u32 = 96;
 /// Sequence length the bundled CoreML query tower is exported at.
 const DEFAULT_COREML_TOKENS: usize = 64;
+const DEFAULT_MAINTENANCE_BYTES: u64 = 256 * 1024 * 1024;
 
 const CHUNK_BITS: u32 = 32;
 
@@ -88,14 +89,14 @@ impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             embed_batch_size: 32,
-            seal_every: 512,
+            seal_every: 4_096,
             channel_capacity: 2,
             chunk_policy: ChunkPolicy::Tokens {
                 max: 510,
                 overlap: 32,
             },
             maintenance_wall_time: Duration::from_millis(25),
-            maintenance_bytes: 8 * 1024 * 1024,
+            maintenance_bytes: DEFAULT_MAINTENANCE_BYTES,
         }
     }
 }
@@ -316,6 +317,47 @@ impl TextStore {
         Ok(report)
     }
 
+    /// Repeats bounded maintenance slices until every due transition completes.
+    ///
+    /// Each core call observes the supplied wall and byte limits. A slice that
+    /// exhausts its budget without consuming any work fails loudly instead of
+    /// spinning forever.
+    pub fn maintain_to_completion(
+        &self,
+        budget: MaintenanceBudget,
+    ) -> Result<MaintenanceReport, TextError> {
+        if budget.wall_time.is_zero() {
+            return Err(TextError::InvalidInput(
+                "maintenance-to-completion wall time must be nonzero",
+            ));
+        }
+        if budget.bytes == 0 {
+            return Err(TextError::InvalidInput(
+                "maintenance-to-completion byte budget must be nonzero",
+            ));
+        }
+        let mut aggregate = empty_maintenance_report();
+        loop {
+            let mut slice = self.maintain(budget)?;
+            let complete = matches!(slice.status, MaintenanceStatus::Complete);
+            let progressed = slice.bytes_consumed != 0
+                || slice.graphs_built != 0
+                || slice.consolidations != 0
+                || slice.passes_applied != 0;
+            merge_maintenance_reports(&mut aggregate, &mut slice)?;
+            if complete {
+                aggregate.status = MaintenanceStatus::Complete;
+                return Ok(aggregate);
+            }
+            if !progressed {
+                return Err(TextError::Pipeline {
+                    stage: "maintenance to completion",
+                    detail: "a budget-exhausted slice made no progress".to_owned(),
+                });
+            }
+        }
+    }
+
     /// Runs bounded parallel tokenization, one MLX embed stream, caller-thread
     /// writes, periodic seals, and budgeted maintenance.
     pub fn ingest_text(
@@ -342,7 +384,6 @@ impl TextStore {
             self.bundle.document_tower().embedding.max_tokens,
         )?;
         let mut core_batch = Vec::with_capacity(options.seal_every);
-        let mut generation = 0_u64;
         let mut chunks = 0_usize;
         let mut tokens = 0_usize;
         let mut embed_batches = 0_usize;
@@ -371,7 +412,7 @@ impl TextStore {
                             .with_epoch(self.document_epoch),
                     )
                     .map_err(TextError::Ingest)?;
-                generation = self.store.seal().map_err(TextError::Seal)?;
+                self.store.seal().map_err(TextError::Seal)?;
                 seals = seals.saturating_add(1);
             }
         }
@@ -379,9 +420,11 @@ impl TextStore {
             self.store
                 .ingest(IngestBatch::new(core_batch).with_epoch(self.document_epoch))
                 .map_err(TextError::Ingest)?;
-            generation = self.store.seal().map_err(TextError::Seal)?;
+            self.store.seal().map_err(TextError::Seal)?;
             seals = seals.saturating_add(1);
         }
+        self.finish_ingest_maintenance(options)?;
+        let generation = self.store.health().map_err(TextError::Store)?.generation;
         self.record_versions(documents, options.chunk_policy)?;
         Ok(TextIngestReport {
             generation,
@@ -492,7 +535,6 @@ impl TextStore {
         let mut pending = BTreeMap::new();
         let mut expected = 0_usize;
         let mut core_batch = Vec::with_capacity(options.seal_every);
-        let mut generation = 0_u64;
         let mut chunks = 0_usize;
         let mut tokens = 0_usize;
         let mut embed_batches = 0_usize;
@@ -557,7 +599,7 @@ impl TextStore {
                                         }
                                     }
                                     match self.store.seal() {
-                                        Ok(sealed_generation) => generation = sealed_generation,
+                                        Ok(_) => {}
                                         Err(error) => {
                                             first_error = Some(TextError::Seal(error));
                                             control.cancel();
@@ -610,7 +652,7 @@ impl TextStore {
             if control.fire(TextFaultSite::SealFailureMidStream) {
                 self.store.close().map_err(TextError::Store)?;
             }
-            generation = self.store.seal().map_err(TextError::Seal)?;
+            self.store.seal().map_err(TextError::Seal)?;
             seals = seals.saturating_add(1);
             let _ = maintenance_tx.try_send(());
         }
@@ -627,6 +669,8 @@ impl TextStore {
         if let Some(error) = first_error {
             return Err(error);
         }
+        self.finish_ingest_maintenance(options)?;
+        let generation = self.store.health().map_err(TextError::Store)?.generation;
         self.record_versions(documents, options.chunk_policy)?;
         Ok(TextIngestReport {
             generation,
@@ -639,6 +683,17 @@ impl TextStore {
             all_threads_joined,
             elapsed: started.elapsed(),
         })
+    }
+
+    fn finish_ingest_maintenance(&self, options: IngestOptions) -> Result<(), TextError> {
+        if options.maintenance_wall_time.is_zero() || options.maintenance_bytes == 0 {
+            return Ok(());
+        }
+        self.maintain_to_completion(MaintenanceBudget {
+            wall_time: options.maintenance_wall_time,
+            bytes: options.maintenance_bytes,
+        })?;
+        Ok(())
     }
 
     fn record_versions(
@@ -835,10 +890,8 @@ impl TextStore {
 
     /// Applies an explicit tier only when the caller asked for one.
     ///
-    /// An unset tier must stay unset: each leg has its own contract for
-    /// the no-preference case, and hybrid fusion selects
-    /// `SearchTier::Exact` for itself precisely because it needs exactly
-    /// rescored vector scores.
+    /// An unset tier must stay unset: each leg has its own contract for the
+    /// no-preference case, and hybrid resolves it from graph availability.
     fn search_options(tier: Option<zeppelin_embed::lifecycle::SearchTier>) -> SearchOptions {
         match tier {
             Some(tier) => SearchOptions::default().with_tier(tier),
@@ -876,6 +929,79 @@ impl TextStore {
             epoch: self.epoch,
         })
     }
+}
+
+fn empty_maintenance_report() -> MaintenanceReport {
+    MaintenanceReport {
+        graphs_built: 0,
+        bytes_consumed: 0,
+        checkpoints_resumed: 0,
+        promotion_deferrals: Vec::new(),
+        graph_profiles: Vec::new(),
+        consolidations: 0,
+        consolidation_generation: None,
+        consolidation_deferrals: Vec::new(),
+        passes_applied: 0,
+        pass_counters: Default::default(),
+        refinement_generation: None,
+        status: MaintenanceStatus::Complete,
+    }
+}
+
+fn merge_maintenance_reports(
+    aggregate: &mut MaintenanceReport,
+    slice: &mut MaintenanceReport,
+) -> Result<(), TextError> {
+    aggregate.graphs_built = checked_maintenance_sum(aggregate.graphs_built, slice.graphs_built)?;
+    aggregate.bytes_consumed =
+        checked_maintenance_sum(aggregate.bytes_consumed, slice.bytes_consumed)?;
+    aggregate.checkpoints_resumed =
+        checked_maintenance_sum(aggregate.checkpoints_resumed, slice.checkpoints_resumed)?;
+    aggregate.consolidations =
+        checked_maintenance_sum(aggregate.consolidations, slice.consolidations)?;
+    aggregate.passes_applied =
+        checked_maintenance_sum(aggregate.passes_applied, slice.passes_applied)?;
+    aggregate.pass_counters.renumber = checked_maintenance_sum(
+        aggregate.pass_counters.renumber,
+        slice.pass_counters.renumber,
+    )?;
+    aggregate.pass_counters.alpha_reprune = checked_maintenance_sum(
+        aggregate.pass_counters.alpha_reprune,
+        slice.pass_counters.alpha_reprune,
+    )?;
+    aggregate.pass_counters.seed_refit = checked_maintenance_sum(
+        aggregate.pass_counters.seed_refit,
+        slice.pass_counters.seed_refit,
+    )?;
+    aggregate.pass_counters.neighbor_reorder = checked_maintenance_sum(
+        aggregate.pass_counters.neighbor_reorder,
+        slice.pass_counters.neighbor_reorder,
+    )?;
+    aggregate.pass_counters.connectivity_repair = checked_maintenance_sum(
+        aggregate.pass_counters.connectivity_repair,
+        slice.pass_counters.connectivity_repair,
+    )?;
+    aggregate
+        .promotion_deferrals
+        .append(&mut slice.promotion_deferrals);
+    aggregate.graph_profiles.append(&mut slice.graph_profiles);
+    aggregate
+        .consolidation_deferrals
+        .append(&mut slice.consolidation_deferrals);
+    if slice.consolidation_generation.is_some() {
+        aggregate.consolidation_generation = slice.consolidation_generation;
+    }
+    if slice.refinement_generation.is_some() {
+        aggregate.refinement_generation = slice.refinement_generation;
+    }
+    Ok(())
+}
+
+fn checked_maintenance_sum(left: u64, right: u64) -> Result<u64, TextError> {
+    left.checked_add(right).ok_or_else(|| TextError::Pipeline {
+        stage: "maintenance to completion",
+        detail: "maintenance report counter overflowed u64".to_owned(),
+    })
 }
 
 fn validate_ingest_options(

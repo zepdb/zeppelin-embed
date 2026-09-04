@@ -1375,7 +1375,11 @@ fn store_open_cleans_only_eligible_orphans() {
         "read-write cleanup removed writer.lock"
     );
     assert_eq!(vfs.delete_calls(), 3, "exact eligible deletion count");
-    assert_eq!(vfs.full_sync_calls(), 1, "one directory sync after cleanup");
+    assert_eq!(
+        vfs.full_sync_calls(),
+        2,
+        "one directory sync for manifest adoption and one after cleanup"
+    );
     read_write.close().expect("close read-write store");
 }
 

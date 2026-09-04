@@ -6,6 +6,11 @@ use zeppelin_embed_text::{
     SearchTier, SegmentTier, TextDocument, TextStore,
 };
 
+#[test]
+fn default_ingest_seals_at_4096_rows() {
+    assert_eq!(IngestOptions::default().seal_every, 4_096);
+}
+
 mod common;
 
 #[test]
@@ -148,10 +153,10 @@ fn query_options_carry_an_explicit_search_tier_through_dense_and_hybrid_legs() {
 
     // Hybrid is different, and deliberately so. Fusion may only fuse vector
     // scores that were exactly rescored, so the store selects
-    // `SearchTier::Exact` for itself whenever the caller states no
-    // preference. Leaving the tier unset must therefore equal asking for
-    // Exact, and asking for an estimating tier must fail loudly rather than
-    // silently fusing estimates.
+    // `SearchTier::Exact` for itself when no graph exists and the caller
+    // states no preference. In this scan-only store, leaving the tier unset
+    // must therefore equal asking for Exact. An explicit estimating tier
+    // must fail loudly rather than silently fusing estimates.
     let mut unset = store
         .query_text(
             "bronze zeppelin",
@@ -235,4 +240,53 @@ fn health_reports_sealed_scan_segments_and_maintain_reports_complete_below_the_g
     assert!(matches!(report.status, MaintenanceStatus::Complete));
     assert_eq!(report.graphs_built, 0);
     assert!(report.promotion_deferrals.is_empty());
+}
+
+#[test]
+#[ignore = "requires an unsandboxed MLX runtime"]
+fn default_text_store_over_30000_documents_maintains_and_serves_a_graph() {
+    let directory = tempdir().expect("store directory");
+    let bundle_path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&bundle_path);
+    let store = TextStore::open(
+        directory.path().join("store"),
+        bundle_path,
+        Default::default(),
+    )
+    .expect("open text store");
+    let documents = (0_u128..30_001)
+        .map(|id| TextDocument::new(id + 1, 1, format!("bronze zeppelin document {id}")))
+        .collect::<Vec<_>>();
+
+    store
+        .ingest_text(&documents, IngestOptions::default())
+        .expect("default ingest");
+    let final_maintenance = store
+        .maintain_to_completion(MaintenanceBudget {
+            wall_time: IngestOptions::default().maintenance_wall_time,
+            bytes: IngestOptions::default().maintenance_bytes,
+        })
+        .expect("explicit completion is idempotent");
+    assert!(matches!(
+        final_maintenance.status,
+        MaintenanceStatus::Complete
+    ));
+    let before = store.health().expect("health before query");
+    assert!(
+        before
+            .segments
+            .iter()
+            .any(|segment| segment.tier == SegmentTier::SealedGraph),
+        "default ingest must publish a graph once scan segments cross the threshold"
+    );
+    assert!(before.graph_coverage > 0.0);
+
+    store
+        .query_text("bronze zeppelin", QueryOptions::default())
+        .expect("default hybrid query");
+    let after = store.health().expect("health after query");
+    assert!(
+        after.stats.graph_segments_served > before.stats.graph_segments_served,
+        "the default hybrid query must serve the published graph"
+    );
 }

@@ -81,6 +81,91 @@ pub enum PlanFallback {
     CandidateShortfall,
 }
 
+/// The only explicit caller tiers that deliberately select scan execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplicitScanTier {
+    /// Exhaustively score full-precision rows.
+    Exact,
+    /// Exhaustively score the segment's persisted scan representation.
+    Scan,
+}
+
+/// Why one segment was served without graph traversal.
+///
+/// These are capacity and caller-choice reasons only. Graph integrity and
+/// validation failures remain typed query errors and never become reasons for
+/// a quiet scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanReason {
+    /// The immutable segment has not reached the measured graph crossover.
+    BelowGraphThreshold {
+        /// Dense rows in the segment.
+        rows: u32,
+        /// Minimum rows required by the segment's policy bucket.
+        min_rows: u32,
+    },
+    /// The segment is eligible, but its graph has not been published yet.
+    GraphPending,
+    /// The mutable unsealed tail cannot carry a graph.
+    ActiveSegment,
+    /// Hybrid widening requested the complete corpus.
+    FullMaterialization,
+    /// Hybrid widening made graph traversal more expensive than exact scan.
+    WideningCap {
+        /// Candidate pool the graph would have visited.
+        ef: usize,
+        /// Rows used to evaluate the widening cap.
+        rows: usize,
+    },
+    /// The caller explicitly selected a scan tier.
+    ExplicitTier(ExplicitScanTier),
+}
+
+/// Stable slots in [`crate::lifecycle::Stats::scans_by_reason`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub enum ScanReasonCounter {
+    /// [`ScanReason::BelowGraphThreshold`].
+    BelowGraphThreshold = 0,
+    /// [`ScanReason::GraphPending`].
+    GraphPending = 1,
+    /// [`ScanReason::ActiveSegment`].
+    ActiveSegment = 2,
+    /// [`ScanReason::FullMaterialization`].
+    FullMaterialization = 3,
+    /// [`ScanReason::WideningCap`].
+    WideningCap = 4,
+    /// [`ScanReason::ExplicitTier`] with [`ExplicitScanTier::Exact`].
+    ExplicitExact = 5,
+    /// [`ScanReason::ExplicitTier`] with [`ExplicitScanTier::Scan`].
+    ExplicitScan = 6,
+}
+
+impl ScanReasonCounter {
+    /// Array index for this stable counter slot.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Number of stable scan-reason counter slots.
+pub const SCAN_REASON_COUNTER_COUNT: usize = 7;
+
+impl ScanReason {
+    pub(crate) const fn counter(self) -> ScanReasonCounter {
+        match self {
+            Self::BelowGraphThreshold { .. } => ScanReasonCounter::BelowGraphThreshold,
+            Self::GraphPending => ScanReasonCounter::GraphPending,
+            Self::ActiveSegment => ScanReasonCounter::ActiveSegment,
+            Self::FullMaterialization => ScanReasonCounter::FullMaterialization,
+            Self::WideningCap { .. } => ScanReasonCounter::WideningCap,
+            Self::ExplicitTier(ExplicitScanTier::Exact) => ScanReasonCounter::ExplicitExact,
+            Self::ExplicitTier(ExplicitScanTier::Scan) => ScanReasonCounter::ExplicitScan,
+        }
+    }
+}
+
 /// Closed recursive plan IR. New execution families require a new enum variant.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanNode {
@@ -134,6 +219,8 @@ pub struct SegmentPlan {
     pub approximate: bool,
     /// Named fallback, if any.
     pub fallback: PlanFallback,
+    /// Capacity or caller-choice reason when this plan executed a scan.
+    pub scan_reason: Option<ScanReason>,
     /// Caller-supplied graph width, or `None` for adaptive or scan work.
     pub ef_requested: Option<usize>,
     /// Actual filter-aware graph width, or `None` when no traversal ran.
@@ -145,7 +232,12 @@ pub struct SegmentPlan {
 }
 
 impl SegmentPlan {
-    pub(crate) fn unfiltered_scan(source: RowSource, tier: SegmentTier, cardinality: u64) -> Self {
+    pub(crate) fn unfiltered_scan(
+        source: RowSource,
+        tier: SegmentTier,
+        cardinality: u64,
+        scan_reason: ScanReason,
+    ) -> Self {
         let branch = SegmentBranch::MaskedScan;
         Self {
             source,
@@ -155,6 +247,7 @@ impl SegmentPlan {
             filter_cardinality: cardinality,
             approximate: false,
             fallback: PlanFallback::None,
+            scan_reason: Some(scan_reason),
             ef_requested: None,
             ef_effective: None,
             graph_profile: None,
@@ -177,6 +270,7 @@ impl SegmentPlan {
             filter_cardinality: cardinality,
             approximate: true,
             fallback: PlanFallback::None,
+            scan_reason: None,
             ef_requested,
             ef_effective: Some(ef_effective),
             graph_profile: Some(graph_profile),
@@ -196,6 +290,7 @@ impl SegmentPlan {
             filter_cardinality: cardinality,
             approximate: false,
             fallback: PlanFallback::None,
+            scan_reason: None,
             ef_requested: None,
             ef_effective: None,
             graph_profile: None,
@@ -211,6 +306,7 @@ impl SegmentPlan {
         tier: SegmentTier,
         branch: SegmentBranch,
         cardinality: u64,
+        scan_reason: Option<ScanReason>,
     ) -> Self {
         Self {
             source,
@@ -220,6 +316,7 @@ impl SegmentPlan {
             filter_cardinality: cardinality,
             approximate: false,
             fallback: PlanFallback::None,
+            scan_reason,
             ef_requested: None,
             ef_effective: None,
             graph_profile: None,
@@ -266,6 +363,7 @@ impl SegmentPlan {
             filter_cardinality: cardinality,
             approximate,
             fallback,
+            scan_reason: None,
             ef_requested,
             ef_effective: Some(ef_effective),
             graph_profile: Some(graph_profile),

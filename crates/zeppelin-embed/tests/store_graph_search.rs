@@ -829,6 +829,34 @@ fn store_search_reaches_the_graph_tier_end_to_end() {
 }
 
 #[test]
+fn graph_segment_accounting_moves_only_when_traversal_serves_the_plan() {
+    let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
+    let store = Store::open(fixture.directory.path(), OpenOptions::default())
+        .expect("open graph accounting fixture");
+    let before = store.stats().expect("stats before graph query");
+    assert_eq!(
+        store.health().expect("graph fixture health").graph_coverage,
+        1.0
+    );
+    store
+        .search(
+            SearchRequest::new(&query(3.5)),
+            3,
+            adaptive_sift_graph_options(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query graph accounting fixture");
+    let after = store.stats().expect("stats after graph query");
+
+    assert_eq!(
+        after.graph_segments_served,
+        before.graph_segments_served + 1
+    );
+    assert_eq!(after.scans_by_reason, before.scans_by_reason);
+    store.close().expect("close graph accounting fixture");
+}
+
+#[test]
 fn graph_diagnostics_make_membership_and_score_provenance_independent() {
     let fixture = publish_graph_fixture(AliveSet::new(ROWS as u32));
     let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");

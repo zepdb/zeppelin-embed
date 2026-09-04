@@ -84,6 +84,9 @@ pub struct QueryDiagnostics {
     pub fusion: Option<FusionReport>,
     /// Bounded-producer facts; absent when no hybrid fusion leg ran.
     pub hybrid: Option<HybridReport>,
+    /// Resolution applied when a hybrid caller supplied no tier preference.
+    /// Explicit caller tiers leave this absent.
+    pub hybrid_tier_resolution: Option<HybridTierResolution>,
     /// Requested result count.
     pub requested_k: usize,
     /// Result count actually returned.
@@ -115,6 +118,7 @@ impl PartialEq for QueryDiagnostics {
             exact_rescore,
             fusion,
             hybrid,
+            hybrid_tier_resolution,
             requested_k,
             returned,
             budget_exhausted,
@@ -132,6 +136,7 @@ impl PartialEq for QueryDiagnostics {
             && exact_rescore == &other.exact_rescore
             && fusion == &other.fusion
             && hybrid == &other.hybrid
+            && hybrid_tier_resolution == &other.hybrid_tier_resolution
             && requested_k == &other.requested_k
             && returned == &other.returned
             && budget_exhausted == &other.budget_exhausted
@@ -159,6 +164,17 @@ pub struct HybridReport {
     pub cross_filled_vector: usize,
     /// Vector-window documents given an exact BM25 they lacked.
     pub cross_filled_lexical: usize,
+}
+
+/// Tier selected internally for a hybrid query with no caller preference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HybridTierResolution {
+    /// At least one sealed segment has a published graph, so automatic
+    /// per-segment selection is safe for fusion.
+    Auto,
+    /// No graph is published, so exact scan is required to avoid estimated
+    /// Bit4 scores entering fusion.
+    Exact,
 }
 
 /// Inputs for one vector-only diagnostics value.
@@ -199,6 +215,7 @@ pub(crate) struct HybridDiagnostics {
     pub lexical: SearchCounters,
     pub report: FusionReport,
     pub hybrid: HybridReport,
+    pub tier_resolution: Option<HybridTierResolution>,
     pub epoch: Option<crate::epoch::EpochIdentity>,
     pub elapsed: Duration,
 }
@@ -213,6 +230,7 @@ impl QueryDiagnostics {
             exact_rescore: input.exact_rescore,
             fusion: None,
             hybrid: None,
+            hybrid_tier_resolution: None,
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted: input.budget_exhausted,
@@ -237,6 +255,7 @@ impl QueryDiagnostics {
             exact_rescore: false,
             fusion: None,
             hybrid: None,
+            hybrid_tier_resolution: None,
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted: false,
@@ -267,6 +286,7 @@ impl QueryDiagnostics {
             exact_rescore: input.exact_rescore,
             fusion: Some(input.report),
             hybrid: Some(input.hybrid),
+            hybrid_tier_resolution: input.tier_resolution,
             requested_k: input.requested_k,
             returned: input.returned,
             budget_exhausted,
@@ -416,6 +436,9 @@ pub struct Health {
     pub segments: Vec<SegmentHealth>,
     /// Live acknowledged rows not yet sealed into immutable segments.
     pub pending_docs: u64,
+    /// Fraction of all alive rows in segments with a published graph.
+    /// Empty stores report complete coverage.
+    pub graph_coverage: f64,
     /// Upper bound of the last explicitly executed retention drop range.
     pub retained_through: Option<i64>,
     /// Cloneable summary of the last maintenance report.
@@ -1165,6 +1188,27 @@ impl crate::lifecycle::Store {
             });
         }
         segments.sort_unstable_by_key(|segment| segment.source);
+        let (alive_rows, graph_rows) =
+            segments
+                .iter()
+                .fold((0_u64, 0_u64), |(alive_total, graph_total), segment| {
+                    let alive = segment.rows.saturating_sub(segment.tombstones);
+                    (
+                        alive_total.saturating_add(alive),
+                        graph_total.saturating_add(
+                            if segment.tier == crate::tier::SegmentTier::SealedGraph {
+                                alive
+                            } else {
+                                0
+                            },
+                        ),
+                    )
+                });
+        let graph_coverage = if alive_rows == 0 {
+            1.0
+        } else {
+            graph_rows as f64 / alive_rows as f64
+        };
         let health_state = self.health_state.lock().map_err(|_| {
             crate::lifecycle::StoreError::Synchronization {
                 component: "health state",
@@ -1177,6 +1221,7 @@ impl crate::lifecycle::Store {
             generation,
             segments,
             pending_docs: stats.active_row_count.saturating_sub(active_tombstones),
+            graph_coverage,
             retained_through: health_state.retained_through,
             last_maintenance: health_state.last_maintenance.clone(),
         })

@@ -202,6 +202,11 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     },
     #[cfg(feature = "text")]
     AbiEntry {
+        name: "ze_text_maintain",
+        coverage: AbiCoverage::InvalidProbe(probe_text_maintain),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
         name: "ze_text_query",
         coverage: AbiCoverage::InvalidProbe(probe_text_query),
     },
@@ -856,6 +861,15 @@ fn probe_text_open(_: &MatrixContext) -> ProbeResult {
 #[cfg(feature = "text")]
 fn probe_text_ingest(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_ingest(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_maintain(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_maintain(
         u64::MAX,
         std::ptr::null(),
         std::ptr::null_mut(),

@@ -372,6 +372,8 @@ pub struct SegmentReader {
     // and every row offset has been walked; the public `stored_text` never
     // consults it and verifies on every call.
     stored_text_validated: OnceLock<()>,
+    vector_codes_validated: OnceLock<()>,
+    vector_factors_validated: OnceLock<()>,
     rescore_valid_chunks: Mutex<Box<[u64]>>,
     query_accounting: Option<Arc<crate::lifecycle::stats::Accounting>>,
     int8_factors_cache: OnceLock<CachedQueryValue<Arc<Vec<crate::scan::Int8Factors>>>>,
@@ -527,6 +529,8 @@ impl SegmentReader {
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
             stored_text_validated: OnceLock::new(),
+            vector_codes_validated: OnceLock::new(),
+            vector_factors_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: None,
             int8_factors_cache: OnceLock::new(),
@@ -597,6 +601,8 @@ impl SegmentReader {
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
             stored_text_validated: OnceLock::new(),
+            vector_codes_validated: OnceLock::new(),
+            vector_factors_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: Some(Arc::clone(accounting)),
             int8_factors_cache: OnceLock::new(),
@@ -803,13 +809,26 @@ impl SegmentReader {
 
     /// Returns packed Bit4 code bytes exactly as passed to the batch kernel.
     pub fn bit4_codes(&self) -> Result<&[u8], SegmentError> {
+        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
+        self.bit4_codes_from(header, payload)
+    }
+
+    fn bit4_codes_unchecked(&self) -> Result<&[u8], SegmentError> {
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorCodes)?;
+        self.bit4_codes_from(header, payload)
+    }
+
+    fn bit4_codes_from<'a>(
+        &'a self,
+        header: super::layout::VectorHeader,
+        payload: &'a [u8],
+    ) -> Result<&[u8], SegmentError> {
         if self.meta.scheme != 4 {
             return Err(SegmentError::Geometry(format!(
                 "Bit4 codes requested for scheme {}",
                 self.meta.scheme
             )));
         }
-        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
         let expected = (self.meta.dims as usize)
             .div_ceil(2)
             .checked_mul(self.meta.row_count as usize)
@@ -858,13 +877,26 @@ impl SegmentReader {
 
     /// Casts signed-byte vector codes directly from the validated mmap region.
     pub fn int8_codes(&self) -> Result<&[i8], SegmentError> {
+        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
+        self.int8_codes_from(header, payload)
+    }
+
+    fn int8_codes_unchecked(&self) -> Result<&[i8], SegmentError> {
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorCodes)?;
+        self.int8_codes_from(header, payload)
+    }
+
+    fn int8_codes_from<'a>(
+        &'a self,
+        header: super::layout::VectorHeader,
+        payload: &'a [u8],
+    ) -> Result<&[i8], SegmentError> {
         if self.meta.scheme != 2 {
             return Err(SegmentError::Geometry(format!(
                 "Int8 codes requested for scheme {}",
                 self.meta.scheme
             )));
         }
-        let (header, payload) = self.vector_payload(RegionKind::VectorCodes)?;
         let expected = (self.meta.dims as usize)
             .checked_mul(self.meta.row_count as usize)
             .ok_or_else(|| SegmentError::Geometry("Int8 code length overflow".to_owned()))?;
@@ -883,13 +915,26 @@ impl SegmentReader {
 
     /// Casts the validated factor region directly to permanent Bit4 records.
     pub fn bit4_factors(&self) -> Result<&[Bit4Factors], SegmentError> {
+        let (header, payload) = self.vector_payload(RegionKind::VectorFactors)?;
+        self.bit4_factors_from(header, payload)
+    }
+
+    fn bit4_factors_unchecked(&self) -> Result<&[Bit4Factors], SegmentError> {
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorFactors)?;
+        self.bit4_factors_from(header, payload)
+    }
+
+    fn bit4_factors_from<'a>(
+        &'a self,
+        header: super::layout::VectorHeader,
+        payload: &'a [u8],
+    ) -> Result<&[Bit4Factors], SegmentError> {
         if self.meta.scheme != 4 {
             return Err(SegmentError::Geometry(format!(
                 "Bit4 factors requested for scheme {}",
                 self.meta.scheme
             )));
         }
-        let (header, payload) = self.vector_payload(RegionKind::VectorFactors)?;
         if header.factor_stride_bytes != 12 {
             return Err(SegmentError::Geometry(format!(
                 "Bit4 factor stride {}, expected 12",
@@ -901,13 +946,26 @@ impl SegmentReader {
 
     /// Casts a validated Int8 factor region directly to permanent records.
     pub fn int8_factors(&self) -> Result<&[Int8Factors], SegmentError> {
+        let (header, payload) = self.vector_payload(RegionKind::VectorFactors)?;
+        self.int8_factors_from(header, payload)
+    }
+
+    fn int8_factors_unchecked(&self) -> Result<&[Int8Factors], SegmentError> {
+        let (header, payload) = self.vector_payload_unchecked(RegionKind::VectorFactors)?;
+        self.int8_factors_from(header, payload)
+    }
+
+    fn int8_factors_from<'a>(
+        &'a self,
+        header: super::layout::VectorHeader,
+        payload: &'a [u8],
+    ) -> Result<&'a [Int8Factors], SegmentError> {
         if self.meta.scheme != 2 {
             return Err(SegmentError::Geometry(format!(
                 "Int8 factors requested for scheme {}",
                 self.meta.scheme
             )));
         }
-        let (header, payload) = self.vector_payload(RegionKind::VectorFactors)?;
         if header.factor_stride_bytes != 8 {
             return Err(SegmentError::Geometry(format!(
                 "Int8 factor stride {}, expected 8",
@@ -917,6 +975,58 @@ impl SegmentReader {
         #[cfg(any(test, feature = "test-support"))]
         account_region_decode(RegionKind::VectorFactors, payload.len());
         cast_slice::<Int8Factors>(payload, self.meta.row_count as usize, "Int8 factors")
+    }
+
+    /// Verifies a vector region's checksum once per reader, then serves it
+    /// from the mapping without re-hashing.
+    ///
+    /// The verifying accessors re-hash the whole region on every call. On
+    /// a query path that is ruinous: hybrid cross-fill called the
+    /// verifying rescore accessor once per cross-filled document and
+    /// spent 219 ms of a 221 ms query re-hashing 181 MB. Query paths use
+    /// these twins; validation, diagnostics and maintenance keep the
+    /// verifying accessors.
+    fn validate_vector_region_once(
+        &self,
+        kind: RegionKind,
+        gate: &OnceLock<()>,
+    ) -> Result<(), SegmentError> {
+        if gate.get().is_some() {
+            return Ok(());
+        }
+        let _ = self.region(kind)?;
+        let _ = gate.set(());
+        Ok(())
+    }
+
+    /// Validate-once twin of [`Self::bit4_codes`].
+    pub(crate) fn query_bit4_codes(&self) -> Result<&[u8], SegmentError> {
+        self.validate_vector_region_once(RegionKind::VectorCodes, &self.vector_codes_validated)?;
+        self.bit4_codes_unchecked()
+    }
+
+    /// Validate-once twin of [`Self::int8_codes`].
+    pub(crate) fn query_int8_codes(&self) -> Result<&[i8], SegmentError> {
+        self.validate_vector_region_once(RegionKind::VectorCodes, &self.vector_codes_validated)?;
+        self.int8_codes_unchecked()
+    }
+
+    /// Validate-once twin of [`Self::int8_factors`] returning the raw slice.
+    pub(crate) fn query_int8_factors_slice(&self) -> Result<&[Int8Factors], SegmentError> {
+        self.validate_vector_region_once(
+            RegionKind::VectorFactors,
+            &self.vector_factors_validated,
+        )?;
+        self.int8_factors_unchecked()
+    }
+
+    /// Validate-once twin of [`Self::bit4_factors`].
+    pub(crate) fn query_bit4_factors(&self) -> Result<&[Bit4Factors], SegmentError> {
+        self.validate_vector_region_once(
+            RegionKind::VectorFactors,
+            &self.vector_factors_validated,
+        )?;
+        self.bit4_factors_unchecked()
     }
 
     pub(crate) fn query_int8_factors(

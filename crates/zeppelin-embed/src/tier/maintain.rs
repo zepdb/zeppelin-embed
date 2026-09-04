@@ -417,7 +417,7 @@ fn maintain_one(
         }
     }
     drop(lease);
-    maintain_consolidation(store, budget, &control, &mut report)?;
+    maintain_consolidation(store, budget, thresholds, &control, &mut report)?;
     if matches!(report.status, MaintenanceStatus::Complete) {
         maintain_refinements(store, budget, &control, &mut report)?;
     }
@@ -665,21 +665,29 @@ fn current_generation(store: &Store) -> Result<u64, StoreError> {
 fn maintain_consolidation(
     store: &Store,
     budget: MaintenanceBudget,
+    thresholds: Option<TierThresholds>,
     control: &QueryControl,
     report: &mut MaintenanceReport,
 ) -> Result<(), MaintenanceError> {
     let lease = store.snapshot().map_err(MaintenanceError::Store)?;
-    let mut inputs = lease
-        .segments()
-        .iter()
-        .filter(|segment| has_graph(segment))
-        .collect::<Vec<_>>();
+    let plan = decide_store(consolidation_store_stats(lease.segments(), thresholds)?);
+    let mut inputs = match plan {
+        StorePlan::Consolidate => lease
+            .segments()
+            .iter()
+            .filter(|segment| has_graph(segment))
+            .collect::<Vec<_>>(),
+        StorePlan::ConsolidateScan => lease
+            .segments()
+            .iter()
+            .filter(|segment| !has_graph(segment))
+            .collect::<Vec<_>>(),
+        StorePlan::Stay => {
+            clear_stale_consolidation(store)?;
+            return Ok(());
+        }
+    };
     inputs.sort_by(|left, right| left.meta().id.as_bytes().cmp(right.meta().id.as_bytes()));
-    let stats = consolidation_store_stats(&inputs)?;
-    if decide_store(stats) == StorePlan::Stay {
-        clear_stale_consolidation(store)?;
-        return Ok(());
-    }
     let deferrals = consolidation_deferrals(&inputs);
     if !deferrals.is_empty() {
         report.consolidation_deferrals.extend(deferrals);
@@ -851,24 +859,54 @@ fn maintain_consolidation(
     Ok(())
 }
 
-fn consolidation_store_stats(inputs: &[&SegmentReader]) -> Result<StoreStats, MaintenanceError> {
+fn consolidation_store_stats(
+    inputs: &[SegmentReader],
+    thresholds: Option<TierThresholds>,
+) -> Result<StoreStats, MaintenanceError> {
     let graph_segment_count =
-        u32::try_from(inputs.len()).map_err(|_| MaintenanceError::ArithmeticOverflow)?;
+        u32::try_from(inputs.iter().filter(|segment| has_graph(segment)).count())
+            .map_err(|_| MaintenanceError::ArithmeticOverflow)?;
+    let scan_segment_count =
+        u32::try_from(inputs.iter().filter(|segment| !has_graph(segment)).count())
+            .map_err(|_| MaintenanceError::ArithmeticOverflow)?;
     let total_graph_rows = inputs
         .iter()
+        .filter(|segment| has_graph(segment))
         .try_fold(0_u64, |total, segment| {
             total.checked_add(u64::from(segment.meta().row_count))
         })
         .ok_or(MaintenanceError::ArithmeticOverflow)?;
     let largest_graph_segment_rows = inputs
         .iter()
+        .filter(|segment| has_graph(segment))
         .map(|segment| u64::from(segment.meta().row_count))
         .max()
         .unwrap_or(0);
+    let total_scan_rows = inputs
+        .iter()
+        .filter(|segment| !has_graph(segment))
+        .try_fold(0_u64, |total, segment| {
+            total.checked_add(u64::from(segment.meta().row_count))
+        })
+        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+    let scan_graph_min_rows = match thresholds {
+        Some(thresholds) => thresholds.graph_min_rows,
+        None => inputs
+            .iter()
+            .find(|segment| !has_graph(segment))
+            .map(|segment| {
+                super::thresholds::for_bucket(segment.meta().dims, segment.meta().scheme)
+                    .graph_min_rows
+            })
+            .unwrap_or(0),
+    };
     Ok(StoreStats {
         graph_segment_count,
         total_graph_rows,
         largest_graph_segment_rows,
+        scan_segment_count,
+        total_scan_rows,
+        scan_graph_min_rows,
     })
 }
 

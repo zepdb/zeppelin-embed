@@ -923,6 +923,46 @@ pub extern "C" fn ze_text_ingest(
     })
 }
 
+/// Repeats bounded text-store maintenance slices until all due work completes.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_maintain(
+    handle: ZeHandle,
+    request: *const ZeMaintainRequest,
+    out_report: *mut ZeMaintainReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_maintain");
+        finish(
+            Some(handle),
+            text_registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let report = access
+                    .store
+                    .maintain_to_completion(MaintenanceBudget {
+                        wall_time: Duration::from_nanos(request.wall_time_ns),
+                        bytes: request.bytes,
+                    })
+                    .map_err(FfiError::text)?;
+                marshal::write_output(
+                    out_report,
+                    ZeMaintainReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        graphs_built: report.graphs_built,
+                        bytes_consumed: report.bytes_consumed,
+                        checkpoints_resumed: report.checkpoints_resumed,
+                        status: 0,
+                        reserved: 0,
+                    },
+                );
+                Ok(())
+            }),
+        )
+    })
+}
+
 /// Executes one dense, lexical, or hybrid text query and returns stored text on every hit.
 #[cfg(feature = "text")]
 #[unsafe(no_mangle)]

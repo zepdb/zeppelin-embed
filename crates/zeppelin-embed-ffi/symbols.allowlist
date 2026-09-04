@@ -26,6 +26,7 @@ ze_search_result_free
 ze_state
 ze_stats
 ze_text_ingest
+ze_text_maintain
 ze_text_open
 ze_text_query
 ze_text_query_result_free

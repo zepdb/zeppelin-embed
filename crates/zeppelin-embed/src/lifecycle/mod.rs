@@ -1648,7 +1648,7 @@ impl SearchOptions {
         }
     }
 
-    const fn explicit_tier(self) -> Option<SearchTier> {
+    pub(crate) const fn explicit_tier(self) -> Option<SearchTier> {
         self.tier
     }
 }
@@ -3375,6 +3375,7 @@ impl Store {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = std::time::Instant::now();
         let mut options = options;
+        let requested_tier = options.explicit_tier();
         // Hybrid once forced SearchTier::Exact unconditionally, because
         // fusion needs an anchor for unseen scores and only an exhaustive
         // scan could name the farthest alive row. The deterministic
@@ -3393,9 +3394,16 @@ impl Store {
         let admitted = self
             .admit_vector_search(options)
             .map_err(crate::fusion::FusionError::from)?;
-        if options.explicit_tier().is_none() && !snapshot_has_graph(&admitted.snapshot) {
-            options = options.with_tier(SearchTier::Exact);
-        }
+        let tier_resolution = if requested_tier.is_none() {
+            if snapshot_has_graph(&admitted.snapshot) {
+                Some(crate::diag::HybridTierResolution::Auto)
+            } else {
+                options = options.with_tier(SearchTier::Exact);
+                Some(crate::diag::HybridTierResolution::Exact)
+            }
+        } else {
+            None
+        };
         let corpus_rows = hybrid::corpus_rows(&admitted.snapshot, &admitted.active_segment)?;
         // Round zero asks each producer for the window plus one row, so the
         // element just past the window is the stability bound's unseen value.
@@ -3409,39 +3417,60 @@ impl Store {
         let panic_vector = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Vector);
         let panic_lexical = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Lexical);
         let lexical_worker = self.ensure_lexical_worker()?;
-        let lexical_work = lexical_worker.submit(|| {
-            let name = std::thread::current().name().map(str::to_owned);
-            let result = (|| {
-                maybe_trigger_hybrid_leg_panic(panic_lexical, "injected lexical hybrid leg panic");
-                let lease =
-                    SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
-                let cancellation = QueryCancellation::new(&control, &lease);
-                cancellation
-                    .check_graph()
-                    .map_err(QueryError::Scan)
-                    .map_err(crate::fusion::FusionError::from)?;
-                match lexical_query {
-                    PinnedLexicalQuery::Term(query) => exact_lexical_leg(
-                        &admitted.snapshot,
-                        &admitted.active_segment,
-                        &self.accounting,
-                        query,
-                        &cancellation,
-                    ),
-                    PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
-                        &admitted.snapshot,
-                        &admitted.active_segment,
-                        &self.accounting,
-                        &self.tokenizer,
-                        query,
-                        &cancellation,
-                    ),
-                }
-            })();
-            (name, result)
-        })?;
-        let caller_chose_tier = options.explicit_tier().is_some();
+        let submit_lexical_leg = |bound| {
+            lexical_worker.submit(|| {
+                let name = std::thread::current().name().map(str::to_owned);
+                let result = (|| {
+                    maybe_trigger_hybrid_leg_panic(
+                        panic_lexical,
+                        "injected lexical hybrid leg panic",
+                    );
+                    let lease =
+                        SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
+                    let cancellation = QueryCancellation::new(&control, &lease);
+                    cancellation
+                        .check_graph()
+                        .map_err(QueryError::Scan)
+                        .map_err(crate::fusion::FusionError::from)?;
+                    match lexical_query {
+                        PinnedLexicalQuery::Term(query) => exact_lexical_leg(
+                            &admitted.snapshot,
+                            &admitted.active_segment,
+                            &self.accounting,
+                            query,
+                            bound,
+                            &cancellation,
+                        ),
+                        PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
+                            &admitted.snapshot,
+                            &admitted.active_segment,
+                            &self.accounting,
+                            &self.tokenizer,
+                            query,
+                            bound,
+                            &cancellation,
+                        ),
+                    }
+                })();
+                (name, result)
+            })
+        };
+        let lexical_work = submit_lexical_leg(width.saturating_add(1))?;
+        let caller_chose_tier = requested_tier.is_some();
         let run_vector_leg = |k: usize| {
+            let graph_available = snapshot_has_graph(&admitted.snapshot);
+            let scan_reason_override = if caller_chose_tier || !graph_available {
+                None
+            } else if k > corpus_rows {
+                Some(crate::planner::ScanReason::FullMaterialization)
+            } else if graph_round_is_worth_it(k, corpus_rows) {
+                None
+            } else {
+                Some(crate::planner::ScanReason::WideningCap {
+                    ef: graph_round_ef(k),
+                    rows: corpus_rows,
+                })
+            };
             search_pinned(
                 admitted.pool.as_deref(),
                 &admitted.snapshot,
@@ -3469,6 +3498,8 @@ impl Store {
                 },
                 control.clone(),
                 GraphBoundMode::Shared,
+                requested_tier,
+                scan_reason_override,
                 started,
                 #[cfg(any(test, feature = "test-support"))]
                 None,
@@ -3499,7 +3530,7 @@ impl Store {
         let _ = lexical_thread_name;
         let (
             mut vector_outcome,
-            (lexical_hits, lexical_sources, lexical_counters, lexical_expansions),
+            (mut lexical_hits, mut lexical_sources, mut lexical_counters, lexical_expansions),
         ) = resolve_hybrid_leg_results(vector_result, lexical_result)?;
 
         let mut rounds = 1_usize;
@@ -3544,7 +3575,17 @@ impl Store {
                 width.saturating_mul(2).min(corpus_rows)
             };
             rounds = rounds.saturating_add(1);
-            vector_outcome = run_vector_leg(width.saturating_add(1))?;
+            let lexical_work = submit_lexical_leg(width.saturating_add(1))?;
+            let vector_result = run_vector_leg(width.saturating_add(1));
+            let (_, lexical_result) = lexical_work
+                .wait()
+                .unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
+            let (next_vector, (next_hits, next_sources, next_counters, _)) =
+                resolve_hybrid_leg_results(vector_result, lexical_result)?;
+            vector_outcome = next_vector;
+            lexical_hits = next_hits;
+            lexical_sources = next_sources;
+            lexical_counters = next_counters;
         };
 
         let crate::ingest::SearchOutcome {
@@ -3575,6 +3616,7 @@ impl Store {
             lexical: lexical_counters,
             report,
             hybrid: report_window,
+            tier_resolution,
             epoch,
             elapsed: started.elapsed(),
         });
@@ -3626,6 +3668,8 @@ impl Store {
                 options,
                 control,
                 graph_bound_mode,
+                options.explicit_tier(),
+                None,
                 started,
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
@@ -4146,6 +4190,7 @@ fn exact_structured_lexical_leg(
     accounting: &Arc<stats::Accounting>,
     analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
+    bound: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
     let lexical_error = |detail: String| crate::fusion::FusionError::Leg {
@@ -4175,7 +4220,7 @@ fn exact_structured_lexical_leg(
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
     let fields = query.fields();
-    let all_rows = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
+    let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
     let mut counters = crate::fts::search::SearchCounters::default();
     let mut aggregate = BTreeMap::<crate::fts::search::GlobalDocId, f64>::new();
     for expansion in &expansions {
@@ -4183,15 +4228,8 @@ fn exact_structured_lexical_leg(
             terms: vec![expansion.term.clone()],
             fields: fields.clone(),
         };
-        let result = crate::fts::search::search_allow_list_driven_controlled(
-            &index,
-            &term_query,
-            all_rows,
-            crate::fts::bm25::Bm25Params::beir(),
-            &allow_lists,
-            || cancellation.check_graph(),
-        )
-        .map_err(map_fusion_controlled_lexical_error)?;
+        let result =
+            exact_hybrid_lexical_search(&index, &term_query, k, &allow_lists, cancellation)?;
         accumulate_search_counters(&mut counters, &result.counters);
         let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
         for hit in result.hits {
@@ -4217,6 +4255,7 @@ fn exact_structured_lexical_leg(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(left.0.cmp(&right.0))
     });
+    scored.truncate(k);
     let mut joined = Vec::with_capacity(scored.len());
     for (doc, score) in scored {
         let document = structured_lexical_document(snapshot, active, &sources, doc, false)
@@ -4236,6 +4275,7 @@ fn exact_lexical_leg(
     active: &crate::ingest::ActiveSegment,
     accounting: &Arc<stats::Accounting>,
     query: &crate::fts::search::TermQuery,
+    bound: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
     let LexicalAssembly {
@@ -4261,20 +4301,12 @@ fn exact_lexical_leg(
                 .collect(),
         ));
     }
-    let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
+    let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
     let allow_lists = alive_sets
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    let result = crate::fts::search::search_allow_list_driven_controlled(
-        &index,
-        query,
-        k,
-        crate::fts::bm25::Bm25Params::beir(),
-        &allow_lists,
-        || cancellation.check_graph(),
-    )
-    .map_err(map_fusion_controlled_lexical_error)?;
+    let result = exact_hybrid_lexical_search(&index, query, k, &allow_lists, cancellation)?;
     let mut joined = Vec::with_capacity(result.hits.len());
     for hit in result.hits {
         let document = structured_lexical_document(snapshot, active, &sources, hit.doc, false)
@@ -4303,6 +4335,54 @@ fn exact_lexical_leg(
     ))
 }
 
+fn exact_hybrid_lexical_search(
+    index: &crate::fts::index::LexicalIndex,
+    query: &crate::fts::search::TermQuery,
+    k: usize,
+    allow_lists: &[&crate::meta::DocBitmap],
+    cancellation: &QueryCancellation<'_>,
+) -> Result<crate::fts::search::SearchResult, crate::fusion::FusionError> {
+    let allowed = allow_lists
+        .iter()
+        .map(|allow_list| allow_list.cardinality())
+        .fold(0_u64, u64::saturating_add);
+    if allowed.saturating_mul(crate::planner::LEXICAL_ALLOW_LIST_DIVISOR) <= index.document_count()
+    {
+        return crate::fts::search::search_allow_list_driven_controlled(
+            index,
+            query,
+            k,
+            crate::fts::bm25::Bm25Params::beir(),
+            allow_lists,
+            || cancellation.check_graph(),
+        )
+        .map_err(map_fusion_controlled_lexical_error);
+    }
+
+    cancellation
+        .check_graph()
+        .map_err(QueryError::Scan)
+        .map_err(crate::fusion::FusionError::from)?;
+    let result = crate::fts::prune::search_pruned_filtered(
+        index,
+        query,
+        k,
+        crate::fts::bm25::Bm25Params::beir(),
+        crate::fts::prune::select_strategy(query.terms.len(), k),
+        allow_lists,
+    )
+    .map_err(|error| crate::fusion::FusionError::Leg {
+        leg: crate::fusion::FusionLeg::Lexical,
+        kind: crate::fusion::LegFailureKind::Lexical,
+        detail: error.to_string(),
+    })?;
+    cancellation
+        .check_graph()
+        .map_err(QueryError::Scan)
+        .map_err(crate::fusion::FusionError::from)?;
+    Ok(result)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_pinned(
     pool: Option<&pool::QueryPool>,
@@ -4316,6 +4396,8 @@ fn search_pinned(
     options: SearchOptions,
     control: QueryControl,
     graph_bound_mode: GraphBoundMode,
+    requested_tier: Option<SearchTier>,
+    hybrid_scan_reason: Option<crate::planner::ScanReason>,
     started: std::time::Instant,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
@@ -4470,6 +4552,7 @@ fn search_pinned(
             RowSource::Active,
             crate::planner::SegmentTier::ActiveScan,
             alive.live_count(),
+            crate::planner::ScanReason::ActiveSegment,
         ));
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
@@ -4606,6 +4689,7 @@ fn search_pinned(
             source,
             tier,
             alive.live_count(),
+            sealed_scan_reason(segment, requested_tier, hybrid_scan_reason),
         ));
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
@@ -4619,6 +4703,7 @@ fn search_pinned(
         threads_used: worker_thread_ids.len(),
         worker_thread_ids,
     };
+    accounting.record_plans(&plans).map_err(QueryError::Store)?;
     let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
         snapshot_generation: generation,
         indexed_through_seq: active
@@ -4671,10 +4756,43 @@ fn graph_round_is_worth_it(k: usize, corpus_rows: usize) -> bool {
     if corpus_rows == 0 {
         return true;
     }
-    let ef = k.saturating_mul(4).max(140);
+    let ef = graph_round_ef(k);
     let cap =
         corpus_rows.saturating_mul(GRAPH_WIDENING_CAP_NUMERATOR) / GRAPH_WIDENING_CAP_DENOMINATOR;
     ef <= cap
+}
+
+fn graph_round_ef(k: usize) -> usize {
+    k.saturating_mul(4).max(140)
+}
+
+fn sealed_scan_reason(
+    segment: &crate::segment::reader::SegmentReader,
+    requested_tier: Option<SearchTier>,
+    hybrid_scan_reason: Option<crate::planner::ScanReason>,
+) -> crate::planner::ScanReason {
+    use crate::planner::{ExplicitScanTier, ScanReason};
+
+    let has_graph = segment
+        .directory()
+        .iter()
+        .any(|entry| entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id());
+    if has_graph && let Some(reason) = hybrid_scan_reason {
+        return reason;
+    }
+    match requested_tier {
+        Some(SearchTier::Exact) => return ScanReason::ExplicitTier(ExplicitScanTier::Exact),
+        Some(SearchTier::Scan) => return ScanReason::ExplicitTier(ExplicitScanTier::Scan),
+        Some(SearchTier::Auto | SearchTier::Graph(_)) | None => {}
+    }
+    let rows = segment.meta().row_count;
+    let min_rows = crate::tier::thresholds::for_bucket(segment.meta().dims, segment.meta().scheme)
+        .graph_min_rows;
+    if rows < min_rows {
+        ScanReason::BelowGraphThreshold { rows, min_rows }
+    } else {
+        ScanReason::GraphPending
+    }
 }
 
 fn snapshot_has_graph(snapshot: &PublishedSnapshot) -> bool {
@@ -5297,7 +5415,7 @@ fn scan_sealed_segment(
                     ),
                     rows: ScanRows::Int8RowMajor {
                         codes: segment
-                            .int8_codes()
+                            .query_int8_codes()
                             .map_err(StoreError::Segment)
                             .map_err(QueryError::Store)?,
                         factors: factors.as_slice(),
@@ -5414,11 +5532,20 @@ pub(crate) fn auto_uses_full_precision(
     has_exact && has_estimated
 }
 
+/// Returns the f32 rescore rows for a query-time exact score.
+///
+/// This is the query path, so it uses the validate-once accessor. The
+/// verifying `rescore_f32` re-hashes the whole rescore region on every
+/// call, and hybrid cross-fill calls this once per cross-filled
+/// document: 50 calls over a 181 MB region cost about 219 ms of a
+/// 221 ms hybrid query on 58,980 FiQA rows, while both legs together
+/// cost under 3 ms. Uncached `rescore_f32` remains for the validation
+/// and diagnostic callers.
 pub(crate) fn exact_rescore_rows(
     segment: &crate::segment::reader::SegmentReader,
 ) -> Result<&[f32], QueryError> {
     segment
-        .rescore_f32()
+        .query_rescore_f32()
         .map_err(|source| QueryError::Store(StoreError::Segment(source)))
 }
 
