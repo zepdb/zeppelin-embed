@@ -43,6 +43,17 @@ dev-dependency, the benchmark crate already carries `serde_json` on the same
 "benchmark tooling only" basis, and `cargo deny check` passes with no new
 package entering `Cargo.lock`. The core crate's dependency graph is unchanged.
 
+Task ANE (2026-09-04) added `cc` as a build-dependency of the outer
+`zeppelin-embed-text` crate only, to compile a 156-line Objective-C shim
+(`objc/ze_coreml.m`) that binds CoreML. The Apple Neural Engine evaluates
+the query tower 14.3x faster than the MLX GPU path at p50 and 77x faster
+at p95, returning vectors that agree with MLX to cosine 0.999980, so this
+is a pure latency win. `cc` is a build-time tool that emits no runtime
+crate, the core crate's graph is unchanged and still exactly `libc`,
+`roaring`, and `xxhash-rust`, and `cargo deny check` passes. C++ and
+Objective-C remain permitted in the outer embedding crate only (owner
+decision 2026-09-03); the core no-C++ rule is unchanged.
+
 The absolute blacklist includes Tokio, Arrow, DataFusion, jemalloc, ONNX
 Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
 C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling

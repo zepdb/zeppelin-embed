@@ -1287,6 +1287,7 @@ dependencies = [
 name = "zeppelin-embed-text"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "libc",
  "mlx-rs",
  "tempfile",

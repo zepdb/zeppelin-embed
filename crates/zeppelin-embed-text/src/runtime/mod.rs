@@ -105,6 +105,9 @@ pub trait ModelRuntime {
     fn identity(&self) -> RuntimeIdentity;
 }
 
+/// CoreML runtime, including the Apple Neural Engine.
+#[cfg(target_os = "macos")]
+pub mod coreml;
 /// MLX GPU runtime.
 pub mod mlx;
 

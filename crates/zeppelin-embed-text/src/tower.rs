@@ -84,6 +84,48 @@ pub struct TokenBatch {
 }
 
 impl TokenBatch {
+    /// Re-pads every row to exactly `width` tokens.
+    ///
+    /// `encode_batch` pads to the longest row it saw, which is what the
+    /// MLX path wants. A CoreML program is exported at one fixed
+    /// sequence length, so it needs an exact width instead. Rows longer
+    /// than `width` are a caller error, not something to silently trim:
+    /// truncating a query would change what was asked.
+    pub fn padded_to(&self, width: usize) -> Result<Self, crate::runtime::RuntimeError> {
+        if width < self.tokens_per_row {
+            return Err(crate::runtime::RuntimeError::Shape(format!(
+                "cannot pad {} tokens per row down to {width}",
+                self.tokens_per_row
+            )));
+        }
+        let mut token_ids = Vec::with_capacity(self.rows.saturating_mul(width));
+        let mut attention_mask = Vec::with_capacity(self.rows.saturating_mul(width));
+        for row in 0..self.rows {
+            let start = row.saturating_mul(self.tokens_per_row);
+            let end = start.saturating_add(self.tokens_per_row);
+            let ids = self.token_ids.get(start..end).ok_or_else(|| {
+                crate::runtime::RuntimeError::Shape("token id row is out of range".to_owned())
+            })?;
+            let mask = self.attention_mask.get(start..end).ok_or_else(|| {
+                crate::runtime::RuntimeError::Shape("attention row is out of range".to_owned())
+            })?;
+            token_ids.extend_from_slice(ids);
+            attention_mask.extend_from_slice(mask);
+            token_ids.resize(
+                token_ids.len().saturating_add(width - self.tokens_per_row),
+                0,
+            );
+            attention_mask.resize(
+                attention_mask
+                    .len()
+                    .saturating_add(width - self.tokens_per_row),
+                0.0,
+            );
+        }
+        Self::new(token_ids, attention_mask, self.rows, width)
+            .map_err(|detail| crate::runtime::RuntimeError::Shape(detail.to_owned()))
+    }
+
     /// Validates and constructs a rectangular token batch.
     pub fn new(
         token_ids: Vec<i32>,
