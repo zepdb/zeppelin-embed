@@ -19,6 +19,9 @@ use zeppelin_embed::lifecycle::{
 use zeppelin_embed::meta::{
     BuildError, ColumnDefinition, ColumnId, ColumnType, Predicate, PredicateValue, Schema,
 };
+use zeppelin_embed::segment::SegmentError;
+use zeppelin_embed::segment::layout::RegionKind;
+use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::wal::WalReader;
 
@@ -1159,4 +1162,180 @@ fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
                 .map_err(std::io::Error::other)
         })
         .collect()
+}
+
+#[test]
+fn row_for_document_version_locates_every_sealed_row_and_rejects_absent_revisions() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    // Doc ids are deliberately out of order so the lookup cannot rely on
+    // ingest order matching id order.
+    let ids: [u128; 6] = [900, 7, 512, 3, 1_000_000, 64];
+    store
+        .ingest(IngestBatch::new(
+            ids.iter()
+                .enumerate()
+                .map(|(row, id)| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(*id), Revision::new(row as u64 + 1)),
+                        vec![row as f32, 1.0],
+                    )
+                    .with_text(format!("row {row}"))
+                })
+                .collect(),
+        ))
+        .expect("ingest unordered rows");
+    store.seal().expect("seal unordered rows");
+    let snapshot = store.snapshot().expect("pin snapshot");
+    let segment = &snapshot.segments()[0];
+    for (row, id) in ids.iter().enumerate() {
+        let version = DocumentVersion::new(DocId::new(*id), Revision::new(row as u64 + 1));
+        assert_eq!(
+            segment.row_for_document_version(version).expect("lookup"),
+            Some(row),
+            "doc {id} must resolve to its sealed row"
+        );
+        assert_eq!(
+            segment
+                .row_for_document_version(DocumentVersion::new(
+                    DocId::new(*id),
+                    Revision::new(row as u64 + 2)
+                ))
+                .expect("stale revision lookup"),
+            None,
+            "a different revision of doc {id} is not present"
+        );
+    }
+    assert_eq!(
+        segment
+            .row_for_document_version(DocumentVersion::new(DocId::new(8), Revision::new(1)))
+            .expect("absent doc lookup"),
+        None
+    );
+    drop(snapshot);
+    store.close().expect("close store");
+}
+
+#[test]
+fn stored_text_resolves_rows_across_segments_with_stale_revisions_and_absent_text() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let stale = DocumentVersion::new(DocId::new(10), Revision::new(1));
+    let textless = DocumentVersion::new(DocId::new(11), Revision::new(1));
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(stale, vec![1.0, 0.0]).with_text("stale body"),
+            IngestDocument::new(textless, vec![0.0, 1.0]),
+        ]))
+        .expect("ingest first segment");
+    store.seal().expect("seal first segment");
+    let fresh = DocumentVersion::new(DocId::new(10), Revision::new(2));
+    let last = DocumentVersion::new(DocId::new(12), Revision::new(1));
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(fresh, vec![1.0, 1.0]).with_text("fresh body"),
+            IngestDocument::new(last, vec![0.5, 0.5]).with_text("last body"),
+        ]))
+        .expect("ingest second segment");
+    store.seal().expect("seal second segment");
+    let before = store.stats().expect("stats before lookups");
+
+    assert_eq!(
+        store.stored_text(fresh).expect("fresh"),
+        Some("fresh body".to_owned())
+    );
+    assert_eq!(
+        store.stored_text(last).expect("last"),
+        Some("last body".to_owned())
+    );
+    // The stale revision's row is still physically present in segment one;
+    // its exact revision is what the caller asked for, so its text returns.
+    assert_eq!(
+        store.stored_text(stale).expect("stale"),
+        Some("stale body".to_owned())
+    );
+    assert_eq!(store.stored_text(textless).expect("textless"), None);
+    assert_eq!(
+        store
+            .stored_text(DocumentVersion::new(DocId::new(10), Revision::new(3)))
+            .expect("absent revision"),
+        None
+    );
+    assert_eq!(
+        store
+            .stored_text(DocumentVersion::new(DocId::new(99), Revision::new(1)))
+            .expect("absent doc"),
+        None
+    );
+    // The identity index each lookup builds is a retained query view and
+    // must reach snapshot accounting exactly, like every other cached view.
+    let snapshot = store.snapshot().expect("accounted snapshot");
+    let retained = snapshot
+        .segments()
+        .iter()
+        .map(zeppelin_embed::segment::reader::SegmentReader::retained_query_view_bytes)
+        .sum::<u64>();
+    drop(snapshot);
+    let after = store.stats().expect("stats after lookups");
+    assert!(retained > 0, "lookups must build the identity index");
+    assert_eq!(after.snapshot_bytes - before.snapshot_bytes, retained);
+    store.close().expect("close store");
+}
+
+#[test]
+fn stored_text_verifies_the_region_checksum_on_every_call_of_the_same_reader() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("alpha body"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_text("omega body"),
+        ]))
+        .expect("ingest rows");
+    store.seal().expect("seal rows");
+    let snapshot = store.snapshot().expect("pin snapshot");
+    let id = snapshot.segments()[0].meta().id;
+    drop(snapshot);
+    store.close().expect("close store");
+    let path = directory.path().join(id.file_name());
+
+    // One mapped reader: validated once, then corrupted underneath it. The
+    // flip lands in the private mapping (copy-on-write), never in the file.
+    let mut reader = SegmentReader::open(&StdVfs, &path, id).expect("open sealed segment");
+    {
+        let first = reader
+            .stored_text()
+            .expect("first call verifies")
+            .expect("text region");
+        assert_eq!(first.row(1), Some(Some("omega body")));
+    }
+    let last_payload_byte = reader
+        .directory()
+        .iter()
+        .find(|entry| entry.kind == RegionKind::StoredText.id())
+        .map(|entry| entry.offset + entry.length - 1)
+        .expect("stored-text region entry");
+    reader
+        .corrupt_mapped_byte_for_test(last_payload_byte as usize, 0x01)
+        .expect("corrupt one mapped stored-text payload byte");
+
+    match reader.stored_text() {
+        Err(SegmentError::Format(error)) => {
+            assert!(
+                error
+                    .to_string()
+                    .contains("StoredText failed BlockChecksum"),
+                "second call must fail the region checksum, got {error}"
+            );
+        }
+        other => panic!("second call must re-verify the region checksum, got {other:?}"),
+    }
 }

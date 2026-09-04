@@ -3166,23 +3166,20 @@ impl Store {
             return Ok(text.map(str::to_owned));
         }
         for segment in snapshot.segments() {
-            for row in 0..segment.meta().row_count as usize {
-                let stored_version = segment
-                    .document_version(row)
-                    .map_err(StoreError::Segment)
-                    .map_err(crate::ingest::StoreLexicalError::from)?;
-                if stored_version != Some(version) {
-                    continue;
-                }
-                let text = segment
-                    .stored_text()
-                    .map_err(StoreError::Segment)
-                    .map_err(crate::ingest::StoreLexicalError::from)?
-                    .and_then(|rows| rows.row(row).flatten())
-                    .map(str::to_owned);
-                drop(active_query);
-                return Ok(text);
-            }
+            let Some(row) = segment
+                .query_row_for_document_version(version)
+                .map_err(crate::ingest::StoreLexicalError::from)?
+            else {
+                continue;
+            };
+            let text = segment
+                .query_stored_text()
+                .map_err(StoreError::Segment)
+                .map_err(crate::ingest::StoreLexicalError::from)?
+                .and_then(|rows| rows.row(row).flatten())
+                .map(str::to_owned);
+            drop(active_query);
+            return Ok(text);
         }
         drop(active_query);
         Ok(None)

@@ -283,6 +283,50 @@ impl MappedFile {
         // alive for the returned borrow through `&self`.
         unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
     }
+
+    /// Flips `mask` into one byte of the private mapping through copy-on-write,
+    /// leaving the file untouched. Test support only: it models bit rot under a
+    /// reader that already validated the page, deterministically on every
+    /// platform (a file write is not visible through a private mapping on
+    /// macOS). `&mut self` proves no `as_bytes` borrow is live during the write.
+    #[cfg(any(test, feature = "test-support"))]
+    fn corrupt_byte(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
+        if offset >= self.length {
+            return Err(std::io::Error::other(
+                "corruption offset is outside the mapping",
+            ));
+        }
+        let page_size_raw = unsafe {
+            // SAFETY: `_SC_PAGESIZE` takes no pointer arguments and has no preconditions.
+            libc::sysconf(libc::_SC_PAGESIZE)
+        };
+        let page_size = usize::try_from(page_size_raw)
+            .ok()
+            .filter(|size| *size != 0)
+            .ok_or_else(|| std::io::Error::other("sysconf returned an invalid page size"))?;
+        let page_offset = offset - offset % page_size;
+        let page = self
+            .pointer
+            .as_ptr()
+            .wrapping_add(page_offset)
+            .cast::<libc::c_void>();
+        // SAFETY: `page` is the page-aligned start of a page inside this live
+        // private mapping, so the kernel may grant copy-on-write access to it.
+        if unsafe { libc::mprotect(page, page_size, libc::PROT_READ | libc::PROT_WRITE) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `offset < length` keeps the byte inside the mapping, the page
+        // is writable, and `&mut self` guarantees no shared view of the bytes.
+        unsafe {
+            let byte = self.pointer.as_ptr().add(offset);
+            byte.write(byte.read() ^ mask);
+        }
+        // SAFETY: the same page range as above, returned to read-only.
+        if unsafe { libc::mprotect(page, page_size, libc::PROT_READ) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 impl Drop for MappedFile {
@@ -324,12 +368,19 @@ pub struct SegmentReader {
     header_length: usize,
     entries: Vec<RegionEntry>,
     document_versions_validation: OnceLock<Result<(), DocumentVersionValidationError>>,
+    // Set by the query path once the stored-text region has passed its checksum
+    // and every row offset has been walked; the public `stored_text` never
+    // consults it and verifies on every call.
+    stored_text_validated: OnceLock<()>,
     rescore_valid_chunks: Mutex<Box<[u64]>>,
     query_accounting: Option<Arc<crate::lifecycle::stats::Accounting>>,
     int8_factors_cache: OnceLock<CachedQueryValue<Arc<Vec<crate::scan::Int8Factors>>>>,
     postings_cache: OnceLock<CachedQueryValue<Arc<crate::fts::sealed::SealedSegment>>>,
     columns_cache: OnceLock<CachedQueryValue<Arc<ColumnStore>>>,
     alive_cache: OnceLock<CachedQueryValue<Arc<AliveSet>>>,
+    // Sealed rows ordered by persisted document identity so an exact revision
+    // resolves by binary search instead of a full row scan.
+    document_version_index_cache: OnceLock<CachedQueryValue<Arc<Box<[u32]>>>>,
     // Inline cached graph metadata is covered by this reader's exactly
     // accounted snapshot slot; its heap-backed scratch is charged to Cache.
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
@@ -475,12 +526,14 @@ impl SegmentReader {
             header_length: parsed.header_length,
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
+            stored_text_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: None,
             int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
             alive_cache: OnceLock::new(),
+            document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
@@ -543,12 +596,14 @@ impl SegmentReader {
             header_length: parsed.header_length,
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
+            stored_text_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
             query_accounting: Some(Arc::clone(accounting)),
             int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
             alive_cache: OnceLock::new(),
+            document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
         })
     }
@@ -583,6 +638,15 @@ impl SegmentReader {
             .map_or(0, |words| std::mem::size_of_val(words.as_ref()))
     }
 
+    /// Flips `mask` into one mapped byte through copy-on-write, leaving the
+    /// segment file untouched, so a test can corrupt what an already-validated
+    /// reader sees. `&mut self` guarantees no region view is live meanwhile.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn corrupt_mapped_byte_for_test(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
+        self.mapping.corrupt_byte(offset, mask)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn retained_query_view_bytes(&self) -> u64 {
@@ -612,11 +676,19 @@ impl SegmentReader {
                 .resident_bytes()
                 .and_then(arc_resident_bytes::<AliveSet>)
         });
+        let document_version_index = self.document_version_index_cache.get().and_then(|cached| {
+            cached
+                .value
+                .len()
+                .checked_mul(std::mem::size_of::<u32>())
+                .and_then(arc_resident_bytes::<Box<[u32]>>)
+        });
         int8_factors
             .into_iter()
             .chain(postings)
             .chain(columns)
             .chain(alive)
+            .chain(document_version_index)
             .fold(0_u64, |total, bytes| {
                 total.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX))
             })
@@ -1148,8 +1220,9 @@ impl SegmentReader {
             })
     }
 
-    /// Decodes one optional sealed-row document identity directly from the mapping.
-    pub fn document_version(&self, row: usize) -> Result<Option<DocumentVersion>, SegmentError> {
+    /// Resolves the checksum-validated document-version region once, or
+    /// `None` for segments sealed before the region existed.
+    fn document_versions_region(&self) -> Result<Option<&[u8]>, SegmentError> {
         let Some(entry) = self
             .entries
             .iter()
@@ -1182,7 +1255,14 @@ impl SegmentReader {
         if let Err(error) = validation {
             return Err(error.clone().into_segment_error(self.meta.id));
         }
-        let bytes = self.region_slice_unaccounted(entry)?;
+        self.region_slice_unaccounted(entry).map(Some)
+    }
+
+    /// Decodes one optional sealed-row document identity directly from the mapping.
+    pub fn document_version(&self, row: usize) -> Result<Option<DocumentVersion>, SegmentError> {
+        let Some(bytes) = self.document_versions_region()? else {
+            return Ok(None);
+        };
         let start = row
             .checked_mul(24)
             .ok_or_else(|| SegmentError::Geometry("document-version row overflow".to_owned()))?;
@@ -1206,6 +1286,88 @@ impl SegmentReader {
             DocId::new(doc_id),
             Revision::new(revision),
         )))
+    }
+
+    /// Finds the sealed row that holds exactly `version`.
+    ///
+    /// `None` means the segment predates document versions or holds no row
+    /// with that exact document id and revision.
+    pub fn row_for_document_version(
+        &self,
+        version: DocumentVersion,
+    ) -> Result<Option<usize>, SegmentError> {
+        let Some(bytes) = self.document_versions_region()? else {
+            return Ok(None);
+        };
+        let needle = encode_document_version(version);
+        Ok(bytes
+            .chunks_exact(DOCUMENT_VERSION_BYTES)
+            .position(|entry| entry == needle))
+    }
+
+    /// Finds the sealed row that holds exactly `version` through the cached
+    /// identity-ordered row permutation, building it on first use.
+    ///
+    /// Equal identities resolve to the lowest row, matching a forward scan.
+    pub(crate) fn query_row_for_document_version(
+        &self,
+        version: DocumentVersion,
+    ) -> Result<Option<usize>, crate::lifecycle::StoreError> {
+        let Some(bytes) = self
+            .document_versions_region()
+            .map_err(crate::lifecycle::StoreError::Segment)?
+        else {
+            return Ok(None);
+        };
+        let Some(index) = self.query_document_version_index(bytes)? else {
+            return Ok(None);
+        };
+        let needle = encode_document_version(version);
+        let position =
+            index.partition_point(|&row| document_version_entry(bytes, row) < needle.as_slice());
+        Ok(index
+            .get(position)
+            .copied()
+            .filter(|&row| document_version_entry(bytes, row) == needle)
+            .map(|row| row as usize))
+    }
+
+    fn query_document_version_index(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<Arc<Box<[u32]>>>, crate::lifecycle::StoreError> {
+        if let Some(cached) = self.document_version_index_cache.get() {
+            return Ok(Some(Arc::clone(&cached.value)));
+        }
+        let mut rows: Vec<u32> = (0..self.meta.row_count).collect();
+        rows.sort_unstable_by(|&left, &right| {
+            document_version_entry(bytes, left)
+                .cmp(document_version_entry(bytes, right))
+                .then(left.cmp(&right))
+        });
+        let index = rows.into_boxed_slice();
+        let resident_bytes = index
+            .len()
+            .checked_mul(std::mem::size_of::<u32>())
+            .and_then(arc_resident_bytes::<Box<[u32]>>)
+            .ok_or(crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            })?;
+        let cached = CachedQueryValue {
+            value: Arc::new(index),
+            _accounting: self.account_query_cache(resident_bytes)?,
+        };
+        if self.document_version_index_cache.set(cached).is_err() {
+            // A concurrent initializer won. Its value and reservation are authoritative.
+        }
+        self.document_version_index_cache
+            .get()
+            .map(|cached| Some(Arc::clone(&cached.value)))
+            .ok_or(crate::lifecycle::StoreError::Synchronization {
+                component: "document-version index cache",
+            })
     }
 
     /// Returns validated opaque metadata rows, or `None` for older segments.
@@ -1290,6 +1452,8 @@ impl SegmentReader {
     }
 
     /// Returns validated optional UTF-8 source rows, or `None` for older segments.
+    ///
+    /// Every call verifies the region checksum and walks every row offset.
     pub fn stored_text(&self) -> Result<Option<StoredTextRows<'_>>, SegmentError> {
         let Some(_) = self
             .entries
@@ -1299,59 +1463,13 @@ impl SegmentReader {
             return Ok(None);
         };
         let region = self.region(RegionKind::StoredText)?;
-        let declared_rows = region
-            .get(..4)
-            .and_then(|value| value.try_into().ok())
-            .map(u32::from_le_bytes)
-            .ok_or_else(|| SegmentError::Geometry("stored-text header is truncated".to_owned()))?;
-        let reserved = region
-            .get(4..8)
-            .and_then(|value| value.try_into().ok())
-            .map(u32::from_le_bytes)
-            .ok_or_else(|| {
-                SegmentError::Geometry("stored-text reserved field is truncated".to_owned())
-            })?;
-        if declared_rows != self.meta.row_count || reserved != 0 {
-            return Err(SegmentError::Geometry(format!(
-                "stored-text rows/reserved {declared_rows}/{reserved}, expected {}/0",
-                self.meta.row_count
-            )));
-        }
-        let row_count = declared_rows as usize;
-        let bitmap_len = row_count.div_ceil(8);
-        let bitmap_end = 8_usize
-            .checked_add(bitmap_len)
-            .ok_or_else(|| SegmentError::Geometry("stored-text bitmap overflow".to_owned()))?;
-        let offsets_len = row_count
-            .checked_mul(8)
-            .ok_or_else(|| SegmentError::Geometry("stored-text offsets overflow".to_owned()))?;
-        let offsets_end = bitmap_end
-            .checked_add(offsets_len)
-            .ok_or_else(|| SegmentError::Geometry("stored-text offset end overflow".to_owned()))?;
-        let present = region.get(8..bitmap_end).ok_or_else(|| {
-            SegmentError::Geometry("stored-text presence bitmap is truncated".to_owned())
-        })?;
-        let offsets = region.get(bitmap_end..offsets_end).ok_or_else(|| {
-            SegmentError::Geometry("stored-text offsets are truncated".to_owned())
-        })?;
-        let bytes = region
-            .get(offsets_end..)
-            .ok_or_else(|| SegmentError::Geometry("stored-text payload is truncated".to_owned()))?;
-        if !row_count.is_multiple_of(8) {
-            let used = row_count % 8;
-            let padding_mask = !((1_u8 << used) - 1);
-            if present.last().is_some_and(|byte| byte & padding_mask != 0) {
-                return Err(SegmentError::Geometry(
-                    "stored-text presence padding bits are nonzero".to_owned(),
-                ));
-            }
-        }
-        let view = StoredTextRows {
-            present,
+        let view = stored_text_view(region, self.meta.row_count)?;
+        let StoredTextRows {
             offsets,
             bytes,
             row_count,
-        };
+            ..
+        } = view;
         let mut previous = 0_usize;
         for row in 0..row_count {
             let value = view.row(row).ok_or_else(|| {
@@ -1390,6 +1508,91 @@ impl SegmentReader {
         Ok(Some(view))
     }
 
+    /// Query-path twin of [`Self::stored_text`]: the checksum and the full
+    /// row-offset walk run once per reader, and later calls rebuild the view
+    /// from the fixed header geometry alone. Like the document-version region,
+    /// later reads come from the mapping without re-verification. Nothing is
+    /// retained beyond the validation fact, so there is nothing to account.
+    pub(crate) fn query_stored_text(&self) -> Result<Option<StoredTextRows<'_>>, SegmentError> {
+        if self.stored_text_validated.get().is_some() {
+            let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.kind == RegionKind::StoredText.id())
+            else {
+                return Ok(None);
+            };
+            let region = self.region_slice(entry)?;
+            return stored_text_view(region, self.meta.row_count).map(Some);
+        }
+        let view = self.stored_text()?;
+        if view.is_some() {
+            // A concurrent validator may have set this first; same fact either way.
+            let _ = self.stored_text_validated.set(());
+        }
+        Ok(view)
+    }
+}
+
+/// Parses the stored-text header geometry into a row view without walking rows.
+fn stored_text_view(region: &[u8], header_rows: u32) -> Result<StoredTextRows<'_>, SegmentError> {
+    {
+        let declared_rows = region
+            .get(..4)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| SegmentError::Geometry("stored-text header is truncated".to_owned()))?;
+        let reserved = region
+            .get(4..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| {
+                SegmentError::Geometry("stored-text reserved field is truncated".to_owned())
+            })?;
+        if declared_rows != header_rows || reserved != 0 {
+            return Err(SegmentError::Geometry(format!(
+                "stored-text rows/reserved {declared_rows}/{reserved}, expected {header_rows}/0"
+            )));
+        }
+        let row_count = declared_rows as usize;
+        let bitmap_len = row_count.div_ceil(8);
+        let bitmap_end = 8_usize
+            .checked_add(bitmap_len)
+            .ok_or_else(|| SegmentError::Geometry("stored-text bitmap overflow".to_owned()))?;
+        let offsets_len = row_count
+            .checked_mul(8)
+            .ok_or_else(|| SegmentError::Geometry("stored-text offsets overflow".to_owned()))?;
+        let offsets_end = bitmap_end
+            .checked_add(offsets_len)
+            .ok_or_else(|| SegmentError::Geometry("stored-text offset end overflow".to_owned()))?;
+        let present = region.get(8..bitmap_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-text presence bitmap is truncated".to_owned())
+        })?;
+        let offsets = region.get(bitmap_end..offsets_end).ok_or_else(|| {
+            SegmentError::Geometry("stored-text offsets are truncated".to_owned())
+        })?;
+        let bytes = region
+            .get(offsets_end..)
+            .ok_or_else(|| SegmentError::Geometry("stored-text payload is truncated".to_owned()))?;
+        if !row_count.is_multiple_of(8) {
+            let used = row_count % 8;
+            let padding_mask = !((1_u8 << used) - 1);
+            if present.last().is_some_and(|byte| byte & padding_mask != 0) {
+                return Err(SegmentError::Geometry(
+                    "stored-text presence padding bits are nonzero".to_owned(),
+                ));
+            }
+        }
+        Ok(StoredTextRows {
+            present,
+            offsets,
+            bytes,
+            row_count,
+        })
+    }
+}
+
+impl SegmentReader {
     /// Returns the validated, mmap-backed fixed-stride graph node-block region.
     pub fn graph_node_blocks(&self) -> Result<GraphNodeBlocks<'_>, SegmentError> {
         let blocks = decode_node_blocks(self.region(RegionKind::GraphNodeBlocks)?)?;
@@ -1634,6 +1837,30 @@ impl SegmentReader {
             ))
         })
     }
+}
+
+/// Persisted width of one document-version row: a little-endian `u128`
+/// document id followed by a little-endian `u64` revision.
+const DOCUMENT_VERSION_BYTES: usize = 24;
+
+fn encode_document_version(version: DocumentVersion) -> [u8; DOCUMENT_VERSION_BYTES] {
+    let doc_id = version.doc_id().get().to_le_bytes();
+    let revision = version.revision().get().to_le_bytes();
+    let mut bytes = [0_u8; DOCUMENT_VERSION_BYTES];
+    for (slot, byte) in bytes.iter_mut().zip(doc_id.into_iter().chain(revision)) {
+        *slot = byte;
+    }
+    bytes
+}
+
+/// Returns the persisted identity bytes of one sealed row. The region length
+/// is validated as exactly `row_count * 24` before any caller reaches this,
+/// so the empty fallback is unreachable and sorts consistently if it were not.
+fn document_version_entry(bytes: &[u8], row: u32) -> &[u8] {
+    (row as usize)
+        .checked_mul(DOCUMENT_VERSION_BYTES)
+        .and_then(|start| bytes.get(start..start.checked_add(DOCUMENT_VERSION_BYTES)?))
+        .unwrap_or(&[])
 }
 
 fn arc_resident_bytes<T>(deep_bytes: usize) -> Option<usize> {
