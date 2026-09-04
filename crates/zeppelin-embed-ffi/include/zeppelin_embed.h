@@ -143,6 +143,18 @@ enum ze_error_code
      An epoch transition was attempted before active writes were sealed.
      */
     ZE_ERR_UNSEALED_WRITES = 28,
+    /*
+     A text model bundle was absent, malformed, or corrupt.
+     */
+    ZE_ERR_BUNDLE = 29,
+    /*
+     The configured text model runtime failed.
+     */
+    ZE_ERR_MODEL = 30,
+    /*
+     A bounded text pipeline stage failed.
+     */
+    ZE_ERR_PIPELINE = 31,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -416,6 +428,246 @@ typedef struct ZeEpochDropReport {
 } ZeEpochDropReport;
 
 /*
+ Text store plus immutable model-bundle open request.
+ */
+typedef struct ZeTextOpenRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing core store-open fields.
+     */
+    struct ZeOpenRequest store;
+    /*
+     Caller-owned UTF-8 `.zem` path.
+     */
+    const uint8_t *bundle_path;
+    /*
+     Number of bundle-path bytes.
+     */
+    size_t bundle_path_len;
+} ZeTextOpenRequest;
+
+/*
+ Stable 128-bit application document identifier.
+ */
+typedef struct ZeDocId {
+    /*
+     Most-significant 64 bits.
+     */
+    uint64_t high;
+    /*
+     Least-significant 64 bits.
+     */
+    uint64_t low;
+} ZeDocId;
+
+/*
+ One caller-owned text document.
+ */
+typedef struct ZeTextDocument {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Stable caller document id; only the high 96-bit text namespace fits.
+     */
+    struct ZeDocId doc_id;
+    /*
+     Monotonic document revision.
+     */
+    uint64_t revision;
+    /*
+     Caller-owned UTF-8 text.
+     */
+    const uint8_t *text;
+    /*
+     Number of text bytes.
+     */
+    size_t text_len;
+} ZeTextDocument;
+
+/*
+ Bounded text-ingest request.
+ */
+typedef struct ZeTextIngestRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned document array.
+     */
+    const struct ZeTextDocument *documents;
+    /*
+     Number of document records.
+     */
+    size_t document_count;
+    /*
+     Model rows evaluated in one MLX call.
+     */
+    size_t embed_batch_size;
+    /*
+     Documents between immutable seal boundaries.
+     */
+    size_t seal_every;
+    /*
+     Bounded tokenized-batch channel capacity.
+     */
+    size_t channel_capacity;
+} ZeTextIngestRequest;
+
+/*
+ WAL and generation coordinates returned by ingest and delete.
+ */
+typedef struct ZeMutationReport {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Last committed WAL sequence.
+     */
+    uint64_t sequence;
+    /*
+     Store generation changed by the mutation.
+     */
+    uint64_t generation;
+} ZeMutationReport;
+
+/*
+ Single-pass text query request.
+ */
+typedef struct ZeTextQueryRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned UTF-8 query text without a model prefix.
+     */
+    const uint8_t *text;
+    /*
+     Number of query bytes.
+     */
+    size_t text_len;
+    /*
+     Requested hit count.
+     */
+    size_t k;
+    /*
+     Dense, lexical, or hybrid.
+     */
+    int32_t legs;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeTextQueryRequest;
+
+/*
+ One callee-owned text query hit.
+ */
+typedef struct ZeTextQueryHit {
+    /*
+     Original caller document id.
+     */
+    struct ZeDocId doc_id;
+    /*
+     Document revision.
+     */
+    uint64_t revision;
+    /*
+     Chunk index.
+     */
+    uint32_t chunk;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Callee-owned UTF-8 hit text.
+     */
+    uint8_t *text;
+    /*
+     Number of hit-text bytes.
+     */
+    size_t text_len;
+    /*
+     Larger-is-better result score.
+     */
+    double score;
+    /*
+     One when `vector_squared_l2` is present.
+     */
+    uint32_t has_vector_score;
+    /*
+     One when `lexical_bm25` is present.
+     */
+    uint32_t has_lexical_score;
+    /*
+     Exact dense squared L2 distance.
+     */
+    double vector_squared_l2;
+    /*
+     Exact lexical BM25 score.
+     */
+    double lexical_bm25;
+} ZeTextQueryHit;
+
+/*
+ Callee-owned text result; release with `ze_text_query_result_free`.
+ */
+typedef struct ZeTextQueryResult {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Callee-owned allocation generation; caller initializes zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Callee-owned hit array.
+     */
+    struct ZeTextQueryHit *hits;
+    /*
+     Number of initialized hits.
+     */
+    size_t hit_count;
+    /*
+     Full bundle pair embedding epoch.
+     */
+    uint64_t embedding_epoch;
+    /*
+     Pinned store tokenizer epoch.
+     */
+    uint64_t tokenizer_epoch;
+} ZeTextQueryResult;
+
+/*
  Store lifecycle state report.
  */
 typedef struct ZeStateReport {
@@ -524,20 +776,6 @@ typedef struct ZeStatsReport {
 } ZeStatsReport;
 
 /*
- Stable 128-bit application document identifier.
- */
-typedef struct ZeDocId {
-    /*
-     Most-significant 64 bits.
-     */
-    uint64_t high;
-    /*
-     Least-significant 64 bits.
-     */
-    uint64_t low;
-} ZeDocId;
-
-/*
  One document supplied to an ingest request.
  */
 typedef struct ZeIngestDocument {
@@ -612,28 +850,6 @@ typedef struct ZeIngestRequest {
      */
     size_t dimension;
 } ZeIngestRequest;
-
-/*
- WAL and generation coordinates returned by ingest and delete.
- */
-typedef struct ZeMutationReport {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Last committed WAL sequence.
-     */
-    uint64_t sequence;
-    /*
-     Store generation changed by the mutation.
-     */
-    uint64_t generation;
-} ZeMutationReport;
 
 /*
  Atomic document-delete request.
@@ -1440,6 +1656,31 @@ ze_error_code ze_epoch_switch_alias(ze_handle handle,
 ze_error_code ze_epoch_drop(ze_handle handle,
                             const struct ZeEpochRequest *target,
                             struct ZeEpochDropReport *out_report);
+
+/*
+ Opens a text store bound to one immutable `.zem` model bundle.
+ */
+ze_error_code ze_text_open(const struct ZeTextOpenRequest *request,
+                           ze_handle *out_handle);
+
+/*
+ Ingests text through the bounded tokenizer, MLX, writer, and maintenance pipeline.
+ */
+ze_error_code ze_text_ingest(ze_handle handle,
+                             const struct ZeTextIngestRequest *request,
+                             struct ZeMutationReport *out_report);
+
+/*
+ Executes one dense, lexical, or hybrid text query and returns stored text on every hit.
+ */
+ze_error_code ze_text_query(ze_handle handle,
+                            const struct ZeTextQueryRequest *request,
+                            struct ZeTextQueryResult *out_result);
+
+/*
+ Frees a text query result and every callee-owned hit string exactly once.
+ */
+ze_error_code ze_text_query_result_free(struct ZeTextQueryResult *result);
 
 /*
  Releases the slot and store. A poisoned handle is still released and

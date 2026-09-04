@@ -340,6 +340,29 @@ pub(crate) fn take_result<T: 'static>(
     Ok(())
 }
 
+#[cfg(feature = "text")]
+pub(crate) fn take_result_box<T: Copy + 'static>(
+    pointer: *mut T,
+    length: usize,
+    generation: u32,
+) -> Result<Box<[T]>, FfiError> {
+    if pointer.is_null() || length == 0 {
+        return Err(FfiError::invalid(
+            "owned result pointer and length disagree",
+        ));
+    }
+    let mut allocations = result_allocations().lock().map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrSynchronization,
+            "result allocation registry mutex is poisoned",
+        )
+    })?;
+    allocations.take(pointer, length, generation)?;
+    drop(allocations);
+    let slice = std::ptr::slice_from_raw_parts_mut(pointer, length);
+    Ok(unsafe { Box::from_raw(slice) })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

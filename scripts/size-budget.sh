@@ -11,7 +11,7 @@ if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
+cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 MEASURE_DIR="$TARGET_ROOT/size-budget"
@@ -34,6 +34,7 @@ mkdir -p "$MEASURE_DIR"
 measure_artifact() {
     local label="$1"
     local artifact="$2"
+    local gate="${3:-gate}"
     local stripped="$MEASURE_DIR/$(basename "${artifact%.a}")-stripped.a"
     local size_bytes size_kb archive_kb
 
@@ -66,9 +67,13 @@ measure_artifact() {
 
     size_kb="$(( (size_bytes + 1023) / 1024 ))"
     archive_kb="$(du -k "$stripped" | awk '{print $1}')"
-    echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; budget: $BUDGET_KB KB)"
+    if [[ "$gate" == "gate" ]]; then
+        echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; budget: $BUDGET_KB KB)"
+    else
+        echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; recorded only; no budget introduced)"
+    fi
 
-    if (( size_kb > BUDGET_KB )); then
+    if [[ "$gate" == "gate" ]] && (( size_kb > BUDGET_KB )); then
         echo "error: $label stripped staticlib linked size $size_kb KB exceeds budget $BUDGET_KB KB" >&2
         exit 1
     fi
@@ -76,6 +81,7 @@ measure_artifact() {
 
 measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
 measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"
+measure_artifact "text" "$TARGET_ROOT/release/libzeppelin_embed_text.a" "report"
 
 CONSUMER_MANIFEST="$PROJECT_ROOT/tools/size-consumer/Cargo.toml"
 CONSUMER_TARGET="$MEASURE_DIR/consumer-target"

@@ -1,6 +1,10 @@
 [advisories]
 unmaintained = "all"
 yanked = "deny"
+ignore = [
+    # Transitive macro helper pinned by mlx-rs 0.25.3; it has no runtime code.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -13,6 +17,7 @@ confidence-threshold = 0.8
 exceptions = [
     { crate = "xxhash-rust", allow = ["BSL-1.0"] },
     { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+    { crate = "libloading", allow = ["ISC"] },
 ]
 
 [bans]
@@ -76,6 +81,8 @@ deny = [
     { name = "rayon", reason = "engine threading must remain explicit" },
     { name = "rayon-core", reason = "engine threading must remain explicit" },
     { name = "serde_json", wrappers = ["criterion", "tinytemplate", "zeppelin-embed-bench"], reason = "JSON is allowed only behind the bench harness" },
+    { name = "cmake", wrappers = ["mlx-sys"], reason = "CMake is allowed only to build pinned mlx-c for zeppelin-embed-text" },
+    { name = "bindgen", wrappers = ["mlx-sys"], reason = "bindgen is allowed only to generate the pinned mlx-c build boundary for zeppelin-embed-text" },
     { name = "cxx", reason = "C++ interop is prohibited" },
     { name = "cxx-build", reason = "C++ interop is prohibited" },
     { name = "cxxbridge-cmd", reason = "C++ interop is prohibited" },

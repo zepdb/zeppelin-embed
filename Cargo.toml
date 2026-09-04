@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/zeppelin-embed",
+    "crates/zeppelin-embed-text",
     "crates/zeppelin-embed-ffi",
     "crates/zeppelin-embed-bench",
     "tests/adversarial-oracle",

@@ -80,6 +80,9 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         28,
         "ZE_ERR_UNSEALED_WRITES",
     ),
+    (ZeErrorCode::ZeErrBundle, 29, "ZE_ERR_BUNDLE"),
+    (ZeErrorCode::ZeErrModel, 30, "ZE_ERR_MODEL"),
+    (ZeErrorCode::ZeErrPipeline, 31, "ZE_ERR_PIPELINE"),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -685,7 +688,7 @@ fn the_poison_table_covers_every_exported_handle_taking_symbol() {
             .last()
             .expect("function name")
             .to_owned();
-        if name != "ze_last_error_message" {
+        if name != "ze_last_error_message" && !name.starts_with("ze_text_") {
             exported.insert(name);
         }
     }

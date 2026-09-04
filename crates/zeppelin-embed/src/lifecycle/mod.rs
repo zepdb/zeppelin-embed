@@ -3141,6 +3141,53 @@ impl Store {
         })
     }
 
+    /// Returns the stored UTF-8 body for one exact document revision.
+    ///
+    /// Active memory and immutable region 14 are searched without adding a
+    /// second text format. `None` means either that the exact revision is not
+    /// present or that its text field was absent.
+    pub fn stored_text(
+        &self,
+        version: crate::ingest::DocumentVersion,
+    ) -> Result<Option<String>, crate::ingest::StoreLexicalError> {
+        let AdmittedLexicalQuery {
+            active,
+            snapshot,
+            active_query,
+            ..
+        } = self.admit_lexical_query()?;
+        if let Some((row, active_version, _)) = active.existing(version.doc_id())
+            && active_version == version
+        {
+            let text = active
+                .text(row)
+                .map_err(crate::ingest::StoreLexicalError::from)?;
+            drop(active_query);
+            return Ok(text.map(str::to_owned));
+        }
+        for segment in snapshot.segments() {
+            for row in 0..segment.meta().row_count as usize {
+                let stored_version = segment
+                    .document_version(row)
+                    .map_err(StoreError::Segment)
+                    .map_err(crate::ingest::StoreLexicalError::from)?;
+                if stored_version != Some(version) {
+                    continue;
+                }
+                let text = segment
+                    .stored_text()
+                    .map_err(StoreError::Segment)
+                    .map_err(crate::ingest::StoreLexicalError::from)?
+                    .and_then(|rows| rows.row(row).flatten())
+                    .map(str::to_owned);
+                drop(active_query);
+                return Ok(text);
+            }
+        }
+        drop(active_query);
+        Ok(None)
+    }
+
     /// Runs a structured lexical query and returns provenance plus snippets
     /// copied from the exact row text pinned for this generation.
     pub fn search_lexical_structured(

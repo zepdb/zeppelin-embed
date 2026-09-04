@@ -103,7 +103,14 @@ fn build_release_staticlib(workspace: &Path, target_dir: &Path) -> PathBuf {
     command
         .current_dir(workspace)
         .env("CARGO_TARGET_DIR", target_dir)
-        .args(["build", "-p", "zeppelin-embed-ffi", "--release"]);
+        .args([
+            "build",
+            "-p",
+            "zeppelin-embed-ffi",
+            "--release",
+            "--features",
+            "text",
+        ]);
     for key in [
         "LLVM_PROFILE_FILE",
         "RUSTC_WRAPPER",

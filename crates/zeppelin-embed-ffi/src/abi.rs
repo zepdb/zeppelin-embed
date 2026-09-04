@@ -60,6 +60,12 @@ pub enum ZeErrorCode {
     ZeErrEpochPublished = 27,
     /// An epoch transition was attempted before active writes were sealed.
     ZeErrUnsealedWrites = 28,
+    /// A text model bundle was absent, malformed, or corrupt.
+    ZeErrBundle = 29,
+    /// The configured text model runtime failed.
+    ZeErrModel = 30,
+    /// A bounded text pipeline stage failed.
+    ZeErrPipeline = 31,
 }
 
 /// Opaque generation-tagged store handle.
@@ -243,6 +249,138 @@ pub struct ZeMutationReport {
     pub sequence: u64,
     /// Store generation changed by the mutation.
     pub generation: u64,
+}
+
+/// Text store plus immutable model-bundle open request.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextOpenRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Existing core store-open fields.
+    pub store: ZeOpenRequest,
+    /// Caller-owned UTF-8 `.zem` path.
+    pub bundle_path: *const u8,
+    /// Number of bundle-path bytes.
+    pub bundle_path_len: usize,
+}
+
+/// One caller-owned text document.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextDocument {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Stable caller document id; only the high 96-bit text namespace fits.
+    pub doc_id: ZeDocId,
+    /// Monotonic document revision.
+    pub revision: u64,
+    /// Caller-owned UTF-8 text.
+    pub text: *const u8,
+    /// Number of text bytes.
+    pub text_len: usize,
+}
+
+/// Bounded text-ingest request.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextIngestRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Caller-owned document array.
+    pub documents: *const ZeTextDocument,
+    /// Number of document records.
+    pub document_count: usize,
+    /// Model rows evaluated in one MLX call.
+    pub embed_batch_size: usize,
+    /// Documents between immutable seal boundaries.
+    pub seal_every: usize,
+    /// Bounded tokenized-batch channel capacity.
+    pub channel_capacity: usize,
+}
+
+/// Text query leg selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum ZeTextLegs {
+    /// Dense model retrieval.
+    Dense = 0,
+    /// Pinned-analyzer lexical retrieval.
+    Lexical = 1,
+    /// Bundle-alpha hybrid retrieval.
+    Hybrid = 2,
+}
+
+/// Single-pass text query request.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextQueryRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Caller-owned UTF-8 query text without a model prefix.
+    pub text: *const u8,
+    /// Number of query bytes.
+    pub text_len: usize,
+    /// Requested hit count.
+    pub k: usize,
+    /// Dense, lexical, or hybrid.
+    pub legs: i32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
+/// One callee-owned text query hit.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextQueryHit {
+    /// Original caller document id.
+    pub doc_id: ZeDocId,
+    /// Document revision.
+    pub revision: u64,
+    /// Chunk index.
+    pub chunk: u32,
+    /// Must be zero.
+    pub reserved: u32,
+    /// Callee-owned UTF-8 hit text.
+    pub text: *mut u8,
+    /// Number of hit-text bytes.
+    pub text_len: usize,
+    /// Larger-is-better result score.
+    pub score: f64,
+    /// One when `vector_squared_l2` is present.
+    pub has_vector_score: u32,
+    /// One when `lexical_bm25` is present.
+    pub has_lexical_score: u32,
+    /// Exact dense squared L2 distance.
+    pub vector_squared_l2: f64,
+    /// Exact lexical BM25 score.
+    pub lexical_bm25: f64,
+}
+
+/// Callee-owned text result; release with `ze_text_query_result_free`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextQueryResult {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Callee-owned allocation generation; caller initializes zero.
+    pub abi_reserved: u32,
+    /// Callee-owned hit array.
+    pub hits: *mut ZeTextQueryHit,
+    /// Number of initialized hits.
+    pub hit_count: usize,
+    /// Full bundle pair embedding epoch.
+    pub embedding_epoch: u64,
+    /// Pinned store tokenizer epoch.
+    pub tokenizer_epoch: u64,
 }
 
 /// Vector search request.

@@ -1,0 +1,18 @@
+[package]
+name = "zeppelin-embed-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0" }
+libc.workspace = true
+xxhash-rust.workspace = true
+mlx-rs = { version = "=0.25.3", default-features = false, features = ["metal"] }
+
+[dev-dependencies]
+tempfile.workspace = true

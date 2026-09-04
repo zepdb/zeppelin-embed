@@ -109,6 +109,41 @@ fn stored_text_region_preserves_presence_and_utf8_after_seal() {
 }
 
 #[test]
+fn stored_text_returns_the_exact_active_and_sealed_document_versions() {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    let sealed = DocumentVersion::new(DocId::new(201), Revision::new(3));
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(sealed, vec![1.0, 0.0]).with_text("sealed text"),
+        ]))
+        .expect("ingest sealed row");
+    store.seal().expect("seal row");
+    let active = DocumentVersion::new(DocId::new(202), Revision::new(4));
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(active, vec![0.0, 1.0]).with_text("active text"),
+        ]))
+        .expect("ingest active row");
+
+    assert_eq!(
+        store.stored_text(sealed).expect("sealed text"),
+        Some("sealed text".to_owned())
+    );
+    assert_eq!(
+        store.stored_text(active).expect("active text"),
+        Some("active text".to_owned())
+    );
+    assert_eq!(
+        store
+            .stored_text(DocumentVersion::new(DocId::new(999), Revision::new(1)))
+            .expect("missing text"),
+        None
+    );
+    store.close().expect("close store");
+}
+
+#[test]
 fn structured_phrase_query_returns_owned_utf8_snippet_and_provenance() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");

@@ -151,6 +151,78 @@ class ZeIngestDocument(ct.Structure):
     ]
 
 
+class ZeTextOpenRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("store", ZeOpenRequest),
+        ("bundle_path", UInt8Pointer),
+        ("bundle_path_len", ct.c_size_t),
+    ]
+
+
+class ZeTextDocument(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("doc_id", ZeDocId),
+        ("revision", ct.c_uint64),
+        ("text", UInt8Pointer),
+        ("text_len", ct.c_size_t),
+    ]
+
+
+class ZeTextIngestRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("documents", ct.POINTER(ZeTextDocument)),
+        ("document_count", ct.c_size_t),
+        ("embed_batch_size", ct.c_size_t),
+        ("seal_every", ct.c_size_t),
+        ("channel_capacity", ct.c_size_t),
+    ]
+
+
+class ZeTextQueryRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("text", UInt8Pointer),
+        ("text_len", ct.c_size_t),
+        ("k", ct.c_size_t),
+        ("legs", ct.c_int32),
+        ("reserved", ct.c_uint32),
+    ]
+
+
+class ZeTextQueryHit(ct.Structure):
+    _fields_ = [
+        ("doc_id", ZeDocId),
+        ("revision", ct.c_uint64),
+        ("chunk", ct.c_uint32),
+        ("reserved", ct.c_uint32),
+        ("text", UInt8Pointer),
+        ("text_len", ct.c_size_t),
+        ("score", ct.c_double),
+        ("has_vector_score", ct.c_uint32),
+        ("has_lexical_score", ct.c_uint32),
+        ("vector_squared_l2", ct.c_double),
+        ("lexical_bm25", ct.c_double),
+    ]
+
+
+class ZeTextQueryResult(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("hits", ct.POINTER(ZeTextQueryHit)),
+        ("hit_count", ct.c_size_t),
+        ("embedding_epoch", ct.c_uint64),
+        ("tokenizer_epoch", ct.c_uint64),
+    ]
+
+
 class ZeIngestRequest(ct.Structure):
     pass
 
@@ -431,4 +503,3 @@ def sized(structure_type: type[SizedStructure]) -> SizedStructure:
     value = structure_type()
     value.abi_size = ct.sizeof(structure_type)
     return value
-

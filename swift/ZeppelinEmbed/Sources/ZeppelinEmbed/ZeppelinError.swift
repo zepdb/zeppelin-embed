@@ -30,4 +30,7 @@ public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {
     case epochIncomplete = 26
     case epochPublished = 27
     case unsealedWrites = 28
+    case bundle = 29
+    case model = 30
+    case pipeline = 31
 }

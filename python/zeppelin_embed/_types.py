@@ -47,6 +47,12 @@ class QueryMode(IntEnum):
     HYBRID = 2
 
 
+class TextLegs(IntEnum):
+    DENSE = 0
+    LEXICAL = 1
+    HYBRID = 2
+
+
 class FusionMethod(IntEnum):
     CONVEX_COMBINATION = 0
     RECIPROCAL_RANK = 1
@@ -187,6 +193,24 @@ class QueryHit:
 
 
 @dataclass(frozen=True)
+class TextHit:
+    doc_id: int
+    revision: int
+    chunk: int
+    text: str
+    score: float
+    vector_squared_l2: float | None
+    lexical_bm25: float | None
+
+
+@dataclass(frozen=True)
+class TextQueryResult:
+    hits: tuple[TextHit, ...]
+    embedding_epoch: int
+    tokenizer_epoch: int
+
+
+@dataclass(frozen=True)
 class FusionReport:
     method: FusionMethod
     effective_alpha: float
@@ -247,4 +271,3 @@ class MaintainReport:
     bytes_consumed: int
     checkpoints_resumed: int
     status: MaintenanceStatus
-

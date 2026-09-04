@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""Fetch Hugging Face checkpoints and bake immutable Zeppelin .zem bundles."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+import torch
+import xxhash
+from huggingface_hub import snapshot_download
+from safetensors import safe_open
+
+MAGIC = b"ZEMB0001"
+VERSION = 1
+
+
+@dataclass(frozen=True)
+class Tensor:
+    name: str
+    shape: tuple[int, ...]
+    data: bytes
+    digest: int
+
+
+@dataclass(frozen=True)
+class Tower:
+    role: int
+    model_id: str
+    root: Path
+    prefix: str
+    config: dict
+    pooling: int
+    architecture: int
+    dense_out: int
+    tensors: tuple[Tensor, ...]
+    weights_digest: bytes
+
+
+def u16(value: int) -> bytes:
+    return struct.pack("<H", value)
+
+
+def u32(value: int) -> bytes:
+    return struct.pack("<I", value)
+
+
+def u64(value: int) -> bytes:
+    return struct.pack("<Q", value)
+
+
+def field(value: bytes) -> bytes:
+    return u32(len(value)) + value
+
+
+def string(value: str) -> bytes:
+    return field(value.encode("utf-8"))
+
+
+def json_file(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as source:
+        return json.load(source)
+
+
+def checkpoint_tensor(path: Path, name: str) -> torch.Tensor:
+    with safe_open(path, framework="pt", device="cpu") as source:
+        return source.get_tensor(name)
+
+
+def load_tensors(root: Path, role_name: str, dense_out: int) -> tuple[Tensor, ...]:
+    model = root / "model.safetensors"
+    if not model.is_file():
+        raise ValueError(f"checkpoint has no model.safetensors: {root}")
+    values: list[tuple[str, torch.Tensor]] = []
+    with safe_open(model, framework="pt", device="cpu") as source:
+        for name in source.keys():
+            values.append((name, source.get_tensor(name)))
+    if dense_out:
+        dense = root / "2_Dense" / "model.safetensors"
+        if not dense.is_file():
+            raise ValueError(f"Dense head declared but absent: {dense}")
+        values.extend(
+            (f"dense.{name.removeprefix('linear.')}", checkpoint_tensor(dense, name))
+            for name in ("linear.weight", "linear.bias")
+        )
+    tensors = []
+    for name, value in values:
+        value = value.detach().to(dtype=torch.float32).contiguous()
+        data = value.numpy().astype("<f4", copy=False).tobytes(order="C")
+        tensors.append(
+            Tensor(
+                name=f"{role_name}/{name}",
+                shape=tuple(value.shape),
+                data=data,
+                digest=xxhash.xxh3_64_intdigest(data),
+            )
+        )
+    return tuple(tensors)
+
+
+def declared_query_prefix(root: Path) -> str:
+    config_path = root / "config_sentence_transformers.json"
+    if not config_path.is_file():
+        return ""
+    prompts = json_file(config_path).get("prompts", {})
+    return str(prompts.get("query", ""))
+
+
+def load_tower(
+    root: Path,
+    model_id: str,
+    role: int,
+    role_name: str,
+    confirmed_prefix: str,
+) -> Tower:
+    config = json_file(root / "config.json")
+    declared_prefix = declared_query_prefix(root) if confirmed_prefix else ""
+    if declared_prefix != confirmed_prefix:
+        raise ValueError(
+            f"confirmed prefix {confirmed_prefix!r} differs from checkpoint "
+            f"declaration {declared_prefix!r}"
+        )
+    model_type = config.get("model_type")
+    if model_type == "bert":
+        architecture = 1
+    elif model_type == "gte":
+        architecture = 2
+    else:
+        raise ValueError(f"unsupported architecture {model_type!r}")
+    pooling_config = root / "1_Pooling" / "config.json"
+    pooling_data = json_file(pooling_config) if pooling_config.is_file() else {}
+    if pooling_data.get("pooling_mode_mean_tokens"):
+        pooling = 1
+    elif pooling_data.get("pooling_mode_lasttoken"):
+        pooling = 3
+    else:
+        pooling = 2
+    dense_config = root / "2_Dense" / "config.json"
+    dense_out = int(json_file(dense_config)["out_features"]) if dense_config.is_file() else 0
+    tensors = load_tensors(root, role_name, dense_out)
+    weights = b"".join(tensor.data for tensor in tensors)
+    return Tower(
+        role=role,
+        model_id=model_id,
+        root=root,
+        prefix=confirmed_prefix,
+        config=config,
+        pooling=pooling,
+        architecture=architecture,
+        dense_out=dense_out,
+        tensors=tensors,
+        weights_digest=xxhash.xxh3_128_intdigest(weights).to_bytes(16, "little"),
+    )
+
+
+def encode_tower(tower: Tower) -> bytes:
+    config = tower.config
+    hidden = int(config["hidden_size"])
+    dims = tower.dense_out or hidden
+    output = bytearray([tower.role])
+    output += string(tower.model_id)
+    output += string(tower.root.name)
+    output += field(tower.weights_digest)
+    output += u32(dims)
+    output += u16(1)
+    output += string(tower.prefix)
+    output += u32(int(config["max_position_embeddings"]))
+    output += u16(2)
+    output += u16(2)
+    output += b"\x00"
+    output += bytes([tower.pooling])
+    output += u16(tower.architecture)
+    output += u16(int(config["num_hidden_layers"]))
+    output += u32(hidden)
+    output += u16(int(config["num_attention_heads"]))
+    output += u32(int(config["intermediate_size"]))
+    output += u32(int(config.get("type_vocab_size", 0)))
+    output += u32(int(config["max_position_embeddings"]))
+    output += struct.pack("<f", float(config["layer_norm_eps"]))
+    output += struct.pack("<f", float(config.get("rope_theta", 10_000.0)))
+    output += u32(tower.dense_out)
+    return bytes(output)
+
+
+def encode_tokenizer(root: Path, architecture: int) -> bytes:
+    tokenizer = json_file(root / "tokenizer.json")
+    model = tokenizer["model"]
+    if architecture == 1:
+        kind = 1
+        vocabulary = sorted(model["vocab"].items(), key=lambda item: item[1])
+        entries = [(token, 0.0) for token, _ in vocabulary]
+    elif model.get("type") == "Unigram":
+        kind = 2
+        entries = [(token, float(score)) for token, score in model["vocab"]]
+    else:
+        raise ValueError(f"unsupported tokenizer model {model.get('type')!r}")
+    added = {item["content"]: int(item["id"]) for item in tokenizer.get("added_tokens", [])}
+    vocab_ids = {token: index for index, (token, _) in enumerate(entries)}
+
+    def token_id(name: str, fallback: str) -> int:
+        config = json_file(root / "tokenizer_config.json")
+        value = config.get(name, fallback)
+        if isinstance(value, dict):
+            value = value.get("content", fallback)
+        if value in added:
+            return added[value]
+        if value in vocab_ids:
+            return vocab_ids[value]
+        raise ValueError(f"tokenizer has no {name}: {value!r}")
+
+    lower = bool(json_file(root / "tokenizer_config.json").get("do_lower_case", False))
+    output = bytearray([kind, int(lower), 0, 0])
+    output += u32(token_id("pad_token", "[PAD]" if kind == 1 else "<pad>"))
+    output += u32(token_id("unk_token", "[UNK]" if kind == 1 else "<unk>"))
+    output += u32(token_id("cls_token", "[CLS]" if kind == 1 else "<s>"))
+    output += u32(token_id("sep_token", "[SEP]" if kind == 1 else "</s>"))
+    output += u32(len(entries))
+    for token, score in entries:
+        output += string(token)
+        output += struct.pack("<f", score)
+    return bytes(output)
+
+
+def tensor_descriptor(tensor: Tensor, offset: int) -> bytes:
+    output = bytearray(string(tensor.name))
+    output += bytes([0, len(tensor.shape), 0, 0])
+    for dimension in tensor.shape:
+        output += u32(dimension)
+    output += u64(offset)
+    output += u64(len(tensor.data))
+    output += u64(tensor.digest)
+    return bytes(output)
+
+
+def bake(args: argparse.Namespace) -> None:
+    document_root = Path(args.document).resolve()
+    if args.query:
+        document = load_tower(document_root, args.document_id, 0, "document", "")
+        query = load_tower(Path(args.query).resolve(), args.query_id, 1, "query", args.query_prefix)
+        towers = (document, query)
+        alignment = bytes.fromhex(args.alignment_digest)
+        tokenizer_root = query.root
+    else:
+        document = load_tower(
+            document_root,
+            args.document_id,
+            0,
+            "document",
+            args.query_prefix,
+        )
+        towers = (document,)
+        alignment = b""
+        tokenizer_root = document.root
+    if len(towers) == 2 and not alignment:
+        raise ValueError("a two-tower bundle requires --alignment-digest")
+    tokenizer = encode_tokenizer(tokenizer_root, towers[-1].architecture)
+    tensors = tuple(tensor for tower in towers for tensor in tower.tensors)
+
+    prefix = bytearray(MAGIC + u32(VERSION) + u32(0) + bytes([len(towers)]) + b"\x00" * 7)
+    for tower in towers:
+        prefix += encode_tower(tower)
+    prefix += tokenizer
+    prefix += struct.pack("<d", args.alpha)
+    prefix += u32(len(tensors))
+    placeholder_descriptors = b"".join(tensor_descriptor(tensor, 0) for tensor in tensors)
+    raw_header = len(prefix) + len(placeholder_descriptors) + len(field(alignment))
+    header_len = int(math.ceil(raw_header / 4096.0) * 4096)
+    prefix[12:16] = u32(header_len)
+
+    unique: dict[tuple[int, int], tuple[int, bytes]] = {}
+    data = bytearray()
+    descriptors = bytearray()
+    for tensor in tensors:
+        key = (tensor.digest, len(tensor.data))
+        stored = unique.get(key)
+        if stored is not None and stored[1] == tensor.data:
+            offset = stored[0]
+        else:
+            offset = header_len + len(data)
+            unique[key] = (offset, tensor.data)
+            data += tensor.data
+        descriptors += tensor_descriptor(tensor, offset)
+    body = prefix + descriptors + field(alignment)
+    body += b"\x00" * (header_len - len(body))
+    body += data
+    body += xxhash.xxh3_128_intdigest(body).to_bytes(16, "little")
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(body)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "bytes": len(body),
+                "bundle_digest": xxhash.xxh3_128_hexdigest(body[:-16]),
+                "tower_weights": {
+                    tower.model_id: tower.weights_digest.hex() for tower in towers
+                },
+                "unique_tensors": len(unique),
+                "tensor_descriptors": len(tensors),
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="ze-model")
+    commands = root.add_subparsers(dest="command", required=True)
+    fetch = commands.add_parser("fetch")
+    fetch.add_argument("model")
+    bake_parser = commands.add_parser("bake")
+    bake_parser.add_argument("--document", required=True)
+    bake_parser.add_argument("--document-id", required=True)
+    bake_parser.add_argument("--query")
+    bake_parser.add_argument("--query-id")
+    bake_parser.add_argument("--query-prefix", required=True)
+    bake_parser.add_argument("--alignment-digest", default="")
+    bake_parser.add_argument("--alpha", type=float, default=0.5)
+    bake_parser.add_argument("--output", required=True)
+    return root
+
+
+def main() -> None:
+    args = parser().parse_args()
+    if args.command == "fetch":
+        print(snapshot_download(args.model))
+        return
+    if args.query and not args.query_id:
+        raise ValueError("--query-id is required with --query")
+    bake(args)
+
+
+if __name__ == "__main__":
+    main()

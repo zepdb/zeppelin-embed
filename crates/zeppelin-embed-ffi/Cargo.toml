@@ -11,12 +11,14 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [features]
 default = []
 abi-panic-probe = []
+text = ["dep:zeppelin-embed-text"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dependencies]
 zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0" }
+zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.1.0", optional = true }
 
 # loom is compiled only under `--cfg loom`, the model-checking build of the
 # handle state machine (task 22 phase 3). It never enters a default build.

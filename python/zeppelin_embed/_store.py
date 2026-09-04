@@ -44,6 +44,9 @@ from ._types import (
     StatsReport,
     StoreState,
     Tier,
+    TextHit,
+    TextLegs,
+    TextQueryResult,
 )
 
 EnumValue = TypeVar("EnumValue", bound=IntEnum)
@@ -264,9 +267,10 @@ class CancelToken:
 class Store:
     """One deterministic wrapper around a generation-tagged store handle."""
 
-    def __init__(self, handle: int) -> None:
+    def __init__(self, handle: int, *, text: bool = False) -> None:
         self._handle = handle
         self._abi_call_count = 0
+        self._text = text
 
     @property
     def closed(self) -> bool:
@@ -413,6 +417,116 @@ class Store:
             raise_for_status(status, handle)
             last = MutationReport(int(report.sequence), int(report.generation))
         return last
+
+    def ingest_text(
+        self,
+        ids: Sequence[int | tuple[int, int]],
+        texts: Sequence[str],
+        *,
+        revisions: Sequence[int] | None = None,
+        embed_batch_size: int = 32,
+        seal_every: int = 512,
+        channel_capacity: int = 2,
+    ) -> MutationReport:
+        """Embed and ingest caller text through the bounded native pipeline."""
+        if not self._text:
+            invalid_argument("ingest_text requires a store opened with open_text")
+        _same_length("texts", texts, len(ids))
+        revisions = [1] * len(ids) if revisions is None else revisions
+        _same_length("revisions", revisions, len(ids))
+        documents = (s.ZeTextDocument * len(ids))()
+        owners: list[object] = [documents]
+        for index, value in enumerate(texts):
+            pointer, length, owner = _text_pointer(value)
+            if owner is not None:
+                owners.append(owner)
+            documents[index] = s.ZeTextDocument(
+                abi_size=ct.sizeof(s.ZeTextDocument),
+                abi_reserved=0,
+                doc_id=_doc_id(ids[index]),
+                revision=revisions[index],
+                text=pointer,
+                text_len=length,
+            )
+        request = s.ZeTextIngestRequest(
+            abi_size=ct.sizeof(s.ZeTextIngestRequest),
+            abi_reserved=0,
+            documents=ct.cast(documents, ct.POINTER(s.ZeTextDocument)),
+            document_count=len(documents),
+            embed_batch_size=embed_batch_size,
+            seal_every=seal_every,
+            channel_capacity=channel_capacity,
+        )
+        report = s.sized(s.ZeMutationReport)
+        handle = self._live_handle()
+        status = self._call(
+            LIBRARY.ze_text_ingest, handle, ct.byref(request), ct.byref(report)
+        )
+        del owners
+        raise_for_status(status, handle)
+        return MutationReport(int(report.sequence), int(report.generation))
+
+    def query_text(
+        self,
+        text: str,
+        *,
+        k: int = 10,
+        legs: TextLegs | str = TextLegs.HYBRID,
+    ) -> TextQueryResult:
+        """Embed one raw query and return stored text with every hit."""
+        if not self._text:
+            invalid_argument("query_text requires a store opened with open_text")
+        pointer, length, owner = _text_pointer(text)
+        request = s.ZeTextQueryRequest(
+            abi_size=ct.sizeof(s.ZeTextQueryRequest),
+            abi_reserved=0,
+            text=pointer,
+            text_len=length,
+            k=k,
+            legs=int(_enum_value(legs, TextLegs, "legs")),
+            reserved=0,
+        )
+        result = s.sized(s.ZeTextQueryResult)
+        handle = self._live_handle()
+        primary: BaseException | None = None
+        try:
+            status = self._call(
+                LIBRARY.ze_text_query, handle, ct.byref(request), ct.byref(result)
+            )
+            raise_for_status(status, handle)
+            hits = tuple(
+                TextHit(
+                    doc_id=_python_doc_id(hit.doc_id),
+                    revision=int(hit.revision),
+                    chunk=int(hit.chunk),
+                    text=ct.string_at(hit.text, hit.text_len).decode("utf-8"),
+                    score=float(hit.score),
+                    vector_squared_l2=(
+                        float(hit.vector_squared_l2) if hit.has_vector_score else None
+                    ),
+                    lexical_bm25=(
+                        float(hit.lexical_bm25) if hit.has_lexical_score else None
+                    ),
+                )
+                for hit in (result.hits[index] for index in range(result.hit_count))
+            )
+            return TextQueryResult(
+                hits=hits,
+                embedding_epoch=int(result.embedding_epoch),
+                tokenizer_epoch=int(result.tokenizer_epoch),
+            )
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            del owner
+            free_status = self._call(LIBRARY.ze_text_query_result_free, ct.byref(result))
+            if free_status != 0:
+                if primary is None:
+                    raise_for_status(free_status, handle)
+                primary.add_note(
+                    f"ze_text_query_result_free: {last_error_message(handle)}"
+                )
 
     def delete(self, doc_ids: Sequence[int | tuple[int, int]]) -> MutationReport:
         handle = self._live_handle()
@@ -847,3 +961,39 @@ def open_with_epoch(
         max_temp_bytes=max_temp_bytes,
         epoch=epoch,
     )
+
+
+def open_text(
+    path: str | Path,
+    bundle_path: str | Path,
+    *,
+    access_mode: AccessMode | str = AccessMode.READ_WRITE,
+    durability: DurabilityMode | str = DurabilityMode.DERIVED,
+    commit_tier: CommitTier | str = CommitTier.ORDERED,
+    reader_drain_timeout_ms: int = 250,
+    max_resident_bytes: int = (1 << 64) - 1,
+    max_temp_bytes: int = (1 << 64) - 1,
+) -> Store:
+    """Open a text store and immutable model bundle through the text ABI."""
+    request, path_owner = _open_request(
+        path,
+        access_mode,
+        durability,
+        commit_tier,
+        reader_drain_timeout_ms,
+        max_resident_bytes,
+        max_temp_bytes,
+    )
+    bundle_pointer, bundle_len, bundle_owner = _text_pointer(str(bundle_path))
+    text_request = s.ZeTextOpenRequest(
+        abi_size=ct.sizeof(s.ZeTextOpenRequest),
+        abi_reserved=0,
+        store=request,
+        bundle_path=bundle_pointer,
+        bundle_path_len=bundle_len,
+    )
+    handle = ct.c_uint64()
+    status = LIBRARY.ze_text_open(ct.byref(text_request), ct.byref(handle))
+    del path_owner, bundle_owner
+    raise_for_status(status, int(handle.value))
+    return Store(int(handle.value), text=True)

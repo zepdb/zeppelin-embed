@@ -65,8 +65,20 @@ _bind("ze_cancel_token_create", [ct.POINTER(CancelHandle)])
 _bind("ze_cancel_token_cancel", [CancelHandle])
 _bind("ze_cancel_token_free", [CancelHandle])
 
+TEXT_AVAILABLE = hasattr(LIBRARY, "ze_text_open")
+if TEXT_AVAILABLE:
+    _bind("ze_text_open", [ct.POINTER(s.ZeTextOpenRequest), ct.POINTER(Handle)])
+    _bind(
+        "ze_text_ingest",
+        [Handle, ct.POINTER(s.ZeTextIngestRequest), ct.POINTER(s.ZeMutationReport)],
+    )
+    _bind(
+        "ze_text_query",
+        [Handle, ct.POINTER(s.ZeTextQueryRequest), ct.POINTER(s.ZeTextQueryResult)],
+    )
+    _bind("ze_text_query_result_free", [ct.POINTER(s.ZeTextQueryResult)])
+
 
 ABI_VERSION = int(LIBRARY.ze_abi_version())
 if ABI_VERSION != 1:
     raise ImportError(f"unsupported Zeppelin Embed ABI version {ABI_VERSION}; expected 1")
-

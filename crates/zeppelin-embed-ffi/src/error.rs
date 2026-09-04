@@ -8,6 +8,28 @@ pub(crate) struct FfiError {
 }
 
 impl FfiError {
+    #[cfg(feature = "text")]
+    pub(crate) fn text(error: zeppelin_embed_text::TextError) -> Self {
+        use zeppelin_embed_text::TextError;
+
+        let message = error.to_string();
+        let code = match error {
+            TextError::Bundle(_) => ZeErrorCode::ZeErrBundle,
+            TextError::Runtime(_) => ZeErrorCode::ZeErrModel,
+            TextError::Pipeline { .. } => ZeErrorCode::ZeErrPipeline,
+            TextError::DimsMismatch { .. } => ZeErrorCode::ZeErrDimensionMismatch,
+            TextError::NonUnitVector | TextError::InvalidInput(_) => {
+                ZeErrorCode::ZeErrInvalidArgument
+            }
+            TextError::Ingest(error) => Self::ingest(error).code,
+            TextError::Seal(error) | TextError::Store(error) => Self::store(error).code,
+            TextError::Query(error) => Self::query(error).code,
+            TextError::Lexical(error) => Self::lexical(error).code,
+            TextError::Hybrid(error) => Self::fusion(error).code,
+        };
+        Self::new(code, message)
+    }
+
     pub(crate) fn new(code: ZeErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
