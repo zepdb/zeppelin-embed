@@ -1,0 +1,20 @@
+# Skew 100,000 documents, 640 hot rows, query t0 t2 t4 t6, k=400, WAND
+#
+# The same corpus and query as skew_100k_four_term_k10_wand, at the other
+# end of the k range, and the reason that file's numbers are believable.
+#
+# t0 is in every document, so its idf is about zero and it scores nothing;
+# the ranking is carried by t2, t4 and t6, which between them reach only
+# about 347 of the 640 hot rows. At k=400 the threshold therefore falls
+# into the cold tail, no cold block is provably unreachable, and WAND
+# honestly skips nothing and decodes the whole list. At k=10 the threshold
+# sits well inside the hot prefix and 2,600 of 2,621 blocks are condemned.
+#
+# That spread is the gate. The defect this pair was written for showed as
+# blocks_decoded being IDENTICAL at every k with blocks_skipped pinned at
+# zero -- a counter that cannot respond to the threshold is not measuring
+# the threshold. Zero here is a measurement; zero at k=10 was a bug.
+docs_evaluated = 2612
+blocks_decoded = 2621
+blocks_skipped = 0
+postings_decoded = 7938

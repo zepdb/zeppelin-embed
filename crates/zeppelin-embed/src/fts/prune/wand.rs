@@ -9,10 +9,19 @@
 //! is provably unreachable and is skipped without being scored.
 //!
 //! The block-max refinement then asks a second, cheaper question: using the
-//! *block* bounds at the current positions rather than the whole-term
-//! bounds, can this pivot document still qualify? If not, jump past it
-//! without decoding anything. That is where the 3.8M-to-21.9K reduction
-//! comes from (`research/02a:281`).
+//! *block* bounds of the blocks that could hold the pivot rather than the
+//! whole-term bounds, can this pivot document still qualify? If not, jump
+//! past it — and past every following block the same bounds condemn, which
+//! is found by walking impact pairs through the skip keys and costs no
+//! decode. That is where the 3.8M-to-21.9K reduction comes from
+//! (`research/02a:281`).
+//!
+//! Both halves of that matter. Taking the decision and then capping the
+//! jump at the end of the block the pivot happened to be standing in makes
+//! the traversal land in the next block, decode it, and ask the same
+//! question again: `blocks_decoded` becomes the whole list at every `k`
+//! and `blocks_skipped` is structurally zero. `prune_contracts::block_max_
+//! wand_skips_blocks_it_can_prove_unreachable` gates that it does not.
 //!
 //! WAND is strongest at small `k` with few terms, which is why the
 //! selection rule prefers it there; its advantage shrinks from 3.4x at
@@ -112,73 +121,83 @@ pub fn run(
             break;
         };
 
-        if first_row == pivot_row {
-            // Every cursor up to the pivot is already on the pivot document.
-            // Refine with block maxima before paying to score it.
-            let mut block_bound = 0.0_f64;
-            for (row, slot) in &live {
-                if *row != pivot_row {
-                    continue;
-                }
-                let Some(cursor) = cursors.get(*slot) else {
-                    continue;
-                };
-                block_bound += cursor.current_block_max();
-            }
-
-            if heap.is_full() && block_bound <= threshold {
-                // Nothing in these blocks can qualify. Jump the whole span
-                // they cover rather than stepping one posting.
-                //
-                // # Why the span is safe, and where it ends
-                //
-                // Two things bound how far this may go.
-                //
-                // `horizon` is the first block boundary any cursor on the
-                // pivot crosses. Up to it, every one of those cursors is
-                // still inside the block whose impact pair `block_bound`
-                // was built from, so `block_bound` still dominates.
-                //
-                // `next_row` is the first row any OTHER live cursor sits
-                // at. Below it, no cursor outside the pivot set contains
-                // the row at all, so none of them can add anything that
-                // `block_bound` failed to account for.
-                //
-                // For every row in `[pivot_row, target - 1]` the total is
-                // therefore at or below `block_bound`, which is at or below
-                // a threshold already achieved by `k` documents. None of
-                // them could have entered the results.
-                let mut horizon: Option<u32> = None;
-                for (row, slot) in &live {
-                    if *row != pivot_row {
+        // The block-max refinement, taken on METADATA ALONE before any
+        // cursor is paid to move.
+        //
+        // # What it decides
+        //
+        // The pivot rule has just proved that no row below `pivot_row` can
+        // qualify. This asks the second, cheaper question about `pivot_row`
+        // itself and the span above it: using the impact pairs of the
+        // blocks that could hold those rows rather than the whole-term
+        // bounds, can anything up there still reach the threshold? While
+        // the answer is no, the span is condemned and the cursors seek
+        // straight over it — over whole blocks, on skip keys, without
+        // unpacking one of them.
+        //
+        // # Why every live cursor, and why `bound_for` rather than the
+        // block the cursor is standing in
+        //
+        // `bound_for` reports the impact pair of the block that COULD hold
+        // the row, found by binary search over skip keys, and nothing for a
+        // cursor whose head has already passed the row. So it is correct
+        // for a cursor that trails the pivot as well as one sitting on it,
+        // which is what lets this run before the trailing cursors are
+        // advanced instead of only after. Summed over every live cursor it
+        // dominates the row's true score, because each term's contribution
+        // is at or below its own block's pair.
+        //
+        // `bound_horizon_for` reports the row through which each cursor's
+        // answer is unchanged; the minimum is the row through which the sum
+        // is unchanged, and therefore the row through which the proof
+        // holds. Extending target to just past it and asking again walks
+        // condemned blocks at one metadata read each rather than decoding
+        // them one at a time.
+        //
+        // # The bug this replaces
+        //
+        // The previous form capped the jump at the end of the block the
+        // pivot was standing in. However many blocks the bound had just
+        // condemned, the cursor landed in the very next one, decoded it,
+        // asked the same question and stepped again. `blocks_decoded` was
+        // the whole list at every `k` and `blocks_skipped` was structurally
+        // zero: block-max WAND had become a slower way to skip documents.
+        if heap.is_full() {
+            let mut target = pivot_row;
+            let mut condemned = false;
+            loop {
+                let mut bound = 0.0_f64;
+                let mut edge: Option<u32> = None;
+                for cursor in cursors.iter() {
+                    if cursor.exhausted() {
                         continue;
                     }
-                    let Some(cursor) = cursors.get(*slot) else {
-                        continue;
-                    };
-                    horizon = match (horizon, cursor.stream.block_horizon()) {
-                        (Some(held), Some(found)) => Some(held.min(found)),
-                        (None, found) => found,
-                        (held, None) => held,
-                    };
+                    bound += cursor.stream.bound_for(target, &cursor.scorer);
+                    if let Some(found) = cursor.stream.bound_horizon_for(target) {
+                        edge = Some(edge.map_or(found, |held: u32| held.min(found)));
+                    }
                 }
-                // Rows are sorted ascending, so the first one past the
-                // pivot is the minimum the previous form scanned for.
-                let next_row = live
-                    .iter()
-                    .map(|(row, _)| *row)
-                    .find(|row| *row > pivot_row);
-                let target = match (horizon, next_row) {
-                    (Some(edge), Some(next)) => edge.saturating_add(1).min(next),
-                    (Some(edge), None) => edge.saturating_add(1),
-                    (None, Some(next)) => next,
-                    (None, None) => pivot_row.saturating_add(1),
+                if bound > threshold {
+                    break;
                 }
-                // A span that does not move is an infinite loop. Both
-                // candidates are strictly above the pivot, so this only
-                // guards against a degenerate cursor.
-                .max(pivot_row.saturating_add(1));
-
+                // No cursor bounds the span: every one of them is spent at
+                // or past `target` and can never contribute again, so there
+                // is nothing left to extend over.
+                let Some(edge) = edge else {
+                    break;
+                };
+                let next = edge.saturating_add(1);
+                // A span that does not move is an infinite loop.
+                // `bound_horizon_for` never reports below its own argument,
+                // so this advances; the guard is against a degenerate
+                // cursor rather than an expected case.
+                if next <= target {
+                    break;
+                }
+                target = next;
+                condemned = true;
+            }
+            if condemned {
                 for cursor in cursors.iter_mut() {
                     if cursor.current().is_some_and(|row| row < target) {
                         // Blocks jumped are tallied on the stream itself
@@ -188,7 +207,9 @@ pub fn run(
                 }
                 continue;
             }
+        }
 
+        if first_row == pivot_row {
             let mut total = 0.0_f64;
             for cursor in cursors.iter_mut() {
                 if cursor.current() != Some(pivot_row) {

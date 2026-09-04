@@ -1,0 +1,30 @@
+# Skew 100,000 documents, 640 hot rows, query t0 t2 t4 t6, k=10, WAND
+#
+# The fixture the Zipf corpora could not be. Zipf term frequencies and
+# document lengths are uniform, so every block of a term carries the same
+# impact pair and no block bound can ever fall below the threshold; WAND
+# reporting zero skips there was honest. Here the high-impact rows are a
+# contiguous prefix, so once the heap is full almost every later block is
+# provably unreachable.
+#
+# These are the counters after the block-max seek target stopped being
+# capped at the end of the block the pivot was standing in. Before that
+# fix WAND decoded all 2,621 blocks and skipped none, at every k: however
+# many blocks the bound had just condemned, the jump could not cross more
+# than one block boundary, so the cursor landed in the next block, decoded
+# it and asked the same question again.
+#
+#   blocks_decoded   2621 -> 21
+#   blocks_skipped      0 -> 2600
+#   docs_evaluated     63 -> 63
+#   postings_decoded  168 -> 168
+#
+# The two scoring counters not moving is the point: the same documents are
+# evaluated from the same postings, and the hits are bit-identical to the
+# exhaustive scan, which is the assertion the test makes first. What
+# changed is only how much of the segment had to be unpacked to reach
+# them -- 0.8% of the blocks instead of all of them.
+docs_evaluated = 63
+blocks_decoded = 21
+blocks_skipped = 2600
+postings_decoded = 168

@@ -366,3 +366,122 @@ proptest! {
         }
     }
 }
+
+/// A corpus whose block bounds differ enough for skipping to fire.
+///
+/// The first `hot` rows are short documents repeating every term; every
+/// later row is a long document carrying each term once. Postings are laid
+/// out in row order, so the high-impact rows fall into a few leading blocks
+/// and the rest are provably unreachable once the heap is full. The
+/// vocabularies elsewhere in this file are near-uniform, which is exactly
+/// the shape under which a broken block-max skip stays green.
+fn skewed_impact_corpus(documents: usize, hot: usize, terms: usize) -> Vec<String> {
+    (0..documents)
+        .map(|doc| {
+            let mut words: Vec<String> = Vec::new();
+            let hot_doc = doc < hot;
+            for term in 0..terms {
+                let period = term + 1;
+                if doc % period != 0 {
+                    continue;
+                }
+                for _ in 0..if hot_doc { 12 } else { 1 } {
+                    words.push(format!("t{term}"));
+                }
+            }
+            if !hot_doc {
+                for filler in 0..40 {
+                    words.push(format!("f{}", (doc + filler) % 2_000));
+                }
+            }
+            if words.is_empty() {
+                words.push(String::from("filler"));
+            }
+            words.join(" ")
+        })
+        .collect()
+}
+
+/// Block skipping must be bit-identical to the unpruned scan.
+///
+/// # Why the properties above are not enough on their own
+///
+/// `prop_pruned_topk_equals_exhaustive` draws corpora of at most forty
+/// documents, which is below one 64-posting block: the pruning machinery
+/// never runs and the skip path is never reached. The multi-block property
+/// does reach it, but its documents are near-uniform in length and term
+/// frequency, so every block of a term carries the same impact pair and no
+/// block bound can fall below the threshold. Both stay green whatever the
+/// skip decision does — which is how a block-max WAND that never skipped a
+/// block survived in this suite.
+///
+/// This sweeps the shape where skipping actually fires — twenty thousand
+/// documents with a hot prefix — across term counts, `k`, and both BM25
+/// parameter sets, and compares SCORE BITS rather than a tolerance. Two
+/// paths running the same scorer over the same postings must produce the
+/// same `f64`; a difference of one ULP means the pruned path summed a
+/// different set of contributions, which is a changed answer however small
+/// it looks.
+///
+/// The run is not allowed to pass vacuously: it counts the cells in which
+/// a block was actually skipped and fails if none was.
+#[test]
+fn block_skipping_returns_bit_identical_hits_and_scores() {
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("valid config");
+    let texts = skewed_impact_corpus(20_000, 320, 12);
+    let index = build_index(&analyzer, &texts, &[texts.len()]);
+    let mut skipping_cells = 0_usize;
+    let mut checked = 0_usize;
+
+    for params in [Bm25Params::default(), Bm25Params::anserini()] {
+        for term_count in 1..=6_usize {
+            let terms: Vec<Vec<u8>> = (0..term_count)
+                .map(|slot| format!("t{}", slot * 2).into_bytes())
+                .collect();
+            let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
+            for k in [1_usize, 2, 10, 37, 100, 400, 1_000] {
+                let expected = search(&index, &query, k, params).expect("scores");
+                for strategy in [Prune::BlockMaxWand, Prune::BlockMaxMaxscore] {
+                    let actual =
+                        search_pruned(&index, &query, k, params, strategy).expect("scores");
+                    checked += 1;
+                    if actual.counters.blocks_skipped > 0 {
+                        skipping_cells += 1;
+                    }
+                    assert_eq!(
+                        actual.hits.len(),
+                        expected.hits.len(),
+                        "{strategy:?} returned a different number of hits at \
+                         k={k} over {term_count} terms"
+                    );
+                    for (rank, (got, want)) in
+                        actual.hits.iter().zip(expected.hits.iter()).enumerate()
+                    {
+                        assert_eq!(
+                            got.doc, want.doc,
+                            "{strategy:?} put a different document at rank \
+                             {rank} at k={k} over {term_count} terms"
+                        );
+                        assert_eq!(
+                            got.score.to_bits(),
+                            want.score.to_bits(),
+                            "{strategy:?} scored rank {rank} as {} against the \
+                             exhaustive scan's {} at k={k} over {term_count} \
+                             terms: the pruned path summed a different set of \
+                             contributions",
+                            got.score,
+                            want.score
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(checked, 168, "the differential grid changed shape");
+    assert!(
+        skipping_cells > 0,
+        "no cell in the grid skipped a block, so this proved nothing about \
+         skipping; the fixture no longer produces skippable blocks"
+    );
+}

@@ -145,6 +145,124 @@ fn zipf_corpus(documents: usize, terms: usize) -> Vec<String> {
         .collect()
 }
 
+/// A deterministic corpus whose block bounds actually differ.
+///
+/// The first `hot` rows are short documents that repeat every query term
+/// twelve times; every later row is a long document carrying each term
+/// once. Postings are laid out in row order, so the high-impact rows fall
+/// into a handful of leading blocks and every later block is provably
+/// unreachable once the heap is full. That is the condition block-max
+/// pruning exists for, and the Zipf fixture above does not have it: its
+/// term frequencies and document lengths are uniform, so every block
+/// carries the same impact pair and no block bound can ever fall below the
+/// threshold.
+fn skew_corpus(documents: usize, hot: usize, terms: usize) -> Vec<String> {
+    (0..documents)
+        .map(|doc| {
+            let mut words: Vec<String> = Vec::new();
+            let hot_doc = doc < hot;
+            for term in 0..terms {
+                let period = term + 1;
+                if doc % period != 0 {
+                    continue;
+                }
+                let repeats = if hot_doc { 12 } else { 1 };
+                for _ in 0..repeats {
+                    words.push(format!("t{term}"));
+                }
+            }
+            if !hot_doc {
+                for filler in 0..80 {
+                    words.push(format!("f{}", (doc + filler) % 5_000));
+                }
+            }
+            if words.is_empty() {
+                words.push(String::from("filler"));
+            }
+            words.join(" ")
+        })
+        .collect()
+}
+
+/// Block-max WAND must skip blocks it can prove cannot reach the threshold.
+///
+/// # What this caught
+///
+/// WAND took its skip decision correctly and then threw the answer away.
+/// The seek target was capped at the end of the block the pivot was
+/// standing in, so however many blocks the bound had just proved
+/// unreachable, the jump could never cross more than one block boundary.
+/// The cursor landed in the next block, decoded it, asked the same
+/// question, and stepped again. `blocks_decoded` was therefore the whole
+/// list at every `k` and `blocks_skipped` was structurally zero.
+///
+/// The counters are the assertion. `blocks_skipped > 0` says a block was
+/// passed over on skip-key metadata without being decoded; the comparison
+/// against the exhaustive run says the traversal reads strictly less of
+/// the segment than the oracle does. The hit equality is the correctness
+/// half: WAND is exact for top-k, so skipping must not move a single
+/// score by a single bit.
+#[test]
+fn block_max_wand_skips_blocks_it_can_prove_unreachable() {
+    let texts = skew_corpus(100_000, 640, 12);
+    let index = index_of(&texts);
+    let params = Bm25Params::default();
+    let query = TermQuery::flat(
+        vec![b"t0".to_vec(), b"t2".to_vec(), b"t4".to_vec(), b"t6".to_vec()],
+        &[DEFAULT_FIELD],
+    );
+
+    let exhaustive = search(&index, &query, 10, params).expect("scores");
+    let pruned = search_pruned(&index, &query, 10, params, Strategy::BlockMaxWand).expect("scores");
+
+    assert_eq!(pruned.hits, exhaustive.hits, "pruning changed the answer");
+    assert!(
+        pruned.counters.blocks_skipped > 0,
+        "block-max WAND skipped no block at k=10 on a corpus whose leading \
+         blocks hold every high-impact row: the skip decision is being taken \
+         and then discarded"
+    );
+    assert!(
+        pruned.counters.blocks_decoded < exhaustive.counters.blocks_decoded,
+        "WAND decoded {} blocks against the exhaustive scan's {}: a traversal \
+         that reads every block has skipped nothing",
+        pruned.counters.blocks_decoded,
+        exhaustive.counters.blocks_decoded
+    );
+    check("skew_100k_four_term_k10_wand", pruned.counters);
+}
+
+/// The same corpus at a large `k`, where the threshold rises slowly.
+///
+/// A skip count that does not move with `k` is the tell that block bounds
+/// are not being consulted at all. At `k` of 400 the threshold is far
+/// lower, so strictly fewer blocks are provably unreachable and strictly
+/// more must be decoded than at `k` of 10.
+#[test]
+fn block_max_wand_skips_less_as_k_rises() {
+    let texts = skew_corpus(100_000, 640, 12);
+    let index = index_of(&texts);
+    let params = Bm25Params::default();
+    let query = TermQuery::flat(
+        vec![b"t0".to_vec(), b"t2".to_vec(), b"t4".to_vec(), b"t6".to_vec()],
+        &[DEFAULT_FIELD],
+    );
+
+    let exhaustive = search(&index, &query, 400, params).expect("scores");
+    let small = search_pruned(&index, &query, 10, params, Strategy::BlockMaxWand).expect("scores");
+    let large = search_pruned(&index, &query, 400, params, Strategy::BlockMaxWand).expect("scores");
+
+    assert_eq!(large.hits, exhaustive.hits, "pruning changed the answer");
+    assert!(
+        large.counters.blocks_decoded > small.counters.blocks_decoded,
+        "k made no difference to blocks_decoded ({} at k=10, {} at k=400): \
+         the block bounds are not reaching the skip decision",
+        small.counters.blocks_decoded,
+        large.counters.blocks_decoded
+    );
+    check("skew_100k_four_term_k400_wand", large.counters);
+}
+
 #[test]
 fn short_list_query_takes_no_pruning_decision() {
     let texts: Vec<String> = (0..20).map(|index| format!("alpha body{index}")).collect();

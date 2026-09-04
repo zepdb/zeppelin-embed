@@ -1496,27 +1496,12 @@ impl ListCursor<'_> {
         self.impact
     }
 
-    /// Returns the last document id of the block the cursor sits in.
-    ///
-    /// The skip key of the current block, read from its four metadata
-    /// bytes without decoding anything.
-    #[must_use]
-    pub fn current_block_last(&self) -> Option<u32> {
-        if self.block == NO_BLOCK {
-            return None;
-        }
-        self.last_docid(self.block)
-    }
-
-    /// Returns the impact pair of the block that could contain `row`.
+    /// Returns the index of the block that could contain `row`.
     ///
     /// `None` when this run provably cannot contribute to `row`: the
     /// cursor has already advanced past it, or every remaining block ends
-    /// below it. Only skip keys and one metadata row are read; nothing is
-    /// decoded. This is what lets a traversal bound a candidate it has not
-    /// paid to visit.
-    #[must_use]
-    pub fn impact_for(&self, row: u32) -> Option<BlockImpact> {
+    /// below it. Only skip keys are read; nothing is decoded.
+    fn block_for(&self, row: u32) -> Option<usize> {
         if self.block == NO_BLOCK {
             return None;
         }
@@ -1526,7 +1511,7 @@ impl ListCursor<'_> {
             return None;
         }
         if self.last_docid(self.block).is_some_and(|last| last >= row) {
-            return Some(self.current_impact());
+            return Some(self.block);
         }
         let mut low = self.block.saturating_add(1);
         let mut high = self.block_count;
@@ -1541,7 +1526,46 @@ impl ListCursor<'_> {
         if low >= self.block_count {
             return None;
         }
-        Some(self.impact_at(low))
+        Some(low)
+    }
+
+    /// Returns the impact pair of the block that could contain `row`.
+    ///
+    /// `None` when this run provably cannot contribute to `row`: the
+    /// cursor has already advanced past it, or every remaining block ends
+    /// below it. Only skip keys and one metadata row are read; nothing is
+    /// decoded. This is what lets a traversal bound a candidate it has not
+    /// paid to visit.
+    #[must_use]
+    pub fn impact_for(&self, row: u32) -> Option<BlockImpact> {
+        let index = self.block_for(row)?;
+        if index == self.block {
+            return Some(self.current_impact());
+        }
+        Some(self.impact_at(index))
+    }
+
+    /// Returns the largest row for which [`Self::impact_for`] is unchanged.
+    ///
+    /// `None` when the answer holds for every row above `row`: the run is
+    /// spent, or every remaining block ends below `row`, so it contributes
+    /// nothing from here on and never will.
+    ///
+    /// Two cases produce a bound. When the run's head sits ABOVE `row` it
+    /// contributes nothing up to the row before that head, and the answer
+    /// changes the moment the head is reached. Otherwise the answer is one
+    /// block's impact pair, and it holds to that block's skip key.
+    fn impact_horizon_for(&self, row: u32) -> Option<u32> {
+        if self.block == NO_BLOCK {
+            return None;
+        }
+        if let Some(current) = self.current()
+            && current > row
+        {
+            return Some(current.saturating_sub(1));
+        }
+        self.block_for(row)
+            .and_then(|index| self.last_docid(index))
     }
 
     /// Returns the impact pair dominating every block of the list.
@@ -1791,25 +1815,29 @@ impl<'segment> TermStream<'segment> {
         self.bound_from(scorer, |run| run.impact_for(row))
     }
 
-    /// The largest row for which [`Self::block_bound`] still dominates.
+    /// The largest row for which [`Self::bound_for`] still dominates.
     ///
     /// # Why a traversal needs this
     ///
-    /// `block_bound` is built from the impact pairs of the blocks the runs
-    /// are sitting in *right now*. It bounds any row up to the first block
-    /// boundary any run crosses, and no further: past that, one run has
-    /// left the block whose pair the bound was taken from.
+    /// [`Self::bound_for`] answers about one row. A traversal that has
+    /// just proved that row unreachable wants to know how far that proof
+    /// reaches, so it can seek past a whole span instead of landing in the
+    /// next block to ask the same question again.
     ///
-    /// That makes this the horizon a block-max traversal may jump to. When
-    /// a pivot's bound cannot reach the top-k threshold, every row from the
-    /// pivot to this horizon is provably unreachable too, so the whole span
-    /// can be skipped instead of one posting.
+    /// Every run reports the row at which its own answer would change: the
+    /// skip key of the block the bound came from, or — for a run whose head
+    /// already sits above `row`, and which therefore contributed nothing —
+    /// the row before that head. The minimum is the row through which
+    /// EVERY run's contribution is still the one that went into the bound,
+    /// so the bound dominates the whole span.
+    ///
+    /// `None` when no run bounds the span: every run is spent at or past
+    /// `row` and can never contribute again.
     #[must_use]
-    pub fn block_horizon(&self) -> Option<u32> {
+    pub fn bound_horizon_for(&self, row: u32) -> Option<u32> {
         self.runs
             .iter()
-            .filter(|run| !run.exhausted())
-            .filter_map(ListCursor::current_block_last)
+            .filter_map(|run| run.impact_horizon_for(row))
             .min()
     }
 
