@@ -155,6 +155,7 @@ impl FfiError {
             FusionError::Leg { kind, .. } => Self::leg_kind_code(kind),
             FusionError::NonFiniteScore { .. }
             | FusionError::NegativeScore { .. }
+            | FusionError::InvalidBounds { .. }
             | FusionError::UnrankedInput { .. }
             | FusionError::MissingDocumentIdentity { .. }
             | FusionError::DuplicateDocumentIdentity { .. } => ZeErrorCode::ZeErrInternal,
