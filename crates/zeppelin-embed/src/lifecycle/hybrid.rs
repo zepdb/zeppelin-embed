@@ -8,7 +8,9 @@ use crate::fusion::{
     FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K, LegBounds, LegFailureKind,
     LexicalBounds, LexicalCandidate, VectorBounds, VectorCandidate,
 };
-use crate::ingest::{ActiveSegment, DocId, SearchCandidate};
+use crate::ingest::{
+    ActiveSegment, DocId, DocumentVersion, GlobalRowId, RowSource, SearchCandidate,
+};
 use crate::lifecycle::{PublishedSnapshot, QueryError, StructuredLexicalSource};
 
 /// Completed producer work retained by the hybrid loop. Keeping this seam
@@ -129,7 +131,7 @@ pub(crate) struct LexicalHit {
     /// Lexical segment ordinal and dense row, for a direct vector row read.
     pub(crate) doc: crate::fts::search::GlobalDocId,
     /// Joined application identity, the fused key.
-    pub(crate) document: Option<DocId>,
+    pub(crate) document: Option<DocumentVersion>,
     /// Exact BM25.
     pub(crate) bm25: f64,
 }
@@ -147,6 +149,14 @@ pub(crate) struct HybridRound {
     pub(crate) cross_filled_vector: usize,
     /// Documents the vector window contributed to the lexical list.
     pub(crate) cross_filled_lexical: usize,
+    pub(crate) lexical_counters: crate::fts::search::SearchCounters,
+}
+
+/// Frozen once after both first-round producers join, before any widening.
+#[derive(Clone, Copy)]
+pub(crate) struct HybridAnchors {
+    pub(crate) vector_ceiling: Option<f64>,
+    pub(crate) lexical_maximum: f64,
 }
 
 pub(crate) fn round_provenance(
@@ -175,9 +185,9 @@ pub(crate) fn round_provenance(
             bounded_coverage(vector.candidates.len())
         },
         lexical_coverage: bounded_coverage(lexical_len),
-        // Until candidate BM25 cross-scoring lands, a truncated lexical list
-        // cannot distinguish a zero from a missing other-leg contribution.
-        cross_scores_complete: lexical_len <= width,
+        // A successfully built round contains a computed score (including an
+        // explicit zero for nonmembership) for every candidate in its union.
+        cross_scores_complete: true,
     }
 }
 
@@ -188,7 +198,7 @@ pub(crate) fn fuse_round(
     require_exact: bool,
 ) -> Result<crate::fusion::FusionOutcome<DocId>, FusionError> {
     use crate::fusion::{CandidateCoverage, FusionTermination, ScorePrecision};
-    let mut outcome = crate::fusion::fuse_bounded(
+    let mut outcome = crate::fusion::fuse_store_bounded(
         query,
         &round.vector,
         &round.lexical,
@@ -226,13 +236,16 @@ pub(crate) fn fuse_round(
 pub(crate) fn build_round(
     snapshot: &PublishedSnapshot,
     active: &ActiveSegment,
-    sources: &[StructuredLexicalSource],
+    assembly: &super::LexicalAssembly,
+    lexical_query: super::PinnedLexicalQuery<'_>,
     query: &[f32],
     vector: &[SearchCandidate],
-    vector_ceiling: Option<f64>,
+    anchors: HybridAnchors,
     lexical: &[LexicalHit],
     width: usize,
+    cancellation: &super::QueryCancellation<'_>,
 ) -> Result<HybridRound, FusionError> {
+    let sources = &assembly.sources;
     let vector_window = vector.get(..width.min(vector.len())).unwrap_or_default();
     let lexical_window = lexical.get(..width.min(lexical.len())).unwrap_or_default();
     let vector_next = vector.get(width).map(candidate_squared_l2);
@@ -240,12 +253,12 @@ pub(crate) fn build_round(
 
     let vector_keys = vector_window
         .iter()
-        .filter_map(|candidate| candidate.document().map(|version| version.doc_id()))
+        .map(|candidate| (candidate.row_id(), candidate.document()))
         .collect::<std::collections::BTreeSet<_>>();
     let lexical_keys = lexical_window
         .iter()
-        .filter_map(|hit| hit.document)
-        .collect::<std::collections::BTreeSet<_>>();
+        .map(|hit| lexical_identity(snapshot, sources, hit))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
 
     let mut vector_candidates = vector_window
         .iter()
@@ -261,45 +274,52 @@ pub(crate) fn build_round(
         .collect::<Vec<_>>();
     let mut cross_filled_vector = 0_usize;
     for hit in lexical_window {
-        let Some(document) = hit.document else {
-            continue;
-        };
-        if vector_keys.contains(&document) {
+        cancellation.check_graph().map_err(QueryError::Scan)?;
+        if vector_keys.contains(&lexical_identity(snapshot, sources, hit)?) {
             continue;
         }
         let squared_l2 = exact_squared_l2(snapshot, active, sources, query, hit.doc)?;
-        vector_candidates.push(VectorCandidate::exact(Some(document), squared_l2));
+        vector_candidates.push(VectorCandidate::exact(
+            hit.document.map(|version| version.doc_id()),
+            squared_l2,
+        ));
         cross_filled_vector = cross_filled_vector.saturating_add(1);
     }
 
     let mut lexical_candidates = lexical_window
         .iter()
-        .map(|hit| LexicalCandidate::new(hit.document, hit.bm25))
+        .map(|hit| LexicalCandidate::new(hit.document.map(|version| version.doc_id()), hit.bm25))
         .collect::<Vec<_>>();
-    let mut cross_filled_lexical = 0_usize;
-    for hit in lexical.get(width.min(lexical.len())..).unwrap_or_default() {
-        let Some(document) = hit.document else {
-            continue;
-        };
-        if !vector_keys.contains(&document) || lexical_keys.contains(&document) {
-            continue;
-        }
-        lexical_candidates.push(LexicalCandidate::new(Some(document), hit.bm25));
-        cross_filled_lexical = cross_filled_lexical.saturating_add(1);
+    let missing = vector_window
+        .iter()
+        .filter(|candidate| !lexical_keys.contains(&(candidate.row_id(), candidate.document())))
+        .copied()
+        .collect::<Vec<_>>();
+    let (scores, lexical_counters) = cross_score_lexical(
+        snapshot,
+        active,
+        assembly,
+        lexical_query,
+        lexical,
+        &missing,
+        cancellation,
+    )?;
+    let cross_filled_lexical = missing.len();
+    for (candidate, score) in missing.iter().zip(scores) {
+        lexical_candidates.push(LexicalCandidate::new(
+            candidate.document().map(|version| version.doc_id()),
+            score,
+        ));
     }
 
     vector_candidates.sort_by(|left, right| left.squared_l2().total_cmp(&right.squared_l2()));
     lexical_candidates.sort_by(|left, right| right.bm25().total_cmp(&left.bm25()));
 
-    let vector_bounds = match vector_window.first() {
+    let vector_bounds = match vector_candidates.first() {
         None => None,
-        Some(best) => {
-            let minimum = candidate_squared_l2(best);
-            let maximum = match vector_ceiling {
+        Some(_) => {
+            let maximum = match anchors.vector_ceiling {
                 Some(maximum) => maximum,
-                None if vector_next.is_none() => {
-                    vector_window.last().map_or(minimum, candidate_squared_l2)
-                }
                 None => {
                     return Err(FusionError::Leg {
                         leg: FusionLeg::Vector,
@@ -310,20 +330,17 @@ pub(crate) fn build_round(
                 }
             };
             Some(VectorBounds {
-                min_squared_l2: minimum,
+                min_squared_l2: 0.0,
                 max_squared_l2: maximum,
                 next_unseen_squared_l2: vector_next,
             })
         }
     };
-    let lexical_bounds = match (lexical_window.first(), lexical.last()) {
-        (Some(best), Some(worst)) => Some(LexicalBounds {
-            max_bm25: best.bm25,
-            min_bm25: worst.bm25,
-            next_unseen_bm25: lexical_next,
-        }),
-        _ => None,
-    };
+    let lexical_bounds = Some(LexicalBounds {
+        max_bm25: anchors.lexical_maximum,
+        min_bm25: 0.0,
+        next_unseen_bm25: lexical_next,
+    });
 
     Ok(HybridRound {
         vector: vector_candidates,
@@ -334,7 +351,152 @@ pub(crate) fn build_round(
         },
         cross_filled_vector,
         cross_filled_lexical,
+        lexical_counters,
     })
+}
+
+fn lexical_identity(
+    snapshot: &PublishedSnapshot,
+    sources: &[StructuredLexicalSource],
+    hit: &LexicalHit,
+) -> Result<(GlobalRowId, Option<DocumentVersion>), FusionError> {
+    let source = sources
+        .get(hit.doc.segment as usize)
+        .ok_or_else(|| lexical_invariant("hybrid lexical source ordinal is absent"))?;
+    let source = match source {
+        StructuredLexicalSource::Active => RowSource::Active,
+        StructuredLexicalSource::Sealed(ordinal) => RowSource::Sealed(
+            snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or_else(|| lexical_invariant("hybrid sealed source is absent"))?
+                .meta()
+                .id,
+        ),
+    };
+    Ok((GlobalRowId::new(source, hit.doc.row), hit.document))
+}
+
+fn lexical_invariant(detail: &str) -> FusionError {
+    FusionError::Leg {
+        leg: FusionLeg::Lexical,
+        kind: LegFailureKind::Invariant,
+        detail: detail.to_owned(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cross_score_lexical(
+    snapshot: &PublishedSnapshot,
+    active: &ActiveSegment,
+    assembly: &super::LexicalAssembly,
+    query: super::PinnedLexicalQuery<'_>,
+    lexical: &[LexicalHit],
+    missing: &[SearchCandidate],
+    cancellation: &super::QueryCancellation<'_>,
+) -> Result<(Vec<f64>, crate::fts::search::SearchCounters), FusionError> {
+    use crate::fts::search::{CandidateScoring, CandidateScoringWork, GlobalDocId, SearchCounters};
+    let mut scores = vec![0.0; missing.len()];
+    let mut counters = SearchCounters::default();
+    cancellation.check_graph().map_err(QueryError::Scan)?;
+    if let super::PinnedLexicalQuery::Structured(_) = query {
+        // Until combined top-k lands, this producer returns the full exact
+        // expansion/phrase aggregate. Absence here is proven nonmembership.
+        let complete = lexical
+            .iter()
+            .map(|hit| {
+                Ok((
+                    lexical_identity(snapshot, &assembly.sources, hit)?,
+                    hit.bm25,
+                ))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>, FusionError>>()?;
+        for (candidate, score) in missing.iter().zip(&mut scores) {
+            cancellation.check_graph().map_err(QueryError::Scan)?;
+            *score = complete
+                .get(&(candidate.row_id(), candidate.document()))
+                .copied()
+                .unwrap_or(0.0);
+        }
+        return Ok((scores, counters));
+    }
+    let mut batches = vec![Vec::<(u32, usize)>::new(); assembly.index.segments().len()];
+    for (position, candidate) in missing.iter().enumerate() {
+        cancellation.check_graph().map_err(QueryError::Scan)?;
+        let ordinal = assembly.sources.iter().position(|source| match source {
+            StructuredLexicalSource::Active => candidate.row_id().source() == RowSource::Active,
+            StructuredLexicalSource::Sealed(ordinal) => {
+                snapshot.segments().get(*ordinal).is_some_and(|segment| {
+                    candidate.row_id().source() == RowSource::Sealed(segment.meta().id)
+                })
+            }
+        });
+        // A source with no lexical index has no text contribution.
+        let Some(ordinal) = ordinal else {
+            continue;
+        };
+        let row = candidate.row_id().local_row();
+        let doc = GlobalDocId {
+            segment: u32::try_from(ordinal).map_err(|_| overflow())?,
+            row,
+        };
+        let document =
+            super::structured_lexical_document(snapshot, active, &assembly.sources, doc, false)
+                .map_err(super::map_term_leg_document_error)?;
+        if document != candidate.document()
+            || !assembly
+                .alive_sets
+                .get(ordinal)
+                .is_some_and(|alive| alive.alive_bitmap().contains(row))
+        {
+            return Err(lexical_invariant(
+                "hybrid candidate does not match the pinned live row and revision",
+            ));
+        }
+        batches
+            .get_mut(ordinal)
+            .ok_or_else(|| lexical_invariant("hybrid lexical index/source count differs"))?
+            .push((row, position));
+    }
+    let super::PinnedLexicalQuery::Term(query) = query else {
+        return Err(lexical_invariant("hybrid lexical query changed kind"));
+    };
+    if batches.iter().all(Vec::is_empty) {
+        return Ok((scores, counters));
+    }
+    let prepared =
+        CandidateScoring::new(&assembly.index, query, crate::fts::bm25::Bm25Params::beir())
+            .map_err(|error| FusionError::Leg {
+                leg: FusionLeg::Lexical,
+                kind: LegFailureKind::Lexical,
+                detail: error.to_string(),
+            })?;
+    let mut work = CandidateScoringWork::default();
+    for (ordinal, batch) in batches
+        .iter()
+        .enumerate()
+        .filter(|(_, batch)| !batch.is_empty())
+    {
+        let rows = batch.iter().map(|(row, _)| *row).collect::<Vec<_>>();
+        let segment = assembly
+            .index
+            .segments()
+            .get(ordinal)
+            .ok_or_else(|| lexical_invariant("hybrid lexical segment is absent"))?;
+        let result = prepared
+            .score_rows(ordinal, segment, &rows, &mut work, |_| {
+                cancellation.check_graph()
+            })
+            .map_err(super::map_fusion_controlled_lexical_error)?;
+        super::accumulate_search_counters(&mut counters, &result.counters);
+        for ((_, position), score) in batch.iter().zip(result.scores) {
+            *scores.get_mut(*position).ok_or_else(|| {
+                lexical_invariant("hybrid candidate routing position is absent")
+            })? = score.unwrap_or(0.0);
+        }
+    }
+    cancellation.check_graph().map_err(QueryError::Scan)?;
+    Ok((scores, counters))
 }
 
 fn candidate_squared_l2(candidate: &SearchCandidate) -> f64 {
@@ -424,6 +586,7 @@ mod tests {
                 },
                 cross_filled_vector: 0,
                 cross_filled_lexical: 0,
+                lexical_counters: crate::fts::search::SearchCounters::default(),
             };
             let outcome = super::fuse_round(
                 &HybridQuery::new(1),

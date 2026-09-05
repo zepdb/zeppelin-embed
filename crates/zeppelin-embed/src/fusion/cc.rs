@@ -157,6 +157,35 @@ pub(crate) fn fuse_bounded_joined<K>(
 where
     K: Clone + Ord,
 {
+    fuse_bounded_policy(query, vector, lexical, bounds, alpha, applied_rules, false)
+}
+
+pub(crate) fn fuse_store_bounded_joined<K>(
+    query: &HybridQuery,
+    vector: &[JoinedVector<K>],
+    lexical: &[JoinedLexical<K>],
+    bounds: LegBounds,
+    alpha: f64,
+    applied_rules: Vec<FusionRule>,
+) -> Result<FusionOutcome<K>, FusionError>
+where
+    K: Clone + Ord,
+{
+    fuse_bounded_policy(query, vector, lexical, bounds, alpha, applied_rules, true)
+}
+
+fn fuse_bounded_policy<K>(
+    query: &HybridQuery,
+    vector: &[JoinedVector<K>],
+    lexical: &[JoinedLexical<K>],
+    bounds: LegBounds,
+    alpha: f64,
+    applied_rules: Vec<FusionRule>,
+    fixed_anchors: bool,
+) -> Result<FusionOutcome<K>, FusionError>
+where
+    K: Clone + Ord,
+{
     validate_bounds(vector, lexical, bounds)?;
     let mut degenerate_legs = Vec::new();
     if let Some(kind) = bounded_vector_degeneracy(vector, bounds) {
@@ -171,17 +200,34 @@ where
             kind,
         });
     }
-    let method = if degenerate_legs.is_empty() {
+    let method = if fixed_anchors || degenerate_legs.is_empty() {
         FusionMethod::ConvexCombination
     } else {
         FusionMethod::ReciprocalRankFusion
     };
-    let vector_range = bounds
-        .vector
-        .and_then(|leg| ScoreRange::explicit(leg.min_squared_l2, leg.max_squared_l2));
-    let lexical_range = bounds
-        .lexical
-        .and_then(|leg| ScoreRange::explicit(leg.min_bm25, leg.max_bm25));
+    let vector_range = bounds.vector.and_then(|leg| {
+        if fixed_anchors {
+            Some(ScoreRange::fixed_zero(leg.max_squared_l2, 1.0))
+        } else {
+            ScoreRange::explicit(leg.min_squared_l2, leg.max_squared_l2)
+        }
+    });
+    let lexical_range = bounds.lexical.and_then(|leg| {
+        if fixed_anchors {
+            Some(ScoreRange::fixed_zero(leg.max_bm25, 0.0))
+        } else {
+            ScoreRange::explicit(leg.min_bm25, leg.max_bm25)
+        }
+    });
+    // Store policy v1 gives the sole useful leg full weight. A zero-distance
+    // vector enclosure is a constant perfect vector score, not an RRF trigger.
+    let alpha = if fixed_anchors && bounds.vector.is_none() {
+        0.0
+    } else if fixed_anchors && bounds.lexical.is_none_or(|leg| leg.max_bm25 == 0.0) {
+        1.0
+    } else {
+        alpha
+    };
     let vector_next = bounds.vector.and_then(|leg| leg.next_unseen_squared_l2);
     let lexical_next = bounds.lexical.and_then(|leg| leg.next_unseen_bm25);
     let exhausted = vector_next.is_none() && lexical_next.is_none();

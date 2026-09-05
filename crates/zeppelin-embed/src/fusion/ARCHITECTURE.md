@@ -10,7 +10,7 @@ priors are not substitutes for these executable invariants.
 | Store-owned hybrid exists: `Store::search_hybrid` pins the vector and lexical legs to one generation, joins them by `DocId`, and routes blend policy and `FusionReport` construction through this module. | [`store_level_hybrid_default_is_exact_and_populates_diagnostics`](../../tests/store_text_columns.rs) |
 | No tier preference selects exhaustive exact vector scoring for hybrid. `SearchOptions::with_tier` records an explicit preference, including explicit `Auto`, and that caller choice wins. | [`store_level_hybrid_default_is_exact_and_populates_diagnostics`, `store_level_hybrid_explicit_estimated_tier_is_rejected`, and `store_level_hybrid_explicit_exact_tier_preserves_ordered_score_bits`](../../tests/store_text_columns.rs) |
 | Fusion accepts exact vector scores only. An explicit estimated tier reaches `FusionError::EstimatedVectorScore` instead of being silently blended. | [`store_level_hybrid_explicit_estimated_tier_is_rejected`](../../tests/store_text_columns.rs) |
-| The shipped blend is an alpha-weighted convex combination after independent per-leg min-max normalization. A degenerate leg selects reported reciprocal-rank fusion instead. | [`iterator_fusion_equals_fusing_the_complete_score_lists_offline` and `degenerate_legs_take_the_rrf_fallback_and_the_report_says_so`](../../tests/fusion_props.rs) |
+| The pure fusion APIs use independent per-leg min-max normalization and RRF for degenerate legs. Store-owned fusion uses the separately versioned policy below. | [`iterator_fusion_equals_fusing_the_complete_score_lists_offline` and `degenerate_legs_take_the_rrf_fallback_and_the_report_says_so`](../../tests/fusion_props.rs) |
 
 ## Rejected alternatives
 
@@ -36,3 +36,33 @@ masquerade as refactoring.
 R04 may replace the currently materialized leg producers with bounded producers.
 It must preserve every fusion invariant above; this ledger does not authorize
 that producer-contract change.
+
+## Store normalization policy v1 (Astra 03)
+
+Store hybrid freezes anchors after both initial producers complete: vector
+[0, validated norm enclosure] and lexical [0, exact maximum live combined BM25].
+The enclosure is not a hardcoded constant, even for normalized text vectors.
+Widening and full materialization use the same anchors. Every candidate in the
+physical-row plus DocumentVersion union receives both exact raw scores; lexical
+nonmembership is a computed zero. A missing score is never treated as absence.
+
+An empty lexical leg gives the vector leg full weight; an empty vector leg gives
+lexical full weight. A zero vector enclosure has constant normalized score one;
+a zero lexical maximum contributes zero. Store scoring remains convex combination
+for singleton and equal-score lists. Empty unions return no hits. The independent
+alpha policy is unchanged. Pure complete-list/bounded APIs retain their existing
+min-max/RRF rules and their separate rank-bound proofs. HybridReport records
+normalization_policy_version=1 and complete structured lexical aggregations.
+
+Exact W+1 producer boundaries bound rows outside both windows. ANN boundaries
+remain approximate even after exact cross-scoring; plan 01's coverage guard still
+prevents a false certificate. Structured hybrid temporarily aggregates complete
+per-expansion results to obtain a valid combined maximum and full cross-scores;
+plan 10 replaces that cost with exact combined top-k. No persisted or C layout
+is extended by this Rust policy change.
+
+The alpha measurements above describe the historical normalization policy. Their
+quality optimum is not assumed to transfer to v1; relevance calibration and
+held-out qualification remain separate work. Public fixed-policy literal/parity
+and degenerate controls are in hybrid_bounded.rs; independent Store replay and
+missing-score/floor/policy/round plants are in the adversarial hybrid oracle.

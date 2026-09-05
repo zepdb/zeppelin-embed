@@ -14,10 +14,7 @@ use rand::Rng;
 use tempfile::tempdir;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
-use zeppelin_embed::fusion::{
-    FusedHit, FusionTermination, HybridQuery, LegBounds, LexicalBounds, LexicalCandidate,
-    VectorBounds, VectorCandidate, fuse_bounded,
-};
+use zeppelin_embed::fusion::{FusedHit, FusionTermination, HybridQuery};
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
@@ -27,6 +24,355 @@ use zeppelin_embed::lifecycle::{
 
 const DIMENSION: usize = 6;
 const TERMS: [&str; 6] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+
+fn astra_03_fixture() -> (tempfile::TempDir, Store) {
+    let directory = tempdir().expect("fixed-policy fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let document = |row: usize, revision| {
+        let tf = if row == 0 {
+            1
+        } else if row <= 80 {
+            81 - row
+        } else {
+            0
+        };
+        let mut words = vec!["alpha"; tf];
+        words.extend(vec!["omega"; 90 - tf]);
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(revision)),
+            vec![astra_03_coordinate(row), 1.0],
+        )
+        .with_text(&words.join(" "))
+    };
+    store
+        .ingest(IngestBatch::new(
+            (0..70).map(|row| document(row, 1)).collect(),
+        ))
+        .expect("sealed rows");
+    store.seal().expect("seal");
+    store
+        .ingest(IngestBatch::new(
+            (70..130).map(|row| document(row, 1)).collect(),
+        ))
+        .expect("active rows");
+    store
+        .ingest(IngestBatch::new(vec![document(0, 2)]))
+        .expect("replace a sealed identity in active");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(8), DocId::new(76)]))
+        .expect("tombstones across both sources");
+    (directory, store)
+}
+
+fn astra_03_coordinate(row: usize) -> f32 {
+    if row == 0 {
+        0.125
+    } else if row <= 80 {
+        3.0 + (row % 5) as f32 * 0.01
+    } else {
+        0.2 + (row - 81) as f32 * 0.001
+    }
+}
+
+fn astra_03_query(
+    store: &Store,
+    k: usize,
+    alpha: f64,
+    rounds: usize,
+) -> zeppelin_embed::ingest::StoreHybridSearchOutcome {
+    let mut query = HybridQuery::new(k).with_max_rounds(rounds);
+    query.alpha = Some(alpha);
+    store
+        .search_hybrid(
+            SearchRequest::new(&[0.0, 1.0]),
+            &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+            &query,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("fixed-policy hybrid")
+}
+
+fn astra_03_bm25(tf: u32) -> f64 {
+    // Literal corpus: 128 live documents, 79 contain alpha, every length is
+    // 90. k1=1.2, b=.75, so length normalization is exactly one.
+    let idf = (1.0_f64 + (128.0 - 79.0 + 0.5) / (79.0 + 0.5)).ln();
+    let tf = f64::from(tf);
+    idf * (tf * 2.2) / (tf + 1.2)
+}
+
+#[test]
+fn astra_03_window_size_does_not_renormalize_seen_documents() {
+    let (_directory, store) = astra_03_fixture();
+    let run = |k| {
+        let mut query = HybridQuery::new(k);
+        query.alpha = Some(0.0);
+        store
+            .search_hybrid(
+                SearchRequest::new(&[0.0, 1.0]),
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                &query,
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("ordinary bounded window")
+    };
+    let narrow = run(2);
+    let wide = run(20);
+    let id = DocId::new(3); // second-best BM25, present in both windows
+    let a = narrow
+        .hits
+        .iter()
+        .find(|hit| hit.key == id)
+        .expect("narrow hit");
+    let b = wide
+        .hits
+        .iter()
+        .find(|hit| hit.key == id)
+        .expect("wide hit");
+    assert_eq!(a.lexical_bm25, b.lexical_bm25);
+    assert_eq!(
+        a.fused_score.to_bits(),
+        b.fused_score.to_bits(),
+        "a wider request must not move a seen document's normalization floor"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_03_vector_winner_receives_bm25_below_lexical_window() {
+    let (_directory, store) = astra_03_fixture();
+    // Ordinary bounded execution exposes the incomplete first window on the
+    // parent; explicit Exact would widen and hide this missing-score defect.
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[0.0, 1.0]),
+            &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("bounded default");
+    assert_eq!(outcome.hits[0].key, DocId::new(1));
+    assert_eq!(
+        outcome.hits[0].lexical_bm25.map(f64::to_bits),
+        Some(astra_03_bm25(1).to_bits()),
+        "rank-79 lexical contribution must be computed for the vector winner"
+    );
+    assert_eq!(outcome.diagnostics.hybrid.expect("hybrid").window, 50);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_03_unseen_lexical_contribution_is_not_erased_by_window_floor() {
+    let (_directory, store) = astra_03_fixture();
+    let outcome = astra_03_query(&store, 130, 0.7, 0);
+    let ceiling = store
+        .search(
+            SearchRequest::new(&[0.0, 1.0]),
+            1,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("ceiling")
+        .vector_ceiling
+        .expect("norm enclosure");
+    let hit = outcome
+        .hits
+        .iter()
+        .find(|hit| hit.key == DocId::new(1))
+        .expect("lowest lexical match");
+    let expected = 0.7 * ((ceiling - 0.015625) / ceiling)
+        + (1.0 - 0.7) * (astra_03_bm25(1) / astra_03_bm25(80));
+    assert_eq!(
+        hit.fused_score.to_bits(),
+        expected.to_bits(),
+        "positive BM25 must retain its contribution at the lowest matching score"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_03_bounded_exact_matches_independent_fixed_policy_oracle() {
+    let (_directory, store) = astra_03_fixture();
+    let ceiling = store
+        .search(
+            SearchRequest::new(&[0.0, 1.0]),
+            1,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("ceiling")
+        .vector_ceiling
+        .expect("norm enclosure");
+    let mut reference = (0..130)
+        .filter(|row| ![7, 75].contains(row))
+        .map(|row| {
+            let x = f64::from(astra_03_coordinate(row));
+            let distance = f64::from((x * x) as f32);
+            let tf = if row == 0 {
+                1
+            } else if row <= 80 {
+                81 - row
+            } else {
+                0
+            };
+            let bm25 = astra_03_bm25(tf as u32);
+            let score =
+                0.7 * ((ceiling - distance) / ceiling) + (1.0 - 0.7) * (bm25 / astra_03_bm25(80));
+            (DocId::new(row as u128 + 1), distance, bm25, score)
+        })
+        .collect::<Vec<_>>();
+    reference.sort_by(|a, b| b.3.total_cmp(&a.3).then(a.0.cmp(&b.0)));
+    assert_eq!(reference[0].0, DocId::new(1), "literal balanced winner");
+    for k in [1, 10, 20, 130] {
+        for rounds in [0, 8] {
+            let outcome = astra_03_query(&store, k, 0.7, rounds);
+            assert_eq!(outcome.hits.len(), k.min(128));
+            for (hit, expected) in outcome.hits.iter().zip(&reference) {
+                assert_eq!(hit.key, expected.0);
+                assert_eq!(
+                    hit.vector_squared_l2.map(f64::to_bits),
+                    Some(expected.1.to_bits())
+                );
+                assert_eq!(
+                    hit.lexical_bm25.map(f64::to_bits),
+                    Some(expected.2.to_bits())
+                );
+                assert_eq!(hit.fused_score.to_bits(), expected.3.to_bits());
+            }
+            assert!(
+                outcome
+                    .diagnostics
+                    .hybrid
+                    .expect("hybrid")
+                    .provenance
+                    .cross_scores_complete
+            );
+            assert_eq!(
+                outcome
+                    .diagnostics
+                    .hybrid
+                    .expect("hybrid")
+                    .normalization_policy_version,
+                1
+            );
+            assert!(matches!(
+                outcome.diagnostics.fusion.expect("fusion").termination,
+                FusionTermination::StableBound | FusionTermination::ListsExhausted
+            ));
+        }
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_03_empty_and_zero_range_legs_have_defined_scores() {
+    use zeppelin_embed::fusion::FusionMethod;
+    for texts in [vec![None, None], vec![Some("alpha"), Some("alpha")]] {
+        let directory = tempdir().expect("degenerate fixture");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let empty = store
+            .search_hybrid(
+                SearchRequest::new(&[0.0, 0.0]),
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(10),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("empty store");
+        assert!(empty.hits.is_empty());
+        let documents = texts
+            .iter()
+            .enumerate()
+            .map(|(row, text)| {
+                let document = IngestDocument::new(
+                    DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                    vec![0.0, 0.0],
+                );
+                text.map_or(document.clone(), |text| document.with_text(text))
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(documents))
+            .expect("equal vectors");
+        let outcome = store
+            .search_hybrid(
+                SearchRequest::new(&[0.0, 0.0]),
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(10),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("degenerate legs");
+        assert_eq!(
+            outcome.diagnostics.fusion.expect("fusion").method,
+            FusionMethod::ConvexCombination
+        );
+        assert_eq!(
+            outcome.hits.iter().map(|hit| hit.key).collect::<Vec<_>>(),
+            vec![DocId::new(1), DocId::new(2)]
+        );
+        for hit in outcome.hits {
+            assert_eq!(hit.fused_score, 1.0);
+            assert!(hit.lexical_bm25.is_some());
+        }
+        store.close().expect("close");
+    }
+}
+
+#[test]
+fn astra_03_structured_anchor_uses_the_exact_combined_maximum() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    let directory = tempdir().expect("combined fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let documents = (0..110)
+        .map(|row| {
+            let (alpha, alpine) = match row {
+                0..51 => (8, 0),
+                51..102 => (0, 8),
+                102 => (5, 5),
+                _ => (0, 0),
+            };
+            let mut words = vec!["alpha"; alpha];
+            words.extend(vec!["alpine"; alpine]);
+            words.extend(vec!["omega"; 16 - words.len()]);
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(&words.join(" "))
+        })
+        .collect();
+    store.ingest(IngestBatch::new(documents)).expect("ingest");
+    let outcome = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &LexicalQuery::prefix(b"al".to_vec(), DEFAULT_FIELD),
+            &HybridQuery::new(1).with_alpha(0.0),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("combined hybrid");
+    // Row 103 is rank 52 in both individual expansions, but wins their sum.
+    let idf = (1.0_f64 + (110.0 - 52.0 + 0.5) / (52.0 + 0.5)).ln();
+    let term = idf * (5.0 * 2.2) / (5.0 + 1.2);
+    assert_eq!(outcome.hits[0].key, DocId::new(103));
+    assert_eq!(
+        outcome.hits[0].lexical_bm25.map(f64::to_bits),
+        Some((term + term).to_bits())
+    );
+    assert_eq!(outcome.hits[0].fused_score, 1.0);
+    assert_eq!(
+        outcome
+            .diagnostics
+            .hybrid
+            .expect("hybrid")
+            .lexical_full_materializations,
+        1
+    );
+    store.close().expect("close");
+}
 
 fn corpus_cases() -> usize {
     std::env::var("PROPTEST_CASES")
@@ -60,48 +406,47 @@ fn offline_full_list_fusion(
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("complete exact lexical list");
-    let vector_candidates = vector_leg
+    let lexical = lexical_leg
+        .candidates
+        .iter()
+        .map(|hit| (hit.document.doc_id(), hit.score))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let maximum = lexical
+        .values()
+        .copied()
+        .max_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    let ceiling = vector_leg.vector_ceiling.expect("validated norm enclosure");
+    let alpha = if maximum == 0.0 { 1.0 } else { 0.7 };
+    let mut hits = vector_leg
         .candidates
         .iter()
         .map(|candidate| {
-            VectorCandidate::exact(
-                candidate.document().map(|version| version.doc_id()),
-                -f64::from(candidate.score()),
-            )
+            let key = candidate.document().expect("document identity").doc_id();
+            let distance = -f64::from(candidate.score());
+            let bm25 = lexical.get(&key).copied().unwrap_or(0.0);
+            let vector_score = if ceiling == 0.0 {
+                1.0
+            } else {
+                (ceiling - distance) / ceiling
+            };
+            let lexical_score = if maximum == 0.0 { 0.0 } else { bm25 / maximum };
+            FusedHit {
+                key,
+                vector_squared_l2: Some(distance),
+                lexical_bm25: Some(bm25),
+                fused_score: alpha * vector_score + (1.0 - alpha) * lexical_score,
+            }
         })
         .collect::<Vec<_>>();
-    let lexical_candidates = lexical_leg
-        .candidates
-        .iter()
-        .map(|candidate| LexicalCandidate::new(Some(candidate.document.doc_id()), candidate.score))
-        .collect::<Vec<_>>();
-    let bounds = LegBounds {
-        vector: vector_candidates.first().map(|best| VectorBounds {
-            min_squared_l2: best.squared_l2(),
-            max_squared_l2: vector_leg
-                .vector_ceiling
-                .expect("complete exact vector leg reports its norm-ball ceiling"),
-            next_unseen_squared_l2: None,
-        }),
-        lexical: lexical_candidates
-            .first()
-            .zip(lexical_candidates.last())
-            .map(|(best, worst)| LexicalBounds {
-                max_bm25: best.bm25(),
-                min_bm25: worst.bm25(),
-                next_unseen_bm25: None,
-            }),
-    };
-    fuse_bounded(
-        &HybridQuery::new(k),
-        &vector_candidates,
-        &lexical_candidates,
-        bounds,
-        |document: &Option<DocId>| *document,
-        |document: &Option<DocId>| *document,
-    )
-    .expect("offline fusion of the complete lists")
-    .hits
+    hits.sort_by(|left, right| {
+        right
+            .fused_score
+            .total_cmp(&left.fused_score)
+            .then(left.key.cmp(&right.key))
+    });
+    hits.truncate(k);
+    hits
 }
 
 fn assert_same_hits(bounded: &[FusedHit<DocId>], offline: &[FusedHit<DocId>], context: &str) {
@@ -331,7 +676,7 @@ fn astra_disjoint_windows_store() -> (tempfile::TempDir, Store) {
 #[test]
 fn astra_00_lexical_window_survives_worker_handoff() {
     let (_directory, store) = astra_disjoint_windows_store();
-    let mut query = HybridQuery::new(1);
+    let mut query = HybridQuery::new(1).with_alpha(1.0);
     query.max_rounds = 1;
     let outcome = store
         .search_hybrid(
@@ -344,23 +689,22 @@ fn astra_00_lexical_window_survives_worker_handoff() {
         .expect("bounded query");
     let report = outcome.diagnostics.hybrid.expect("hybrid");
     assert_eq!(
-        report.lexical_returned,
-        report.window.min(200),
-        "the worker must return its requested window of the 200 matching rows"
+        report.lexical_candidates_produced, 51,
+        "the worker must return its requested W+1 producer boundary"
     );
     store.close().expect("close store");
 }
 
 #[test]
-// Keep this a single ordinary bounded round. Explicit Exact now widens when
-// candidate cross-scores are incomplete; astra_01 pins that separate contract.
+// Alpha one certifies one round while both disjoint producers and their
+// cross-fills still execute. This isolates the literal work receipt.
 fn astra_00_cross_fill_counts_exact_rows_and_bytes() {
     let (_directory, store) = astra_disjoint_windows_store();
     let outcome = store
         .search_hybrid(
             SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-            &HybridQuery::new(1),
+            &HybridQuery::new(1).with_alpha(1.0),
             SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -376,14 +720,20 @@ fn astra_00_cross_fill_counts_exact_rows_and_bytes() {
     assert_eq!(outcome.diagnostics.counters.scan.dims_touched, 2_700);
     assert_eq!(outcome.diagnostics.counters.scan.bytes_read, 10_800);
     // Secondary score control, in addition to the literal work oracle above.
-    let offline = offline_full_list_fusion(
-        &store,
-        &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-        1,
-        400,
+    let offline = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1).with_alpha(1.0).with_max_rounds(0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("same-policy exhaustive work control");
+    assert_same_hits(
+        &outcome.hits,
+        &offline.hits,
+        "one-round cross-fill accounting",
     );
-    assert_same_hits(&outcome.hits, &offline, "one-round cross-fill accounting");
     store.close().expect("close");
 }
 
@@ -395,7 +745,7 @@ fn astra_00_cache_receipts_belong_to_the_query() {
             .search_hybrid(
                 SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-                &HybridQuery::new(1),
+                &HybridQuery::new(1).with_alpha(1.0),
                 SearchOptions::default(),
                 QueryControl::Cancel(CancelToken::new()),
             )
@@ -519,16 +869,6 @@ fn astra_std_cc_reference(
     ceiling: f64,
 ) -> Vec<(u128, f64)> {
     let lexical: std::collections::BTreeMap<_, _> = lexical.iter().copied().collect();
-    let minimum_vector = vector
-        .iter()
-        .map(|(_, score)| *score)
-        .min_by(f64::total_cmp)
-        .expect("vectors");
-    let minimum_lexical = lexical
-        .values()
-        .copied()
-        .min_by(f64::total_cmp)
-        .expect("lexical scores");
     let maximum_lexical = lexical
         .values()
         .copied()
@@ -538,10 +878,10 @@ fn astra_std_cc_reference(
         .iter()
         .map(|(id, distance)| {
             let alpha = 0.7_f64; // Declared core default; text queries explicitly choose 0.5.
-            let dense = alpha * ((ceiling - distance) / (ceiling - minimum_vector));
-            let sparse = lexical.get(id).map_or(0.0, |score| {
-                (1.0 - alpha) * ((score - minimum_lexical) / (maximum_lexical - minimum_lexical))
-            });
+            let dense = alpha * ((ceiling - distance) / ceiling);
+            let sparse = lexical
+                .get(id)
+                .map_or(0.0, |score| (1.0 - alpha) * (score / maximum_lexical));
             (*id, dense + sparse)
         })
         .collect::<Vec<_>>();

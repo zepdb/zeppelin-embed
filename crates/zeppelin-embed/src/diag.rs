@@ -197,6 +197,10 @@ impl PartialEq for QueryDiagnostics {
 /// and whether the producers can support a completeness certificate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HybridReport {
+    /// Version of the Store normalization/degenerate-leg score contract.
+    pub normalization_policy_version: u16,
+    /// Complete structured lexical aggregations executed across all rounds.
+    pub lexical_full_materializations: usize,
     /// Independent score precision, producer coverage and cross-score facts.
     pub provenance: crate::fusion::HybridProvenance,
     /// Per-leg window width the producers were finally asked for.
@@ -211,7 +215,7 @@ pub struct HybridReport {
     pub cross_filled_lexical: usize,
     /// Exact vector cross-fills across all completed rounds, including repeats.
     pub total_cross_filled_vector: usize,
-    /// Reused lexical scores cross-filled across all completed rounds.
+    /// Computed lexical cross-scores across all completed rounds, including zeros.
     pub total_cross_filled_lexical: usize,
     /// Sum of vector producer candidate counts before each round's fusion cut.
     pub vector_candidates_produced: usize,

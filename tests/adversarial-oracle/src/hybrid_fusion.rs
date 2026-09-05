@@ -6,11 +6,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const I45_CHECKER_ID: &str = "hybrid.i45.provenance.v2";
-pub const I46_CHECKER_ID: &str = "hybrid.i46.normalization.v2";
-pub const I47_CHECKER_ID: &str = "hybrid.i47.bounded.v2";
-pub const I48_CHECKER_ID: &str = "hybrid.i48.rrf.v2";
-pub const I49_CHECKER_ID: &str = "hybrid.i49.legs.v2";
+pub const I45_CHECKER_ID: &str = "hybrid.i45.provenance.v3";
+pub const I46_CHECKER_ID: &str = "hybrid.i46.normalization.v3";
+pub const I47_CHECKER_ID: &str = "hybrid.i47.bounded.v3";
+pub const I48_CHECKER_ID: &str = "hybrid.i48.rrf.v3";
+pub const I49_CHECKER_ID: &str = "hybrid.i49.legs.v3";
 
 const RRF_K: f64 = 60.0;
 
@@ -50,8 +50,16 @@ impl RankedScore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorePolicyFact {
+    pub version: u16,
+    pub vector_ceiling_bits: u64,
+    pub corpus_rows: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FusionCaseInput {
+    pub store_policy: Option<StorePolicyFact>,
     pub k: usize,
     pub alpha_bits: u64,
     pub max_rounds: usize,
@@ -75,6 +83,7 @@ pub struct FusedHitFact {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FusionReportFact {
+    pub normalization_policy_version: Option<u16>,
     pub method: FusionMethodFact,
     pub rounds: usize,
     pub budget_exhausted: bool,
@@ -322,13 +331,136 @@ fn stable_bound(
     next_vector + next_lexical < threshold
 }
 
+/// Independent replay of Store policy v1 over complete primitive score facts.
+/// No production normalizer, cross-fill, range, sorting or stop helper is used.
+fn expected_store_case(input: &FusionCaseInput, policy: StorePolicyFact) -> FusionCaseObserved {
+    let ceiling = f64::from_bits(policy.vector_ceiling_bits);
+    let lexical_maximum = input.lexical.first().map_or(0.0, |hit| hit.score());
+    let alpha = if input.vector.is_empty() {
+        0.0
+    } else if lexical_maximum == 0.0 {
+        1.0
+    } else {
+        input.alpha()
+    };
+    let vector_part = |distance| {
+        alpha
+            * if ceiling == 0.0 {
+                1.0
+            } else {
+                (ceiling - distance) / ceiling
+            }
+    };
+    let lexical_part = |score| {
+        (1.0 - alpha)
+            * if lexical_maximum == 0.0 {
+                0.0
+            } else {
+                score / lexical_maximum
+            }
+    };
+    let vectors = input
+        .vector
+        .iter()
+        .map(|hit| (hit.id, *hit))
+        .collect::<BTreeMap<_, _>>();
+    let lexical = input
+        .lexical
+        .iter()
+        .map(|hit| (hit.id, *hit))
+        .collect::<BTreeMap<_, _>>();
+    let mut width = if input.max_rounds == 0 {
+        policy.corpus_rows
+    } else {
+        50.max(5 * input.k).max(input.k).min(policy.corpus_rows)
+    };
+    let mut rounds = 1;
+    let mut budget_exhausted = false;
+    loop {
+        let union = input
+            .vector
+            .iter()
+            .take(width)
+            .chain(input.lexical.iter().take(width))
+            .map(|hit| hit.id)
+            .collect::<BTreeSet<_>>();
+        let mut hits = union
+            .into_iter()
+            .map(|id| {
+                let vector = vectors.get(&id);
+                let bm25 = lexical.get(&id).map_or(0.0, |hit| hit.score());
+                let mut score = 0.0;
+                if let Some(vector) = vector {
+                    score += vector_part(vector.score());
+                }
+                score += lexical_part(bm25);
+                FusedHitFact {
+                    id,
+                    vector_squared_l2_bits: vector.map(|hit| hit.score_bits),
+                    lexical_bm25_bits: Some(bm25.to_bits()),
+                    fused_score_bits: score.to_bits(),
+                }
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            f64::from_bits(right.fused_score_bits)
+                .total_cmp(&f64::from_bits(left.fused_score_bits))
+                .then(left.id.cmp(&right.id))
+        });
+        hits.truncate(input.k);
+        let next_vector = input.vector.get(width);
+        let next_lexical = input.lexical.get(width);
+        let exhausted = next_vector.is_none() && next_lexical.is_none();
+        let unseen = next_vector
+            .map_or(0.0, |hit| vector_part(hit.score()))
+            .max(0.0)
+            + next_lexical
+                .map_or(0.0, |hit| lexical_part(hit.score()))
+                .max(0.0);
+        let stable = input.k != 0
+            && hits.len() >= input.k
+            && hits
+                .last()
+                .is_some_and(|hit| unseen < f64::from_bits(hit.fused_score_bits));
+        if exhausted || stable || width >= policy.corpus_rows || input.k == 0 {
+            return FusionCaseObserved {
+                hits,
+                report: FusionReportFact {
+                    normalization_policy_version: Some(1),
+                    method: FusionMethodFact::ConvexCombination,
+                    rounds,
+                    budget_exhausted,
+                    termination: if budget_exhausted {
+                        FusionTerminationFact::BudgetFullMaterialization
+                    } else if exhausted {
+                        FusionTerminationFact::ListsExhausted
+                    } else {
+                        FusionTerminationFact::StableBound
+                    },
+                },
+            };
+        }
+        width = if rounds >= input.max_rounds {
+            budget_exhausted = true;
+            policy.corpus_rows
+        } else {
+            width.saturating_mul(2).min(policy.corpus_rows)
+        };
+        rounds += 1;
+    }
+}
+
 fn expected_case(input: &FusionCaseInput) -> FusionCaseObserved {
+    if let Some(policy) = input.store_policy {
+        return expected_store_case(input, policy);
+    }
     let selected_method = method(input);
     let maximum_len = input.vector.len().max(input.lexical.len());
     if input.k == 0 || maximum_len == 0 {
         return FusionCaseObserved {
             hits: Vec::new(),
             report: FusionReportFact {
+                normalization_policy_version: None,
                 method: selected_method,
                 rounds: usize::from(maximum_len != 0),
                 budget_exhausted: false,
@@ -351,6 +483,7 @@ fn expected_case(input: &FusionCaseInput) -> FusionCaseObserved {
             return FusionCaseObserved {
                 hits,
                 report: FusionReportFact {
+                    normalization_policy_version: None,
                     method: selected_method,
                     rounds,
                     budget_exhausted: false,
@@ -378,6 +511,7 @@ fn expected_case(input: &FusionCaseInput) -> FusionCaseObserved {
     FusionCaseObserved {
         hits,
         report: FusionReportFact {
+            normalization_policy_version: None,
             method: selected_method,
             rounds,
             budget_exhausted: true,
@@ -394,6 +528,16 @@ fn score_bits_by_id(values: &[RankedScore], id: u64) -> Option<u64> {
 }
 
 fn guard_fixture(input: &HybridInput, checker: &str) -> Result<(), String> {
+    for case in [&input.main, &input.rrf, &input.single, &input.empty] {
+        if case.store_policy.is_some_and(|policy| {
+            policy.version != 1
+                || !f64::from_bits(policy.vector_ceiling_bits).is_finite()
+                || f64::from_bits(policy.vector_ceiling_bits) < 0.0
+                || policy.corpus_rows < case.vector.len()
+        }) {
+            return fail(checker, "invalid fixed Store policy facts");
+        }
+    }
     if !(40..=200).contains(&input.generated_docs) {
         return fail(checker, "fixture document count is outside 40..=200");
     }
@@ -488,7 +632,8 @@ fn compare_provenance(
 ) -> Result<(), String> {
     for hit in &observed.hits {
         let vector = score_bits_by_id(&input.vector, hit.id);
-        let lexical = score_bits_by_id(&input.lexical, hit.id);
+        let lexical = score_bits_by_id(&input.lexical, hit.id)
+            .or_else(|| input.store_policy.map(|_| 0.0_f64.to_bits()));
         if hit.vector_squared_l2_bits != vector || hit.lexical_bm25_bits != lexical {
             return fail(
                 I45_CHECKER_ID,
@@ -514,6 +659,10 @@ fn compare_scores(
     observed: &FusionCaseObserved,
 ) -> Result<(), String> {
     let expected = expected_case(input);
+    if observed.report.normalization_policy_version != expected.report.normalization_policy_version
+    {
+        return fail(checker, "Store normalization policy version differs");
+    }
     if observed.hits.len() != expected.hits.len() {
         return fail(
             checker,
@@ -601,7 +750,9 @@ pub fn compare_i47(input: &HybridInput, observed: &HybridObserved) -> Result<(),
             ),
         );
     }
-    if observed.main.report.rounds != expected.report.rounds
+    if observed.main.report.normalization_policy_version
+        != expected.report.normalization_policy_version
+        || observed.main.report.rounds != expected.report.rounds
         || observed.main.report.budget_exhausted != expected.report.budget_exhausted
         || observed.main.report.termination != expected.report.termination
     {
@@ -619,10 +770,18 @@ pub fn compare_i47(input: &HybridInput, observed: &HybridObserved) -> Result<(),
 pub fn compare_i48(input: &HybridInput, observed: &HybridObserved) -> Result<(), String> {
     guard_fixture(input, I48_CHECKER_ID)?;
     let expected = expected_case(&input.rrf);
-    if expected.report.method != FusionMethodFact::ReciprocalRankFusion
+    if expected.report.method
+        != if input.rrf.store_policy.is_some() {
+            FusionMethodFact::ConvexCombination
+        } else {
+            FusionMethodFact::ReciprocalRankFusion
+        }
         || observed.rrf.report.method != expected.report.method
     {
-        return fail(I48_CHECKER_ID, "all-equal leg did not select RRF fallback");
+        return fail(
+            I48_CHECKER_ID,
+            "all-equal leg selected a method inconsistent with its declared score policy",
+        );
     }
     if observed.rrf != expected {
         return fail(
@@ -682,6 +841,7 @@ mod tests {
 
     fn case(k: usize, vector: &[(u64, f64)], lexical: &[(u64, f64)]) -> FusionCaseInput {
         FusionCaseInput {
+            store_policy: None,
             k,
             alpha_bits: 0.5_f64.to_bits(),
             max_rounds: 8,
@@ -739,6 +899,39 @@ mod tests {
             same_seed_control_passed: true,
         };
         (input, observed)
+    }
+
+    #[test]
+    fn astra_03_literal_fixed_policy_rejects_boundary_floor_and_missing_score() {
+        let mut input = case(
+            3,
+            &[(100, 0.0), (99, 0.0), (98, 1.0)],
+            &[(100, 3.0), (99, 3.0), (98, 1.0)],
+        );
+        input.store_policy = Some(StorePolicyFact {
+            version: 1,
+            vector_ceiling_bits: 4.0_f64.to_bits(),
+            corpus_rows: 3,
+        });
+        let clean = expected_case(&input);
+        assert_eq!(clean.hits[2].id, 98);
+        assert_eq!(
+            clean.hits[2].fused_score_bits,
+            (0.5_f64 * (3.0 / 4.0) + 0.5 * (1.0 / 3.0)).to_bits()
+        );
+        compare_scores(I46_CHECKER_ID, "literal zero anchors", &input, &clean)
+            .expect("clean fixed-policy control");
+        let mut floor_plant = clean.clone();
+        // Treat the third lexical score as a W+1 normalization floor. Its
+        // real positive contribution is then erased, exactly the old defect.
+        floor_plant.hits[2].fused_score_bits =
+            (0.5_f64 * (3.0 / 4.0) + 0.5 * ((1.0 - 1.0) / (3.0 - 1.0))).to_bits();
+        assert!(
+            compare_scores(I46_CHECKER_ID, "boundary floor plant", &input, &floor_plant).is_err()
+        );
+        let mut missing_plant = clean;
+        missing_plant.hits[2].lexical_bm25_bits = None;
+        assert!(compare_provenance("missing score plant", &input, &missing_plant).is_err());
     }
 
     #[test]

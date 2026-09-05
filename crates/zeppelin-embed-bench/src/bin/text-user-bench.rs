@@ -418,6 +418,8 @@ fn query_sample_json(
             "ef_effective": plan.ef_effective,
         })).collect::<Vec<_>>();
         let hybrid = diag.hybrid.as_ref().map(|report| json!({
+            "normalization_policy_version": report.normalization_policy_version,
+            "lexical_full_materializations": report.lexical_full_materializations,
             "provenance": {
                 "vector_precision": format!("{:?}", report.provenance.vector_precision),
                 "vector_coverage": format!("{:?}", report.provenance.vector_coverage),

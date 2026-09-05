@@ -21,7 +21,7 @@ use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::hybrid_fusion::{
     FusedHitFact, FusionCaseInput, FusionCaseObserved, FusionLegFact, FusionMethodFact,
     FusionReportFact, FusionTerminationFact, HybridInput, HybridObserved, LegFailureFact,
-    LegFaultObserved, RankedScore,
+    LegFaultObserved, RankedScore, StorePolicyFact,
 };
 
 use super::runner::FrozenStoreFixture;
@@ -274,7 +274,7 @@ fn vector_scores(
     documents: &[FixtureDocument],
     query: &[f32],
     k: usize,
-) -> Result<Vec<RankedScore>, String> {
+) -> Result<(Vec<RankedScore>, f64), String> {
     let independent = documents
         .iter()
         .filter(|document| !document.deleted)
@@ -291,15 +291,18 @@ fn vector_scores(
             (document.id, f64::from(squared_l2 as f32).to_bits())
         })
         .collect::<BTreeMap<_, _>>();
-    let mut scores = store
+    let outcome = store
         .search(
             SearchRequest::new(query),
             k,
             SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .map_err(|error| format!("observe public exact vector leg: {error}"))?
-        .candidates
+        .map_err(|error| format!("observe public exact vector leg: {error}"))?;
+    let ceiling = outcome
+        .vector_ceiling
+        .ok_or_else(|| "missing validated vector ceiling".to_owned())?;
+    let mut scores = outcome.candidates
         .into_iter()
         .map(|candidate| {
             let document = candidate
@@ -324,7 +327,7 @@ fn vector_scores(
             .total_cmp(&f64::from_bits(right.score_bits))
             .then_with(|| left.id.cmp(&right.id))
     });
-    Ok(scores)
+    Ok((scores, ceiling))
 }
 
 fn term_query(term: &[u8]) -> TermQuery {
@@ -360,8 +363,9 @@ fn lexical_scores(store: &Store, term: &[u8], k: usize) -> Result<Vec<RankedScor
     Ok(scores)
 }
 
-fn report_fact(report: &zeppelin_embed::fusion::FusionReport) -> FusionReportFact {
+fn report_fact(report: &zeppelin_embed::fusion::FusionReport, version: u16) -> FusionReportFact {
     FusionReportFact {
+        normalization_policy_version: Some(version),
         method: match report.method {
             FusionMethod::ConvexCombination => FusionMethodFact::ConvexCombination,
             FusionMethod::ReciprocalRankFusion => FusionMethodFact::ReciprocalRankFusion,
@@ -416,7 +420,15 @@ fn observe_case(
         .collect::<Result<Vec<_>, String>>()?;
     Ok(FusionCaseObserved {
         hits,
-        report: report_fact(report),
+        report: report_fact(
+            report,
+            outcome
+                .diagnostics
+                .hybrid
+                .as_ref()
+                .ok_or_else(|| "missing Store policy report".to_owned())?
+                .normalization_policy_version,
+        ),
     })
 }
 
@@ -424,8 +436,10 @@ fn case_input(
     query: &HybridQuery,
     vector: &[RankedScore],
     lexical: Vec<RankedScore>,
+    policy: StorePolicyFact,
 ) -> FusionCaseInput {
     FusionCaseInput {
+        store_policy: Some(policy),
         k: query.k,
         alpha_bits: query
             .alpha
@@ -459,7 +473,12 @@ pub fn build_hybrid_episode(seed: u64) -> Result<HybridEpisode, String> {
     ingest_documents(&store, &documents[sealed_count..])?;
 
     let live_count = generated_docs - deleted_docs;
-    let vector = vector_scores(&store, &documents, &vector_query, live_count)?;
+    let (vector, ceiling) = vector_scores(&store, &documents, &vector_query, live_count)?;
+    let policy = StorePolicyFact {
+        version: 1,
+        vector_ceiling_bits: ceiling.to_bits(),
+        corpus_rows: generated_docs,
+    };
     let k = 5 + (seed as usize % 11);
     let alpha = [
         0.0,
@@ -473,21 +492,25 @@ pub fn build_hybrid_episode(seed: u64) -> Result<HybridEpisode, String> {
         &query,
         &vector,
         lexical_scores(&store, MAIN_TERM, live_count)?,
+        policy,
     );
     let rrf = case_input(
         &query,
         &vector,
         lexical_scores(&store, RRF_TERM, live_count)?,
+        policy,
     );
     let single = case_input(
         &query,
         &vector,
         lexical_scores(&store, SINGLE_TERM, live_count)?,
+        policy,
     );
     let empty = case_input(
         &query,
         &vector,
         lexical_scores(&store, EMPTY_TERM, live_count)?,
+        policy,
     );
     let observed = HybridObserved {
         main: observe_case(&store, &vector_query, MAIN_TERM, &query)?,
@@ -745,6 +768,74 @@ pub fn run_hybrid_operation(
 mod tests {
     use super::*;
     use zeppelin_embed_adversarial_oracle::hybrid_fusion as oracle;
+
+    #[test]
+    fn astra_03_fixed_policy_cross_fill_and_certificate_plants() {
+        let episode = build_hybrid_episode(11).expect("seed-11 fixed-policy episode");
+        for operation in [
+            HybridOperationKind::Provenance,
+            HybridOperationKind::Normalization,
+            HybridOperationKind::BoundedFusion,
+            HybridOperationKind::Rrf,
+            HybridOperationKind::Legs,
+        ] {
+            let fault = match operation {
+                HybridOperationKind::Provenance => Some(HybridFaultKind::EstimatedScore),
+                HybridOperationKind::Normalization => Some(HybridFaultKind::NonfiniteScore),
+                HybridOperationKind::Legs => Some(HybridFaultKind::LegPanic),
+                _ => None,
+            };
+            let evidence =
+                run_hybrid_operation(&episode, operation, fault).expect("directed policy boundary");
+            assert!(evidence.clean_control_passed);
+            assert_eq!(evidence.receipts.len(), usize::from(fault.is_some()));
+            for invariant in evidence.invariants {
+                match invariant {
+                    HybridInvariantEvidence::I45 {
+                        input,
+                        mut observed,
+                    } => {
+                        oracle::compare_i45(&input, &observed).expect("complete raw-score control");
+                        observed.main.hits[0].lexical_bm25_bits = None;
+                        assert!(
+                            oracle::compare_i45(&input, &observed).is_err(),
+                            "omitted cross-score plant must fire"
+                        );
+                    }
+                    HybridInvariantEvidence::I46 {
+                        input,
+                        mut observed,
+                    } => {
+                        oracle::compare_i46(&input, &observed).expect("fixed-anchor control");
+                        observed.main.report.normalization_policy_version = Some(0);
+                        assert!(
+                            oracle::compare_i46(&input, &observed).is_err(),
+                            "unsupported normalization policy must fire"
+                        );
+                    }
+                    HybridInvariantEvidence::I47 {
+                        input,
+                        mut observed,
+                    } => {
+                        oracle::compare_i47(&input, &observed).expect("independent bounded replay");
+                        observed.main.report.rounds += 1;
+                        assert!(
+                            oracle::compare_i47(&input, &observed).is_err(),
+                            "false round receipt must fire"
+                        );
+                    }
+                    HybridInvariantEvidence::I48 { input, observed } => {
+                        oracle::compare_i48(&input, &observed)
+                            .expect("Store degenerate policy control")
+                    }
+                    HybridInvariantEvidence::I49 { input, observed } => {
+                        oracle::compare_i49(&input, &observed)
+                            .expect("panic join and exact same-seed retry")
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_hybrid_operation_runs_its_checker_on_one_shared_episode() {

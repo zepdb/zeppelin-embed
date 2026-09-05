@@ -4,6 +4,7 @@ use super::{DegenerateKind, DegenerateLeg, FusionLeg, JoinedLexical, JoinedVecto
 pub(crate) struct ScoreRange {
     minimum: f64,
     maximum: f64,
+    constant: Option<f64>,
 }
 
 impl ScoreRange {
@@ -11,15 +12,29 @@ impl ScoreRange {
     /// are not a range: the leg is degenerate and falls back to rank fusion,
     /// exactly as an all-equal complete list does.
     pub(crate) fn explicit(minimum: f64, maximum: f64) -> Option<Self> {
-        (minimum != maximum).then_some(Self { minimum, maximum })
+        (minimum != maximum).then_some(Self {
+            minimum,
+            maximum,
+            constant: None,
+        })
+    }
+
+    pub(crate) fn fixed_zero(maximum: f64, zero_width_score: f64) -> Self {
+        Self {
+            minimum: 0.0,
+            maximum,
+            constant: (maximum == 0.0).then_some(zero_width_score),
+        }
     }
 
     pub(crate) fn vector(self, squared_l2: f64) -> f64 {
-        (self.maximum - squared_l2) / (self.maximum - self.minimum)
+        self.constant
+            .unwrap_or_else(|| (self.maximum - squared_l2) / (self.maximum - self.minimum))
     }
 
     pub(crate) fn lexical(self, bm25: f64) -> f64 {
-        (bm25 - self.minimum) / (self.maximum - self.minimum)
+        self.constant
+            .unwrap_or_else(|| (bm25 - self.minimum) / (self.maximum - self.minimum))
     }
 }
 
@@ -29,6 +44,7 @@ pub(crate) fn vector_range<K>(hits: &[JoinedVector<K>]) -> Option<ScoreRange> {
     (first != last).then_some(ScoreRange {
         minimum: first,
         maximum: last,
+        constant: None,
     })
 }
 
@@ -38,6 +54,7 @@ pub(crate) fn lexical_range<K>(hits: &[JoinedLexical<K>]) -> Option<ScoreRange> 
     (first != last).then_some(ScoreRange {
         minimum: last,
         maximum: first,
+        constant: None,
     })
 }
 

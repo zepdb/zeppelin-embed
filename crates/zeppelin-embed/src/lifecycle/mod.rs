@@ -3592,7 +3592,7 @@ impl Store {
             mut vector_outcome,
             (
                 mut lexical_hits,
-                mut lexical_sources,
+                mut lexical_assembly,
                 mut lexical_counters,
                 lexical_expansions,
                 mut lexical_cache_hit,
@@ -3601,6 +3601,13 @@ impl Store {
 
         timings.lexical_queue = queue_time;
         timings.lexical = lexical_time;
+        let anchors = hybrid::HybridAnchors {
+            vector_ceiling: vector_outcome.vector_ceiling,
+            lexical_maximum: lexical_hits.first().map_or(0.0, |hit| hit.bm25),
+        };
+        let fusion_lease =
+            SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
+        let fusion_cancellation = QueryCancellation::new(&control, &fusion_lease);
         let mut work = hybrid::HybridWork::new();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
@@ -3612,12 +3619,14 @@ impl Store {
             let round = hybrid::build_round(
                 &admitted.snapshot,
                 &admitted.active_segment,
-                &lexical_sources,
+                &lexical_assembly,
+                lexical_query,
                 vector_query.vector(),
                 &vector_outcome.candidates,
-                vector_outcome.vector_ceiling,
+                anchors,
                 &lexical_hits,
                 width,
+                &fusion_cancellation,
             )?;
             // Cross-fill reads full-precision rows on the caller thread,
             // outside the vector producer. Include those actual reads in
@@ -3646,6 +3655,7 @@ impl Store {
                 }
                 vector_outcome.stats.threads_used = vector_outcome.stats.worker_thread_ids.len();
             }
+            accumulate_search_counters(&mut lexical_counters, &round.lexical_counters);
             work.complete_round(
                 &vector_outcome.stats,
                 vector_outcome.graph_stats,
@@ -3684,6 +3694,18 @@ impl Store {
                 break (
                     fused,
                     crate::diag::HybridReport {
+                        normalization_policy_version:
+                            crate::fusion::HYBRID_NORMALIZATION_POLICY_VERSION,
+                        lexical_full_materializations: if matches!(
+                            lexical_query,
+                            PinnedLexicalQuery::Structured(_)
+                        ) && !lexical_expansions.is_empty()
+                            && !lexical_assembly.index.segments().is_empty()
+                        {
+                            rounds
+                        } else {
+                            0
+                        },
                         provenance,
                         window: width,
                         vector_returned: round.vector.len(),
@@ -3724,7 +3746,7 @@ impl Store {
             timings.lexical += lexical_time;
             vector_outcome = next_vector;
             lexical_hits = next_hits;
-            lexical_sources = next_sources;
+            lexical_assembly = next_sources;
             lexical_counters = next_counters;
             lexical_cache_hit = next_cache_hit;
         };
@@ -4590,7 +4612,7 @@ fn structured_lexical_row<'a>(
 
 type ExactLexicalLeg = (
     Vec<hybrid::LexicalHit>,
-    Vec<StructuredLexicalSource>,
+    Arc<LexicalAssembly>,
     crate::fts::search::SearchCounters,
     Vec<crate::fts::query::LexicalExpansion>,
     bool,
@@ -4634,7 +4656,7 @@ fn exact_structured_lexical_leg(
     inputs: LexicalInputs<'_>,
     analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
-    bound: usize,
+    _bound: usize,
     cancellation: &QueryCancellation<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
     let (snapshot, active) = (inputs.snapshot, inputs.active);
@@ -4653,7 +4675,7 @@ fn exact_structured_lexical_leg(
     if index.segments().is_empty() || expansions.is_empty() {
         return Ok((
             Vec::new(),
-            sources.clone(),
+            Arc::clone(&assembly.assembly),
             crate::fts::search::SearchCounters::default(),
             expansions,
             assembly.cache_hit,
@@ -4665,7 +4687,9 @@ fn exact_structured_lexical_leg(
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
     let fields = query.fields();
-    let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
+    // Exact combined maximum and cross-scores require complete expansion lists.
+    // Plan 10 replaces this interim full aggregation with combined top-k.
+    let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
     let mut counters = crate::fts::search::SearchCounters::default();
     let mut aggregate = BTreeMap::<crate::fts::search::GlobalDocId, f64>::new();
     for expansion in &expansions {
@@ -4704,8 +4728,7 @@ fn exact_structured_lexical_leg(
     let mut joined = Vec::with_capacity(scored.len());
     for (doc, score) in scored {
         let document = structured_lexical_document(snapshot, active, sources, doc, false)
-            .map_err(map_structured_leg_document_error)?
-            .map(|version| version.doc_id());
+            .map_err(map_structured_leg_document_error)?;
         joined.push(hybrid::LexicalHit {
             doc,
             document,
@@ -4714,7 +4737,7 @@ fn exact_structured_lexical_leg(
     }
     Ok((
         joined,
-        sources.clone(),
+        Arc::clone(&assembly.assembly),
         counters,
         expansions,
         assembly.cache_hit,
@@ -4735,7 +4758,7 @@ fn exact_lexical_leg(
     if index.segments().is_empty() {
         return Ok((
             Vec::new(),
-            sources.clone(),
+            Arc::clone(&assembly.assembly),
             crate::fts::search::SearchCounters::default(),
             query
                 .terms
@@ -4760,8 +4783,7 @@ fn exact_lexical_leg(
     let mut joined = Vec::with_capacity(result.hits.len());
     for hit in result.hits {
         let document = structured_lexical_document(snapshot, active, sources, hit.doc, false)
-            .map_err(map_term_leg_document_error)?
-            .map(|version| version.doc_id());
+            .map_err(map_term_leg_document_error)?;
         joined.push(hybrid::LexicalHit {
             doc: hit.doc,
             document,
@@ -4770,7 +4792,7 @@ fn exact_lexical_leg(
     }
     Ok((
         joined,
-        sources.clone(),
+        Arc::clone(&assembly.assembly),
         result.counters,
         query
             .terms
