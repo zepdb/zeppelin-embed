@@ -4945,6 +4945,9 @@ fn search_pinned(
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
         let exact_score = full_precision;
+        let mut exact_memory =
+            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
         let outcome = match options.tier() {
             SearchTier::Auto if full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
@@ -4955,6 +4958,7 @@ fn search_pinned(
                     request.vector(),
                     k,
                     &cancellation,
+                    &mut exact_memory,
                     #[cfg(any(test, feature = "test-support"))]
                     vector_fault_controller,
                     #[cfg(any(test, feature = "test-support"))]
@@ -5001,6 +5005,7 @@ fn search_pinned(
                     request.vector(),
                     k,
                     &cancellation,
+                    &mut exact_memory,
                     #[cfg(any(test, feature = "test-support"))]
                     vector_fault_controller,
                     #[cfg(any(test, feature = "test-support"))]
@@ -5112,6 +5117,9 @@ fn search_pinned(
             continue;
         }
 
+        let mut exact_memory =
+            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
         let outcome = scan_sealed_segment(
             pool,
             snapshot,
@@ -5125,6 +5133,7 @@ fn search_pinned(
             &bit4_query,
             &int8_query,
             full_precision,
+            &mut exact_memory,
             source,
             options.tier(),
             #[cfg(any(test, feature = "test-support"))]
@@ -5837,6 +5846,7 @@ fn scan_sealed_segment(
     bit4_query: &std::cell::OnceCell<Result<crate::quant::Bit4Query, crate::quant::QuantError>>,
     int8_query: &std::cell::OnceCell<Result<crate::quant::Int8Query, crate::quant::QuantError>>,
     full_precision: bool,
+    exact_memory: &mut stats::AccountedCounter,
     source: crate::ingest::RowSource,
     tier: SearchTier,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
@@ -5862,6 +5872,7 @@ fn scan_sealed_segment(
             request.vector(),
             k,
             &cancellation,
+            exact_memory,
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
@@ -6195,6 +6206,7 @@ fn scan_active_squared_l2(
     query: &[f32],
     k: usize,
     cancellation: &QueryCancellation<'_>,
+    memory: &mut stats::AccountedCounter,
     #[cfg(any(test, feature = "test-support"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -6207,6 +6219,7 @@ fn scan_active_squared_l2(
         query,
         k,
         cancellation,
+        memory,
         #[cfg(any(test, feature = "test-support"))]
         controller,
         #[cfg(any(test, feature = "test-support"))]
@@ -6227,6 +6240,7 @@ fn scan_squared_l2(
     query: &[f32],
     k: usize,
     cancellation: &QueryCancellation<'_>,
+    memory: &mut stats::AccountedCounter,
     #[cfg(any(test, feature = "test-support"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -6245,47 +6259,29 @@ fn scan_squared_l2(
             actual: vectors.len(),
         }));
     }
-    let mut row_indices = Vec::new();
+    // Preserve the original physical-row cancellation preflight without storing
+    // the rows. Scoring checks subsequently count eligible rows, as before.
+    let mut live_rows = 0;
     for row in 0..row_count {
         if row.is_multiple_of(64) {
             cancellation.check_graph().map_err(map_scan_error)?;
         }
         let local_row = u32::try_from(row)
             .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-        if !alive.is_alive(local_row) {
-            continue;
-        }
-        row_indices.push(local_row);
+        live_rows += usize::from(alive.is_alive(local_row));
     }
     cancellation.check_graph().map_err(map_scan_error)?;
-    if row_indices.is_empty() {
-        return Ok(crate::scan::ScanOutcome {
-            candidates: Vec::new(),
-            worst_score: None,
-            stats: crate::scan::ScanStats {
-                dims_touched: 0,
-                bytes_read: 0,
-                threads_used: 1,
-                worker_thread_ids: vec![std::thread::current().id()],
-            },
-        });
-    }
-
-    let coarse_scores = vec![0.0_f32; row_indices.len()];
-    let pool = crate::quant::RescorePool::retained(
-        &row_indices,
-        &coarse_scores,
-        crate::quant::RescoreMetric::SquaredL2,
-        0,
-        0,
-    )
-    .with_prefetch(true);
-    let rescored = crate::quant::rescore_top_k_with_check(
+    let mut collector =
+        crate::scan::topk::ExactTopK::try_new(k, live_rows, memory).map_err(QueryError::Store)?;
+    let mut worst_score: Option<f32> = None;
+    let mut narrowing_error: Option<(usize, f64)> = None;
+    let rows = vectors
+        .chunks_exact(query.len())
+        .enumerate()
+        .filter(|(row, _)| u32::try_from(*row).is_ok_and(|row| alive.is_alive(row)));
+    let scored_rows = crate::quant::exact_squared_l2_with_sink(
         query,
-        vectors,
-        query.len(),
-        pool,
-        row_indices.len(),
+        rows,
         |row, is_checkpoint| {
             if is_checkpoint {
                 cancellation.check_graph().map_err(map_scan_error)?;
@@ -6297,40 +6293,54 @@ fn scan_squared_l2(
             }
             Ok(())
         },
+        |row_id, exact| {
+            let score = exact as f32;
+            if !score.is_finite() {
+                // The old full f64 sort chose the best overflowing score, then
+                // physical row ID. Defer this failure until every row check and
+                // f64 rejection has run, including the final cancellation check.
+                if narrowing_error.is_none_or(|(row, previous)| {
+                    exact.total_cmp(&previous).is_gt()
+                        || (exact.total_cmp(&previous).is_eq() && row_id < row)
+                }) {
+                    narrowing_error = Some((row_id, exact));
+                }
+                return Ok(());
+            }
+            if worst_score.is_none_or(|worst| score.total_cmp(&worst).is_lt()) {
+                worst_score = Some(score);
+            }
+            collector
+                .try_push(crate::scan::ScanCandidate { row_id, score }, memory)
+                .map_err(QueryError::Store)
+        },
     )
     .map_err(|error| match error {
         crate::quant::RescoreCheckError::Rescore(error) => map_l2_rescore_error(error),
         crate::quant::RescoreCheckError::Check(error) => error,
     })?;
     cancellation.check_graph().map_err(map_scan_error)?;
-
-    let mut candidates = Vec::with_capacity(rescored.hits.len());
-    for hit in rescored.hits {
-        let score = hit.score as f32;
-        if !score.is_finite() {
-            return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
-                row_id: hit.row_index,
-            }));
-        }
-        candidates.push(crate::scan::ScanCandidate {
-            row_id: hit.row_index,
-            score,
+    if let Some((row_id, _)) = narrowing_error {
+        return Err(QueryError::Scan(crate::scan::ScanError::NonFiniteScore {
+            row_id,
+        }));
+    }
+    let (candidates, _collector_capacity) = collector
+        .try_into_sorted_with_ties(memory)
+        .map_err(QueryError::Store)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(controller) = controller {
+        controller.record_exact_scan(crate::scan::vector_fault::ExactScanWork {
+            sorted_items: candidates.len(),
+            collector_capacity: _collector_capacity,
+            scored_rows,
+            worst_score,
+            ..Default::default()
         });
     }
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| left.row_id.cmp(&right.row_id))
-    });
-    // Every alive row was scored exactly, so the tail of the complete order
-    // is the farthest row: the hybrid normalization anchor, taken before the
-    // top-k cut throws it away.
-    let worst_score = candidates.last().map(|candidate| candidate.score);
-    crate::scan::truncate_to_k_with_score_ties(&mut candidates, k, |candidate| candidate.score);
     let dims = u64::try_from(query.len())
         .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-    let scored_rows = u64::try_from(rescored.candidates_rescored)
+    let scored_rows = u64::try_from(scored_rows)
         .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
     let dims_touched = scored_rows
         .checked_mul(dims)

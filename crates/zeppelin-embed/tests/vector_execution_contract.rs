@@ -1044,3 +1044,341 @@ fn identity_public_store_requires_nonempty_scores_document_ties_and_physical_ide
         }
     }
 }
+
+#[test]
+fn astra_04_exact_scan_does_not_materialize_corpus_results() {
+    for n in [129_usize, 1025] {
+        let directory = tempdir().expect("exact scratch fixture");
+        let controller = VectorFaultController::observe_only(11);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            vector_dependencies(controller.clone()),
+        )
+        .expect("open exact scratch fixture");
+        let rows = (0..n)
+            .map(|row| (row as u128 + 1, [row as f32 + 2.0, -1.0, 0.5]))
+            .collect::<Vec<_>>();
+        ingest_rows(&store, &rows);
+        let outcome = search(&store, SearchTier::Exact, 7).expect("bounded exact query");
+        assert_eq!(outcome.candidates.len(), 7);
+        assert_eq!(outcome.stats.dims_touched, n as u64 * 3);
+        assert_eq!(outcome.stats.bytes_read, n as u64 * 12);
+        let work = controller.take_exact_scan_work();
+        assert_eq!(work.len(), 1);
+        eprintln!("exact scratch n={n} k=7: {:?}", work[0]);
+        assert_eq!(work[0].scored_rows, n);
+        assert_eq!(work[0].row_indices_capacity, 0, "full alive-row buffer");
+        assert_eq!(work[0].coarse_scores_capacity, 0, "dummy scores");
+        assert_eq!(work[0].exact_scores_capacity, 0, "full f64 result buffer");
+        assert_eq!(
+            work[0].converted_candidates_capacity, 0,
+            "full converted result buffer"
+        );
+        assert_eq!(work[0].sorted_items, 7);
+        assert!(work[0].collector_capacity <= 14);
+    }
+}
+
+fn astra_04_run(store: &Store, query: &[f32], k: usize) -> Result<SearchOutcome, QueryError> {
+    store.search(
+        SearchRequest::new(query),
+        k,
+        search_options(SearchTier::Exact),
+        QueryControl::Cancel(CancelToken::new()),
+    )
+}
+
+#[test]
+fn astra_04_exact_scan_boundary_ties_survive_identity_join() {
+    let directory = tempdir().expect("tie fixture");
+    let controller = VectorFaultController::observe_only(11);
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("open tie fixture");
+    // f64 distinguishes 1 and 1 + 2^-26; both distances narrow to f32 1.
+    let high = [1.0, 0.0001220703125, 0.0];
+    assert_ne!(
+        1_f64.to_bits(),
+        (1.0 + f64::from(high[1]).powi(2)).to_bits()
+    );
+    assert_eq!(
+        1_f32.to_bits(),
+        ((1.0 + f64::from(high[1]).powi(2)) as f32).to_bits()
+    );
+    for base in [200_u128, 100, 0] {
+        let rows = (1..=80)
+            .rev()
+            .map(|id| (base + id, if id % 2 == 0 { high } else { [1.0, 0.0, 0.0] }))
+            .collect::<Vec<_>>();
+        ingest_rows(&store, &rows);
+        if base != 0 {
+            store.seal().expect("seal tie segment");
+        }
+    }
+    let outcome = astra_04_run(&store, &[0.0; 3], 7).expect("identity tie query");
+    assert_eq!(
+        result_documents(&outcome)
+            .iter()
+            .map(|v| v.doc_id().get())
+            .collect::<Vec<_>>(),
+        (1..=7).collect::<Vec<_>>()
+    );
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|c| c.score().to_bits() == (-1_f32).to_bits())
+    );
+    assert_eq!(outcome.stats.dims_touched, 240 * 3);
+    let work = controller.take_exact_scan_work();
+    assert_eq!(work.len(), 3);
+    assert!(work.iter().all(|w| w.scored_rows == 80));
+    eprintln!("valid O(N) boundary ties: {work:?}");
+}
+
+#[test]
+fn astra_04_exact_scan_matches_scalar_bits_and_worst_score() {
+    for dim in [1, 3, 4, 7, 129] {
+        let directory = tempdir().expect("scalar fixture");
+        let controller = VectorFaultController::observe_only(11);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            vector_dependencies(controller.clone()),
+        )
+        .expect("open scalar fixture");
+        let query = (0..dim)
+            .map(|j| (j as f32 - 1.5) * 0.003)
+            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for group in 0..3 {
+            let mut documents = Vec::new();
+            for i in 0..9 {
+                let id = (group * 9 + i + 1) as u128;
+                let vector = (0..dim)
+                    .map(|j| (((id as usize * 13 + j * 7) % 47) as f32 - 23.0) * 0.03125)
+                    .collect::<Vec<_>>();
+                rows.push((id, vector.clone(), group));
+                documents.push(IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vector,
+                ));
+            }
+            store
+                .ingest(IngestBatch::new(documents))
+                .expect("scalar rows");
+            if group < 2 {
+                store.seal().expect("scalar seal");
+            }
+        }
+        store
+            .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![
+                DocId::new(2),
+                DocId::new(12),
+                DocId::new(25),
+            ]))
+            .expect("scalar tombstones");
+        rows.retain(|(id, _, _)| ![2, 12, 25].contains(id));
+        let score = |row: &[f32]| {
+            let mut sum = 0_f64;
+            for (&q, &v) in query.iter().zip(row) {
+                let d = f64::from(q) - f64::from(v);
+                sum += d * d;
+            }
+            -sum as f32
+        };
+        let mut expected = rows
+            .iter()
+            .map(|(id, v, _)| (*id, score(v)))
+            .collect::<Vec<_>>();
+        expected.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        for k in [1, 7, 23, 24, 30] {
+            let actual = astra_04_run(&store, &query, k).expect("scalar exact");
+            assert_eq!(
+                actual
+                    .candidates
+                    .iter()
+                    .map(|c| (
+                        c.document().expect("identity").doc_id().get(),
+                        c.score().to_bits()
+                    ))
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .take(k)
+                    .map(|(id, s)| (*id, s.to_bits()))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(actual.stats.dims_touched, 24 * dim as u64);
+            assert_eq!(actual.stats.bytes_read, 24 * dim as u64 * 4);
+            let mut worst = controller
+                .take_exact_scan_work()
+                .iter()
+                .filter_map(|w| w.worst_score)
+                .map(f32::to_bits)
+                .collect::<Vec<_>>();
+            let mut expected_worst = (0..3)
+                .map(|group| {
+                    rows.iter()
+                        .filter(|r| r.2 == group)
+                        .map(|r| score(&r.1))
+                        .min_by(f32::total_cmp)
+                        .expect("live group")
+                        .to_bits()
+                })
+                .collect::<Vec<_>>();
+            worst.sort_unstable();
+            expected_worst.sort_unstable();
+            assert_eq!(worst, expected_worst);
+        }
+        store
+            .delete(zeppelin_embed::ingest::DeleteBatch::new(
+                rows.iter().map(|r| DocId::new(r.0)).collect(),
+            ))
+            .expect("delete all");
+        let empty = astra_04_run(&store, &query, 7).expect("empty alive query");
+        assert!(empty.candidates.is_empty());
+        assert_eq!(empty.stats.dims_touched, 0);
+    }
+}
+
+#[test]
+fn astra_04_exact_scan_preserves_cancel_and_nonfinite_precedence() {
+    let directory = tempdir().expect("precedence fixture");
+    let controller = VectorFaultController::armed(
+        VectorFault::CancelAfterRows {
+            source: VectorRowSource::Active,
+            requested_rows: 2,
+            tier: VectorSearchTier::Exact,
+        },
+        11,
+    );
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("open precedence fixture");
+    ingest_rows(&store, &[(1, [0.0; 3]), (2, [1.0; 3]), (3, [2.0; 3])]);
+    let huge = [1.0e20_f32; 3];
+    assert!(matches!(
+        astra_04_run(&store, &huge, 1),
+        Err(QueryError::Cancelled { partial: false })
+    ));
+    let receipts = controller.take_typed_receipts();
+    assert_eq!(receipts.len(), 1);
+    assert!(!receipts[0].result_published());
+    assert!(matches!(
+        receipts[0].effect(),
+        VectorFaultEffect::CancelledAfterRows {
+            requested_rows: 2,
+            observed_rows: 2,
+            ..
+        }
+    ));
+    assert!(matches!(
+        astra_04_run(&store, &huge, 1),
+        Err(QueryError::Scan(ScanError::NonFiniteScore { row_id: 0 }))
+    ));
+    let retry = astra_04_run(&store, &[0.0; 3], 3).expect("finite retry");
+    let clean_dir = tempdir().expect("same-seed clean");
+    let clean = Store::open_with_test_dependencies(
+        clean_dir.path(),
+        OpenOptions::default(),
+        vector_dependencies(VectorFaultController::observe_only(11)),
+    )
+    .expect("clean");
+    ingest_rows(&clean, &[(1, [0.0; 3]), (2, [1.0; 3]), (3, [2.0; 3])]);
+    assert_same_result(
+        &astra_04_run(&clean, &[0.0; 3], 3).expect("clean result"),
+        &retry,
+    );
+}
+
+#[test]
+#[ignore = "paired process exact selection measurement"]
+fn astra_04_exact_scan_measurement() {
+    for (n, k, tied) in [
+        (1024, 10, false),
+        (8192, 10, false),
+        (60000, 10, false),
+        (8192, 4096, false),
+        (8192, 8192, false),
+        (8192, 10, true),
+    ] {
+        let dir = tempdir().expect("measurement fixture");
+        let store = Store::open(dir.path(), OpenOptions::default()).expect("measurement Store");
+        let documents = (0..n)
+            .map(|row| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new((n - row) as u128), Revision::new(1)),
+                    (0..16)
+                        .map(|j| {
+                            if tied {
+                                1.0
+                            } else {
+                                ((row * 31 + j * 17) % 65521) as f32 * 0.001
+                            }
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(documents))
+            .expect("measurement ingest");
+        let query = [0.125_f32; 16];
+        let mut oracle = (0..n)
+            .map(|row| {
+                let mut distance = 0_f64;
+                for j in 0..16 {
+                    let v = if tied {
+                        1.0
+                    } else {
+                        ((row * 31 + j * 17) % 65521) as f32 * 0.001
+                    };
+                    let delta = f64::from(query[j]) - f64::from(v);
+                    distance += delta * delta;
+                }
+                ((n - row) as u128, (-distance as f32).to_bits())
+            })
+            .collect::<Vec<_>>();
+        oracle.sort_unstable_by(|a, b| {
+            f32::from_bits(b.1)
+                .total_cmp(&f32::from_bits(a.1))
+                .then(a.0.cmp(&b.0))
+        });
+        oracle.truncate(k);
+        let mut timings = Vec::new();
+        for iteration in 0..84 {
+            let started = std::time::Instant::now();
+            let actual = astra_04_run(&store, &query, k).expect("measured exact query");
+            let micros = started.elapsed().as_secs_f64() * 1e6;
+            assert_eq!(actual.stats.dims_touched, n as u64 * 16);
+            assert_eq!(actual.stats.bytes_read, n as u64 * 64);
+            assert_eq!(
+                actual
+                    .candidates
+                    .iter()
+                    .map(|c| (
+                        c.document().expect("identity").doc_id().get(),
+                        c.score().to_bits()
+                    ))
+                    .collect::<Vec<_>>(),
+                oracle
+            );
+            if iteration >= 20 {
+                timings.push(micros);
+            }
+        }
+        timings.sort_by(f64::total_cmp);
+        eprintln!(
+            "ASTRA04 n={n} k={k} tied={tied} p50_us={} p95_us={} samples={timings:?}",
+            timings[31], timings[60]
+        );
+    }
+}

@@ -464,6 +464,64 @@ pub(crate) fn rescore_top_k_with_check<E>(
     })
 }
 
+/// Stream validated alive rows without a coarse-score or complete result buffer.
+/// Scoring is pure; checks and the sink still execute in physical input order.
+pub(crate) fn exact_squared_l2_with_sink<'a, E>(
+    query: &[f32],
+    mut rows: impl Iterator<Item = (usize, &'a [f32])>,
+    mut check: impl FnMut(usize, bool) -> Result<(), E>,
+    mut sink: impl FnMut(usize, f64) -> Result<(), E>,
+) -> Result<usize, RescoreCheckError<E>> {
+    let mut position = 0_usize;
+    let (mut current, mut len) = next_exact_batch(&mut rows);
+    loop {
+        if len == 0 {
+            return Ok(position);
+        }
+        // Read the next four eligible rows once, then reuse those references on
+        // the next iteration. Lookahead and score scratch stay on the stack.
+        let (next, next_len) = next_exact_batch(&mut rows);
+        for (_, row) in next.iter().take(next_len) {
+            prefetch_f32_row(row, 0, query.len());
+        }
+        let batch = current.get(..len).ok_or(RescoreError::ArithmeticOverflow)?;
+        let mut scores = [0.0_f64; ROW_BATCH];
+        if let [(_, first), (_, second), (_, third), (_, fourth)] = batch {
+            let (a, b, c, d) = squared_l2_f64_x4(query, first, second, third, fourth);
+            scores = [-a, -b, -c, -d];
+        } else {
+            for (score, (_, row)) in scores.iter_mut().zip(batch) {
+                *score = -squared_l2_f64(query, row);
+            }
+        }
+        for ((row_id, _), score) in batch.iter().zip(scores) {
+            check(*row_id, position.is_multiple_of(64)).map_err(RescoreCheckError::Check)?;
+            if !score.is_finite() {
+                return Err(RescoreError::NonFiniteExactScore { row_index: *row_id }.into());
+            }
+            sink(*row_id, score).map_err(RescoreCheckError::Check)?;
+            position += 1;
+        }
+        current = next;
+        len = next_len;
+    }
+}
+
+fn next_exact_batch<'a>(
+    rows: &mut impl Iterator<Item = (usize, &'a [f32])>,
+) -> ([(usize, &'a [f32]); ROW_BATCH], usize) {
+    let mut batch: [(usize, &[f32]); ROW_BATCH] = [(0, &[]); ROW_BATCH];
+    let mut len = 0;
+    for slot in &mut batch {
+        let Some(row) = rows.next() else {
+            break;
+        };
+        *slot = row;
+        len += 1;
+    }
+    (batch, len)
+}
+
 /// Rows scored in one call so that four independent f64 accumulator chains
 /// overlap. One row's exact squared-L2 sum is a strictly sequential chain of
 /// dependent `fadd`s that no compiler may reassociate, so a single row cannot
@@ -653,4 +711,53 @@ fn prefetch_f32_row(base: &[f32], row_id: usize, dimensions: usize) {
     }
     #[cfg(not(target_arch = "aarch64"))]
     let _ = address;
+}
+
+#[cfg(test)]
+mod exact_sink_tests {
+    use super::*;
+
+    #[test]
+    fn astra_04_sink_checks_precede_nonfinite_and_count_eligible_rows() {
+        let mut values = [1.0_f32; 67];
+        if let Some(value) = values.get_mut(65) {
+            *value = f32::NAN;
+        }
+        for cancel in [true, false] {
+            let mut checks = Vec::new();
+            let mut emitted = Vec::new();
+            let result = exact_squared_l2_with_sink(
+                &[0.0],
+                values.chunks_exact(1).enumerate(),
+                |row, checkpoint| {
+                    checks.push((row, checkpoint));
+                    if cancel && row == 65 { Err(65) } else { Ok(()) }
+                },
+                |row, score| {
+                    emitted.push((row, score.to_bits()));
+                    Ok(())
+                },
+            );
+            if cancel {
+                assert!(matches!(result, Err(RescoreCheckError::Check(65))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(RescoreCheckError::Rescore(
+                        RescoreError::NonFiniteExactScore { row_index: 65 }
+                    ))
+                ));
+            }
+            assert_eq!(
+                checks,
+                (0..66).map(|row| (row, row % 64 == 0)).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                emitted,
+                (0..65)
+                    .map(|row| (row, (-1.0_f64).to_bits()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }

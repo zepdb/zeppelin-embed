@@ -479,6 +479,19 @@ pub enum VectorFault {
     },
 }
 
+/// Query-local scratch observations; separate from the frozen fault receipt codec.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExactScanWork {
+    pub row_indices_capacity: usize,
+    pub coarse_scores_capacity: usize,
+    pub exact_scores_capacity: usize,
+    pub converted_candidates_capacity: usize,
+    pub sorted_items: usize,
+    pub collector_capacity: usize,
+    pub scored_rows: usize,
+    pub worst_score: Option<f32>,
+}
+
 #[derive(Debug)]
 struct State {
     fault: Option<VectorFault>,
@@ -486,6 +499,7 @@ struct State {
     eligible_rows: u32,
     pending: Option<PendingReceipt>,
     receipts: Vec<VectorFaultReceipt>,
+    exact_scans: Vec<ExactScanWork>,
 }
 
 #[derive(Debug)]
@@ -503,6 +517,34 @@ pub struct VectorFaultController {
 
 impl VectorFaultController {
     #[must_use]
+    pub fn observe_only(seed_case_id: u64) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State {
+                fault: None,
+                seed_case_id,
+                eligible_rows: 0,
+                pending: None,
+                receipts: Vec::new(),
+                exact_scans: Vec::new(),
+            })),
+        }
+    }
+
+    #[must_use]
+    pub fn take_exact_scan_work(&self) -> Vec<ExactScanWork> {
+        self.state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.exact_scans))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn record_exact_scan(&self, work: ExactScanWork) {
+        if let Ok(mut state) = self.state.lock() {
+            state.exact_scans.push(work);
+        }
+    }
+
+    #[must_use]
     pub fn armed(fault: VectorFault, seed_case_id: u64) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -511,6 +553,7 @@ impl VectorFaultController {
                 eligible_rows: 0,
                 pending: None,
                 receipts: Vec::new(),
+                exact_scans: Vec::new(),
             })),
         }
     }
