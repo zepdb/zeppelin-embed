@@ -80,7 +80,18 @@ impl DocBitmap {
 
     /// Iterates identifiers in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.inner.iter()
+        self.inner.iter().inspect(|_| {
+            #[cfg(any(test, feature = "test-support"))]
+            super::bitmap_observer::row();
+        })
+    }
+
+    /// Finds the first row outside a dense `0..row_count` segment without
+    /// walking its valid prefix. The inclusive lower bound also covers MAX.
+    pub(crate) fn first_at_or_after(&self, row_count: u32) -> Option<u32> {
+        #[cfg(any(test, feature = "test-support"))]
+        super::bitmap_observer::probe();
+        self.inner.range(row_count..).next()
     }
 
     pub(crate) const fn as_roaring(&self) -> &RoaringBitmap {
@@ -106,5 +117,34 @@ impl DocBitmap {
     #[must_use]
     pub fn is_subset(&self, other: &Self) -> bool {
         self.inner.is_subset(&other.inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DocBitmap;
+
+    #[test]
+    fn astra_15_empty_zero_and_max_u32_bitmap_bounds_are_checked() {
+        let empty = DocBitmap::new();
+        assert_eq!(empty.first_at_or_after(0), None);
+        assert_eq!(empty.first_at_or_after(u32::MAX), None);
+        let sparse = DocBitmap::from_ids([0, 2, 65_535, 65_536, u32::MAX - 1]);
+        for (bound, expected) in [
+            (0, Some(0)),
+            (1, Some(2)),
+            (3, Some(65_535)),
+            (65_536, Some(65_536)),
+            (65_537, Some(u32::MAX - 1)),
+            (u32::MAX, None),
+        ] {
+            assert_eq!(sparse.first_at_or_after(bound), expected);
+        }
+        let maximum = DocBitmap::from_ids([u32::MAX]);
+        assert_eq!(maximum.first_at_or_after(u32::MAX), Some(u32::MAX));
+        let dense = DocBitmap::full(131_072);
+        assert_eq!(dense.first_at_or_after(65_536), Some(65_536));
+        assert_eq!(dense.first_at_or_after(131_071), Some(131_071));
+        assert_eq!(dense.first_at_or_after(131_072), None);
     }
 }

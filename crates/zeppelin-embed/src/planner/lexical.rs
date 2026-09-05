@@ -151,7 +151,7 @@ fn validate_allow_lists(
         });
     }
     for (segment, (sealed, allow_list)) in index.segments().iter().zip(allow_lists).enumerate() {
-        if let Some(row) = allow_list.iter().find(|row| *row >= sealed.row_count()) {
+        if let Some(row) = allow_list.first_at_or_after(sealed.row_count()) {
             return Err(LexicalFilterError::RowOutOfRange {
                 segment,
                 row,

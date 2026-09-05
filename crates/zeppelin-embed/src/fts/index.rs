@@ -758,7 +758,7 @@ fn live_segment_counters(
     segment: &SealedSegment,
     live_rows: &DocBitmap,
 ) -> Result<LiveSegmentCounters, IndexError> {
-    if let Some(row) = live_rows.iter().find(|row| *row >= segment.row_count()) {
+    if let Some(row) = live_rows.first_at_or_after(segment.row_count()) {
         return Err(IndexError::LiveRowOutOfRange {
             segment: ordinal,
             row,

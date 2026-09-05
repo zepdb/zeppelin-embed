@@ -6,6 +6,9 @@
 
 mod alive;
 mod bitmap;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod bitmap_observer;
 mod columns;
 mod dict;
 mod predicate;

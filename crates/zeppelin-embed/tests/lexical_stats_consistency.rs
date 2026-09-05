@@ -12,6 +12,192 @@ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 const REMOVED: DocId = DocId::new(1);
 
 #[test]
+fn astra_15_allow_list_validation_does_not_visit_every_valid_row() {
+    use zeppelin_embed::fts::{
+        bm25::Bm25Params,
+        index::{Document, LexicalIndex, SegmentIndex},
+        tokenizer::{Analyzer, Profile},
+    };
+    use zeppelin_embed::meta::{DocBitmap, bitmap_observer as observer};
+    use zeppelin_embed::planner::{LexicalBranch, search_lexical_filtered};
+
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let mut segment = SegmentIndex::new();
+    for _ in 0..131_072 {
+        segment
+            .push_document(&analyzer, &Document::with_text("present"))
+            .expect("document");
+    }
+    let mut index = LexicalIndex::new();
+    index.push_segment(segment).expect("seal");
+    for allowed in [
+        DocBitmap::full(131_072),
+        DocBitmap::from_ids((0..131_072).step_by(97)),
+    ] {
+        observer::begin();
+        let result = search_lexical_filtered(
+            &index,
+            &TermQuery::flat(vec![b"absent".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            Bm25Params::default(),
+            &[allowed],
+            Some(LexicalBranch::PostCheck),
+        );
+        let work = observer::take();
+        assert!(result.expect("valid allow list").result.hits.is_empty());
+        assert_eq!(work.rows, 0, "validation walked the valid prefix: {work:?}");
+        assert_eq!(work.probes, 1);
+    }
+}
+
+#[test]
+fn astra_15_live_assembly_only_walks_rows_for_token_summation() {
+    use zeppelin_embed::fts::{
+        index::{Document, LexicalIndex, SegmentIndex},
+        sealed::SealedSegment,
+        tokenizer::{Analyzer, Profile},
+    };
+    use zeppelin_embed::meta::{DocBitmap, bitmap_observer as observer};
+
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let mut segment = SegmentIndex::new();
+    for _ in 0..2048 {
+        segment
+            .push_document(&analyzer, &Document::with_text("present pair"))
+            .expect("document");
+    }
+    let sealed = SealedSegment::seal(&segment).expect("seal");
+    for (alive, documents, tokens) in [
+        (DocBitmap::full(2048), 2048, 4096),
+        (DocBitmap::from_ids([0, 17, 2047]), 3, 6),
+    ] {
+        let mut index = LexicalIndex::new();
+        observer::begin();
+        index
+            .push_sealed_with_live_rows(sealed.clone(), &alive)
+            .expect("validated live assembly");
+        let work = observer::take();
+        assert_eq!(index.document_count(), documents);
+        assert_eq!(index.total_tokens(), tokens);
+        assert_eq!(
+            work.rows as u64, documents,
+            "only live token summation may walk rows: {work:?}"
+        );
+        assert_eq!(work.probes, 1);
+    }
+}
+
+#[test]
+fn astra_15_allow_list_reports_same_first_invalid_row() {
+    use zeppelin_embed::fts::{
+        bm25::Bm25Params,
+        index::{Document, IndexError, LexicalIndex, SegmentIndex},
+        sealed::SealedSegment,
+        tokenizer::{Analyzer, Profile},
+    };
+    use zeppelin_embed::meta::DocBitmap;
+    use zeppelin_embed::planner::{LexicalFilterError, search_lexical_filtered};
+
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let mut segment = SegmentIndex::new();
+    for _ in 0..65_536 {
+        segment
+            .push_document(&analyzer, &Document::with_text("present"))
+            .expect("document");
+    }
+    let sealed = SealedSegment::seal(&segment).expect("seal");
+    let mut index = LexicalIndex::new();
+    index.push_sealed(sealed.clone());
+    index.push_sealed(sealed.clone());
+    for mut invalid in [
+        DocBitmap::full(65_536),
+        DocBitmap::from_ids([0, 17, 65_535]),
+    ] {
+        invalid.insert(65_537);
+        invalid.insert(u32::MAX);
+        invalid.insert(65_536);
+        let error = search_lexical_filtered(
+            &index,
+            &TermQuery::flat(vec![b"present".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            Bm25Params::default(),
+            &[DocBitmap::full(65_536), invalid.clone()],
+            None,
+        )
+        .expect_err("invalid allow-list");
+        assert!(matches!(
+            error,
+            LexicalFilterError::RowOutOfRange {
+                segment: 1,
+                row: 65_536,
+                row_count: 65_536
+            }
+        ));
+        let mut live_index = LexicalIndex::new();
+        live_index.push_sealed(sealed.clone());
+        let error = live_index
+            .push_sealed_with_live_rows(sealed.clone(), &invalid)
+            .expect_err("invalid live bitmap");
+        assert!(matches!(
+            error,
+            IndexError::LiveRowOutOfRange {
+                segment: 1,
+                row: 65_536,
+                row_count: 65_536
+            }
+        ));
+        assert_eq!(
+            live_index.segments().len(),
+            1,
+            "refusal published no segment"
+        );
+        assert_eq!(live_index.document_count(), 65_536);
+        assert_eq!(live_index.total_tokens(), 65_536);
+    }
+}
+
+#[test]
+fn astra_15_wrong_segment_count_precedes_row_validation() {
+    use zeppelin_embed::fts::{
+        bm25::Bm25Params,
+        index::{Document, LexicalIndex, SegmentIndex},
+        tokenizer::{Analyzer, Profile},
+    };
+    use zeppelin_embed::meta::{DocBitmap, bitmap_observer as observer};
+    use zeppelin_embed::planner::{LexicalFilterError, search_lexical_filtered};
+
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let mut segment = SegmentIndex::new();
+    segment
+        .push_document(&analyzer, &Document::with_text("present"))
+        .expect("document");
+    let mut index = LexicalIndex::new();
+    index.push_segment(segment).expect("seal");
+    for allowed in [Vec::new(), vec![DocBitmap::from_ids([u32::MAX]); 2]] {
+        let actual = allowed.len();
+        observer::begin();
+        let error = search_lexical_filtered(
+            &index,
+            &TermQuery::flat(vec![b"present".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            Bm25Params::default(),
+            &allowed,
+            None,
+        )
+        .expect_err("wrong segment count");
+        let work = observer::take();
+        assert!(matches!(error, LexicalFilterError::SegmentCount {
+            expected: 1, actual: count
+        } if count == actual));
+        assert_eq!(
+            work,
+            observer::Work::default(),
+            "count refusal precedes all bitmap probes"
+        );
+    }
+}
+
+#[test]
 fn astra_02_candidate_bm25_matches_exhaustive_scores() {
     use zeppelin_embed::fts::bm25::Bm25Params;
     use zeppelin_embed::fts::index::{Document, LexicalIndex, SegmentIndex};
