@@ -117,6 +117,492 @@ fn assert_same_result(control: &SearchOutcome, retry: &SearchOutcome) {
     assert_eq!(retry.diagnostics.returned, control.diagnostics.returned);
 }
 
+#[test]
+fn astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage() {
+    use zeppelin_embed::lifecycle::ScanRescoreOptions;
+    let directory = tempdir().expect("candidate-rescore fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let documents: Vec<_> = (0..48)
+        .map(|row| (row as u128 + 1, [row as f32 * 0.01, 1.0, 0.25]))
+        .collect();
+    ingest_rows(&store, &documents);
+    let result = store
+        .search(
+            SearchRequest::new(&QUERY),
+            1,
+            search_options(SearchTier::Scan)
+                .with_scan_rescore(ScanRescoreOptions::new(2, 16).expect("valid controls")),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("candidate-rescore query");
+    assert!(
+        result.diagnostics.exact_rescore,
+        "selected rows must have exact scores"
+    );
+    for hit in &result.candidates {
+        let id = hit.document().expect("document identity").doc_id().get();
+        let row = documents
+            .iter()
+            .find(|(document, _)| *document == id)
+            .expect("fixture row")
+            .1;
+        let distance = QUERY.iter().zip(row).fold(0.0_f64, |sum, (q, x)| {
+            let delta = f64::from(*q) - f64::from(x);
+            sum + delta * delta
+        });
+        assert_eq!(hit.score().to_bits(), (-distance as f32).to_bits());
+    }
+    assert!(
+        result.diagnostics.approximate,
+        "exact scores do not prove complete membership"
+    );
+    assert_eq!(result.candidates.len(), 1);
+}
+
+fn astra_06_two_rows() -> (TempDir, Store) {
+    let directory = tempdir().expect("two-row candidate fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    ingest_rows(&store, &[(1, QUERY), (2, [2.0, -2.0, 1.0])]);
+    (directory, store)
+}
+
+#[test]
+fn astra_06_rescore_invalid_queries_and_cancellation_fail_closed() {
+    for sealed in [false, true] {
+        let (_directory, store) = astra_06_two_rows();
+        if sealed {
+            store.seal().expect("seal");
+        }
+        let run = |query: &[f32], control| {
+            store.search(
+                SearchRequest::new(query),
+                1,
+                astra_06_options(2, 16),
+                control,
+            )
+        };
+        let control = run(&QUERY, QueryControl::Cancel(CancelToken::new())).expect("clean control");
+        for query in [&[][..], &[f32::NAN; 3][..], &[0.0; 4][..]] {
+            assert!(matches!(
+                run(query, QueryControl::Cancel(CancelToken::new())),
+                Err(QueryError::Scan(_))
+            ));
+        }
+        let token = CancelToken::new();
+        token.cancel();
+        assert!(matches!(
+            run(&QUERY, QueryControl::Cancel(token)),
+            Err(QueryError::Cancelled { partial: false })
+        ));
+        let deadline = zeppelin_embed::lifecycle::Deadline::after(std::time::Duration::ZERO)
+            .expect("expired deadline");
+        assert!(matches!(
+            run(&QUERY, QueryControl::Deadline(deadline)),
+            Err(QueryError::Timeout { partial: false })
+        ));
+        assert_eq!(store.stats().expect("released scratch").temporary_bytes, 0);
+        let retry = run(&QUERY, QueryControl::Cancel(CancelToken::new())).expect("clean retry");
+        assert_same_result(&control, &retry);
+        assert_eq!(
+            control.diagnostics.scan_rescore,
+            retry.diagnostics.scan_rescore
+        );
+    }
+}
+
+fn astra_06_options(oversample: usize, limit: usize) -> SearchOptions {
+    search_options(SearchTier::Scan).with_scan_rescore(
+        zeppelin_embed::lifecycle::ScanRescoreOptions::new(oversample, limit)
+            .expect("valid controls"),
+    )
+}
+
+#[test]
+fn astra_06_rescored_scan_can_miss_a_true_neighbor() {
+    let (_directory, store) = astra_06_two_rows();
+    let exact = search(&store, SearchTier::Exact, 1).expect("exhaustive result");
+    assert_eq!(
+        exact.candidates[0].document().expect("identity").doc_id(),
+        DocId::new(1)
+    );
+    assert_eq!(exact.candidates[0].score().to_bits(), (-0.0_f32).to_bits());
+    let selected = store
+        .search(
+            SearchRequest::new(&QUERY),
+            1,
+            astra_06_options(1, 1),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("selected result");
+    // A coarse inner-product frontier prefers the doubled vector. Its exact
+    // squared-L2 is 1 + 1 + .25 = 2.25; the omitted query vector has distance 0.
+    assert_eq!(
+        selected.candidates[0]
+            .document()
+            .expect("identity")
+            .doc_id(),
+        DocId::new(2)
+    );
+    assert_eq!(
+        selected.candidates[0].score().to_bits(),
+        (-2.25_f32).to_bits()
+    );
+    assert!(selected.diagnostics.exact_rescore && selected.diagnostics.approximate);
+    let work = selected.diagnostics.scan_rescore.expect("two-stage work");
+    assert_eq!(
+        (
+            work.coarse_rows,
+            work.candidates_rescored,
+            work.coarse_bytes,
+            work.rescore_bytes
+        ),
+        (2, 1, 4, 12)
+    );
+    assert_eq!(
+        selected.stats.bytes_read,
+        work.coarse_bytes + work.rescore_bytes
+    );
+    let exhaustive = store
+        .search(
+            SearchRequest::new(&QUERY),
+            1,
+            astra_06_options(2, 2),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("complete retained set");
+    assert_eq!(exhaustive.candidates, exact.candidates);
+    assert!(exhaustive.diagnostics.exact_rescore && !exhaustive.diagnostics.approximate);
+    assert_eq!(
+        exhaustive
+            .diagnostics
+            .scan_rescore
+            .expect("work")
+            .rescore_bytes,
+        24
+    );
+}
+
+#[test]
+fn astra_06_explicit_exact_and_scan_semantics_remain_distinct() {
+    let (_directory, store) = astra_06_two_rows();
+    for tier in [SearchTier::Exact, SearchTier::Scan, SearchTier::Auto] {
+        let options = astra_06_options(1, 1).with_tier(tier);
+        assert_eq!(
+            options.scan_rescore(),
+            None,
+            "explicit tier clears rescore mode"
+        );
+        let actual = store
+            .search(
+                SearchRequest::new(&QUERY),
+                1,
+                options,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("explicit tier");
+        let control = search(&store, tier, 1).expect("ordinary tier control");
+        assert_same_result(&control, &actual);
+        assert_eq!(actual.diagnostics.scan_rescore, None);
+    }
+}
+
+#[test]
+fn astra_06_rescore_budget_and_boundary_ties_fail_loudly() {
+    use zeppelin_embed::{lifecycle::ScanRescoreOptions, quant::RescoreError};
+    assert_eq!(
+        ScanRescoreOptions::new(0, 1),
+        Err(RescoreError::ZeroOversample)
+    );
+    assert_eq!(
+        ScanRescoreOptions::new(1, 0),
+        Err(RescoreError::ZeroCandidateLimit)
+    );
+    let (_directory, store) = astra_06_two_rows();
+    let run = |k, options| {
+        store.search(
+            SearchRequest::new(&QUERY),
+            k,
+            options,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    assert!(matches!(
+        run(usize::MAX, astra_06_options(2, 2)),
+        Err(QueryError::Scan(ScanError::Rescore(
+            RescoreError::ArithmeticOverflow
+        )))
+    ));
+    assert!(matches!(
+        run(1, astra_06_options(2, 1)),
+        Err(QueryError::Scan(ScanError::Rescore(
+            RescoreError::CandidateLimitExceeded {
+                requested: 2,
+                maximum: 1
+            }
+        )))
+    ));
+    run(1, astra_06_options(2, 2)).expect("retry after budget error");
+    let tied = tempdir().expect("boundary ties");
+    let tied = Store::open(tied.path(), OpenOptions::default()).expect("tied Store");
+    ingest_rows(&tied, &(1..=8).map(|id| (id, QUERY)).collect::<Vec<_>>());
+    let run_tied = |limit| {
+        tied.search(
+            SearchRequest::new(&QUERY),
+            1,
+            astra_06_options(1, limit),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    assert!(matches!(
+        run_tied(2),
+        Err(QueryError::Scan(ScanError::Rescore(
+            RescoreError::CandidateLimitExceeded {
+                requested: 8,
+                maximum: 2
+            }
+        )))
+    ));
+    assert_eq!(
+        tied.stats()
+            .expect("post-refusal accounting")
+            .temporary_bytes,
+        0
+    );
+    let all = run_tied(8).expect("all ties fit");
+    assert_eq!(
+        all.candidates[0].document().expect("identity").doc_id(),
+        DocId::new(1)
+    );
+    assert_eq!(
+        all.diagnostics
+            .scan_rescore
+            .expect("work")
+            .candidates_rescored,
+        8
+    );
+    assert!(!all.diagnostics.approximate);
+    assert_eq!(
+        tied.stats()
+            .expect("post-success accounting")
+            .temporary_bytes,
+        0
+    );
+}
+
+#[test]
+fn astra_06_filtered_rescore_applies_eligibility_before_frontier() {
+    use zeppelin_embed::meta::{Predicate, PredicateValue, TIMESTAMP_COLUMN};
+    for sealed in [false, true] {
+        let directory = tempdir().expect("filtered rescore fixture");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let documents = [
+            (1_u128, 1.0_f32, 1_i64),
+            (2, 2.0, 1),
+            (3, 100.0, 2),
+            (4, 50.0, 1),
+        ]
+        .into_iter()
+        .map(|(id, scale, timestamp)| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                QUERY.iter().map(|x| x * scale).collect(),
+            )
+            .with_timestamp(timestamp)
+        })
+        .collect();
+        store.ingest(IngestBatch::new(documents)).expect("ingest");
+        if sealed {
+            store.seal().expect("seal");
+        }
+        store
+            .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![DocId::new(
+                4,
+            )]))
+            .expect("delete high coarse row");
+        let result = store
+            .search_filtered(
+                SearchRequest::new(&QUERY),
+                &Predicate::Eq {
+                    column: TIMESTAMP_COLUMN,
+                    value: PredicateValue::I64(1),
+                },
+                1,
+                astra_06_options(1, 1),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("filtered candidate rescore");
+        assert!(
+            result.diagnostics.exact_rescore,
+            "filtered mode must rescore its candidates"
+        );
+        assert_eq!(
+            result.candidates[0].document().expect("identity").doc_id(),
+            DocId::new(2)
+        );
+        assert_eq!(
+            result.candidates[0].score().to_bits(),
+            (-2.25_f32).to_bits()
+        );
+        assert!(result.diagnostics.approximate);
+        let work = result
+            .diagnostics
+            .scan_rescore
+            .expect("filtered rescore counters");
+        assert_eq!(
+            (
+                work.coarse_rows,
+                work.candidates_rescored,
+                work.rescore_bytes
+            ),
+            (2, 1, 12)
+        );
+        assert_eq!(result.plans[0].filter_cardinality, 2);
+    }
+}
+
+#[test]
+fn astra_06_rescored_scan_matches_independent_selected_row_scores() {
+    for scheme in [QuantScheme::Bit4, QuantScheme::Int8] {
+        let directory = tempdir().expect("mixed-source rescoring");
+        let dependencies =
+            StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+                .with_vector_seal_scheme(scheme);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            dependencies,
+        )
+        .expect("open");
+        for group in 0..3 {
+            let rows = (0..16)
+                .map(|row| {
+                    let scale = (row + 1) as f32 / 8.0;
+                    (group * 16 + row as u128 + 1, QUERY.map(|x| x * scale))
+                })
+                .collect::<Vec<_>>();
+            ingest_rows(&store, &rows);
+            if group < 2 {
+                store.seal().expect("seal source");
+            }
+        }
+        store
+            .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![
+                DocId::new(5),
+                DocId::new(21),
+                DocId::new(37),
+            ]))
+            .expect("one tombstone per source");
+        let result = store
+            .search(
+                SearchRequest::new(&QUERY),
+                2,
+                astra_06_options(2, 16),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("mixed-source query");
+        // Coarse dot scores increase with scale. Each source retains slots
+        // 12..15. The nearest selected scale is 13/8 in every source; canonical
+        // identity ties pick documents 13 and 29. Exact distance is
+        // (5/8)^2 + (5/8)^2 + (5/16)^2 = 0.87890625.
+        assert_eq!(
+            result_documents(&result)
+                .iter()
+                .map(|v| v.doc_id())
+                .collect::<Vec<_>>(),
+            [DocId::new(13), DocId::new(29)]
+        );
+        for hit in &result.candidates {
+            assert_eq!(hit.score().to_bits(), (-0.87890625_f32).to_bits());
+        }
+        let work = result.diagnostics.scan_rescore.expect("per-stage work");
+        assert_eq!(
+            (
+                work.coarse_rows,
+                work.candidates_rescored,
+                work.rescore_bytes
+            ),
+            (if scheme == QuantScheme::Int8 { 46 } else { 48 }, 12, 144)
+        );
+        assert_eq!(work.eligible_rows, 45);
+        assert_eq!(
+            work.coarse_bytes,
+            if scheme == QuantScheme::Int8 { 122 } else { 96 }
+        );
+        assert_eq!(
+            result.stats.bytes_read,
+            work.coarse_bytes + work.rescore_bytes
+        );
+        assert_eq!(
+            result.stats.dims_touched,
+            if scheme == QuantScheme::Int8 {
+                174
+            } else {
+                180
+            }
+        );
+        assert_eq!(result.diagnostics.plan.len(), 3);
+        assert!(result.diagnostics.plan.iter().all(|p| p.approximate));
+        assert!(result.diagnostics.exact_rescore);
+        assert_eq!(store.stats().expect("scratch released").temporary_bytes, 0);
+    }
+}
+
+#[test]
+fn astra_06_rescore_corrupt_rows_fail_loudly() {
+    let source = tempdir().expect("rescore corruption source");
+    let (segment, frozen, _, _) = sealed_bit4_fixture(source.path());
+    let (clean_directory, fault_directory) = frozen.isolated_pair();
+    let clean = Store::open(clean_directory.path(), OpenOptions::default()).expect("clean");
+    let run = |store: &Store| {
+        store.search(
+            SearchRequest::new(&QUERY),
+            1,
+            astra_06_options(1, 3),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    let control = run(&clean).expect("clean candidate rescore");
+    let controller = VectorFaultController::armed(
+        VectorFault::MissingRescoreRows {
+            source: VectorRowSource::Sealed(*segment.as_bytes()),
+            site: MissingRescoreSite::ExactRescoreRows,
+            expected_rows: 3,
+            available_rows: 2,
+            tier: VectorSearchTier::Scan,
+        },
+        2606,
+    );
+    let faulty = Store::open_with_test_dependencies(
+        fault_directory.path(),
+        OpenOptions::default(),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("fault store");
+    assert!(matches!(
+        run(&faulty),
+        Err(QueryError::Store(StoreError::Segment(
+            zeppelin_embed::segment::SegmentError::Geometry(_)
+        )))
+    ));
+    let receipts = controller.take_typed_receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].site(), VectorFaultSite::ExactRescoreRows);
+    assert!(!receipts[0].result_published());
+    assert_eq!(
+        faulty
+            .stats()
+            .expect("failed query released scratch")
+            .temporary_bytes,
+        0
+    );
+    let retry = run(&faulty).expect("same-seed clean retry");
+    assert_same_result(&control, &retry);
+    assert_eq!(
+        retry.diagnostics.scan_rescore,
+        control.diagnostics.scan_rescore
+    );
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FrozenFixtureFile {
     relative_path: String,
@@ -2393,5 +2879,152 @@ fn astra_05_exact_crossover_measurement() {
         eprintln!(
             "ASTRA05_CROSSOVER workers={workers} n={n} dim={dim} tied={tied} samples_us={samples:?} actual_workers={actual_workers:?} collector_bytes={collector_bytes:?}"
         );
+    }
+}
+
+#[test]
+#[ignore = "release-only mixed-segment and tombstone rescore measurement"]
+fn astra_06_mixed_tombstone_measurement() {
+    use rand::{Rng, SeedableRng};
+    use std::time::Instant;
+    const DIM: usize = 128;
+    const ROWS: usize = 6144;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x5eed);
+    let vectors: Vec<Vec<f32>> = (0..ROWS)
+        .map(|_| {
+            let mut vector: Vec<f32> = (0..DIM).map(|_| rng.random_range(-1.0_f32..1.0)).collect();
+            let norm = vector
+                .iter()
+                .map(|x| f64::from(*x).powi(2))
+                .sum::<f64>()
+                .sqrt() as f32;
+            for value in &mut vector {
+                *value /= norm;
+            }
+            vector
+        })
+        .collect();
+    let queries: Vec<_> = (0..16).map(|q| &vectors[q * 382 + 1]).collect();
+    for tombstones in [false, true] {
+        let directory = tempdir().expect("stress store");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        for group in 0..3 {
+            store
+                .ingest(IngestBatch::new(
+                    (group * 2048..(group + 1) * 2048)
+                        .map(|row| {
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                                vectors[row].clone(),
+                            )
+                        })
+                        .collect(),
+                ))
+                .expect("ingest group");
+            if group < 2 {
+                store.seal().expect("seal group");
+            }
+        }
+        if tombstones {
+            store
+                .delete(zeppelin_embed::ingest::DeleteBatch::new(
+                    (0..ROWS)
+                        .step_by(2)
+                        .map(|row| DocId::new(row as u128 + 1))
+                        .collect(),
+                ))
+                .expect("delete half across all sources");
+        }
+        let run = |query: &[f32], rescore: bool| {
+            store
+                .search(
+                    SearchRequest::new(query),
+                    10,
+                    if rescore {
+                        SearchOptions::default().with_scan_rescore(
+                            zeppelin_embed::lifecycle::ScanRescoreOptions::new(2, 8192)
+                                .expect("stress controls"),
+                        )
+                    } else {
+                        SearchOptions::default().with_tier(SearchTier::Exact)
+                    },
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("stress query")
+        };
+        let reference: Vec<_> = queries
+            .iter()
+            .map(|q| result_documents(&run(q, false)))
+            .collect();
+        for repetition in 0..3 {
+            for rescore in if repetition == 1 {
+                [true, false]
+            } else {
+                [false, true]
+            } {
+                for index in 0..20 {
+                    let _ = run(queries[index % queries.len()], rescore);
+                }
+                let mut samples = Vec::new();
+                let mut recalls = Vec::new();
+                let mut coarse_bytes = 0_u64;
+                let mut rescore_bytes = 0_u64;
+                let mut selected = 0_u64;
+                for (index, query) in queries.iter().cycle().take(64).enumerate() {
+                    let start = Instant::now();
+                    let result = run(query, rescore);
+                    samples.push(start.elapsed().as_secs_f64() * 1e6);
+                    let ids = result_documents(&result);
+                    let expected = &reference[index % reference.len()];
+                    recalls
+                        .push(ids.iter().filter(|id| expected.contains(id)).count() as f64 / 10.0);
+                    assert_eq!(result.diagnostics.plan.len(), 3);
+                    assert!(result.diagnostics.exact_rescore);
+                    if rescore {
+                        let work = result.diagnostics.scan_rescore.expect("work");
+                        assert_eq!(work.coarse_rows, ROWS as u64);
+                        assert_eq!(
+                            work.eligible_rows,
+                            (if tombstones { ROWS / 2 } else { ROWS }) as u64
+                        );
+                        assert_eq!(work.coarse_bytes, (ROWS * DIM / 2) as u64);
+                        assert_eq!(
+                            work.rescore_bytes,
+                            work.candidates_rescored * DIM as u64 * 4
+                        );
+                        assert!(work.candidates_rescored >= 60);
+                        coarse_bytes += work.coarse_bytes;
+                        rescore_bytes += work.rescore_bytes;
+                        selected += work.candidates_rescored;
+                    }
+                    for candidate in result.candidates {
+                        let row =
+                            candidate.document().expect("identity").doc_id().get() as usize - 1;
+                        assert!(!tombstones || row % 2 == 1);
+                        let distance =
+                            query
+                                .iter()
+                                .zip(&vectors[row])
+                                .fold(0.0_f64, |sum, (q, x)| {
+                                    let delta = f64::from(*q) - f64::from(*x);
+                                    sum + delta * delta
+                                });
+                        assert_eq!(candidate.score().to_bits(), (-distance as f32).to_bits());
+                    }
+                    assert_eq!(store.stats().expect("scratch released").temporary_bytes, 0);
+                }
+                samples.sort_by(f64::total_cmp);
+                println!(
+                    "{{\"tombstones\":{tombstones},\"rescore\":{rescore},\"repetition\":{repetition},\"queries\":64,\"p50_us\":{},\"p95_us\":{},\"recall\":{},\"coarse_bytes_mean\":{},\"rescore_bytes_mean\":{},\"candidates_mean\":{}}}",
+                    samples[31],
+                    samples[60],
+                    recalls.iter().sum::<f64>() / 64.0,
+                    coarse_bytes / 64,
+                    rescore_bytes / 64,
+                    selected / 64
+                );
+            }
+        }
+        store.close().expect("close");
     }
 }

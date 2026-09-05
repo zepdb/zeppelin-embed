@@ -104,6 +104,23 @@ impl ObservedQos {
     }
 }
 
+/// Selected-row rescoring work, independent of score precision and coverage.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ScanRescoreCounters {
+    /// Rows scored by quantized scans, including masked Bit4 rows.
+    pub coarse_rows: u64,
+    /// Rows eligible for selection after live and filter masks.
+    pub eligible_rows: u64,
+    /// Selected rows read from full-precision vector storage.
+    pub candidates_rescored: u64,
+    /// Encoded coordinate bytes, with the same scope as ScanStats::bytes_read.
+    /// Per-row quantization-factor metadata is excluded.
+    pub coarse_bytes: u64,
+    /// Selected rows times vector dimension times four bytes.
+    pub rescore_bytes: u64,
+}
+
 /// Version 1 unconditional report of what one store query actually did.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -119,6 +136,8 @@ pub struct QueryDiagnostics {
     pub approximate: bool,
     /// True when every returned score was computed from full-precision rows.
     pub exact_rescore: bool,
+    /// Work from explicit quantized candidate scanning and selected-row rescoring.
+    pub scan_rescore: Option<ScanRescoreCounters>,
     /// Version 1 fusion report; absent when no hybrid fusion leg ran.
     pub fusion: Option<FusionReport>,
     /// Bounded-producer facts; absent when no hybrid fusion leg ran.
@@ -157,6 +176,7 @@ impl PartialEq for QueryDiagnostics {
             plan,
             approximate,
             exact_rescore,
+            scan_rescore,
             fusion,
             hybrid,
             hybrid_tier_resolution,
@@ -176,6 +196,7 @@ impl PartialEq for QueryDiagnostics {
             && plan == &other.plan
             && approximate == &other.approximate
             && exact_rescore == &other.exact_rescore
+            && scan_rescore == &other.scan_rescore
             && fusion == &other.fusion
             && hybrid == &other.hybrid
             && hybrid_tier_resolution == &other.hybrid_tier_resolution
@@ -285,6 +306,7 @@ impl QueryDiagnostics {
             plan: input.plan,
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
+            scan_rescore: None,
             fusion: None,
             hybrid: None,
             hybrid_tier_resolution: None,
@@ -313,6 +335,7 @@ impl QueryDiagnostics {
             plan: Vec::new(),
             approximate: false,
             exact_rescore: false,
+            scan_rescore: None,
             fusion: None,
             hybrid: None,
             hybrid_tier_resolution: None,
@@ -347,6 +370,7 @@ impl QueryDiagnostics {
             plan: input.plan,
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
+            scan_rescore: None,
             fusion: Some(input.report),
             hybrid: Some(input.hybrid),
             hybrid_tier_resolution: input.tier_resolution,

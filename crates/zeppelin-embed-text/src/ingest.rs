@@ -801,19 +801,13 @@ impl TextStore {
             Legs::Dense => {
                 let (embedded, tokens) = self.query_vector(text, &mut timings)?;
                 query_tokens = tokens;
-                self.dense_hits(embedded.values(), options.k, options.tier, &mut timings)?
+                self.dense_hits(embedded.values(), options, &mut timings)?
             }
             Legs::Hybrid => {
                 let (embedded, tokens) = self.query_vector(text, &mut timings)?;
                 query_tokens = tokens;
                 let query = self.analyzed_query(text, &mut timings);
-                self.hybrid_hits(
-                    embedded.values(),
-                    &query,
-                    options.k,
-                    options.tier,
-                    &mut timings,
-                )?
+                self.hybrid_hits(embedded.values(), &query, options, &mut timings)?
             }
         };
         timings.end_to_end = stage_elapsed(started);
@@ -874,8 +868,7 @@ impl TextStore {
     fn dense_hits(
         &self,
         vector: &[f32],
-        k: usize,
-        tier: Option<zeppelin_embed::lifecycle::SearchTier>,
+        options: QueryOptions,
         timings: &mut TextQueryTimings,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
@@ -883,8 +876,8 @@ impl TextStore {
             .store
             .search(
                 SearchRequest::new(vector),
-                k,
-                Self::search_options(tier),
+                options.k,
+                Self::search_options(options),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Query)?;
@@ -939,8 +932,7 @@ impl TextStore {
         &self,
         vector: &[f32],
         query: &TermQuery,
-        k: usize,
-        tier: Option<zeppelin_embed::lifecycle::SearchTier>,
+        options: QueryOptions,
         timings: &mut TextQueryTimings,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
@@ -949,10 +941,10 @@ impl TextStore {
             .search_hybrid(
                 SearchRequest::new(vector),
                 query,
-                &HybridQuery::new(k)
+                &HybridQuery::new(options.k)
                     .with_alpha(self.bundle.hybrid_alpha())
                     .with_epoch(self.document_epoch),
-                Self::search_options(tier),
+                Self::search_options(options),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Hybrid)?;
@@ -986,8 +978,11 @@ impl TextStore {
     ///
     /// An unset tier must stay unset: each leg has its own contract for the
     /// no-preference case, and hybrid resolves it from graph availability.
-    fn search_options(tier: Option<zeppelin_embed::lifecycle::SearchTier>) -> SearchOptions {
-        match tier {
+    fn search_options(options: QueryOptions) -> SearchOptions {
+        if let Some(config) = options.scan_rescore {
+            return SearchOptions::default().with_scan_rescore(config);
+        }
+        match options.tier {
             Some(tier) => SearchOptions::default().with_tier(tier),
             None => SearchOptions::default(),
         }

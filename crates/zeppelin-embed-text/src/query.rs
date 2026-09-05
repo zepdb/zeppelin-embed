@@ -1,5 +1,5 @@
 use zeppelin_embed::epoch::EpochIdentity;
-use zeppelin_embed::lifecycle::SearchTier;
+use zeppelin_embed::lifecycle::{ScanRescoreOptions, SearchTier};
 
 /// Retrieval legs selected by a text query.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -20,6 +20,7 @@ pub struct QueryOptions {
     pub(crate) k: usize,
     pub(crate) legs: Legs,
     pub(crate) tier: Option<SearchTier>,
+    pub(crate) scan_rescore: Option<ScanRescoreOptions>,
 }
 
 impl QueryOptions {
@@ -30,6 +31,7 @@ impl QueryOptions {
             k,
             legs: Legs::Hybrid,
             tier: None,
+            scan_rescore: None,
         }
     }
 
@@ -49,6 +51,20 @@ impl QueryOptions {
     #[must_use]
     pub const fn with_tier(mut self, tier: SearchTier) -> Self {
         self.tier = Some(tier);
+        self.scan_rescore = None;
+        self
+    }
+
+    /// Selects quantized candidates and scores selected rows exactly.
+    ///
+    /// Dense and hybrid membership may be approximate. The controls apply to
+    /// each segment and vector-producer invocation, including hybrid frontiers.
+    /// Lexical-only queries do not use these controls. Selecting a tier later
+    /// clears this mode and restores that tier's ordinary contract.
+    #[must_use]
+    pub const fn with_scan_rescore(mut self, options: ScanRescoreOptions) -> Self {
+        self.tier = Some(SearchTier::Scan);
+        self.scan_rescore = Some(options);
         self
     }
 
@@ -59,6 +75,7 @@ impl QueryOptions {
     #[must_use]
     pub const fn with_optional_tier(mut self, tier: Option<SearchTier>) -> Self {
         self.tier = tier;
+        self.scan_rescore = None;
         self
     }
 }

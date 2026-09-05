@@ -228,6 +228,8 @@ pub enum ScanError {
     },
     /// A quantization scorer rejected encoded input.
     Quant(QuantError),
+    /// Explicit candidate-rescore controls or selected rows were rejected.
+    Rescore(crate::quant::RescoreError),
     /// Candidate-window arithmetic overflowed `usize`.
     ArithmeticOverflow,
     /// A persistent scan worker panicked before returning a typed result.
@@ -276,6 +278,7 @@ impl std::fmt::Display for ScanError {
                 write!(formatter, "scan score is non-finite at row {row_id}")
             }
             Self::Quant(error) => write!(formatter, "scan quantization error: {error}"),
+            Self::Rescore(error) => write!(formatter, "scan rescore error: {error}"),
             Self::ArithmeticOverflow => {
                 formatter.write_str("scan candidate-window arithmetic overflowed")
             }

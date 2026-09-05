@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::graph::search::{FilteredGraphSearchOutcome, GraphSearchCounters, GraphSearchRequest};
 use crate::ingest::{RowSource, SearchCandidate, SearchRequest};
 use crate::lifecycle::{
-    GraphSearchOptions, PublishedSnapshot, QueryCancellation, QueryControl, QueryError,
-    SearchOptions, SearchTier, SnapshotLease, Store, StoreError, StoreState,
-    auto_graph_search_options, auto_uses_full_precision, exact_rescore_rows,
+    ExactScanMemory, GraphSearchOptions, PublishedSnapshot, QueryCancellation, QueryControl,
+    QueryError, SearchOptions, SearchTier, SnapshotLease, Store, StoreError, StoreState,
+    auto_graph_search_options, auto_uses_full_precision, exact_rescore_rows, rescored_scan,
 };
 use crate::meta::{ColumnStore, ColumnStoreBuilder, EvalError, Predicate, evaluate};
 use crate::quant::{Bit4Query, Int8Query, prepare_bit4_query, prepare_int8_query};
@@ -281,6 +281,10 @@ fn execute_pinned(
     >,
 ) -> Result<FilteredSearchOutcome, FilteredSearchError> {
     let mut candidates = Vec::new();
+    let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
+    if let Some(options) = options.scan_rescore() {
+        options.frontier(k, 0)?;
+    }
     let mut plans = Vec::new();
     let mut stats = MutableStats::default();
     let mut graph_stats = crate::ingest::GraphSearchStats::default();
@@ -315,6 +319,8 @@ fn execute_pinned(
             &mut candidates,
             &mut stats,
             &mut plans,
+            accounting,
+            &mut rescore_counters,
             #[cfg(any(test, feature = "test-support"))]
             metadata_controller,
             #[cfg(any(test, feature = "test-support"))]
@@ -408,8 +414,9 @@ fn execute_pinned(
         )?;
         let scan_reason = (tier == SegmentTier::SealedScan)
             .then(|| sealed_scan_reason(segment, options.explicit_tier()));
-        let plan = SegmentPlan::exact(source, tier, branch, allow_list.cardinality(), scan_reason)
-            .with_predicate(predicate);
+        let mut plan =
+            SegmentPlan::exact(source, tier, branch, allow_list.cardinality(), scan_reason)
+                .with_predicate(predicate);
         #[cfg(any(test, feature = "test-support"))]
         let receipt_context = metadata_execution_receipt_context(
             metadata_controller,
@@ -420,13 +427,18 @@ fn execute_pinned(
             request.vector().len(),
             true,
         )?;
-        let (local, local_stats, execution) = scan_sealed_filtered(
+        let frontier = options
+            .scan_rescore()
+            .map(|options| options.frontier(k, allow_list.cardinality()))
+            .transpose()?
+            .unwrap_or(k);
+        let (mut local, mut local_stats, execution) = scan_sealed_filtered(
             segment,
             &plan,
             row_count,
             request.vector(),
             &allow_list,
-            k,
+            frontier,
             cancellation,
             full_precision,
             &bit4_query,
@@ -434,6 +446,26 @@ fn execute_pinned(
             #[cfg(any(test, feature = "test-support"))]
             receipt_context,
         )?;
+        let _rescore_memory = if let Some(rescore) = options.scan_rescore() {
+            let mut memory = ExactScanMemory::new(accounting)?;
+            let (counters, exhaustive, _) = rescored_scan::rescore(
+                &mut local,
+                &mut local_stats,
+                exact_rescore_rows(segment)?,
+                request.vector(),
+                k,
+                allow_list.cardinality(),
+                rescore,
+                cancellation,
+                accounting,
+                &mut memory,
+            )?;
+            plan.approximate = !exhaustive;
+            rescored_scan::accumulate(&mut rescore_counters, counters)?;
+            Some(memory)
+        } else {
+            None
+        };
         #[cfg(any(test, feature = "test-support"))]
         let reported_branch =
             metadata_query.map_or(plan.branch, |query| query.reported_branch(plan.branch));
@@ -450,7 +482,7 @@ fn execute_pinned(
                     .map_err(QueryError::Store)
             },
             &mut candidates,
-            full_precision || segment.meta().scheme == 0,
+            full_precision || segment.meta().scheme == 0 || options.scan_rescore().is_some(),
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
@@ -466,7 +498,7 @@ fn execute_pinned(
     cancellation.check_graph().map_err(map_scan_error)?;
     let stats = stats.finish();
     accounting.record_plans(&plans).map_err(QueryError::Store)?;
-    let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
+    let mut diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
         snapshot_generation: generation,
         indexed_through_seq: active
             .indexed_through_seq()
@@ -487,6 +519,7 @@ fn execute_pinned(
         epoch,
         elapsed: started.elapsed(),
     });
+    diagnostics.scan_rescore = options.scan_rescore().map(|_| rescore_counters);
     Ok(FilteredSearchOutcome {
         candidates,
         stats,
@@ -528,6 +561,8 @@ fn execute_active_filtered(
     candidates: &mut Vec<SearchCandidate>,
     stats: &mut MutableStats,
     plans: &mut Vec<SegmentPlan>,
+    accounting: &Arc<crate::lifecycle::stats::Accounting>,
+    rescore_counters: &mut crate::diag::ScanRescoreCounters,
     #[cfg(any(test, feature = "test-support"))] metadata_controller: Option<
         &MetadataTestController,
     >,
@@ -554,7 +589,7 @@ fn execute_active_filtered(
         allow_list.cardinality(),
         branch,
     )?;
-    let plan = SegmentPlan::exact(
+    let mut plan = SegmentPlan::exact(
         source,
         SegmentTier::ActiveScan,
         branch,
@@ -572,14 +607,19 @@ fn execute_active_filtered(
         request.vector().len(),
         false,
     )?;
-    let (local, local_stats, execution) = if full_precision {
+    let frontier = options
+        .scan_rescore()
+        .map(|options| options.frontier(k, allow_list.cardinality()))
+        .transpose()?
+        .unwrap_or(k);
+    let (mut local, mut local_stats, execution) = if full_precision {
         execute_squared_l2_plan(
             &plan.node,
             active.vectors(),
             active.row_count(),
             request.vector(),
             &allow_list,
-            k,
+            frontier,
             cancellation,
             #[cfg(any(test, feature = "test-support"))]
             receipt_context,
@@ -596,11 +636,31 @@ fn execute_active_filtered(
                 row_mask: Some(allow_list.as_roaring()),
             },
             active.row_count(),
-            k,
+            frontier,
             cancellation,
             #[cfg(any(test, feature = "test-support"))]
             receipt_context,
         )?
+    };
+    let _rescore_memory = if let Some(rescore) = options.scan_rescore() {
+        let mut memory = ExactScanMemory::new(accounting)?;
+        let (counters, exhaustive, _) = rescored_scan::rescore(
+            &mut local,
+            &mut local_stats,
+            active.vectors(),
+            request.vector(),
+            k,
+            allow_list.cardinality(),
+            rescore,
+            cancellation,
+            accounting,
+            &mut memory,
+        )?;
+        plan.approximate = !exhaustive;
+        rescored_scan::accumulate(rescore_counters, counters)?;
+        Some(memory)
+    } else {
+        None
     };
     #[cfg(any(test, feature = "test-support"))]
     let reported_branch =
@@ -613,7 +673,7 @@ fn execute_active_filtered(
         source,
         |row| Ok(active.document(row)),
         candidates,
-        full_precision,
+        full_precision || options.scan_rescore().is_some(),
         #[cfg(any(test, feature = "test-support"))]
         vector_fault_controller,
         #[cfg(any(test, feature = "test-support"))]
@@ -1528,6 +1588,18 @@ fn record_visited_fallback_feature(
 struct LocalCandidate {
     row: usize,
     score: f32,
+}
+
+impl rescored_scan::RescoreCandidate for LocalCandidate {
+    fn row_id(&self) -> usize {
+        self.row
+    }
+    fn score(&self) -> f32 {
+        self.score
+    }
+    fn set_score(&mut self, score: f32) {
+        self.score = score;
+    }
 }
 
 /// Facts set by the concrete executor branch that actually ran and returned

@@ -164,6 +164,15 @@ pub enum RescoreError {
     ZeroK,
     /// Oversampling must retain at least `k` coarse candidates.
     ZeroOversample,
+    /// A per-segment candidate limit was zero.
+    ZeroCandidateLimit,
+    /// The requested frontier or its boundary ties exceeded the explicit limit.
+    CandidateLimitExceeded {
+        /// Candidate rows that would require exact scoring.
+        requested: usize,
+        /// Caller-supplied maximum per segment.
+        maximum: usize,
+    },
     /// A coarse score was NaN or infinite.
     NonFiniteCoarseScore {
         /// Zero-based row position of the invalid score.
@@ -215,6 +224,13 @@ impl std::fmt::Display for RescoreError {
             ),
             Self::ZeroK => formatter.write_str("rescore top-k must not be zero"),
             Self::ZeroOversample => formatter.write_str("rescore oversample must not be zero"),
+            Self::ZeroCandidateLimit => {
+                formatter.write_str("rescore candidate limit must not be zero")
+            }
+            Self::CandidateLimitExceeded { requested, maximum } => write!(
+                formatter,
+                "rescore candidate count {requested} exceeds per-segment limit {maximum}"
+            ),
             Self::NonFiniteCoarseScore { index } => {
                 write!(
                     formatter,

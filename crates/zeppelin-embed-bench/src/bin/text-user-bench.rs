@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
-use zeppelin_embed::lifecycle::{OpenOptions, SearchTier, Store};
+use zeppelin_embed::lifecycle::{OpenOptions, ScanRescoreOptions, SearchTier, Store};
 use zeppelin_embed::tier::SegmentTier;
 use zeppelin_embed_bench::beir::eval::{Run, RunEntry, mean_ndcg_at_k};
 use zeppelin_embed_bench::beir::loader::{BeirCorpus, load_corpus};
@@ -262,6 +262,13 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let warm = cli.usize("--warm", 20)?;
     let k = cli.usize("--k", 10)?;
     let seed = parse_seed(cli.required("--seed")?)?;
+    let rescore = parse_scan_rescore(cli, requested_tier)?;
+    let mut query_options = QueryOptions::new(k)
+        .with_legs(legs)
+        .with_optional_tier(requested_tier);
+    if let Some(config) = rescore {
+        query_options = query_options.with_scan_rescore(config);
+    }
     let out = Path::new(cli.required("--out")?);
     let corpus = load_corpus(beir_root, corpus_name)?;
     let queries = test_queries(&corpus)?;
@@ -278,12 +285,7 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let query = queries
             .get(*index)
             .ok_or_else(|| io::Error::other("warmup query index is out of bounds"))?;
-        let _ = store.query_text(
-            &query.text,
-            QueryOptions::new(k)
-                .with_legs(legs)
-                .with_optional_tier(requested_tier),
-        )?;
+        let _ = store.query_text(&query.text, query_options)?;
     }
     let mut samples = Vec::with_capacity(queries.len().saturating_mul(rounds));
     let mut run = Run::new();
@@ -295,12 +297,7 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .get(*index)
                 .ok_or_else(|| io::Error::other("query index is out of bounds"))?;
             let started = Instant::now();
-            let outcome = store.query_text_with_diagnostics(
-                &query.text,
-                QueryOptions::new(k)
-                    .with_legs(legs)
-                    .with_optional_tier(requested_tier),
-            )?;
+            let outcome = store.query_text_with_diagnostics(&query.text, query_options)?;
             let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
             samples.push(latency_ms);
             let entries = run_entries(&outcome.hits, &id_map)?;
@@ -326,6 +323,7 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "leg": leg_name(legs),
         "store_tier": segment_tier_short(physical_tier),
         "query_tier": requested_tier.map_or("unset", search_tier_name),
+        "scan_rescore": scan_rescore_json(rescore),
         "corpus": corpus_name,
         "documents": corpus.documents.len(),
         "dimensions": dimensions,
@@ -462,6 +460,14 @@ fn query_sample_json(
             "plans": plans,
             "fusion": fusion,
             "hybrid": hybrid,
+            "scan_rescore": diag.scan_rescore.map(|work| json!({
+                "coarse_rows": work.coarse_rows,
+                "eligible_rows": work.eligible_rows,
+                "candidates_rescored": work.candidates_rescored,
+                "coarse_bytes": work.coarse_bytes,
+                "rescore_bytes": work.rescore_bytes,
+                "byte_scope": "coordinate payload only; factor metadata excluded; hybrid cross-fill separate",
+            })),
             "counters": {
                 "vector_coordinates": counters.scan.dims_touched,
                 "vector_bytes": counters.scan.bytes_read,
@@ -593,6 +599,14 @@ fn recall(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::other("lexical recall is exact by construction").into());
     }
     let k = cli.usize("--k", 10)?;
+    let requested_tier = parse_search_tier(cli.optional("--tier").unwrap_or("auto"))?;
+    let rescore = parse_scan_rescore(cli, requested_tier)?;
+    let mut approximate_options = QueryOptions::new(k)
+        .with_legs(legs)
+        .with_optional_tier(requested_tier);
+    if let Some(config) = rescore {
+        approximate_options = approximate_options.with_scan_rescore(config);
+    }
     let out = Path::new(cli.required("--out")?);
     let corpus = load_corpus(beir_root, corpus_name)?;
     let queries = test_queries(&corpus)?;
@@ -605,12 +619,7 @@ fn recall(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut exact_run = Run::new();
     let mut rows = Vec::with_capacity(queries.len());
     for query in &queries {
-        let approximate = store.query_text(
-            &query.text,
-            QueryOptions::new(k)
-                .with_legs(legs)
-                .with_tier(SearchTier::Auto),
-        )?;
+        let approximate = store.query_text(&query.text, approximate_options)?;
         let exact = store.query_text(
             &query.text,
             QueryOptions::new(k)
@@ -632,6 +641,8 @@ fn recall(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
     let output = json!({
         "kind": "recall",
+        "query_tier": requested_tier.map_or("unset", search_tier_name),
+        "scan_rescore": scan_rescore_json(rescore),
         "backend": backend,
         "leg": leg_name(legs),
         "store_tier": segment_tier_short(physical_tier),
@@ -980,6 +991,29 @@ fn parse_segment_tier(value: &str) -> Result<SegmentTier, Box<dyn std::error::Er
 /// preference. That is not the same as `auto`: the hybrid leg selects
 /// `SearchTier::Exact` for itself when no preference is stated, because
 /// fusion may only fuse exactly rescored vector scores.
+fn parse_scan_rescore(
+    cli: &Cli,
+    tier: Option<SearchTier>,
+) -> Result<Option<ScanRescoreOptions>, Box<dyn std::error::Error>> {
+    match (cli.optional("--scan-rescore-oversample"), cli.optional("--scan-rescore-max-candidates")) {
+        (None, None) => Ok(None),
+        (Some(oversample), Some(limit)) if tier == Some(SearchTier::Scan) => {
+            Ok(Some(ScanRescoreOptions::new(oversample.parse()?, limit.parse()?)?))
+        }
+        _ => Err(io::Error::other("rescoring requires --tier scan, --scan-rescore-oversample and --scan-rescore-max-candidates").into()),
+    }
+}
+
+fn scan_rescore_json(config: Option<ScanRescoreOptions>) -> Option<Value> {
+    config.map(|config| {
+        json!({
+            "oversample": config.oversample(),
+            "max_candidates_per_segment": config.max_candidates_per_segment(),
+            "budget_scope": "per segment and vector-producer invocation, including boundary ties",
+        })
+    })
+}
+
 fn parse_search_tier(value: &str) -> Result<Option<SearchTier>, Box<dyn std::error::Error>> {
     match value {
         "unset" => Ok(None),

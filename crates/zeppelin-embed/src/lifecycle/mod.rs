@@ -9,6 +9,7 @@ pub(crate) mod graph_cache;
 mod hybrid;
 pub mod lock;
 mod pool;
+pub(crate) mod rescored_scan;
 #[cfg(test)]
 mod shared_bound_tests;
 mod snapshot;
@@ -21,6 +22,7 @@ pub use cancel::{
 #[cfg(any(test, feature = "test-support"))]
 pub use clock::ManualMonotonicClock;
 pub use clock::{MonotonicClock, SystemMonotonicClock};
+pub use rescored_scan::ScanRescoreOptions;
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
 };
@@ -1612,6 +1614,7 @@ pub enum SearchTier {
 pub struct SearchOptions {
     scan: crate::scan::ScanOptions,
     tier: Option<SearchTier>,
+    scan_rescore: Option<ScanRescoreOptions>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1625,14 +1628,35 @@ impl SearchOptions {
     /// Creates options with no tier preference and the supplied scan worker budget.
     #[must_use]
     pub const fn new(scan: crate::scan::ScanOptions) -> Self {
-        Self { scan, tier: None }
+        Self {
+            scan,
+            tier: None,
+            scan_rescore: None,
+        }
     }
 
     /// Explicitly selects one store-search tier.
     #[must_use]
     pub const fn with_tier(mut self, tier: SearchTier) -> Self {
         self.tier = Some(tier);
+        self.scan_rescore = None;
         self
+    }
+
+    /// Selects quantized Scan candidates followed by exact full-precision scores.
+    /// Candidate membership remains approximate unless every eligible row is
+    /// rescored. A subsequent `with_tier` call clears these controls.
+    #[must_use]
+    pub const fn with_scan_rescore(mut self, options: ScanRescoreOptions) -> Self {
+        self.tier = Some(SearchTier::Scan);
+        self.scan_rescore = Some(options);
+        self
+    }
+
+    /// Explicit selected-row rescoring controls, absent for ordinary tiers.
+    #[must_use]
+    pub const fn scan_rescore(self) -> Option<ScanRescoreOptions> {
+        self.scan_rescore
     }
 
     /// Returns the scan worker controls used by scan-tier work.
@@ -3612,6 +3636,7 @@ impl Store {
             SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
         let fusion_cancellation = QueryCancellation::new(&control, &fusion_lease);
         let mut work = hybrid::HybridWork::new();
+        let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
         let (fused, report_window) = loop {
@@ -3659,6 +3684,9 @@ impl Store {
                 vector_outcome.stats.threads_used = vector_outcome.stats.worker_thread_ids.len();
             }
             accumulate_search_counters(&mut lexical_counters, &round.lexical_counters);
+            if let Some(counters) = vector_outcome.diagnostics.scan_rescore {
+                rescored_scan::accumulate(&mut rescore_counters, counters)?;
+            }
             work.complete_round(
                 &vector_outcome.stats,
                 vector_outcome.graph_stats,
@@ -3790,6 +3818,7 @@ impl Store {
                 elapsed: self.clock.now().saturating_duration_since(started),
             });
         diagnostics.counters.lexical_cache_hits = work.lexical_cache_hits;
+        diagnostics.scan_rescore = options.scan_rescore().map(|_| rescore_counters);
         diagnostics.counters.lexical_cache_builds = work.lexical_cache_builds;
         diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then_some(timings);
         Ok(crate::ingest::StoreHybridSearchOutcome {
@@ -4903,6 +4932,11 @@ fn search_pinned(
 
     let vector_started = timing_start(clock);
     let scan_options = options.scan();
+    let rescore_options = options.scan_rescore();
+    let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
+    if let Some(options) = rescore_options {
+        options.frontier(k, 0)?;
+    }
     let query = request.vector();
     let quantized_query_validation = if query.is_empty() {
         Err(QuantError::EmptyVector)
@@ -4973,16 +5007,21 @@ fn search_pinned(
 
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
-        let exact_score = full_precision;
+        let mut exact_score = full_precision;
+        let mut approximate = false;
+        let frontier = rescore_options
+            .map(|options| options.frontier(k, alive.live_count()))
+            .transpose()?
+            .unwrap_or(k);
         let mut exact_memory = ExactScanMemory::new(accounting)?;
-        let outcome = match options.tier() {
+        let mut outcome = match options.tier() {
             SearchTier::Auto if full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
                 scan_active_squared_l2(
                     active,
                     &alive,
                     request.vector(),
-                    k,
+                    frontier,
                     ExactScanDispatch {
                         pool,
                         accounting,
@@ -5017,7 +5056,7 @@ fn search_pinned(
                         },
                         row_mask: Some(alive.scan_mask()),
                     },
-                    k,
+                    frontier,
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
@@ -5035,7 +5074,7 @@ fn search_pinned(
                     active,
                     &alive,
                     request.vector(),
-                    k,
+                    frontier,
                     ExactScanDispatch {
                         pool,
                         accounting,
@@ -5052,6 +5091,26 @@ fn search_pinned(
                 )?
             }
         };
+        if let Some(rescore) = rescore_options {
+            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+            let cancellation = QueryCancellation::new(&control, &lease);
+            let (counters, exhaustive, worst) = rescored_scan::rescore(
+                &mut outcome.candidates,
+                &mut outcome.stats,
+                active.vectors(),
+                query,
+                k,
+                alive.live_count(),
+                rescore,
+                &cancellation,
+                accounting,
+                &mut exact_memory,
+            )?;
+            outcome.worst_score = worst;
+            exact_score = true;
+            approximate = !exhaustive;
+            rescored_scan::accumulate(&mut rescore_counters, counters)?;
+        }
         fold_worst_squared_l2(&mut worst_squared_l2, &mut worst_exhaustive, &outcome);
         merge_store_outcome(
             outcome,
@@ -5067,12 +5126,14 @@ fn search_pinned(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_tier(options.tier()),
         )?;
-        plans.push(crate::planner::SegmentPlan::unfiltered_scan(
+        let mut plan = crate::planner::SegmentPlan::unfiltered_scan(
             RowSource::Active,
             crate::planner::SegmentTier::ActiveScan,
             alive.live_count(),
             crate::planner::ScanReason::ActiveSegment,
-        ));
+        );
+        plan.approximate = approximate;
+        plans.push(plan);
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
         }
@@ -5157,14 +5218,18 @@ fn search_pinned(
         }
 
         let mut exact_memory = ExactScanMemory::new(accounting)?;
-        let outcome = scan_sealed_segment(
+        let frontier = rescore_options
+            .map(|options| options.frontier(k, alive.live_count()))
+            .transpose()?
+            .unwrap_or(k);
+        let mut outcome = scan_sealed_segment(
             pool,
             snapshot,
             segment,
             &alive,
             generation,
             request,
-            k,
+            frontier,
             scan_options,
             &control,
             &bit4_query,
@@ -5178,7 +5243,35 @@ fn search_pinned(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
         )?;
-        let exact_score = full_precision || segment.meta().scheme == 0;
+        let mut exact_score = full_precision || segment.meta().scheme == 0;
+        let mut approximate = false;
+        if let Some(rescore) = rescore_options {
+            let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
+            let cancellation = QueryCancellation::new(&control, &lease);
+            let vectors = exact_rescore_rows_for_search(
+                segment,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_controller,
+                #[cfg(any(test, feature = "test-support"))]
+                vector_fault_tier(options.tier()),
+            )?;
+            let (counters, exhaustive, worst) = rescored_scan::rescore(
+                &mut outcome.candidates,
+                &mut outcome.stats,
+                vectors,
+                query,
+                k,
+                alive.live_count(),
+                rescore,
+                &cancellation,
+                accounting,
+                &mut exact_memory,
+            )?;
+            outcome.worst_score = worst;
+            exact_score = true;
+            approximate = !exhaustive;
+            rescored_scan::accumulate(&mut rescore_counters, counters)?;
+        }
         fold_worst_squared_l2(&mut worst_squared_l2, &mut worst_exhaustive, &outcome);
         merge_store_outcome(
             outcome,
@@ -5208,12 +5301,14 @@ fn search_pinned(
         } else {
             crate::planner::SegmentTier::SealedScan
         };
-        plans.push(crate::planner::SegmentPlan::unfiltered_scan(
+        let mut plan = crate::planner::SegmentPlan::unfiltered_scan(
             source,
             tier,
             alive.live_count(),
             sealed_scan_reason(segment, requested_tier, hybrid_scan_reason),
-        ));
+        );
+        plan.approximate = approximate;
+        plans.push(plan);
         if matches!(graph_bound_mode, GraphBoundMode::Shared) {
             retain_global_top_k(&mut candidates, k);
         }
@@ -5246,6 +5341,7 @@ fn search_pinned(
         epoch,
         elapsed: clock.now().saturating_duration_since(started),
     });
+    diagnostics.scan_rescore = rescore_options.map(|_| rescore_counters);
     diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then(|| crate::diag::QueryTimings {
         vector: timing_elapsed(clock, vector_started),
         ..Default::default()
@@ -6303,13 +6399,13 @@ impl ExactScanError {
     }
 }
 
-struct ExactScanMemory {
+pub(crate) struct ExactScanMemory {
     candidates: stats::AccountedCounter,
     worker_ids: stats::AccountedCounter,
 }
 
 impl ExactScanMemory {
-    fn new(accounting: &Arc<stats::Accounting>) -> Result<Self, QueryError> {
+    pub(crate) fn new(accounting: &Arc<stats::Accounting>) -> Result<Self, QueryError> {
         Ok(Self {
             candidates: stats::AccountedCounter::new(
                 accounting,
@@ -6765,6 +6861,10 @@ fn map_l2_rescore_error(error: crate::quant::RescoreError) -> QueryError {
         | crate::quant::RescoreError::InsufficientCandidates { .. }
         | crate::quant::RescoreError::ArithmeticOverflow => {
             crate::scan::ScanError::ArithmeticOverflow
+        }
+        error @ (crate::quant::RescoreError::ZeroCandidateLimit
+        | crate::quant::RescoreError::CandidateLimitExceeded { .. }) => {
+            crate::scan::ScanError::Rescore(error)
         }
     };
     QueryError::Scan(error)

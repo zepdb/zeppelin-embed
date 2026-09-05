@@ -25,6 +25,89 @@ use zeppelin_embed::lifecycle::{
 const DIMENSION: usize = 6;
 const TERMS: [&str; 6] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
 
+#[test]
+fn astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage() {
+    use zeppelin_embed::fusion::CandidateCoverage;
+    use zeppelin_embed::lifecycle::ScanRescoreOptions;
+    let directory = tempdir().expect("rescore hybrid");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (0..100)
+                .map(|row| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                        vec![1.0 + row as f32 * 0.125, 0.0],
+                    )
+                    .with_text(if row == 0 { "alpha" } else { "omega" })
+                })
+                .collect(),
+        ))
+        .expect("ingest");
+    let exact = store
+        .search(
+            SearchRequest::new(&[1.0, 0.0]),
+            1,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("independent ceiling");
+    let ceiling = exact.vector_ceiling.expect("norm enclosure");
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0]),
+            &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(10).with_alpha(0.7),
+            SearchOptions::default()
+                .with_scan_rescore(ScanRescoreOptions::new(1, 200).expect("controls")),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit rescore hybrid");
+    let counters = outcome
+        .diagnostics
+        .scan_rescore
+        .expect("hybrid must retain rescore receipts");
+    assert_eq!((counters.coarse_rows, counters.eligible_rows), (100, 100));
+    assert_eq!(
+        (
+            counters.candidates_rescored,
+            counters.coarse_bytes,
+            counters.rescore_bytes
+        ),
+        (51, 100, 408)
+    );
+    assert!(outcome.diagnostics.approximate);
+    assert!(outcome.diagnostics.exact_rescore);
+    let report = outcome.diagnostics.hybrid.expect("hybrid report");
+    assert_eq!(
+        report.provenance.vector_coverage,
+        CandidateCoverage::Approximate
+    );
+    assert!(report.provenance.cross_scores_complete);
+    assert_eq!(report.normalization_policy_version, 1);
+    assert_eq!(report.total_cross_filled_vector, 1);
+    let fusion = outcome.diagnostics.fusion.expect("fusion report");
+    assert_eq!(fusion.termination, FusionTermination::ApproximateCandidates);
+    assert_eq!(fusion.rounds, 1);
+    assert_eq!(
+        outcome.hits[0].key,
+        DocId::new(1),
+        "lexical cross-fill recovers the unseen exact winner"
+    );
+    for hit in &outcome.hits {
+        let row = hit.key.get() - 1;
+        let distance = (row as f64 * 0.125).powi(2);
+        assert_eq!(
+            hit.vector_squared_l2.map(f64::to_bits),
+            Some(distance.to_bits())
+        );
+        let expected = 0.7 * ((ceiling - distance) / ceiling) + (1.0 - 0.7) * f64::from(row == 0);
+        assert_eq!(hit.fused_score.to_bits(), expected.to_bits());
+    }
+    assert_eq!(outcome.diagnostics.counters.scan.bytes_read, 100 + 408 + 8);
+    store.close().expect("close");
+}
+
 fn astra_03_fixture() -> (tempfile::TempDir, Store) {
     let directory = tempdir().expect("fixed-policy fixture");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open");

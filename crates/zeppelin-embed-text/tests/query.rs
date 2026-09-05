@@ -7,6 +7,83 @@ use zeppelin_embed_text::{IngestOptions, Legs, QueryOptions, TextDocument, TextS
 mod common;
 
 #[test]
+fn astra_06_text_query_exposes_explicit_rescore_and_preserves_tier_controls() {
+    use zeppelin_embed::lifecycle::{ScanRescoreOptions, SearchTier};
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store = TextStore::open(directory.path().join("store"), &path, Default::default())
+        .expect("open native fixture");
+    store
+        .ingest_text(
+            &[TextDocument::new(1, 1, "bronze zeppelin")],
+            IngestOptions::default(),
+        )
+        .expect("ingest");
+    let config = ScanRescoreOptions::new(2, 128).expect("controls");
+    for legs in [Legs::Dense, Legs::Hybrid, Legs::Lexical] {
+        let base = QueryOptions::new(1).with_legs(legs);
+        let report = store
+            .query_text_with_diagnostics("bronze zeppelin", base.with_scan_rescore(config))
+            .expect("rescore text query");
+        assert_eq!(report.embedding_calls, usize::from(legs != Legs::Lexical));
+        let diagnostics = report.diagnostics.expect("admitted");
+        if legs == Legs::Lexical {
+            assert!(diagnostics.scan_rescore.is_none());
+        } else {
+            let counters = diagnostics
+                .scan_rescore
+                .expect("text option must reach vector producer");
+            assert_eq!(counters.candidates_rescored, 1);
+            assert_eq!(counters.rescore_bytes, 8);
+            assert!(diagnostics.exact_rescore);
+            assert!(
+                !diagnostics.approximate,
+                "all eligible rows rescored in tiny fixture"
+            );
+        }
+        let control = store
+            .query_text("bronze zeppelin", base.with_tier(SearchTier::Exact))
+            .expect("exact");
+        assert_eq!(report.hits, control);
+        for tier in [
+            None,
+            Some(SearchTier::Exact),
+            Some(SearchTier::Auto),
+            Some(SearchTier::Scan),
+        ] {
+            let reset = store.query_text_with_diagnostics(
+                "bronze zeppelin",
+                base.with_scan_rescore(config).with_optional_tier(tier),
+            );
+            let ordinary = store.query_text("bronze zeppelin", base.with_optional_tier(tier));
+            if legs == Legs::Hybrid && matches!(tier, Some(SearchTier::Auto | SearchTier::Scan)) {
+                // Explicit ordinary coarse tiers retain their existing refusal
+                // to supply estimated scores to exact-score fusion.
+                assert!(matches!(
+                    reset,
+                    Err(zeppelin_embed_text::TextError::Hybrid(
+                        zeppelin_embed::fusion::FusionError::EstimatedVectorScore { rank: 0 }
+                    ))
+                ));
+                assert!(matches!(
+                    ordinary,
+                    Err(zeppelin_embed_text::TextError::Hybrid(
+                        zeppelin_embed::fusion::FusionError::EstimatedVectorScore { rank: 0 }
+                    ))
+                ));
+                continue;
+            }
+            let reset = reset.expect("ordinary tier");
+            let ordinary = ordinary.expect("control");
+            assert_eq!(reset.hits, ordinary);
+            assert!(reset.diagnostics.expect("admitted").scan_rescore.is_none());
+        }
+    }
+    store.close().expect("close");
+}
+
+#[test]
 fn the_query_prefix_is_applied_from_the_bundle_and_never_by_the_caller() {
     let directory = tempdir().expect("tempdir");
     let path = directory.path().join("pair.zem");
