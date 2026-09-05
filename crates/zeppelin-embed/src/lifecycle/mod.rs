@@ -3437,38 +3437,32 @@ impl Store {
             active: &admitted.active_segment,
             accounting: &self.accounting,
         };
-        let submit_lexical_leg = |bound| {
-            lexical_worker.submit(|| {
-                let name = std::thread::current().name().map(str::to_owned);
-                let result = (|| {
-                    maybe_trigger_hybrid_leg_panic(
-                        panic_lexical,
-                        "injected lexical hybrid leg panic",
-                    );
-                    let lease =
-                        SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
-                    let cancellation = QueryCancellation::new(&control, &lease);
-                    cancellation
-                        .check_graph()
-                        .map_err(QueryError::Scan)
-                        .map_err(crate::fusion::FusionError::from)?;
-                    match lexical_query {
-                        PinnedLexicalQuery::Term(query) => {
-                            exact_lexical_leg(lexical_inputs, query, bound, &cancellation)
-                        }
-                        PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
-                            lexical_inputs,
-                            &self.tokenizer,
-                            query,
-                            bound,
-                            &cancellation,
-                        ),
+        let run_lexical_leg = |bound| {
+            let name = std::thread::current().name().map(str::to_owned);
+            let result = (|| {
+                maybe_trigger_hybrid_leg_panic(panic_lexical, "injected lexical hybrid leg panic");
+                let lease =
+                    SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
+                let cancellation = QueryCancellation::new(&control, &lease);
+                cancellation
+                    .check_graph()
+                    .map_err(QueryError::Scan)
+                    .map_err(crate::fusion::FusionError::from)?;
+                match lexical_query {
+                    PinnedLexicalQuery::Term(query) => {
+                        exact_lexical_leg(lexical_inputs, query, bound, &cancellation)
                     }
-                })();
-                (name, result)
-            })
+                    PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
+                        lexical_inputs,
+                        &self.tokenizer,
+                        query,
+                        bound,
+                        &cancellation,
+                    ),
+                }
+            })();
+            (name, result)
         };
-        let lexical_work = submit_lexical_leg(width.saturating_add(1))?;
         let caller_chose_tier = requested_tier.is_some();
         let run_vector_leg = |k: usize| {
             let graph_available = snapshot_has_graph(&admitted.snapshot);
@@ -3519,17 +3513,24 @@ impl Store {
             )
             .map_err(crate::fusion::FusionError::from)
         };
-        let vector_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            maybe_trigger_hybrid_leg_panic(panic_vector, "injected vector hybrid leg panic");
-            run_vector_leg(width.saturating_add(1))
-        }))
-        .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
-            leg: crate::fusion::FusionLeg::Vector,
-            detail: "vector hybrid leg panicked",
-        }));
-        let (lexical_thread_name, lexical_result) = lexical_work
-            .wait()
-            .unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
+        let (vector_result, lexical_result) = lexical_worker.run_scoped(
+            || run_lexical_leg(width.saturating_add(1)),
+            || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    maybe_trigger_hybrid_leg_panic(
+                        panic_vector,
+                        "injected vector hybrid leg panic",
+                    );
+                    run_vector_leg(width.saturating_add(1))
+                }))
+                .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
+                    leg: crate::fusion::FusionLeg::Vector,
+                    detail: "vector hybrid leg panicked",
+                }))
+            },
+        )?;
+        let (lexical_thread_name, lexical_result) =
+            lexical_result.unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
         #[cfg(any(test, feature = "test-support"))]
         if let Ok(mut receipt) = self.hybrid_execution_receipt.lock() {
             *receipt = Some(HybridExecutionReceipt {
@@ -3588,10 +3589,11 @@ impl Store {
                 width.saturating_mul(2).min(corpus_rows)
             };
             rounds = rounds.saturating_add(1);
-            let lexical_work = submit_lexical_leg(width.saturating_add(1))?;
-            let vector_result = run_vector_leg(width.saturating_add(1));
-            let (_, lexical_result) = lexical_work
-                .wait()
+            let (vector_result, lexical_result) = lexical_worker.run_scoped(
+                || run_lexical_leg(width.saturating_add(1)),
+                || run_vector_leg(width.saturating_add(1)),
+            )?;
+            let (_, lexical_result) = lexical_result
                 .unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
             let (next_vector, (next_hits, next_sources, next_counters, _)) =
                 resolve_hybrid_leg_results(vector_result, lexical_result)?;

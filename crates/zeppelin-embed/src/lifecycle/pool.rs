@@ -262,7 +262,7 @@ enum LexicalReply<R> {
     Panicked,
 }
 
-pub(crate) struct PendingLexical<R> {
+struct PendingLexical<R> {
     receiver: Option<mpsc::Receiver<LexicalReply<R>>>,
 }
 
@@ -344,13 +344,19 @@ impl LexicalWorker {
         })
     }
 
-    pub(crate) fn submit<'scope, F, R>(
+    /// Runs borrowed lexical work while the caller executes its vector leg.
+    /// The pending guard cannot escape this scope, even through `forget`;
+    /// on caller unwind its destructor still joins the lexical job before
+    /// any caller-owned borrow can expire.
+    pub(crate) fn run_scoped<'scope, F, R, G, S>(
         &self,
         work: F,
-    ) -> Result<PendingLexical<R>, crate::fusion::FusionError>
+        concurrent: G,
+    ) -> Result<(S, Result<R, crate::fusion::FusionError>), crate::fusion::FusionError>
     where
         F: FnOnce() -> R + Send + 'scope,
         R: Send + 'scope,
+        G: FnOnce() -> S,
     {
         let worker =
             self.worker
@@ -378,9 +384,10 @@ impl LexicalWorker {
             let _ = response_tx.send(LexicalReply::Panicked);
         });
         let run = unsafe {
-            // SAFETY: `PendingLexical` waits during normal return and in Drop.
-            // The response send therefore completes or disconnects before any
-            // value borrowed by this scoped job can leave its caller's scope.
+            // SAFETY: the local pending guard below cannot escape. It waits
+            // on return or unwind while every borrow captured by `work` is
+            // still live. FnOnce consumes and drops the captures before the
+            // completion reply is sent.
             std::mem::transmute::<Box<dyn FnOnce() + Send + 'scope>, LexicalJob>(run)
         };
         let report_panic = unsafe {
@@ -397,9 +404,11 @@ impl LexicalWorker {
                 leg: crate::fusion::FusionLeg::Lexical,
                 detail: "pooled lexical worker disconnected during submission".to_owned(),
             })?;
-        Ok(PendingLexical {
+        let pending = PendingLexical {
             receiver: Some(response_rx),
-        })
+        };
+        let result = concurrent();
+        Ok((result, pending.wait()))
     }
 
     pub(crate) fn stop_and_join(&self) -> Result<(), StoreError> {

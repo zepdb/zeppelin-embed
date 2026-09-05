@@ -779,6 +779,53 @@ mod tests {
     }
 
     #[test]
+    fn astra_00_scoped_lexical_worker_panic_and_clean_control() {
+        let episode = build_hybrid_episode(11).expect("hybrid episode");
+        // The existing I49 full-score checker models the old k-wide producer
+        // and fails before this change (ASTRA-ISSUE-002). This directed case
+        // owns atomic leg failure and same-seed recovery, not fusion policy.
+        let atomic = |facts: &[LegFaultObserved]| {
+            facts.len() == 2
+                && facts.iter().all(|fact| {
+                    fact.kind == LegFailureFact::Panic
+                        && fact.no_partial
+                        && fact.both_legs_completed
+                        && fact.detail
+                            == match fact.leg {
+                                FusionLegFact::Vector => "vector hybrid leg panicked",
+                                FusionLegFact::Lexical => "lexical hybrid leg panicked",
+                            }
+                })
+        };
+        let evidence = run_hybrid_operation(
+            &episode,
+            HybridOperationKind::Legs,
+            Some(HybridFaultKind::LegPanic),
+        )
+        .expect("directed leg panic");
+        assert!(evidence.clean_control_passed);
+        assert_eq!(evidence.receipts.len(), 1);
+        assert_eq!(evidence.receipts[0].cardinality, 1);
+        for invariant in evidence.invariants {
+            let HybridInvariantEvidence::I49 { mut observed, .. } = invariant else {
+                panic!("unexpected invariant at leg boundary");
+            };
+            assert!(atomic(&observed.leg_faults));
+            for fault in &observed.leg_faults {
+                assert_eq!(
+                    fault.retry, episode.observed.main,
+                    "post-panic retry must equal the same-seed clean query"
+                );
+            }
+            observed.leg_faults[0].both_legs_completed = false;
+            assert!(
+                !atomic(&observed.leg_faults),
+                "a missing join must trip the atomic-failure oracle"
+            );
+        }
+    }
+
+    #[test]
     fn every_declared_hybrid_fault_fires_once() {
         let episode = build_hybrid_episode(11).expect("hybrid episode");
         for fault in [

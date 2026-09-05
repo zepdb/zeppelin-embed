@@ -303,3 +303,50 @@ fn hybrid_widens_and_reports_the_round_count_when_the_first_window_is_unproven()
     assert_same_hits(&outcome.hits, &offline, "widened window");
     store.close().expect("close store");
 }
+
+fn astra_disjoint_windows_store() -> (tempfile::TempDir, Store) {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    const ROWS: usize = 400;
+    let mut documents = Vec::with_capacity(ROWS);
+    for row in 0..ROWS {
+        let identity = DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1));
+        let mut vector = vec![0.0_f32; DIMENSION];
+        vector[0] = 1.0;
+        vector[1] = row as f32 * 0.0025;
+        let document = IngestDocument::new(identity, vector);
+        documents.push(if row < ROWS / 2 {
+            document
+        } else {
+            let repeats = 1 + (ROWS - row) % 5;
+            document.with_text(vec!["zeppelin"; repeats].join(" ").as_str())
+        });
+    }
+    store
+        .ingest(IngestBatch::new(documents))
+        .expect("ingest the adversarial corpus");
+    (directory, store)
+}
+
+#[test]
+fn astra_00_lexical_window_survives_worker_handoff() {
+    let (_directory, store) = astra_disjoint_windows_store();
+    let mut query = HybridQuery::new(1);
+    query.max_rounds = 1;
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &query,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("bounded query");
+    let report = outcome.diagnostics.hybrid.expect("hybrid");
+    assert_eq!(
+        report.lexical_returned,
+        report.window.min(200),
+        "the worker must return its requested window of the 200 matching rows"
+    );
+    store.close().expect("close store");
+}
