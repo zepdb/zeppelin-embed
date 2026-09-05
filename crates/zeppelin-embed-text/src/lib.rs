@@ -11,6 +11,9 @@
 )]
 #![warn(missing_docs)]
 
+#[cfg(all(test, feature = "test-support"))]
+extern crate self as zeppelin_embed_text;
+
 /// Model architecture implementations.
 pub mod arch;
 /// Immutable `.zem` bundle loading and validation.

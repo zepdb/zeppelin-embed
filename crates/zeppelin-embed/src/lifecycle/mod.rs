@@ -33,7 +33,12 @@ pub use hybrid::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use materialize::MaterializationTestCounters;
-pub use materialize::{MaterializationError, MaterializedRow, QueryMaterializer};
+pub use materialize::{
+    HybridPreparationError, MaterializationError, MaterializedRow, QueryMaterializer,
+};
+
+#[cfg(test)]
+mod hybrid_overlap_tests;
 pub use rescored_scan::ScanRescoreOptions;
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
@@ -3642,6 +3647,38 @@ impl Store {
             Option<&materialize::HybridAddresses>,
         ) -> Result<R, crate::fusion::FusionError>,
     ) -> Result<R, crate::fusion::FusionError> {
+        self.search_hybrid_prepared_then(
+            || Ok::<_, std::convert::Infallible>(vector_query),
+            lexical_query,
+            hybrid_query,
+            options,
+            control,
+            capture_rows,
+            finish,
+        )
+        .map_err(|error| match error {
+            HybridPreparationError::Preparation(never) => match never {},
+            HybridPreparationError::Search(error) => error,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)] // The existing query arguments plus its scoped continuation.
+    fn search_hybrid_prepared_then<'vector, E, R>(
+        &self,
+        prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
+        lexical_query: PinnedLexicalQuery<'_>,
+        hybrid_query: &crate::fusion::HybridQuery,
+        options: SearchOptions,
+        control: QueryControl,
+        capture_rows: bool,
+        finish: impl FnOnce(
+            crate::ingest::StoreHybridSearchOutcome,
+            &PublishedSnapshot,
+            &crate::ingest::ActiveSegment,
+            &QueryCancellation<'_>,
+            Option<&materialize::HybridAddresses>,
+        ) -> Result<R, crate::fusion::FusionError>,
+    ) -> Result<R, HybridPreparationError<E>> {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
@@ -3749,12 +3786,9 @@ impl Store {
             )
         };
         let caller_chose_tier = requested_tier.is_some();
-        let mut vector_preparation = prepared::PreparedVectorQuery::new(
-            vector_query.vector(),
-            self.epoch_identity(),
-            &self.accounting,
-        );
-        let mut run_vector_leg = |k: usize| {
+        let run_vector_leg = |vector_query: crate::ingest::SearchRequest<'_>,
+                              vector_preparation: &mut prepared::PreparedVectorQuery<'_>,
+                              k: usize| {
             let graph_available = snapshot_has_graph(&admitted.snapshot);
             let scan_reason_override = if caller_chose_tier || !graph_available {
                 None
@@ -3799,14 +3833,14 @@ impl Store {
                 scan_reason_override,
                 started,
                 self.clock.as_ref(),
-                &mut vector_preparation,
+                vector_preparation,
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
             )
             .map_err(crate::fusion::FusionError::from)
         };
         let lexical_queued = timing_start(self.clock.as_ref());
-        let (vector_result, lexical_result) = lexical_worker.run_scoped(
+        let (prepared_vector_result, lexical_result) = lexical_worker.run_scoped(
             || {
                 run_lexical_leg(
                     &mut lexical_preparation,
@@ -3816,16 +3850,30 @@ impl Store {
             },
             || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let vector_query =
+                        prepare_vector().map_err(HybridPreparationError::Preparation)?;
+                    let mut vector_preparation = prepared::PreparedVectorQuery::new(
+                        vector_query.vector(),
+                        self.epoch_identity(),
+                        &self.accounting,
+                    );
                     maybe_trigger_hybrid_leg_panic(
                         panic_vector,
                         "injected vector hybrid leg panic",
                     );
-                    run_vector_leg(width.saturating_add(1))
+                    let result = run_vector_leg(
+                        vector_query,
+                        &mut vector_preparation,
+                        width.saturating_add(1),
+                    );
+                    Ok((vector_query, vector_preparation, result))
                 }))
-                .unwrap_or(Err(crate::fusion::FusionError::LegPanic {
-                    leg: crate::fusion::FusionLeg::Vector,
-                    detail: "vector hybrid leg panicked",
-                }))
+                .unwrap_or(Err(HybridPreparationError::Search(
+                    crate::fusion::FusionError::LegPanic {
+                        leg: crate::fusion::FusionLeg::Vector,
+                        detail: "vector hybrid leg panicked",
+                    },
+                )))
             },
         )?;
         let (lexical_thread_name, lexical_result, queue_time, lexical_time) = lexical_result
@@ -3848,6 +3896,30 @@ impl Store {
         }
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = lexical_thread_name;
+        // run_scoped has joined lexical work even when vector preparation
+        // failed or panicked. A stopped admission takes precedence over a late
+        // producer error; otherwise retain the caller's original error type.
+        let (vector_query, mut vector_preparation, vector_result) = match prepared_vector_result {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let lease =
+                    SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
+                QueryCancellation::new(&control, &lease)
+                    .check_graph()
+                    .map_err(map_scan_error)?;
+                if let Err(lexical_error) = lexical_result
+                    && matches!(
+                        lexical_error,
+                        crate::fusion::FusionError::ReadCancelled { .. }
+                            | crate::fusion::FusionError::Timeout { .. }
+                            | crate::fusion::FusionError::Cancelled { .. }
+                    )
+                {
+                    return Err(HybridPreparationError::Search(lexical_error));
+                }
+                return Err(error);
+            }
+        };
         let (
             mut vector_outcome,
             (mut lexical_hits, mut lexical_assembly, mut lexical_counters, mut lexical_cache_hit),
@@ -3996,7 +4068,13 @@ impl Store {
                         lexical_queued,
                     )
                 },
-                || run_vector_leg(width.saturating_add(1)),
+                || {
+                    run_vector_leg(
+                        vector_query,
+                        &mut vector_preparation,
+                        width.saturating_add(1),
+                    )
+                },
             )?;
             let (_, lexical_result, queue_time, lexical_time) =
                 lexical_result.unwrap_or_else(|error| {
@@ -4070,6 +4148,7 @@ impl Store {
             &fusion_cancellation,
             addresses.as_ref(),
         )
+        .map_err(HybridPreparationError::Search)
     }
 
     /// Returns `(hits, builds)` for the assembled-lexical-index cache.

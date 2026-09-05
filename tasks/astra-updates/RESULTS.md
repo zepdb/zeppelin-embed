@@ -2,6 +2,11 @@
 
 Status: plan 00 landed as 8d5991c after prerequisite 12ee589. Plans 01-03 landed as 6b37820, aa9c409 and 1f12858; 60a0e9d fixes assembly accounting. Plan 04 landed as fcc5999; plan 05 landed as b743113; plan 06 landed as d66b161 with measured dense benefit; plan 07 landed as 1f9f8ad with pinned text correctness and measured copy/admission reduction. Plan 09 landed as 3befa3c with query preparation/score/buffer reuse and measured validator outlining. Plan 10 landed as 8cecfcf with bounded combined structured scoring and measured fuzzy/hybrid stress gains. Plan 11 landed as cee49da with selective persisted positions and 95.86-97.72% phrase stress p95 gains. Plan 12 landed as b417501 with cached vocabulary and warm prefix p95 -96.84%; its instrumented post-update p95 regression remains explicit. Plan 13 landed as bfc2945 with focused GREEN and paired fuzzy Store/hybrid p95 gains of 48.62%/39.22%, with cache and first-use costs explicit. Full graph/held-out/broad qualification remains pending.
 
+The user narrowed execution to finish Step 19 and stop. Steps 00–19 have
+individual implementation and evidence entries; Steps 20–33 are unexecuted.
+The Step 19 implementation, tests and measurements are contained in this commit.
+Its resolved commit receipt is `/private/tmp/ze-astra19-host-0_z5i12g/commit-receipt.json`.
+
 Update as the goal runs. "Landed" means an actual scoped commit exists.
 Focused GREEN, benchmark confirmation and broad qualification are separate.
 Log incidental problems in [ISSUES.md](ISSUES.md), then continue unless they
@@ -27,29 +32,32 @@ block the current plan or a trustworthy required comparison.
 | [15](15-bitmap-validation/plan.md) | Implemented, 818a433 | Two executed work REDs to GREEN; six focused tests; exact first-invalid/error order and BM25 controls pass | [Evidence](../evidence/astra-15-bitmap-validation.md): 58,980-row setup p95 178.042 -> 0.125 us; assembly 343.750 -> 178.459 us; six uninstrumented processes, 240 exact scored control hits | Core setup only; unchanged memory layout, no new cache; pause lifted by user |
 | [16](16-incremental-lexical-assembly/plan.md) | Implemented, 87421b7 | Actual row-walk RED to GREEN; seven focused and six affected cases pass; memory/stale plants fire | [Evidence](../evidence/astra-16-lexical-assembly.md): post-update core setup p95 -59.85% to -75.22%, zero unchanged sealed statistics walks; 11,520 identical scored hits | Warm absent p95 +0.041-0.042 us; cache +320/+1,488 bytes; issue 018 logged; combined native checkpoint with 17 complete |
 | [17](17-live-document-frequency/plan.md) | Implemented, ee016e3 | Literal reuse/admission RED to GREEN; 9 focused tests, 2 firing plants, 5 selected integration cases GREEN | [Evidence](../evidence/astra-17-live-df.md): final tombstoned common core p95 -93.18% to -99.53%; 24 native processes / all 648 queries preserve full payloads; fixed-deletion lexical/hybrid p95 -9.23%/-6.10%; intact APIs unchanged | Initial unique-term regressions rejected; final all-live core control +0.125us; cache +6,768B per partial contribution; broad qualification pending |
-| [18](18-query-cancellation/plan.md) | Implemented; scoped implementation commit | 52 cases GREEN:39 core18+6 regressions+7 text controls; seven firing/restored plants | [Evidence](../evidence/astra-18-query-cancellation.md): bounded preparation/queue work;384 native cancellations+recoveries pass; CoreML/MLX residual p95 0.894/5.659ms;48-process ordinary screen has exact payload parity | Lexical p95 +9.24–13.32%,deleted hybrid +10.84%;24-process diagnostic attributes material cost to polling (issue020); full qualification pending |
-| [19](19-embedding-lexical-overlap/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [20](20-query-runtime-isolation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [21](21-lexical-worker-capacity/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [22](22-live-graph-results/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [23](23-graph-quality-tuning/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [24](24-graph-scan-crossover/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [25](25-maintenance-priority/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [26](26-lexical-strategy-tuning/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [27](27-lexical-bound-reuse/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [28](28-distinct-parent-results/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [29](29-fusion-calibration/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [30](30-query-embedding-cache/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [31](31-coreml-shape-buckets/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [32](32-reranker-evaluation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
-| [33](33-mrl-candidate-evaluation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
+| [18](18-query-cancellation/plan.md) | Implemented, 192689b | 52 cases GREEN:39 core18+6 regressions+7 text controls; seven firing/restored plants | [Evidence](../evidence/astra-18-query-cancellation.md): bounded preparation/queue work;384 native cancellations+recoveries pass; CoreML/MLX residual p95 0.894/5.659ms;48-process ordinary screen has exact payload parity | Lexical p95 +9.24–13.32%,deleted hybrid +10.84%;24-process diagnostic attributes material cost to polling (issue020); full qualification pending |
+| [19](19-embedding-lexical-overlap/plan.md) | Implemented in this commit; resolved SHA in host commit receipt | Five core + three TextStore cases GREEN; early-preparation plant fires/restores; directed panic/clean control and native public case pass | [Evidence](../evidence/astra-19-embedding-overlap.md): 66 ordinary + 18 diagnostic processes, 5,376 calls; graph hybrid p50 -34.57%, p95 -18.28%; scan hybrid p95 -11.20% intact / -18.06% deleted; exact payload/work/quality parity; 576/576 after queries overlap native embedding and lexical work | Single-leg timing noise within 5%; no universal 1 ms claim; broad qualification unrun; user stop after 19 |
+| [20](20-query-runtime-isolation/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [21](21-lexical-worker-capacity/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [22](22-live-graph-results/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [23](23-graph-quality-tuning/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [24](24-graph-scan-crossover/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [25](25-maintenance-priority/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [26](26-lexical-strategy-tuning/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [27](27-lexical-bound-reuse/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [28](28-distinct-parent-results/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [29](29-fusion-calibration/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [30](30-query-embedding-cache/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [31](31-coreml-shape-buckets/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [32](32-reranker-evaluation/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
+| [33](33-mrl-candidate-evaluation/plan.md) | Not executed: user stop after 19 | NOT RUN | NOT RUN | Outside revised scope |
 
 ## Final comparison
 
-Not run. Summarize the assembled before/after matrix and measured per-change
-contributions here after execution. Include negative results, interactions,
-unmeasured cells and remaining true blockers. Nonblocking issue backlog does
-not need to be fixed to finish the planned work.
+Full assembled held-out comparison NOT RUN under the revised stop-after-19
+scope. Individual per-change evidence and the completed pre-Step-16/full-query
+comparison below remain available; they do not substitute for that qualification.
+Step 19 adds a matched 64-query full-corpus screen including a production-pair
+graph control. The separately authorized full-query BEIR/native comparison is
+complete for three full datasets and the prepared NQ prefix; its frozen source
+precedes Steps 17–19: [comparison](../cross-bench-results/2026-09-05-prepared-core-graph.md).
 
 ## Broad qualification
 
@@ -59,11 +67,12 @@ from the focused implementation and benchmark pass, as specified in README.md.
 
 ## Current execution checkpoint
 
-The implementation queue through Step 17 has focused GREEN and per-change
+The implementation queue through Step 19 has focused GREEN and per-change
 measurements. Selected after-03, after-07 and after-17 integration checkpoints
 pass. The Step17 commit contains exact live-frequency caching, rejected admission
-experiments and the full native Step16+17 confirmation. Plans 18-33 and the final
-assembled held-out/graph confirmation remain required. Step06 retains its hybrid/
+experiments and the full native Step16+17 confirmation. Steps 18 and 19 have
+separate completed per-change evidence. Plans 20–33 and the final assembled
+held-out/graph confirmation remain unexecuted under the revised user scope. Step06 retains its hybrid/
 small-store negative results without changing defaults. Corrected Step08 corpus
 comparisons cover all 648 queries. Unrelated examples/python remains untouched.
 
@@ -129,7 +138,7 @@ accepts approximately 1 ms and rejects FiQA-specific tuning.
 The default clean71 graph is published, but refinement/comparison is pending
 at a preserved checkpoint. This is not a qualified graph result. The completed
 diagnostics and pending status are committed before resuming Step 16. Plans
-18-33 remain uncompleted until their individual contracts are met.
+20–33 remain unexecuted under the user stop after 19.
 
 Step 16 retains immutable contribution sharing after public-path RED/GREEN,
 13 distinct focused/regression cases, two firing fault plants and six matched
@@ -137,14 +146,15 @@ normal-feature core processes. Post-update setup p95 improves 59.85-75.22%;
 warm absent p95 rises one approximate timer tick and remains an explicit
 negative result. Step16 landed as `87421b7`. The shared after-17 native checkpoint
 is complete: on fixed deletions, lexical/hybrid p95 improve 9.23%/6.10%; intact
-controls are unchanged and all 15,552 full payloads are identical. Step 18 is active
-with implementation and per-change measurements complete. Its64-query full-corpus
+controls are unchanged and all 15,552 full payloads are identical. Step 18 landed
+as 192689b with implementation and per-change measurements complete. Its64-query full-corpus
 screen has48 successful processes and exact payload parity. Six native processes
 verify384 cancellation/recovery cases;24 diagnostic processes attribute the
 lexical slowdown to cooperative polling. The required cancellation repair is
 retained with issue020 recording that cost;full qualification remains separate.
 The user requests completion of Step19 followed by a stop on this plan.
-Steps20–33 remain unstarted;the separate BEIR preparation task continues.
+Step 19 is complete in this commit; Steps 20–33 remain unstarted. The separate
+BEIR comparison is complete for its revised three-full-dataset/NQ-prefix scope.
 
 
 The user-requested pre-Step-16 all-API comparison is complete: [report](../evidence/query-api-pre16-before-after.md).

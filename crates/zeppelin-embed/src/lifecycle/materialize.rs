@@ -7,6 +7,45 @@ use crate::ingest::{
 use std::cell::Cell;
 use std::sync::Arc;
 
+/// Preserves a deferred vector producer's typed error separately from search.
+#[derive(Debug)]
+pub enum HybridPreparationError<E> {
+    /// The caller could not produce a validated query vector.
+    Preparation(E),
+    /// Admission, retrieval, fusion, cancellation or materialization failed.
+    Search(crate::fusion::FusionError),
+}
+
+impl<E> From<crate::fusion::FusionError> for HybridPreparationError<E> {
+    fn from(error: crate::fusion::FusionError) -> Self {
+        Self::Search(error)
+    }
+}
+
+impl<E> From<QueryError> for HybridPreparationError<E> {
+    fn from(error: QueryError) -> Self {
+        Self::Search(error.into())
+    }
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for HybridPreparationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preparation(error) => error.fmt(formatter),
+            Self::Search(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for HybridPreparationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Preparation(error) => Some(error),
+            Self::Search(error) => Some(error),
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub(super) struct TestMaterializationWork {
@@ -307,45 +346,26 @@ impl QueryMaterializer<'_> {
 }
 
 impl Store {
-    /// Reads literal counters without resetting concurrent observations.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn query_materialization_test_counters(&self) -> MaterializationTestCounters {
-        use std::sync::atomic::Ordering::Relaxed;
-        MaterializationTestCounters {
-            admissions: self.text_materialization_work.admissions.load(Relaxed),
-            reverse_version_lookups: self
-                .text_materialization_work
-                .reverse_version_lookups
-                .load(Relaxed),
-            direct_row_lookups: self
-                .text_materialization_work
-                .direct_row_lookups
-                .load(Relaxed),
-            #[cfg(feature = "query-timing")]
-            lexical_admission_locks: self
-                .text_materialization_work
-                .lexical_admission_locks
-                .load(Relaxed),
-            #[cfg(feature = "query-timing")]
-            lexical_admission_lock_nanos: self
-                .text_materialization_work
-                .lexical_admission_lock_nanos
-                .load(Relaxed),
-        }
-    }
-    /// Runs hybrid fusion and constructs caller-owned results before releasing its snapshot.
-    pub fn search_hybrid_with_text<R>(
+    /// Starts lexical retrieval before obtaining a caller-owned query vector.
+    /// Both legs and returned text use one admission pinned before the producer
+    /// runs. All submitted lexical work is joined on producer failure or panic.
+    ///
+    /// The returned vector borrow must remain valid for the complete query.
+    /// Producer errors retain their original type; core failures are separate.
+    ///
+    /// # Errors
+    /// Returns the producer's error or a typed admission/search failure.
+    pub fn search_hybrid_with_text_deferred<'vector, E, R>(
         &self,
-        vector: crate::ingest::SearchRequest<'_>,
+        prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
         lexical: &crate::fts::search::TermQuery,
         query: &crate::fusion::HybridQuery,
         options: impl Into<super::SearchOptions>,
         control: super::QueryControl,
         finish: impl FnOnce(&crate::ingest::StoreHybridSearchOutcome, &QueryMaterializer<'_>) -> R,
-    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), crate::fusion::FusionError> {
-        self.search_hybrid_then(
-            vector,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), HybridPreparationError<E>> {
+        self.search_hybrid_prepared_then(
+            prepare_vector,
             super::PinnedLexicalQuery::Term(lexical),
             query,
             options.into(),
@@ -390,6 +410,57 @@ impl Store {
                 Ok((outcome, value))
             },
         )
+    }
+
+    /// Reads literal counters without resetting concurrent observations.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn query_materialization_test_counters(&self) -> MaterializationTestCounters {
+        use std::sync::atomic::Ordering::Relaxed;
+        MaterializationTestCounters {
+            admissions: self.text_materialization_work.admissions.load(Relaxed),
+            reverse_version_lookups: self
+                .text_materialization_work
+                .reverse_version_lookups
+                .load(Relaxed),
+            direct_row_lookups: self
+                .text_materialization_work
+                .direct_row_lookups
+                .load(Relaxed),
+            #[cfg(feature = "query-timing")]
+            lexical_admission_locks: self
+                .text_materialization_work
+                .lexical_admission_locks
+                .load(Relaxed),
+            #[cfg(feature = "query-timing")]
+            lexical_admission_lock_nanos: self
+                .text_materialization_work
+                .lexical_admission_lock_nanos
+                .load(Relaxed),
+        }
+    }
+    /// Runs hybrid fusion and constructs caller-owned results before releasing its snapshot.
+    pub fn search_hybrid_with_text<R>(
+        &self,
+        vector: crate::ingest::SearchRequest<'_>,
+        lexical: &crate::fts::search::TermQuery,
+        query: &crate::fusion::HybridQuery,
+        options: impl Into<super::SearchOptions>,
+        control: super::QueryControl,
+        finish: impl FnOnce(&crate::ingest::StoreHybridSearchOutcome, &QueryMaterializer<'_>) -> R,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), crate::fusion::FusionError> {
+        self.search_hybrid_with_text_deferred(
+            || Ok::<_, std::convert::Infallible>(vector),
+            lexical,
+            query,
+            options,
+            control,
+            finish,
+        )
+        .map_err(|error| match error {
+            HybridPreparationError::Preparation(never) => match never {},
+            HybridPreparationError::Search(error) => error,
+        })
     }
 
     /// Runs a lexical query and constructs caller-owned results before releasing its snapshot.

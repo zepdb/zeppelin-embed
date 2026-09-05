@@ -114,7 +114,9 @@ pub struct TextQueryTimings {
     pub embedding_evaluation: std::time::Duration,
     /// Output dimension/unit-norm validation and normalization.
     pub embedding_normalization: std::time::Duration,
-    /// Core retrieval including admission, both legs and fusion.
+    /// Core retrieval including admission, both legs and fusion. Hybrid also
+    /// includes deferred embedding, which overlaps lexical work; stage times
+    /// therefore must not be added to derive end-to-end latency.
     pub retrieval: std::time::Duration,
     /// Returned text and revision construction, including its store lookups.
     pub materialization: std::time::Duration,

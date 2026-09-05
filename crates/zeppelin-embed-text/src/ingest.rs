@@ -21,7 +21,9 @@ use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestAck, IngestBatch, IngestDocument, Revision,
     SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SearchOptions, Store};
+use zeppelin_embed::lifecycle::{
+    CancelToken, HybridPreparationError, OpenOptions, QueryControl, SearchOptions, Store,
+};
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStatus};
 
 const CALLER_BITS: u32 = 96;
@@ -831,10 +833,30 @@ impl TextStore {
                 self.dense_hits(embedded.values(), options, &mut timings, &control)
             }
             Legs::Hybrid => {
-                let (embedded, tokens) = self.query_vector(text, &mut timings, &control)?;
-                query_tokens = tokens;
                 let query = self.analyzed_query(text, &mut timings);
-                self.hybrid_hits(embedded.values(), &query, options, &mut timings, &control)
+                let mut embedded = None;
+                let mut embedding_timings = TextQueryTimings::default();
+                let slot = &mut embedded;
+                let tokens = &mut query_tokens;
+                let preparation_timings = &mut embedding_timings;
+                let preparation_control = &control;
+                let result = self.hybrid_hits(
+                    move || {
+                        let (batch, count) =
+                            self.query_vector(text, preparation_timings, preparation_control)?;
+                        *tokens = count;
+                        Ok(SearchRequest::new(slot.insert(batch).values()))
+                    },
+                    &query,
+                    options,
+                    &mut timings,
+                    &control,
+                );
+                timings.tokenization = embedding_timings.tokenization;
+                timings.embedding_queue = embedding_timings.embedding_queue;
+                timings.embedding_evaluation = embedding_timings.embedding_evaluation;
+                timings.embedding_normalization = embedding_timings.embedding_normalization;
+                result
             }
         })();
         let (hits, diagnostics) = result?;
@@ -973,9 +995,9 @@ impl TextStore {
         Ok((hits?, outcome.diagnostics))
     }
 
-    fn hybrid_hits(
+    fn hybrid_hits<'vector>(
         &self,
-        vector: &[f32],
+        prepare_vector: impl FnOnce() -> Result<SearchRequest<'vector>, TextError>,
         query: &TermQuery,
         options: QueryOptions,
         timings: &mut TextQueryTimings,
@@ -984,8 +1006,8 @@ impl TextStore {
         let retrieval_started = stage_start();
         let (outcome, hits) = self
             .store
-            .search_hybrid_with_text(
-                SearchRequest::new(vector),
+            .search_hybrid_with_text_deferred(
+                prepare_vector,
                 query,
                 &HybridQuery::new(options.k)
                     .with_alpha(self.bundle.hybrid_alpha())
@@ -1016,7 +1038,10 @@ impl TextStore {
                     hits
                 },
             )
-            .map_err(TextError::Hybrid)?;
+            .map_err(|error| match error {
+                HybridPreparationError::Preparation(error) => error,
+                HybridPreparationError::Search(error) => TextError::Hybrid(error),
+            })?;
         Ok((hits?, outcome.diagnostics))
     }
 
@@ -1948,3 +1973,7 @@ mod tests {
 #[cfg(all(test, feature = "test-support"))]
 #[path = "query_control_tests.rs"]
 mod query_control_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "query_overlap_tests.rs"]
+mod query_overlap_tests;
