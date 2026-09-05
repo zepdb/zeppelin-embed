@@ -3995,6 +3995,8 @@ struct LexicalAssembly {
     index: crate::fts::index::LexicalIndex,
     alive_sets: Vec<Arc<crate::meta::AliveSet>>,
     sources: Vec<StructuredLexicalSource>,
+    // The last cache/query owner releases this charge, even after eviction.
+    memory: stats::AccountedCounter,
 }
 
 impl LexicalAssembly {
@@ -4066,7 +4068,6 @@ struct CachedLexicalAssembly {
     /// other until the proof has actually run.
     document_identity_verified: bool,
     assembly: Arc<LexicalAssembly>,
-    _memory: stats::AccountedCounter,
 }
 
 impl CachedLexicalAssembly {
@@ -4188,13 +4189,13 @@ fn assemble_lexical_index(
             cache_hit: true,
         });
     }
-    // Release the entry and its reservation before building the replacement,
-    // so a store near its resident budget never has to hold both at once.
+    // Evict before building. A query retaining this assembly also retains
+    // its reservation; a replacement must fit alongside those live bytes.
     let stale = entry.take();
     drop(entry);
     drop(stale);
 
-    let (assembly, owned_bytes) = build_lexical_assembly(
+    let (mut assembly, owned_bytes) = build_lexical_assembly(
         snapshot,
         active,
         accounting,
@@ -4202,12 +4203,11 @@ fn assemble_lexical_index(
         cancellation,
     )?;
     cache.record_build();
-    let assembly = Arc::new(assembly);
-    let mut memory = stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
-        .map_err(LexicalAssemblyError::Store)?;
-    memory
+    assembly
+        .memory
         .set(owned_bytes)
         .map_err(LexicalAssemblyError::Store)?;
+    let assembly = Arc::new(assembly);
     let mut entry = cache.lock()?;
     // A concurrent builder may have installed its own entry. Last writer
     // wins: every read validates by pointer identity, so the worst an
@@ -4217,7 +4217,6 @@ fn assemble_lexical_index(
         active: Arc::downgrade(active),
         document_identity_verified: require_document_identity,
         assembly: Arc::clone(&assembly),
-        _memory: memory,
     });
     drop(entry);
     Ok(LexicalAssemblyReceipt {
@@ -4325,6 +4324,8 @@ fn build_lexical_assembly(
         index,
         alive_sets,
         sources,
+        memory: stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
+            .map_err(LexicalAssemblyError::Store)?,
     };
     let owned_bytes =
         assembly
@@ -6508,6 +6509,67 @@ mod tests {
         SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
         resolve_hybrid_leg_results,
     };
+
+    #[test]
+    fn astra_03_lexical_assembly_charge_survives_cache_eviction() {
+        use crate::fts::index::DEFAULT_FIELD;
+        use crate::fts::search::TermQuery;
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let directory = tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("alpha beta"),
+            ]))
+            .expect("ingest");
+        store
+            .search_lexical(
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                1,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("build lexical cache");
+        let (first, second) = {
+            let entry = store.lexical_index_cache.entry.lock().expect("cache lock");
+            let assembly = &entry.as_ref().expect("cached assembly").assembly;
+            (Arc::clone(assembly), Arc::clone(assembly))
+        };
+        let charged = store.stats().expect("charged stats").cache_bytes;
+        let evicted = store
+            .lexical_index_cache
+            .entry
+            .lock()
+            .expect("cache lock")
+            .take();
+        drop(evicted);
+        assert_eq!(
+            first.index.document_count(),
+            1,
+            "eviction left the query data alive"
+        );
+        assert_eq!(
+            store.stats().expect("held stats").cache_bytes,
+            charged,
+            "cache eviction must not release a query-owned assembly's charge"
+        );
+        drop(first);
+        assert_eq!(
+            store.stats().expect("second owner stats").cache_bytes,
+            charged
+        );
+        drop(second);
+        let released = store.stats().expect("released stats").cache_bytes;
+        assert_eq!(
+            released, 0,
+            "the final owner must release the full assembly charge"
+        );
+        println!("assembly cache bytes: retained={charged}, after final owner={released}");
+        store.close().expect("close");
+    }
 
     /// Vectors whose norms differ enough that the ceiling is not degenerate.
     const CEILING_ROWS: [[f32; 4]; 3] = [
