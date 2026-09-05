@@ -304,15 +304,19 @@ pub struct PublishedSnapshot {
     segments: Accounted<Vec<SegmentReader>>,
     query_segment_count: usize,
     cancelled: AtomicBool,
-    reader_changed: Condvar,
-    reader_signal: Mutex<()>,
+    reader_signal: Arc<ReaderSignal>,
     _mapping_reservation: Option<MappingReservation>,
     #[cfg(test)]
     release_probe: SnapshotReleaseProbe,
 }
 
 impl PublishedSnapshot {
+    #[cfg(test)]
     pub(crate) fn empty(generation: u64) -> Self {
+        Self::empty_with_signal(generation, Arc::new(ReaderSignal::new(None)))
+    }
+
+    fn empty_with_signal(generation: u64, reader_signal: Arc<ReaderSignal>) -> Self {
         Self {
             generation,
             absorbed_through: 0,
@@ -322,8 +326,7 @@ impl PublishedSnapshot {
             segments: Accounted::unaccounted_empty(),
             query_segment_count: 0,
             cancelled: AtomicBool::new(false),
-            reader_changed: Condvar::new(),
-            reader_signal: Mutex::new(()),
+            reader_signal,
             _mapping_reservation: None,
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
@@ -356,7 +359,10 @@ impl PublishedSnapshot {
         match vfs.open(&manifest_path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::empty(0));
+                return Ok(Self::empty_with_signal(
+                    0,
+                    ReaderSignal::accounted(accounting)?,
+                ));
             }
             Err(source) => {
                 return Err(StoreError::Io {
@@ -479,8 +485,7 @@ impl PublishedSnapshot {
             segments,
             query_segment_count,
             cancelled: AtomicBool::new(false),
-            reader_changed: Condvar::new(),
-            reader_signal: Mutex::new(()),
+            reader_signal: ReaderSignal::accounted(accounting)?,
             _mapping_reservation: Some(mapping_reservation),
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
@@ -540,12 +545,13 @@ impl PublishedSnapshot {
 
     pub(crate) fn drain_readers(self: &Arc<Self>, grace: Duration) -> Result<(), StoreError> {
         let deadline = Instant::now().checked_add(grace);
-        let mut signal = self
-            .reader_signal
-            .lock()
-            .map_err(|_| StoreError::Synchronization {
-                component: "snapshot readers",
-            })?;
+        let mut signal =
+            self.reader_signal
+                .mutex
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "snapshot readers",
+                })?;
         while Arc::strong_count(self) > 1 {
             let Some(deadline) = deadline else {
                 break;
@@ -556,7 +562,8 @@ impl PublishedSnapshot {
             }
             let remaining = deadline.saturating_duration_since(now);
             let waited = self
-                .reader_changed
+                .reader_signal
+                .changed
                 .wait_timeout(signal, remaining)
                 .map_err(|_| StoreError::Synchronization {
                     component: "snapshot readers",
@@ -565,15 +572,14 @@ impl PublishedSnapshot {
         }
         if Arc::strong_count(self) > 1 {
             self.cancelled.store(true, Ordering::Release);
-            self.reader_changed.notify_all();
+            self.reader_signal.changed.notify_all();
         }
         while Arc::strong_count(self) > 1 {
-            signal = self
-                .reader_changed
-                .wait(signal)
-                .map_err(|_| StoreError::Synchronization {
+            signal = self.reader_signal.changed.wait(signal).map_err(|_| {
+                StoreError::Synchronization {
                     component: "snapshot readers",
-                })?;
+                }
+            })?;
         }
         drop(signal);
         Ok(())
@@ -581,7 +587,7 @@ impl PublishedSnapshot {
 
     pub(crate) fn cancel_readers(&self) {
         self.cancelled.store(true, Ordering::Release);
-        self.reader_changed.notify_all();
+        self.reader_signal.changed.notify_all();
     }
 }
 
@@ -592,9 +598,88 @@ fn segment_is_published(
     alias.is_none_or(|identity| segment.epoch_id == Some(identity.embedding))
 }
 
+// The notification allocation outlives the snapshot reference being released.
+// Keeping it independent lets ordinary field-drop order decrement ownership
+// before the close waiter is signalled, without unsafe code or timed polling.
+struct ReaderSignal {
+    mutex: Mutex<()>,
+    changed: Condvar,
+    _charge: Option<super::stats::AccountedCounter>,
+    #[cfg(test)]
+    release_observed: std::sync::atomic::AtomicUsize,
+}
+
+impl ReaderSignal {
+    fn new(charge: Option<super::stats::AccountedCounter>) -> Self {
+        Self {
+            mutex: Mutex::new(()),
+            changed: Condvar::new(),
+            _charge: charge,
+            #[cfg(test)]
+            release_observed: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn accounted(accounting: &Arc<Accounting>) -> Result<Arc<Self>, StoreError> {
+        let mut charge =
+            super::stats::AccountedCounter::new(accounting, AllocationComponent::Snapshot)?;
+        charge.set(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())?;
+        Ok(Arc::new(Self::new(Some(charge))))
+    }
+}
+
+struct ReaderRelease {
+    signal: Arc<ReaderSignal>,
+    #[cfg(test)]
+    snapshot: std::sync::Weak<PublishedSnapshot>,
+}
+
+impl Drop for ReaderRelease {
+    fn drop(&mut self) {
+        let _guard = self
+            .signal
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        self.signal
+            .release_observed
+            .store(self.snapshot.strong_count(), Ordering::Relaxed);
+        self.signal.changed.notify_all();
+    }
+}
+
+/// Internal ownership shared by public leases and complete query admissions.
+/// Fields deliberately drop in order: snapshot reference, then notification.
+pub(super) struct ReadSnapshot {
+    snapshot: Arc<PublishedSnapshot>,
+    _release: ReaderRelease,
+}
+
+impl ReadSnapshot {
+    pub(super) fn new(snapshot: Arc<PublishedSnapshot>) -> Self {
+        let release = ReaderRelease {
+            signal: Arc::clone(&snapshot.reader_signal),
+            #[cfg(test)]
+            snapshot: Arc::downgrade(&snapshot),
+        };
+        Self {
+            snapshot,
+            _release: release,
+        }
+    }
+}
+
+impl Deref for ReadSnapshot {
+    type Target = Arc<PublishedSnapshot>;
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
+}
+
 /// One admitted read's strong ownership of its published snapshot.
 pub struct SnapshotLease {
-    snapshot: Arc<PublishedSnapshot>,
+    snapshot: ReadSnapshot,
     generation: u64,
 }
 
@@ -602,14 +687,14 @@ impl SnapshotLease {
     pub(crate) fn new(snapshot: Arc<PublishedSnapshot>) -> Self {
         let generation = snapshot.generation();
         Self {
-            snapshot,
+            snapshot: ReadSnapshot::new(snapshot),
             generation,
         }
     }
 
-    pub(crate) const fn new_at(snapshot: Arc<PublishedSnapshot>, generation: u64) -> Self {
+    pub(crate) fn new_at(snapshot: Arc<PublishedSnapshot>, generation: u64) -> Self {
         Self {
-            snapshot,
+            snapshot: ReadSnapshot::new(snapshot),
             generation,
         }
     }
@@ -638,16 +723,20 @@ impl SnapshotLease {
         let mut signal =
             self.snapshot
                 .reader_signal
+                .mutex
                 .lock()
                 .map_err(|_| StoreError::Synchronization {
                     component: "snapshot readers",
                 })?;
         while !self.snapshot.cancelled.load(Ordering::Acquire) {
-            signal = self.snapshot.reader_changed.wait(signal).map_err(|_| {
-                StoreError::Synchronization {
+            signal = self
+                .snapshot
+                .reader_signal
+                .changed
+                .wait(signal)
+                .map_err(|_| StoreError::Synchronization {
                     component: "snapshot readers",
-                }
-            })?;
+                })?;
         }
         drop(signal);
         Ok(())
@@ -662,19 +751,11 @@ impl Deref for SnapshotLease {
     }
 }
 
-impl Drop for SnapshotLease {
-    fn drop(&mut self) {
-        if let Ok(signal) = self.snapshot.reader_signal.lock() {
-            self.snapshot.reader_changed.notify_all();
-            drop(signal);
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use tempfile::tempdir;
 
@@ -692,6 +773,41 @@ mod tests {
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
     use crate::vfs::crash::{CrashOperation, RecordingVfs};
     use crate::vfs::{CountingVfs, StdVfs, SyncKind};
+
+    #[test]
+    fn astra_05_snapshot_release_notifies_after_ownership_drops() {
+        let snapshot = Arc::new(PublishedSnapshot::empty(1));
+        let lease = super::SnapshotLease::new(snapshot.clone());
+        drop(lease);
+        assert_eq!(
+            snapshot
+                .reader_signal
+                .release_observed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "close notification must observe only the draining owner"
+        );
+        // A complete admission can outlive its last partition lease. Its
+        // final raw snapshot reference must generate a second notification.
+        let admission = super::ReadSnapshot::new(snapshot.clone());
+        let partition = super::SnapshotLease::new(snapshot.clone());
+        drop(partition);
+        assert_eq!(
+            snapshot
+                .reader_signal
+                .release_observed
+                .load(Ordering::Relaxed),
+            2
+        );
+        drop(admission);
+        assert_eq!(
+            snapshot
+                .reader_signal
+                .release_observed
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
 
     #[test]
     fn sealed_segment_open_is_routed_through_vfs_open_for_map() {

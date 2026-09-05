@@ -3076,7 +3076,7 @@ impl Store {
         Ok(AdmittedLexicalQuery {
             generation,
             active,
-            snapshot,
+            snapshot: snapshot::ReadSnapshot::new(snapshot),
             active_query,
         })
     }
@@ -3988,7 +3988,7 @@ impl Store {
         drop(state);
         Ok(AdmittedVectorSearch {
             pool,
-            snapshot,
+            snapshot: snapshot::ReadSnapshot::new(snapshot),
             active_segment,
             generation,
             _active_query: active_query,
@@ -6492,13 +6492,13 @@ pub(crate) fn reserve_global_candidates(
 struct AdmittedLexicalQuery<'a> {
     generation: u64,
     active: Arc<crate::ingest::ActiveSegment>,
-    snapshot: Arc<PublishedSnapshot>,
+    snapshot: snapshot::ReadSnapshot,
     active_query: ActiveQuery<'a>,
 }
 
 struct AdmittedVectorSearch<'a> {
     pool: Option<Arc<pool::QueryPool>>,
-    snapshot: Arc<PublishedSnapshot>,
+    snapshot: snapshot::ReadSnapshot,
     active_segment: Arc<crate::ingest::ActiveSegment>,
     generation: u64,
     _active_query: ActiveQuery<'a>,
