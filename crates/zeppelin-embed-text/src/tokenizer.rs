@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use unicode_categories::UnicodeCategories;
+use unicode_normalization_alignments::UnicodeNormalization;
 
 use crate::runtime::RuntimeError;
 use crate::tower::TokenBatch;
@@ -20,9 +22,17 @@ pub(crate) struct ModelTokenizer {
     sep: u32,
     lowercase: bool,
     strip_accents: bool,
+    special_tokens: Vec<(String, u32)>,
 }
 
 impl ModelTokenizer {
+    pub(crate) const fn evaluation_revision(&self) -> &'static str {
+        match self.kind {
+            TokenizerKind::WordPiece => ";ze-text-wordpiece=2",
+            TokenizerKind::Unigram => "",
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         kind: TokenizerKind,
@@ -44,6 +54,20 @@ impl ModelTokenizer {
                 return Err("tokenizer special id is outside the vocabulary");
             }
         }
+        let mut special_tokens = Vec::new();
+        if kind == TokenizerKind::WordPiece {
+            for id in [pad, unk, cls, sep] {
+                let token = vocabulary.get(id as usize).ok_or("missing special token")?;
+                if token.is_empty() {
+                    return Err("tokenizer special token must not be empty");
+                }
+                special_tokens.push((token.clone(), id));
+            }
+            if let Some(id) = vocabulary.iter().position(|token| token == "[MASK]") {
+                let id = u32::try_from(id).map_err(|_| "mask token id exceeds u32")?;
+                special_tokens.push(("[MASK]".to_owned(), id));
+            }
+        }
         let token_ids = vocabulary
             .iter()
             .enumerate()
@@ -59,6 +83,7 @@ impl ModelTokenizer {
             sep,
             lowercase,
             strip_accents,
+            special_tokens,
         })
     }
 
@@ -75,10 +100,9 @@ impl ModelTokenizer {
         let mut rows = Vec::with_capacity(texts.len());
         let body_limit = max_tokens.saturating_sub(2);
         for text in texts {
-            let normalized = self.normalize(text);
             let mut tokens = match self.kind {
-                TokenizerKind::WordPiece => self.wordpiece(&normalized),
-                TokenizerKind::Unigram => self.unigram(&normalized),
+                TokenizerKind::WordPiece => self.wordpiece_input(text),
+                TokenizerKind::Unigram => self.unigram(&self.normalize(text)),
             };
             tokens.truncate(body_limit);
             let mut row = Vec::with_capacity(tokens.len().saturating_add(2));
@@ -116,6 +140,43 @@ impl ModelTokenizer {
     }
 
     fn normalize(&self, text: &str) -> String {
+        if self.kind == TokenizerKind::WordPiece {
+            let mut cleaned = String::with_capacity(text.len());
+            for character in text.chars() {
+                let whitespace_control = matches!(character, '\t' | '\n' | '\r');
+                if matches!(character, '\0' | '\u{fffd}')
+                    || (!whitespace_control && character.is_other())
+                {
+                    continue;
+                }
+                if character.is_whitespace() {
+                    cleaned.push(' ');
+                } else if is_bert_cjk(character) {
+                    cleaned.push(' ');
+                    cleaned.push(character);
+                    cleaned.push(' ');
+                } else {
+                    cleaned.push(character);
+                }
+            }
+            // The legacy exporter records the BERT uncased choice in bit 0.
+            // Its source default also strips accents; bit 1 forces stripping
+            // for a cased tokenizer. Version this corrected interpretation.
+            let stripped = if self.strip_accents || self.lowercase {
+                cleaned
+                    .nfd()
+                    .map(|(c, _)| c)
+                    .filter(|c| !c.is_mark_nonspacing())
+                    .collect()
+            } else {
+                cleaned
+            };
+            return if self.lowercase {
+                stripped.chars().flat_map(char::to_lowercase).collect()
+            } else {
+                stripped
+            };
+        }
         let lowered = if self.lowercase {
             text.to_lowercase()
         } else {
@@ -130,9 +191,39 @@ impl ModelTokenizer {
             .collect()
     }
 
+    fn wordpiece_input(&self, text: &str) -> Vec<u32> {
+        let mut remaining = text;
+        let mut output = Vec::new();
+        // Added special tokens are matched on original text before normalizing.
+        // Source BERT marks them non-normalized, including within another word.
+        loop {
+            let next = self
+                .special_tokens
+                .iter()
+                .filter_map(|(token, id)| remaining.find(token).map(|offset| (offset, token, *id)))
+                .min_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.len().cmp(&a.1.len())));
+            let Some((offset, token, id)) = next else {
+                output.extend(self.wordpiece(&self.normalize(remaining)));
+                break;
+            };
+            if let Some(prefix) = remaining.get(..offset) {
+                output.extend(self.wordpiece(&self.normalize(prefix)));
+            }
+            output.push(id);
+            remaining = remaining
+                .get(offset.saturating_add(token.len())..)
+                .unwrap_or_default();
+        }
+        output
+    }
+
     fn wordpiece(&self, text: &str) -> Vec<u32> {
         let mut output = Vec::new();
         for word in basic_tokens(text) {
+            if word.chars().count() > 100 {
+                output.push(self.unk);
+                continue;
+            }
             if let Some(id) = self.token_ids.get(word).copied() {
                 output.push(id);
                 continue;
@@ -246,13 +337,14 @@ fn basic_tokens(text: &str) -> Vec<&str> {
     let mut tokens = Vec::new();
     let mut start = None;
     for (offset, character) in text.char_indices() {
-        if character.is_whitespace() || character.is_ascii_punctuation() {
+        let punctuation = character.is_ascii_punctuation() || character.is_punctuation();
+        if character.is_whitespace() || punctuation {
             if let Some(begin) = start.take()
                 && let Some(token) = text.get(begin..offset)
             {
                 tokens.push(token);
             }
-            if character.is_ascii_punctuation()
+            if punctuation
                 && let Some(token) = text.get(offset..offset.saturating_add(character.len_utf8()))
             {
                 tokens.push(token);
@@ -267,6 +359,13 @@ fn basic_tokens(text: &str) -> Vec<&str> {
         tokens.push(token);
     }
     tokens
+}
+
+const fn is_bert_cjk(character: char) -> bool {
+    matches!(character as u32,
+        0x4e00..=0x9fff | 0x3400..=0x4dbf | 0x20000..=0x2a6df |
+        0x2a700..=0x2b73f | 0x2b740..=0x2b81f | 0x2b920..=0x2ceaf |
+        0xf900..=0xfaff | 0x2f800..=0x2fa1f)
 }
 
 const fn is_combining_mark(character: char) -> bool {

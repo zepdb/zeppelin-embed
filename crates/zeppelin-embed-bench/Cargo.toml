@@ -25,6 +25,10 @@ criterion.workspace = true
 name = "scaffold"
 harness = false
 
+[[example]]
+name = "tokenizer-cost"
+required-features = ["text"]
+
 [[bin]]
 name = "wal-throughput"
 path = "src/bin/wal-throughput.rs"

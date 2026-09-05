@@ -185,15 +185,84 @@ def encode_tower(tower: Tower) -> bytes:
     return bytes(output)
 
 
+def wordpiece_flags(tokenizer: dict) -> int:
+    """Validate the complete single-sequence WordPiece contract representable in v1.
+
+    Bundle limits/padding are selected by the caller, not tokenizer.json's saved
+    encode options. Decoding and paired-sequence templates are never executed.
+    """
+    normalizer = tokenizer.get("normalizer", {})
+    lower = normalizer.get("lowercase")
+    strip = normalizer.get("strip_accents")
+    if (normalizer.get("type") != "BertNormalizer"
+            or normalizer.get("clean_text") is not True
+            or normalizer.get("handle_chinese_chars") is not True
+            or type(lower) is not bool
+            or (strip is not None and type(strip) is not bool)
+            or (lower and strip is False)):
+        raise ValueError("bundle v1 requires BERT cleaning/CJK and uncased default accent stripping")
+    if tokenizer.get("pre_tokenizer") != {"type": "BertPreTokenizer"}:
+        raise ValueError("bundle v1 requires BertPreTokenizer")
+    model = tokenizer["model"]
+    if (model.get("type") != "WordPiece" or model.get("unk_token") != "[UNK]"
+            or model.get("continuing_subword_prefix") != "##"
+            or model.get("max_input_chars_per_word") != 100):
+        raise ValueError("bundle v1 requires standard WordPiece with a 100-character limit")
+    vocab = model["vocab"]
+    if sorted(vocab.values()) != list(range(len(vocab))):
+        raise ValueError("WordPiece vocabulary IDs must be contiguous from zero")
+    specials = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+    if any(token not in vocab for token in specials):
+        raise ValueError("bundle v1 requires the five standard BERT special tokens")
+    expected_added = [{"id": vocab[token], "content": token, "single_word": False,
+                       "lstrip": False, "rstrip": False, "normalized": False, "special": True}
+                      for token in specials]
+    added = tokenizer.get("added_tokens", [])
+    if sorted(added, key=lambda token: token["id"]) != sorted(expected_added, key=lambda token: token["id"]):
+        raise ValueError("bundle v1 cannot represent different or additional special-token matching")
+    post = tokenizer.get("post_processor", {})
+    expected_single = [{"SpecialToken": {"id": "[CLS]", "type_id": 0}},
+                       {"Sequence": {"id": "A", "type_id": 0}},
+                       {"SpecialToken": {"id": "[SEP]", "type_id": 0}}]
+    expected_specials = {token: {"id": token, "ids": [vocab[token]], "tokens": [token]}
+                         for token in ["[CLS]", "[SEP]"]}
+    if (post.get("type") != "TemplateProcessing" or post.get("single") != expected_single
+            or post.get("special_tokens") != expected_specials):
+        raise ValueError("bundle v1 requires a single CLS/sequence/SEP template with type ID zero")
+    return int(lower) | (int(lower if strip is None else strip) << 1)
+
+
 def encode_tokenizer(root: Path, architecture: int) -> bytes:
     tokenizer = json_file(root / "tokenizer.json")
+    config = json_file(root / "tokenizer_config.json")
     model = tokenizer["model"]
     if architecture == 1:
         kind = 1
+        flags = wordpiece_flags(tokenizer)
+        if ("do_lower_case" in config and config["do_lower_case"] is not bool(flags & 1)
+                or "tokenize_chinese_chars" in config and config["tokenize_chinese_chars"] is not True):
+            raise ValueError("tokenizer_config.json contradicts the BERT normalizer")
+        if "strip_accents" in config:
+            strip = config["strip_accents"]
+            effective = bool(flags & 1) if strip is None else strip
+            if effective is not bool(flags & 2):
+                raise ValueError("tokenizer_config.json contradicts BERT accent stripping")
+        if any(config.get(key, "right") != "right" for key in ["padding_side", "truncation_side"]):
+            raise ValueError("bundle v1 requires right padding and right truncation")
+        mask = config.get("mask_token", "[MASK]")
+        if isinstance(mask, dict):
+            mask = mask.get("content")
+        if mask != "[MASK]" or config.get("extra_special_tokens"):
+            raise ValueError("bundle v1 requires only the five standard BERT special tokens")
+        added = {item["id"]: item for item in tokenizer["added_tokens"]}
+        for configured_id, token in config.get("added_tokens_decoder", {}).items():
+            if {"id": int(configured_id), **token} != added.get(int(configured_id)):
+                raise ValueError("tokenizer_config.json contradicts BERT special-token matching")
         vocabulary = sorted(model["vocab"].items(), key=lambda item: item[1])
         entries = [(token, 0.0) for token, _ in vocabulary]
     elif model.get("type") == "Unigram":
         kind = 2
+        flags = int(bool(config.get("do_lower_case", False)))
         entries = [(token, float(score)) for token, score in model["vocab"]]
     else:
         raise ValueError(f"unsupported tokenizer model {model.get('type')!r}")
@@ -201,7 +270,6 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
     vocab_ids = {token: index for index, (token, _) in enumerate(entries)}
 
     def token_id(name: str, fallback: str) -> int:
-        config = json_file(root / "tokenizer_config.json")
         value = config.get(name, fallback)
         if isinstance(value, dict):
             value = value.get("content", fallback)
@@ -211,12 +279,15 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
             return vocab_ids[value]
         raise ValueError(f"tokenizer has no {name}: {value!r}")
 
-    lower = bool(json_file(root / "tokenizer_config.json").get("do_lower_case", False))
-    output = bytearray([kind, int(lower), 0, 0])
-    output += u32(token_id("pad_token", "[PAD]" if kind == 1 else "<pad>"))
-    output += u32(token_id("unk_token", "[UNK]" if kind == 1 else "<unk>"))
-    output += u32(token_id("cls_token", "[CLS]" if kind == 1 else "<s>"))
-    output += u32(token_id("sep_token", "[SEP]" if kind == 1 else "</s>"))
+    output = bytearray([kind, flags, 0, 0])
+    for name, fallback in [("pad_token", "[PAD]" if kind == 1 else "<pad>"),
+                           ("unk_token", "[UNK]" if kind == 1 else "<unk>"),
+                           ("cls_token", "[CLS]" if kind == 1 else "<s>"),
+                           ("sep_token", "[SEP]" if kind == 1 else "</s>")]:
+        selected = token_id(name, fallback)
+        if kind == 1 and selected != vocab_ids[fallback]:
+            raise ValueError(f"bundle v1 requires the standard BERT {name}")
+        output += u32(selected)
     output += u32(len(entries))
     for token, score in entries:
         output += string(token)
@@ -257,6 +328,8 @@ def bake(args: argparse.Namespace) -> None:
     if len(towers) == 2 and not alignment:
         raise ValueError("a two-tower bundle requires --alignment-digest")
     tokenizer = encode_tokenizer(tokenizer_root, towers[-1].architecture)
+    if len(towers) == 2 and encode_tokenizer(document_root, document.architecture) != tokenizer:
+        raise ValueError("bundle v1 has one tokenizer; document and query tokenizers must match")
     tensors = tuple(tensor for tower in towers for tensor in tower.tensors)
 
     prefix = bytearray(MAGIC + u32(VERSION) + u32(0) + bytes([len(towers)]) + b"\x00" * 7)

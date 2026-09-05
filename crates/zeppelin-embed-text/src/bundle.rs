@@ -394,6 +394,14 @@ impl Bundle {
             .encode_batch(&inputs, self.query.embedding.max_tokens as usize)
     }
 
+    /// Tokenizes already formed document chunks with the ingest tokenizer and
+    /// document limit. Chunk formation remains the responsibility of ingestion.
+    #[doc(hidden)]
+    pub fn tokenize_document_chunks(&self, texts: &[String]) -> Result<TokenBatch, RuntimeError> {
+        self.tokenizer
+            .encode_batch(texts, self.document.embedding.max_tokens as usize)
+    }
+
     fn prefault_query(&self) -> Result<(), BundleError> {
         for tensor in self
             .tensors

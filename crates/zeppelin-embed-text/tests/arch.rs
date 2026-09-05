@@ -11,6 +11,226 @@ use zeppelin_embed_text::tower::{TokenBatch, TowerRole};
 
 mod common;
 
+#[path = "goldens/astra_08_embeddings.rs"]
+#[allow(clippy::excessive_precision)] // Preserve the reference generator's exact FP32 values.
+mod astra_08_embeddings;
+#[path = "goldens/astra_08_wordpiece.rs"]
+mod astra_08_wordpiece;
+
+#[test]
+fn astra_08_reembedded_unicode_documents_match_reference() {
+    use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
+    use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+    use zeppelin_embed::lifecycle::{OpenOptions, Store};
+    use zeppelin_embed_text::{IngestOptions, TextDocument, TextStore};
+
+    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle_path = root.join("leaf-v1.5-pair.zem");
+    let bundle = Arc::new(Bundle::open(&bundle_path).expect("pinned pair bundle"));
+    let cases = astra_08_embeddings::DOCUMENT_CASES;
+    for rows in [1, 2, 33] {
+        let directory = tempdir().expect("fresh Unicode store");
+        let texts: Vec<_> = cases
+            .iter()
+            .cycle()
+            .take(rows)
+            .map(|case| case.0.to_owned())
+            .collect();
+        let tokenized = bundle
+            .tokenize_document_chunks(&texts)
+            .expect("document tokens");
+        for (row, case) in cases.iter().cycle().take(rows).enumerate() {
+            let width = tokenized.tokens_per_row;
+            let mut expected = case.1.to_vec();
+            expected.resize(width, 0);
+            let mut mask = vec![1.0; case.1.len()];
+            mask.resize(width, 0.0);
+            assert_eq!(
+                &tokenized.token_ids[row * width..(row + 1) * width],
+                expected
+            );
+            assert_eq!(
+                &tokenized.attention_mask[row * width..(row + 1) * width],
+                mask
+            );
+        }
+        let store = TextStore::open(directory.path(), &bundle_path, Default::default())
+            .expect("fresh text store");
+        let documents: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(row, text)| TextDocument::new(row as u128 + 1, 1, text.clone()))
+            .collect();
+        let report = store
+            .ingest_text(
+                &documents,
+                IngestOptions {
+                    embed_batch_size: rows,
+                    seal_every: 100,
+                    maintenance_wall_time: std::time::Duration::ZERO,
+                    ..IngestOptions::default()
+                },
+            )
+            .expect("actual public ingestion");
+        assert_eq!(report.chunks, rows);
+        store.close().expect("close text store");
+        let mut document = bundle.document_tower().embedding.clone();
+        document
+            .model_version
+            .push_str(";ze-text-output-layout=2;ze-text-wordpiece=2");
+        let tokenizer = TokenizerConfig::text_default();
+        let core = Store::open(
+            directory.path(),
+            OpenOptions::default()
+                .with_epoch(StoreEpoch {
+                    embedding: EmbeddingEpoch {
+                        document: document.clone(),
+                        query: document,
+                        alignment_digest: Vec::new(),
+                    },
+                    tokenizer: tokenizer.epoch(),
+                })
+                .with_tokenizer(tokenizer),
+        )
+        .expect("inspect persisted document vectors");
+        let snapshot = core.snapshot().expect("sealed rows");
+        assert_eq!(snapshot.segments().len(), 1);
+        let segment = &snapshot.segments()[0];
+        let vectors = segment.rescore_f32().expect("exact persisted vectors");
+        assert_eq!(vectors.len(), rows * 768);
+        for (row, vector) in vectors.chunks_exact(768).enumerate() {
+            let version = segment
+                .document_version(row)
+                .expect("row identity")
+                .expect("document");
+            let parent = (version.doc_id().get() >> 32) as usize;
+            assert!((1..=rows).contains(&parent));
+            let expected = cases[(parent - 1) % cases.len()].2;
+            let norm = vector
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!((norm - 1.0).abs() < 1e-5);
+            assert_normalized_reference(vector, expected, rows, row);
+            let error = vector
+                .iter()
+                .zip(expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            eprintln!("astra08 document rows={rows} parent={parent} max_abs_error={error}");
+        }
+        drop(snapshot);
+        core.close().expect("close core reader");
+    }
+    let mut runtime =
+        MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query).expect("query runtime");
+    for rows in [1, 2, 33] {
+        let cases: Vec<_> = astra_08_embeddings::QUERY_CASES
+            .iter()
+            .cycle()
+            .take(rows)
+            .collect();
+        let inputs: Vec<_> = cases.iter().map(|case| case.0).collect();
+        let tokens = bundle.tokenize_queries(&inputs).expect("query tokens");
+        for (row, case) in cases.iter().enumerate() {
+            assert_eq!(
+                &tokens.token_ids
+                    [row * tokens.tokens_per_row..row * tokens.tokens_per_row + case.1.len()],
+                case.1
+            );
+        }
+        let actual = runtime.embed_batch(&tokens).expect("query embedding");
+        assert_eq!(actual.rows(), rows);
+        for (row, (vector, case)) in actual.values().chunks_exact(768).zip(cases).enumerate() {
+            assert_normalized_reference(vector, case.2, rows, row);
+        }
+    }
+}
+
+#[test]
+fn astra_08_source_tokenizer_unicode_ids_match() {
+    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
+    for &(text, expected) in astra_08_wordpiece::QUERY_CASES {
+        let tokens = bundle.tokenize_query(text).expect("public tokenizer");
+        assert_eq!(tokens.token_ids, expected, "source token IDs for {text:?}");
+        assert_eq!(tokens.attention_mask, vec![1.0; expected.len()]);
+    }
+    for &(text, expected) in astra_08_wordpiece::DOCUMENT_CASES {
+        let tokens = bundle
+            .tokenize_document_chunks(&[text.to_owned()])
+            .expect("document tokenizer");
+        assert_eq!(
+            tokens.token_ids, expected,
+            "document source token IDs for {text:?}"
+        );
+        assert_eq!(tokens.attention_mask, vec![1.0; expected.len()]);
+    }
+}
+
+#[test]
+fn astra_08_source_tokenizer_normalization_order_matches() {
+    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
+    // Source references cover NFD before stripping Mn (but not Mc), scalar
+    // lowercase instead of contextual final sigma, and NFD rather than NFKD.
+    for index in [1, 2, 3, 4, 7, 13, 21] {
+        let (text, expected) = astra_08_wordpiece::QUERY_CASES[index];
+        assert_eq!(
+            bundle.tokenize_query(text).expect("query").token_ids,
+            expected
+        );
+    }
+    // Explicit rectangular masks, including truncation and the runtime's
+    // 32-row boundary. Every row is pinned to independently generated IDs.
+    for rows in [2, 33] {
+        let cases: Vec<_> = astra_08_wordpiece::QUERY_CASES
+            .iter()
+            .cycle()
+            .take(rows)
+            .collect();
+        let input: Vec<_> = cases.iter().map(|case| case.0).collect();
+        let tokens = bundle.tokenize_queries(&input).expect("padded query batch");
+        let width = cases.iter().map(|case| case.1.len()).max().expect("rows");
+        assert_eq!(tokens.tokens_per_row, width);
+        for (row, case) in cases.iter().enumerate() {
+            let mut ids = case.1.to_vec();
+            ids.resize(width, 0);
+            let mut mask = vec![1.0; case.1.len()];
+            mask.resize(width, 0.0);
+            assert_eq!(&tokens.token_ids[row * width..(row + 1) * width], ids);
+            assert_eq!(&tokens.attention_mask[row * width..(row + 1) * width], mask);
+        }
+    }
+}
+
+#[test]
+fn astra_08_ascii_tokenization_is_unchanged() {
+    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
+    for index in [0, 18, 19, 20] {
+        let (text, expected) = astra_08_wordpiece::QUERY_CASES[index];
+        let tokens = bundle
+            .tokenize_query_padded(text, 64)
+            .expect("CoreML-width query");
+        let mut ids = expected.to_vec();
+        ids.resize(64, 0);
+        let mut mask = vec![1.0; expected.len()];
+        mask.resize(64, 0.0);
+        assert_eq!(tokens.token_ids, ids);
+        assert_eq!(tokens.attention_mask, mask);
+    }
+}
+
 #[test]
 fn arctic_v15_batched_cls_matches_reference_across_padding_and_chunk_boundary() {
     let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")

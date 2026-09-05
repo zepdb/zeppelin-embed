@@ -1,5 +1,14 @@
 # Text embedding crate guide
 
+- Step 08 admits pinned pure-Rust `unicode-normalization-alignments` 0.1.12
+  and `unicode_categories` 0.1.1 in this outer crate only. They are the source
+  tokenizers 0.22.2 Unicode helpers and avoid hand-maintained normalization
+  approximations. Their MIT/Apache licenses require no deny-policy exception;
+  the dependency audit and linked-size comparison belong to Step 08 evidence.
+  No dependency enters the core. WordPiece follows the source BERT order:
+  clean controls/whitespace, separate CJK, NFD/strip Mn, scalar lowercase,
+  Unicode punctuation splitting, then WordPiece with a 100-character limit.
+
 - MLX is bound through `mlx-rs` 0.25.3 with its `metal` feature so only this
   outer crate owns the CMake, C++, Metal, `cmake`, and `bindgen` build graph.
 - `cmake` builds pinned `mlx-c`; `bindgen` generates that C ABI, and both are
@@ -31,3 +40,8 @@
   evaluation behavior without changing bundle bytes or format layouts. Older
   text stores fail with `EpochMismatch` and require re-embedding into a fresh
   store; never relabel their existing vectors as corrected.
+
+- Step 08 additionally appends `;ze-text-wordpiece=2` for the corrected BERT
+  tokenizer interpretation, in both public and document epochs. Unigram epochs
+  are unchanged. Legacy uncased WordPiece implies BERT default accent stripping;
+  new exports record the effective strip flag and reject unsupported contracts.

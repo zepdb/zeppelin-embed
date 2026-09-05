@@ -158,8 +158,12 @@ fn fixture_epoch(path: &Path) -> EpochIdentity {
     let tokenizer = Analyzer::new(TokenizerConfig::text_default()).expect("fixture analyzer");
     let mut document = bundle.document_tower().embedding.clone();
     let mut query = bundle.query_tower().embedding.clone();
-    document.model_version.push_str(";ze-text-output-layout=2");
-    query.model_version.push_str(";ze-text-output-layout=2");
+    document
+        .model_version
+        .push_str(";ze-text-output-layout=2;ze-text-wordpiece=2");
+    query
+        .model_version
+        .push_str(";ze-text-output-layout=2;ze-text-wordpiece=2");
     StoreEpoch {
         embedding: EmbeddingEpoch {
             document,
