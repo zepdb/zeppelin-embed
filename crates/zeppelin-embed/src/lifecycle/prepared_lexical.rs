@@ -183,9 +183,19 @@ impl<'query> PreparedLexicalQuery<'query> {
         if self.structured.is_none() {
             let receipt = super::assemble_lexical_index(inputs, false, Some(cancellation))
                 .map_err(super::map_fusion_lexical_assembly_error)?;
-            let vocabulary = crate::fts::query::vocabulary(query, receipt.index.terms());
-            let expansions = crate::fts::query::expand(query, &vocabulary)
-                .map_err(|error| lexical_failure(&error.to_string()))?;
+            let vocabulary = if query.needs_vocabulary() {
+                Some(receipt.vocabulary(inputs.accounting, cancellation)?)
+            } else {
+                None
+            };
+            let empty_vocabulary = crate::fts::vocabulary::Vocabulary::empty();
+            let expansions = crate::fts::query::expand(
+                query,
+                vocabulary
+                    .as_ref()
+                    .map_or(&empty_vocabulary, |cached| &cached.view),
+            )
+            .map_err(|error| lexical_failure(&error.to_string()))?;
             drop(vocabulary);
             cache_hit = receipt.cache_hit;
             cancellation.check_graph().map_err(QueryError::Scan)?;

@@ -24,6 +24,114 @@ fn text_analyzer() -> Analyzer {
     Analyzer::new(TokenizerConfig::text_default()).expect("valid configuration")
 }
 
+#[test]
+fn astra_12_vocabulary_reused_until_exact_inputs_change() {
+    use zeppelin_embed::fts::{preparation_observer as observer, query::LexicalQuery};
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    let ingest = |id, text: &str| {
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text(text),
+            ]))
+            .expect("ingest")
+    };
+    ingest(1, "alpha alphabet beta");
+    store.seal().expect("seal");
+    let query = LexicalQuery::prefix(b"alph".to_vec(), DEFAULT_FIELD);
+    let search = || {
+        observer::begin();
+        let result = store
+            .search_lexical_structured(&query, 10, 64, QueryControl::Cancel(CancelToken::new()))
+            .expect("prefix");
+        let work = observer::vocabulary_work();
+        observer::take();
+        (result, work)
+    };
+    let (first, cold) = search();
+    let (second, warm) = search();
+    assert_eq!(first.candidates, second.candidates);
+    assert_eq!(cold.builds, 1);
+    assert_eq!(
+        warm.builds, 0,
+        "unchanged immutable inputs rebuilt vocabulary: {warm:?}"
+    );
+    assert_eq!(warm.copied_bytes, 0);
+    ingest(2, "alphonse gamma");
+    let (updated, changed) = search();
+    assert_eq!(changed.builds, 1);
+    assert_eq!(updated.candidates.len(), 2);
+    assert_eq!(search().1.builds, 0);
+    store.seal().expect("publish new snapshot");
+    assert_eq!(search().1.builds, 1);
+    assert_eq!(search().1.builds, 0);
+    store
+        .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![DocId::new(
+            2,
+        )]))
+        .expect("tombstone");
+    let (deleted, work) = search();
+    assert_eq!(work.builds, 1);
+    assert_eq!(deleted.candidates.len(), 1);
+    assert_eq!(
+        deleted.expansions, updated.expansions,
+        "tombstones preserve all analyzed vocabulary expansions"
+    );
+    let purge = store.purge(&[DocId::new(2)]).expect("purge");
+    store.await_physical_purge(purge).expect("physical purge");
+    let (purged, work) = search();
+    assert_eq!(work.builds, 1);
+    assert_eq!(
+        purged.expansions, first.expansions,
+        "physical purge removes the deleted source vocabulary"
+    );
+    assert_eq!(store.stats().expect("stats").temporary_bytes, 0);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_12_term_and_phrase_still_build_no_vocabulary() {
+    use zeppelin_embed::fts::{
+        preparation_observer as observer, query::LexicalQuery, search::TermQuery,
+    };
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("alpha beta"),
+        ]))
+        .expect("ingest");
+    store.seal().expect("seal");
+    for query in [
+        LexicalQuery::term(TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD])),
+        LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD),
+    ] {
+        observer::begin();
+        let result = store
+            .search_lexical_structured(&query, 1, 64, QueryControl::Cancel(CancelToken::new()))
+            .expect("query");
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(
+            observer::vocabulary_work(),
+            observer::VocabularyWork::default()
+        );
+        observer::take();
+    }
+    store.close().expect("close");
+}
+
 /// Words the corpus and query generators draw from.
 const WORDS: [&str; 12] = [
     "alpha",

@@ -204,6 +204,13 @@ impl SealedSegment {
         })
     }
 
+    pub(crate) fn vocabulary_terms(&self) -> impl Iterator<Item = (&[u8], FieldId)> + Clone {
+        self.spans
+            .iter()
+            .enumerate()
+            .map(move |(index, span)| (self.term_of(index), span.field))
+    }
+
     /// Seals an active segment into the persisted layout.
     ///
     /// # Errors

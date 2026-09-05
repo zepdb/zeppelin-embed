@@ -3343,8 +3343,19 @@ impl Store {
         .map_err(map_store_lexical_assembly_error)?;
         let index = &assembly.index;
         let sources = &assembly.sources;
-        let vocabulary = crate::fts::query::vocabulary(query, index.terms());
-        let mut expansions = crate::fts::query::expand(query, &vocabulary)?;
+        let vocabulary = if query.needs_vocabulary() {
+            Some(assembly.vocabulary(&self.accounting, &cancellation)?)
+        } else {
+            None
+        };
+        let empty_vocabulary = crate::fts::vocabulary::Vocabulary::empty();
+        let mut expansions = crate::fts::query::expand(
+            query,
+            vocabulary
+                .as_ref()
+                .map_or(&empty_vocabulary, |cached| &cached.view),
+        )?;
+        drop(vocabulary);
         let allow_lists = assembly
             .alive_sets
             .iter()
@@ -4290,11 +4301,60 @@ struct LexicalAssembly {
     index: crate::fts::index::LexicalIndex,
     alive_sets: Vec<Arc<crate::meta::AliveSet>>,
     sources: Vec<StructuredLexicalSource>,
+    vocabulary: Mutex<Option<Arc<CachedVocabulary>>>,
     // The last cache/query owner releases this charge, even after eviction.
     memory: stats::AccountedCounter,
 }
 
+struct CachedVocabulary {
+    view: crate::fts::vocabulary::Vocabulary,
+    // Charged for as long as any query or assembly retains the dictionary.
+    _memory: stats::AccountedCounter,
+}
+
 impl LexicalAssembly {
+    fn vocabulary(
+        &self,
+        accounting: &Arc<stats::Accounting>,
+        cancellation: &QueryCancellation<'_>,
+    ) -> Result<Arc<CachedVocabulary>, QueryError> {
+        let mut cached = self.vocabulary.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "lexical vocabulary cache",
+            })
+        })?;
+        if let Some(value) = cached.as_ref() {
+            return Ok(Arc::clone(value));
+        }
+        let mut memory =
+            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
+                .map_err(QueryError::Store)?;
+        let mut temporary =
+            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
+        let view = crate::fts::vocabulary::Vocabulary::build(
+            self.index.vocabulary_terms(),
+            |scratch, owned| {
+                cancellation.check_graph().map_err(QueryError::Scan)?;
+                prepared_lexical::reserve_weighted_scratch(&mut temporary, scratch)?;
+                let bytes = owned
+                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CachedVocabulary>()))
+                    .ok_or(QueryError::Store(StoreError::BudgetExceeded {
+                        needed: u64::MAX,
+                        budget: u64::MAX,
+                        component: "lexical vocabulary cache",
+                    }))?;
+                memory.set(bytes).map_err(QueryError::Store)
+            },
+        )?;
+        let value = Arc::new(CachedVocabulary {
+            view,
+            _memory: memory,
+        });
+        *cached = Some(Arc::clone(&value));
+        Ok(value)
+    }
+
     /// Returns the bytes retaining this assembly costs, or `None` on
     /// overflow.
     ///
@@ -4619,6 +4679,7 @@ fn build_lexical_assembly(
         index,
         alive_sets,
         sources,
+        vocabulary: Mutex::new(None),
         memory: stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
             .map_err(LexicalAssemblyError::Store)?,
     };
@@ -7197,6 +7258,154 @@ mod tests {
         SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
         resolve_hybrid_leg_results,
     };
+
+    #[test]
+    fn astra_12_vocabulary_charge_survives_eviction_and_close() {
+        use crate::fts::{index::DEFAULT_FIELD, query::LexicalQuery};
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let directory = tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("alpha alphabet beta"),
+            ]))
+            .expect("ingest");
+        store
+            .search_lexical_structured(
+                &LexicalQuery::prefix(b"alph".to_vec(), DEFAULT_FIELD),
+                1,
+                64,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("build cache");
+        let dictionary = {
+            let entry = store.lexical_index_cache.entry.lock().expect("assembly");
+            let vocabulary = entry
+                .as_ref()
+                .expect("assembly")
+                .assembly
+                .vocabulary
+                .lock()
+                .expect("vocabulary");
+            Arc::clone(vocabulary.as_ref().expect("cached"))
+        };
+        let bytes = dictionary._memory.bytes();
+        assert!(bytes > 17);
+        let second_owner = Arc::clone(&dictionary);
+        drop(
+            store
+                .lexical_index_cache
+                .entry
+                .lock()
+                .expect("evict")
+                .take(),
+        );
+        assert_eq!(store.stats().expect("held bytes").cache_bytes, bytes);
+        store
+            .search_lexical_structured(
+                &LexicalQuery::prefix(b"alph".to_vec(), DEFAULT_FIELD),
+                1,
+                64,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("replacement cache");
+        assert!(store.stats().expect("both dictionaries").cache_bytes > bytes);
+        store.close().expect("close");
+        assert_eq!(
+            store
+                .accounting
+                .audit()
+                .expect("closed accounting")
+                .cache_bytes,
+            bytes
+        );
+        drop(dictionary);
+        assert_eq!(
+            store.accounting.audit().expect("second owner").cache_bytes,
+            bytes
+        );
+        assert_eq!(
+            second_owner.view.iter().collect::<Vec<_>>(),
+            vec![b"alpha".as_slice(), b"alphabet", b"beta"]
+        );
+        drop(second_owner);
+        assert_eq!(store.accounting.audit().expect("last owner").cache_bytes, 0);
+        assert_eq!(
+            store.accounting.audit().expect("scratch").temporary_bytes,
+            0
+        );
+    }
+
+    #[test]
+    fn astra_12_refused_vocabulary_is_not_published() {
+        use crate::fts::{index::DEFAULT_FIELD, query::LexicalQuery};
+        use crate::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, StoreLexicalError,
+        };
+        let directory = tempdir().expect("directory");
+        let writer = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        writer
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("alpha alphabet beta"),
+            ]))
+            .expect("ingest");
+        writer.seal().expect("seal");
+        writer.close().expect("close writer");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::default().with_max_temp_bytes(1),
+        )
+        .expect("small budget");
+        for _ in 0..2 {
+            let result = store.search_lexical_structured(
+                &LexicalQuery::prefix(b"alph".to_vec(), DEFAULT_FIELD),
+                1,
+                64,
+                QueryControl::Cancel(CancelToken::new()),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(StoreLexicalError::Query(super::QueryError::Store(
+                        StoreError::BudgetExceeded {
+                            component: "temporary",
+                            ..
+                        }
+                    )))
+                ),
+                "{result:?}"
+            );
+            assert_eq!(store.stats().expect("released").temporary_bytes, 0);
+            let entry = store.lexical_index_cache.entry.lock().expect("assembly");
+            assert!(
+                entry
+                    .as_ref()
+                    .expect("assembled")
+                    .assembly
+                    .vocabulary
+                    .lock()
+                    .expect("dictionary")
+                    .is_none()
+            );
+        }
+        store.close().expect("close");
+        assert_eq!(
+            store
+                .accounting
+                .audit()
+                .expect("released cache")
+                .cache_bytes,
+            0
+        );
+    }
 
     #[test]
     fn astra_03_lexical_assembly_charge_survives_cache_eviction() {

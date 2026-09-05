@@ -228,6 +228,18 @@ impl Store {
         drop(lexical_worker);
         let lexical_worker_result =
             stopped_lexical_worker.map_or(Ok(()), |worker| worker.stop_and_join());
+        // Admission has stopped and readers/workers have drained. Drop only
+        // the cache owner; any retained query assembly keeps its own charge.
+        let lexical_cache_result = self
+            .lexical_index_cache
+            .entry
+            .lock()
+            .map(|mut entry| {
+                drop(entry.take());
+            })
+            .map_err(|_| StoreError::Synchronization {
+                component: "lexical index cache",
+            });
         drop(released_snapshot);
 
         let mut active = self
@@ -269,6 +281,7 @@ impl Store {
         background_result
             .and(query_pool_result)
             .and(lexical_worker_result)
+            .and(lexical_cache_result)
     }
 
     /// Runs close ordering during `Drop` without propagating failures or
@@ -315,6 +328,11 @@ impl Store {
         if let Some(worker) = lexical_worker_slot.take() {
             worker.stop_best_effort();
         }
+        let lexical_cache = match self.lexical_index_cache.entry.get_mut() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        drop(lexical_cache.take());
         drop(released_snapshot);
 
         let active_slot = match self.active.get_mut() {

@@ -5,7 +5,7 @@
 //! query behavior from the indexed vocabulary. Adding another operator (for
 //! example regex) therefore does not require a segment-format change.
 
-use std::collections::BTreeSet;
+use super::vocabulary::Vocabulary;
 
 use super::fuzzy;
 use super::index::FieldId;
@@ -152,6 +152,13 @@ impl LexicalQuery {
         Self::Phonetic { term, field }
     }
 
+    pub(crate) fn needs_vocabulary(&self) -> bool {
+        matches!(
+            self,
+            Self::Prefix { .. } | Self::Fuzzy { .. } | Self::Phonetic { .. }
+        )
+    }
+
     pub(crate) fn fields(&self) -> FieldWeights {
         match self {
             Self::Term(query) => query.fields.clone(),
@@ -247,21 +254,18 @@ impl std::fmt::Display for LexicalQueryError {
 
 impl std::error::Error for LexicalQueryError {}
 
-pub(crate) fn vocabulary<'a>(
-    query: &LexicalQuery,
-    terms: impl Iterator<Item = &'a [u8]>,
-) -> BTreeSet<Vec<u8>> {
-    match query {
-        LexicalQuery::Prefix { .. }
-        | LexicalQuery::Fuzzy { .. }
-        | LexicalQuery::Phonetic { .. } => terms.map(<[u8]>::to_vec).collect(),
-        LexicalQuery::Term(_) | LexicalQuery::Phrase { .. } => BTreeSet::new(),
+#[cfg(test)]
+fn vocabulary<'a>(query: &LexicalQuery, terms: impl Iterator<Item = &'a [u8]>) -> Vocabulary {
+    if query.needs_vocabulary() {
+        terms.map(<[u8]>::to_vec).collect()
+    } else {
+        Vocabulary::empty()
     }
 }
 
 pub(crate) fn expand(
     query: &LexicalQuery,
-    vocabulary: &BTreeSet<Vec<u8>>,
+    vocabulary: &Vocabulary,
 ) -> Result<Vec<LexicalExpansion>, LexicalQueryError> {
     #[cfg(any(test, feature = "test-support"))]
     super::preparation_observer::expansion();
@@ -300,9 +304,8 @@ pub(crate) fn expand(
                 return Err(LexicalQueryError::Empty);
             }
             vocabulary
-                .iter()
-                .filter(|term| term.starts_with(prefix))
-                .cloned()
+                .prefix(prefix)
+                .map(<[u8]>::to_vec)
                 .map(|term| LexicalExpansion {
                     term,
                     boost_thousandths: 1_000,
@@ -327,7 +330,7 @@ pub(crate) fn expand(
                 .filter_map(|candidate| {
                     let distance = wagner_fischer(term, candidate);
                     (distance <= *max_distance).then(|| LexicalExpansion {
-                        term: candidate.clone(),
+                        term: candidate.to_vec(),
                         boost_thousandths: match distance {
                             0 => 1_000,
                             1 => 500,
@@ -351,7 +354,7 @@ pub(crate) fn expand(
                     std::str::from_utf8(candidate)
                         .is_ok_and(|candidate| phonetic::encode(candidate) == code)
                 })
-                .cloned()
+                .map(<[u8]>::to_vec)
                 .map(|term| LexicalExpansion {
                     term,
                     boost_thousandths: 250,
@@ -416,8 +419,120 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn astra_12_vocabulary_groups_memberships_with_linear_work() {
+        let terms = (0..10_000)
+            .map(|n| format!("unique{n:05}").into_bytes())
+            .collect::<Vec<_>>();
+        super::super::preparation_observer::begin();
+        let dictionary = vocabulary(
+            &LexicalQuery::prefix(b"unique".to_vec(), field()),
+            terms.iter().map(Vec::as_slice),
+        );
+        let checks = super::super::preparation_observer::vocabulary_group_checks();
+        super::super::preparation_observer::take();
+        assert_eq!(dictionary.iter().count(), terms.len());
+        assert!(
+            checks <= 2 * terms.len(),
+            "group boundary comparisons: {checks}"
+        );
+    }
+
+    #[test]
+    fn astra_12_prefix_visits_only_matching_vocabulary_range() {
+        let mut terms = (0..20_000)
+            .map(|n| format!("{}{n:05}", if n < 10_000 { "aaa" } else { "zzz" }).into_bytes())
+            .collect::<Vec<_>>();
+        terms.extend([
+            b"middlea".to_vec(),
+            b"middleb".to_vec(),
+            b"middlec".to_vec(),
+        ]);
+        let query = LexicalQuery::prefix(b"middle".to_vec(), field());
+        let dictionary = vocabulary(&query, terms.iter().map(Vec::as_slice));
+        super::super::preparation_observer::begin();
+        let actual = expand(&query, &dictionary).expect("expand");
+        let work = super::super::preparation_observer::vocabulary_work();
+        super::super::preparation_observer::take();
+        let expected = [b"middlea", b"middleb", b"middlec"]
+            .into_iter()
+            .map(|term| LexicalExpansion {
+                term: term.to_vec(),
+                boost_thousandths: 1000,
+                kind: LexicalMatchKind::Prefix,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(
+            work.terms_visited <= 4,
+            "prefix walked unrelated vocabulary: {work:?}"
+        );
+        assert!(work.seek_steps <= 16, "lower-bound work: {work:?}");
+    }
+
     fn field() -> FieldId {
         FieldId(7)
+    }
+
+    #[test]
+    fn astra_12_prefix_field_membership_and_byte_edges_preserve_expansion_order() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let source = [
+            (b"alpha".as_slice(), FieldId(7)),
+            (b"alpine", FieldId(8)),
+            (b"alpha", FieldId(8)),
+            (b"alpha", FieldId(7)),
+            (&[0], FieldId(3)),
+            (&[0, 255], FieldId(4)),
+            (&[255], FieldId(7)),
+            (&[255, 255], FieldId(8)),
+            (&[255, 255, 0], FieldId(7)),
+            ("éclair".as_bytes(), FieldId(8)),
+        ];
+        let mut oracle = BTreeMap::<Vec<u8>, BTreeSet<FieldId>>::new();
+        for (term, field) in source {
+            oracle.entry(term.to_vec()).or_default().insert(field);
+        }
+        let dictionary =
+            Vocabulary::build(source.into_iter(), |_, _| Ok::<_, ()>(())).expect("dictionary");
+        assert_eq!(
+            dictionary
+                .entries()
+                .map(|(term, fields)| (term.to_vec(), fields.to_vec()))
+                .collect::<Vec<_>>(),
+            oracle
+                .iter()
+                .map(|(term, fields)| (term.clone(), fields.iter().copied().collect()))
+                .collect::<Vec<_>>()
+        );
+        for prefix in [
+            b"al".as_slice(),
+            &[0],
+            &[255],
+            &[255, 255],
+            &[255, 255, 255],
+            &[0xc3],
+            b"missing",
+        ] {
+            for field in [FieldId(7), FieldId(8), FieldId(99)] {
+                // Vocabulary visibility is global across fields, just as before;
+                // field restrictions belong to scoring, not expansion policy.
+                let query = LexicalQuery::prefix(prefix.to_vec(), field);
+                let expected = oracle
+                    .keys()
+                    .filter(|term| term.starts_with(prefix))
+                    .map(|term| LexicalExpansion {
+                        term: term.clone(),
+                        boost_thousandths: 1000,
+                        kind: LexicalMatchKind::Prefix,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    expand(&query, &dictionary).expect("expand arbitrary bytes"),
+                    expected
+                );
+            }
+        }
     }
 
     #[cfg(feature = "allocation-audit")]
@@ -432,7 +547,7 @@ mod tests {
             b"nite".to_vec(),
         ];
         let query = LexicalQuery::term(TermQuery::flat(vec![b"cat".to_vec()], &[field()]));
-        let empty_vocabulary = BTreeSet::new();
+        let empty_vocabulary = Vocabulary::empty();
         drop(expand(&query, &empty_vocabulary).expect("warm term expansion"));
         let (_, baseline) =
             crate::allocation_audit::audit_engine_path(|| expand(&query, &empty_vocabulary));

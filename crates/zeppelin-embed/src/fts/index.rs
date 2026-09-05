@@ -685,6 +685,12 @@ impl LexicalIndex {
         self.segments.iter().flat_map(|segment| segment.terms())
     }
 
+    pub(crate) fn vocabulary_terms(&self) -> impl Iterator<Item = (&[u8], FieldId)> + Clone {
+        self.segments
+            .iter()
+            .flat_map(|segment| segment.vocabulary_terms())
+    }
+
     /// Returns the store-wide document count.
     #[must_use]
     pub fn document_count(&self) -> u64 {

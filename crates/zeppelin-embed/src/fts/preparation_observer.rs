@@ -17,6 +17,84 @@ struct Counts {
     phrase_text_bytes: AtomicUsize,
     phrase_positions: AtomicUsize,
     phrase_position_bytes: AtomicUsize,
+    vocabulary_builds: AtomicUsize,
+    vocabulary_copied_bytes: AtomicUsize,
+    vocabulary_terms_visited: AtomicUsize,
+    vocabulary_seek_steps: AtomicUsize,
+    vocabulary_group_checks: AtomicUsize,
+}
+
+/// Actual dictionary construction and prefix traversal in one query window.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VocabularyWork {
+    /// Complete dictionary constructions.
+    pub builds: usize,
+    /// Term payload bytes copied while building the dictionary.
+    pub copied_bytes: usize,
+    /// Terms examined after locating the prefix range.
+    pub terms_visited: usize,
+    /// Lower-bound comparisons.
+    pub seek_steps: usize,
+}
+
+/// Reads the armed query's vocabulary work without ending observation.
+pub fn vocabulary_work() -> VocabularyWork {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(VocabularyWork::default(), |o| VocabularyWork {
+                builds: o.0.vocabulary_builds.load(Ordering::Relaxed),
+                copied_bytes: o.0.vocabulary_copied_bytes.load(Ordering::Relaxed),
+                terms_visited: o.0.vocabulary_terms_visited.load(Ordering::Relaxed),
+                seek_steps: o.0.vocabulary_seek_steps.load(Ordering::Relaxed),
+            })
+    })
+}
+
+pub(crate) fn vocabulary_build(bytes: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.vocabulary_builds.fetch_add(1, Ordering::Relaxed);
+            o.0.vocabulary_copied_bytes
+                .fetch_add(bytes, Ordering::Relaxed);
+        }
+    });
+}
+
+pub(crate) fn vocabulary_visit() {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.vocabulary_terms_visited.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+pub(crate) fn vocabulary_seek() {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.vocabulary_seek_steps.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Comparisons used to group sorted term/field memberships during a build.
+pub fn vocabulary_group_checks() -> usize {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(0, |o| o.0.vocabulary_group_checks.load(Ordering::Relaxed))
+    })
+}
+
+pub(crate) fn record_vocabulary_group_checks(count: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.vocabulary_group_checks
+                .fetch_add(count, Ordering::Relaxed);
+        }
+    });
 }
 
 /// Opaque handle passed to the same query's worker; no global counting window.

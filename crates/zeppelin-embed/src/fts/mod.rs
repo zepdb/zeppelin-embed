@@ -59,3 +59,4 @@ pub mod snippet;
 
 /// Structured query descriptions and deterministic expansion provenance.
 pub mod query;
+pub(crate) mod vocabulary;
