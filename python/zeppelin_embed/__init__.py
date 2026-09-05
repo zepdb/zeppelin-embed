@@ -1,7 +1,7 @@
 """Python bindings for the Zeppelin Embed C ABI."""
 
 from . import _errors as _error_module
-from ._errors import *
+from ._errors import *  # noqa: F403
 from ._ffi import ABI_VERSION
 from ._library import LIBRARY_PATH
 from ._store import CancelToken, Store, epoch_identity, open, open_text, open_with_epoch
@@ -35,10 +35,10 @@ from ._types import (
     StateReport,
     StatsReport,
     StoreState,
-    Tier,
     TextHit,
     TextLegs,
     TextQueryResult,
+    Tier,
 )
 
 __all__ = [  # noqa: PLE0604

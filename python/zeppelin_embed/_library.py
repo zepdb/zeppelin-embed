@@ -22,12 +22,18 @@ def _candidates() -> tuple[Path, ...]:
         return (Path(override).expanduser(),)
     filename = _library_filename()
     package = Path(__file__).resolve().parent
-    workspace = package.parents[1]
-    return (
-        package / ".dylibs" / filename,
-        workspace / "target" / "debug" / filename,
-        workspace / "target" / "release" / filename,
-    )
+    bundled = package / ".dylibs" / filename
+    python_root = package.parent
+    workspace = python_root.parent
+    if (python_root / "pyproject.toml").is_file() and (
+        workspace / "Cargo.toml"
+    ).is_file():
+        return (
+            bundled,
+            workspace / "target" / "debug" / filename,
+            workspace / "target" / "release" / filename,
+        )
+    return (bundled,)
 
 
 def _load() -> tuple[ct.CDLL, Path]:

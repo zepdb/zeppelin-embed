@@ -43,10 +43,10 @@ from ._types import (
     StateReport,
     StatsReport,
     StoreState,
-    Tier,
     TextHit,
     TextLegs,
     TextQueryResult,
+    Tier,
 )
 
 EnumValue = TypeVar("EnumValue", bound=IntEnum)
@@ -524,6 +524,7 @@ class Store:
             if free_status != 0:
                 if primary is None:
                     raise_for_status(free_status, handle)
+                assert primary is not None
                 primary.add_note(
                     f"ze_text_query_result_free: {last_error_message(handle)}"
                 )

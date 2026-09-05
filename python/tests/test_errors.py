@@ -30,12 +30,12 @@ def _header_errors() -> tuple[str, ...]:
 
 def test_error_hierarchy_matches_exported_c_table_and_header() -> None:
     assert ze.ERROR_NAMES == _header_errors()
-    assert len(ze.ERROR_NAMES) == 29
+    assert len(ze.ERROR_NAMES) == 32
     assert ze.ErrorCode.OK == 0
-    assert ze.ErrorCode.ERR_UNSEALED_WRITES == 28
+    assert ze.ErrorCode.ERR_PIPELINE == 31
     for code, name in enumerate(ze.ERROR_NAMES):
         assert ze.error_code_name(code) == name
-    assert ze.error_code_name(29) == "ZE_ERR_UNKNOWN"
+    assert ze.error_code_name(32) == "ZE_ERR_UNKNOWN"
     assert issubclass(ze.Cancelled, ze.ZeppelinError)
     assert ze.Cancelled.code == ze.ErrorCode.ERR_CANCELLED
 
