@@ -3184,6 +3184,7 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let assembly = assemble_lexical_index(
             LexicalInputs {
+                generation,
                 cache: &self.lexical_index_cache,
                 snapshot: &snapshot,
                 active: &active,
@@ -3333,6 +3334,7 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let assembly = assemble_lexical_index(
             LexicalInputs {
+                generation,
                 cache: &self.lexical_index_cache,
                 snapshot: &snapshot,
                 active: &active,
@@ -3653,6 +3655,7 @@ impl Store {
             ..Default::default()
         };
         let lexical_inputs = LexicalInputs {
+            generation: admitted.generation,
             cache: &self.lexical_index_cache,
             snapshot: &admitted.snapshot,
             active: &admitted.active_segment,
@@ -4044,6 +4047,20 @@ impl Store {
         )
     }
 
+    /// `(hits, builds)` of immutable lexical statistics contributions.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn lexical_contribution_cache_counters(&self) -> (u64, u64) {
+        (
+            self.lexical_index_cache
+                .contribution_hits
+                .load(Ordering::Relaxed),
+            self.lexical_index_cache
+                .contribution_builds
+                .load(Ordering::Relaxed),
+        )
+    }
+
     fn consume_hybrid_test_fault(&self, leg: crate::fusion::FusionLeg) -> bool {
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -4299,6 +4316,7 @@ struct LexicalAssembly {
     index: crate::fts::index::LexicalIndex,
     alive_sets: Vec<Arc<crate::meta::AliveSet>>,
     sources: Vec<StructuredLexicalSource>,
+    contributions: Vec<Arc<CachedLexicalContribution>>,
     vocabulary: Mutex<Option<Arc<CachedVocabulary>>>,
     // The last cache/query owner releases this charge, even after eviction.
     memory: stats::AccountedCounter,
@@ -4355,16 +4373,11 @@ impl LexicalAssembly {
         Ok(value)
     }
 
-    /// Returns the bytes retaining this assembly costs, or `None` on
-    /// overflow.
-    ///
-    /// `owned_alive_bytes` is the active segment's alive set, which is built
-    /// per assembly rather than shared from a reader. Every other alive set
-    /// and every posting list is an `Arc` clone of a value its segment reader
-    /// already charged, so charging them here would double-count them.
-    fn owned_bytes(&self, owned_alive_bytes: usize) -> Option<usize> {
+    /// Assembly spines only: contribution reservations own their shared
+    /// counters/bitmaps, and current readers own decoded postings/alive views.
+    fn owned_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>()
-            .checked_add(self.index.resident_bytes()?)?
+            .checked_add(self.index.resident_spine_bytes()?)?
             .checked_add(
                 self.alive_sets
                     .capacity()
@@ -4375,7 +4388,75 @@ impl LexicalAssembly {
                     .capacity()
                     .checked_mul(std::mem::size_of::<StructuredLexicalSource>())?,
             )?
-            .checked_add(owned_alive_bytes)
+            .checked_add(
+                self.contributions
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Arc<CachedLexicalContribution>>())?,
+            )
+    }
+}
+
+enum LexicalContributionKey {
+    // Reader objects are recreated on publication. Same immutable file plus
+    // freshly verified live membership identifies the same contribution.
+    Sealed(crate::segment::SegmentMeta, (u64, u64)),
+    Active(std::sync::Weak<crate::ingest::ActiveSegment>),
+}
+
+struct CachedLexicalContribution {
+    key: LexicalContributionKey,
+    statistics: Arc<crate::fts::index::LiveSegmentStatistics>,
+    // Only active alive sets are newly allocated here. Sealed sets remain the
+    // current reader's owned/counted query view, never a retired reader's view.
+    active_alive: Option<Arc<crate::meta::AliveSet>>,
+    _memory: stats::AccountedCounter,
+}
+
+impl CachedLexicalContribution {
+    fn build(
+        key: LexicalContributionKey,
+        postings: &crate::fts::sealed::SealedSegment,
+        alive: &Arc<crate::meta::AliveSet>,
+        ordinal: usize,
+        accounting: &Arc<stats::Accounting>,
+    ) -> Result<Arc<Self>, LexicalAssemblyError> {
+        let active = matches!(key, LexicalContributionKey::Active(_));
+        let alive_bytes = if active {
+            alive
+                .resident_bytes()
+                .and_then(|n| n.checked_add(std::mem::size_of::<crate::meta::AliveSet>()))
+                .and_then(|n| n.checked_add(2 * std::mem::size_of::<usize>()))
+        } else {
+            Some(0)
+        };
+        let bytes =
+            crate::fts::index::LiveSegmentStatistics::allocation_bytes(alive.alive_bitmap())
+                .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
+                .and_then(|n| n.checked_add(2 * std::mem::size_of::<usize>()))
+                .and_then(|n| n.checked_add(alive_bytes?))
+                .ok_or(LexicalAssemblyError::Store(StoreError::BudgetExceeded {
+                    needed: u64::MAX,
+                    budget: u64::MAX,
+                    component: "cache",
+                }))?;
+        let mut memory =
+            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
+                .map_err(LexicalAssemblyError::Store)?;
+        memory.set(bytes).map_err(LexicalAssemblyError::Store)?;
+        let statistics = Arc::new(
+            crate::fts::index::LiveSegmentStatistics::build(
+                ordinal,
+                postings,
+                alive.alive_bitmap(),
+            )
+            .map_err(LexicalAssemblyError::Lexical)?,
+        );
+        Ok(Arc::new(Self {
+            key,
+            statistics,
+            active_alive: active.then(|| Arc::clone(alive)),
+            _memory: memory,
+        }))
     }
 }
 
@@ -4389,11 +4470,9 @@ enum LexicalAssemblyError {
 /// One assembled lexical index, held for as long as the inputs it was built
 /// from are still the store's inputs.
 ///
-/// Assembling an index walks every live row of every text-bearing segment
-/// twice -- once for the BM25 corpus counters and once to clone the live-row
-/// bitmap -- and clones a Roaring bitmap per segment. None of that work
-/// depends on the query, so a lexical query pays it once and a hybrid query
-/// pays it once per widening round.
+/// A complete assembly is reused while its snapshot/active identities match.
+/// After mutation, independently reserved contributions reuse unchanged sealed
+/// counters and membership while rebuilding current source ordinals and totals.
 ///
 /// Reusing it is safe because both inputs are copy-on-write behind an `Arc`
 /// and the borrow checker, not a convention, enforces that. A
@@ -4415,6 +4494,7 @@ enum LexicalAssemblyError {
 /// the allocation reserved, so a dropped input's address can never be reused
 /// by a different value and compare equal here.
 struct CachedLexicalAssembly {
+    generation: u64,
     snapshot: std::sync::Weak<PublishedSnapshot>,
     active: std::sync::Weak<crate::ingest::ActiveSegment>,
     /// Set when this assembly was built, or has since been proven, under
@@ -4443,17 +4523,19 @@ impl CachedLexicalAssembly {
 
 /// The store's single-entry cache of assembled lexical indexes.
 ///
-/// One entry is enough for the access pattern it exists for: a hybrid query
-/// re-runs its lexical leg against unchanged inputs once per widening round,
-/// and consecutive queries between two ingests share their inputs exactly. A
-/// query whose inputs do not match simply builds its own, so the cache can
-/// only ever cost a miss, never a wrong answer.
+/// One entry bounds retained history. A builder holds the entry lock through
+/// construction; old admissions may build their own answer, but cannot replace
+/// a cached newer generation. Only immutable contribution Arcs cross rebuilds.
 pub(crate) struct LexicalIndexCache {
     entry: Mutex<Option<CachedLexicalAssembly>>,
     #[cfg(any(test, feature = "test-support"))]
     hits: AtomicU64,
     #[cfg(any(test, feature = "test-support"))]
     builds: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    contribution_hits: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    contribution_builds: AtomicU64,
 }
 
 impl LexicalIndexCache {
@@ -4464,6 +4546,10 @@ impl LexicalIndexCache {
             hits: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             builds: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            contribution_hits: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            contribution_builds: AtomicU64::new(0),
         }
     }
 
@@ -4483,6 +4569,17 @@ impl LexicalIndexCache {
     #[cfg(not(any(test, feature = "test-support")))]
     const fn record_build(&self) {}
 
+    fn record_contribution(&self, hit: bool) {
+        #[cfg(any(test, feature = "test-support"))]
+        if hit {
+            self.contribution_hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.contribution_builds.fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = hit;
+    }
+
     fn lock(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, Option<CachedLexicalAssembly>>, LexicalAssemblyError>
@@ -4500,6 +4597,7 @@ impl LexicalIndexCache {
 /// standalone paths all pass exactly this set through unchanged.
 #[derive(Clone, Copy)]
 struct LexicalInputs<'a> {
+    generation: u64,
     cache: &'a LexicalIndexCache,
     snapshot: &'a Arc<PublishedSnapshot>,
     active: &'a Arc<crate::ingest::ActiveSegment>,
@@ -4524,6 +4622,7 @@ fn assemble_lexical_index(
     cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<LexicalAssemblyReceipt, LexicalAssemblyError> {
     let LexicalInputs {
+        generation,
         cache,
         snapshot,
         active,
@@ -4544,18 +4643,21 @@ fn assemble_lexical_index(
             cache_hit: true,
         });
     }
-    // Evict before building. A query retaining this assembly also retains
-    // its reservation; a replacement must fit alongside those live bytes.
-    let stale = entry.take();
-    drop(entry);
-    drop(stale);
-
+    // One builder at a time bounds concurrent allocation and prevents a late
+    // old admission from repeatedly replacing a newer assembly. The old entry
+    // remains accounted during construction and is replaced only on success.
+    let previous = entry.as_ref().map(|cached| Arc::clone(&cached.assembly));
+    let contributions = previous
+        .as_ref()
+        .map_or(&[][..], |a| a.contributions.as_slice());
     let (mut assembly, owned_bytes) = build_lexical_assembly(
         snapshot,
         active,
         accounting,
         require_document_identity,
         cancellation,
+        cache,
+        contributions,
     )?;
     cache.record_build();
     assembly
@@ -4563,16 +4665,18 @@ fn assemble_lexical_index(
         .set(owned_bytes)
         .map_err(LexicalAssemblyError::Store)?;
     let assembly = Arc::new(assembly);
-    let mut entry = cache.lock()?;
-    // A concurrent builder may have installed its own entry. Last writer
-    // wins: every read validates by pointer identity, so the worst an
-    // overwritten entry can cost is the next query's miss.
-    *entry = Some(CachedLexicalAssembly {
-        snapshot: Arc::downgrade(snapshot),
-        active: Arc::downgrade(active),
-        document_identity_verified: require_document_identity,
-        assembly: Arc::clone(&assembly),
-    });
+    if entry
+        .as_ref()
+        .is_none_or(|cached| generation >= cached.generation)
+    {
+        *entry = Some(CachedLexicalAssembly {
+            generation,
+            snapshot: Arc::downgrade(snapshot),
+            active: Arc::downgrade(active),
+            document_identity_verified: require_document_identity,
+            assembly: Arc::clone(&assembly),
+        });
+    }
     drop(entry);
     Ok(LexicalAssemblyReceipt {
         assembly,
@@ -4625,15 +4729,17 @@ fn verify_document_identity(
 
 fn build_lexical_assembly(
     snapshot: &PublishedSnapshot,
-    active: &crate::ingest::ActiveSegment,
+    active: &Arc<crate::ingest::ActiveSegment>,
     accounting: &Arc<stats::Accounting>,
     require_document_identity: bool,
     cancellation: Option<&QueryCancellation<'_>>,
+    cache: &LexicalIndexCache,
+    previous: &[Arc<CachedLexicalContribution>],
 ) -> Result<(LexicalAssembly, usize), LexicalAssemblyError> {
     let mut index = crate::fts::index::LexicalIndex::new();
     let mut alive_sets = Vec::new();
     let mut sources = Vec::new();
-    let mut owned_alive_bytes = 0_usize;
+    let mut contributions = Vec::new();
     for (ordinal, segment) in snapshot.segments().iter().enumerate() {
         if let Some(cancellation) = cancellation {
             cancellation
@@ -4648,9 +4754,35 @@ fn build_lexical_assembly(
                 check_segment_document_identity(segment, &postings)?;
             }
             let alive = segment.query_alive().map_err(LexicalAssemblyError::Store)?;
-            index
-                .push_shared_with_live_rows(postings, alive.alive_bitmap())
-                .map_err(LexicalAssemblyError::Lexical)?;
+            let identity = segment
+                .lexical_postings_identity()
+                .map_err(StoreError::Segment)
+                .map_err(LexicalAssemblyError::Store)?;
+            let reused = previous
+                .binary_search_by(|value| match &value.key {
+                    LexicalContributionKey::Sealed(meta, _) => meta.id.cmp(&segment.meta().id),
+                    LexicalContributionKey::Active(_) => std::cmp::Ordering::Greater,
+                })
+                .ok()
+                .and_then(|slot| previous.get(slot))
+                .filter(|value| {
+                    matches!(&value.key, LexicalContributionKey::Sealed(meta, stored)
+                    if meta.same_segment_file(segment.meta()) && *stored == identity)
+                        && value.statistics.rows == *alive.alive_bitmap()
+                });
+            cache.record_contribution(reused.is_some());
+            let contribution = match reused {
+                Some(value) => Arc::clone(value),
+                None => CachedLexicalContribution::build(
+                    LexicalContributionKey::Sealed(segment.meta().clone(), identity),
+                    &postings,
+                    &alive,
+                    index.segments().len(),
+                    accounting,
+                )?,
+            };
+            index.push_shared_with_statistics(postings, Arc::clone(&contribution.statistics));
+            contributions.push(contribution);
             alive_sets.push(alive);
             sources.push(StructuredLexicalSource::Sealed(ordinal));
         }
@@ -4659,33 +4791,57 @@ fn build_lexical_assembly(
         let sealed = active
             .sealed_lexical(accounting)
             .map_err(LexicalAssemblyError::Store)?;
-        let alive = Arc::new(active.alive().map_err(LexicalAssemblyError::Store)?);
-        owned_alive_bytes = alive
-            .resident_bytes()
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::meta::AliveSet>()))
-            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
-            .ok_or(LexicalAssemblyError::Store(StoreError::BudgetExceeded {
-                needed: u64::MAX,
-                budget: u64::MAX,
-                component: "cache",
+        let reused = previous.last().filter(|value| {
+            matches!(&value.key, LexicalContributionKey::Active(cached)
+                if cached.upgrade().is_some_and(|cached| Arc::ptr_eq(&cached, active)))
+        });
+        cache.record_contribution(reused.is_some());
+        let contribution = match reused {
+            Some(value) => Arc::clone(value),
+            None => {
+                let alive = Arc::new(active.alive().map_err(LexicalAssemblyError::Store)?);
+                CachedLexicalContribution::build(
+                    LexicalContributionKey::Active(Arc::downgrade(active)),
+                    &sealed,
+                    &alive,
+                    index.segments().len(),
+                    accounting,
+                )?
+            }
+        };
+        let alive = contribution
+            .active_alive
+            .as_ref()
+            .ok_or(LexicalAssemblyError::Store(StoreError::Synchronization {
+                component: "active lexical contribution",
             }))?;
-        index
-            .push_shared_with_live_rows(sealed, alive.alive_bitmap())
-            .map_err(LexicalAssemblyError::Lexical)?;
-        alive_sets.push(alive);
+        index.push_shared_with_statistics(sealed, Arc::clone(&contribution.statistics));
+        alive_sets.push(Arc::clone(alive));
+        contributions.push(contribution);
         sources.push(StructuredLexicalSource::Active);
     }
+    contributions.sort_unstable_by(|left, right| match (&left.key, &right.key) {
+        (LexicalContributionKey::Sealed(a, _), LexicalContributionKey::Sealed(b, _)) => {
+            a.id.cmp(&b.id)
+        }
+        (LexicalContributionKey::Active(_), LexicalContributionKey::Active(_)) => {
+            std::cmp::Ordering::Equal
+        }
+        (LexicalContributionKey::Active(_), _) => std::cmp::Ordering::Greater,
+        (_, LexicalContributionKey::Active(_)) => std::cmp::Ordering::Less,
+    });
     let assembly = LexicalAssembly {
         index,
         alive_sets,
         sources,
+        contributions,
         vocabulary: Mutex::new(None),
         memory: stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
             .map_err(LexicalAssemblyError::Store)?,
     };
     let owned_bytes =
         assembly
-            .owned_bytes(owned_alive_bytes)
+            .owned_bytes()
             .ok_or(LexicalAssemblyError::Store(StoreError::BudgetExceeded {
                 needed: u64::MAX,
                 budget: u64::MAX,
@@ -7236,6 +7392,9 @@ impl Drop for Store {
         self.close_best_effort();
     }
 }
+
+#[cfg(test)]
+mod lexical_assembly_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]

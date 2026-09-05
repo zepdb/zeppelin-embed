@@ -391,3 +391,21 @@ boundary-floor plant fire. See astra-03 evidence and regression-receipts.json.
   General measurement correction; no FiQA-specific runtime tuning. Future
   benchmark binaries must record their feature graph and separate work-counter
   builds from production-feature latency controls.
+
+### ASTRA-ISSUE-018: stats rejects a retained old active generation
+
+- During Step 16's deterministic old/new query lifetime test, `Store::stats`
+  fails with `Statistics { component: "active segment accounting" }` after
+  active append while an older admitted query still owns the previous active
+  buffers. `stats_while_open` compares all charged active bytes against only
+  the current active segment. That code is unchanged from parent 7d0f9ef.
+  Evidence: `tasks/evidence/astra-16-raw/lifetime-diagnosis.log`, one failed
+  test; the initial barrier probe required termination because assertion failure
+  did not release its peer, then a release-on-unwind guard exposed the error.
+- Nonblocking for contribution-cache correctness: the internal accounting
+  audit still covers both generations. The cache lifetime probe uses those
+  exact counters directly. This prevents relying on public stats during this
+  overlap; it does not justify dropping old-generation reservations.
+- Follow-up: make stats distinguish current active ownership from retired
+  active generations retained by queries, with independent lifetime/accounting
+  tests. No unrelated stats repair is included in Step 16.

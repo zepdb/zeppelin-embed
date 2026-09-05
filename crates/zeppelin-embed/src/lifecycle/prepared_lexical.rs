@@ -357,6 +357,7 @@ mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
         let inputs = LexicalInputs {
+            generation: admitted.generation,
             cache: &store.lexical_index_cache,
             snapshot: &admitted.snapshot,
             active: &admitted.active_segment,

@@ -13,6 +13,7 @@ struct Counts {
     structured_retained_rows: AtomicUsize,
     structured_bound_terms: AtomicUsize,
     corpus_statistics: AtomicUsize,
+    live_statistics_rows: AtomicUsize,
     phrase_reanalyses: AtomicUsize,
     phrase_text_bytes: AtomicUsize,
     phrase_positions: AtomicUsize,
@@ -193,6 +194,26 @@ pub(crate) fn phonetic_bucket(count: usize) {
         if let Some(o) = current.borrow().as_ref() {
             o.0.phonetic_bucket_terms
                 .fetch_add(count, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Rows whose lengths were read to build live lexical counters.
+pub fn live_statistics_rows() -> usize {
+    CURRENT.with(|current| {
+        current.borrow().as_ref().map_or(0, |observer| {
+            observer.0.live_statistics_rows.load(Ordering::Relaxed)
+        })
+    })
+}
+
+pub(crate) fn live_statistics_row() {
+    CURRENT.with(|current| {
+        if let Some(observer) = current.borrow().as_ref() {
+            observer
+                .0
+                .live_statistics_rows
+                .fetch_add(1, Ordering::Relaxed);
         }
     });
 }

@@ -1,0 +1,46 @@
+{
+  "head": "7d0f9efd9d7fab2cbd507665c7e8384cfb39d51f",
+  "parent_source": "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra16-37c1tlg6/parent",
+  "scratch": "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra16-37c1tlg6",
+  "files": {
+    "crates/zeppelin-embed-bench/examples/lexical-assembly-cost.rs": {
+      "before": "9ebadf1ca44c87ebe3cb844e6fe50c67cd21b87e497917fbb7e991ea0d02fc0a",
+      "after": "9ebadf1ca44c87ebe3cb844e6fe50c67cd21b87e497917fbb7e991ea0d02fc0a"
+    },
+    "crates/zeppelin-embed/src/fts/index.rs": {
+      "before": "5a891e74d3dbd9bc9033f21b87a18be938e126b51bd29a932feb1dadf98639a6",
+      "after": "4d753672e5671a1f11c144bc3491da8ffe18418a0f86e1fd2d605244a5f5c5bc"
+    },
+    "crates/zeppelin-embed/src/fts/preparation_observer.rs": {
+      "before": "1b77919a20c113f263406941885b58600a38b6bbb444289c66caeb30d9d41487",
+      "after": "618acf7e8d0cfb8a060551dbc3584ed19f2ea85f13ab0a530a9ba3056c9c5b82"
+    },
+    "crates/zeppelin-embed/src/lifecycle/lexical_assembly_tests.rs": {
+      "before": null,
+      "after": "9ee263168a7fc1234515e803e281dc5faf90de625ebfb0fa2e85acc7acb6bea7"
+    },
+    "crates/zeppelin-embed/src/lifecycle/mod.rs": {
+      "before": "27e238db7035a6f2ce0b093be05f810460dac215526e843eb7158a15cb2441da",
+      "after": "30ba7100b141b1324054b4c4dc485b84443732f461025d0d3d09aa6438e36471"
+    },
+    "crates/zeppelin-embed/src/lifecycle/prepared_lexical.rs": {
+      "before": "d5f54285e3bfefa37bb7642a11c3496d419cf198b43f66f4eff5f6b25495c6b0",
+      "after": "ab5e3ce493f4e945885ecccc91c8fe0192a8f320a0e3e05a430fb0f5a1cf1805"
+    },
+    "crates/zeppelin-embed/src/segment/reader.rs": {
+      "before": "7a948aff54c65e6dace9c377e0615ceada429c5110b4869d267c04339d83d606",
+      "after": "f23b356d63f9e9e0e9ffd9efef243db60ee811aba6b6481bd51a910f280a0323"
+    },
+    "crates/zeppelin-embed/tests/lexical_stats_consistency.rs": {
+      "before": "be84923b5e362ec1ac7c45e47c5e24e1909ff253de82a6cb747315429926177b",
+      "after": "c894d3de172efa94bfb1383e8466af30d841040d585895b997f9c26904a7385a"
+    },
+    "tasks/astra-updates/ISSUES.md": {
+      "before": "042fe76678f61601372aff8e1989b84a34872b9f234f2955346f6ad998c8612c",
+      "after": "a7e491b18b60ea50c9e9d7583901ab373dd0092f8270be3cacb7c464019115a5"
+    }
+  },
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)\nbinary: rustc\ncommit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c\ncommit-date: 2026-01-19\nhost: aarch64-apple-darwin\nrelease: 1.93.0\nLLVM version: 21.1.8\n",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5388g\n",
+  "hardware": "Mac15,9\nApple M3 Max\n137438953472\n"
+}

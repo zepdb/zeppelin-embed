@@ -11,6 +11,260 @@ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 
 const REMOVED: DocId = DocId::new(1);
 
+fn astra_16_ingest(store: &Store, id: u128, text: &str) {
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(text),
+        ]))
+        .expect("ingest");
+}
+
+fn astra_16_absent_query(store: &Store) {
+    let answer = store
+        .search_lexical(
+            &TermQuery::flat(vec![b"absent".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query");
+    assert!(answer.candidates.is_empty());
+}
+
+#[test]
+fn astra_16_active_ingest_reuses_unchanged_sealed_lexical_statistics() {
+    use zeppelin_embed::meta::bitmap_observer as observer;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (1..=2048)
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                    .with_text("present pair")
+                })
+                .collect(),
+        ))
+        .expect("sealed corpus");
+    store.seal().expect("seal");
+    astra_16_absent_query(&store);
+    astra_16_ingest(&store, 3000, "active present");
+    observer::begin();
+    astra_16_absent_query(&store);
+    let work = observer::take();
+    assert_eq!(
+        work.rows, 2,
+        "unchanged sealed rows must not be walked again: {work:?}"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_16_alive_change_invalidates_only_affected_contribution() {
+    use zeppelin_embed::meta::bitmap_observer as observer;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    for (start, count) in [(1, 32), (100, 17)] {
+        store
+            .ingest(IngestBatch::new(
+                (start..start + count)
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0, 0.0],
+                        )
+                        .with_text("present pair")
+                    })
+                    .collect(),
+            ))
+            .expect("batch");
+        store.seal().expect("seal");
+    }
+    astra_16_absent_query(&store);
+    let before = store.lexical_contribution_cache_counters();
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(1)]))
+        .expect("delete");
+    observer::begin();
+    zeppelin_embed::fts::preparation_observer::begin();
+    astra_16_absent_query(&store);
+    let work = observer::take();
+    let after = store.lexical_contribution_cache_counters();
+    assert_eq!(
+        after.0 - before.0,
+        1,
+        "unchanged second contribution reused"
+    );
+    assert_eq!(
+        after.1 - before.1,
+        1,
+        "only tombstoned contribution rebuilt"
+    );
+    let statistics_rows = zeppelin_embed::fts::preparation_observer::live_statistics_rows();
+    zeppelin_embed::fts::preparation_observer::take();
+    assert_eq!(
+        statistics_rows, 31,
+        "only affected live counters walk: {work:?}"
+    );
+    let stats = store.lexical_corpus_stats().expect("uncached stats");
+    assert_eq!((stats.document_count(), stats.total_tokens()), (48, 96));
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_16_cached_global_stats_match_exhaustive_live_model() {
+    fn check(store: &Store, model: &[(u128, &str)]) {
+        use zeppelin_embed::fts::{
+            bm25::Bm25Params,
+            index::{Document, LexicalIndex, SegmentIndex},
+            search::search,
+            tokenizer::{Analyzer, TokenizerConfig},
+        };
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+        let mut reference = SegmentIndex::new();
+        for (_, text) in model {
+            reference
+                .push_document(&analyzer, &Document::with_text(text))
+                .expect("reference row");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(reference).expect("reference seal");
+        let query = TermQuery::flat(vec![b"common".to_vec()], &[DEFAULT_FIELD]);
+        let exhaustive =
+            search(&index, &query, usize::MAX, Bm25Params::default()).expect("uncached exhaustive");
+        let mut expected = exhaustive
+            .hits
+            .into_iter()
+            .map(|h| {
+                (
+                    DocId::new(model.get(h.doc.row as usize).expect("reference id").0),
+                    h.score.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut actual = query_scores(store)
+            .into_iter()
+            .map(|(id, score)| (id, score.to_bits()))
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "cached scores and identities match fresh exhaustive index"
+        );
+        // Independent literal live corpus and BM25 equation, not production stats.
+        let n = model.len() as f64;
+        let lengths = model
+            .iter()
+            .map(|(_, text)| text.split_whitespace().count())
+            .collect::<Vec<_>>();
+        let tokens: usize = lengths.iter().sum();
+        let df = model
+            .iter()
+            .filter(|(_, text)| text.split_whitespace().any(|t| t == "common"))
+            .count() as f64;
+        let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+        for (id, text) in model {
+            let tf = text.split_whitespace().filter(|t| *t == "common").count() as f64;
+            if tf == 0.0 {
+                continue;
+            }
+            let len = text.split_whitespace().count() as f64;
+            let expected =
+                idf * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * len / (tokens as f64 / n)));
+            let actual = actual
+                .iter()
+                .find(|(doc, _)| doc.get() == *id)
+                .expect("literal match");
+            assert!((f64::from_bits(actual.1) - expected).abs() < 1e-12);
+        }
+        let stats = store.lexical_corpus_stats().expect("uncached global stats");
+        assert_eq!(
+            (stats.document_count(), stats.total_tokens()),
+            (model.len() as u64, tokens as u64)
+        );
+    }
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let mut model = vec![(1, "common red"), (2, "common common blue"), (3, "other")];
+    for (id, text) in &model {
+        astra_16_ingest(&store, *id, text);
+    }
+    store.seal().expect("first seal");
+    check(&store, &model);
+    astra_16_ingest(&store, 4, "common green green green");
+    model.push((4, "common green green green"));
+    check(&store, &model);
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2), Revision::new(2)),
+                vec![1.0, 0.0],
+            )
+            .with_text("common changed"),
+        ]))
+        .expect("replace sealed id");
+    model
+        .iter_mut()
+        .find(|(id, _)| *id == 2)
+        .expect("model row")
+        .1 = "common changed";
+    check(&store, &model);
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(1)]))
+        .expect("delete");
+    model.retain(|(id, _)| *id != 1);
+    check(&store, &model);
+    store.seal().expect("second seal");
+    check(&store, &model);
+    let token = store.purge(&[DocId::new(1)]).expect("purge");
+    store.await_physical_purge(token).expect("purge complete");
+    check(&store, &model);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_16_retention_reuses_survivor_with_new_source_ordinal() {
+    use zeppelin_embed::fts::preparation_observer as observer;
+    use zeppelin_embed::ingest::RetentionPolicy;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    for (id, timestamp) in [(1, 0), (2, 25)] {
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_timestamp(timestamp)
+                .with_text("common pair"),
+            ]))
+            .expect("ingest");
+        store.seal().expect("seal");
+    }
+    assert_eq!(query_scores(&store).len(), 2);
+    let before = store.lexical_contribution_cache_counters();
+    store
+        .apply_retention(RetentionPolicy::new(10).expect("window"), 30)
+        .expect("retention");
+    observer::begin();
+    let results = query_scores(&store);
+    assert_eq!(observer::live_statistics_rows(), 0);
+    observer::take();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.first().expect("survivor").0, DocId::new(2));
+    assert!((results.first().expect("score").1 - (1.0_f64 + 0.5 / 1.5).ln()).abs() < 1e-12);
+    let after = store.lexical_contribution_cache_counters();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+    store.close().expect("close");
+}
+
 #[test]
 fn astra_15_allow_list_validation_does_not_visit_every_valid_row() {
     use zeppelin_embed::fts::{

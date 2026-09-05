@@ -1,0 +1,105 @@
+[
+  {
+    "name": "final-unit",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "astra_16_"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "final-public",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "lexical_stats_consistency",
+      "astra_16_"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "assembly-lifetime-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "astra_03_lexical_assembly_charge_survives_cache_eviction"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "vocabulary-lifetime-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "astra_12_vocabulary_charge_survives_eviction_and_close"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "preparation-binding-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "astra_09_lexical_preparation_refuses_foreign_bindings_and_releases_failed_budget"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "cache-public-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "store_text_columns",
+      "lexical_index_cache_follows_the_active_segment_and_the_snapshot",
+      "--",
+      "--exact"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "field-union-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "fts::index::tests::a_term_in_two_fields_of_one_document_counts_once",
+      "--",
+      "--exact"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "--test",
+      "lexical_stats_consistency"
+    ],
+    "exit_code": 0
+  }
+]

@@ -565,14 +565,39 @@ impl SegmentIndex {
 #[derive(Clone, Debug, Default)]
 pub struct LexicalIndex {
     segments: Vec<Arc<SealedSegment>>,
-    live_counters: Vec<LiveSegmentCounters>,
-    live_rows: Vec<DocBitmap>,
+    statistics: Vec<Arc<LiveSegmentStatistics>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct LiveSegmentCounters {
     documents: u64,
     tokens: u64,
+}
+
+/// Validated live membership and counters, independent of source ordinal.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveSegmentStatistics {
+    pub(crate) rows: DocBitmap,
+    counters: LiveSegmentCounters,
+}
+
+impl LiveSegmentStatistics {
+    pub(crate) fn build(
+        ordinal: usize,
+        segment: &SealedSegment,
+        rows: &DocBitmap,
+    ) -> Result<Self, IndexError> {
+        Ok(Self {
+            counters: live_segment_counters(ordinal, segment, rows)?,
+            rows: rows.clone(),
+        })
+    }
+
+    pub(crate) fn allocation_bytes(rows: &DocBitmap) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(2 * std::mem::size_of::<usize>())?
+            .checked_add(rows.resident_bytes()?)
+    }
 }
 
 impl LexicalIndex {
@@ -601,11 +626,13 @@ impl LexicalIndex {
     }
 
     fn push_shared(&mut self, segment: Arc<SealedSegment>) {
-        self.live_rows.push(DocBitmap::full(segment.row_count()));
-        self.live_counters.push(LiveSegmentCounters {
-            documents: u64::from(segment.row_count()),
-            tokens: segment.total_tokens(),
-        });
+        self.statistics.push(Arc::new(LiveSegmentStatistics {
+            rows: DocBitmap::full(segment.row_count()),
+            counters: LiveSegmentCounters {
+                documents: u64::from(segment.row_count()),
+                tokens: segment.total_tokens(),
+            },
+        }));
         self.segments.push(segment);
     }
 
@@ -634,12 +661,24 @@ impl LexicalIndex {
         segment: Arc<SealedSegment>,
         live_rows: &DocBitmap,
     ) -> Result<(), IndexError> {
-        let ordinal = self.segments.len();
-        let counters = live_segment_counters(ordinal, &segment, live_rows)?;
-        self.segments.push(segment);
-        self.live_counters.push(counters);
-        self.live_rows.push(live_rows.clone());
+        let statistics = Arc::new(LiveSegmentStatistics::build(
+            self.segments.len(),
+            &segment,
+            live_rows,
+        )?);
+        self.push_shared_with_statistics(segment, statistics);
         Ok(())
+    }
+
+    /// Only a validated contribution can enter this path; callers cannot supply
+    /// independent counters or change the membership behind the shared value.
+    pub(crate) fn push_shared_with_statistics(
+        &mut self,
+        segment: Arc<SealedSegment>,
+        statistics: Arc<LiveSegmentStatistics>,
+    ) {
+        self.segments.push(segment);
+        self.statistics.push(statistics);
     }
 
     /// Returns the segments in seal order.
@@ -648,33 +687,17 @@ impl LexicalIndex {
         &self.segments
     }
 
-    /// Returns the bytes this index owns outright, or `None` on overflow.
-    ///
-    /// The segment handles are `Arc` clones of postings that were decoded and
-    /// charged by whoever owns the cache they came from, so only the pointer
-    /// array counts for them. The live-row bitmaps are clones this index
-    /// made, so they count in full. Callers that retain an index past a
-    /// single query use this to charge what retaining it costs.
-    pub(crate) fn resident_bytes(&self) -> Option<usize> {
-        let segments = self
-            .segments
+    /// Bytes for the index spines. Cached contributions own and account their
+    /// shared membership/counters separately for the full Arc lifetime.
+    pub(crate) fn resident_spine_bytes(&self) -> Option<usize> {
+        self.segments
             .capacity()
-            .checked_mul(std::mem::size_of::<Arc<SealedSegment>>())?;
-        let counters = self
-            .live_counters
-            .capacity()
-            .checked_mul(std::mem::size_of::<LiveSegmentCounters>())?;
-        let spine = self
-            .live_rows
-            .capacity()
-            .checked_mul(std::mem::size_of::<DocBitmap>())?;
-        let bitmaps = self.live_rows.iter().try_fold(0_usize, |total, rows| {
-            total.checked_add(rows.resident_bytes()?)
-        })?;
-        segments
-            .checked_add(counters)?
-            .checked_add(spine)?
-            .checked_add(bitmaps)
+            .checked_mul(std::mem::size_of::<Arc<SealedSegment>>())?
+            .checked_add(
+                self.statistics
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Arc<LiveSegmentStatistics>>())?,
+            )
     }
 
     /// Iterates the analyzed vocabulary of every segment.
@@ -694,18 +717,18 @@ impl LexicalIndex {
     /// Returns the store-wide document count.
     #[must_use]
     pub fn document_count(&self) -> u64 {
-        self.live_counters
+        self.statistics
             .iter()
-            .map(|counters| counters.documents)
+            .map(|statistics| statistics.counters.documents)
             .fold(0_u64, u64::saturating_add)
     }
 
     /// Returns the store-wide analyzed token count.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.live_counters
+        self.statistics
             .iter()
-            .map(|counters| counters.tokens)
+            .map(|statistics| statistics.counters.tokens)
             .fold(0_u64, u64::saturating_add)
     }
 
@@ -741,8 +764,9 @@ impl LexicalIndex {
         super::preparation_observer::frequency();
         self.segments
             .iter()
-            .zip(&self.live_rows)
-            .map(|(segment, live_rows)| {
+            .zip(&self.statistics)
+            .map(|(segment, statistics)| {
+                let live_rows = &statistics.rows;
                 if live_rows.cardinality() == u64::from(segment.row_count()) {
                     segment.document_frequency(term, fields)
                 } else {
@@ -767,6 +791,8 @@ fn live_segment_counters(
     }
     let tokens =
         live_rows.iter().try_fold(0_u64, |total, row| {
+            #[cfg(any(test, feature = "test-support"))]
+            super::preparation_observer::live_statistics_row();
             let slot = usize::try_from(row).map_err(|_| IndexError::LiveLengthMissing {
                 segment: ordinal,
                 row,

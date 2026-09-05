@@ -1,0 +1,383 @@
+{
+  "table": [
+    {
+      "rows": 8192,
+      "segments": 1,
+      "metric": "warm_us",
+      "before": {
+        "p50_us": 0.5,
+        "p95_us": 0.5,
+        "process_p50_us": [
+          0.5,
+          0.5,
+          0.459
+        ],
+        "process_p95_us": [
+          0.5419999999999999,
+          0.5,
+          0.5
+        ]
+      },
+      "after": {
+        "p50_us": 0.541,
+        "p95_us": 0.5419999999999999,
+        "process_p50_us": [
+          0.541,
+          0.5,
+          0.541
+        ],
+        "process_p95_us": [
+          0.5419999999999999,
+          0.541,
+          0.5840000000000001
+        ]
+      },
+      "p95_delta_us": 0.041999999999999926,
+      "p95_change_percent": 8.399999999999984
+    },
+    {
+      "rows": 8192,
+      "segments": 1,
+      "metric": "setup_us",
+      "before": {
+        "p50_us": 27.25,
+        "p95_us": 28.541,
+        "process_p50_us": [
+          26.875,
+          27.25,
+          27.375
+        ],
+        "process_p95_us": [
+          28.084,
+          28.541,
+          28.958
+        ]
+      },
+      "after": {
+        "p50_us": 10.417,
+        "p95_us": 11.458,
+        "process_p50_us": [
+          10.417,
+          10.417,
+          10.583
+        ],
+        "process_p95_us": [
+          11.375,
+          11.541,
+          11.458
+        ]
+      },
+      "p95_delta_us": -17.083,
+      "p95_change_percent": -59.85424477068078
+    },
+    {
+      "rows": 8192,
+      "segments": 1,
+      "metric": "present_us",
+      "before": {
+        "p50_us": 2.334,
+        "p95_us": 2.8329999999999997,
+        "process_p50_us": [
+          2.292,
+          2.334,
+          2.375
+        ],
+        "process_p95_us": [
+          2.8329999999999997,
+          2.7920000000000003,
+          2.834
+        ]
+      },
+      "after": {
+        "p50_us": 2.334,
+        "p95_us": 2.75,
+        "process_p50_us": [
+          2.459,
+          2.3329999999999997,
+          2.334
+        ],
+        "process_p95_us": [
+          2.75,
+          2.708,
+          2.7920000000000003
+        ]
+      },
+      "p95_delta_us": -0.08299999999999974,
+      "p95_change_percent": -2.929756441934339
+    },
+    {
+      "rows": 8192,
+      "segments": 8,
+      "metric": "warm_us",
+      "before": {
+        "p50_us": 0.667,
+        "p95_us": 0.709,
+        "process_p50_us": [
+          0.6659999999999999,
+          0.667,
+          0.667
+        ],
+        "process_p95_us": [
+          0.667,
+          0.709,
+          0.75
+        ]
+      },
+      "after": {
+        "p50_us": 0.7080000000000001,
+        "p95_us": 0.75,
+        "process_p50_us": [
+          0.667,
+          0.7080000000000001,
+          0.7080000000000001
+        ],
+        "process_p95_us": [
+          0.7080000000000001,
+          0.792,
+          0.75
+        ]
+      },
+      "p95_delta_us": 0.041000000000000036,
+      "p95_change_percent": 5.782792665726388
+    },
+    {
+      "rows": 8192,
+      "segments": 8,
+      "metric": "setup_us",
+      "before": {
+        "p50_us": 23.042,
+        "p95_us": 23.708000000000002,
+        "process_p50_us": [
+          23.0,
+          23.083,
+          23.042
+        ],
+        "process_p95_us": [
+          23.666999999999998,
+          23.958,
+          23.708000000000002
+        ]
+      },
+      "after": {
+        "p50_us": 5.208,
+        "p95_us": 5.875,
+        "process_p50_us": [
+          5.25,
+          5.208,
+          5.084
+        ],
+        "process_p95_us": [
+          5.9159999999999995,
+          5.875,
+          5.792
+        ]
+      },
+      "p95_delta_us": -17.833000000000002,
+      "p95_change_percent": -75.21933524548676
+    },
+    {
+      "rows": 8192,
+      "segments": 8,
+      "metric": "present_us",
+      "before": {
+        "p50_us": 4.041,
+        "p95_us": 4.417,
+        "process_p50_us": [
+          4.041,
+          4.0,
+          4.041
+        ],
+        "process_p95_us": [
+          4.458,
+          4.4159999999999995,
+          4.417
+        ]
+      },
+      "after": {
+        "p50_us": 4.042,
+        "p95_us": 4.458,
+        "process_p50_us": [
+          4.042,
+          4.0840000000000005,
+          4.042
+        ],
+        "process_p95_us": [
+          4.458,
+          4.5,
+          4.375
+        ]
+      },
+      "p95_delta_us": 0.04100000000000037,
+      "p95_change_percent": 0.9282318315599003
+    },
+    {
+      "rows": 65536,
+      "segments": 1,
+      "metric": "warm_us",
+      "before": {
+        "p50_us": 0.20800000000000002,
+        "p95_us": 0.20900000000000002,
+        "process_p50_us": [
+          0.20800000000000002,
+          0.20900000000000002,
+          0.20800000000000002
+        ],
+        "process_p95_us": [
+          0.20900000000000002,
+          0.25,
+          0.20900000000000002
+        ]
+      },
+      "after": {
+        "p50_us": 0.20800000000000002,
+        "p95_us": 0.25,
+        "process_p50_us": [
+          0.20800000000000002,
+          0.25,
+          0.20800000000000002
+        ],
+        "process_p95_us": [
+          0.25,
+          0.29200000000000004,
+          0.25
+        ]
+      },
+      "p95_delta_us": 0.04099999999999998,
+      "p95_change_percent": 19.617224880382757
+    },
+    {
+      "rows": 65536,
+      "segments": 1,
+      "metric": "setup_us",
+      "before": {
+        "p50_us": 181.458,
+        "p95_us": 191.792,
+        "process_p50_us": [
+          181.458,
+          181.083,
+          185.167
+        ],
+        "process_p95_us": [
+          191.792,
+          183.25,
+          196.875
+        ]
+      },
+      "after": {
+        "p50_us": 53.291999999999994,
+        "p95_us": 54.125,
+        "process_p50_us": [
+          53.291999999999994,
+          53.333,
+          53.25
+        ],
+        "process_p95_us": [
+          54.125,
+          54.125,
+          54.041
+        ]
+      },
+      "p95_delta_us": -137.667,
+      "p95_change_percent": -71.77932343371987
+    },
+    {
+      "rows": 65536,
+      "segments": 1,
+      "metric": "present_us",
+      "before": {
+        "p50_us": 2.084,
+        "p95_us": 2.5,
+        "process_p50_us": [
+          2.084,
+          2.125,
+          2.084
+        ],
+        "process_p95_us": [
+          2.459,
+          2.5,
+          2.6670000000000003
+        ]
+      },
+      "after": {
+        "p50_us": 2.0829999999999997,
+        "p95_us": 2.459,
+        "process_p50_us": [
+          2.0829999999999997,
+          2.0829999999999997,
+          2.125
+        ],
+        "process_p95_us": [
+          2.459,
+          2.583,
+          2.417
+        ]
+      },
+      "p95_delta_us": -0.040999999999999925,
+      "p95_change_percent": -1.639999999999997
+    }
+  ],
+  "cache_bytes": [
+    {
+      "rows": 8192,
+      "segments": 1,
+      "before": {
+        "initial_cache_bytes": 66024,
+        "final_cache_bytes": 66496,
+        "peak_sampled_cache_bytes": 66496
+      },
+      "after": {
+        "initial_cache_bytes": 66136,
+        "final_cache_bytes": 66816,
+        "peak_sampled_cache_bytes": 66816
+      }
+    },
+    {
+      "rows": 8192,
+      "segments": 8,
+      "before": {
+        "initial_cache_bytes": 17384,
+        "final_cache_bytes": 18432,
+        "peak_sampled_cache_bytes": 18432
+      },
+      "after": {
+        "initial_cache_bytes": 18856,
+        "final_cache_bytes": 19920,
+        "peak_sampled_cache_bytes": 19920
+      }
+    },
+    {
+      "rows": 65536,
+      "segments": 1,
+      "before": {
+        "initial_cache_bytes": 66024,
+        "final_cache_bytes": 66496,
+        "peak_sampled_cache_bytes": 66496
+      },
+      "after": {
+        "initial_cache_bytes": 66136,
+        "final_cache_bytes": 66816,
+        "peak_sampled_cache_bytes": 66816
+      }
+    }
+  ],
+  "exact_scored_hits_checked": 11520,
+  "timed_calls": 4608,
+  "process_memory": {
+    "before": {
+      "rss_process_bytes": [
+        76054528,
+        71745536,
+        75546624
+      ],
+      "median_rss_bytes": 75546624
+    },
+    "after": {
+      "rss_process_bytes": [
+        77987840,
+        73957376,
+        73957376
+      ],
+      "median_rss_bytes": 73957376
+    }
+  }
+}

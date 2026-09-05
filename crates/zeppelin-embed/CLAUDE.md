@@ -578,3 +578,14 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   identity is a typed error, never a dropped candidate. The existing fusion
   module remains the sole owner of normalization, alpha policy, RRF fallback,
   termination, and `FusionReport`.
+
+## Astra 16 lexical contribution cache
+
+- Reuse sealed live statistics only for the same immutable file metadata,
+  verified postings length/checksum and exact live membership. Publication
+  remaps reader objects; current reader validation must precede cache reuse.
+- Rebuild source ordinals from the pinned snapshot. Cached contributions never
+  carry ordinals from a retired assembly. Active keys are exact Weak identities.
+- Contribution reservations belong to their Arc lifetime, including evicted
+  values held by old queries. Serialize builders and refuse stale-generation
+  replacement; do not drop a live reservation to satisfy the next admission.

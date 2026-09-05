@@ -25,7 +25,7 @@ block the current plan or a trustworthy required comparison.
 | [13](13-bounded-fuzzy/plan.md) | Implemented, bfc2945 | Length/scratch RED to GREEN; five focused release tests and seven vocabulary/public regressions pass | [Evidence](../evidence/astra-13-bounded-fuzzy.md): same-length near expansion p95 -89.08%; Store fuzzy -48.62%, hybrid -39.22%; 2610 exact core payloads and 1152 unchanged native controls | Cache +65,576 bytes; prefix initial/update overhead extends issue 015 |
 | [14](14-phonetic-index/plan.md) | Implemented, 2ca47fc | Warm-encoding RED to GREEN; five release tests, public/reuse controls and actual reservation plant pass | [Evidence](../evidence/astra-14-phonetic-index.md): Store rare phonetic p95 -97.87%, hybrid -85.81%; warm encodes 4100 -> 1; 3480 exact core payloads and 1152 unchanged native results/work | Cache +65,664 bytes; collision p95 +1.18%, cold/update tradeoff extends 015; unrelated formatting 016 |
 | [15](15-bitmap-validation/plan.md) | Implemented, 818a433 | Two executed work REDs to GREEN; six focused tests; exact first-invalid/error order and BM25 controls pass | [Evidence](../evidence/astra-15-bitmap-validation.md): 58,980-row setup p95 178.042 -> 0.125 us; assembly 343.750 -> 178.459 us; six uninstrumented processes, 240 exact scored control hits | Core setup only; unchanged memory layout, no new cache; pause lifted by user |
-| [16](16-incremental-lexical-assembly/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
+| [16](16-incremental-lexical-assembly/plan.md) | Implemented; commit pending | Actual row-walk RED to GREEN; seven focused and six affected cases pass; memory/stale plants fire | [Evidence](../evidence/astra-16-lexical-assembly.md): post-update core setup p95 -59.85% to -75.22%, zero unchanged sealed statistics walks; 11,520 identical scored hits | Warm absent p95 +0.041-0.042 us; cache +320/+1,488 bytes; issue 018 logged; native checkpoint after 17 |
 | [17](17-live-document-frequency/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [18](18-query-cancellation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [19](19-embedding-lexical-overlap/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
@@ -133,3 +133,10 @@ The default clean71 graph is published, but refinement/comparison is pending
 at a preserved checkpoint. This is not a qualified graph result. The completed
 diagnostics and pending status are committed before resuming Step 16. Plans
 16-33 remain uncompleted until their individual contracts are met.
+
+Step 16 retains immutable contribution sharing after public-path RED/GREEN,
+13 distinct focused/regression cases, two firing fault plants and six matched
+normal-feature core processes. Post-update setup p95 improves 59.85-75.22%;
+warm absent p95 rises one approximate timer tick and remains an explicit
+negative result. Step 17 is next; native TextStore confirmation belongs to its
+shared integration checkpoint. Step 16 commit is pending until Git succeeds.

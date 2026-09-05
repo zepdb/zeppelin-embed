@@ -1287,6 +1287,13 @@ impl SegmentReader {
         Ok(Some(postings))
     }
 
+    /// Directory identity for already verified lexical payloads. A remapped
+    /// reader may reuse statistics only after its normal postings validation.
+    pub(crate) fn lexical_postings_identity(&self) -> Result<(u64, u64), SegmentError> {
+        let entry = self.entry(RegionKind::Postings)?;
+        Ok((entry.length, entry.checksum))
+    }
+
     pub(crate) fn query_postings(
         &self,
     ) -> Result<Option<Arc<crate::fts::sealed::SealedSegment>>, crate::lifecycle::StoreError> {
