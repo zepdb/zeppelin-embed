@@ -30,7 +30,7 @@ pub use ingest::{
     ChunkPolicy, IngestControl, IngestOptions, TextDocument, TextFaultSite, TextIngestReport,
     TextOpenOptions, TextStore,
 };
-pub use query::{Legs, QueryOptions, TextHit};
+pub use query::{Legs, QueryBackend, QueryOptions, TextHit, TextQueryOutcome, TextQueryTimings};
 pub use zeppelin_embed::lifecycle::SearchTier;
 pub use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceReport, MaintenanceStatus, SegmentTier,

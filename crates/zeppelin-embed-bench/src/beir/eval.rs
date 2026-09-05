@@ -18,7 +18,7 @@
 //! Task 13 R2 says to validate this against a hand-computed fixture before
 //! the gate means anything. `tests/beir_eval.rs` is that fixture.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A judged relevance grade for one (query, document) pair.
 pub type Grade = u32;
@@ -52,7 +52,12 @@ pub fn dcg_at_k(grades: &[Grade], k: usize) -> f64 {
         .sum()
 }
 
-/// Returns nDCG@k for one query.
+/// Returns nDCG@k over unique retrieved document IDs for one query.
+///
+/// The first occurrence establishes each document's rank. Repeated chunks of
+/// that document neither earn another gain nor occupy another parent rank.
+/// Fewer than `k` distinct retrieved IDs remain fewer than `k` results; this
+/// evaluator does not retrieve additional parents to fill the list.
 ///
 /// Returns `None` when the query has no positive judgement, which is the
 /// signal to skip it rather than to score it zero.
@@ -72,8 +77,10 @@ pub fn ndcg_at_k_for_query(
         return None;
     }
 
+    let mut seen = BTreeSet::new();
     let retrieved: Vec<Grade> = ranked
         .iter()
+        .filter(|entry| seen.insert(entry.doc_id.as_str()))
         .take(k)
         .map(|entry| judgements.get(&entry.doc_id).copied().unwrap_or(0))
         .collect();

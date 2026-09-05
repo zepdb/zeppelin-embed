@@ -245,3 +245,21 @@ fn a_malformed_qrels_row_is_a_typed_error_not_a_silent_skip() {
     assert!(parse_qrels("q1\td1\t2\nq1\td2\tnope\n", path).is_err());
     assert!(parse_qrels("q1\td1\n", path).is_err());
 }
+
+#[test]
+fn astra_00_duplicate_parent_receives_gain_once() {
+    // Parent ranks are a, unjudged, b after first-occurrence deduplication.
+    // DCG = 2/1 + 0/log2(3) + 1/2 = 2.5.
+    // IDCG = 2 + 1/log2(3) = 2.6309297535714578.
+    let judged = judgements(&[("a", 2), ("b", 1)]);
+    close(
+        ndcg_at_k_for_query(&ranked(&["a", "a", "unjudged", "b"]), &judged, 10).expect("judged"),
+        0.950_234_416_789_835_6,
+        "a duplicate chunk cannot earn its parent a second gain",
+    );
+    close(
+        ndcg_at_k_for_query(&ranked(&["a", "a", "a"]), &judged, 10).expect("judged"),
+        0.760_187_533_431_868_5,
+        "three chunks still retrieve only one of two relevant parents",
+    );
+}

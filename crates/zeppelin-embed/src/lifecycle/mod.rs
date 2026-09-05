@@ -14,6 +14,7 @@ mod shared_bound_tests;
 mod snapshot;
 pub(crate) mod stats;
 
+use crate::diag::{timing_elapsed, timing_start};
 pub use cancel::{
     CancelToken, Deadline, DeadlineError, QueryCancellation, QueryControl, QueryError,
 };
@@ -3088,13 +3089,16 @@ impl Store {
         control: QueryControl,
     ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
         let control = control.with_clock(Arc::clone(&self.clock));
-        let started = std::time::Instant::now();
+        let started = self.clock.now();
+        let admission_started = timing_start(self.clock.as_ref());
         let AdmittedLexicalQuery {
             generation,
             active,
             snapshot,
             active_query,
         } = self.admit_lexical_query()?;
+        let admission_time = timing_elapsed(self.clock.as_ref(), admission_started);
+        let lexical_started = timing_start(self.clock.as_ref());
 
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
@@ -3135,16 +3139,25 @@ impl Store {
                 score: hit.score,
             });
         }
-        let diagnostics = crate::diag::QueryDiagnostics::lexical(crate::diag::LexicalDiagnostics {
-            snapshot_generation: generation,
-            indexed_through_seq: active
-                .indexed_through_seq()
-                .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
-            requested_k: k,
-            returned: candidates.len(),
-            counters: lexical.result.counters,
-            elapsed: started.elapsed(),
-        });
+        let mut diagnostics =
+            crate::diag::QueryDiagnostics::lexical(crate::diag::LexicalDiagnostics {
+                snapshot_generation: generation,
+                indexed_through_seq: active
+                    .indexed_through_seq()
+                    .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
+                requested_k: k,
+                returned: candidates.len(),
+                counters: lexical.result.counters,
+                elapsed: self.clock.now().saturating_duration_since(started),
+            });
+        diagnostics.counters.lexical_cache_hits = usize::from(assembly.cache_hit);
+        diagnostics.counters.lexical_cache_builds = usize::from(!assembly.cache_hit);
+        diagnostics.timings =
+            crate::diag::QUERY_TIMING_ENABLED.then(|| crate::diag::QueryTimings {
+                admission: admission_time,
+                lexical: timing_elapsed(self.clock.as_ref(), lexical_started),
+                ..Default::default()
+            });
         drop(active_query);
         Ok(crate::ingest::StoreLexicalSearchOutcome {
             candidates,
@@ -3208,13 +3221,16 @@ impl Store {
     ) -> Result<crate::ingest::StoreStructuredLexicalSearchOutcome, crate::ingest::StoreLexicalError>
     {
         let control = control.with_clock(Arc::clone(&self.clock));
-        let started = std::time::Instant::now();
+        let started = self.clock.now();
+        let admission_started = timing_start(self.clock.as_ref());
         let AdmittedLexicalQuery {
             generation,
             active,
             snapshot,
             active_query,
         } = self.admit_lexical_query()?;
+        let admission_time = timing_elapsed(self.clock.as_ref(), admission_started);
+        let lexical_started = timing_start(self.clock.as_ref());
 
         let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
         let cancellation = QueryCancellation::new(&control, &lease);
@@ -3321,16 +3337,25 @@ impl Store {
             });
         }
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        let diagnostics = crate::diag::QueryDiagnostics::lexical(crate::diag::LexicalDiagnostics {
-            snapshot_generation: generation,
-            indexed_through_seq: active
-                .indexed_through_seq()
-                .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
-            requested_k: k,
-            returned: candidates.len(),
-            counters,
-            elapsed: started.elapsed(),
-        });
+        let mut diagnostics =
+            crate::diag::QueryDiagnostics::lexical(crate::diag::LexicalDiagnostics {
+                snapshot_generation: generation,
+                indexed_through_seq: active
+                    .indexed_through_seq()
+                    .max(crate::wal::LogSeq::new(snapshot.absorbed_through())),
+                requested_k: k,
+                returned: candidates.len(),
+                counters,
+                elapsed: self.clock.now().saturating_duration_since(started),
+            });
+        diagnostics.counters.lexical_cache_hits = usize::from(assembly.cache_hit);
+        diagnostics.counters.lexical_cache_builds = usize::from(!assembly.cache_hit);
+        diagnostics.timings =
+            crate::diag::QUERY_TIMING_ENABLED.then(|| crate::diag::QueryTimings {
+                admission: admission_time,
+                lexical: timing_elapsed(self.clock.as_ref(), lexical_started),
+                ..Default::default()
+            });
         drop(active_query);
         Ok(crate::ingest::StoreStructuredLexicalSearchOutcome {
             candidates,
@@ -3387,7 +3412,8 @@ impl Store {
         control: QueryControl,
     ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
         let control = control.with_clock(Arc::clone(&self.clock));
-        let started = std::time::Instant::now();
+        let started = self.clock.now();
+        let admission_started = timing_start(self.clock.as_ref());
         let mut options = options;
         let requested_tier = options.explicit_tier();
         // Hybrid once forced SearchTier::Exact unconditionally, because
@@ -3431,13 +3457,19 @@ impl Store {
         let panic_vector = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Vector);
         let panic_lexical = self.consume_hybrid_test_fault(crate::fusion::FusionLeg::Lexical);
         let lexical_worker = self.ensure_lexical_worker()?;
+        let mut timings = crate::diag::QueryTimings {
+            admission: timing_elapsed(self.clock.as_ref(), admission_started),
+            ..Default::default()
+        };
         let lexical_inputs = LexicalInputs {
             cache: &self.lexical_index_cache,
             snapshot: &admitted.snapshot,
             active: &admitted.active_segment,
             accounting: &self.accounting,
         };
-        let run_lexical_leg = |bound| {
+        let run_lexical_leg = |bound, queued| {
+            let queue_time = timing_elapsed(self.clock.as_ref(), queued);
+            let lexical_started = timing_start(self.clock.as_ref());
             let name = std::thread::current().name().map(str::to_owned);
             let result = (|| {
                 maybe_trigger_hybrid_leg_panic(panic_lexical, "injected lexical hybrid leg panic");
@@ -3461,7 +3493,12 @@ impl Store {
                     ),
                 }
             })();
-            (name, result)
+            (
+                name,
+                result,
+                queue_time,
+                timing_elapsed(self.clock.as_ref(), lexical_started),
+            )
         };
         let caller_chose_tier = requested_tier.is_some();
         let run_vector_leg = |k: usize| {
@@ -3508,13 +3545,15 @@ impl Store {
                 requested_tier,
                 scan_reason_override,
                 started,
+                self.clock.as_ref(),
                 #[cfg(any(test, feature = "test-support"))]
                 None,
             )
             .map_err(crate::fusion::FusionError::from)
         };
+        let lexical_queued = timing_start(self.clock.as_ref());
         let (vector_result, lexical_result) = lexical_worker.run_scoped(
-            || run_lexical_leg(width.saturating_add(1)),
+            || run_lexical_leg(width.saturating_add(1), lexical_queued),
             || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     maybe_trigger_hybrid_leg_panic(
@@ -3529,8 +3568,15 @@ impl Store {
                 }))
             },
         )?;
-        let (lexical_thread_name, lexical_result) =
-            lexical_result.unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
+        let (lexical_thread_name, lexical_result, queue_time, lexical_time) = lexical_result
+            .unwrap_or_else(|error| {
+                (
+                    Some("zeppelin-fts".to_owned()),
+                    Err(error),
+                    std::time::Duration::ZERO,
+                    std::time::Duration::ZERO,
+                )
+            });
         #[cfg(any(test, feature = "test-support"))]
         if let Ok(mut receipt) = self.hybrid_execution_receipt.lock() {
             *receipt = Some(HybridExecutionReceipt {
@@ -3544,12 +3590,25 @@ impl Store {
         let _ = lexical_thread_name;
         let (
             mut vector_outcome,
-            (mut lexical_hits, mut lexical_sources, mut lexical_counters, lexical_expansions),
+            (
+                mut lexical_hits,
+                mut lexical_sources,
+                mut lexical_counters,
+                lexical_expansions,
+                mut lexical_cache_hit,
+            ),
         ) = resolve_hybrid_leg_results(vector_result, lexical_result)?;
 
+        timings.lexical_queue = queue_time;
+        timings.lexical = lexical_time;
+        let mut work = hybrid::HybridWork::new();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
         let (fused, report_window) = loop {
+            if let Some(vector_timings) = vector_outcome.diagnostics.timings {
+                timings.vector += vector_timings.vector;
+            }
+            let fusion_started = timing_start(self.clock.as_ref());
             let round = hybrid::build_round(
                 &admitted.snapshot,
                 &admitted.active_segment,
@@ -3560,6 +3619,57 @@ impl Store {
                 &lexical_hits,
                 width,
             )?;
+            // Cross-fill reads full-precision rows on the caller thread,
+            // outside the vector producer. Include those actual reads in
+            // the same scan work receipt as the producer's scored rows.
+            let cross_fill_dims = u64::try_from(round.cross_filled_vector)
+                .ok()
+                .and_then(|rows| rows.checked_mul(vector_query.vector().len() as u64))
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            let cross_fill_bytes = cross_fill_dims
+                .checked_mul(4)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            vector_outcome.stats.dims_touched = vector_outcome
+                .stats
+                .dims_touched
+                .checked_add(cross_fill_dims)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            vector_outcome.stats.bytes_read = vector_outcome
+                .stats
+                .bytes_read
+                .checked_add(cross_fill_bytes)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            if cross_fill_dims != 0 {
+                let caller = std::thread::current().id();
+                if !vector_outcome.stats.worker_thread_ids.contains(&caller) {
+                    vector_outcome.stats.worker_thread_ids.push(caller);
+                }
+                vector_outcome.stats.threads_used = vector_outcome.stats.worker_thread_ids.len();
+            }
+            work.complete_round(
+                &vector_outcome.stats,
+                vector_outcome.graph_stats,
+                lexical_counters,
+            )?;
+            work.lexical_cache_hits += usize::from(lexical_cache_hit);
+            work.lexical_cache_builds += usize::from(!lexical_cache_hit);
+            work.plans.append(&mut vector_outcome.diagnostics.plan);
+            work.cross_filled_vector = work
+                .cross_filled_vector
+                .checked_add(round.cross_filled_vector)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            work.cross_filled_lexical = work
+                .cross_filled_lexical
+                .checked_add(round.cross_filled_lexical)
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            work.vector_candidates_produced = work
+                .vector_candidates_produced
+                .checked_add(vector_outcome.candidates.len())
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+            work.lexical_candidates_produced = work
+                .lexical_candidates_produced
+                .checked_add(lexical_hits.len())
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
             let fused = crate::fusion::fuse_bounded(
                 hybrid_query,
                 &round.vector,
@@ -3568,6 +3678,7 @@ impl Store {
                 |document: &Option<crate::ingest::DocId>| *document,
                 |document: &Option<crate::ingest::DocId>| *document,
             )?;
+            timings.fusion_cross_fill += timing_elapsed(self.clock.as_ref(), fusion_started);
             if fused.report.termination != crate::fusion::FusionTermination::WindowUnproven
                 || width >= corpus_rows
             {
@@ -3579,6 +3690,10 @@ impl Store {
                         lexical_returned: round.lexical.len(),
                         cross_filled_vector: round.cross_filled_vector,
                         cross_filled_lexical: round.cross_filled_lexical,
+                        total_cross_filled_vector: work.cross_filled_vector,
+                        total_cross_filled_lexical: work.cross_filled_lexical,
+                        vector_candidates_produced: work.vector_candidates_produced,
+                        lexical_candidates_produced: work.lexical_candidates_produced,
                     },
                 );
             }
@@ -3589,25 +3704,36 @@ impl Store {
                 width.saturating_mul(2).min(corpus_rows)
             };
             rounds = rounds.saturating_add(1);
+            let lexical_queued = timing_start(self.clock.as_ref());
             let (vector_result, lexical_result) = lexical_worker.run_scoped(
-                || run_lexical_leg(width.saturating_add(1)),
+                || run_lexical_leg(width.saturating_add(1), lexical_queued),
                 || run_vector_leg(width.saturating_add(1)),
             )?;
-            let (_, lexical_result) = lexical_result
-                .unwrap_or_else(|error| (Some("zeppelin-fts".to_owned()), Err(error)));
-            let (next_vector, (next_hits, next_sources, next_counters, _)) =
+            let (_, lexical_result, queue_time, lexical_time) =
+                lexical_result.unwrap_or_else(|error| {
+                    (
+                        Some("zeppelin-fts".to_owned()),
+                        Err(error),
+                        std::time::Duration::ZERO,
+                        std::time::Duration::ZERO,
+                    )
+                });
+            let (next_vector, (next_hits, next_sources, next_counters, _, next_cache_hit)) =
                 resolve_hybrid_leg_results(vector_result, lexical_result)?;
+            timings.lexical_queue += queue_time;
+            timings.lexical += lexical_time;
             vector_outcome = next_vector;
             lexical_hits = next_hits;
             lexical_sources = next_sources;
             lexical_counters = next_counters;
+            lexical_cache_hit = next_cache_hit;
         };
 
         let crate::ingest::SearchOutcome {
             candidates: _,
             vector_ceiling: _,
-            stats: scan,
-            graph_stats: graph,
+            stats: _,
+            graph_stats: _,
             generation,
             epoch,
             diagnostics: vector_diagnostics,
@@ -3618,23 +3744,27 @@ impl Store {
             report.budget_exhausted = true;
             report.termination = crate::fusion::FusionTermination::BudgetFullMaterialization;
         }
-        let diagnostics = crate::diag::QueryDiagnostics::hybrid(crate::diag::HybridDiagnostics {
-            snapshot_generation: vector_diagnostics.snapshot_generation,
-            indexed_through_seq: vector_diagnostics.indexed_through_seq,
-            plan: vector_diagnostics.plan,
-            approximate: vector_diagnostics.approximate,
-            exact_rescore: vector_diagnostics.exact_rescore,
-            requested_k: hybrid_query.k,
-            returned: fused.hits.len(),
-            scan,
-            graph,
-            lexical: lexical_counters,
-            report,
-            hybrid: report_window,
-            tier_resolution,
-            epoch,
-            elapsed: started.elapsed(),
-        });
+        let mut diagnostics =
+            crate::diag::QueryDiagnostics::hybrid(crate::diag::HybridDiagnostics {
+                snapshot_generation: vector_diagnostics.snapshot_generation,
+                indexed_through_seq: vector_diagnostics.indexed_through_seq,
+                plan: work.plans,
+                approximate: vector_diagnostics.approximate,
+                exact_rescore: vector_diagnostics.exact_rescore,
+                requested_k: hybrid_query.k,
+                returned: fused.hits.len(),
+                scan: work.scan,
+                graph: work.graph,
+                lexical: work.lexical,
+                report,
+                hybrid: report_window,
+                tier_resolution,
+                epoch,
+                elapsed: self.clock.now().saturating_duration_since(started),
+            });
+        diagnostics.counters.lexical_cache_hits = work.lexical_cache_hits;
+        diagnostics.counters.lexical_cache_builds = work.lexical_cache_builds;
+        diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then_some(timings);
         Ok(crate::ingest::StoreHybridSearchOutcome {
             hits: fused.hits,
             lexical_expansions,
@@ -3682,8 +3812,10 @@ impl Store {
         graph_bound_mode: GraphBoundMode,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
         let control = control.with_clock(Arc::clone(&self.clock));
-        let started = std::time::Instant::now();
+        let started = self.clock.now();
+        let admission_started = timing_start(self.clock.as_ref());
         let admitted = self.admit_vector_search(options)?;
+        let admission_time = timing_elapsed(self.clock.as_ref(), admission_started);
         let score = || {
             search_pinned(
                 admitted.pool.as_deref(),
@@ -3700,6 +3832,7 @@ impl Store {
                 options.explicit_tier(),
                 None,
                 started,
+                self.clock.as_ref(),
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
             )
@@ -3717,7 +3850,12 @@ impl Store {
                 controller.finalize_search(result.is_ok());
             }
         }
-        result
+        result.map(|mut outcome| {
+            if let Some(timings) = &mut outcome.diagnostics.timings {
+                timings.admission = admission_time;
+            }
+            outcome
+        })
     }
 
     fn ensure_query_pool(&self) -> Result<Arc<pool::QueryPool>, QueryError> {
@@ -4010,11 +4148,23 @@ struct LexicalInputs<'a> {
     accounting: &'a Arc<stats::Accounting>,
 }
 
+struct LexicalAssemblyReceipt {
+    assembly: Arc<LexicalAssembly>,
+    cache_hit: bool,
+}
+
+impl std::ops::Deref for LexicalAssemblyReceipt {
+    type Target = LexicalAssembly;
+    fn deref(&self) -> &Self::Target {
+        &self.assembly
+    }
+}
+
 fn assemble_lexical_index(
     inputs: LexicalInputs<'_>,
     require_document_identity: bool,
     cancellation: Option<&QueryCancellation<'_>>,
-) -> Result<Arc<LexicalAssembly>, LexicalAssemblyError> {
+) -> Result<LexicalAssemblyReceipt, LexicalAssemblyError> {
     let LexicalInputs {
         cache,
         snapshot,
@@ -4031,7 +4181,10 @@ fn assemble_lexical_index(
         }
         let assembly = Arc::clone(&cached.assembly);
         cache.record_hit();
-        return Ok(assembly);
+        return Ok(LexicalAssemblyReceipt {
+            assembly,
+            cache_hit: true,
+        });
     }
     // Release the entry and its reservation before building the replacement,
     // so a store near its resident budget never has to hold both at once.
@@ -4065,7 +4218,10 @@ fn assemble_lexical_index(
         _memory: memory,
     });
     drop(entry);
-    Ok(assembly)
+    Ok(LexicalAssemblyReceipt {
+        assembly,
+        cache_hit: false,
+    })
 }
 
 fn check_segment_document_identity(
@@ -4434,6 +4590,7 @@ type ExactLexicalLeg = (
     Vec<StructuredLexicalSource>,
     crate::fts::search::SearchCounters,
     Vec<crate::fts::query::LexicalExpansion>,
+    bool,
 );
 
 fn resolve_hybrid_leg_results<Vector, Lexical>(
@@ -4496,6 +4653,7 @@ fn exact_structured_lexical_leg(
             sources.clone(),
             crate::fts::search::SearchCounters::default(),
             expansions,
+            assembly.cache_hit,
         ));
     }
     let allow_lists = assembly
@@ -4551,7 +4709,13 @@ fn exact_structured_lexical_leg(
             bm25: score,
         });
     }
-    Ok((joined, sources.clone(), counters, expansions))
+    Ok((
+        joined,
+        sources.clone(),
+        counters,
+        expansions,
+        assembly.cache_hit,
+    ))
 }
 
 fn exact_lexical_leg(
@@ -4580,6 +4744,7 @@ fn exact_lexical_leg(
                     kind: crate::fts::query::LexicalMatchKind::Term,
                 })
                 .collect(),
+            assembly.cache_hit,
         ));
     }
     let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
@@ -4614,6 +4779,7 @@ fn exact_lexical_leg(
                 kind: crate::fts::query::LexicalMatchKind::Term,
             })
             .collect(),
+        assembly.cache_hit,
     ))
 }
 
@@ -4681,6 +4847,7 @@ fn search_pinned(
     requested_tier: Option<SearchTier>,
     hybrid_scan_reason: Option<crate::planner::ScanReason>,
     started: std::time::Instant,
+    clock: &dyn MonotonicClock,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -4689,6 +4856,7 @@ fn search_pinned(
     use crate::quant::{QuantError, prepare_bit4_query};
     use crate::scan::{ScanQuery, ScanRequest, ScanRows, ScanStats};
 
+    let vector_started = timing_start(clock);
     let scan_options = options.scan();
     let query = request.vector();
     let quantized_query_validation = if query.is_empty() {
@@ -4986,7 +5154,10 @@ fn search_pinned(
         worker_thread_ids,
     };
     accounting.record_plans(&plans).map_err(QueryError::Store)?;
-    let diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
+    // Ceiling construction is part of the vector query, including the first
+    // immutable norm-enclosure pass. Finalize elapsed only after it completes.
+    let vector_ceiling = Some(exact_vector_ceiling(snapshot, active, query)?);
+    let mut diagnostics = crate::diag::QueryDiagnostics::vector(crate::diag::VectorDiagnostics {
         snapshot_generation: generation,
         indexed_through_seq: active
             .indexed_through_seq()
@@ -5000,7 +5171,11 @@ fn search_pinned(
         scan: stats.clone(),
         graph: graph_stats,
         epoch,
-        elapsed: started.elapsed(),
+        elapsed: clock.now().saturating_duration_since(started),
+    });
+    diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then(|| crate::diag::QueryTimings {
+        vector: timing_elapsed(clock, vector_started),
+        ..Default::default()
     });
     Ok(SearchOutcome {
         candidates,
@@ -5008,7 +5183,7 @@ fn search_pinned(
         // traversal cannot name the farthest alive row, and letting the
         // anchor depend on the tier would let the tier change ranking,
         // so the ceiling is the anchor everywhere.
-        vector_ceiling: Some(exact_vector_ceiling(snapshot, active, query)?),
+        vector_ceiling,
         stats,
         graph_stats,
         generation,
@@ -6475,6 +6650,63 @@ mod tests {
                 "the remembered ceiling is not the recomputed ceiling"
             );
         }
+    }
+
+    #[test]
+    fn astra_00_elapsed_includes_ceiling_work() {
+        use std::time::{Duration, Instant};
+        struct CeilingClock {
+            base: Instant,
+            snapshot: Arc<super::PublishedSnapshot>,
+        }
+        impl super::MonotonicClock for CeilingClock {
+            fn now(&self) -> Instant {
+                // Advance exactly when the production ceiling has completed
+                // its immutable enclosure. No sleeping or CPU timing oracle.
+                if self
+                    .snapshot
+                    .segments()
+                    .iter()
+                    .all(|segment| segment.cached_vector_ceiling_norm_range().is_some())
+                {
+                    self.base + Duration::from_secs(7)
+                } else {
+                    self.base
+                }
+            }
+        }
+        let directory = tempdir().expect("ceiling timer store");
+        let mut store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        ingest_ceiling_rows(&store, 0, false);
+        let admitted = store
+            .admit_vector_search(SearchOptions::default())
+            .expect("snapshot");
+        assert_eq!(admitted.snapshot.segments().len(), 1);
+        assert!(
+            admitted
+                .snapshot
+                .segments()
+                .iter()
+                .all(|segment| { segment.cached_vector_ceiling_norm_range().is_none() })
+        );
+        let snapshot = Arc::clone(&admitted.snapshot);
+        drop(admitted);
+        store.clock = Arc::new(CeilingClock {
+            base: Instant::now(),
+            snapshot,
+        });
+        let outcome = store
+            .search(
+                crate::ingest::SearchRequest::new(&[1.0, 0.0, 0.0, 0.0]),
+                1,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("exact query");
+        assert_eq!(outcome.diagnostics.elapsed, Duration::from_secs(7));
+        // Release the test clock's snapshot before close waits for all pins.
+        store.clock = Arc::new(super::SystemMonotonicClock);
+        store.close().expect("close");
     }
 
     #[test]

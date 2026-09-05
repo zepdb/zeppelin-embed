@@ -12,6 +12,41 @@ use crate::planner::SegmentPlan;
 use crate::scan::ScanStats;
 use crate::wal::LogSeq;
 
+/// Whether optional query-stage clocks are enabled in this binary.
+/// Work counters and the existing inclusive core elapsed time are unconditional.
+pub const QUERY_TIMING_ENABLED: bool = cfg!(feature = "query-timing");
+
+/// Version 1 stage durations. Vector and lexical work overlap and can repeat;
+/// these totals must not be added to estimate end-to-end latency.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueryTimings {
+    /// Admission, snapshot capture and initial worker admission.
+    pub admission: Duration,
+    /// Sum of vector producer wall durations, including ceiling construction.
+    pub vector: Duration,
+    /// Sum of time from lexical submission until its worker begins.
+    pub lexical_queue: Duration,
+    /// Sum of lexical setup, retrieval and identity-join wall durations.
+    pub lexical: Duration,
+    /// Sum of cross-fill, fusion and round-accounting wall durations.
+    pub fusion_cross_fill: Duration,
+}
+
+pub(crate) fn timing_start(
+    clock: &dyn crate::lifecycle::MonotonicClock,
+) -> Option<std::time::Instant> {
+    QUERY_TIMING_ENABLED.then(|| clock.now())
+}
+
+pub(crate) fn timing_elapsed(
+    clock: &dyn crate::lifecycle::MonotonicClock,
+    started: Option<std::time::Instant>,
+) -> Duration {
+    started.map_or(Duration::ZERO, |start| {
+        clock.now().saturating_duration_since(start)
+    })
+}
+
 /// Version 1 composition of the exact counters already returned by each query leg.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -22,6 +57,10 @@ pub struct QueryCounters {
     pub graph: GraphSearchStats,
     /// Version 1 exact lexical work; zero when no lexical leg ran.
     pub lexical: SearchCounters,
+    /// Exact query-local count of reused assembled lexical indexes.
+    pub lexical_cache_hits: usize,
+    /// Exact query-local count of assembled lexical indexes built.
+    pub lexical_cache_builds: usize,
 }
 
 /// Version 1 observation of the caller thread's scheduling class.
@@ -103,6 +142,8 @@ pub struct QueryDiagnostics {
     pub observed_qos: ObservedQos,
     /// Wall time spent in the admitted query path.
     pub elapsed: Duration,
+    /// Optional stage clocks; absent unless built with `query-timing`.
+    pub timings: Option<QueryTimings>,
 }
 
 /// Compares semantic query behavior while intentionally excluding `elapsed`,
@@ -127,6 +168,7 @@ impl PartialEq for QueryDiagnostics {
             tokenizer_epoch,
             observed_qos,
             elapsed: _,
+            timings: _,
         } = self;
 
         snapshot_generation == &other.snapshot_generation
@@ -164,6 +206,14 @@ pub struct HybridReport {
     pub cross_filled_vector: usize,
     /// Vector-window documents given an exact BM25 they lacked.
     pub cross_filled_lexical: usize,
+    /// Exact vector cross-fills across all completed rounds, including repeats.
+    pub total_cross_filled_vector: usize,
+    /// Reused lexical scores cross-filled across all completed rounds.
+    pub total_cross_filled_lexical: usize,
+    /// Sum of vector producer candidate counts before each round's fusion cut.
+    pub vector_candidates_produced: usize,
+    /// Sum of lexical producer candidate counts before each round's fusion cut.
+    pub lexical_candidates_produced: usize,
 }
 
 /// Tier selected internally for a hybrid query with no caller preference.
@@ -238,11 +288,14 @@ impl QueryDiagnostics {
                 scan: input.scan,
                 graph: input.graph,
                 lexical: SearchCounters::default(),
+                lexical_cache_hits: 0,
+                lexical_cache_builds: 0,
             },
             embedding_epoch: input.epoch.map(|epoch| epoch.embedding),
             tokenizer_epoch: None,
             observed_qos: ObservedQos::current(),
             elapsed: input.elapsed,
+            timings: None,
         }
     }
 
@@ -268,11 +321,14 @@ impl QueryDiagnostics {
                 },
                 graph: GraphSearchStats::default(),
                 lexical: input.counters,
+                lexical_cache_hits: 0,
+                lexical_cache_builds: 0,
             },
             embedding_epoch: None,
             tokenizer_epoch: Some(crate::fts::tokenizer::TokenizerConfig::text_default().epoch()),
             observed_qos: ObservedQos::current(),
             elapsed: input.elapsed,
+            timings: None,
         }
     }
 
@@ -294,11 +350,14 @@ impl QueryDiagnostics {
                 scan: input.scan,
                 graph: input.graph,
                 lexical: input.lexical,
+                lexical_cache_hits: 0,
+                lexical_cache_builds: 0,
             },
             embedding_epoch: input.epoch.map(|epoch| epoch.embedding),
             tokenizer_epoch: Some(crate::fts::tokenizer::TokenizerConfig::text_default().epoch()),
             observed_qos: ObservedQos::current(),
             elapsed: input.elapsed,
+            timings: None,
         }
     }
 }

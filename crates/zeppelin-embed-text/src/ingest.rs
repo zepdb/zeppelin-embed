@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::bundle::Bundle;
 use crate::epoch::{document_epoch, embedding_epoch};
 use crate::error::TextError;
-use crate::query::{Legs, QueryOptions, TextHit};
+use crate::query::{Legs, QueryBackend, QueryOptions, TextHit, TextQueryOutcome, TextQueryTimings};
 use crate::runtime::mlx::MlxRuntime;
 use crate::runtime::{EmbeddingBatch, ModelRuntime, RuntimeError};
 use crate::tower::{TokenBatch, TowerRole};
@@ -298,6 +298,12 @@ impl TextStore {
     #[must_use]
     pub const fn epoch(&self) -> EpochIdentity {
         self.epoch
+    }
+
+    /// Returns the loaded query runtime and its requested compute policy.
+    #[must_use]
+    pub const fn query_backend(&self) -> QueryBackend {
+        self.runtime.query_backend
     }
 
     /// Returns current store health without changing engine behavior.
@@ -761,36 +767,102 @@ impl TextStore {
 
     /// Embeds and executes one dense, lexical, or hybrid text query.
     pub fn query_text(&self, text: &str, options: QueryOptions) -> Result<Vec<TextHit>, TextError> {
-        if options.k == 0 {
-            return Ok(Vec::new());
-        }
-        let term_query = || {
-            let terms = self
-                .analyzer
-                .analyze(text)
-                .into_iter()
-                .map(|token| token.term.into_bytes())
-                .collect();
-            TermQuery::flat(terms, &[DEFAULT_FIELD])
-        };
-        match options.legs {
-            Legs::Lexical => self.lexical_hits(&term_query(), options.k),
-            Legs::Dense => {
-                let embedded = self.query_vector(text)?;
-                self.dense_hits(embedded.values(), options.k, options.tier)
-            }
-            Legs::Hybrid => {
-                let embedded = self.query_vector(text)?;
-                self.hybrid_hits(embedded.values(), &term_query(), options.k, options.tier)
-            }
-        }
+        self.query_text_with_diagnostics(text, options)
+            .map(|outcome| outcome.hits)
     }
 
-    fn query_vector(&self, text: &str) -> Result<EmbeddingBatch, TextError> {
+    /// Executes the same text query with core work and optional outer timing.
+    /// Stage timing is enabled by the core `query-timing` feature. This does
+    /// not change the query's tier, score policy, snapshot or embedding epoch.
+    pub fn query_text_with_diagnostics(
+        &self,
+        text: &str,
+        options: QueryOptions,
+    ) -> Result<TextQueryOutcome, TextError> {
+        let started = stage_start();
+        let mut timings = TextQueryTimings::default();
+        if options.k == 0 {
+            timings.end_to_end = stage_elapsed(started);
+            return Ok(TextQueryOutcome {
+                hits: Vec::new(),
+                diagnostics: None,
+                backend: None,
+                timings: zeppelin_embed::diag::QUERY_TIMING_ENABLED.then_some(timings),
+                query_tokens: 0,
+                embedding_calls: 0,
+            });
+        }
+        let mut query_tokens = 0;
+        let (hits, diagnostics) = match options.legs {
+            Legs::Lexical => {
+                let query = self.analyzed_query(text, &mut timings);
+                self.lexical_hits(&query, options.k, &mut timings)?
+            }
+            Legs::Dense => {
+                let (embedded, tokens) = self.query_vector(text, &mut timings)?;
+                query_tokens = tokens;
+                self.dense_hits(embedded.values(), options.k, options.tier, &mut timings)?
+            }
+            Legs::Hybrid => {
+                let (embedded, tokens) = self.query_vector(text, &mut timings)?;
+                query_tokens = tokens;
+                let query = self.analyzed_query(text, &mut timings);
+                self.hybrid_hits(
+                    embedded.values(),
+                    &query,
+                    options.k,
+                    options.tier,
+                    &mut timings,
+                )?
+            }
+        };
+        timings.end_to_end = stage_elapsed(started);
+        Ok(TextQueryOutcome {
+            hits,
+            diagnostics: Some(diagnostics),
+            timings: zeppelin_embed::diag::QUERY_TIMING_ENABLED.then_some(timings),
+            backend: (options.legs != Legs::Lexical).then_some(self.runtime.query_backend),
+            query_tokens,
+            embedding_calls: usize::from(options.legs != Legs::Lexical),
+        })
+    }
+
+    fn analyzed_query(&self, text: &str, timings: &mut TextQueryTimings) -> TermQuery {
+        let started = stage_start();
+        let terms = self
+            .analyzer
+            .analyze(text)
+            .into_iter()
+            .map(|token| token.term.into_bytes())
+            .collect();
+        let query = TermQuery::flat(terms, &[DEFAULT_FIELD]);
+        timings.lexical_analysis = stage_elapsed(started);
+        query
+    }
+
+    fn query_vector(
+        &self,
+        text: &str,
+        timings: &mut TextQueryTimings,
+    ) -> Result<(EmbeddingBatch, usize), TextError> {
+        let started = stage_start();
         let tokens = self.bundle.tokenize_query(text)?;
-        let mut embedded = self.runtime.embed(TowerRole::Query, tokens, false)?;
+        timings.tokenization = stage_elapsed(started);
+        let count = tokens
+            .attention_mask
+            .iter()
+            .filter(|mask| **mask != 0.0)
+            .count();
+        let evaluated = self
+            .runtime
+            .embed_with_timing(TowerRole::Query, tokens, false)?;
+        timings.embedding_queue = evaluated.queue_wait;
+        timings.embedding_evaluation = evaluated.evaluation;
+        let mut embedded = evaluated.batch;
+        let started = stage_start();
         normalize_batch(&mut embedded, &self.bundle.query_tower().embedding)?;
-        Ok(embedded)
+        timings.embedding_normalization = stage_elapsed(started);
+        Ok((embedded, count))
     }
 
     /// Closes runtime resources and the underlying store.
@@ -804,7 +876,9 @@ impl TextStore {
         vector: &[f32],
         k: usize,
         tier: Option<zeppelin_embed::lifecycle::SearchTier>,
-    ) -> Result<Vec<TextHit>, TextError> {
+        timings: &mut TextQueryTimings,
+    ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
+        let retrieval_started = stage_start();
         let outcome = self
             .store
             .search(
@@ -814,7 +888,9 @@ impl TextStore {
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Query)?;
-        outcome
+        timings.retrieval = stage_elapsed(retrieval_started);
+        let materialization_started = stage_start();
+        let hits = outcome
             .candidates
             .into_iter()
             .map(|candidate| {
@@ -825,15 +901,25 @@ impl TextStore {
                 let squared_l2 = -f64::from(candidate.score());
                 self.make_hit(version, -squared_l2, Some(squared_l2), None)
             })
-            .collect()
+            .collect::<Result<Vec<_>, TextError>>()?;
+        timings.materialization = stage_elapsed(materialization_started);
+        Ok((hits, outcome.diagnostics))
     }
 
-    fn lexical_hits(&self, query: &TermQuery, k: usize) -> Result<Vec<TextHit>, TextError> {
+    fn lexical_hits(
+        &self,
+        query: &TermQuery,
+        k: usize,
+        timings: &mut TextQueryTimings,
+    ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
+        let retrieval_started = stage_start();
         let outcome = self
             .store
             .search_lexical(query, k, QueryControl::Cancel(CancelToken::new()))
             .map_err(TextError::Lexical)?;
-        outcome
+        timings.retrieval = stage_elapsed(retrieval_started);
+        let materialization_started = stage_start();
+        let hits = outcome
             .candidates
             .into_iter()
             .map(|candidate| {
@@ -844,7 +930,9 @@ impl TextStore {
                     Some(candidate.score),
                 )
             })
-            .collect()
+            .collect::<Result<Vec<_>, TextError>>()?;
+        timings.materialization = stage_elapsed(materialization_started);
+        Ok((hits, outcome.diagnostics))
     }
 
     fn hybrid_hits(
@@ -853,7 +941,9 @@ impl TextStore {
         query: &TermQuery,
         k: usize,
         tier: Option<zeppelin_embed::lifecycle::SearchTier>,
-    ) -> Result<Vec<TextHit>, TextError> {
+        timings: &mut TextQueryTimings,
+    ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
+        let retrieval_started = stage_start();
         let outcome = self
             .store
             .search_hybrid(
@@ -866,11 +956,13 @@ impl TextStore {
                 QueryControl::Cancel(CancelToken::new()),
             )
             .map_err(TextError::Hybrid)?;
+        timings.retrieval = stage_elapsed(retrieval_started);
+        let materialization_started = stage_start();
         let versions = self.versions.lock().map_err(|_| TextError::Pipeline {
             stage: "version registry",
             detail: "mutex poisoned".to_owned(),
         })?;
-        outcome
+        let hits = outcome
             .hits
             .into_iter()
             .map(|hit| {
@@ -885,7 +977,9 @@ impl TextStore {
                     hit.lexical_bm25,
                 )
             })
-            .collect()
+            .collect::<Result<Vec<_>, TextError>>()?;
+        timings.materialization = stage_elapsed(materialization_started);
+        Ok((hits, outcome.diagnostics))
     }
 
     /// Applies an explicit tier only when the caller asked for one.
@@ -1291,12 +1385,27 @@ fn load_versions(store: &Store) -> Result<BTreeMap<DocId, Revision>, TextError> 
     Ok(versions)
 }
 
+fn stage_start() -> Option<Instant> {
+    zeppelin_embed::diag::QUERY_TIMING_ENABLED.then(Instant::now)
+}
+
+fn stage_elapsed(started: Option<Instant>) -> Duration {
+    started.map_or(Duration::ZERO, |started| started.elapsed())
+}
+
+struct RuntimeEmbedding {
+    batch: EmbeddingBatch,
+    queue_wait: Duration,
+    evaluation: Duration,
+}
+
 enum RuntimeCommand {
     Embed {
         role: TowerRole,
         tokens: TokenBatch,
         inject_panic: bool,
-        reply: mpsc::SyncSender<Result<EmbeddingBatch, RuntimeError>>,
+        queued: Option<Instant>,
+        reply: mpsc::SyncSender<Result<RuntimeEmbedding, RuntimeError>>,
     },
     Close,
 }
@@ -1315,6 +1424,19 @@ enum QueryRuntime {
 }
 
 impl QueryRuntime {
+    fn backend(&self) -> QueryBackend {
+        match self {
+            Self::Mlx(runtime) => mlx_backend(runtime),
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(runtime) => QueryBackend {
+                runtime: runtime.identity(),
+                requested_compute_units: zeppelin_embed::epoch::ComputeUnits::CpuAndNeuralEngine,
+                observed_compute_units: None,
+                sequence_length: Some(runtime.sequence()),
+            },
+        }
+    }
+
     fn embed(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
         match self {
             Self::Mlx(runtime) => runtime.embed_batch(tokens),
@@ -1338,6 +1460,13 @@ enum RuntimeSet {
 }
 
 impl RuntimeSet {
+    fn query_backend(&self) -> QueryBackend {
+        match self {
+            Self::Symmetric(runtime) => mlx_backend(runtime),
+            Self::Pair { query, .. } => query.backend(),
+        }
+    }
+
     fn embed(
         &mut self,
         role: TowerRole,
@@ -1353,7 +1482,22 @@ impl RuntimeSet {
     }
 }
 
+fn mlx_backend(runtime: &MlxRuntime) -> QueryBackend {
+    let identity = runtime.identity();
+    QueryBackend {
+        runtime: identity,
+        requested_compute_units: if identity.gpu {
+            zeppelin_embed::epoch::ComputeUnits::CpuAndGpu
+        } else {
+            zeppelin_embed::epoch::ComputeUnits::Cpu
+        },
+        observed_compute_units: None,
+        sequence_length: None,
+    }
+}
+
 struct RuntimeClient {
+    query_backend: QueryBackend,
     sender: mpsc::SyncSender<RuntimeCommand>,
     thread: Mutex<Option<JoinHandle<()>>>,
     closed: AtomicBool,
@@ -1401,7 +1545,7 @@ impl RuntimeClient {
                 );
                 let mut runtimes = match runtimes {
                     Ok(runtimes) => {
-                        let _ = init_sender.send(Ok(()));
+                        let _ = init_sender.send(Ok(runtimes.query_backend()));
                         runtimes
                     }
                     Err(error) => {
@@ -1415,8 +1559,11 @@ impl RuntimeClient {
                             role,
                             tokens,
                             inject_panic,
+                            queued,
                             reply,
                         } => {
+                            let queue_wait = stage_elapsed(queued);
+                            let evaluation_started = stage_start();
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     if inject_panic {
@@ -1425,6 +1572,12 @@ impl RuntimeClient {
                                     runtimes.embed(role, &tokens)
                                 }))
                                 .unwrap_or(Err(RuntimeError::WorkerPanicked));
+                            let evaluation = stage_elapsed(evaluation_started);
+                            let result = result.map(|batch| RuntimeEmbedding {
+                                batch,
+                                queue_wait,
+                                evaluation,
+                            });
                             let _ = reply.send(result);
                         }
                         RuntimeCommand::Close => break,
@@ -1435,11 +1588,12 @@ impl RuntimeClient {
                 stage: "embed start",
                 detail: error.to_string(),
             })?;
-        init_receiver.recv().map_err(|_| TextError::Pipeline {
+        let query_backend = init_receiver.recv().map_err(|_| TextError::Pipeline {
             stage: "embed initialization",
             detail: "thread closed before reporting initialization".to_owned(),
         })??;
         Ok(Self {
+            query_backend,
             sender,
             thread: Mutex::new(Some(thread)),
             closed: AtomicBool::new(false),
@@ -1452,6 +1606,16 @@ impl RuntimeClient {
         tokens: TokenBatch,
         inject_panic: bool,
     ) -> Result<EmbeddingBatch, TextError> {
+        self.embed_with_timing(role, tokens, inject_panic)
+            .map(|result| result.batch)
+    }
+
+    fn embed_with_timing(
+        &self,
+        role: TowerRole,
+        tokens: TokenBatch,
+        inject_panic: bool,
+    ) -> Result<RuntimeEmbedding, TextError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TextError::Pipeline {
                 stage: "embed submit",
@@ -1464,6 +1628,7 @@ impl RuntimeClient {
                 role,
                 tokens,
                 inject_panic,
+                queued: stage_start(),
                 reply,
             })
             .map_err(|_| TextError::Pipeline {

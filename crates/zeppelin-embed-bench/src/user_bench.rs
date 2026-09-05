@@ -16,7 +16,7 @@ pub struct Summary {
 /// One cold-start row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColdCell {
-    /// `MLX GPU` or `ANE`.
+    /// `MLX GPU` or `CoreML CPU_AND_NE requested`.
     pub backend: String,
     /// First-ever or relaunch label.
     pub launch: String,
@@ -33,7 +33,7 @@ pub struct ColdCell {
 pub struct SteadyCell {
     /// Dense, Lexical, or Hybrid.
     pub leg: String,
-    /// `MLX GPU`, `ANE`, or `(none)`.
+    /// `MLX GPU`, `CoreML CPU_AND_NE requested`, or `(none)`.
     pub backend: String,
     /// `scan` or `graph`.
     pub store_tier: String,
@@ -52,7 +52,7 @@ pub struct QualityCell {
     pub ndcg_at_10: f64,
     /// Auto-versus-exact recall for MLX, when applicable.
     pub recall_mlx: Option<f64>,
-    /// Auto-versus-exact recall for ANE, when applicable.
+    /// Auto-versus-exact recall for the requested CoreML policy, when applicable.
     pub recall_ane: Option<f64>,
 }
 
@@ -171,8 +171,11 @@ pub fn render_tables(results: &Results) -> String {
     for (backend, launch) in [
         ("MLX GPU", "first-ever"),
         ("MLX GPU", "relaunch (median of 10)"),
-        ("ANE", "first-ever (fresh model digest)"),
-        ("ANE", "relaunch (median of 10)"),
+        (
+            "CoreML CPU_AND_NE requested",
+            "first-ever (fresh model digest)",
+        ),
+        ("CoreML CPU_AND_NE requested", "relaunch (median of 10)"),
     ] {
         if let Some(cell) = results
             .cold
@@ -196,22 +199,22 @@ pub fn render_tables(results: &Results) -> String {
     }
     let components = results.components;
     output.push_str(&format!(
-        "\nOpen breakdown (`components`, ms): bundle open {} / document tower (MLX)\n{} / query runtime (MLX {}, ANE {}) / core store open {}.\n\n",
+        "\nOpen breakdown (`components`, ms): bundle open {} / document tower (MLX)\n{} / query runtime (MLX {}, CoreML {}) / core store open {}.\n\n",
         optional_component(components.map(|value| value.bundle_open_ms)),
         optional_component(components.map(|value| value.document_tower_ms)),
         optional_component(components.map(|value| value.mlx_query_ms)),
         optional_component(components.and_then(|value| value.ane_query_ms)),
         optional_component(components.map(|value| value.store_open_ms)),
     ));
-    output.push_str("### Table B. Steady state, user-felt `query_text` latency (ms, 1,944 samples per cell)\n\n");
+    output.push_str("### Table B. Steady state, user-felt `query_text` latency (ms; sample counts in source artifacts)\n\n");
     output.push_str("| leg | backend | scan p50 | graph p50 | graph payoff (scan - graph, ms) | speedup (scan / graph) | scan p95 | graph p95 | graph p99 |\n");
     output.push_str("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for (leg, backend) in [
         ("Dense", "MLX GPU"),
-        ("Dense", "ANE"),
+        ("Dense", "CoreML CPU_AND_NE requested"),
         ("Lexical", "(none)"),
         ("Hybrid", "MLX GPU"),
-        ("Hybrid", "ANE"),
+        ("Hybrid", "CoreML CPU_AND_NE requested"),
     ] {
         let scan = steady_cell(results, leg, backend, "scan");
         let graph = steady_cell(results, leg, backend, "graph");
@@ -242,7 +245,7 @@ pub fn render_tables(results: &Results) -> String {
     ));
     output.push_str("### Table C. Quality on the same store\n\n");
     output.push_str(
-        "| leg | tier | nDCG@10 | recall@10 vs Exact (MLX) | recall@10 vs Exact (ANE) |\n",
+        "| leg | tier | nDCG@10 | recall@10 vs Exact (MLX) | recall@10 vs Exact (CoreML) |\n",
     );
     output.push_str("| --- | --- | ---: | ---: | ---: |\n");
     for (leg, tier) in [
@@ -281,7 +284,7 @@ pub fn render_tables(results: &Results) -> String {
     output.push_str("| backend | CPU mW | GPU mW | ANE mW | `pmset -g therm` before / after |\n");
     output.push_str("| --- | ---: | ---: | ---: | --- |\n");
     output.push_str("| MLX GPU | not measured | not measured | not measured | not measured |\n");
-    output.push_str("| ANE | not measured | not measured | not measured | not measured |\n\n");
+    output.push_str("| CoreML CPU_AND_NE requested | not measured | not measured | not measured | not measured |\n\n");
     output.push_str("### Table E. Query-tower component (informs D1; ms)\n\n");
     output.push_str("| bucket set | first-ever load | relaunch load | p50 @32 | p50 @64 | p50 @128 | MLX GPU p50 @ same length | chosen |\n");
     output.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n");
@@ -350,10 +353,10 @@ mod tests {
         let rendered = render_tables(&Results::default());
         for row in [
             "| Dense | MLX GPU |",
-            "| Dense | ANE |",
+            "| Dense | CoreML CPU_AND_NE requested |",
             "| Lexical | (none) |",
             "| Hybrid | MLX GPU |",
-            "| Hybrid | ANE |",
+            "| Hybrid | CoreML CPU_AND_NE requested |",
         ] {
             assert!(rendered.contains(row), "missing row {row}");
         }

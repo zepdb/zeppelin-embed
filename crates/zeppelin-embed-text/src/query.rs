@@ -69,6 +69,59 @@ impl Default for QueryOptions {
     }
 }
 
+/// Loaded query runtime selection. CoreML compute units are requested policy;
+/// they are not evidence that the Neural Engine executed each operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueryBackend {
+    /// Identity reported by the loaded runtime, rather than bundle metadata.
+    pub runtime: crate::runtime::RuntimeIdentity,
+    /// Compute units requested when constructing that runtime.
+    pub requested_compute_units: zeppelin_embed::epoch::ComputeUnits,
+    /// Independently observed hardware routing, when available.
+    pub observed_compute_units: Option<zeppelin_embed::epoch::ComputeUnits>,
+    /// Fixed CoreML input width, or `None` for dynamic MLX inputs.
+    pub sequence_length: Option<usize>,
+}
+
+/// Optional version 1 outer query spans. Retrieval includes overlapping core
+/// stages; neither those stages nor their medians should be summed with it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextQueryTimings {
+    /// Model tokenization including bundle prefix construction.
+    pub tokenization: std::time::Duration,
+    /// Lexical analyzer and term-query construction.
+    pub lexical_analysis: std::time::Duration,
+    /// Bounded embed-channel wait until the embed worker starts this request.
+    pub embedding_queue: std::time::Duration,
+    /// Runtime call wall time, including native synchronization and runtime locks.
+    pub embedding_evaluation: std::time::Duration,
+    /// Output dimension/unit-norm validation and normalization.
+    pub embedding_normalization: std::time::Duration,
+    /// Core retrieval including admission, both legs and fusion.
+    pub retrieval: std::time::Duration,
+    /// Returned text and revision construction, including its store lookups.
+    pub materialization: std::time::Duration,
+    /// Inclusive outer duration finalized after returned hits are constructed.
+    pub end_to_end: std::time::Duration,
+}
+
+/// Version 1 text-query evidence, additive to the existing hit-only method.
+#[derive(Debug)]
+pub struct TextQueryOutcome {
+    /// The same ordered hits returned by `TextStore::query_text`.
+    pub hits: Vec<TextHit>,
+    /// Core execution facts; absent for k=0, when no query is admitted.
+    pub diagnostics: Option<zeppelin_embed::diag::QueryDiagnostics>,
+    /// Stage clocks; absent unless the core `query-timing` feature is enabled.
+    pub timings: Option<TextQueryTimings>,
+    /// Runtime actually selected; absent for lexical-only and k=0 queries.
+    pub backend: Option<QueryBackend>,
+    /// Nonpadding model input tokens, including the model's query prefix.
+    pub query_tokens: usize,
+    /// Completed query embedding calls; zero for lexical-only and k=0 queries.
+    pub embedding_calls: usize,
+}
+
 /// One text-bearing retrieval result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextHit {

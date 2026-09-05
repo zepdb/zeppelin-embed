@@ -350,3 +350,60 @@ fn astra_00_lexical_window_survives_worker_handoff() {
     );
     store.close().expect("close store");
 }
+
+#[test]
+fn astra_00_cross_fill_counts_exact_rows_and_bytes() {
+    let (_directory, store) = astra_disjoint_windows_store();
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("cross-fill query");
+    let report = outcome.diagnostics.hybrid.expect("hybrid");
+    assert_eq!(report.window, 50);
+    assert_eq!(report.cross_filled_vector, 50);
+    assert_eq!(
+        outcome.diagnostics.fusion.as_ref().expect("fusion").rounds,
+        1
+    );
+    // One exhaustive 400 x 6 scan plus 50 disjoint 6-dimensional f32 reads.
+    assert_eq!(outcome.diagnostics.counters.scan.dims_touched, 2_700);
+    assert_eq!(outcome.diagnostics.counters.scan.bytes_read, 10_800);
+    // Secondary score control, in addition to the literal work oracle above.
+    let offline = offline_full_list_fusion(
+        &store,
+        &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+        1,
+        400,
+    );
+    assert_same_hits(&outcome.hits, &offline, "one-round cross-fill accounting");
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_00_cache_receipts_belong_to_the_query() {
+    let (_directory, store) = astra_disjoint_windows_store();
+    for (hits, builds) in [(0, 1), (1, 0)] {
+        let outcome = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(1),
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("cache query");
+        assert_eq!(outcome.diagnostics.counters.lexical_cache_hits, hits);
+        assert_eq!(outcome.diagnostics.counters.lexical_cache_builds, builds);
+        assert_eq!(
+            outcome.diagnostics.timings.is_some(),
+            zeppelin_embed::diag::QUERY_TIMING_ENABLED
+        );
+    }
+    store.close().expect("close");
+}

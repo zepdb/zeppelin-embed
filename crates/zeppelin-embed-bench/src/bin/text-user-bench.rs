@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zeppelin_embed::epoch::{EmbeddingEpoch, EmbeddingRuntime, StoreEpoch};
+use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::lifecycle::{OpenOptions, SearchTier, Store};
 use zeppelin_embed::tier::SegmentTier;
@@ -17,11 +17,12 @@ use zeppelin_embed_bench::user_bench::{
     shuffled_order,
 };
 use zeppelin_embed_text::bundle::Bundle;
+use zeppelin_embed_text::runtime::ModelRuntime;
 use zeppelin_embed_text::runtime::mlx::MlxRuntime;
 use zeppelin_embed_text::tower::TowerRole;
 use zeppelin_embed_text::{
-    IngestOptions, Legs, MaintenanceBudget, MaintenanceStatus, QueryOptions, TextDocument,
-    TextStore,
+    IngestOptions, Legs, MaintenanceBudget, MaintenanceStatus, QueryBackend, QueryOptions,
+    TextDocument, TextQueryOutcome, TextStore,
 };
 
 const MIN_GRAPH_ROWS: u64 = 30_000;
@@ -233,12 +234,16 @@ fn verify(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let store = TextStore::open(store_path, bundle_path, Default::default())?;
     let health = store.health()?;
     let rows = verify_health(&health, expected, MIN_GRAPH_ROWS)?;
+    let dimensions = Bundle::open(bundle_path)?.query_tower().embedding.dims;
     let output = json!({
         "kind": "verify",
         "bundle": bundle_path,
         "store": store_path,
         "expected": segment_tier_name(expected),
         "sealed_rows": rows,
+        "dimensions": dimensions,
+        "epoch": { "embedding": store.epoch().embedding.value(), "tokenizer": store.epoch().tokenizer.value() },
+        "query_backend": backend_name(store.query_backend()),
         "promotion_deferrals": [],
         "segments": segments_json(&health),
     });
@@ -261,13 +266,12 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let corpus = load_corpus(beir_root, corpus_name)?;
     let queries = test_queries(&corpus)?;
     let id_map = read_id_map(store_path, corpus_name)?;
-    let bundle = Bundle::open(bundle_path)?;
+    let store = TextStore::open(store_path, bundle_path, Default::default())?;
     let backend = if legs == Legs::Lexical {
         "(none)"
     } else {
-        backend_name(bundle.query_tower().embedding.runtime)?
+        backend_name(store.query_backend())
     };
-    let store = TextStore::open(store_path, bundle_path, Default::default())?;
     let physical_tier = verify_timing_store(&store, store_path)?;
     let order = shuffled_order(queries.len(), seed);
     for index in order.iter().cycle().take(warm) {
@@ -284,21 +288,26 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut samples = Vec::with_capacity(queries.len().saturating_mul(rounds));
     let mut run = Run::new();
     let mut rankings = Vec::with_capacity(queries.len());
+    let mut query_samples = Vec::with_capacity(queries.len().saturating_mul(rounds));
     for round in 0..rounds {
         for index in &order {
             let query = queries
                 .get(*index)
                 .ok_or_else(|| io::Error::other("query index is out of bounds"))?;
             let started = Instant::now();
-            let hits = store.query_text(
+            let outcome = store.query_text_with_diagnostics(
                 &query.text,
                 QueryOptions::new(k)
                     .with_legs(legs)
                     .with_optional_tier(requested_tier),
             )?;
-            samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+            let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            samples.push(latency_ms);
+            let entries = run_entries(&outcome.hits, &id_map)?;
+            query_samples.push(query_sample_json(
+                &query.id, round, latency_ms, &outcome, &entries,
+            ));
             if round == 0 {
-                let entries = run_entries(&hits, &id_map)?;
                 rankings.push(json!({
                     "query_id": query.id,
                     "doc_ids": entries.iter().map(|entry| entry.doc_id.as_str()).collect::<Vec<_>>(),
@@ -310,6 +319,7 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let summary = percentiles(&samples)
         .ok_or_else(|| io::Error::other("steady-state sample set is empty"))?;
     let ndcg = mean_ndcg_at_k(&run, &corpus.qrels, k);
+    let dimensions = Bundle::open(bundle_path)?.query_tower().embedding.dims;
     let output = json!({
         "kind": "steady",
         "backend": backend,
@@ -317,6 +327,8 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "store_tier": segment_tier_short(physical_tier),
         "query_tier": requested_tier.map_or("unset", search_tier_name),
         "corpus": corpus_name,
+        "documents": corpus.documents.len(),
+        "dimensions": dimensions,
         "queries": queries.len(),
         "rounds": rounds,
         "warm": warm,
@@ -324,13 +336,153 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "seed": seed,
         "samples": samples.len(),
         "summary": summary_json(summary),
-        "ndcg_at_10": ndcg,
+        "ndcg_at_10": (k == 10).then_some(ndcg),
+        "unique_parent_ndcg_at_k": ndcg,
+        "metric_policy": "first parent occurrence, compact unique parent ranks; no retrieval fill",
+        "chunk_policy": "raw chunk ranks retained in query_samples; qrels judge parents, not chunks",
+        "instrumentation_enabled": zeppelin_embed::diag::QUERY_TIMING_ENABLED,
+        "epoch": { "embedding": store.epoch().embedding.value(), "tokenizer": store.epoch().tokenizer.value() },
+        "segments": segments_json(&store.health()?),
         "latencies_ms": samples,
         "rankings": rankings,
+        "query_samples": query_samples,
     });
     write_and_print_json(out, &output)?;
     store.close()?;
     Ok(())
+}
+
+// JSON construction stays outside the measured query boundary. Raw chunk
+// identity and score bits make later evaluator changes independently replayable.
+fn query_sample_json(
+    query_id: &str,
+    round: usize,
+    latency_ms: f64,
+    outcome: &TextQueryOutcome,
+    entries: &[RunEntry],
+) -> Value {
+    let milliseconds = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    let chunks = outcome
+        .hits
+        .iter()
+        .zip(entries)
+        .map(|(hit, entry)| {
+            json!({
+                "parent_id": entry.doc_id,
+                "caller_id": hit.doc_id.to_string(),
+                "revision": hit.revision,
+                "chunk": hit.chunk,
+                "score": hit.score,
+                "score_bits": hit.score.to_bits(),
+                "vector_squared_l2_bits": hit.vector_squared_l2.map(f64::to_bits),
+                "lexical_bm25_bits": hit.lexical_bm25.map(f64::to_bits),
+            })
+        })
+        .collect::<Vec<_>>();
+    let backend = outcome.backend.map(|backend| json!({
+        "runtime": backend.runtime.name,
+        "requested_compute_units": format!("{:?}", backend.requested_compute_units),
+        "observed_compute_units": backend.observed_compute_units.map(|units| format!("{units:?}")),
+        "sequence_length": backend.sequence_length,
+    }));
+    let text_spans = outcome.timings.map(|timing| {
+        json!({
+            "tokenization": milliseconds(timing.tokenization),
+            "lexical_analysis": milliseconds(timing.lexical_analysis),
+            "embedding_queue": milliseconds(timing.embedding_queue),
+            "embedding_evaluation": milliseconds(timing.embedding_evaluation),
+            "embedding_normalization": milliseconds(timing.embedding_normalization),
+            "retrieval": milliseconds(timing.retrieval),
+            "materialization": milliseconds(timing.materialization),
+            "end_to_end": milliseconds(timing.end_to_end),
+        })
+    });
+    let diagnostics = outcome.diagnostics.as_ref().map(|diag| {
+        let core_spans = diag.timings.map(|timing| json!({
+            "admission": milliseconds(timing.admission),
+            "vector": milliseconds(timing.vector),
+            "lexical_queue": milliseconds(timing.lexical_queue),
+            "lexical": milliseconds(timing.lexical),
+            "fusion_cross_fill": milliseconds(timing.fusion_cross_fill),
+        }));
+        let plans = diag.plan.iter().map(|plan| json!({
+            "source": format!("{:?}", plan.source),
+            "tier": format!("{:?}", plan.tier),
+            "branch": format!("{:?}", plan.branch),
+            "filter_mode": format!("{:?}", plan.filter_mode),
+            "filter_cardinality": plan.filter_cardinality,
+            "approximate": plan.approximate,
+            "fallback": format!("{:?}", plan.fallback),
+            "scan_reason": plan.scan_reason.map(|reason| format!("{reason:?}")),
+            "ef_requested": plan.ef_requested,
+            "ef_effective": plan.ef_effective,
+        })).collect::<Vec<_>>();
+        let hybrid = diag.hybrid.as_ref().map(|report| json!({
+            "final_window": report.window,
+            "final_vector_returned": report.vector_returned,
+            "final_lexical_returned": report.lexical_returned,
+            "cross_filled_vector": report.total_cross_filled_vector,
+            "cross_filled_lexical": report.total_cross_filled_lexical,
+            "vector_candidates_produced": report.vector_candidates_produced,
+            "lexical_candidates_produced": report.lexical_candidates_produced,
+        }));
+        let fusion = diag.fusion.as_ref().map(|report| json!({
+            "method": format!("{:?}", report.method),
+            "effective_alpha": report.effective_alpha,
+            "rounds": report.rounds,
+            "termination": format!("{:?}", report.termination),
+        }));
+        let counters = &diag.counters;
+        json!({
+            "snapshot_generation": diag.snapshot_generation,
+            "indexed_through_seq": diag.indexed_through_seq.get(),
+            "approximate_membership": diag.approximate,
+            "returned_scores_full_precision": diag.exact_rescore,
+            // Preserve the raw producer report without treating a fusion stop
+            // reason as a proof that graph candidate membership is exhaustive.
+            "coverage_certificate": "not emitted by this schema version",
+            "requested_k": diag.requested_k,
+            "returned": diag.returned,
+            "budget_exhausted": diag.budget_exhausted,
+            "elapsed_ms": milliseconds(diag.elapsed),
+            "core_spans_ms": core_spans,
+            "span_policy": "inclusive wall spans; vector and lexical overlap; round spans accumulate",
+            "plans": plans,
+            "fusion": fusion,
+            "hybrid": hybrid,
+            "counters": {
+                "vector_coordinates": counters.scan.dims_touched,
+                "vector_bytes": counters.scan.bytes_read,
+                "vector_workers": counters.scan.threads_used,
+                "graph_segments": counters.graph.segments_traversed,
+                "graph_validations": counters.graph.graph_validations,
+                "graph_seed_discoveries": counters.graph.entry_seed_discoveries,
+                "graph_visited_clears": counters.graph.visited_epoch_clears,
+                "graph_candidates_scored": counters.graph.candidates_scored,
+                "graph_candidates_rescored": counters.graph.candidates_rescored,
+                "graph_segments_pruned": counters.graph.segments_pruned_by_bound,
+                "lexical_docs_evaluated": counters.lexical.docs_evaluated,
+                "lexical_postings_decoded": counters.lexical.postings_decoded,
+                "lexical_blocks_decoded": counters.lexical.blocks_decoded,
+                "lexical_blocks_skipped": counters.lexical.blocks_skipped,
+                "lexical_cache_hits": counters.lexical_cache_hits,
+                "lexical_cache_builds": counters.lexical_cache_builds,
+            },
+        })
+    });
+    json!({
+        "query_id": query_id,
+        "round": round,
+        "latency_ms": latency_ms,
+        "chunks_returned": chunks.len(),
+        "unique_parents_returned": entries.iter().map(|entry| &entry.doc_id).collect::<BTreeSet<_>>().len(),
+        "chunks": chunks,
+        "backend": backend,
+        "query_tokens": outcome.query_tokens,
+        "embedding_calls": outcome.embedding_calls,
+        "text_spans_ms": text_spans,
+        "diagnostics": diagnostics,
+    })
 }
 
 fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::Error>> {
@@ -353,8 +505,11 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
         .saturating_sub(verification)
         .as_secs_f64()
         * 1_000.0;
-    let bundle = Bundle::open(bundle_path)?;
-    let backend = backend_name(bundle.query_tower().embedding.runtime)?;
+    let backend = if legs == Legs::Lexical {
+        "(none)"
+    } else {
+        backend_name(store.query_backend())
+    };
     let output = json!({
         "kind": "cold",
         "backend": backend,
@@ -373,13 +528,17 @@ fn components(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let bundle = Arc::new(Bundle::open(bundle_path)?);
     let bundle_open_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    let backend = backend_name(bundle.query_tower().embedding.runtime)?;
     let started = Instant::now();
     let document = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document)?;
     let document_tower_load_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let started = Instant::now();
     let query = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)?;
     let query_runtime_load_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let backend = if query.identity().gpu {
+        "MLX GPU"
+    } else {
+        "MLX CPU"
+    };
     drop(query);
     drop(document);
     let tokenizer = TokenizerConfig::text_default();
@@ -426,9 +585,8 @@ fn recall(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let corpus = load_corpus(beir_root, corpus_name)?;
     let queries = test_queries(&corpus)?;
     let id_map = read_id_map(store_path, corpus_name)?;
-    let bundle = Bundle::open(bundle_path)?;
-    let backend = backend_name(bundle.query_tower().embedding.runtime)?;
     let store = TextStore::open(store_path, bundle_path, Default::default())?;
+    let backend = backend_name(store.query_backend());
     let physical_tier = verify_timing_store(&store, store_path)?;
     let mut recall_total = 0.0_f64;
     let mut auto_run = Run::new();
@@ -545,7 +703,7 @@ fn absorb_steady(results: &mut Results, value: &Value) -> Result<(), Box<dyn std
         .ok_or_else(|| io::Error::other("steady result lacks summary"))?;
     let cell = SteadyCell {
         leg: json_string(value, "leg")?.to_owned(),
-        backend: json_string(value, "backend")?.to_owned(),
+        backend: reported_backend(value)?.to_owned(),
         store_tier: json_string(value, "store_tier")?.to_owned(),
         summary: Summary {
             p50: json_f64(summary, "p50")?,
@@ -576,7 +734,7 @@ fn absorb_steady(results: &mut Results, value: &Value) -> Result<(), Box<dyn std
 fn absorb_recall(results: &mut Results, value: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let leg = json_string(value, "leg")?.to_owned();
     let tier = json_string(value, "store_tier")?.to_owned();
-    let backend = json_string(value, "backend")?;
+    let backend = reported_backend(value)?;
     let recall = json_f64(value, "recall_at_10")?;
     if let Some(cell) = results
         .quality
@@ -586,7 +744,7 @@ fn absorb_recall(results: &mut Results, value: &Value) -> Result<(), Box<dyn std
         cell.ndcg_at_10 = json_f64(value, "auto_ndcg_at_10")?;
         if backend == "MLX GPU" {
             cell.recall_mlx = Some(recall);
-        } else if backend == "ANE" {
+        } else if backend == "CoreML CPU_AND_NE requested" {
             cell.recall_ane = Some(recall);
         }
     } else {
@@ -595,14 +753,14 @@ fn absorb_recall(results: &mut Results, value: &Value) -> Result<(), Box<dyn std
             tier,
             ndcg_at_10: json_f64(value, "auto_ndcg_at_10")?,
             recall_mlx: (backend == "MLX GPU").then_some(recall),
-            recall_ane: (backend == "ANE").then_some(recall),
+            recall_ane: (backend == "CoreML CPU_AND_NE requested").then_some(recall),
         });
     }
     Ok(())
 }
 
 fn absorb_cold(results: &mut Results, value: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    let backend = json_string(value, "backend")?;
+    let backend = reported_backend(value)?;
     for (prefix, launch) in [
         ("first_ever", "first-ever"),
         ("relaunch_median", "relaunch (median of 10)"),
@@ -612,7 +770,7 @@ fn absorb_cold(results: &mut Results, value: &Value) -> Result<(), Box<dyn std::
             .ok_or_else(|| io::Error::other(format!("cold summary lacks {prefix}")))?;
         results.cold.push(ColdCell {
             backend: backend.to_owned(),
-            launch: if backend == "ANE" && prefix == "first_ever" {
+            launch: if backend == "CoreML CPU_AND_NE requested" && prefix == "first_ever" {
                 "first-ever (fresh model digest)".to_owned()
             } else {
                 launch.to_owned()
@@ -629,14 +787,14 @@ fn absorb_components(
     results: &mut Results,
     value: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let backend = json_string(value, "backend")?;
+    let backend = reported_backend(value)?;
     let mut components = results.components.unwrap_or_default();
     components.bundle_open_ms = json_f64(value, "bundle_open_ms")?;
     components.document_tower_ms = json_f64(value, "document_tower_load_ms")?;
     components.store_open_ms = json_f64(value, "store_open_ms")?;
     if backend == "MLX GPU" {
         components.mlx_query_ms = json_f64(value, "query_runtime_load_ms")?;
-    } else if backend == "ANE" {
+    } else if backend == "CoreML CPU_AND_NE requested" {
         components.ane_query_ms = Some(json_f64(value, "query_runtime_load_ms")?);
     }
     results.components = Some(components);
@@ -839,13 +997,24 @@ fn parse_seed(value: &str) -> Result<u64, Box<dyn std::error::Error>> {
         .map_err(|error| io::Error::other(format!("invalid seed {value:?}: {error}")).into())
 }
 
-fn backend_name(runtime: EmbeddingRuntime) -> Result<&'static str, Box<dyn std::error::Error>> {
-    match runtime {
-        EmbeddingRuntime::Mlx => Ok("MLX GPU"),
-        EmbeddingRuntime::CoreMl => Ok("ANE"),
-        EmbeddingRuntime::CpuReference => {
-            Err(io::Error::other("CPU reference bundles are not benchmark backends").into())
-        }
+// Older artifacts called the requested CoreML policy ANE. Normalize that
+// legacy label without promoting it to observed hardware execution.
+fn reported_backend(value: &Value) -> Result<&str, Box<dyn std::error::Error>> {
+    let backend = json_string(value, "backend")?;
+    Ok(if backend == "ANE" {
+        "CoreML CPU_AND_NE requested"
+    } else {
+        backend
+    })
+}
+
+fn backend_name(backend: QueryBackend) -> &'static str {
+    if backend.sequence_length.is_some() {
+        "CoreML CPU_AND_NE requested"
+    } else if backend.runtime.gpu {
+        "MLX GPU"
+    } else {
+        "MLX CPU"
     }
 }
 

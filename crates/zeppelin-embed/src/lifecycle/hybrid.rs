@@ -12,6 +12,71 @@ use crate::fusion::{
 use crate::ingest::{ActiveSegment, DocId, SearchCandidate};
 use crate::lifecycle::{PublishedSnapshot, QueryError, StructuredLexicalSource};
 
+/// Completed producer work retained by the hybrid loop. Keeping this seam
+/// independent of fusion termination lets counter receipts be tested even
+/// when a particular score policy certifies its first candidate window.
+pub(crate) struct HybridWork {
+    pub(crate) scan: crate::scan::ScanStats,
+    pub(crate) graph: crate::ingest::GraphSearchStats,
+    pub(crate) lexical: crate::fts::search::SearchCounters,
+    pub(crate) plans: Vec<crate::planner::SegmentPlan>,
+    pub(crate) lexical_cache_hits: usize,
+    pub(crate) lexical_cache_builds: usize,
+    pub(crate) cross_filled_vector: usize,
+    pub(crate) cross_filled_lexical: usize,
+    pub(crate) vector_candidates_produced: usize,
+    pub(crate) lexical_candidates_produced: usize,
+}
+
+impl HybridWork {
+    pub(crate) fn new() -> Self {
+        Self {
+            scan: crate::scan::ScanStats {
+                dims_touched: 0,
+                bytes_read: 0,
+                threads_used: 0,
+                worker_thread_ids: Vec::new(),
+            },
+            graph: crate::ingest::GraphSearchStats::default(),
+            lexical: crate::fts::search::SearchCounters::default(),
+            plans: Vec::new(),
+            lexical_cache_hits: 0,
+            lexical_cache_builds: 0,
+            cross_filled_vector: 0,
+            cross_filled_lexical: 0,
+            vector_candidates_produced: 0,
+            lexical_candidates_produced: 0,
+        }
+    }
+
+    pub(crate) fn complete_round(
+        &mut self,
+        scan: &crate::scan::ScanStats,
+        graph: crate::ingest::GraphSearchStats,
+        lexical: crate::fts::search::SearchCounters,
+    ) -> Result<(), QueryError> {
+        self.scan.dims_touched = self
+            .scan
+            .dims_touched
+            .checked_add(scan.dims_touched)
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        self.scan.bytes_read = self
+            .scan
+            .bytes_read
+            .checked_add(scan.bytes_read)
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        for worker in &scan.worker_thread_ids {
+            if !self.scan.worker_thread_ids.contains(worker) {
+                self.scan.worker_thread_ids.push(*worker);
+            }
+        }
+        self.scan.threads_used = self.scan.worker_thread_ids.len();
+        super::add_traversal_stats(&mut self.graph, graph)?;
+        super::accumulate_search_counters(&mut self.lexical, &lexical);
+        Ok(())
+    }
+}
+
 /// Requested per-leg window. Both legs share one width so the stability
 /// bound has exactly one (W+1)-th element per leg.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,6 +326,54 @@ fn exact_squared_l2(
 mod tests {
     use super::{HYBRID_WINDOW_FLOOR, HybridWindow, hybrid_window};
     use crate::fusion::{FusionError, LegFailureKind};
+
+    #[test]
+    fn astra_00_all_hybrid_rounds_contribute_work() {
+        let caller = std::thread::current().id();
+        let mut work = super::HybridWork::new();
+        // Independent completed receipts: three four-dimensional f32 rows,
+        // then five six-dimensional f32 rows; lexical work is disjoint.
+        for (dims, bytes, docs, postings, traversals, rescored) in
+            [(12, 48, 3, 7, 1, 2), (30, 120, 5, 11, 2, 4)]
+        {
+            work.complete_round(
+                &crate::scan::ScanStats {
+                    dims_touched: dims,
+                    bytes_read: bytes,
+                    threads_used: 1,
+                    worker_thread_ids: vec![caller],
+                },
+                crate::ingest::GraphSearchStats {
+                    segments_traversed: traversals,
+                    candidates_rescored: rescored,
+                    ..Default::default()
+                },
+                crate::fts::search::SearchCounters {
+                    docs_evaluated: docs,
+                    postings_decoded: postings,
+                    blocks_decoded: 1,
+                    blocks_skipped: 2,
+                },
+            )
+            .expect("completed round receipt");
+        }
+        assert_eq!(
+            work.scan.dims_touched, 42,
+            "both round receipts must survive"
+        );
+        assert_eq!(work.scan.bytes_read, 168);
+        assert_eq!(work.scan.worker_thread_ids, vec![caller]);
+        assert_eq!(
+            work.scan.threads_used, 1,
+            "count distinct executors, not round uses"
+        );
+        assert_eq!(work.graph.segments_traversed, 3);
+        assert_eq!(work.graph.candidates_rescored, 6);
+        assert_eq!(work.lexical.docs_evaluated, 8);
+        assert_eq!(work.lexical.postings_decoded, 18);
+        assert_eq!(work.lexical.blocks_decoded, 2);
+        assert_eq!(work.lexical.blocks_skipped, 4);
+    }
 
     #[test]
     fn hybrid_window_is_clamped_between_k_and_the_corpus() {

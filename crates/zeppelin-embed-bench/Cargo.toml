@@ -8,6 +8,7 @@ publish = false
 
 [features]
 default = []
+query-timing = ["zeppelin-embed/query-timing"]
 text = ["dep:zeppelin-embed-text"]
 
 [dependencies]

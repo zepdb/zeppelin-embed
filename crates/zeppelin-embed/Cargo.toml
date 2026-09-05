@@ -9,6 +9,7 @@ license.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
+query-timing = []
 allocation-audit = []
 test-support = []
 
