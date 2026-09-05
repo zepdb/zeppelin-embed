@@ -193,9 +193,29 @@ impl MlxRuntime {
             Architecture::Bert => bert::forward(self, tokens),
             Architecture::Gte => gte::forward(self, tokens),
         }?;
+        // CLS pooling and MRL truncation can leave gaps between logical
+        // rows. mlx-rs's slice accessor reads consecutive memory and does
+        // not gather by stride. Flatten our unit-inner-stride output on
+        // this runtime's stream before copying it to the host.
+        let output = output
+            .reshape_device(&[-1], self.stream()?)
+            .map_err(|error| RuntimeError::Mlx(error.to_string()))?;
         output
             .eval()
             .map_err(|error| RuntimeError::Mlx(error.to_string()))?;
+        // With one retained coordinate, flattening may still produce a
+        // strided vector. Gather its logical elements without arithmetic
+        // (including preserving signed zero) before using the slice accessor.
+        let output = if output.strides() == [1] {
+            output
+        } else {
+            let count = i32::try_from(output.size())
+                .map_err(|_| RuntimeError::Shape("output size exceeds i32".to_owned()))?;
+            let indices = Array::from_slice(&(0..count).collect::<Vec<_>>(), &[count]);
+            output
+                .take_axis_device(&indices, 0, self.stream()?)
+                .map_err(|error| RuntimeError::Mlx(error.to_string()))?
+        };
         let values = output
             .try_as_slice::<f32>()
             .map_err(|error| RuntimeError::Mlx(error.to_string()))?

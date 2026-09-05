@@ -1,12 +1,11 @@
 #![allow(clippy::expect_used)]
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use tempfile::tempdir;
 use zeppelin_embed::epoch::ComputeUnits;
 use zeppelin_embed_text::bundle::Bundle;
+use zeppelin_embed_text::runtime::coreml::{ComputeUnits as CoreMlComputeUnits, CoreMlRuntime};
 use zeppelin_embed_text::runtime::mlx::MlxRuntime;
 use zeppelin_embed_text::runtime::{ModelRuntime, RuntimeError};
 use zeppelin_embed_text::tower::{TokenBatch, TowerRole};
@@ -43,34 +42,27 @@ fn gpu_cpu_and_ane_query_vectors_agree_within_tolerance_on_the_golden_queries() 
     let gpu_vectors = normalized(gpu.embed_batch(&tokens).expect("GPU vectors").into_values());
     let cpu_vectors = normalized(cpu.embed_batch(&tokens).expect("CPU vectors").into_values());
 
-    let directory = tempdir().expect("placement tempdir");
-    let input = directory.path().join("tokens.bin");
-    let output = directory.path().join("ane.f32");
-    write_tokens(&input, &tokens);
     let model = std::env::var_os("ZE_COREML_QUERY_MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-coreml-v2-c2/mdbr-leaf-ir.mlpackage"));
-    assert!(
-        model.is_dir(),
-        "CoreML query model is absent: {}",
-        model.display()
+        .unwrap_or_else(|| bundle_root.join("leaf-v1.5-pair.mlmodelc"));
+    let sequence = std::env::var("ZE_QUERY_COREML_TOKENS")
+        .map(|value| value.parse::<usize>().expect("CoreML token count"))
+        .unwrap_or(64);
+    // Exercise the same public runtime and compiled model as TextStore,
+    // without relying on a temporary Python environment from the exporter.
+    let mut ane = CoreMlRuntime::load(
+        &model,
+        sequence,
+        768,
+        CoreMlComputeUnits::CpuAndNeuralEngine,
+    )
+    .expect("load CoreML query model");
+    let ane_tokens = tokens.padded_to(sequence).expect("CoreML padding");
+    let ane_vectors = normalized(
+        ane.embed_batch(&ane_tokens)
+            .expect("CoreML vectors")
+            .into_values(),
     );
-    let ze_model = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/ze-model/ze-model");
-    let status = Command::new("/private/tmp/ze-coreml-v2-c2/bin/python")
-        .arg(ze_model)
-        .arg("coreml-run")
-        .arg("--model")
-        .arg(&model)
-        .arg("--input")
-        .arg(&input)
-        .arg("--compute-units")
-        .arg("cpu-and-neural-engine")
-        .arg("--output")
-        .arg(&output)
-        .status()
-        .expect("run CoreML placement arm");
-    assert!(status.success(), "CoreML placement arm failed");
-    let ane_vectors = normalized(read_f32(&output));
 
     assert_cosine_drift(&gpu_vectors, &cpu_vectors, 768, 1.0e-5, "MLX CPU");
     assert_cosine_drift(&gpu_vectors, &ane_vectors, 768, 1.0e-3, "ANE");
@@ -151,25 +143,4 @@ fn assert_cosine_drift(left: &[f32], right: &[f32], dims: usize, tolerance: f64,
             1.0 - cosine
         );
     }
-}
-
-fn write_tokens(path: &Path, tokens: &TokenBatch) {
-    let mut output = Vec::new();
-    output.extend_from_slice(&(tokens.rows as u32).to_le_bytes());
-    output.extend_from_slice(&(tokens.tokens_per_row as u32).to_le_bytes());
-    for token in &tokens.token_ids {
-        output.extend_from_slice(&token.to_le_bytes());
-    }
-    for value in &tokens.attention_mask {
-        output.extend_from_slice(&value.to_le_bytes());
-    }
-    std::fs::write(path, output).expect("write placement tokens");
-}
-
-fn read_f32(path: &Path) -> Vec<f32> {
-    std::fs::read(path)
-        .expect("read CoreML vectors")
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("f32 bytes")))
-        .collect()
 }

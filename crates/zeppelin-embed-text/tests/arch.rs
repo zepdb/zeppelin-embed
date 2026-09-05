@@ -12,6 +12,99 @@ use zeppelin_embed_text::tower::{TokenBatch, TowerRole};
 mod common;
 
 #[test]
+fn arctic_v15_batched_cls_matches_reference_across_padding_and_chunk_boundary() {
+    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle = Arc::new(Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pair bundle"));
+    let mut runtime = MlxRuntime::load(bundle, TowerRole::Document).expect("document runtime");
+    let golden = include_str!("goldens/arctic_m_v15_documents.json");
+    let ids = [
+        json_i32_array(golden, "token_ids_0"),
+        json_i32_array(golden, "token_ids_1"),
+    ];
+    let references = [
+        json_f32_array(golden, "vector_0"),
+        json_f32_array(golden, "vector_1"),
+    ];
+    for (tokens, expected) in ids.iter().zip(&references) {
+        let input = TokenBatch::new(tokens.clone(), vec![1.0; tokens.len()], 1, tokens.len())
+            .expect("single token row");
+        let actual = runtime.embed_batch(&input).expect("single embedding");
+        assert_normalized_reference(actual.values(), expected, 1, 0);
+    }
+    // Two differently sized documents catch CLS row strides. Thirty-three
+    // rows also exercise the runtime's bounded 32-row evaluation split.
+    for rows in [2, 33] {
+        let width = ids.iter().map(Vec::len).max().expect("two token rows");
+        let mut token_ids = Vec::new();
+        let mut mask = Vec::new();
+        for tokens in ids.iter().cycle().take(rows) {
+            token_ids.extend(tokens);
+            mask.extend(std::iter::repeat_n(1.0, tokens.len()));
+            token_ids.extend(std::iter::repeat_n(0, width - tokens.len()));
+            mask.extend(std::iter::repeat_n(0.0, width - tokens.len()));
+        }
+        let input = TokenBatch::new(token_ids, mask, rows, width).expect("padded batch");
+        let actual = runtime.embed_batch(&input).expect("batched embedding");
+        assert_eq!(actual.rows(), rows);
+        assert_eq!(actual.dims(), 768);
+        for (row, (actual, expected)) in actual
+            .values()
+            .chunks_exact(768)
+            .zip(references.iter().cycle())
+            .enumerate()
+        {
+            assert_normalized_reference(actual, expected, rows, row);
+        }
+    }
+}
+
+fn assert_normalized_reference(actual: &[f32], expected: &[f32], rows: usize, row: usize) {
+    assert_eq!(actual.len(), expected.len());
+    let norm = actual
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let max_error = actual
+        .iter()
+        .zip(expected)
+        .map(|(actual, expected)| (f64::from(*actual) / norm - f64::from(*expected)).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_error <= 1.0e-4,
+        "batch {rows} row {row}: maximum error {max_error}"
+    );
+}
+
+#[test]
+fn batched_one_dimension_truncation_matches_each_individual_row() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("truncated.zem");
+    let mut tower = common::FixtureTower::document("truncated-mean");
+    tower.dims = 1;
+    tower.word_vectors[6] = [0.0, 1.0];
+    common::write_fixture_bundle(&path, &[tower], &[]);
+    let bundle = Arc::new(Bundle::open(path).expect("truncated bundle"));
+    let mut runtime = MlxRuntime::load(bundle, TowerRole::Document).expect("runtime");
+    let rows = [vec![2, 5, 5, 3], vec![2, 6, 6, 3]];
+    let input = TokenBatch::new(rows.concat(), vec![1.0; 8], 2, 4).expect("batch");
+    let batch = runtime.embed_batch(&input).expect("batch embedding");
+    let mut expected = Vec::new();
+    for ids in rows {
+        let input = TokenBatch::new(ids, vec![1.0; 4], 1, 4).expect("single row");
+        expected.extend(
+            runtime
+                .embed_batch(&input)
+                .expect("single embedding")
+                .into_values(),
+        );
+    }
+    assert_eq!(batch.values(), expected);
+}
+
+#[test]
 fn bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1e_4() {
     matches_reference(
         "leaf-v1.5-pair.zem",

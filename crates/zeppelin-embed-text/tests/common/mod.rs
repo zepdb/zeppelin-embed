@@ -156,10 +156,14 @@ fn write_fixture_bytes(path: &Path, towers: &[FixtureTower<'_>], alignment: &[u8
 fn fixture_epoch(path: &Path) -> EpochIdentity {
     let bundle = Bundle::open(path).expect("open fixture bundle");
     let tokenizer = Analyzer::new(TokenizerConfig::text_default()).expect("fixture analyzer");
+    let mut document = bundle.document_tower().embedding.clone();
+    let mut query = bundle.query_tower().embedding.clone();
+    document.model_version.push_str(";ze-text-output-layout=2");
+    query.model_version.push_str(";ze-text-output-layout=2");
     StoreEpoch {
         embedding: EmbeddingEpoch {
-            document: bundle.document_tower().embedding.clone(),
-            query: bundle.query_tower().embedding.clone(),
+            document,
+            query,
             alignment_digest: bundle.alignment_digest().to_vec(),
         },
         tokenizer: tokenizer.epoch(),

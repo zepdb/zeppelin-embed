@@ -22,3 +22,12 @@
   within tolerance remains an open owner decision.
 - Produced vectors are dimension-checked, truncated before normalization,
   materialized as f32, and checked for unit norm before core ingest.
+- Before the MLX host copy, flatten pooled/truncated output on the owning
+  stream: CLS and MRL can leave strided rows that `try_as_slice` does not gather.
+  If scalar truncation leaves the flattened vector strided, gather its logical
+  elements before reading consecutive host memory.
+  `TextStore` appends `;ze-text-output-layout=2` to the source model version
+  when deriving both public and persisted epochs. This versions the corrected
+  evaluation behavior without changing bundle bytes or format layouts. Older
+  text stores fail with `EpochMismatch` and require re-embedding into a fresh
+  store; never relabel their existing vectors as corrected.
