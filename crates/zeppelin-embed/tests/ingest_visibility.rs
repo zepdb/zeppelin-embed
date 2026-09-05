@@ -867,7 +867,9 @@ fn deleted_doc_is_not_returned_and_is_durable() {
     assert!(stats.active_segment_bytes >= stats.tombstone_bytes);
     assert_eq!(
         stats.resident_owned_bytes,
-        stats.active_segment_bytes
+        stats.snapshot_bytes
+            + stats.active_segment_bytes
+            + stats.retired_active_segment_bytes
             + stats.wal_bytes
             + stats.cache_bytes
             + stats.temporary_bytes
@@ -943,7 +945,10 @@ fn every_active_segment_byte_is_accounted() {
     assert_eq!(stats.tombstone_bytes, 0);
     assert_eq!(
         stats.resident_owned_bytes,
-        stats.active_segment_bytes + stats.wal_bytes
+        stats.snapshot_bytes
+            + stats.active_segment_bytes
+            + stats.retired_active_segment_bytes
+            + stats.wal_bytes
     );
 }
 

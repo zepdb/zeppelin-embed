@@ -614,8 +614,12 @@ pub struct Stats {
     pub mapped_resident_bytes: u64,
     /// Exact bytes in immutable segment mappings.
     pub segment_bytes: u64,
-    /// Exact allocation capacity held by the in-RAM active segment.
+    /// Exact allocation capacity held by the currently published in-RAM active
+    /// segment.
     pub active_segment_bytes: u64,
+    /// Exact allocation capacity held by retired active generations that are
+    /// still pinned by admitted queries.
+    pub retired_active_segment_bytes: u64,
     /// Exact number of rows currently represented by the in-RAM active segment.
     pub active_row_count: u64,
     /// Exact number of in-memory active-segment tombstones.
@@ -710,14 +714,15 @@ impl Store {
                 ),
             });
         }
-        if accounting.active_bytes != active_segment_bytes {
-            return Err(StoreError::Statistics {
+        let retired_active_segment_bytes = accounting
+            .active_bytes
+            .checked_sub(active_segment_bytes)
+            .ok_or_else(|| StoreError::Statistics {
                 component: "active segment accounting",
                 source: std::io::Error::other(
-                    "active segment capacity disagrees with accounting component",
+                    "current active segment capacity exceeds the accounting component",
                 ),
-            });
-        }
+            })?;
         let snapshot_guard = self
             .snapshot
             .read()
@@ -768,6 +773,7 @@ impl Store {
             mapped_resident_bytes,
             segment_bytes: accounting.mapped_bytes,
             active_segment_bytes,
+            retired_active_segment_bytes,
             active_row_count,
             tombstone_count,
             tombstone_bytes,
@@ -828,6 +834,7 @@ mod tests {
     fn stats_bytes_are_conserved() {
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let baseline = store.stats().expect("baseline stats");
         let wal = store
             .allocate_bytes(37, AllocationComponent::Wal)
             .expect("accounted WAL bytes");
@@ -843,14 +850,18 @@ mod tests {
         assert_eq!(stats.wal_bytes, 37);
         assert_eq!(stats.cache_bytes, 19);
         assert_eq!(stats.temporary_bytes, 11);
-        assert_eq!(stats.resident_owned_bytes, 67);
+        assert_eq!(stats.retired_active_segment_bytes, 0);
+        assert_eq!(
+            stats.resident_owned_bytes,
+            baseline.resident_owned_bytes + 67
+        );
         assert_eq!(stats.resident_owned_bytes, audit.component_sum());
         assert_eq!(stats.resident_owned_bytes, audit.resident_owned_bytes);
 
         drop((wal, cache, temporary));
         assert_eq!(
             store.stats().expect("released stats").resident_owned_bytes,
-            0
+            baseline.resident_owned_bytes
         );
 
         let published = published_store();
@@ -859,7 +870,8 @@ mod tests {
         let segment = snapshot.segments().first().expect("fixture segment");
         let expected_snapshot_bytes = std::mem::size_of::<SegmentReader>()
             + std::mem::size_of_val(segment.directory())
-            + segment.retained_validation_bytes();
+            + segment.retained_validation_bytes()
+            + usize::try_from(baseline.snapshot_bytes).expect("baseline snapshot bytes fit usize");
         drop(snapshot);
         let mapped_stats = mapped.stats().expect("mapped stats");
         assert_eq!(
@@ -954,8 +966,15 @@ mod tests {
     #[test]
     fn budget_exceeded_is_typed_and_pre_allocation() {
         let directory = tempdir().expect("store directory");
+        let baseline_store =
+            Store::open(directory.path(), OpenOptions::default()).expect("baseline open");
+        let baseline = baseline_store
+            .stats()
+            .expect("baseline stats")
+            .snapshot_bytes;
+        baseline_store.close().expect("close baseline");
         let options = OpenOptions::new()
-            .with_max_resident_bytes(64)
+            .with_max_resident_bytes(baseline + 64)
             .with_max_temp_bytes(32);
         let store = Store::open(directory.path(), options).expect("open");
 
@@ -969,7 +988,7 @@ mod tests {
             })
         ));
         let after_rejection = store.stats().expect("stats after rejection");
-        assert_eq!(after_rejection.resident_owned_bytes, 0);
+        assert_eq!(after_rejection.resident_owned_bytes, baseline);
         assert_eq!(after_rejection.temporary_bytes, 0);
 
         let accepted = store
@@ -980,10 +999,10 @@ mod tests {
         assert!(matches!(
             store.allocate_bytes(50, AllocationComponent::Wal),
             Err(StoreError::BudgetExceeded {
-                needed: 74,
-                budget: 64,
+                needed,
+                budget,
                 component: "wal",
-            })
+            }) if needed == baseline + 74 && budget == baseline + 64
         ));
         assert_eq!(
             store.stats().expect("resident rejection stats").wal_bytes,

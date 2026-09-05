@@ -405,6 +405,10 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - The active-state generation is authoritative while a writer is open: it is
   initialized from the manifest generation and advanced by mutations. Sealing
   advances from that value, never from the possibly stale published snapshot.
+- `Store::stats().active_segment_bytes` names only the currently published
+  active generation. Active allocations retained by an admitted query after a
+  mutation are reported separately as `retired_active_segment_bytes`; their sum
+  must equal the exact `Active` accounting component until the last owner drops.
 
 ## Task 10 Part B seal invariants
 

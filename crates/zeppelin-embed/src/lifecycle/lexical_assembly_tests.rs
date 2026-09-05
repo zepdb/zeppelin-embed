@@ -146,6 +146,44 @@ fn astra_16_delayed_old_query_does_not_replace_newer_assembly() {
 }
 
 #[test]
+fn stats_remains_available_while_old_active_generation_is_retained() {
+    let (_directory, store) = fixture();
+    let old = store.admit_lexical_query().expect("old query");
+    let old_active_bytes = old.active.resident_bytes();
+
+    append(&store, 4);
+
+    let retained = store
+        .stats()
+        .expect("stats while the old active generation is retained");
+    assert_eq!(retained.retired_active_segment_bytes, old_active_bytes);
+    assert_eq!(
+        retained
+            .active_segment_bytes
+            .checked_add(retained.retired_active_segment_bytes),
+        Some(
+            store
+                .accounting
+                .audit()
+                .expect("active accounting")
+                .active_bytes
+        )
+    );
+    drop(old);
+
+    let released = store.stats().expect("stats after old query releases");
+    assert_eq!(released.retired_active_segment_bytes, 0);
+    assert_eq!(released.active_segment_bytes, retained.active_segment_bytes);
+    assert_eq!(
+        retained
+            .resident_owned_bytes
+            .checked_sub(released.resident_owned_bytes),
+        Some(old_active_bytes)
+    );
+    store.close().expect("close");
+}
+
+#[test]
 fn astra_16_refused_contribution_leaves_previous_cache_and_no_charge() {
     let (_directory, store) = fixture();
     let old = store.admit_lexical_query().expect("old");
