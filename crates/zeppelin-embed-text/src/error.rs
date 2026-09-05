@@ -34,6 +34,8 @@ pub enum TextError {
     Lexical(zeppelin_embed::ingest::StoreLexicalError),
     /// Core hybrid query failed.
     Hybrid(zeppelin_embed::fusion::FusionError),
+    /// A ranked source could not supply matching owned text and identity.
+    Materialization(zeppelin_embed::lifecycle::MaterializationError),
     /// Store open or close failed.
     Store(zeppelin_embed::lifecycle::StoreError),
     /// The caller supplied an invalid option or document.
@@ -60,6 +62,7 @@ impl std::fmt::Display for TextError {
             Self::Query(error) => error.fmt(formatter),
             Self::Lexical(error) => error.fmt(formatter),
             Self::Hybrid(error) => error.fmt(formatter),
+            Self::Materialization(error) => error.fmt(formatter),
             Self::InvalidInput(detail) => write!(formatter, "invalid text input: {detail}"),
         }
     }
@@ -75,6 +78,7 @@ impl std::error::Error for TextError {
             Self::Query(error) => Some(error),
             Self::Lexical(error) => Some(error),
             Self::Hybrid(error) => Some(error),
+            Self::Materialization(error) => Some(error),
             Self::DimsMismatch { .. }
             | Self::NonUnitVector
             | Self::Pipeline { .. }

@@ -138,6 +138,8 @@ pub(crate) struct LexicalHit {
 
 /// Cross-filled windows and the ranges used to score them.
 pub(crate) struct HybridRound {
+    /// Source/version payload retained through fusion only for scoped hydration.
+    pub(crate) addresses: Option<super::materialize::HybridAddresses>,
     /// Vector window plus every lexical-window document's exact squared-L2.
     pub(crate) vector: Vec<VectorCandidate<Option<DocId>>>,
     /// Lexical window plus every vector-window document's exact BM25.
@@ -244,6 +246,8 @@ pub(crate) fn build_round(
     lexical: &[LexicalHit],
     width: usize,
     cancellation: &super::QueryCancellation<'_>,
+    capture_rows: bool,
+    accounting: &std::sync::Arc<super::stats::Accounting>,
 ) -> Result<HybridRound, FusionError> {
     let sources = &assembly.sources;
     let vector_window = vector.get(..width.min(vector.len())).unwrap_or_default();
@@ -342,7 +346,49 @@ pub(crate) fn build_round(
         next_unseen_bm25: lexical_next,
     });
 
+    let addresses = if capture_rows {
+        let capacity = vector_keys
+            .len()
+            .checked_add(lexical_keys.len())
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        let mut addresses = super::stats::Accounted::try_with_capacity(
+            accounting,
+            capacity,
+            super::stats::AllocationComponent::Temporary,
+        )
+        .map_err(QueryError::Store)?;
+        for &(row_id, document) in vector_keys.iter().chain(&lexical_keys) {
+            if let Some(version) = document {
+                addresses
+                    .push((
+                        version.doc_id(),
+                        super::materialize::ResultAddress { row_id, document },
+                    ))
+                    .map_err(QueryError::Store)?;
+            }
+        }
+        addresses
+            .as_mut_slice()
+            .sort_unstable_by_key(|(key, _)| *key);
+        for adjacent in addresses.windows(2) {
+            if let [left, right] = adjacent
+                && left.0 == right.0
+                && left.1 != right.1
+            {
+                return Err(FusionError::Leg {
+                    leg: FusionLeg::Vector,
+                    kind: LegFailureKind::Invariant,
+                    detail: "hybrid document key names conflicting ranked source versions"
+                        .to_owned(),
+                });
+            }
+        }
+        Some(addresses)
+    } else {
+        None
+    };
     Ok(HybridRound {
+        addresses,
         vector: vector_candidates,
         lexical: lexical_candidates,
         bounds: LegBounds {
@@ -571,6 +617,7 @@ mod tests {
         assert_eq!(reference, 3);
         for next in [None, Some(9.0)] {
             let round = super::HybridRound {
+                addresses: None,
                 vector: vec![
                     super::VectorCandidate::exact(Some(DocId::new(1)), 1.0),
                     super::VectorCandidate::exact(Some(DocId::new(2)), 4.0),

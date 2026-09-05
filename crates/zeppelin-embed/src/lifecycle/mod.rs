@@ -8,6 +8,7 @@ pub mod durability;
 pub(crate) mod graph_cache;
 mod hybrid;
 pub mod lock;
+mod materialize;
 mod pool;
 pub(crate) mod rescored_scan;
 #[cfg(test)]
@@ -22,6 +23,9 @@ pub use cancel::{
 #[cfg(any(test, feature = "test-support"))]
 pub use clock::ManualMonotonicClock;
 pub use clock::{MonotonicClock, SystemMonotonicClock};
+#[cfg(any(test, feature = "test-support"))]
+pub use materialize::MaterializationTestCounters;
+pub use materialize::{MaterializationError, MaterializedRow, QueryMaterializer};
 pub use rescored_scan::ScanRescoreOptions;
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
@@ -2211,6 +2215,8 @@ pub struct Store {
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
     pub(crate) active_queries: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    text_materialization_work: materialize::TestMaterializationWork,
     pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
     pub(crate) tokenizer: crate::fts::tokenizer::Analyzer,
@@ -2586,6 +2592,8 @@ impl Store {
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             active_queries: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            text_materialization_work: materialize::TestMaterializationWork::default(),
             epoch_alias: crate::epoch::EpochAliasCell::new(persisted_epoch.or(declared_epoch)),
             epoch: options.epoch,
             tokenizer,
@@ -3063,25 +3071,41 @@ impl Store {
     }
 
     fn admit_lexical_query(&self) -> Result<AdmittedLexicalQuery<'_>, QueryError> {
+        #[cfg(any(test, feature = "test-support"))]
+        self.text_materialization_work
+            .admissions
+            .fetch_add(1, Ordering::Relaxed);
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        let lock_started = std::time::Instant::now();
         let state = self
             .state
             .lock()
             .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        self.text_materialization_work
+            .observe_lexical_lock(lock_started);
         match *state {
             StoreState::Open => {}
             StoreState::Closing => return Err(QueryError::Store(StoreError::Closing)),
             StoreState::Closed => return Err(QueryError::Store(StoreError::Closed)),
         }
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        let lock_started = std::time::Instant::now();
         let active_guard = self.active.lock().map_err(|_| {
             QueryError::Store(StoreError::Synchronization {
                 component: "active segment",
             })
         })?;
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        self.text_materialization_work
+            .observe_lexical_lock(lock_started);
         let active_state = active_guard
             .as_ref()
             .ok_or(QueryError::Store(StoreError::Closed))?;
         let generation = active_state.generation;
         let active = Arc::clone(&active_state.segment);
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        let lock_started = std::time::Instant::now();
         let snapshot = self
             .snapshot
             .read()
@@ -3089,6 +3113,11 @@ impl Store {
                 QueryError::Store(StoreError::Synchronization {
                     component: "published snapshot",
                 })
+            })
+            .inspect(|_| {
+                #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+                self.text_materialization_work
+                    .observe_lexical_lock(lock_started);
             })?
             .as_ref()
             .cloned()
@@ -3114,6 +3143,23 @@ impl Store {
         k: usize,
         control: QueryControl,
     ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
+        self.search_lexical_then(query, k, control, |outcome, _, _, _, _, _| Ok(outcome))
+    }
+
+    fn search_lexical_then<R>(
+        &self,
+        query: &crate::fts::search::TermQuery,
+        k: usize,
+        control: QueryControl,
+        finish: impl FnOnce(
+            crate::ingest::StoreLexicalSearchOutcome,
+            &PublishedSnapshot,
+            &crate::ingest::ActiveSegment,
+            &LexicalAssembly,
+            &[crate::fts::search::ScoredDoc],
+            &QueryCancellation<'_>,
+        ) -> Result<R, crate::ingest::StoreLexicalError>,
+    ) -> Result<R, crate::ingest::StoreLexicalError> {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
@@ -3184,12 +3230,21 @@ impl Store {
                 lexical: timing_elapsed(self.clock.as_ref(), lexical_started),
                 ..Default::default()
             });
-        drop(active_query);
-        Ok(crate::ingest::StoreLexicalSearchOutcome {
+        let outcome = crate::ingest::StoreLexicalSearchOutcome {
             candidates,
             generation,
             diagnostics,
-        })
+        };
+        let result = finish(
+            outcome,
+            &snapshot,
+            &active,
+            &assembly,
+            &lexical.result.hits,
+            &cancellation,
+        );
+        drop(active_query);
+        result
     }
 
     /// Returns the stored UTF-8 body for one exact document revision.
@@ -3207,6 +3262,10 @@ impl Store {
             active_query,
             ..
         } = self.admit_lexical_query()?;
+        #[cfg(any(test, feature = "test-support"))]
+        self.text_materialization_work
+            .reverse_version_lookups
+            .fetch_add(1, Ordering::Relaxed);
         if let Some((row, active_version, _)) = active.existing(version.doc_id())
             && active_version == version
         {
@@ -3217,6 +3276,10 @@ impl Store {
             return Ok(text.map(str::to_owned));
         }
         for segment in snapshot.segments() {
+            #[cfg(any(test, feature = "test-support"))]
+            self.text_materialization_work
+                .reverse_version_lookups
+                .fetch_add(1, Ordering::Relaxed);
             let Some(row) = segment
                 .query_row_for_document_version(version)
                 .map_err(crate::ingest::StoreLexicalError::from)?
@@ -3437,6 +3500,34 @@ impl Store {
         options: SearchOptions,
         control: QueryControl,
     ) -> Result<crate::ingest::StoreHybridSearchOutcome, crate::fusion::FusionError> {
+        self.search_hybrid_then(
+            vector_query,
+            lexical_query,
+            hybrid_query,
+            options,
+            control,
+            false,
+            |outcome, _, _, _, _| Ok(outcome),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // The existing query arguments plus its scoped continuation.
+    fn search_hybrid_then<R>(
+        &self,
+        vector_query: crate::ingest::SearchRequest<'_>,
+        lexical_query: PinnedLexicalQuery<'_>,
+        hybrid_query: &crate::fusion::HybridQuery,
+        options: SearchOptions,
+        control: QueryControl,
+        capture_rows: bool,
+        finish: impl FnOnce(
+            crate::ingest::StoreHybridSearchOutcome,
+            &PublishedSnapshot,
+            &crate::ingest::ActiveSegment,
+            &QueryCancellation<'_>,
+            Option<&materialize::HybridAddresses>,
+        ) -> Result<R, crate::fusion::FusionError>,
+    ) -> Result<R, crate::fusion::FusionError> {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
@@ -3639,7 +3730,7 @@ impl Store {
         let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
-        let (fused, report_window) = loop {
+        let (fused, report_window, addresses) = loop {
             if let Some(vector_timings) = vector_outcome.diagnostics.timings {
                 timings.vector += vector_timings.vector;
             }
@@ -3655,6 +3746,8 @@ impl Store {
                 &lexical_hits,
                 width,
                 &fusion_cancellation,
+                capture_rows,
+                &self.accounting,
             )?;
             // Cross-fill reads full-precision rows on the caller thread,
             // outside the vector producer. Include those actual reads in
@@ -3748,6 +3841,7 @@ impl Store {
                         vector_candidates_produced: work.vector_candidates_produced,
                         lexical_candidates_produced: work.lexical_candidates_produced,
                     },
+                    round.addresses,
                 );
             }
             width = if rounds >= hybrid_query.max_rounds {
@@ -3821,12 +3915,19 @@ impl Store {
         diagnostics.scan_rescore = options.scan_rescore().map(|_| rescore_counters);
         diagnostics.counters.lexical_cache_builds = work.lexical_cache_builds;
         diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then_some(timings);
-        Ok(crate::ingest::StoreHybridSearchOutcome {
+        let outcome = crate::ingest::StoreHybridSearchOutcome {
             hits: fused.hits,
             lexical_expansions,
             generation,
             diagnostics,
-        })
+        };
+        finish(
+            outcome,
+            &admitted.snapshot,
+            &admitted.active_segment,
+            &fusion_cancellation,
+            addresses.as_ref(),
+        )
     }
 
     /// Returns `(hits, builds)` for the assembled-lexical-index cache.
@@ -3867,13 +3968,36 @@ impl Store {
         control: QueryControl,
         graph_bound_mode: GraphBoundMode,
     ) -> Result<crate::ingest::SearchOutcome, QueryError> {
+        self.search_with_graph_bound_mode_then(
+            request,
+            k,
+            options,
+            control,
+            graph_bound_mode,
+            |outcome, _, _| Ok(outcome),
+        )
+    }
+
+    fn search_with_graph_bound_mode_then<R>(
+        &self,
+        request: crate::ingest::SearchRequest<'_>,
+        k: usize,
+        options: SearchOptions,
+        control: QueryControl,
+        graph_bound_mode: GraphBoundMode,
+        finish: impl FnOnce(
+            crate::ingest::SearchOutcome,
+            &AdmittedVectorSearch<'_>,
+            &QueryControl,
+        ) -> Result<R, QueryError>,
+    ) -> Result<R, QueryError> {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
         let admitted = self.admit_vector_search(options)?;
         let admission_time = timing_elapsed(self.clock.as_ref(), admission_started);
         let score = || {
-            search_pinned(
+            let mut outcome = search_pinned(
                 admitted.pool.as_deref(),
                 &admitted.snapshot,
                 &admitted.active_segment,
@@ -3883,7 +4007,7 @@ impl Store {
                 request,
                 k,
                 options,
-                control,
+                control.clone(),
                 graph_bound_mode,
                 options.explicit_tier(),
                 None,
@@ -3891,7 +4015,11 @@ impl Store {
                 self.clock.as_ref(),
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
-            )
+            )?;
+            if let Some(timings) = &mut outcome.diagnostics.timings {
+                timings.admission = admission_time;
+            }
+            finish(outcome, &admitted, &control)
         };
         #[cfg(any(test, feature = "test-support"))]
         let result = crate::kernels::vector_fault::run_store_scoring(
@@ -3906,12 +4034,7 @@ impl Store {
                 controller.finalize_search(result.is_ok());
             }
         }
-        result.map(|mut outcome| {
-            if let Some(timings) = &mut outcome.diagnostics.timings {
-                timings.admission = admission_time;
-            }
-            outcome
-        })
+        result
     }
 
     fn ensure_query_pool(&self) -> Result<Arc<pool::QueryPool>, QueryError> {
@@ -3974,6 +4097,10 @@ impl Store {
         options: SearchOptions,
         hybrid_default: bool,
     ) -> Result<AdmittedVectorSearch<'_>, QueryError> {
+        #[cfg(any(test, feature = "test-support"))]
+        self.text_materialization_work
+            .admissions
+            .fetch_add(1, Ordering::Relaxed);
         let state = self
             .state
             .lock()

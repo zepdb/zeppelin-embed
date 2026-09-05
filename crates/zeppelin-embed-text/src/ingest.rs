@@ -872,31 +872,34 @@ impl TextStore {
         timings: &mut TextQueryTimings,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
-        let outcome = self
+        let (outcome, hits) = self
             .store
-            .search(
+            .search_with_text(
                 SearchRequest::new(vector),
                 options.k,
                 Self::search_options(options),
                 QueryControl::Cancel(CancelToken::new()),
+                |outcome, materializer| {
+                    timings.retrieval = stage_elapsed(retrieval_started);
+                    let started = stage_start();
+                    let hits = outcome
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, candidate)| {
+                            let row = materializer
+                                .text(rank)
+                                .map_err(TextError::Materialization)?;
+                            let squared_l2 = -f64::from(candidate.score());
+                            self.make_hit(row, -squared_l2, Some(squared_l2), None)
+                        })
+                        .collect::<Result<Vec<_>, TextError>>();
+                    timings.materialization = stage_elapsed(started);
+                    hits
+                },
             )
             .map_err(TextError::Query)?;
-        timings.retrieval = stage_elapsed(retrieval_started);
-        let materialization_started = stage_start();
-        let hits = outcome
-            .candidates
-            .into_iter()
-            .map(|candidate| {
-                let version = candidate.document().ok_or(TextError::Pipeline {
-                    stage: "dense result",
-                    detail: "candidate has no document identity".to_owned(),
-                })?;
-                let squared_l2 = -f64::from(candidate.score());
-                self.make_hit(version, -squared_l2, Some(squared_l2), None)
-            })
-            .collect::<Result<Vec<_>, TextError>>()?;
-        timings.materialization = stage_elapsed(materialization_started);
-        Ok((hits, outcome.diagnostics))
+        Ok((hits?, outcome.diagnostics))
     }
 
     fn lexical_hits(
@@ -906,26 +909,32 @@ impl TextStore {
         timings: &mut TextQueryTimings,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
-        let outcome = self
+        let (outcome, hits) = self
             .store
-            .search_lexical(query, k, QueryControl::Cancel(CancelToken::new()))
+            .search_lexical_with_text(
+                query,
+                k,
+                QueryControl::Cancel(CancelToken::new()),
+                |outcome, materializer| {
+                    timings.retrieval = stage_elapsed(retrieval_started);
+                    let started = stage_start();
+                    let hits = outcome
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, candidate)| {
+                            let row = materializer
+                                .text(rank)
+                                .map_err(TextError::Materialization)?;
+                            self.make_hit(row, candidate.score, None, Some(candidate.score))
+                        })
+                        .collect::<Result<Vec<_>, TextError>>();
+                    timings.materialization = stage_elapsed(started);
+                    hits
+                },
+            )
             .map_err(TextError::Lexical)?;
-        timings.retrieval = stage_elapsed(retrieval_started);
-        let materialization_started = stage_start();
-        let hits = outcome
-            .candidates
-            .into_iter()
-            .map(|candidate| {
-                self.make_hit(
-                    candidate.document,
-                    candidate.score,
-                    None,
-                    Some(candidate.score),
-                )
-            })
-            .collect::<Result<Vec<_>, TextError>>()?;
-        timings.materialization = stage_elapsed(materialization_started);
-        Ok((hits, outcome.diagnostics))
+        Ok((hits?, outcome.diagnostics))
     }
 
     fn hybrid_hits(
@@ -936,9 +945,9 @@ impl TextStore {
         timings: &mut TextQueryTimings,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
-        let outcome = self
+        let (outcome, hits) = self
             .store
-            .search_hybrid(
+            .search_hybrid_with_text(
                 SearchRequest::new(vector),
                 query,
                 &HybridQuery::new(options.k)
@@ -946,32 +955,31 @@ impl TextStore {
                     .with_epoch(self.document_epoch),
                 Self::search_options(options),
                 QueryControl::Cancel(CancelToken::new()),
+                |outcome, materializer| {
+                    timings.retrieval = stage_elapsed(retrieval_started);
+                    let started = stage_start();
+                    let hits = outcome
+                        .hits
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, hit)| {
+                            let row = materializer
+                                .text(rank)
+                                .map_err(TextError::Materialization)?;
+                            self.make_hit(
+                                row,
+                                hit.fused_score,
+                                hit.vector_squared_l2,
+                                hit.lexical_bm25,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, TextError>>();
+                    timings.materialization = stage_elapsed(started);
+                    hits
+                },
             )
             .map_err(TextError::Hybrid)?;
-        timings.retrieval = stage_elapsed(retrieval_started);
-        let materialization_started = stage_start();
-        let versions = self.versions.lock().map_err(|_| TextError::Pipeline {
-            stage: "version registry",
-            detail: "mutex poisoned".to_owned(),
-        })?;
-        let hits = outcome
-            .hits
-            .into_iter()
-            .map(|hit| {
-                let revision = versions.get(&hit.key).copied().ok_or(TextError::Pipeline {
-                    stage: "hybrid result",
-                    detail: "document revision is unavailable".to_owned(),
-                })?;
-                self.make_hit(
-                    DocumentVersion::new(hit.key, revision),
-                    hit.fused_score,
-                    hit.vector_squared_l2,
-                    hit.lexical_bm25,
-                )
-            })
-            .collect::<Result<Vec<_>, TextError>>()?;
-        timings.materialization = stage_elapsed(materialization_started);
-        Ok((hits, outcome.diagnostics))
+        Ok((hits?, outcome.diagnostics))
     }
 
     /// Applies an explicit tier only when the caller asked for one.
@@ -990,23 +998,17 @@ impl TextStore {
 
     fn make_hit(
         &self,
-        version: DocumentVersion,
+        row: zeppelin_embed::lifecycle::MaterializedRow,
         score: f64,
         vector_squared_l2: Option<f64>,
         lexical_bm25: Option<f64>,
     ) -> Result<TextHit, TextError> {
+        let version = row.document;
         let encoded = version.doc_id().get();
         let doc_id = encoded >> CHUNK_BITS;
         let chunk = u32::try_from(encoded & u128::from(u32::MAX))
             .map_err(|_| TextError::InvalidInput("chunk id exceeds u32"))?;
-        let text = self
-            .store
-            .stored_text(version)
-            .map_err(TextError::Lexical)?
-            .ok_or(TextError::Pipeline {
-                stage: "stored text",
-                detail: "result row has no stored text".to_owned(),
-            })?;
+        let text = row.text;
         Ok(TextHit {
             doc_id,
             revision: version.revision().get(),

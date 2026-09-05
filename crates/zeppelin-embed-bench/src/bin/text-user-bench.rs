@@ -468,6 +468,11 @@ fn query_sample_json(
                 "rescore_bytes": work.rescore_bytes,
                 "byte_scope": "coordinate payload only; factor metadata excluded; hybrid cross-fill separate",
             })),
+            "materialization": diag.materialization.map(|work| json!({
+                "row_lookups": work.row_lookups,
+                "text_copies": work.text_copies,
+                "text_bytes": work.text_bytes,
+            })),
             "counters": {
                 "vector_coordinates": counters.scan.dims_touched,
                 "vector_bytes": counters.scan.bytes_read,

@@ -583,3 +583,349 @@ fn assert_deadline_interrupts(store: &Store, request: ScanRequest<'_>, scheme: &
         "{scheme} loop ignored cancellation for {elapsed:?}"
     );
 }
+
+#[path = "test_support/pinned_text.rs"]
+mod pinned_text;
+
+#[test]
+fn astra_07_cancelled_materialization_does_not_report_published_kernel_results() {
+    use zeppelin_embed::ingest::{
+        DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+    };
+    use zeppelin_embed::kernels::{KernelVariant, vector_fault::KernelFaultController};
+    use zeppelin_embed::lifecycle::{SearchOptions, SearchTier, SystemMonotonicClock};
+    zeppelin_embed::kernels::initialize().expect("process backend");
+    for cancel in [true, false] {
+        let directory = tempdir().expect("publication receipt fixture");
+        let controller =
+            KernelFaultController::forced_backend(KernelVariant::selected().backend_id(), 11);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            StoreTestDependencies::new(Arc::new(StdVfs), Arc::new(SystemMonotonicClock))
+                .with_kernel_fault_controller(controller.clone()),
+        )
+        .expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("bronze"),
+            ]))
+            .expect("ingest");
+        let token = CancelToken::new();
+        let outcome = store.search_with_text(
+            SearchRequest::new(&[1.0, 0.0]),
+            1,
+            SearchOptions::default().with_tier(SearchTier::Scan),
+            QueryControl::Cancel(token.clone()),
+            |_, materializer| {
+                let row = materializer.text(0).expect("ranked row copied");
+                if cancel {
+                    token.cancel();
+                }
+                row
+            },
+        );
+        if cancel {
+            assert!(matches!(
+                outcome,
+                Err(QueryError::Cancelled { partial: false })
+            ));
+        } else {
+            assert_eq!(outcome.expect("clean query").1.text, "bronze");
+        }
+        let observations = controller.take_observations();
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].work_items() > 0);
+        assert_eq!(
+            observations[0].result_published(),
+            !cancel,
+            "publication must describe the completed public operation"
+        );
+        let receipts = controller.take_typed_receipts();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].result_published(), !cancel);
+        store.close().expect("close");
+    }
+}
+
+#[test]
+fn astra_07_materialization_survives_physical_purge_of_its_source() {
+    use std::sync::mpsc;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    for leg in pinned_text::LEGS {
+        let directory = tempdir().expect("purge hydration fixture");
+        let store = Arc::new(Store::open(directory.path(), OpenOptions::default()).expect("open"));
+        let original = DocumentVersion::new(DocId::new(7), Revision::new(3));
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(original, vec![1.0, 0.0])
+                    .with_text("original bronze purge sentinel"),
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(8), Revision::new(1)),
+                    vec![0.0, 1.0],
+                )
+                .with_text("surviving bronze"),
+            ]))
+            .expect("ingest");
+        store.seal().expect("seal");
+        let old_source = store.snapshot().expect("source identity").segments()[0]
+            .meta()
+            .id;
+        let old_path = directory.path().join(old_source.file_name());
+        let (ranked_tx, ranked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let query_store = Arc::clone(&store);
+        let task = std::thread::spawn(move || {
+            pinned_text::run(&query_store, leg, 2, |materializer| {
+                ranked_tx.send(()).expect("ranking barrier");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("purge finished");
+                (0..2)
+                    .map(|rank| materializer.text(rank))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+        });
+        ranked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("ranking complete");
+        let token = store.purge(&[original.doc_id()]).expect("schedule purge");
+        let report = store
+            .await_physical_purge(token)
+            .expect("physical purge completes");
+        assert_eq!(report.segments_rewritten(), 1);
+        assert!(report.wal_rewritten());
+        assert!(
+            !old_path.exists(),
+            "purge must actually unlink the original source"
+        );
+        assert_eq!(store.stored_text(original).expect("current snapshot"), None);
+        resume_tx.send(()).expect("resume original hydration");
+        let (_, rows) = task.join().expect("query joined").expect("query completes");
+        let rows = rows.expect("pinned mapping survives unlink");
+        let row = rows
+            .iter()
+            .find(|row| row.document == original)
+            .expect("original version retained");
+        assert_eq!(row.text, "original bronze purge sentinel");
+        assert_eq!(
+            row.row_id.source(),
+            zeppelin_embed::ingest::RowSource::Sealed(old_source)
+        );
+        let (_, rows) =
+            pinned_text::run(&store, leg, 1, |m| m.text(0)).expect("clean subsequent query");
+        assert_eq!(rows.expect("survivor").document.doc_id(), DocId::new(8));
+        assert_eq!(store.stats().expect("scratch released").temporary_bytes, 0);
+        store.close().expect("close");
+    }
+}
+
+#[test]
+fn astra_07_close_during_materialization_joins_or_cancels_without_partial_hits() {
+    use std::sync::mpsc;
+    use zeppelin_embed::fusion::FusionError;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    for leg in pinned_text::LEGS {
+        let directory = tempdir().expect("close hydration fixture");
+        let store = Arc::new(Store::open(directory.path(), OpenOptions::default()).expect("open"));
+        for id in 1..=2 {
+            store
+                .ingest(IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                    .with_text("original bronze"),
+                ]))
+                .expect("ingest");
+            if id == 1 {
+                store.seal().expect("mixed source");
+            }
+        }
+        let (ranked_tx, ranked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let query_store = Arc::clone(&store);
+        let task = std::thread::spawn(move || {
+            pinned_text::run(&query_store, leg, 2, |materializer| {
+                let first = materializer.text(0).expect("first row before close");
+                ranked_tx.send(()).expect("hydration barrier");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("close cancelled lease");
+                // Even a callback that retains its first hit must not cause a
+                // partially materialized result to escape the Store method.
+                assert!(matches!(
+                    materializer.text(1),
+                    Err(zeppelin_embed::lifecycle::MaterializationError::Query(
+                        QueryError::ReadCancelled { partial: false }
+                    ))
+                ));
+                vec![first]
+            })
+        });
+        ranked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("first row copied");
+        let lease = store.snapshot().expect("observe cancellation signal");
+        let close_store = Arc::clone(&store);
+        let closer = std::thread::spawn(move || close_store.close());
+        lease
+            .wait_for_close_cancellation()
+            .expect("close cancellation");
+        drop(lease);
+        resume_tx.send(()).expect("resume");
+        assert!(
+            matches!(
+                task.join().expect("query joined"),
+                Err(FusionError::ReadCancelled { partial: false })
+            ),
+            "{leg:?}"
+        );
+        closer
+            .join()
+            .expect("close joined")
+            .expect("close drains hydration");
+        assert!(matches!(store.stats(), Err(StoreError::Closed)));
+        let reopened = Store::open(directory.path(), OpenOptions::default())
+            .expect("writer ownership released");
+        let (_, rows) = pinned_text::run(&reopened, leg, 2, |materializer| {
+            (0..2)
+                .map(|rank| materializer.text(rank))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .expect("clean reopened query");
+        assert_eq!(rows.expect("complete reopened result").len(), 2);
+        reopened.close().expect("close reopened store");
+    }
+}
+
+#[test]
+fn astra_07_materialization_survives_consolidation_with_original_lease() {
+    use std::sync::mpsc;
+    use zeppelin_embed::epoch::{
+        ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+    };
+    use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
+    let tower = EmbeddingTower {
+        model_id: "astra-07-snapshot".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![7],
+        dims: 2,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let epoch = StoreEpoch {
+        embedding: EmbeddingEpoch {
+            document: tower.clone(),
+            query: tower,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    };
+    for leg in pinned_text::LEGS {
+        let directory = tempdir().expect("consolidation hydration fixture");
+        let store = Arc::new(
+            Store::open(
+                directory.path(),
+                OpenOptions::default().with_epoch(epoch.clone()),
+            )
+            .expect("open"),
+        );
+        for group in 0..3 {
+            store
+                .ingest(
+                    IngestBatch::new(
+                        (1..=64)
+                            .map(|row| {
+                                let id = group * 64 + row;
+                                IngestDocument::new(
+                                    DocumentVersion::new(DocId::new(id), Revision::new(3)),
+                                    vec![1.0, 0.0],
+                                )
+                                .with_text(format!("original bronze {id}"))
+                            })
+                            .collect(),
+                    )
+                    .with_epoch(epoch.identity()),
+                )
+                .expect("ingest");
+            store.seal().expect("seal");
+        }
+        let old_ids: Vec<_> = store
+            .snapshot()
+            .expect("old sources")
+            .segments()
+            .iter()
+            .map(|s| s.meta().id)
+            .collect();
+        let (ranked_tx, ranked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let query_store = Arc::clone(&store);
+        let task = std::thread::spawn(move || {
+            pinned_text::run(&query_store, leg, 192, |materializer| {
+                ranked_tx.send(()).expect("ranking barrier");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("consolidation finished");
+                (0..192)
+                    .map(|rank| materializer.text(rank))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+        });
+        ranked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("ranking complete");
+        let report = store.maintain_with_test_thresholds(
+            MaintenanceBudget {
+                wall_time: Duration::from_secs(20),
+                bytes: u64::MAX,
+            },
+            TierThresholds {
+                graph_min_rows: 100,
+            },
+        );
+        assert!(
+            matches!(report.status, MaintenanceStatus::Complete),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.consolidations, 1,
+            "actual consolidation must publish"
+        );
+        let snapshot = store.snapshot().expect("new sources");
+        assert_eq!(snapshot.segments().len(), 1);
+        assert!(
+            snapshot
+                .segments()
+                .iter()
+                .all(|s| !old_ids.contains(&s.meta().id))
+        );
+        drop(snapshot);
+        resume_tx.send(()).expect("resume original hydration");
+        let (_, rows) = task.join().expect("query joined").expect("query completes");
+        let rows = rows.expect("original rows remain readable");
+        assert_eq!(rows.len(), 192);
+        for row in rows {
+            assert_eq!(row.document.revision(), Revision::new(3));
+            assert_eq!(
+                row.text,
+                format!("original bronze {}", row.document.doc_id().get())
+            );
+            assert!(
+                matches!(row.row_id.source(), zeppelin_embed::ingest::RowSource::Sealed(id) if old_ids.contains(&id))
+            );
+        }
+        assert_eq!(store.stats().expect("scratch released").temporary_bytes, 0);
+        store.close().expect("close");
+    }
+}

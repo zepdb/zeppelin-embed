@@ -7,6 +7,47 @@ use zeppelin_embed_text::{IngestOptions, Legs, QueryOptions, TextDocument, TextS
 mod common;
 
 #[test]
+fn astra_07_result_materialization_uses_one_admission() {
+    let directory = tempdir().expect("text hydration fixture");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store =
+        TextStore::open(directory.path().join("store"), &path, Default::default()).expect("open");
+    let documents: Vec<_> = (1..=100)
+        .map(|id| TextDocument::new(id, 7, "bronze zeppelin"))
+        .collect();
+    store
+        .ingest_text(&documents, IngestOptions::default())
+        .expect("ingest");
+    for k in [1, 10, 100] {
+        for legs in [Legs::Dense, Legs::Lexical, Legs::Hybrid] {
+            let outcome = store
+                .query_text_with_diagnostics(
+                    "bronze zeppelin",
+                    QueryOptions::new(k).with_legs(legs),
+                )
+                .expect("text query");
+            let work = outcome
+                .diagnostics
+                .expect("core query")
+                .materialization
+                .expect("text must be materialized within retrieval admission");
+            assert_eq!(work.row_lookups, k as u64);
+            assert_eq!(work.text_copies, k as u64);
+            assert_eq!(work.text_bytes, (k * "bronze zeppelin".len()) as u64);
+            assert_eq!(outcome.hits.len(), k);
+            assert!(
+                outcome
+                    .hits
+                    .iter()
+                    .all(|hit| hit.revision == 7 && hit.text == "bronze zeppelin")
+            );
+        }
+    }
+    store.close().expect("close");
+}
+
+#[test]
 fn astra_06_text_query_exposes_explicit_rescore_and_preserves_tier_controls() {
     use zeppelin_embed::lifecycle::{ScanRescoreOptions, SearchTier};
     let directory = tempdir().expect("tempdir");

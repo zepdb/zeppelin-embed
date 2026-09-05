@@ -25,6 +25,289 @@ use zeppelin_embed::segment::reader::SegmentReader;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::wal::WalReader;
 
+#[path = "test_support/pinned_text.rs"]
+mod pinned_text;
+
+/// Component comparison: the old public per-hit route versus the pinned callback.
+/// Release-only supporting measurements; no wall-clock acceptance threshold.
+#[cfg(feature = "query-timing")]
+#[test]
+#[ignore = "explicit materialization and lock-acquisition measurement"]
+fn astra_07_materialization_component_measurement() {
+    use std::time::Instant;
+    let directory = tempdir().expect("materialization measurement");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (1..=4096_u128)
+                .map(|id| {
+                    let bytes = [64, 256, 1024, 4096][id as usize % 4];
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(3)),
+                        vec![1.0, 0.0],
+                    )
+                    .with_text(format!("bronze café {id:08} {}", "x".repeat(bytes)))
+                })
+                .collect(),
+        ))
+        .expect("ingest");
+    store.seal().expect("seal");
+    for k in [1, 10, 100] {
+        let mut samples = [Vec::new(), Vec::new()];
+        for round in 0..84 {
+            for arm in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                let options = SearchOptions::default().with_tier(SearchTier::Exact);
+                let control = QueryControl::Cancel(CancelToken::new());
+                let request = SearchRequest::new(&[1.0, 0.0]);
+                let (rows, nanos, before, after) = if arm == 0 {
+                    let result = store
+                        .search(request, k, options, control)
+                        .expect("legacy ranking");
+                    let before = store.query_materialization_test_counters();
+                    let started = Instant::now();
+                    let rows: Vec<_> = result
+                        .candidates
+                        .iter()
+                        .map(|hit| {
+                            let document = hit.document().expect("ranked identity");
+                            (
+                                document,
+                                store
+                                    .stored_text(document)
+                                    .expect("legacy lookup")
+                                    .expect("text"),
+                            )
+                        })
+                        .collect();
+                    let nanos = started.elapsed().as_nanos() as u64;
+                    (
+                        rows,
+                        nanos,
+                        before,
+                        store.query_materialization_test_counters(),
+                    )
+                } else {
+                    store
+                        .search_with_text(request, k, options, control, |_, materializer| {
+                            let before = store.query_materialization_test_counters();
+                            let started = Instant::now();
+                            let rows: Vec<_> = (0..k)
+                                .map(|rank| {
+                                    let row = materializer.text(rank).expect("pinned row");
+                                    (row.document, row.text)
+                                })
+                                .collect();
+                            let nanos = started.elapsed().as_nanos() as u64;
+                            (
+                                rows,
+                                nanos,
+                                before,
+                                store.query_materialization_test_counters(),
+                            )
+                        })
+                        .expect("scoped ranking")
+                        .1
+                };
+                assert_eq!(rows.len(), k);
+                for (rank, (document, text)) in rows.iter().enumerate() {
+                    let id = rank as u128 + 1;
+                    assert_eq!(
+                        *document,
+                        DocumentVersion::new(DocId::new(id), Revision::new(3))
+                    );
+                    assert_eq!(
+                        text,
+                        &format!(
+                            "bronze café {id:08} {}",
+                            "x".repeat([64, 256, 1024, 4096][id as usize % 4])
+                        )
+                    );
+                }
+                let admissions = after.admissions - before.admissions;
+                let reverse = after.reverse_version_lookups - before.reverse_version_lookups;
+                let locks = after.lexical_admission_locks - before.lexical_admission_locks;
+                let lock_nanos =
+                    after.lexical_admission_lock_nanos - before.lexical_admission_lock_nanos;
+                let direct = after.direct_row_lookups - before.direct_row_lookups;
+                assert_eq!(
+                    (admissions, reverse, locks, direct),
+                    if arm == 0 {
+                        (k as u64, 2 * k as u64, 3 * k as u64, 0)
+                    } else {
+                        (0, 0, 0, k as u64)
+                    }
+                );
+                if arm == 1 {
+                    assert_eq!(lock_nanos, 0);
+                }
+                if round >= 20 {
+                    let bytes: usize = rows.iter().map(|(_, text)| text.len()).sum();
+                    samples[arm].push((nanos, lock_nanos, locks, bytes));
+                }
+            }
+        }
+        for (arm, sample) in samples.iter_mut().enumerate() {
+            sample.sort_unstable_by_key(|row| row.0);
+            let mean_lock =
+                sample.iter().map(|row| row.1 as f64).sum::<f64>() / sample.len() as f64;
+            println!(
+                "ASTRA07_MATERIALIZE k={k} arm={arm} samples={} p50_ns={} p95_ns={} mean_lock_acquisition_ns={mean_lock} locks={} text_bytes={}",
+                sample.len(),
+                sample[31].0,
+                sample[60].0,
+                sample[0].2,
+                sample[0].3
+            );
+        }
+    }
+    assert_eq!(store.stats().expect("scratch released").temporary_bytes, 0);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_07_result_text_and_revision_match_scored_snapshot() {
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    for leg in pinned_text::LEGS {
+        for sealed in [false, true] {
+            for delete in [false, true] {
+                let directory = tempdir().expect("snapshot hydration fixture");
+                let store =
+                    Arc::new(Store::open(directory.path(), OpenOptions::default()).expect("open"));
+                let original = DocumentVersion::new(DocId::new(7), Revision::new(1));
+                store
+                    .ingest(IngestBatch::new(vec![
+                        IngestDocument::new(original, vec![1.0, 0.0])
+                            .with_text("original bronze café 🚀"),
+                    ]))
+                    .expect("ingest");
+                if sealed {
+                    store.seal().expect("seal");
+                }
+                let (ranked_tx, ranked_rx) = mpsc::channel();
+                let (resume_tx, resume_rx) = mpsc::channel();
+                let query_store = Arc::clone(&store);
+                let task = std::thread::spawn(move || {
+                    pinned_text::run(&query_store, leg, 1, |materializer| {
+                        ranked_tx.send(()).expect("ranking barrier");
+                        resume_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .expect("mutation finished");
+                        if !delete {
+                            let current = DocumentVersion::new(original.doc_id(), Revision::new(2));
+                            assert!(
+                                matches!(
+                                    materializer.text_with_test_document(0, Some(current)),
+                                    Err(zeppelin_embed::lifecycle::MaterializationError::IdentityMismatch {
+                                        expected, actual: Some(actual), ..
+                                    }) if expected == current && actual == original
+                                ),
+                                "the current revision must fail the original-snapshot oracle"
+                            );
+                        }
+                        materializer.text(0)
+                    })
+                });
+                ranked_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("ranked before mutation");
+                if delete {
+                    store
+                        .delete(DeleteBatch::new(vec![original.doc_id()]))
+                        .expect("delete between ranking and hydration");
+                } else {
+                    store
+                        .ingest(IngestBatch::new(vec![
+                            IngestDocument::new(
+                                DocumentVersion::new(original.doc_id(), Revision::new(2)),
+                                vec![0.0, 1.0],
+                            )
+                            .with_text("new text"),
+                        ]))
+                        .expect("update between ranking and hydration");
+                }
+                resume_tx.send(()).expect("resume hydration");
+                let (_generation, row) = task.join().expect("query thread").expect("ranked query");
+                let row = row.expect("original scored source must remain available after mutation");
+                assert_eq!(row.document, original);
+                assert_eq!(row.text, "original bronze café 🚀");
+                store.close().expect("close");
+            }
+        }
+    }
+}
+
+#[test]
+fn astra_07_result_materialization_uses_one_admission() {
+    let directory = tempdir().expect("receipt fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    for group in 0..3 {
+        store
+            .ingest(IngestBatch::new(
+                (0..40)
+                    .map(|row| {
+                        IngestDocument::new(
+                            DocumentVersion::new(
+                                DocId::new(group * 40 + row + 1),
+                                Revision::new(3),
+                            ),
+                            vec![1.0, 0.0],
+                        )
+                        .with_text("original bronze café")
+                    })
+                    .collect(),
+            ))
+            .expect("ingest group");
+        if group < 2 {
+            store.seal().expect("mixed sources");
+        }
+    }
+    for k in [1, 10, 100] {
+        for leg in pinned_text::LEGS {
+            let before = store.query_materialization_test_counters();
+            let (_, rows) = pinned_text::run(&store, leg, k, |materializer| {
+                (0..k)
+                    .map(|rank| materializer.text(rank))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .expect("scoped query");
+            let rows = rows.expect("owned rows");
+            let after = store.query_materialization_test_counters();
+            assert_eq!(after.admissions - before.admissions, 1, "{leg:?} k={k}");
+            assert_eq!(
+                after.reverse_version_lookups - before.reverse_version_lookups,
+                0
+            );
+            assert_eq!(
+                after.direct_row_lookups - before.direct_row_lookups,
+                k as u64
+            );
+            assert_eq!(rows.len(), k);
+            for (rank, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.document,
+                    DocumentVersion::new(DocId::new(rank as u128 + 1), Revision::new(3))
+                );
+                assert_eq!(row.text, "original bronze café");
+            }
+            // Independent counter control: the old public hydration route
+            // really performs one new admission and reverse lookup per hit.
+            let before = store.query_materialization_test_counters();
+            for row in &rows {
+                assert_eq!(
+                    store.stored_text(row.document).expect("standalone text"),
+                    Some(row.text.clone())
+                );
+            }
+            let after = store.query_materialization_test_counters();
+            assert_eq!(after.admissions - before.admissions, k as u64);
+            assert!(after.reverse_version_lookups - before.reverse_version_lookups >= k as u64);
+            assert_eq!(after.direct_row_lookups, before.direct_row_lookups);
+        }
+    }
+    store.close().expect("close");
+}
+
 #[test]
 fn text_ingested_through_the_store_is_searchable_after_reopen() {
     let directory = tempdir().expect("store directory");
@@ -1523,4 +1806,62 @@ fn lexical_index_cache_follows_the_active_segment_and_the_snapshot() {
     );
 
     store.close().expect("close store");
+}
+
+#[test]
+fn astra_07_missing_text_or_identity_is_typed_and_store_remains_reusable() {
+    use zeppelin_embed::lifecycle::MaterializationError;
+    for sealed in [false, true] {
+        let directory = tempdir().expect("missing text fixture");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let original = DocumentVersion::new(DocId::new(7), Revision::new(1));
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                original,
+                vec![1.0, 0.0],
+            )]))
+            .expect("no text");
+        if sealed {
+            store.seal().expect("seal absent text");
+        }
+        let (_, row) = pinned_text::run(&store, pinned_text::Leg::Dense, 1, |materializer| {
+            materializer.text(0)
+        })
+        .expect("ranked row");
+        assert!(
+            matches!(row, Err(MaterializationError::MissingText { document, .. }) if document == original)
+        );
+        let current = DocumentVersion::new(original.doc_id(), Revision::new(2));
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(current, vec![1.0, 0.0]).with_text("original bronze"),
+            ]))
+            .expect("add valid text");
+        if sealed {
+            store.seal().expect("seal valid source");
+        }
+        for leg in pinned_text::LEGS {
+            let (_, row) = pinned_text::run(&store, leg, 1, |materializer| {
+                assert!(matches!(materializer.text(1), Err(MaterializationError::RankOutOfRange { rank: 1, returned: 1 })));
+                assert!(matches!(materializer.text_with_test_document(0, None), Err(MaterializationError::MissingIdentity { .. })));
+                let wrong_current = DocumentVersion::new(current.doc_id(), Revision::new(3));
+                assert!(matches!(materializer.text_with_test_document(0, Some(wrong_current)), Err(MaterializationError::IdentityMismatch { expected, actual: Some(actual), .. }) if expected == wrong_current && actual == current));
+                materializer.text(0)
+            }).expect("same-query clean control");
+            let row = row.expect("valid identity/text retry");
+            assert_eq!(row.document, current);
+            assert_eq!(row.text, "original bronze");
+            let (_, retry) = pinned_text::run(&store, leg, 1, |materializer| materializer.text(0))
+                .expect("clean subsequent query");
+            assert_eq!(retry.expect("no fault"), row);
+        }
+        assert_eq!(
+            store
+                .stats()
+                .expect("released temporary work")
+                .temporary_bytes,
+            0
+        );
+        store.close().expect("close");
+    }
 }

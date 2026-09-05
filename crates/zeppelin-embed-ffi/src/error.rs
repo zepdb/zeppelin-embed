@@ -26,6 +26,22 @@ impl FfiError {
             TextError::Query(error) => Self::query(error).code,
             TextError::Lexical(error) => Self::lexical(error).code,
             TextError::Hybrid(error) => Self::fusion(error).code,
+            TextError::Materialization(error) => {
+                use zeppelin_embed::lifecycle::MaterializationError;
+                match error {
+                    MaterializationError::Query(error) => Self::query(error).code,
+                    MaterializationError::Storage(error) => Self::store(error).code,
+                    MaterializationError::MissingText { .. } => ZeErrorCode::ZeErrNotFound,
+                    MaterializationError::AllocationFailed { .. } => ZeErrorCode::ZeErrOutOfMemory,
+                    MaterializationError::RankOutOfRange { .. }
+                    | MaterializationError::ArithmeticOverflow => ZeErrorCode::ZeErrInternal,
+                    MaterializationError::MissingIdentity { .. }
+                    | MaterializationError::MissingSource { .. }
+                    | MaterializationError::InvalidLexicalSource { .. }
+                    | MaterializationError::MissingFusedIdentity { .. }
+                    | MaterializationError::IdentityMismatch { .. } => ZeErrorCode::ZeErrCorrupt,
+                }
+            }
         };
         Self::new(code, message)
     }
@@ -229,6 +245,94 @@ mod tests {
     use super::*;
     use zeppelin_embed::fusion::{FusionError, FusionLeg, LegFailureKind};
     use zeppelin_embed::lifecycle::StoreErrorKind;
+
+    #[cfg(feature = "text")]
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn astra_07_materialization_failures_keep_typed_ffi_codes() {
+        use zeppelin_embed::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+        };
+        use zeppelin_embed::lifecycle::{
+            CancelToken, MaterializationError as Error, OpenOptions, QueryControl, QueryError,
+            SearchOptions, SearchTier, Store, StoreError,
+        };
+        let directory = tempfile::tempdir().expect("mapping fixture");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let document = DocumentVersion::new(DocId::new(7), Revision::new(1));
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                document,
+                vec![1.0, 0.0],
+            )]))
+            .expect("ingest");
+        let outcome = store
+            .search(
+                SearchRequest::new(&[1.0, 0.0]),
+                1,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("ranked address");
+        let row_id = outcome.candidates.first().expect("hit").row_id();
+        for (error, code) in [
+            (
+                Error::MissingText { row_id, document },
+                ZeErrorCode::ZeErrNotFound,
+            ),
+            (Error::MissingIdentity { row_id }, ZeErrorCode::ZeErrCorrupt),
+            (Error::MissingSource { row_id }, ZeErrorCode::ZeErrCorrupt),
+            (
+                Error::InvalidLexicalSource { source: 9 },
+                ZeErrorCode::ZeErrCorrupt,
+            ),
+            (
+                Error::MissingFusedIdentity {
+                    document: document.doc_id(),
+                },
+                ZeErrorCode::ZeErrCorrupt,
+            ),
+            (
+                Error::IdentityMismatch {
+                    row_id,
+                    expected: document,
+                    actual: None,
+                },
+                ZeErrorCode::ZeErrCorrupt,
+            ),
+            (
+                Error::AllocationFailed { bytes: 10 },
+                ZeErrorCode::ZeErrOutOfMemory,
+            ),
+            (
+                Error::RankOutOfRange {
+                    rank: 1,
+                    returned: 1,
+                },
+                ZeErrorCode::ZeErrInternal,
+            ),
+            (Error::ArithmeticOverflow, ZeErrorCode::ZeErrInternal),
+            (
+                Error::Query(QueryError::Timeout { partial: false }),
+                ZeErrorCode::ZeErrTimeout,
+            ),
+            (
+                Error::Query(QueryError::Cancelled { partial: false }),
+                ZeErrorCode::ZeErrCancelled,
+            ),
+            (
+                Error::Query(QueryError::ReadCancelled { partial: false }),
+                ZeErrorCode::ZeErrCancelled,
+            ),
+            (Error::Storage(StoreError::Closed), ZeErrorCode::ZeErrClosed),
+        ] {
+            let message = error.to_string();
+            let mapped = FfiError::text(zeppelin_embed_text::TextError::Materialization(error));
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.message, message);
+        }
+        store.close().expect("close");
+    }
 
     #[test]
     fn a_hybrid_leg_failure_keeps_its_store_classification() {

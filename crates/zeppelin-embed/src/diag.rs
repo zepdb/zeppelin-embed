@@ -121,6 +121,18 @@ pub struct ScanRescoreCounters {
     pub rescore_bytes: u64,
 }
 
+/// Work performed while copying ranked text under its retrieval snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct MaterializationCounters {
+    /// Direct physical result rows resolved inside the retrieval admission.
+    pub row_lookups: u64,
+    /// Owned strings copied from those rows, including present empty strings.
+    pub text_copies: u64,
+    /// UTF-8 source bytes copied into the owned result strings.
+    pub text_bytes: u64,
+}
+
 /// Version 1 unconditional report of what one store query actually did.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -138,6 +150,8 @@ pub struct QueryDiagnostics {
     pub exact_rescore: bool,
     /// Work from explicit quantized candidate scanning and selected-row rescoring.
     pub scan_rescore: Option<ScanRescoreCounters>,
+    /// Scoped result hydration work; absent for hit-only core queries.
+    pub materialization: Option<MaterializationCounters>,
     /// Version 1 fusion report; absent when no hybrid fusion leg ran.
     pub fusion: Option<FusionReport>,
     /// Bounded-producer facts; absent when no hybrid fusion leg ran.
@@ -177,6 +191,7 @@ impl PartialEq for QueryDiagnostics {
             approximate,
             exact_rescore,
             scan_rescore,
+            materialization,
             fusion,
             hybrid,
             hybrid_tier_resolution,
@@ -197,6 +212,7 @@ impl PartialEq for QueryDiagnostics {
             && approximate == &other.approximate
             && exact_rescore == &other.exact_rescore
             && scan_rescore == &other.scan_rescore
+            && materialization == &other.materialization
             && fusion == &other.fusion
             && hybrid == &other.hybrid
             && hybrid_tier_resolution == &other.hybrid_tier_resolution
@@ -307,6 +323,7 @@ impl QueryDiagnostics {
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
             scan_rescore: None,
+            materialization: None,
             fusion: None,
             hybrid: None,
             hybrid_tier_resolution: None,
@@ -336,6 +353,7 @@ impl QueryDiagnostics {
             approximate: false,
             exact_rescore: false,
             scan_rescore: None,
+            materialization: None,
             fusion: None,
             hybrid: None,
             hybrid_tier_resolution: None,
@@ -371,6 +389,7 @@ impl QueryDiagnostics {
             approximate: input.approximate,
             exact_rescore: input.exact_rescore,
             scan_rescore: None,
+            materialization: None,
             fusion: Some(input.report),
             hybrid: Some(input.hybrid),
             hybrid_tier_resolution: input.tier_resolution,
