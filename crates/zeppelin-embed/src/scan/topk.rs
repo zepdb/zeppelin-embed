@@ -69,6 +69,8 @@ impl BoundedTopK {
         })
     }
 
+    // Exact scans update this heap for every eligible row, including rejects.
+    #[inline(always)]
     pub(crate) fn try_push(
         &mut self,
         candidate: ScanCandidate,
@@ -131,6 +133,7 @@ impl BoundedTopK {
         Ok((boundary, peak_capacity))
     }
 
+    #[inline(always)]
     fn push_with_reserve<E>(
         &mut self,
         candidate: ScanCandidate,
@@ -228,6 +231,9 @@ impl ExactTopK {
         }
     }
 
+    // Keep the per-row update inline when serial scans, worker partitions and
+    // the final merge share this collector. Outlining adds a call to every row.
+    #[inline(always)]
     pub(crate) fn try_push(
         &mut self,
         candidate: ScanCandidate,

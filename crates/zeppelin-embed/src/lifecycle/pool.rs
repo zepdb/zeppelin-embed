@@ -24,7 +24,14 @@ enum WorkerMessage {
 }
 
 #[derive(Clone, Copy)]
+enum WorkKind {
+    Scan,
+    Exact,
+}
+
+#[derive(Clone, Copy)]
 struct WorkItem {
+    kind: WorkKind,
     query: usize,
     slot: usize,
     start: usize,
@@ -33,6 +40,16 @@ struct WorkItem {
 
 impl WorkItem {
     fn run(self) {
+        if matches!(self.kind, WorkKind::Exact) {
+            let execution = unsafe {
+                // SAFETY: execute_exact keeps its accounted execution at a stable
+                // address; ExactExecution::drop joins every admitted slot on all
+                // return/unwind paths before any borrowed request can be released.
+                &*(self.query as *const ExactExecution<'static>)
+            };
+            execution.run_partition(self.slot, self.start..self.end);
+            return;
+        }
         let execution = unsafe {
             // SAFETY: `QueryPool::execute` boxes this `QueryExecution` and waits
             // for every submitted slot before dropping it. `query` is that
@@ -43,6 +60,19 @@ impl WorkItem {
     }
 
     fn report_panic(self) {
+        if matches!(self.kind, WorkKind::Exact) {
+            let execution = unsafe {
+                // SAFETY: the same join-before-release proof as run applies.
+                &*(self.query as *const ExactExecution<'static>)
+            };
+            execution.complete(
+                self.slot,
+                Err(super::ExactScanError::Query(QueryError::Scan(
+                    ScanError::WorkerPanicked,
+                ))),
+            );
+            return;
+        }
         let execution = unsafe {
             // SAFETY: the same boxed-execution lifetime proof as `run` applies;
             // catch_unwind reports the panic before this work slot completes.
@@ -61,6 +91,7 @@ struct Worker {
 pub(crate) struct QueryPool {
     workers: Mutex<Option<Accounted<Vec<Worker>>>>,
     worker_count: usize,
+    next_exact_worker: AtomicU64,
 }
 
 impl QueryPool {
@@ -124,6 +155,7 @@ impl QueryPool {
         Ok(Self {
             workers: Mutex::new(Some(workers)),
             worker_count,
+            next_exact_worker: AtomicU64::new(0),
         })
     }
 
@@ -158,6 +190,7 @@ impl QueryPool {
         })?;
         for (slot, (worker, range)) in available.iter().zip(ranges).enumerate() {
             let work = WorkItem {
+                kind: WorkKind::Scan,
                 query,
                 slot,
                 start: range.start,
@@ -171,6 +204,140 @@ impl QueryPool {
 
         let partitions = execution.wait()?;
         merge_partitions(partitions, geometry, workers, k).map_err(QueryError::Scan)
+    }
+
+    // Four shared workers improve the measured one/two-caller FiQA scans while
+    // bounding contention across callers; the quantized pool stays wider.
+    fn exact_capacity(&self) -> usize {
+        self.worker_count.min(4)
+    }
+
+    // Calibrated on row/dimension boundary cases, including all-score ties.
+    pub(crate) fn exact_workers(&self, rows: usize, dimension: usize, requested: usize) -> usize {
+        if rows < 256 || rows.saturating_mul(dimension) < 262_144 {
+            return 1;
+        }
+        let requested = if requested == 0 { 4 } else { requested };
+        requested.min(self.exact_capacity()).min(rows / 64).max(1)
+    }
+
+    pub(crate) fn reserve_exact_lane(&self, requested: usize) -> usize {
+        let count = (if requested == 0 { 4 } else { requested })
+            .min(self.exact_capacity())
+            .max(1);
+        self.next_exact_worker
+            .fetch_add(count as u64, Ordering::Relaxed) as usize
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_exact(
+        &self,
+        vectors: &[f32],
+        row_count: usize,
+        alive: &crate::meta::AliveSet,
+        query_vector: &[f32],
+        k: usize,
+        requested: usize,
+        offset: usize,
+        control: &QueryControl,
+        lease: &SnapshotLease,
+        accounting: &Arc<Accounting>,
+        memory: &mut super::ExactScanMemory,
+        #[cfg(any(test, feature = "test-support"))] controller: Option<
+            &crate::scan::vector_fault::VectorFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))]
+        source: crate::scan::vector_fault::VectorRowSource,
+        #[cfg(any(test, feature = "test-support"))]
+        tier: crate::scan::vector_fault::VectorSearchTier,
+    ) -> Result<ScanOutcome, QueryError> {
+        let workers = self.exact_workers(row_count, query_vector.len(), requested);
+        #[cfg(any(test, feature = "test-support"))]
+        if controller.is_some_and(|controller| controller.deny_exact_reservation()) {
+            return Err(QueryError::Store(StoreError::AllocationFailed {
+                needed: std::mem::size_of::<ExactExecution<'_>>() as u64,
+                component: "exact query execution",
+            }));
+        }
+        // The fixed arena supplies both stable address and pre-allocation charge.
+        let mut owner = Accounted::try_with_capacity(accounting, 1, AllocationComponent::Temporary)
+            .map_err(QueryError::Store)?;
+        owner
+            .push(ExactExecution::new(
+                vectors,
+                row_count,
+                alive,
+                query_vector,
+                k,
+                control,
+                lease,
+                accounting,
+                workers,
+                #[cfg(any(test, feature = "test-support"))]
+                controller,
+                #[cfg(any(test, feature = "test-support"))]
+                source,
+                #[cfg(any(test, feature = "test-support"))]
+                tier,
+            )?)
+            .map_err(QueryError::Store)?;
+        let execution = owner
+            .first()
+            .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+        let query = std::ptr::from_ref(execution) as usize;
+        let guard = self.workers.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "query pool",
+            })
+        })?;
+        let available = guard
+            .as_ref()
+            .ok_or(QueryError::Store(StoreError::Synchronization {
+                component: "stopped query pool",
+            }))?;
+        let available = available
+            .as_slice()
+            .get(..self.exact_capacity())
+            .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+        let offset = offset
+            .checked_rem(available.len())
+            .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+        for slot in 0..workers {
+            let start = slot
+                .checked_mul(row_count)
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?
+                / workers;
+            let end = (slot + 1)
+                .checked_mul(row_count)
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?
+                / workers;
+            let worker = offset
+                .checked_add(slot)
+                .and_then(|index| available.get(index % available.len()))
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+            execution.admit()?;
+            let work = WorkItem {
+                kind: WorkKind::Exact,
+                query,
+                slot,
+                start,
+                end,
+            };
+            if worker.sender.send(WorkerMessage::Run(work)).is_err() {
+                execution.complete(
+                    slot,
+                    Err(super::ExactScanError::Query(QueryError::Scan(
+                        ScanError::WorkerPanicked,
+                    ))),
+                );
+            }
+        }
+        drop(guard);
+        #[cfg(any(test, feature = "test-support"))]
+        if controller.is_some_and(|controller| controller.panic_exact_caller()) {
+            std::panic::resume_unwind(Box::new("injected exact caller unwind"));
+        }
+        execution.wait_and_merge(k, memory)
     }
 
     pub(crate) fn stop_and_join(&self) -> Result<(), StoreError> {
@@ -582,6 +749,345 @@ impl<'a> QueryExecution<'a> {
             partitions.push(result.map_err(QueryError::Scan)?);
         }
         Ok(partitions)
+    }
+}
+
+struct OwnedExactPartition {
+    outcome: ScanOutcome,
+    _memory: super::ExactScanMemory,
+}
+
+struct ExactCompletion {
+    remaining: usize,
+    results: Accounted<Vec<Option<Result<OwnedExactPartition, super::ExactScanError>>>>,
+}
+
+struct ExactExecution<'a> {
+    vectors: &'a [f32],
+    row_count: usize,
+    alive: &'a crate::meta::AliveSet,
+    query: &'a [f32],
+    k: usize,
+    control: &'a QueryControl,
+    lease: &'a SnapshotLease,
+    accounting: &'a Arc<Accounting>,
+    completion: Mutex<ExactCompletion>,
+    changed: Condvar,
+    #[cfg(any(test, feature = "test-support"))]
+    queued_at: Option<std::time::Instant>,
+    #[cfg(any(test, feature = "test-support"))]
+    controller: Option<&'a crate::scan::vector_fault::VectorFaultController>,
+    #[cfg(any(test, feature = "test-support"))]
+    source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-support"))]
+    tier: crate::scan::vector_fault::VectorSearchTier,
+}
+
+impl<'a> ExactExecution<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        vectors: &'a [f32],
+        row_count: usize,
+        alive: &'a crate::meta::AliveSet,
+        query: &'a [f32],
+        k: usize,
+        control: &'a QueryControl,
+        lease: &'a SnapshotLease,
+        accounting: &'a Arc<Accounting>,
+        workers: usize,
+        #[cfg(any(test, feature = "test-support"))] controller: Option<
+            &'a crate::scan::vector_fault::VectorFaultController,
+        >,
+        #[cfg(any(test, feature = "test-support"))]
+        source: crate::scan::vector_fault::VectorRowSource,
+        #[cfg(any(test, feature = "test-support"))]
+        tier: crate::scan::vector_fault::VectorSearchTier,
+    ) -> Result<Self, QueryError> {
+        let mut results =
+            Accounted::try_with_capacity(accounting, workers, AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
+        for _ in 0..workers {
+            results.push(None).map_err(QueryError::Store)?;
+        }
+        Ok(Self {
+            vectors,
+            row_count,
+            alive,
+            query,
+            k,
+            control,
+            lease,
+            accounting,
+            completion: Mutex::new(ExactCompletion {
+                remaining: 0,
+                results,
+            }),
+            changed: Condvar::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            queued_at: controller.map(|_| std::time::Instant::now()),
+            #[cfg(any(test, feature = "test-support"))]
+            controller,
+            #[cfg(any(test, feature = "test-support"))]
+            source,
+            #[cfg(any(test, feature = "test-support"))]
+            tier,
+        })
+    }
+
+    fn admit(&self) -> Result<(), QueryError> {
+        let mut state = self.completion.lock().map_err(|_| {
+            QueryError::Store(StoreError::Synchronization {
+                component: "exact query completion",
+            })
+        })?;
+        state.remaining += 1;
+        Ok(())
+    }
+
+    fn run_partition(&self, slot: usize, range: Range<usize>) {
+        #[cfg(any(test, feature = "test-support"))]
+        let started = self.queued_at.map(|_| std::time::Instant::now());
+        #[cfg(any(test, feature = "test-support"))]
+        let timed_range = range.clone();
+        let result = (|| {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(controller) = self.controller {
+                match controller.exact_worker_fault(slot) {
+                    crate::scan::vector_fault::ExactWorkerFault::None => {}
+                    crate::scan::vector_fault::ExactWorkerFault::Panic => {
+                        std::panic::resume_unwind(Box::new("injected exact worker panic"))
+                    }
+                    crate::scan::vector_fault::ExactWorkerFault::NonFinite { row_id } => {
+                        return Err(super::ExactScanError::Query(QueryError::Scan(
+                            ScanError::NonFiniteScore { row_id },
+                        )));
+                    }
+                }
+            }
+            let mut memory = super::ExactScanMemory::new(self.accounting)?;
+            let cancellation = QueryCancellation::new(self.control, self.lease);
+            let outcome = super::scan_exact_partition::<true>(
+                self.vectors,
+                self.row_count,
+                range,
+                self.alive,
+                self.query,
+                self.k,
+                &cancellation,
+                &mut memory,
+                #[cfg(any(test, feature = "test-support"))]
+                self.controller,
+                #[cfg(any(test, feature = "test-support"))]
+                self.source,
+                #[cfg(any(test, feature = "test-support"))]
+                self.tier,
+            )?;
+            Ok(OwnedExactPartition {
+                outcome,
+                _memory: memory,
+            })
+        })();
+        #[cfg(any(test, feature = "test-support"))]
+        if let (Some(controller), Some(started), Some(queued)) =
+            (self.controller, started, self.queued_at)
+        {
+            controller.record_exact_worker_timing(crate::scan::vector_fault::ExactWorkerTiming {
+                slot,
+                range: timed_range,
+                queue_wait: started.saturating_duration_since(queued),
+                execution: started.elapsed(),
+            });
+        }
+        self.complete(slot, result);
+    }
+
+    fn complete(&self, slot: usize, result: Result<OwnedExactPartition, super::ExactScanError>) {
+        #[cfg(any(test, feature = "test-support"))]
+        let notifier = self
+            .controller
+            .and_then(|controller| controller.exact_completion_notifier());
+        let mut state = self
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(target) = state.results.as_mut_slice().get_mut(slot)
+            && target.is_none()
+        {
+            *target = Some(result);
+            state.remaining = state.remaining.saturating_sub(1);
+        }
+        self.changed.notify_all();
+        drop(state);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(notifier) = notifier {
+            let _ = notifier.send(slot);
+        }
+    }
+
+    fn wait_and_merge(
+        &self,
+        k: usize,
+        memory: &mut super::ExactScanMemory,
+    ) -> Result<ScanOutcome, QueryError> {
+        let mut state = self
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some(deadline) = self.control.deadline()
+                && self.control.error().is_none()
+                && self.control.now().is_some_and(|now| now >= deadline)
+            {
+                self.control.mark_timed_out();
+            }
+            if state.remaining == 0 {
+                break;
+            }
+            if let Some(deadline) = self.control.deadline()
+                && self.control.error().is_none()
+            {
+                let remaining =
+                    deadline.saturating_duration_since(self.control.now().unwrap_or(deadline));
+                state = self
+                    .changed
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            } else {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+        if self.lease.is_cancelled() {
+            return Err(QueryError::ReadCancelled { partial: false });
+        }
+        if let Some(error) = self.control.error() {
+            return Err(error);
+        }
+        if self.completion.is_poisoned() {
+            return Err(QueryError::Store(StoreError::Synchronization {
+                component: "exact query completion",
+            }));
+        }
+        // Completion order never selects the failure. Check every ordered slot
+        // before allocating the merge, and defer f32 overflow behind row errors.
+        let mut first_error = None;
+        let mut narrowing: Option<(usize, f64)> = None;
+        let mut retained = 0_usize;
+        for result in state.results.as_mut_slice() {
+            if let Some(Ok(partition)) = result {
+                retained = retained
+                    .checked_add(partition.outcome.candidates.len())
+                    .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+            } else {
+                match result.take() {
+                    Some(Err(super::ExactScanError::Query(error))) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Some(Err(super::ExactScanError::Narrowing { row_id, score })) => {
+                        if narrowing.is_none_or(|(row, previous)| {
+                            score.total_cmp(&previous).is_gt()
+                                || (score.total_cmp(&previous).is_eq() && row_id < row)
+                        }) {
+                            narrowing = Some((row_id, score));
+                        }
+                    }
+                    None => {
+                        if first_error.is_none() {
+                            first_error = Some(QueryError::Store(StoreError::Synchronization {
+                                component: "exact query result slot",
+                            }));
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        if let Some((row_id, _)) = narrowing {
+            return Err(QueryError::Scan(ScanError::NonFiniteScore { row_id }));
+        }
+        let mut merged = crate::scan::topk::ExactTopK::try_new(k, retained, &mut memory.candidates)
+            .map_err(QueryError::Store)?;
+        let mut dims_touched = 0_u64;
+        let mut bytes_read = 0_u64;
+        let mut worst_score: Option<f32> = None;
+        let mut worker_ids = Vec::new();
+        memory
+            .worker_ids
+            .set(state.results.len() * std::mem::size_of::<std::thread::ThreadId>())
+            .map_err(QueryError::Store)?;
+        worker_ids
+            .try_reserve_exact(state.results.len())
+            .map_err(|_| {
+                QueryError::Store(StoreError::AllocationFailed {
+                    needed: memory.worker_ids.bytes(),
+                    component: "exact worker IDs",
+                })
+            })?;
+        for result in state.results.as_mut_slice() {
+            let partition = result
+                .take()
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?
+                .map_err(super::ExactScanError::into_query)?;
+            dims_touched = dims_touched
+                .checked_add(partition.outcome.stats.dims_touched)
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+            bytes_read = bytes_read
+                .checked_add(partition.outcome.stats.bytes_read)
+                .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?;
+            if let Some(score) = partition.outcome.worst_score
+                && worst_score.is_none_or(|worst| score.total_cmp(&worst).is_lt())
+            {
+                worst_score = Some(score);
+            }
+            for id in partition.outcome.stats.worker_thread_ids {
+                if !worker_ids.contains(&id) {
+                    worker_ids.push(id);
+                }
+            }
+            for candidate in partition.outcome.candidates {
+                merged
+                    .try_push(candidate, &mut memory.candidates)
+                    .map_err(QueryError::Store)?;
+            }
+        }
+        let (candidates, _) = merged
+            .try_into_sorted_with_ties(&mut memory.candidates)
+            .map_err(QueryError::Store)?;
+        Ok(ScanOutcome {
+            candidates,
+            worst_score,
+            stats: ScanStats {
+                dims_touched,
+                bytes_read,
+                threads_used: worker_ids.len(),
+                worker_thread_ids: worker_ids,
+            },
+        })
+    }
+}
+
+impl Drop for ExactExecution<'_> {
+    fn drop(&mut self) {
+        // This is also the unwind/poison path. No admitted worker may retain
+        // an erased pointer when its stable arena or borrowed snapshot drops.
+        let mut state = self
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.remaining > 0 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
     }
 }
 

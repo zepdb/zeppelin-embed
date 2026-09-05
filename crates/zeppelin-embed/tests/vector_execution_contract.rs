@@ -1382,3 +1382,1016 @@ fn astra_04_exact_scan_measurement() {
         );
     }
 }
+
+#[test]
+fn astra_05_large_exact_scan_executes_disjoint_worker_partitions() {
+    let capacity = zeppelin_embed::scan::physical_thread_capacity().expect("worker capacity");
+    let workers = capacity.min(4);
+    assert!(
+        workers >= 2,
+        "this directed worker test needs a multi-core host"
+    );
+    let n = 16_385_usize;
+    let dim = 129_usize;
+    let directory = tempdir().expect("exact worker fixture");
+    let controller = VectorFaultController::trace_exact_partitions(11);
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        OpenOptions::default(),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("open exact worker fixture");
+    store
+        .ingest(IngestBatch::new(
+            (0..n)
+                .map(|row| {
+                    let mut vector = vec![0.03125; dim];
+                    vector[0] = row as f32 * 0.0009765625;
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                        vector,
+                    )
+                })
+                .collect(),
+        ))
+        .expect("worker rows");
+    let deleted = (0..n)
+        .step_by(4096)
+        .map(|row| DocId::new(row as u128 + 1))
+        .collect::<Vec<_>>();
+    let live = n - deleted.len();
+    store
+        .delete(zeppelin_embed::ingest::DeleteBatch::new(deleted))
+        .expect("worker tombstones");
+    let query = vec![0.0_f32; dim];
+    let outcome = store
+        .search(
+            SearchRequest::new(&query),
+            10,
+            SearchOptions::new(ScanOptions {
+                thread_budget: workers,
+            })
+            .with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("large exact query");
+    assert_eq!(outcome.stats.dims_touched, (live * dim) as u64);
+    assert_eq!(outcome.stats.bytes_read, (live * dim * 4) as u64);
+    let work = controller.take_exact_scan_work();
+    assert_eq!(
+        work.iter().map(|work| work.scored_rows).sum::<usize>(),
+        live
+    );
+    assert!(
+        store.stats().expect("pool stats").query_pool_bytes > 0,
+        "active admission already creates a pool"
+    );
+    assert_eq!(
+        outcome.stats.threads_used, workers,
+        "large Exact still ran on the caller despite its admitted query pool"
+    );
+    assert_eq!(outcome.stats.worker_thread_ids.len(), workers);
+    assert!(
+        !outcome
+            .stats
+            .worker_thread_ids
+            .contains(&std::thread::current().id())
+    );
+    assert_eq!(work.len(), workers);
+    let partitions = controller.take_exact_partitions();
+    assert_eq!(partitions.len(), workers);
+    let mut seen = BTreeSet::new();
+    for partition in partitions {
+        assert!(
+            outcome
+                .stats
+                .worker_thread_ids
+                .contains(&partition.thread_id)
+        );
+        for row in partition.checked_rows {
+            assert!(partition.range.contains(&row));
+            assert_ne!(row % 4096, 0, "tombstone scored");
+            assert!(seen.insert(row), "eligible row scored by two workers");
+        }
+    }
+    assert_eq!(seen, (0..n).filter(|row| row % 4096 != 0).collect());
+}
+
+fn astra_05_query(
+    store: &Store,
+    query: &[f32],
+    k: usize,
+    workers: usize,
+    token: CancelToken,
+) -> Result<SearchOutcome, QueryError> {
+    store.search(
+        SearchRequest::new(query),
+        k,
+        SearchOptions::new(ScanOptions {
+            thread_budget: workers,
+        })
+        .with_tier(SearchTier::Exact),
+        QueryControl::Cancel(token),
+    )
+}
+
+fn astra_05_fixture(controller: VectorFaultController) -> (TempDir, Arc<Store>, Vec<f32>) {
+    astra_05_fixture_with_clock(controller, Arc::new(SystemMonotonicClock))
+}
+
+#[test]
+fn astra_05_exact_pool_capacity_is_shared_across_callers() {
+    let (_directory, store, query) = astra_05_fixture(VectorFaultController::observe_only(11));
+    let expected =
+        astra_05_query(&store, &query, 7, 1, CancelToken::new()).expect("serial capacity oracle");
+    let start = std::sync::Barrier::new(4);
+    let outcomes = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (store, query, start) = (&store, &query, &start);
+                scope.spawn(move || {
+                    start.wait();
+                    astra_05_query(store, query, 7, 4, CancelToken::new())
+                        .expect("concurrent exact query")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("caller joins"))
+            .collect::<Vec<_>>()
+    });
+    let mut threads = std::collections::HashSet::new();
+    for outcome in outcomes {
+        assert_same_result(&expected, &outcome);
+        assert_eq!(outcome.stats.threads_used, 4);
+        threads.extend(outcome.stats.worker_thread_ids);
+    }
+    assert_eq!(
+        threads.len(),
+        4,
+        "Exact callers share the measured four-worker capacity"
+    );
+    assert_eq!(
+        store
+            .stats()
+            .expect("all query scratch released")
+            .temporary_bytes,
+        0
+    );
+}
+
+fn astra_05_fixture_with_clock(
+    controller: VectorFaultController,
+    clock: Arc<dyn zeppelin_embed::lifecycle::MonotonicClock>,
+) -> (TempDir, Arc<Store>, Vec<f32>) {
+    let dir = tempdir().expect("exact lifecycle fixture");
+    let store = Arc::new(
+        Store::open_with_test_dependencies(
+            dir.path(),
+            OpenOptions::default(),
+            StoreTestDependencies::new(Arc::new(StdVfs), clock)
+                .with_vector_fault_controller(controller),
+        )
+        .expect("open exact lifecycle fixture"),
+    );
+    store
+        .ingest(IngestBatch::new(
+            (0..2049)
+                .map(|row| {
+                    let mut vector = vec![0.03125; 129];
+                    vector[0] = row as f32 * 0.0009765625;
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                        vector,
+                    )
+                })
+                .collect(),
+        ))
+        .expect("lifecycle rows");
+    (dir, store, vec![0.0; 129])
+}
+
+#[test]
+fn astra_05_parallel_exact_matches_serial_bits_and_identity_ties() {
+    let dir = tempdir().expect("parallel ties");
+    let controller = VectorFaultController::trace_exact_partitions(11);
+    let store = Store::open_with_test_dependencies(
+        dir.path(),
+        OpenOptions::default(),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("parallel ties Store");
+    for base in [20_000_u128, 10_000, 0] {
+        store
+            .ingest(IngestBatch::new(
+                (1..=2049)
+                    .rev()
+                    .map(|id| {
+                        let mut vector = vec![0.0_f32; 129];
+                        vector[0] = 1.0;
+                        if id % 2 == 0 {
+                            vector[1] = 1.0_f32 / 8192.0;
+                        }
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(base + id), Revision::new(1)),
+                            vector,
+                        )
+                    })
+                    .collect(),
+            ))
+            .expect("tie source");
+        if base != 0 {
+            store.seal().expect("tie seal");
+        }
+    }
+    store
+        .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![
+            DocId::new(1),
+            DocId::new(10_001),
+            DocId::new(20_001),
+        ]))
+        .expect("tie tombstones");
+    let query = vec![0.0_f32; 129];
+    let serial = astra_05_query(&store, &query, 7, 1, CancelToken::new()).expect("serial ties");
+    let _ = controller.take_exact_partitions();
+    let parallel = astra_05_query(&store, &query, 7, 4, CancelToken::new()).expect("parallel ties");
+    assert_eq!(
+        parallel.stats.threads_used, 4,
+        "one worker lane must be reused across segments"
+    );
+    assert_same_result(&serial, &parallel);
+    assert_eq!(serial.generation, parallel.generation);
+    assert_eq!(
+        result_documents(&parallel)
+            .iter()
+            .map(|v| v.doc_id().get())
+            .collect::<Vec<_>>(),
+        (2..=8).collect::<Vec<_>>()
+    );
+    assert!(
+        parallel
+            .candidates
+            .iter()
+            .all(|c| c.score().to_bits() == (-1.0_f32).to_bits())
+    );
+    assert_eq!(parallel.stats.dims_touched, 3 * 2048 * 129);
+    let receipts = controller.take_exact_partitions();
+    assert_eq!(receipts.len(), 12);
+    assert_eq!(
+        receipts.iter().map(|r| r.checked_rows.len()).sum::<usize>(),
+        3 * 2048
+    );
+    assert_eq!(
+        store
+            .stats()
+            .expect("released parallel scratch")
+            .temporary_bytes,
+        0
+    );
+}
+
+#[test]
+fn astra_05_parallel_narrowing_error_uses_global_f64_order() {
+    let dir = tempdir().expect("parallel overflow");
+    let store = Store::open(dir.path(), OpenOptions::default()).expect("overflow Store");
+    store
+        .ingest(IngestBatch::new(
+            (0..2049)
+                .map(|row| {
+                    let mut vector = vec![0.03125_f32; 129];
+                    vector[0] = row as f32 * 1.0e9;
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                        vector,
+                    )
+                })
+                .collect(),
+        ))
+        .expect("finite large rows");
+    for workers in [1, 4] {
+        let error = astra_05_query(&store, &[1.0e20_f32; 129], 7, workers, CancelToken::new())
+            .expect_err("f32 overflow");
+        assert!(
+            matches!(
+                error,
+                QueryError::Scan(ScanError::NonFiniteScore { row_id: 2048 })
+            ),
+            "best f64 overflow is in the last partition: {error:?}"
+        );
+        assert_eq!(
+            store
+                .stats()
+                .expect("overflow releases scratch")
+                .temporary_bytes,
+            0
+        );
+    }
+}
+
+#[test]
+fn astra_05_exact_pool_reservation_failure_leaves_store_reusable() {
+    let controller = VectorFaultController::observe_only(11);
+    let (dir, store, query) = astra_05_fixture(controller.clone());
+    let control = astra_05_query(&store, &query, 7, 1, CancelToken::new()).expect("clean serial");
+    let before = store.stats().expect("before refusal");
+    controller.deny_next_exact_reservation();
+    assert!(matches!(
+        astra_05_query(&store, &query, 7, 4, CancelToken::new()),
+        Err(QueryError::Store(StoreError::AllocationFailed {
+            component: "exact query execution",
+            ..
+        }))
+    ));
+    assert_eq!(controller.take_exact_reservation_denials(), 1);
+    assert!(
+        controller.take_exact_worker_timings().is_empty(),
+        "refused execution must not submit workers"
+    );
+    let after = store.stats().expect("after refusal");
+    assert_eq!(after.temporary_bytes, 0);
+    assert_eq!(after.resident_owned_bytes, before.resident_owned_bytes);
+    assert_eq!(after.active_queries, 0);
+    let retry =
+        astra_05_query(&store, &query, 7, 4, CancelToken::new()).expect("retry after refusal");
+    assert_same_result(&control, &retry);
+    assert_eq!(retry.stats.threads_used, 4);
+    assert_eq!(store.stats().expect("retry scratch").temporary_bytes, 0);
+
+    store.seal().expect("seal budget fixture");
+    store.close().expect("close unlimited fixture");
+    let limited = Store::open(dir.path(), OpenOptions::default().with_max_temp_bytes(1024))
+        .expect("open under real temporary ceiling");
+    let serial = astra_05_query(&limited, &query, 7, 1, CancelToken::new())
+        .expect("serial collector fits ceiling");
+    let before = limited.stats().expect("budget baseline");
+    let result = astra_05_query(&limited, &query, 7, 4, CancelToken::new());
+    assert!(
+        matches!(
+            result,
+            Err(QueryError::Store(StoreError::BudgetExceeded {
+                budget: 1024,
+                component: "temporary",
+                ..
+            }))
+        ),
+        "parallel scratch must respect actual ceiling: {result:?}"
+    );
+    let after = limited.stats().expect("released refused query");
+    assert_eq!(after.temporary_bytes, 0);
+    assert_eq!(after.resident_owned_bytes, before.resident_owned_bytes);
+    assert_eq!(after.active_queries, 0);
+    assert_same_result(
+        &serial,
+        &astra_05_query(&limited, &query, 7, 1, CancelToken::new())
+            .expect("serial retry after real budget refusal"),
+    );
+}
+
+#[derive(Default)]
+struct Astra05Gate {
+    open: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+impl Astra05Gate {
+    fn wait(&self) {
+        let mut open = self.open.lock().expect("gate lock");
+        while !*open {
+            open = self.changed.wait(open).expect("gate wait");
+        }
+    }
+    fn release(&self) {
+        *self.open.lock().expect("release lock") = true;
+        self.changed.notify_all();
+    }
+}
+struct Astra05Gates([Arc<Astra05Gate>; 2]);
+impl Drop for Astra05Gates {
+    fn drop(&mut self) {
+        for gate in &self.0 {
+            gate.release();
+        }
+    }
+}
+
+#[test]
+fn astra_05_exact_worker_cancel_close_and_dual_failure_join_cleanly() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use zeppelin_embed::scan::vector_fault::ExactWorkerFault;
+    // Each release order is driven by actual worker completion notifications.
+    for reverse in [false, true] {
+        for case in [
+            "cancel",
+            "deadline",
+            "close",
+            "dual",
+            "panic",
+            "caller_unwind",
+        ] {
+            let controller = VectorFaultController::observe_only(11);
+            let clock = Arc::new(zeppelin_embed::lifecycle::ManualMonotonicClock::new());
+            let (dir, store, query) =
+                astra_05_fixture_with_clock(controller.clone(), clock.clone());
+            let expected = astra_05_query(&store, &query, 7, 1, CancelToken::new())
+                .expect("same-seed clean control");
+            let gates = Astra05Gates(std::array::from_fn(|_| Arc::new(Astra05Gate::default())));
+            let worker_gates = gates.0.clone();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (completed_tx, completed_rx) = mpsc::channel();
+            controller.notify_exact_completions(completed_tx);
+            controller.set_exact_worker_hook(move |slot| {
+                started_tx.send(slot).expect("worker entered");
+                worker_gates[slot].wait();
+                match case {
+                    "dual" => ExactWorkerFault::NonFinite {
+                        row_id: if slot == 0 { 111 } else { 1500 },
+                    },
+                    "panic" if slot == 0 => ExactWorkerFault::Panic,
+                    "panic" => ExactWorkerFault::NonFinite { row_id: 1500 },
+                    _ => ExactWorkerFault::None,
+                }
+            });
+            if case == "caller_unwind" {
+                controller.panic_after_exact_submission();
+            }
+            let token = CancelToken::new();
+            let control = if case == "deadline" {
+                QueryControl::Deadline(
+                    zeppelin_embed::lifecycle::Deadline::after_with_test_clock(
+                        Duration::from_secs(60),
+                        clock.clone(),
+                    )
+                    .expect("manual deadline"),
+                )
+            } else {
+                QueryControl::Cancel(token.clone())
+            };
+            let querying_store = Arc::clone(&store);
+            let querying_vector = query.clone();
+            let (result_tx, result_rx) = mpsc::channel();
+            let querying = std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    querying_store.search(
+                        SearchRequest::new(&querying_vector),
+                        7,
+                        SearchOptions::new(ScanOptions { thread_budget: 2 })
+                            .with_tier(SearchTier::Exact),
+                        control,
+                    )
+                }));
+                result_tx.send(result).expect("deliver joined query result");
+            });
+            let entered = [
+                started_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("first worker enters"),
+                started_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("second worker enters"),
+            ];
+            assert_eq!(
+                entered.into_iter().collect::<BTreeSet<_>>(),
+                BTreeSet::from([0, 1])
+            );
+            let closing = if case == "close" {
+                let lease = store.snapshot().expect("observe close cancellation");
+                let closing_store = Arc::clone(&store);
+                let closing = std::thread::spawn(move || closing_store.close());
+                lease
+                    .wait_for_close_cancellation()
+                    .expect("close has cancelled the pinned snapshot");
+                drop(lease);
+                Some(closing)
+            } else {
+                None
+            };
+            if case == "cancel" {
+                token.cancel();
+            }
+            if case == "deadline" {
+                clock.advance(Duration::from_secs(120));
+            }
+            let order = if reverse { [1, 0] } else { [0, 1] };
+            gates.0[order[0]].release();
+            assert_eq!(
+                completed_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("first actual completion"),
+                order[0]
+            );
+            assert!(
+                matches!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "{case}: returned while second worker still owns a borrowed request"
+            );
+            gates.0[order[1]].release();
+            assert_eq!(
+                completed_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("second actual completion"),
+                order[1]
+            );
+            let result = result_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("joined query returns");
+            querying.join().expect("query driver joins");
+            match case {
+                "caller_unwind" => assert!(result.is_err(), "caller panic plant did not fire"),
+                "cancel" => assert!(matches!(
+                    result.expect("no caller panic"),
+                    Err(QueryError::Cancelled { partial: false })
+                )),
+                "deadline" => assert!(matches!(
+                    result.expect("no caller panic"),
+                    Err(QueryError::Timeout { partial: false })
+                )),
+                "close" => assert!(matches!(
+                    result.expect("no caller panic"),
+                    Err(QueryError::ReadCancelled { partial: false })
+                )),
+                "dual" => assert!(matches!(
+                    result.expect("no caller panic"),
+                    Err(QueryError::Scan(ScanError::NonFiniteScore { row_id: 111 }))
+                )),
+                "panic" => assert!(matches!(
+                    result.expect("no caller panic"),
+                    Err(QueryError::Scan(ScanError::WorkerPanicked))
+                )),
+                _ => unreachable!(),
+            }
+            controller.clear_exact_worker_hook();
+            if let Some(closing) = closing {
+                closing
+                    .join()
+                    .expect("close thread joins")
+                    .expect("close completes");
+                assert!(
+                    matches!(store.stats(), Err(StoreError::Closed)),
+                    "closed handles reject statistics"
+                );
+                let reopened =
+                    Store::open(dir.path(), OpenOptions::default()).expect("reopen after close");
+                assert_same_result(
+                    &expected,
+                    &astra_05_query(&reopened, &query, 7, 2, CancelToken::new())
+                        .expect("closed-case clean retry"),
+                );
+            } else {
+                assert_eq!(
+                    store.stats().expect("joined error scratch").temporary_bytes,
+                    0
+                );
+                assert_eq!(store.stats().expect("query released").active_queries, 0);
+                let retry = astra_05_query(&store, &query, 7, 2, CancelToken::new())
+                    .expect("same-seed clean retry");
+                assert_same_result(&expected, &retry);
+                assert_eq!(retry.stats.threads_used, 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn astra_05_exact_hybrid_widening_admits_required_workers() {
+    use zeppelin_embed::epoch::{
+        ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+    };
+    use zeppelin_embed::fts::index::DEFAULT_FIELD;
+    use zeppelin_embed::fts::search::TermQuery;
+    use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+    use zeppelin_embed::fusion::HybridQuery;
+    use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
+    for (n, dim, graph, traverses_first) in [
+        (2049, 129, false, false),
+        (256, 1024, true, false),
+        (1024, 256, true, true),
+    ] {
+        let dir = tempdir().expect("hybrid worker fixture");
+        let tower = EmbeddingTower {
+            model_id: "astra-05-worker-fixture".to_owned(),
+            model_version: "1".to_owned(),
+            weights_digest: vec![11],
+            dims: dim as u32,
+            normalization: Normalization::None,
+            prompt_prefix: String::new(),
+            max_tokens: 32,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        };
+        let epoch = StoreEpoch {
+            embedding: EmbeddingEpoch {
+                query: tower.clone(),
+                document: tower,
+                alignment_digest: Vec::new(),
+            },
+            tokenizer: TokenizerConfig::text_default().epoch(),
+        };
+        let options = OpenOptions::default().with_epoch(epoch.clone());
+        let fixture = Store::open(dir.path(), options.clone()).expect("fixture Store");
+        fixture
+            .ingest(
+                IngestBatch::new(
+                    (0..n)
+                        .map(|row| {
+                            let mut vector = vec![0.03125_f32; dim];
+                            vector[0] = row as f32 * 0.00390625;
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                                vector,
+                            )
+                            .with_text("alpha")
+                        })
+                        .collect(),
+                )
+                .with_epoch(epoch.identity()),
+            )
+            .expect("hybrid fixture rows");
+        fixture.seal().expect("sealed hybrid fixture");
+        if graph {
+            let report = fixture.maintain_with_test_thresholds(
+                MaintenanceBudget {
+                    wall_time: std::time::Duration::from_secs(120),
+                    bytes: u64::MAX,
+                },
+                TierThresholds { graph_min_rows: 32 },
+            );
+            assert!(matches!(report.status, MaintenanceStatus::Complete));
+            assert_eq!(report.graphs_built, 1);
+        }
+        fixture.close().expect("close prebuilt fixture");
+        let controller = VectorFaultController::trace_exact_partitions(11);
+        let store = Store::open_with_test_dependencies(
+            dir.path(),
+            options,
+            vector_dependencies(controller.clone()),
+        )
+        .expect("fresh hybrid admission");
+        assert_eq!(store.stats().expect("no prior pool").query_pool_bytes, 0);
+        let result = store
+            .search_hybrid(
+                SearchRequest::new(&vec![0.0_f32; dim]),
+                &TermQuery::flat(vec![b"absent".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(1),
+                SearchOptions::new(ScanOptions { thread_budget: 4 }),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("hybrid exact dispatch");
+        if traverses_first {
+            // Plan 01 ends ANN rounds as approximate; it does not widen them.
+            assert_eq!(result.diagnostics.counters.scan.threads_used, 1);
+            assert!(result.diagnostics.counters.scan.dims_touched < (n * dim) as u64);
+            assert!(result.diagnostics.counters.scan.bytes_read < (n * dim * 4) as u64);
+            assert_eq!(result.diagnostics.counters.graph.segments_traversed, 1);
+            assert_eq!(
+                result
+                    .diagnostics
+                    .fusion
+                    .as_ref()
+                    .expect("fusion report")
+                    .rounds,
+                1
+            );
+            assert_eq!(
+                result
+                    .diagnostics
+                    .fusion
+                    .as_ref()
+                    .expect("fusion report")
+                    .termination,
+                zeppelin_embed::fusion::FusionTermination::ApproximateCandidates
+            );
+        } else {
+            assert_eq!(result.diagnostics.counters.scan.threads_used, 4);
+            assert_eq!(
+                result.diagnostics.counters.scan.dims_touched,
+                (n * dim) as u64
+            );
+            assert_eq!(
+                result.diagnostics.counters.scan.bytes_read,
+                (n * dim * 4) as u64
+            );
+        }
+        assert!(store.stats().expect("pool admitted").query_pool_bytes > 0);
+        assert_eq!(result.hits[0].key, DocId::new(1));
+        let partitions = controller.take_exact_partitions();
+        assert_eq!(partitions.len(), if traverses_first { 0 } else { 4 });
+        assert_eq!(
+            partitions
+                .iter()
+                .map(|p| p.checked_rows.len())
+                .sum::<usize>(),
+            if traverses_first { 0 } else { n }
+        );
+        if graph && !traverses_first {
+            assert!(result.diagnostics.plan.iter().any(|plan| matches!(
+                plan.scan_reason,
+                Some(zeppelin_embed::planner::ScanReason::WideningCap { .. })
+            )));
+            if !traverses_first {
+                // The smaller graph reaches its cap in the first request.
+                assert_eq!(result.diagnostics.counters.graph.segments_traversed, 0);
+            }
+        }
+        assert_eq!(
+            store
+                .stats()
+                .expect("hybrid scratch released")
+                .temporary_bytes,
+            0
+        );
+    }
+}
+
+#[test]
+#[ignore = "release-only FiQA worker-capacity screen; requires ASTRA05_STORE"]
+fn astra_05_exact_pool_measurement() {
+    use std::time::Instant;
+    let path = std::env::var("ASTRA05_STORE").expect("explicit corrected store");
+    let workers: usize = std::env::var("ASTRA05_WORKERS")
+        .expect("workers")
+        .parse()
+        .expect("worker integer");
+    let callers: usize = std::env::var("ASTRA05_CALLERS")
+        .expect("callers")
+        .parse()
+        .expect("caller integer");
+    assert!((1..=4).contains(&callers));
+    let controller = VectorFaultController::observe_only(11);
+    let manifest_path = Path::new(&path).join("manifest.ze");
+    let manifest = zeppelin_embed::manifest::decode_manifest(
+        &manifest_path.display().to_string(),
+        &std::fs::read(&manifest_path).expect("read immutable epoch declaration"),
+    )
+    .expect("checked manifest");
+    let alias = manifest.epoch_alias.expect("persisted epoch alias");
+    assert_eq!(alias.embedding.value(), 7508391831206249002);
+    assert_eq!(alias.tokenizer.value(), 1035315901113778624);
+    let declared = manifest
+        .epochs
+        .iter()
+        .find(|epoch| epoch.id == alias.embedding)
+        .expect("full persisted embedding declaration");
+    let declared = zeppelin_embed::epoch::StoreEpoch {
+        embedding: declared.embedding.clone(),
+        tokenizer: declared.tokenizer,
+    };
+    assert_eq!(declared.identity(), alias);
+    let store = Store::open_with_test_dependencies(
+        &path,
+        OpenOptions::read_only()
+            .with_epoch(declared)
+            .with_tokenizer(zeppelin_embed::fts::tokenizer::TokenizerConfig::text_default()),
+        vector_dependencies(controller.clone()),
+    )
+    .expect("open corrected FiQA");
+    let epoch = store.epoch_identity().expect("stamped store");
+    assert_eq!(epoch.embedding.value(), 7508391831206249002);
+    assert_eq!(epoch.tokenizer.value(), 1035315901113778624);
+    let snapshot = store.snapshot().expect("oracle snapshot");
+    assert_eq!(snapshot.segments().len(), 1);
+    let segment = &snapshot.segments()[0];
+    assert_eq!(segment.meta().row_count, 58980);
+    assert_eq!(segment.meta().dims, 768);
+    assert!(!segment.directory().iter().any(
+        |entry| entry.kind == zeppelin_embed::segment::layout::RegionKind::GraphNodeBlocks.id()
+    ));
+    let rows = segment
+        .rescore_f32()
+        .expect("checked full-precision vectors");
+    assert_eq!(rows.len(), 58980 * 768);
+    let alive = segment.alive().expect("live mask");
+    assert!((0..58980).all(|row| alive.is_alive(row)));
+    let queries: Vec<_> = (0..8)
+        .map(|index| rows[index * 7372 * 768..(index * 7372 + 1) * 768].to_vec())
+        .collect();
+    let versions: Vec<_> = (0..58980)
+        .map(|row| {
+            segment
+                .document_version(row)
+                .expect("valid identity")
+                .expect("present identity")
+        })
+        .collect();
+    let expected: Vec<_> = queries
+        .iter()
+        .map(|query| {
+            let mut scores: Vec<_> = rows
+                .chunks_exact(768)
+                .enumerate()
+                .map(|(row, vector)| {
+                    let mut distance = 0.0_f64;
+                    for (q, v) in query.iter().zip(vector) {
+                        let delta = f64::from(*q) - f64::from(*v);
+                        distance += delta * delta;
+                    }
+                    (versions[row], (-distance as f32).to_bits())
+                })
+                .collect();
+            scores.sort_unstable_by(|a, b| {
+                f32::from_bits(b.1)
+                    .total_cmp(&f32::from_bits(a.1))
+                    .then(a.0.cmp(&b.0))
+            });
+            scores.truncate(10);
+            scores
+        })
+        .collect();
+    drop(snapshot);
+    for iteration in 0..20 {
+        astra_05_query(
+            &store,
+            &queries[iteration % 8],
+            10,
+            workers,
+            CancelToken::new(),
+        )
+        .expect("warm query");
+    }
+    let _ = controller.take_exact_worker_timings();
+    let _ = controller.take_exact_scan_work();
+    let start = std::sync::Barrier::new(callers + 1);
+    let (elapsed, outputs) = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for caller in 0..callers {
+            let (store, queries, expected, start) = (&store, &queries, &expected, &start);
+            handles.push(scope.spawn(move || {
+                let mut samples = Vec::new();
+                let mut ids = std::collections::HashSet::new();
+                start.wait();
+                for iteration in 0..64 {
+                    let index = (iteration + caller) % 8;
+                    let began = Instant::now();
+                    let result =
+                        astra_05_query(store, &queries[index], 10, workers, CancelToken::new())
+                            .expect("measured exact query");
+                    samples.push(began.elapsed().as_secs_f64() * 1e6);
+                    assert_eq!(result.stats.dims_touched, 45_296_640);
+                    assert_eq!(result.stats.bytes_read, 181_186_560);
+                    assert_eq!(
+                        result.stats.threads_used,
+                        if workers == 0 { 4 } else { workers }
+                    );
+                    ids.extend(result.stats.worker_thread_ids);
+                    let signature: Vec<_> = result
+                        .candidates
+                        .iter()
+                        .map(|hit| {
+                            (
+                                hit.document().expect("returned identity"),
+                                hit.score().to_bits(),
+                            )
+                        })
+                        .collect();
+                    assert_eq!(
+                        signature, expected[index],
+                        "independent scalar identity/bit oracle"
+                    );
+                }
+                (samples, ids)
+            }));
+        }
+        let began = Instant::now();
+        start.wait();
+        let outputs: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("measurement caller joins"))
+            .collect();
+        (began.elapsed().as_secs_f64(), outputs)
+    });
+    let mut samples = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for (times, threads) in outputs {
+        samples.extend(times);
+        ids.extend(threads);
+    }
+    let timings = controller.take_exact_worker_timings();
+    let work = controller.take_exact_scan_work();
+    assert_eq!(
+        work.iter().map(|work| work.scored_rows).sum::<usize>(),
+        callers * 64 * 58980
+    );
+    assert_eq!(store.stats().expect("final accounting").temporary_bytes, 0);
+    let queue_us: Vec<_> = timings
+        .iter()
+        .map(|t| t.queue_wait.as_secs_f64() * 1e6)
+        .collect();
+    let execution_us: Vec<_> = timings
+        .iter()
+        .map(|t| t.execution.as_secs_f64() * 1e6)
+        .collect();
+    let collector_bytes: Vec<_> = work
+        .iter()
+        .map(|w| w.collector_capacity * std::mem::size_of::<zeppelin_embed::scan::ScanCandidate>())
+        .collect();
+    eprintln!(
+        "ASTRA05 workers={workers} callers={callers} elapsed_s={elapsed} unique_threads={} samples_us={samples:?} queue_us={queue_us:?} execution_us={execution_us:?} collector_bytes={collector_bytes:?}",
+        ids.len()
+    );
+}
+
+#[test]
+#[ignore = "release-only exact crossover and all-tie collector screen"]
+fn astra_05_exact_crossover_measurement() {
+    let workers: usize = std::env::var("ASTRA05_WORKERS")
+        .expect("explicit measured worker count")
+        .parse()
+        .expect("worker integer");
+    for (n, dim, tied) in [
+        (1024, 16, false),
+        (128, 2048, false),
+        (256, 1024, false),
+        (2048, 128, false),
+        (4096, 128, false),
+        (16384, 16, false),
+        (8192, 16, true),
+        (4096, 129, true),
+    ] {
+        let directory = tempdir().expect("crossover fixture");
+        let controller = VectorFaultController::observe_only(11);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            vector_dependencies(controller.clone()),
+        )
+        .expect("crossover store");
+        let component = |row: usize, j: usize| {
+            if tied {
+                1.0_f32
+            } else {
+                ((row * 31 + j * 17) % 65521) as f32 * 0.001
+            }
+        };
+        let documents = (0..n)
+            .map(|row| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new((n - row) as u128), Revision::new(1)),
+                    (0..dim).map(|j| component(row, j)).collect(),
+                )
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(documents))
+            .expect("crossover ingest");
+        let query = vec![0.125_f32; dim];
+        let mut oracle: Vec<_> = (0..n)
+            .map(|row| {
+                let mut distance = 0.0_f64;
+                for (j, q) in query.iter().enumerate() {
+                    let delta = f64::from(*q) - f64::from(component(row, j));
+                    distance += delta * delta;
+                }
+                ((n - row) as u128, (-distance as f32).to_bits())
+            })
+            .collect();
+        oracle.sort_unstable_by(|a, b| {
+            f32::from_bits(b.1)
+                .total_cmp(&f32::from_bits(a.1))
+                .then(a.0.cmp(&b.0))
+        });
+        oracle.truncate(10);
+        let mut samples = Vec::new();
+        let mut actual_workers = Vec::new();
+        let mut collector_bytes = Vec::new();
+        for iteration in 0..84 {
+            let began = std::time::Instant::now();
+            let result = astra_05_query(&store, &query, 10, workers, CancelToken::new())
+                .expect("crossover query");
+            let micros = began.elapsed().as_secs_f64() * 1e6;
+            assert_eq!(result.stats.dims_touched, (n * dim) as u64);
+            assert_eq!(result.stats.bytes_read, (n * dim * 4) as u64);
+            let signature: Vec<_> = result
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.document().expect("identity").doc_id().get(),
+                        candidate.score().to_bits(),
+                    )
+                })
+                .collect();
+            assert_eq!(signature, oracle, "independent scalar crossover oracle");
+            let work = controller.take_exact_scan_work();
+            assert_eq!(work.iter().map(|w| w.scored_rows).sum::<usize>(), n);
+            let _ = controller.take_exact_worker_timings();
+            if iteration >= 20 {
+                samples.push(micros);
+                actual_workers.push(result.stats.threads_used);
+                collector_bytes.extend(work.iter().map(|w| {
+                    w.collector_capacity
+                        * std::mem::size_of::<zeppelin_embed::scan::ScanCandidate>()
+                }));
+            }
+        }
+        assert_eq!(
+            store
+                .stats()
+                .expect("released crossover scratch")
+                .temporary_bytes,
+            0
+        );
+        eprintln!(
+            "ASTRA05_CROSSOVER workers={workers} n={n} dim={dim} tied={tied} samples_us={samples:?} actual_workers={actual_workers:?} collector_bytes={collector_bytes:?}"
+        );
+    }
+}

@@ -492,6 +492,63 @@ pub struct ExactScanWork {
     pub worst_score: Option<f32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ExactWorkerFault {
+    None,
+    Panic,
+    NonFinite { row_id: usize },
+}
+
+struct ExactWorkerHook(Arc<dyn Fn(usize) -> ExactWorkerFault + Send + Sync>);
+impl std::fmt::Debug for ExactWorkerHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExactWorkerHook")
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExactWorkerTiming {
+    pub slot: usize,
+    pub range: std::ops::Range<usize>,
+    pub queue_wait: std::time::Duration,
+    pub execution: std::time::Duration,
+}
+
+/// Explicit test-only row tracing; ordinary observation never stores row IDs.
+#[derive(Clone, Debug)]
+pub struct ExactPartitionReceipt {
+    pub range: std::ops::Range<usize>,
+    pub source: VectorRowSource,
+    pub tier: VectorSearchTier,
+    pub thread_id: std::thread::ThreadId,
+    pub checked_rows: Vec<usize>,
+}
+
+pub(crate) struct ExactRowTrace {
+    controller: VectorFaultController,
+    receipt: ExactPartitionReceipt,
+}
+
+impl ExactRowTrace {
+    pub(crate) fn checked(&mut self, row: usize) {
+        self.receipt.checked_rows.push(row);
+    }
+}
+
+impl Drop for ExactRowTrace {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.controller.state.lock() {
+            state.exact_partitions.push(ExactPartitionReceipt {
+                range: self.receipt.range.clone(),
+                source: self.receipt.source,
+                tier: self.receipt.tier,
+                thread_id: self.receipt.thread_id,
+                checked_rows: std::mem::take(&mut self.receipt.checked_rows),
+            });
+        }
+    }
+}
+
 #[derive(Debug)]
 struct State {
     fault: Option<VectorFault>,
@@ -500,6 +557,14 @@ struct State {
     pending: Option<PendingReceipt>,
     receipts: Vec<VectorFaultReceipt>,
     exact_scans: Vec<ExactScanWork>,
+    trace_exact: bool,
+    exact_partitions: Vec<ExactPartitionReceipt>,
+    exact_hook: Option<ExactWorkerHook>,
+    exact_completion: Option<std::sync::mpsc::Sender<usize>>,
+    deny_exact_reservation: bool,
+    exact_reservation_denials: usize,
+    panic_exact_caller: bool,
+    exact_worker_timings: Vec<ExactWorkerTiming>,
 }
 
 #[derive(Debug)]
@@ -513,12 +578,14 @@ struct PendingReceipt {
 #[derive(Clone, Debug)]
 pub struct VectorFaultController {
     state: Arc<Mutex<State>>,
+    cancel_after_rows: bool,
 }
 
 impl VectorFaultController {
     #[must_use]
     pub fn observe_only(seed_case_id: u64) -> Self {
         Self {
+            cancel_after_rows: false,
             state: Arc::new(Mutex::new(State {
                 fault: None,
                 seed_case_id,
@@ -526,8 +593,132 @@ impl VectorFaultController {
                 pending: None,
                 receipts: Vec::new(),
                 exact_scans: Vec::new(),
+                trace_exact: false,
+                exact_partitions: Vec::new(),
+                exact_hook: None,
+                exact_completion: None,
+                deny_exact_reservation: false,
+                exact_reservation_denials: 0,
+                panic_exact_caller: false,
+                exact_worker_timings: Vec::new(),
             })),
         }
+    }
+
+    pub fn set_exact_worker_hook(
+        &self,
+        hook: impl Fn(usize) -> ExactWorkerFault + Send + Sync + 'static,
+    ) {
+        if let Ok(mut state) = self.state.lock() {
+            state.exact_hook = Some(ExactWorkerHook(Arc::new(hook)));
+        }
+    }
+    pub fn clear_exact_worker_hook(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.exact_hook = None;
+            state.exact_completion = None;
+        }
+    }
+    pub fn notify_exact_completions(&self, sender: std::sync::mpsc::Sender<usize>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.exact_completion = Some(sender);
+        }
+    }
+    pub fn deny_next_exact_reservation(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.deny_exact_reservation = true;
+        }
+    }
+    pub fn panic_after_exact_submission(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.panic_exact_caller = true;
+        }
+    }
+    #[must_use]
+    pub fn take_exact_reservation_denials(&self) -> usize {
+        self.state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.exact_reservation_denials))
+            .unwrap_or(0)
+    }
+    #[must_use]
+    pub fn take_exact_worker_timings(&self) -> Vec<ExactWorkerTiming> {
+        self.state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.exact_worker_timings))
+            .unwrap_or_default()
+    }
+    pub(crate) fn exact_worker_fault(&self, slot: usize) -> ExactWorkerFault {
+        let hook = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.exact_hook.as_ref().map(|hook| Arc::clone(&hook.0)));
+        hook.map_or(ExactWorkerFault::None, |hook| hook(slot))
+    }
+    pub(crate) fn exact_completion_notifier(&self) -> Option<std::sync::mpsc::Sender<usize>> {
+        self.state.lock().ok()?.exact_completion.clone()
+    }
+    pub(crate) fn deny_exact_reservation(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let deny = std::mem::take(&mut state.deny_exact_reservation);
+        state.exact_reservation_denials += usize::from(deny);
+        deny
+    }
+    pub(crate) fn panic_exact_caller(&self) -> bool {
+        self.state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.panic_exact_caller))
+            .unwrap_or(false)
+    }
+    pub(crate) fn record_exact_worker_timing(&self, timing: ExactWorkerTiming) {
+        if let Ok(mut state) = self.state.lock() {
+            state.exact_worker_timings.push(timing);
+        }
+    }
+
+    #[must_use]
+    pub fn trace_exact_partitions(seed_case_id: u64) -> Self {
+        let controller = Self::observe_only(seed_case_id);
+        if let Ok(mut state) = controller.state.lock() {
+            state.trace_exact = true;
+        }
+        controller
+    }
+
+    pub(crate) fn has_exact_row_hooks(&self) -> bool {
+        self.cancel_after_rows || self.state.lock().is_ok_and(|state| state.trace_exact)
+    }
+
+    #[must_use]
+    pub fn take_exact_partitions(&self) -> Vec<ExactPartitionReceipt> {
+        self.state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.exact_partitions))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn trace_rows(
+        &self,
+        source: VectorRowSource,
+        tier: VectorSearchTier,
+        range: std::ops::Range<usize>,
+    ) -> Option<ExactRowTrace> {
+        if !self.state.lock().ok()?.trace_exact {
+            return None;
+        }
+        Some(ExactRowTrace {
+            controller: self.clone(),
+            receipt: ExactPartitionReceipt {
+                range,
+                source,
+                tier,
+                thread_id: std::thread::current().id(),
+                checked_rows: Vec::new(),
+            },
+        })
     }
 
     #[must_use]
@@ -547,6 +738,7 @@ impl VectorFaultController {
     #[must_use]
     pub fn armed(fault: VectorFault, seed_case_id: u64) -> Self {
         Self {
+            cancel_after_rows: matches!(fault, VectorFault::CancelAfterRows { .. }),
             state: Arc::new(Mutex::new(State {
                 fault: Some(fault),
                 seed_case_id,
@@ -554,6 +746,14 @@ impl VectorFaultController {
                 pending: None,
                 receipts: Vec::new(),
                 exact_scans: Vec::new(),
+                trace_exact: false,
+                exact_partitions: Vec::new(),
+                exact_hook: None,
+                exact_completion: None,
+                deny_exact_reservation: false,
+                exact_reservation_denials: 0,
+                panic_exact_caller: false,
+                exact_worker_timings: Vec::new(),
             })),
         }
     }
@@ -692,6 +892,11 @@ impl VectorFaultController {
         actual_tier: VectorSearchTier,
         local_row: usize,
     ) -> bool {
+        // Observation-only controllers must not serialize every scored row.
+        // Fault kind is fixed at construction; consuming it only disarms it.
+        if !self.cancel_after_rows {
+            return false;
+        }
         let Ok(local_row_u32) = u32::try_from(local_row) else {
             return false;
         };

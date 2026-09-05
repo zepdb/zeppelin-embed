@@ -1597,7 +1597,9 @@ pub enum SearchTier {
     /// Select graph traversal per sealed segment when that graph is published.
     #[default]
     Auto,
-    /// Exhaustively score full-precision vectors.
+    /// Exhaustively score full-precision vectors. Large scans share at most
+    /// four pool workers across callers, bounded further by the scan worker
+    /// budget; small scans execute serially.
     Exact,
     /// Preserve the existing exhaustive sealed-segment scan.
     Scan,
@@ -3432,8 +3434,9 @@ impl Store {
         // Exact for itself. This is the adaptive ladder choosing the
         // tier that can honour the contract, not a fallback hiding one.
         let admitted = self
-            .admit_vector_search(options)
+            .admit_vector_search_for(options, requested_tier.is_none())
             .map_err(crate::fusion::FusionError::from)?;
+        options = admitted.execution_options;
         let tier_resolution = if requested_tier.is_none() {
             if snapshot_has_graph(&admitted.snapshot) {
                 Some(crate::diag::HybridTierResolution::Auto)
@@ -3547,7 +3550,7 @@ impl Store {
                 started,
                 self.clock.as_ref(),
                 #[cfg(any(test, feature = "test-support"))]
-                None,
+                self.vector_fault_controller.as_ref(),
             )
             .map_err(crate::fusion::FusionError::from)
         };
@@ -3934,6 +3937,14 @@ impl Store {
         &self,
         options: SearchOptions,
     ) -> Result<AdmittedVectorSearch<'_>, QueryError> {
+        self.admit_vector_search_for(options, false)
+    }
+
+    fn admit_vector_search_for(
+        &self,
+        options: SearchOptions,
+        hybrid_default: bool,
+    ) -> Result<AdmittedVectorSearch<'_>, QueryError> {
         let state = self
             .state
             .lock()
@@ -3964,14 +3975,22 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(QueryError::Store(StoreError::Closed))?;
+        let execution_options = if hybrid_default && !snapshot_has_graph(&snapshot) {
+            options.with_tier(SearchTier::Exact)
+        } else {
+            options
+        };
+        // Default hybrid may move from graph traversal to Exact while widening.
+        // Admit that resource while the Store is still Open under this lock.
         let needs_query_pool = !active_segment.is_empty()
-            || match options.tier() {
+            || (hybrid_default && !snapshot.segments().is_empty())
+            || match execution_options.tier() {
                 SearchTier::Auto => snapshot.segments().iter().any(|segment| {
                     !segment.directory().iter().any(|entry| {
                         entry.kind == crate::segment::layout::RegionKind::GraphNodeBlocks.id()
                     })
                 }),
-                SearchTier::Exact => false,
+                SearchTier::Exact => !snapshot.segments().is_empty(),
                 SearchTier::Scan => true,
                 SearchTier::Graph(_) => false,
             };
@@ -3988,6 +4007,7 @@ impl Store {
         drop(state);
         Ok(AdmittedVectorSearch {
             pool,
+            execution_options,
             snapshot: snapshot::ReadSnapshot::new(snapshot),
             active_segment,
             generation,
@@ -4942,22 +4962,35 @@ fn search_pinned(
         || (matches!(options.tier(), SearchTier::Auto)
             && auto_uses_full_precision(snapshot, active));
 
+    // Reuse one bounded worker lane across this pinned query's segments.
+    let exact_lane = if full_precision {
+        pool.map_or(0, |pool| {
+            pool.reserve_exact_lane(scan_options.thread_budget)
+        })
+    } else {
+        0
+    };
+
     if !active.is_empty() {
         let alive = active.alive().map_err(QueryError::Store)?;
         let exact_score = full_precision;
-        let mut exact_memory =
-            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
-                .map_err(QueryError::Store)?;
+        let mut exact_memory = ExactScanMemory::new(accounting)?;
         let outcome = match options.tier() {
             SearchTier::Auto if full_precision => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
-                let cancellation = QueryCancellation::new(&control, &lease);
                 scan_active_squared_l2(
                     active,
                     &alive,
                     request.vector(),
                     k,
-                    &cancellation,
+                    ExactScanDispatch {
+                        pool,
+                        accounting,
+                        control: &control,
+                        lease: &lease,
+                        thread_budget: scan_options.thread_budget,
+                        lane: exact_lane,
+                    },
                     &mut exact_memory,
                     #[cfg(any(test, feature = "test-support"))]
                     vector_fault_controller,
@@ -4998,13 +5031,19 @@ fn search_pinned(
             }
             SearchTier::Exact | SearchTier::Graph(_) => {
                 let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
-                let cancellation = QueryCancellation::new(&control, &lease);
                 scan_active_squared_l2(
                     active,
                     &alive,
                     request.vector(),
                     k,
-                    &cancellation,
+                    ExactScanDispatch {
+                        pool,
+                        accounting,
+                        control: &control,
+                        lease: &lease,
+                        thread_budget: scan_options.thread_budget,
+                        lane: exact_lane,
+                    },
                     &mut exact_memory,
                     #[cfg(any(test, feature = "test-support"))]
                     vector_fault_controller,
@@ -5117,9 +5156,7 @@ fn search_pinned(
             continue;
         }
 
-        let mut exact_memory =
-            stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
-                .map_err(QueryError::Store)?;
+        let mut exact_memory = ExactScanMemory::new(accounting)?;
         let outcome = scan_sealed_segment(
             pool,
             snapshot,
@@ -5133,6 +5170,8 @@ fn search_pinned(
             &bit4_query,
             &int8_query,
             full_precision,
+            exact_lane,
+            accounting,
             &mut exact_memory,
             source,
             options.tier(),
@@ -5846,7 +5885,9 @@ fn scan_sealed_segment(
     bit4_query: &std::cell::OnceCell<Result<crate::quant::Bit4Query, crate::quant::QuantError>>,
     int8_query: &std::cell::OnceCell<Result<crate::quant::Int8Query, crate::quant::QuantError>>,
     full_precision: bool,
-    exact_memory: &mut stats::AccountedCounter,
+    exact_lane: usize,
+    accounting: &Arc<stats::Accounting>,
+    exact_memory: &mut ExactScanMemory,
     source: crate::ingest::RowSource,
     tier: SearchTier,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
@@ -5857,7 +5898,6 @@ fn scan_sealed_segment(
 
     if full_precision {
         let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
-        let cancellation = QueryCancellation::new(control, &lease);
         let vectors = exact_rescore_rows_for_search(
             segment,
             #[cfg(any(test, feature = "test-support"))]
@@ -5871,7 +5911,14 @@ fn scan_sealed_segment(
             alive,
             request.vector(),
             k,
-            &cancellation,
+            ExactScanDispatch {
+                pool,
+                accounting,
+                control,
+                lease: &lease,
+                thread_budget: scan_options.thread_budget,
+                lane: exact_lane,
+            },
             exact_memory,
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
@@ -6200,13 +6247,17 @@ fn map_graph_error(error: crate::graph::search::GraphSearchError) -> QueryError 
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "scoped dispatch and test source identity stay explicit"
+)]
 fn scan_active_squared_l2(
     active: &crate::ingest::ActiveSegment,
     alive: &crate::meta::AliveSet,
     query: &[f32],
     k: usize,
-    cancellation: &QueryCancellation<'_>,
-    memory: &mut stats::AccountedCounter,
+    dispatch: ExactScanDispatch<'_>,
+    memory: &mut ExactScanMemory,
     #[cfg(any(test, feature = "test-support"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -6218,7 +6269,7 @@ fn scan_active_squared_l2(
         alive,
         query,
         k,
-        cancellation,
+        dispatch,
         memory,
         #[cfg(any(test, feature = "test-support"))]
         controller,
@@ -6229,9 +6280,63 @@ fn scan_active_squared_l2(
     )
 }
 
+#[derive(Debug)]
+enum ExactScanError {
+    Query(QueryError),
+    Narrowing { row_id: usize, score: f64 },
+}
+
+impl From<QueryError> for ExactScanError {
+    fn from(error: QueryError) -> Self {
+        Self::Query(error)
+    }
+}
+
+impl ExactScanError {
+    fn into_query(self) -> QueryError {
+        match self {
+            Self::Query(error) => error,
+            Self::Narrowing { row_id, .. } => {
+                QueryError::Scan(crate::scan::ScanError::NonFiniteScore { row_id })
+            }
+        }
+    }
+}
+
+struct ExactScanMemory {
+    candidates: stats::AccountedCounter,
+    worker_ids: stats::AccountedCounter,
+}
+
+impl ExactScanMemory {
+    fn new(accounting: &Arc<stats::Accounting>) -> Result<Self, QueryError> {
+        Ok(Self {
+            candidates: stats::AccountedCounter::new(
+                accounting,
+                stats::AllocationComponent::Temporary,
+            )
+            .map_err(QueryError::Store)?,
+            worker_ids: stats::AccountedCounter::new(
+                accounting,
+                stats::AllocationComponent::Temporary,
+            )
+            .map_err(QueryError::Store)?,
+        })
+    }
+}
+
+struct ExactScanDispatch<'a> {
+    pool: Option<&'a pool::QueryPool>,
+    accounting: &'a Arc<stats::Accounting>,
+    control: &'a QueryControl,
+    lease: &'a SnapshotLease,
+    thread_budget: usize,
+    lane: usize,
+}
+
 #[allow(
     clippy::too_many_arguments,
-    reason = "test-support vector faults require the actual source and tier at the scoring boundary"
+    reason = "scoped dispatch and test source identity stay explicit"
 )]
 fn scan_squared_l2(
     vectors: &[f32],
@@ -6239,8 +6344,266 @@ fn scan_squared_l2(
     alive: &crate::meta::AliveSet,
     query: &[f32],
     k: usize,
+    dispatch: ExactScanDispatch<'_>,
+    memory: &mut ExactScanMemory,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<crate::scan::ScanOutcome, QueryError> {
+    if let Some(pool) = dispatch.pool
+        && pool.exact_workers(row_count, query.len(), dispatch.thread_budget) > 1
+    {
+        return pool.execute_exact(
+            vectors,
+            row_count,
+            alive,
+            query,
+            k,
+            dispatch.thread_budget,
+            dispatch.lane,
+            dispatch.control,
+            dispatch.lease,
+            dispatch.accounting,
+            memory,
+            #[cfg(any(test, feature = "test-support"))]
+            controller,
+            #[cfg(any(test, feature = "test-support"))]
+            source,
+            #[cfg(any(test, feature = "test-support"))]
+            tier,
+        );
+    }
+    let cancellation = QueryCancellation::new(dispatch.control, dispatch.lease);
+    #[cfg(any(test, feature = "test-support"))]
+    if controller.is_some_and(|controller| controller.has_exact_row_hooks()) {
+        return scan_exact_partition::<false>(
+            vectors,
+            row_count,
+            0..row_count,
+            alive,
+            query,
+            k,
+            &cancellation,
+            memory,
+            #[cfg(any(test, feature = "test-support"))]
+            controller,
+            #[cfg(any(test, feature = "test-support"))]
+            source,
+            #[cfg(any(test, feature = "test-support"))]
+            tier,
+        )
+        .map_err(ExactScanError::into_query);
+    }
+    scan_serial_squared_l2(
+        vectors,
+        row_count,
+        alive,
+        query,
+        k,
+        &cancellation,
+        &mut memory.candidates,
+        &mut memory.worker_ids,
+        #[cfg(any(test, feature = "test-support"))]
+        controller,
+        #[cfg(any(test, feature = "test-support"))]
+        source,
+        #[cfg(any(test, feature = "test-support"))]
+        tier,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_exact_partition<const OFFSET_ROWS: bool>(
+    vectors: &[f32],
+    row_count: usize,
+    range: std::ops::Range<usize>,
+    alive: &crate::meta::AliveSet,
+    query: &[f32],
+    k: usize,
+    cancellation: &QueryCancellation<'_>,
+    memory: &mut ExactScanMemory,
+    #[cfg(any(test, feature = "test-support"))] controller: Option<
+        &crate::scan::vector_fault::VectorFaultController,
+    >,
+    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+) -> Result<crate::scan::ScanOutcome, ExactScanError> {
+    if query.is_empty() {
+        return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension).into());
+    }
+    let expected = row_count
+        .checked_mul(query.len())
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    if vectors.len() != expected {
+        return Err(QueryError::Scan(crate::scan::ScanError::RowDataLength {
+            dimension: query.len(),
+            actual: vectors.len(),
+        })
+        .into());
+    }
+    // Preserve the original physical-row cancellation preflight without storing
+    // the rows. Scoring checks subsequently count eligible rows, as before.
+    if range.start > range.end || range.end > row_count || (!OFFSET_ROWS && range.start != 0) {
+        return Err(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow).into());
+    }
+    let mut live_rows = 0;
+    for row in range.clone() {
+        if row.is_multiple_of(64) {
+            cancellation.check_graph().map_err(map_scan_error)?;
+        }
+        let local_row = u32::try_from(row)
+            .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        live_rows += usize::from(alive.is_alive(local_row));
+    }
+    cancellation.check_graph().map_err(map_scan_error)?;
+    let mut collector = crate::scan::topk::ExactTopK::try_new(k, live_rows, &mut memory.candidates)
+        .map_err(QueryError::Store)?;
+    let mut worst_score: Option<f32> = None;
+    let mut narrowing_error: Option<(usize, f64)> = None;
+    let start = range
+        .start
+        .checked_mul(query.len())
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let end = range
+        .end
+        .checked_mul(query.len())
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let partition_vectors = vectors
+        .get(start..end)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let rows = partition_vectors
+        .chunks_exact(query.len())
+        .enumerate()
+        .map(|(local, vector)| {
+            (
+                if OFFSET_ROWS {
+                    range.start + local
+                } else {
+                    local
+                },
+                vector,
+            )
+        })
+        .filter(|(row, _)| u32::try_from(*row).is_ok_and(|row| alive.is_alive(row)));
+    #[cfg(any(test, feature = "test-support"))]
+    let mut trace =
+        controller.and_then(|controller| controller.trace_rows(source, tier, range.clone()));
+    let scored_rows = crate::quant::exact_squared_l2_with_sink(
+        query,
+        rows,
+        |row, is_checkpoint| {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(controller) = controller {
+                if let Some(trace) = &mut trace {
+                    trace.checked(row);
+                }
+                if is_checkpoint {
+                    cancellation.check_graph().map_err(map_scan_error)?;
+                }
+                if controller.after_eligible_row(source, tier, row) {
+                    return Err(QueryError::Cancelled { partial: false });
+                }
+                return Ok(());
+            }
+            if is_checkpoint {
+                cancellation.check_graph().map_err(map_scan_error)?;
+            }
+            Ok(())
+        },
+        |row_id, exact| {
+            let score = exact as f32;
+            if !score.is_finite() {
+                // The old full f64 sort chose the best overflowing score, then
+                // physical row ID. Defer this failure until every row check and
+                // f64 rejection has run, including the final cancellation check.
+                if narrowing_error.is_none_or(|(row, previous)| {
+                    exact.total_cmp(&previous).is_gt()
+                        || (exact.total_cmp(&previous).is_eq() && row_id < row)
+                }) {
+                    narrowing_error = Some((row_id, exact));
+                }
+                return Ok(());
+            }
+            if worst_score.is_none_or(|worst| score.total_cmp(&worst).is_lt()) {
+                worst_score = Some(score);
+            }
+            collector
+                .try_push(
+                    crate::scan::ScanCandidate { row_id, score },
+                    &mut memory.candidates,
+                )
+                .map_err(QueryError::Store)
+        },
+    )
+    .map_err(|error| match error {
+        crate::quant::RescoreCheckError::Rescore(error) => map_l2_rescore_error(error),
+        crate::quant::RescoreCheckError::Check(error) => error,
+    })?;
+    cancellation.check_graph().map_err(map_scan_error)?;
+    if let Some((row_id, score)) = narrowing_error {
+        return Err(ExactScanError::Narrowing { row_id, score });
+    }
+    let (candidates, _collector_capacity) = collector
+        .try_into_sorted_with_ties(&mut memory.candidates)
+        .map_err(QueryError::Store)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(controller) = controller {
+        controller.record_exact_scan(crate::scan::vector_fault::ExactScanWork {
+            sorted_items: candidates.len(),
+            collector_capacity: _collector_capacity,
+            scored_rows,
+            worst_score,
+            ..Default::default()
+        });
+    }
+    let dims = u64::try_from(query.len())
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let scored_rows = u64::try_from(scored_rows)
+        .map_err(|_| QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let dims_touched = scored_rows
+        .checked_mul(dims)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    let bytes_read = dims_touched
+        .checked_mul(std::mem::size_of::<f32>() as u64)
+        .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    memory
+        .worker_ids
+        .set(std::mem::size_of::<std::thread::ThreadId>())
+        .map_err(QueryError::Store)?;
+    let mut worker_thread_ids = Vec::new();
+    worker_thread_ids.try_reserve_exact(1).map_err(|_| {
+        QueryError::Store(StoreError::AllocationFailed {
+            needed: memory.worker_ids.bytes(),
+            component: "exact worker IDs",
+        })
+    })?;
+    worker_thread_ids.push(std::thread::current().id());
+    Ok(crate::scan::ScanOutcome {
+        candidates,
+        worst_score,
+        stats: crate::scan::ScanStats {
+            dims_touched,
+            bytes_read,
+            threads_used: 1,
+            worker_thread_ids,
+        },
+    })
+}
+
+// Retain the plan-04 serial iterator and QueryError path. Partition offsets
+// and narrowing-error aggregation belong only to worker scans.
+#[allow(clippy::too_many_arguments)]
+fn scan_serial_squared_l2(
+    vectors: &[f32],
+    row_count: usize,
+    alive: &crate::meta::AliveSet,
+    query: &[f32],
+    k: usize,
     cancellation: &QueryCancellation<'_>,
     memory: &mut stats::AccountedCounter,
+    worker_memory: &mut stats::AccountedCounter,
     #[cfg(any(test, feature = "test-support"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -6348,6 +6711,17 @@ fn scan_squared_l2(
     let bytes_read = dims_touched
         .checked_mul(std::mem::size_of::<f32>() as u64)
         .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+    worker_memory
+        .set(std::mem::size_of::<std::thread::ThreadId>())
+        .map_err(QueryError::Store)?;
+    let mut worker_thread_ids = Vec::new();
+    worker_thread_ids.try_reserve_exact(1).map_err(|_| {
+        QueryError::Store(StoreError::AllocationFailed {
+            needed: worker_memory.bytes(),
+            component: "exact worker IDs",
+        })
+    })?;
+    worker_thread_ids.push(std::thread::current().id());
     Ok(crate::scan::ScanOutcome {
         candidates,
         worst_score,
@@ -6355,7 +6729,7 @@ fn scan_squared_l2(
             dims_touched,
             bytes_read,
             threads_used: 1,
-            worker_thread_ids: vec![std::thread::current().id()],
+            worker_thread_ids,
         },
     })
 }
@@ -6497,6 +6871,7 @@ struct AdmittedLexicalQuery<'a> {
 }
 
 struct AdmittedVectorSearch<'a> {
+    execution_options: SearchOptions,
     pool: Option<Arc<pool::QueryPool>>,
     snapshot: snapshot::ReadSnapshot,
     active_segment: Arc<crate::ingest::ActiveSegment>,
