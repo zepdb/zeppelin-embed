@@ -29,6 +29,7 @@
 pub mod bounds;
 pub mod maxscore;
 pub mod wand;
+pub(crate) mod weighted;
 
 use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
@@ -229,6 +230,10 @@ impl TopK {
     /// scan stops at the first entry the newcomer does not precede, which is
     /// where a stable sort would have placed it.
     pub fn offer(&mut self, doc: GlobalDocId, score: f64) {
+        self.offer_observed(doc, score, |_| {});
+    }
+
+    fn offer_observed(&mut self, doc: GlobalDocId, score: f64, observe: impl FnOnce(usize)) {
         if self.capacity == 0 {
             return;
         }
@@ -256,6 +261,7 @@ impl TopK {
             }
         }
         self.entries.insert(slot, entry);
+        observe(self.entries.len());
         self.entries.truncate(self.capacity);
     }
 

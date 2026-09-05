@@ -713,6 +713,8 @@ impl LexicalIndex {
     /// Returns [`IndexError::Stats`] when the index holds no documents or
     /// no tokens, because `avgdl` is undefined then.
     pub fn corpus_stats(&self) -> Result<CorpusStats, IndexError> {
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::corpus_statistics();
         Ok(CorpusStats::new(
             self.document_count(),
             self.total_tokens(),

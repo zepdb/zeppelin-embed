@@ -452,7 +452,7 @@ fn astra_03_structured_anchor_uses_the_exact_combined_maximum() {
             .hybrid
             .expect("hybrid")
             .lexical_full_materializations,
-        1
+        0
     );
     store.close().expect("close");
 }
@@ -754,6 +754,530 @@ fn astra_disjoint_windows_store() -> (tempfile::TempDir, Store) {
         .ingest(IngestBatch::new(documents))
         .expect("ingest the adversarial corpus");
     (directory, store)
+}
+
+fn astra_10_combined_fixture() -> (tempfile::TempDir, Store) {
+    let directory = tempdir().expect("combined lexical fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let documents = (0..129)
+        .map(|row| {
+            let text = match row {
+                0..64 => "alpha alpha alpha alpha",
+                64..128 => "beta beta beta beta",
+                _ => "alpha beta",
+            };
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )
+            .with_text(text)
+        })
+        .collect();
+    store.ingest(IngestBatch::new(documents)).expect("ingest");
+    (directory, store)
+}
+
+#[test]
+fn astra_10_combined_winner_below_each_expansion_cutoff_survives() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    let (_directory, store) = astra_10_combined_fixture();
+    let winner = DocId::new(129);
+    for term in [b"alpha".to_vec(), b"beta".to_vec()] {
+        let leg = store
+            .search_lexical(
+                &TermQuery::flat(vec![term], &[DEFAULT_FIELD]),
+                51,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("per-expansion cutoff");
+        assert_eq!(leg.candidates.len(), 51);
+        assert!(
+            leg.candidates
+                .iter()
+                .all(|hit| hit.document.doc_id() != winner)
+        );
+    }
+    let query = LexicalQuery::term(TermQuery::flat(
+        vec![b"alpha".to_vec(), b"beta".to_vec()],
+        &[DEFAULT_FIELD],
+    ));
+    let standalone = store
+        .search_lexical_structured(&query, 1, 128, QueryControl::Cancel(CancelToken::new()))
+        .expect("combined standalone");
+    let hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &query,
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("combined hybrid");
+    // Literal corpus statistics: N=129, total length=514 and df=65 per term.
+    // Each solo row outranks the winner for its one term, but two contributions
+    // make the winner's complete sum larger than every solo row's score.
+    let idf = (1.0_f64 + 64.5 / 65.5).ln();
+    let average = 514.0 / 129.0;
+    let score =
+        |tf: f64, length: f64| idf * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * length / average));
+    let each = score(1.0, 2.0);
+    let solo = score(4.0, 4.0);
+    assert!(each < solo && each + each > solo);
+    assert_eq!(standalone.candidates.len(), 1);
+    assert_eq!(standalone.candidates[0].document.doc_id(), winner);
+    assert!((standalone.candidates[0].score - (each + each)).abs() <= 1e-12);
+    assert_eq!(hybrid.hits[0].key, winner);
+    assert_eq!(
+        hybrid.hits[0]
+            .lexical_bm25
+            .expect("complete lexical score")
+            .to_bits(),
+        standalone.candidates[0].score.to_bits()
+    );
+    assert_eq!(
+        standalone.candidates[0]
+            .provenance
+            .iter()
+            .map(|entry| entry.term.as_slice())
+            .collect::<Vec<_>>(),
+        vec![b"alpha".as_slice(), b"beta".as_slice()]
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_small_structured_window_retains_only_bounded_candidates() {
+    use zeppelin_embed::fts::{preparation_observer, query::LexicalQuery};
+    let (_directory, store) = astra_10_combined_fixture();
+    let query = LexicalQuery::term(TermQuery::flat(
+        vec![b"alpha".to_vec(), b"beta".to_vec()],
+        &[DEFAULT_FIELD],
+    ));
+    preparation_observer::begin();
+    let standalone = store
+        .search_lexical_structured(&query, 1, 128, QueryControl::Cancel(CancelToken::new()))
+        .expect("standalone");
+    let standalone_rows = preparation_observer::take_with_collection().3;
+    preparation_observer::begin();
+    let hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &query,
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid");
+    let hybrid_rows = preparation_observer::take_with_collection().3;
+    assert_eq!(standalone.candidates[0].document.doc_id(), DocId::new(129));
+    assert_eq!(hybrid.hits[0].key, DocId::new(129));
+    assert_eq!(
+        hybrid.diagnostics.fusion.as_ref().expect("fusion").rounds,
+        1
+    );
+    eprintln!("standalone retained={standalone_rows}, hybrid retained={hybrid_rows}");
+    assert!(
+        standalone_rows > 0 && hybrid_rows > 0,
+        "real collector observations must fire"
+    );
+    assert!(
+        standalone_rows <= 2,
+        "k1 collector must not retain all matching rows"
+    );
+    assert!(
+        hybrid_rows <= 52,
+        "width50 plus its next candidate must remain bounded"
+    );
+    assert_eq!(
+        hybrid
+            .diagnostics
+            .hybrid
+            .as_ref()
+            .expect("hybrid work")
+            .lexical_full_materializations,
+        0
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_structured_standalone_and_hybrid_share_exact_lexical_scores() {
+    use zeppelin_embed::fts::{preparation_observer, query::LexicalQuery};
+    let directory = tempdir().expect("weighted cross-fill fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (0..240)
+                .map(|row| {
+                    let text = match row % 4 {
+                        0 => "alpha alpin alpin",
+                        1 => "alpha alpha alpht",
+                        2 => "alpin beta beta",
+                        _ => "alpht beta beta beta",
+                    };
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                        vec![1.0 + row as f32 * 0.03125, 0.0],
+                    )
+                    .with_text(text)
+                })
+                .collect(),
+        ))
+        .expect("ingest");
+    store.seal().expect("sealed control");
+    store
+        .delete(DeleteBatch::new(vec![
+            DocId::new(1),
+            DocId::new(9),
+            DocId::new(200),
+        ]))
+        .expect("tombstones");
+    let queries = [
+        LexicalQuery::term(TermQuery::flat(
+            vec![b"alpin".to_vec(), b"alpha".to_vec(), b"alpha".to_vec()],
+            &[DEFAULT_FIELD],
+        )),
+        LexicalQuery::prefix(b"al".to_vec(), DEFAULT_FIELD),
+        LexicalQuery::fuzzy(b"alpha".to_vec(), 1, DEFAULT_FIELD),
+    ];
+    for query in &queries {
+        let all = store
+            .search_lexical_structured(query, 240, 128, QueryControl::Cancel(CancelToken::new()))
+            .expect("complete standalone scores");
+        let scores = all
+            .candidates
+            .iter()
+            .map(|hit| (hit.document.doc_id(), hit.score))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        preparation_observer::begin();
+        let bounded = store
+            .search_hybrid_structured(
+                SearchRequest::new(&[1.0, 0.0]),
+                query,
+                &HybridQuery::new(10).with_alpha(0.9),
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("bounded weighted hybrid");
+        assert_eq!(
+            preparation_observer::corpus_statistics_calls(),
+            1,
+            "one combined preparation across producer and cross-scorer"
+        );
+        let (scorers, frequencies, expansions, retained) =
+            preparation_observer::take_with_collection();
+        assert_eq!(
+            scorers,
+            all.expansions.len(),
+            "each expansion scorer prepared once including duplicates"
+        );
+        assert_eq!(frequencies, scorers);
+        assert_eq!(expansions, 1);
+        assert!(retained < 237, "a bounded producer really ran");
+        assert!(
+            bounded
+                .diagnostics
+                .hybrid
+                .as_ref()
+                .expect("report")
+                .cross_filled_lexical
+                > 0,
+            "scores outside the lexical window are exercised"
+        );
+        for hit in &bounded.hits {
+            assert_eq!(
+                hit.lexical_bm25.map(f64::to_bits),
+                Some(scores.get(&hit.key).copied().unwrap_or(0.0).to_bits())
+            );
+        }
+        let full_query = HybridQuery {
+            max_rounds: 0,
+            ..HybridQuery::new(10).with_alpha(0.9)
+        };
+        let full = store
+            .search_hybrid_structured(
+                SearchRequest::new(&[1.0, 0.0]),
+                query,
+                &full_query,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("exhaustive fusion control");
+        assert_eq!(
+            bounded.hits, full.hits,
+            "fixed anchors and W+1 bound preserve the full answer"
+        );
+    }
+    assert_eq!(store.stats().expect("released").temporary_bytes, 0);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_phrase_rejections_do_not_consume_topk_capacity() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    let directory = tempdir().expect("phrase fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (0..100)
+                .map(|row| {
+                    let text = if row < 90 {
+                        "beta beta beta alpha alpha alpha".to_owned()
+                    } else {
+                        format!("alpha beta {}", "filler ".repeat(32))
+                    };
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                        vec![1.0 + row as f32 * 0.125, 0.0],
+                    )
+                    .with_text(&text)
+                })
+                .collect(),
+        ))
+        .expect("ingest");
+    let query = LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD);
+    let standalone = store
+        .search_lexical_structured(&query, 3, 128, QueryControl::Cancel(CancelToken::new()))
+        .expect("eligible top three");
+    assert_eq!(
+        standalone
+            .candidates
+            .iter()
+            .map(|hit| hit.document.doc_id())
+            .collect::<Vec<_>>(),
+        vec![DocId::new(91), DocId::new(92), DocId::new(93)]
+    );
+    let lexical_hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &query,
+            &HybridQuery::new(3).with_alpha(0.0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("phrase hybrid");
+    assert_eq!(
+        lexical_hybrid
+            .hits
+            .iter()
+            .map(|hit| hit.key)
+            .collect::<Vec<_>>(),
+        vec![DocId::new(91), DocId::new(92), DocId::new(93)]
+    );
+    let vector_hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &query,
+            &HybridQuery::new(3).with_alpha(1.0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("phrase rejects cross-scores too");
+    assert_eq!(
+        vector_hybrid
+            .hits
+            .iter()
+            .map(|hit| hit.key)
+            .collect::<Vec<_>>(),
+        vec![DocId::new(1), DocId::new(2), DocId::new(3)]
+    );
+    assert!(
+        vector_hybrid
+            .hits
+            .iter()
+            .all(|hit| hit.lexical_bm25 == Some(0.0)),
+        "term matches without phrase eligibility contribute zero"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_expansion_provenance_matches_contributing_terms() {
+    use zeppelin_embed::fts::query::{LexicalMatchKind, LexicalQuery};
+    let directory = tempdir().expect("provenance fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let texts = [
+        "alpha alpin",
+        "alpha",
+        "alpin",
+        "alpht",
+        "beta alpha",
+        "beta",
+    ];
+    store
+        .ingest(IngestBatch::new(
+            texts
+                .iter()
+                .enumerate()
+                .map(|(row, text)| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                    .with_text(*text)
+                })
+                .collect(),
+        ))
+        .expect("ingest");
+    let queries = [
+        (
+            LexicalQuery::term(TermQuery::flat(
+                vec![b"alpha".to_vec(), b"beta".to_vec(), b"alpha".to_vec()],
+                &[DEFAULT_FIELD],
+            )),
+            vec![
+                ("alpha", 1000, LexicalMatchKind::Term),
+                ("beta", 1000, LexicalMatchKind::Term),
+                ("alpha", 1000, LexicalMatchKind::Term),
+            ],
+        ),
+        (
+            LexicalQuery::prefix(b"al".to_vec(), DEFAULT_FIELD),
+            vec![
+                ("alpha", 1000, LexicalMatchKind::Prefix),
+                ("alpht", 1000, LexicalMatchKind::Prefix),
+                ("alpin", 1000, LexicalMatchKind::Prefix),
+            ],
+        ),
+        (
+            LexicalQuery::fuzzy(b"alpha".to_vec(), 1, DEFAULT_FIELD),
+            vec![
+                ("alpha", 1000, LexicalMatchKind::Fuzzy { distance: 0 }),
+                ("alpht", 500, LexicalMatchKind::Fuzzy { distance: 1 }),
+            ],
+        ),
+    ];
+    for (query, expanded) in queries {
+        for k in [1, 6] {
+            let result = store
+                .search_lexical_structured(&query, k, 128, QueryControl::Cancel(CancelToken::new()))
+                .expect("explained results");
+            assert_eq!(
+                result
+                    .expansions
+                    .iter()
+                    .map(|entry| (
+                        std::str::from_utf8(&entry.term).expect("ASCII"),
+                        entry.boost_thousandths,
+                        entry.kind
+                    ))
+                    .collect::<Vec<_>>(),
+                expanded
+            );
+            for candidate in result.candidates {
+                let row = candidate.document.doc_id().get() as usize - 1;
+                let expected = expanded
+                    .iter()
+                    .filter(|(term, _, _)| texts[row].split_whitespace().any(|word| word == *term))
+                    .copied()
+                    .collect::<Vec<_>>();
+                let actual = candidate
+                    .provenance
+                    .iter()
+                    .map(|entry| {
+                        (
+                            std::str::from_utf8(&entry.term).expect("ASCII"),
+                            entry.boost_thousandths,
+                            entry.kind,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual, expected,
+                    "only matched expansions, in original order"
+                );
+                assert!(!candidate.snippet.highlights.is_empty());
+            }
+        }
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_structured_collector_reserves_and_releases_its_capacity() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    use zeppelin_embed::ingest::StoreLexicalError;
+    use zeppelin_embed::lifecycle::{QueryError, StoreError};
+    let (directory, store) = astra_10_combined_fixture();
+    store.seal().expect("persist fixture");
+    store.close().expect("close writer");
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::default().with_max_temp_bytes(2_048),
+    )
+    .expect("limited query handle");
+    let query = LexicalQuery::term(TermQuery::flat(
+        vec![b"alpha".to_vec(), b"beta".to_vec()],
+        &[DEFAULT_FIELD],
+    ));
+    let small = store
+        .search_lexical_structured(&query, 1, 128, QueryControl::Cancel(CancelToken::new()))
+        .expect("small collector fits");
+    assert_eq!(small.candidates[0].document.doc_id(), DocId::new(129));
+    let large =
+        store.search_lexical_structured(&query, 129, 128, QueryControl::Cancel(CancelToken::new()));
+    assert!(
+        matches!(
+            large,
+            Err(StoreLexicalError::Query(QueryError::Store(
+                StoreError::BudgetExceeded {
+                    component: "temporary",
+                    ..
+                }
+            )))
+        ),
+        "the 130-slot collector alone exceeds this budget"
+    );
+    assert_eq!(
+        store.stats().expect("reservation released").temporary_bytes,
+        0
+    );
+    assert!(
+        store
+            .search_lexical_structured(&query, 1, 128, QueryControl::Cancel(CancelToken::new()))
+            .is_ok(),
+        "a rejected reservation keeps the handle usable"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_10_empty_expansion_needs_no_live_scoring_statistics() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    let (_directory, store) = astra_10_combined_fixture();
+    store
+        .seal()
+        .expect("retain lexical segment after tombstones");
+    let queries = [
+        LexicalQuery::prefix(b"zzzz".to_vec(), DEFAULT_FIELD),
+        LexicalQuery::fuzzy(b"qqqq".to_vec(), 1, DEFAULT_FIELD),
+    ];
+    for deleted in [false, true] {
+        if deleted {
+            store
+                .delete(DeleteBatch::new((1..=129).map(DocId::new).collect()))
+                .expect("delete every row");
+        }
+        for query in &queries {
+            let lexical = store
+                .search_lexical_structured(query, 10, 128, QueryControl::Cancel(CancelToken::new()))
+                .expect("no expansion needs no BM25 statistics");
+            assert!(lexical.candidates.is_empty());
+            assert!(lexical.expansions.is_empty());
+            let hybrid = store
+                .search_hybrid_structured(
+                    SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                    query,
+                    &HybridQuery::new(10),
+                    SearchOptions::default().with_tier(SearchTier::Exact),
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("empty lexical leg");
+            assert_eq!(hybrid.hits.len(), if deleted { 0 } else { 10 });
+            assert!(hybrid.hits.iter().all(|hit| hit.lexical_bm25 == Some(0.0)));
+        }
+    }
+    store.close().expect("close");
 }
 
 #[test]

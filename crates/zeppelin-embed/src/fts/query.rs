@@ -15,6 +15,67 @@ use super::search::{FieldWeights, TermQuery};
 use super::snippet::Highlight;
 use super::tokenizer::Analyzer;
 
+/// Expansion order and one set of pinned BM25 statistics, shared by the
+/// combined top-k producer and exact scoring of supplied hybrid candidates.
+pub(crate) struct PreparedWeightedQuery {
+    expansions: Vec<LexicalExpansion>,
+    scoring: super::search::PreparedTermQuery,
+}
+
+impl PreparedWeightedQuery {
+    pub(crate) fn new(
+        index: &super::index::LexicalIndex,
+        expansions: Vec<LexicalExpansion>,
+        fields: FieldWeights,
+    ) -> Result<Self, super::index::IndexError> {
+        let query = TermQuery {
+            terms: expansions.iter().map(|entry| entry.term.clone()).collect(),
+            fields,
+        };
+        Ok(Self {
+            scoring: super::search::PreparedTermQuery::from_owned(
+                index,
+                query,
+                super::bm25::Bm25Params::beir(),
+            )?,
+            expansions,
+        })
+    }
+
+    pub(crate) fn allocation_bytes(
+        expansions: &Vec<LexicalExpansion>,
+        fields: &FieldWeights,
+    ) -> Option<usize> {
+        let mut bytes = expansions
+            .capacity()
+            .checked_mul(std::mem::size_of::<LexicalExpansion>())?;
+        for entry in expansions {
+            bytes = bytes.checked_add(entry.term.capacity())?.checked_add(
+                super::search::PreparedTermQuery::single_allocation_bytes(
+                    &FieldWeights::flat(&[]),
+                    entry.term.len(),
+                )?,
+            )?;
+        }
+        bytes.checked_add(
+            fields
+                .iter()
+                .count()
+                .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
+        )
+    }
+
+    pub(crate) fn expansions(&self) -> &[LexicalExpansion] {
+        &self.expansions
+    }
+    pub(crate) fn take_expansions(&mut self) -> Vec<LexicalExpansion> {
+        std::mem::take(&mut self.expansions)
+    }
+    pub(crate) fn scoring(&self) -> &super::search::PreparedTermQuery {
+        &self.scoring
+    }
+}
+
 /// A structured lexical query over already-analyzed terms.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LexicalQuery {

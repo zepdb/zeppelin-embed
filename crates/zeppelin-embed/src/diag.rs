@@ -236,7 +236,9 @@ impl PartialEq for QueryDiagnostics {
 pub struct HybridReport {
     /// Version of the Store normalization/degenerate-leg score contract.
     pub normalization_policy_version: u16,
-    /// Complete structured lexical aggregations executed across all rounds.
+    /// Unbounded intermediate structured lexical aggregations across rounds.
+    /// The combined top-k producer needs none, even for an explicitly exhaustive
+    /// requested window; its output is bounded by that requested capacity.
     pub lexical_full_materializations: usize,
     /// Independent score precision, producer coverage and cross-score facts.
     pub provenance: crate::fusion::HybridProvenance,

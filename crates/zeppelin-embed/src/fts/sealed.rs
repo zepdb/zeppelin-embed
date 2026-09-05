@@ -1564,8 +1564,7 @@ impl ListCursor<'_> {
         {
             return Some(current.saturating_sub(1));
         }
-        self.block_for(row)
-            .and_then(|index| self.last_docid(index))
+        self.block_for(row).and_then(|index| self.last_docid(index))
     }
 
     /// Returns the impact pair dominating every block of the list.
@@ -1610,9 +1609,59 @@ impl<'segment> TermStream<'segment> {
         term: &[u8],
         weights: &FieldWeights,
     ) -> Option<Self> {
+        Self::open_with_capacity(segment, term, weights, 0)
+    }
+
+    /// Exact capacities for a query-budgeted stream, including both decode
+    /// buffers of every field cursor. No postings are decoded to size it.
+    pub(crate) fn allocation_bytes(
+        segment: &SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+    ) -> Option<usize> {
+        Self::run_count(segment, term, weights).checked_mul(
+            std::mem::size_of::<ListCursor<'_>>()
+                .checked_add(std::mem::size_of::<u64>())?
+                .checked_add(
+                    usize::from(segment.postings_per_block)
+                        .checked_mul(2 * std::mem::size_of::<u32>())?,
+                )?,
+        )
+    }
+
+    fn run_count(segment: &SealedSegment, term: &[u8], weights: &FieldWeights) -> usize {
         let (start, end) = segment.term_span_range(term);
-        let mut runs: Vec<ListCursor<'segment>> = Vec::new();
-        let mut scales: Vec<u64> = Vec::new();
+        segment
+            .spans
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .filter(|span| weights.weight(span.field) != 0)
+            .count()
+    }
+
+    pub(crate) fn open_sized(
+        segment: &'segment SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+    ) -> Option<Self> {
+        Self::open_with_capacity(
+            segment,
+            term,
+            weights,
+            Self::run_count(segment, term, weights),
+        )
+    }
+
+    fn open_with_capacity(
+        segment: &'segment SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+        capacity: usize,
+    ) -> Option<Self> {
+        let (start, end) = segment.term_span_range(term);
+        let mut runs: Vec<ListCursor<'segment>> = Vec::with_capacity(capacity);
+        let mut scales: Vec<u64> = Vec::with_capacity(capacity);
         for index in start..end {
             let span = segment.spans.get(index)?;
             let weight = u64::from(weights.weight(span.field));
@@ -2215,5 +2264,52 @@ mod tests {
         let impacts = crate::fts::postings::block_impacts(&list, 64, &[]);
         assert_eq!(impacts[0].max_tf, 2);
         assert_eq!(impacts[0].min_len, 1);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod astra_10_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn astra_10_stream_reservation_matches_actual_owned_capacities() {
+        use crate::fts::index::{Document, FieldId, SegmentIndex};
+        use crate::fts::tokenizer::{Analyzer, Profile};
+        let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+        let mut index = SegmentIndex::new();
+        for _ in 0..130 {
+            let mut doc = Document::new();
+            doc.set(FieldId(0), "alpha beta");
+            doc.set(FieldId(1), "alpha alpha");
+            doc.set(FieldId(2), "beta");
+            index.push_document(&analyzer, &doc).expect("document");
+        }
+        let segment = SealedSegment::seal(&index).expect("sealed");
+        for weights in [
+            FieldWeights::flat(&[FieldId(0)]),
+            FieldWeights::new(&[(FieldId(0), 500), (FieldId(1), 1500), (FieldId(2), 0)]),
+        ] {
+            for term in [b"alpha".as_slice(), b"beta", b"absent"] {
+                let planned =
+                    TermStream::allocation_bytes(&segment, term, &weights).expect("fits usize");
+                let actual = TermStream::open_sized(&segment, term, &weights).map_or(0, |stream| {
+                    stream.runs.capacity() * std::mem::size_of::<ListCursor<'_>>()
+                        + stream.weights.capacity() * std::mem::size_of::<u64>()
+                        + stream
+                            .runs
+                            .iter()
+                            .map(|run| {
+                                (run.decoded_docids.capacity() + run.decoded_tfs.capacity())
+                                    * std::mem::size_of::<u32>()
+                            })
+                            .sum::<usize>()
+                });
+                assert_eq!(
+                    planned, actual,
+                    "reserve the actual buffers, including absent and zero-weight fields"
+                );
+            }
+        }
     }
 }

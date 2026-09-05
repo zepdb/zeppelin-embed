@@ -31,9 +31,21 @@ impl PreparedTermState {
 
 pub(super) struct PreparedStructuredState {
     pub(super) assembly: Arc<LexicalAssembly>,
-    pub(super) expansions: Vec<crate::fts::query::LexicalExpansion>,
-    pub(super) terms: Vec<PreparedTermQuery>,
+    pub(super) query: Option<crate::fts::query::PreparedWeightedQuery>,
     _memory: AccountedCounter,
+}
+
+pub(super) fn reserve_weighted_scratch(
+    memory: &mut AccountedCounter,
+    bytes: Option<usize>,
+) -> Result<(), QueryError> {
+    memory
+        .set(bytes.ok_or(QueryError::Store(StoreError::BudgetExceeded {
+            needed: u64::MAX,
+            budget: u64::MAX,
+            component: "temporary",
+        }))?)
+        .map_err(QueryError::Store)
 }
 
 impl<'query> PreparedLexicalQuery<'query> {
@@ -119,58 +131,28 @@ impl<'query> PreparedLexicalQuery<'query> {
             let mut memory =
                 AccountedCounter::new(inputs.accounting, AllocationComponent::Temporary)
                     .map_err(QueryError::Store)?;
-            let expansion_bytes = expansions.iter().try_fold(
-                expansions
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<crate::fts::query::LexicalExpansion>())
-                    .ok_or_else(overflow)?,
-                |bytes, expansion| {
-                    bytes
-                        .checked_add(expansion.term.capacity())
-                        .ok_or_else(overflow)
-                },
-            )?;
-            let count = if receipt.index.segments().is_empty() {
-                0
+            let fields = query.fields();
+            let query = if receipt.index.segments().is_empty() || expansions.is_empty() {
+                None
             } else {
-                expansions.len()
-            };
-            let mut bytes = expansion_bytes
-                .checked_add(
-                    count
-                        .checked_mul(std::mem::size_of::<PreparedTermQuery>())
-                        .ok_or_else(overflow)?,
+                let bytes = crate::fts::query::PreparedWeightedQuery::allocation_bytes(
+                    &expansions,
+                    &fields,
                 )
                 .ok_or_else(overflow)?;
-            memory.set(bytes).map_err(QueryError::Store)?;
-            let mut terms = Vec::with_capacity(count);
-            let fields = query.fields();
-            for expansion in expansions.iter().take(count) {
-                cancellation.check_graph().map_err(QueryError::Scan)?;
-                bytes = bytes
-                    .checked_add(
-                        PreparedTermQuery::single_allocation_bytes(&fields, expansion.term.len())
-                            .ok_or_else(overflow)?,
-                    )
-                    .ok_or_else(overflow)?;
                 memory.set(bytes).map_err(QueryError::Store)?;
-                let term = TermQuery {
-                    terms: vec![expansion.term.clone()],
-                    fields: fields.clone(),
-                };
-                terms.push(
-                    PreparedTermQuery::from_owned(
+                Some(
+                    crate::fts::query::PreparedWeightedQuery::new(
                         &receipt.index,
-                        term,
-                        crate::fts::bm25::Bm25Params::beir(),
+                        expansions,
+                        fields,
                     )
                     .map_err(|error| lexical_failure(&error.to_string()))?,
-                );
-            }
+                )
+            };
             self.structured = Some(PreparedStructuredState {
                 assembly: Arc::clone(&receipt.assembly),
-                expansions,
-                terms,
+                query,
                 _memory: memory,
             });
         }
@@ -180,16 +162,6 @@ impl<'query> PreparedLexicalQuery<'query> {
                 .ok_or_else(|| invariant("prepared structured state is absent"))?,
             cache_hit,
         ))
-    }
-
-    pub(super) fn has_expansions(&self) -> bool {
-        match self.query {
-            PinnedLexicalQuery::Term(query) => !query.terms.is_empty(),
-            PinnedLexicalQuery::Structured(_) => self
-                .structured
-                .as_ref()
-                .is_some_and(|state| !state.expansions.is_empty()),
-        }
     }
 
     pub(super) fn take_expansions(
@@ -206,13 +178,13 @@ impl<'query> PreparedLexicalQuery<'query> {
                     kind: crate::fts::query::LexicalMatchKind::Term,
                 })
                 .collect(),
-            PinnedLexicalQuery::Structured(_) => std::mem::take(
-                &mut self
-                    .structured
-                    .as_mut()
-                    .ok_or_else(|| invariant("structured producer did not prepare expansions"))?
-                    .expansions,
-            ),
+            PinnedLexicalQuery::Structured(_) => self
+                .structured
+                .as_mut()
+                .ok_or_else(|| invariant("structured producer did not prepare expansions"))?
+                .query
+                .as_mut()
+                .map_or_else(Vec::new, |query| query.take_expansions()),
         })
     }
 
@@ -237,6 +209,26 @@ impl<'query> PreparedLexicalQuery<'query> {
             .scoring
             .as_ref()
             .ok_or_else(|| invariant("nonempty lexical candidates have no prepared statistics"))
+    }
+
+    pub(super) fn structured_scoring(
+        &self,
+        assembly: &LexicalAssembly,
+        query: &crate::fts::query::LexicalQuery,
+    ) -> Result<Option<&crate::fts::query::PreparedWeightedQuery>, FusionError> {
+        let PinnedLexicalQuery::Structured(bound) = self.query else {
+            return Err(invariant("structured scoring used for another query kind"));
+        };
+        let state = self
+            .structured
+            .as_ref()
+            .ok_or_else(|| invariant("structured producer did not prepare its query"))?;
+        if !std::ptr::eq(bound, query) || !std::ptr::eq(Arc::as_ptr(&state.assembly), assembly) {
+            return Err(invariant(
+                "structured preparation belongs to another query or pinned assembly",
+            ));
+        }
+        Ok(state.query.as_ref())
     }
 }
 

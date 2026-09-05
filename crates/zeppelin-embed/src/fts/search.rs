@@ -537,7 +537,37 @@ impl<'query> CandidateScoring<'query> {
         segment: &SealedSegment,
         rows: &[u32],
         work: &mut CandidateScoringWork,
+        checkpoint: impl FnMut(&CandidateScoringWork) -> Result<(), Control>,
+    ) -> Result<CandidateScores, ControlledSearchError<Control>> {
+        self.score_rows_with(ordinal, segment, rows, work, checkpoint, |_, score| score)
+    }
+
+    pub(crate) fn score_weighted_rows<Control>(
+        &self,
+        ordinal: usize,
+        segment: &SealedSegment,
+        rows: &[u32],
+        work: &mut CandidateScoringWork,
+        checkpoint: impl FnMut(&CandidateScoringWork) -> Result<(), Control>,
+        expansions: &[super::query::LexicalExpansion],
+    ) -> Result<CandidateScores, ControlledSearchError<Control>> {
+        self.score_rows_with(ordinal, segment, rows, work, checkpoint, |slot, score| {
+            score
+                * expansions
+                    .get(slot)
+                    .map_or(0.0, |entry| f64::from(entry.boost_thousandths) / 1_000.0)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn score_rows_with<Control>(
+        &self,
+        ordinal: usize,
+        segment: &SealedSegment,
+        rows: &[u32],
+        work: &mut CandidateScoringWork,
         mut checkpoint: impl FnMut(&CandidateScoringWork) -> Result<(), Control>,
+        contribution: impl Fn(usize, f64) -> f64,
     ) -> Result<CandidateScores, ControlledSearchError<Control>> {
         checkpoint(work).map_err(ControlledSearchError::Control)?;
         // Validate the whole input before any cursor or score is produced.
@@ -584,7 +614,7 @@ impl<'query> CandidateScoring<'query> {
                     work.scorers_prepared = work
                         .scorers_prepared
                         .saturating_add(u64::from(self.scorers.is_none()));
-                    streams.push((stream, scorer));
+                    streams.push((stream, scorer, slot));
                 }
             }
             if slot % 64 == 63 {
@@ -606,7 +636,7 @@ impl<'query> CandidateScoring<'query> {
                 ))?;
             let mut total = 0.0_f64;
             let mut matched = false;
-            for (stream, scorer) in &mut streams {
+            for (stream, scorer, slot) in &mut streams {
                 stream.seek(row);
                 work.seeks = work.seeks.saturating_add(1);
                 if work.seeks.is_multiple_of(64) {
@@ -614,7 +644,10 @@ impl<'query> CandidateScoring<'query> {
                 }
                 if stream.current_row() == Some(row) {
                     counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                    total += scorer.score(Tf(stream.current_tf().unwrap_or(0)), DocLen(length));
+                    total += contribution(
+                        *slot,
+                        scorer.score(Tf(stream.current_tf().unwrap_or(0)), DocLen(length)),
+                    );
                     matched = true;
                 }
             }
@@ -633,7 +666,7 @@ impl<'query> CandidateScoring<'query> {
             }
         }
         // Reused cursors own cumulative block receipts; count each once.
-        for (stream, _) in streams {
+        for (stream, _, _) in streams {
             counters.blocks_decoded = counters
                 .blocks_decoded
                 .saturating_add(stream.blocks_decoded());

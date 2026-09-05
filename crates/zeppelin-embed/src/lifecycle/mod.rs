@@ -39,7 +39,6 @@ pub use snapshot::{
 };
 pub use stats::Stats;
 
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 #[cfg(any(test, feature = "test-support"))]
 use std::io::IoSlice;
@@ -3345,62 +3344,120 @@ impl Store {
         let index = &assembly.index;
         let sources = &assembly.sources;
         let vocabulary = crate::fts::query::vocabulary(query, index.terms());
-        let expansions = crate::fts::query::expand(query, &vocabulary)?;
+        let mut expansions = crate::fts::query::expand(query, &vocabulary)?;
         let allow_lists = assembly
             .alive_sets
             .iter()
             .map(|alive| alive.alive_bitmap())
             .collect::<Vec<_>>();
-        let mut aggregate = BTreeMap::<
-            crate::fts::search::GlobalDocId,
-            (f64, Vec<crate::fts::query::LexicalExpansion>),
-        >::new();
-        let mut counters = crate::fts::search::SearchCounters::default();
+        let mut prepared_memory =
+            stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
         let fields = query.fields();
-        let all_rows = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
-        for expansion in &expansions {
-            cancellation.check_graph().map_err(QueryError::Scan)?;
-            let term_query = crate::fts::search::TermQuery {
-                terms: vec![expansion.term.clone()],
-                fields: fields.clone(),
-            };
-            let scored = crate::fts::search::search_allow_list_driven_controlled(
-                index,
-                &term_query,
-                all_rows,
-                crate::fts::bm25::Bm25Params::beir(),
-                &allow_lists,
-                || cancellation.check_graph(),
+        prepared_memory
+            .set(
+                crate::fts::query::PreparedWeightedQuery::allocation_bytes(&expansions, &fields)
+                    .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?,
             )
-            .map_err(map_store_controlled_lexical_error)?;
-            accumulate_search_counters(&mut counters, &scored.counters);
-            let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
-            for hit in scored.hits {
-                let entry = aggregate.entry(hit.doc).or_default();
-                entry.0 += hit.score * boost;
-                entry.1.push(expansion.clone());
-            }
-        }
-        let mut scored = Vec::with_capacity(aggregate.len());
-        for (doc, (score, provenance)) in aggregate {
-            if let Some((terms, slop)) = query.phrase_constraint() {
-                let (text, _) = structured_lexical_row(&snapshot, &active, sources, doc)?;
-                if !crate::fts::query::phrase_matches(&self.tokenizer, text, terms, slop) {
-                    continue;
+            .map_err(QueryError::Store)?;
+        let mut prepared = if index.segments().is_empty() || expansions.is_empty() {
+            None
+        } else {
+            Some(
+                crate::fts::query::PreparedWeightedQuery::new(
+                    index,
+                    std::mem::take(&mut expansions),
+                    fields,
+                )
+                .map_err(crate::planner::LexicalFilterError::from)?,
+            )
+        };
+        let mut scratch_memory =
+            stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
+        let result = match &prepared {
+            None => crate::fts::prune::weighted::WeightedResult::default(),
+            Some(prepared) => crate::fts::prune::weighted::search(
+                index,
+                prepared,
+                k,
+                &allow_lists,
+                || {
+                    cancellation
+                        .check_graph()
+                        .map_err(QueryError::Scan)
+                        .map_err(crate::ingest::StoreLexicalError::from)
+                },
+                |doc| {
+                    if let Some((terms, slop)) = query.phrase_constraint() {
+                        let (text, _) = structured_lexical_row(&snapshot, &active, sources, doc)?;
+                        Ok(crate::fts::query::phrase_matches(
+                            &self.tokenizer,
+                            text,
+                            terms,
+                            slop,
+                        ))
+                    } else {
+                        Ok(true)
+                    }
+                },
+                |bytes| {
+                    prepared_lexical::reserve_weighted_scratch(&mut scratch_memory, bytes)
+                        .map_err(crate::ingest::StoreLexicalError::from)
+                },
+            )
+            .map_err(|error| match error {
+                crate::fts::search::ControlledSearchError::Index(error) => {
+                    crate::ingest::StoreLexicalError::from(
+                        crate::planner::LexicalFilterError::from(error),
+                    )
                 }
-            }
-            scored.push((doc, score, provenance));
-        }
-        scored.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(left.0.cmp(&right.0))
-        });
-        scored.truncate(k);
+                crate::fts::search::ControlledSearchError::Control(error) => error,
+            })?,
+        };
+        let mut counters = result.counters;
+        let scored = result.hits;
+        let mut provenance_memory =
+            stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
+                .map_err(QueryError::Store)?;
         let mut candidates = Vec::with_capacity(scored.len());
-        for (doc, score, provenance) in scored {
+        for (doc, score) in scored {
+            let mut provenance = Vec::new();
+            let segment = index
+                .segments()
+                .get(doc.segment as usize)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            let scoring = prepared
+                .as_ref()
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+            for expansion in scoring.expansions() {
+                cancellation.check_graph().map_err(QueryError::Scan)?;
+                let fields = &scoring.scoring().query().fields;
+                prepared_lexical::reserve_weighted_scratch(
+                    &mut provenance_memory,
+                    crate::fts::sealed::TermStream::allocation_bytes(
+                        segment,
+                        &expansion.term,
+                        fields,
+                    ),
+                )?;
+                if let Some(mut stream) =
+                    crate::fts::sealed::TermStream::open_sized(segment, &expansion.term, fields)
+                {
+                    stream.seek(doc.row);
+                    if stream.current_row() == Some(doc.row) {
+                        provenance.push(expansion.clone());
+                        counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                    }
+                    counters.blocks_decoded = counters
+                        .blocks_decoded
+                        .saturating_add(stream.blocks_decoded());
+                    counters.blocks_skipped = counters
+                        .blocks_skipped
+                        .saturating_add(stream.blocks_skipped());
+                }
+                provenance_memory.set(0).map_err(QueryError::Store)?;
+            }
             cancellation.check_graph().map_err(QueryError::Scan)?;
             let (text, document) = structured_lexical_row(&snapshot, &active, sources, doc)?;
             let terms = provenance
@@ -3455,7 +3512,9 @@ impl Store {
         drop(active_query);
         Ok(crate::ingest::StoreStructuredLexicalSearchOutcome {
             candidates,
-            expansions,
+            expansions: prepared
+                .as_mut()
+                .map_or(expansions, |query| query.take_expansions()),
             generation,
             diagnostics,
         })
@@ -3757,7 +3816,8 @@ impl Store {
         let mut work = hybrid::HybridWork::new();
         let mut cross_scores = hybrid::CrossScoreCache::new(vector_outcome.epoch);
         let mut round_buffers = hybrid::HybridRoundBuffers::new();
-        let mut fusion_scratch = crate::fusion::StoreFusionScratch::new(Arc::clone(&self.accounting));
+        let mut fusion_scratch =
+            crate::fusion::StoreFusionScratch::new(Arc::clone(&self.accounting));
         let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
@@ -3771,6 +3831,7 @@ impl Store {
                 &admitted.active_segment,
                 &lexical_assembly,
                 &lexical_preparation,
+                &self.tokenizer,
                 lexical_query,
                 vector_query.vector(),
                 &vector_outcome.candidates,
@@ -3855,16 +3916,7 @@ impl Store {
                     crate::diag::HybridReport {
                         normalization_policy_version:
                             crate::fusion::HYBRID_NORMALIZATION_POLICY_VERSION,
-                        lexical_full_materializations: if matches!(
-                            lexical_query,
-                            PinnedLexicalQuery::Structured(_)
-                        ) && lexical_preparation.has_expansions()
-                            && !lexical_assembly.index.segments().is_empty()
-                        {
-                            rounds
-                        } else {
-                            0
-                        },
+                        lexical_full_materializations: 0,
                         provenance,
                         window: width,
                         vector_returned: round.vector.len(),
@@ -4635,17 +4687,6 @@ fn accumulate_search_counters(
     total.blocks_skipped = total.blocks_skipped.saturating_add(delta.blocks_skipped);
 }
 
-fn map_store_controlled_lexical_error(
-    error: crate::fts::search::ControlledSearchError<crate::scan::ScanError>,
-) -> crate::ingest::StoreLexicalError {
-    match error {
-        crate::fts::search::ControlledSearchError::Index(error) => {
-            crate::planner::LexicalFilterError::from(error).into()
-        }
-        crate::fts::search::ControlledSearchError::Control(error) => QueryError::Scan(error).into(),
-    }
-}
-
 fn map_fusion_controlled_lexical_error(
     error: crate::fts::search::ControlledSearchError<crate::scan::ScanError>,
 ) -> crate::fusion::FusionError {
@@ -4878,7 +4919,7 @@ fn exact_structured_lexical_leg(
     inputs: LexicalInputs<'_>,
     analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
-    _bound: usize,
+    bound: usize,
     cancellation: &QueryCancellation<'_>,
     preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
@@ -4892,53 +4933,55 @@ fn exact_structured_lexical_leg(
     let assembly = &prepared.assembly;
     let index = &assembly.index;
     let sources = &assembly.sources;
-    let expansions = &prepared.expansions;
-    if index.segments().is_empty() || expansions.is_empty() {
+    let Some(query_scoring) = prepared.query.as_ref() else {
         return Ok((
             Vec::new(),
             Arc::clone(assembly),
             crate::fts::search::SearchCounters::default(),
             cache_hit,
         ));
-    }
+    };
     let allow_lists = assembly
         .alive_sets
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    // Exact combined maximum and cross-scores require complete expansion lists.
-    // Plan 10 replaces this interim full aggregation with combined top-k.
-    let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
-    let mut counters = crate::fts::search::SearchCounters::default();
-    let mut aggregate = BTreeMap::<crate::fts::search::GlobalDocId, f64>::new();
-    for (expansion, term) in expansions.iter().zip(&prepared.terms) {
-        let result = exact_hybrid_lexical_search(index, term, k, &allow_lists, cancellation)?;
-        accumulate_search_counters(&mut counters, &result.counters);
-        let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
-        for hit in result.hits {
-            *aggregate.entry(hit.doc).or_default() += hit.score * boost;
-        }
-    }
-    if let Some((terms, slop)) = query.phrase_constraint() {
-        let mut retained = BTreeMap::new();
-        for (doc, score) in aggregate {
-            let (text, _) = structured_lexical_row(snapshot, active, sources, doc)
-                .map_err(|error| lexical_error(error.to_string()))?;
-            if crate::fts::query::phrase_matches(analyzer, text, terms, slop) {
-                retained.insert(doc, score);
+    let mut scratch_memory =
+        stats::AccountedCounter::new(inputs.accounting, stats::AllocationComponent::Temporary)
+            .map_err(QueryError::Store)?;
+    let result = crate::fts::prune::weighted::search(
+        index,
+        query_scoring,
+        bound,
+        &allow_lists,
+        || {
+            cancellation
+                .check_graph()
+                .map_err(QueryError::Scan)
+                .map_err(crate::fusion::FusionError::from)
+        },
+        |doc| {
+            if let Some((terms, slop)) = query.phrase_constraint() {
+                let (text, _) = structured_lexical_row(snapshot, active, sources, doc)
+                    .map_err(|error| lexical_error(error.to_string()))?;
+                Ok(crate::fts::query::phrase_matches(
+                    analyzer, text, terms, slop,
+                ))
+            } else {
+                Ok(true)
             }
-        }
-        aggregate = retained;
-    }
-    let mut scored = aggregate.into_iter().collect::<Vec<_>>();
-    scored.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(left.0.cmp(&right.0))
-    });
-    scored.truncate(k);
+        },
+        |bytes| {
+            prepared_lexical::reserve_weighted_scratch(&mut scratch_memory, bytes)
+                .map_err(crate::fusion::FusionError::from)
+        },
+    )
+    .map_err(|error| match error {
+        crate::fts::search::ControlledSearchError::Index(error) => lexical_error(error.to_string()),
+        crate::fts::search::ControlledSearchError::Control(error) => error,
+    })?;
+    let counters = result.counters;
+    let scored = result.hits;
     let mut joined = Vec::with_capacity(scored.len());
     for (doc, score) in scored {
         let document = structured_lexical_document(snapshot, active, sources, doc, false)

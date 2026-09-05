@@ -560,6 +560,7 @@ pub(crate) fn build_round<'scratch>(
     active: &ActiveSegment,
     assembly: &super::LexicalAssembly,
     preparation: &super::prepared_lexical::PreparedLexicalQuery<'_>,
+    analyzer: &crate::fts::tokenizer::Analyzer,
     lexical_query: super::PinnedLexicalQuery<'_>,
     query: &[f32],
     vector: &[SearchCandidate],
@@ -686,8 +687,8 @@ pub(crate) fn build_round<'scratch>(
         active,
         assembly,
         preparation,
+        analyzer,
         lexical_query,
-        lexical,
         newly_missing,
         cancellation,
     )?;
@@ -855,8 +856,8 @@ fn cross_score_lexical(
     active: &ActiveSegment,
     assembly: &super::LexicalAssembly,
     preparation: &super::prepared_lexical::PreparedLexicalQuery<'_>,
+    analyzer: &crate::fts::tokenizer::Analyzer,
     query: super::PinnedLexicalQuery<'_>,
-    lexical: &[LexicalHit],
     missing: &[SearchCandidate],
     cancellation: &super::QueryCancellation<'_>,
 ) -> Result<(Vec<f64>, crate::fts::search::SearchCounters), FusionError> {
@@ -864,27 +865,6 @@ fn cross_score_lexical(
     let mut scores = vec![0.0; missing.len()];
     let mut counters = SearchCounters::default();
     cancellation.check_graph().map_err(QueryError::Scan)?;
-    if let super::PinnedLexicalQuery::Structured(_) = query {
-        // Until combined top-k lands, this producer returns the full exact
-        // expansion/phrase aggregate. Absence here is proven nonmembership.
-        let complete = lexical
-            .iter()
-            .map(|hit| {
-                Ok((
-                    lexical_identity(snapshot, &assembly.sources, hit)?,
-                    hit.bm25,
-                ))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>, FusionError>>()?;
-        for (candidate, score) in missing.iter().zip(&mut scores) {
-            cancellation.check_graph().map_err(QueryError::Scan)?;
-            *score = complete
-                .get(&(candidate.row_id(), candidate.document()))
-                .copied()
-                .unwrap_or(0.0);
-        }
-        return Ok((scores, counters));
-    }
     let mut batches = vec![Vec::<(u32, usize)>::new(); assembly.index.segments().len()];
     for (position, candidate) in missing.iter().enumerate() {
         cancellation.check_graph().map_err(QueryError::Scan)?;
@@ -923,13 +903,21 @@ fn cross_score_lexical(
             .ok_or_else(|| lexical_invariant("hybrid lexical index/source count differs"))?
             .push((row, position));
     }
-    let super::PinnedLexicalQuery::Term(query) = query else {
-        return Err(lexical_invariant("hybrid lexical query changed kind"));
-    };
     if batches.iter().all(Vec::is_empty) {
         return Ok((scores, counters));
     }
-    let prepared = CandidateScoring::prepared(preparation.term_scoring(assembly, query)?);
+    let (scoring, weighted) = match query {
+        super::PinnedLexicalQuery::Term(query) => {
+            (preparation.term_scoring(assembly, query)?, None)
+        }
+        super::PinnedLexicalQuery::Structured(query) => {
+            let Some(weighted) = preparation.structured_scoring(assembly, query)? else {
+                return Ok((scores, counters));
+            };
+            (weighted.scoring(), Some(weighted))
+        }
+    };
+    let prepared = CandidateScoring::prepared(scoring);
     let mut work = CandidateScoringWork::default();
     for (ordinal, batch) in batches
         .iter()
@@ -954,13 +942,41 @@ fn cross_score_lexical(
                 }
             }
         });
-        let result = prepared
-            .score_rows(ordinal, segment, &rows, &mut work, |_| {
+        let result = match weighted {
+            None => prepared.score_rows(ordinal, segment, &rows, &mut work, |_| {
                 cancellation.check_graph()
-            })
-            .map_err(super::map_fusion_controlled_lexical_error)?;
+            }),
+            Some(weighted) => prepared.score_weighted_rows(
+                ordinal,
+                segment,
+                &rows,
+                &mut work,
+                |_| cancellation.check_graph(),
+                weighted.expansions(),
+            ),
+        }
+        .map_err(super::map_fusion_controlled_lexical_error)?;
         super::accumulate_search_counters(&mut counters, &result.counters);
-        for ((_, position), score) in batch.iter().zip(result.scores) {
+        for ((row, position), mut score) in batch.iter().zip(result.scores) {
+            if let super::PinnedLexicalQuery::Structured(query) = query
+                && let Some((terms, slop)) = query.phrase_constraint()
+                && score.is_some()
+            {
+                let doc = GlobalDocId {
+                    segment: u32::try_from(ordinal).map_err(|_| overflow())?,
+                    row: *row,
+                };
+                let (text, _) =
+                    super::structured_lexical_row(snapshot, active, &assembly.sources, doc)
+                        .map_err(|error| FusionError::Leg {
+                            leg: FusionLeg::Lexical,
+                            kind: LegFailureKind::Lexical,
+                            detail: error.to_string(),
+                        })?;
+                if !crate::fts::query::phrase_matches(analyzer, text, terms, slop) {
+                    score = None;
+                }
+            }
             *scores.get_mut(*position).ok_or_else(|| {
                 lexical_invariant("hybrid candidate routing position is absent")
             })? = score.unwrap_or(0.0);
