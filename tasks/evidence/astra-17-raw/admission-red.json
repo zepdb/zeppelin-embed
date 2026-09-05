@@ -1,0 +1,12 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "zeppelin-embed",
+    "--lib",
+    "astra_17_single_posting_queries_do_not_displace_repeated_terms"
+  ],
+  "exit_code": 101,
+  "seconds": 5.333417892456055
+}

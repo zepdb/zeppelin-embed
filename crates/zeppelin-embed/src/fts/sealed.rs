@@ -855,6 +855,42 @@ impl SealedSegment {
         }
     }
 
+    /// No cache lookup or eviction is worthwhile for zero or one posting.
+    /// Inspect immutable dictionary metadata first; a singleton needs only
+    /// its first row and the exact current membership bit. Multiple matching
+    /// field runs still use the ordinary union counter, even if they overlap.
+    pub(crate) fn single_posting_live_frequency(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+        live_rows: &DocBitmap,
+    ) -> Option<u32> {
+        let (start, end) = self.term_span_range(term);
+        let mut matched = None;
+        for index in start..end {
+            let span = self.spans.get(index)?;
+            if !fields.contains(&span.field) || span.doc_freq == 0 {
+                continue;
+            }
+            if span.doc_freq > 1 || matched.is_some() {
+                return None;
+            }
+            matched = Some(index);
+        }
+        let Some(index) = matched else {
+            return Some(0);
+        };
+        let mut cursor = self.cursor_at(index, 1_000)?;
+        cursor.reset();
+        let row = cursor.current()?;
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::live_df_walk(
+            1,
+            usize::try_from(cursor.blocks_decoded).unwrap_or(usize::MAX),
+        );
+        Some(u32::from(live_rows.contains(row)))
+    }
+
     pub(crate) fn live_document_frequency(
         &self,
         term: &[u8],
@@ -866,12 +902,23 @@ impl SealedSegment {
             return 0;
         };
         let mut count = 0_u32;
+        #[cfg(any(test, feature = "test-support"))]
+        let mut visited = 0_usize;
         while let Some(row) = stream.current_row() {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                visited = visited.saturating_add(1);
+            }
             if live_rows.contains(row) {
                 count = count.saturating_add(1);
             }
             stream.advance();
         }
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::live_df_walk(
+            visited,
+            usize::try_from(stream.blocks_decoded()).unwrap_or(usize::MAX),
+        );
         count
     }
 

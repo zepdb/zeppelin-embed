@@ -1,0 +1,22 @@
+[
+  {
+    "arm": "before",
+    "adapter_and_harness_hashes": {
+      "crates/zeppelin-embed-text/src/bundle.rs": "0691067667549b9759230eb8e80f9ebc654354e063eeafd82d3befc098fb3598",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/Cargo.toml": "f869afad5ef8c06e4684a49393f3b4e6840b26e602acca5589e1570a27a0eb8d",
+      "tools/matched-api/src/main.rs": "d803a4beb16560b0ddc3ecf4142b862d8d86b696705451e2f8c4e5dd54db4e41"
+    }
+  },
+  {
+    "arm": "after",
+    "adapter_and_harness_hashes": {
+      "crates/zeppelin-embed-text/src/bundle.rs": "0691067667549b9759230eb8e80f9ebc654354e063eeafd82d3befc098fb3598",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/Cargo.toml": "f869afad5ef8c06e4684a49393f3b4e6840b26e602acca5589e1570a27a0eb8d",
+      "tools/matched-api/src/main.rs": "d803a4beb16560b0ddc3ecf4142b862d8d86b696705451e2f8c4e5dd54db4e41"
+    }
+  }
+]

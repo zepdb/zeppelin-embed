@@ -1,0 +1,52 @@
+[
+  {
+    "arm": "before",
+    "command": [
+      "cargo",
+      "build",
+      "--offline",
+      "--manifest-path",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before/tools/matched-api/Cargo.toml",
+      "--profile",
+      "bench",
+      "--message-format=json-render-diagnostics"
+    ],
+    "CARGO_TARGET_DIR": "/private/tmp/ze-astra17-native-mmcjqffv/target",
+    "exit_code": 0,
+    "seconds": 139.21822428703308,
+    "binary_sha256": "803bc9061895d0ce665df6499003e3d37d43d5c5e162e336e9c6382f9e436194",
+    "core_features": [],
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 2,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": false
+    }
+  },
+  {
+    "arm": "after",
+    "command": [
+      "cargo",
+      "build",
+      "--offline",
+      "--manifest-path",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after/tools/matched-api/Cargo.toml",
+      "--profile",
+      "bench",
+      "--message-format=json-render-diagnostics"
+    ],
+    "CARGO_TARGET_DIR": "/private/tmp/ze-astra17-native-mmcjqffv/target",
+    "exit_code": 0,
+    "seconds": 59.37395620346069,
+    "binary_sha256": "1d987364f810c23373bb09e73f64453136c8a9bc512f16e0937ac46d9f0b0110",
+    "core_features": [],
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 2,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": false
+    }
+  }
+]

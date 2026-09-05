@@ -1,0 +1,458 @@
+[
+  {
+    "label": "before-all-lexical-r1",
+    "arm": "before",
+    "api": "lexical",
+    "state": "all",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-lexical-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-lexical-r1",
+    "arm": "after",
+    "api": "lexical",
+    "state": "all",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-lexical-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-all-hybrid-r1",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-hybrid-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-hybrid-r1",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-hybrid-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-lexical-r1",
+    "arm": "before",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-lexical-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-lexical-r1",
+    "arm": "after",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-lexical-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-hybrid-r1",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-hybrid-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-hybrid-r1",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-hybrid-r1",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-lexical-r2",
+    "arm": "after",
+    "api": "lexical",
+    "state": "all",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-lexical-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-all-lexical-r2",
+    "arm": "before",
+    "api": "lexical",
+    "state": "all",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-lexical-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-hybrid-r2",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-hybrid-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-all-hybrid-r2",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-hybrid-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-lexical-r2",
+    "arm": "after",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-lexical-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-lexical-r2",
+    "arm": "before",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-lexical-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-hybrid-r2",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-hybrid-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-hybrid-r2",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-hybrid-r2",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-all-lexical-r3",
+    "arm": "before",
+    "api": "lexical",
+    "state": "all",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-lexical-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-lexical-r3",
+    "arm": "after",
+    "api": "lexical",
+    "state": "all",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-lexical-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-all-hybrid-r3",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-all-hybrid-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-all-hybrid-r3",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "all",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-all-hybrid-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-all",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-lexical-r3",
+    "arm": "before",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-lexical-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-lexical-r3",
+    "arm": "after",
+    "api": "lexical",
+    "state": "tomb",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-lexical-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "lexical"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "before-tomb-hybrid-r3",
+    "arm": "before",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/before-tomb-hybrid-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-before-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "after-tomb-hybrid-r3",
+    "arm": "after",
+    "api": "hybrid",
+    "state": "tomb",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-api",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-astra17-native-mmcjqffv/tombstone-fixture.json",
+      "/private/tmp/ze-astra17-native-mmcjqffv/after-tomb-hybrid-r3",
+      "/private/tmp/ze-astra17-native-mmcjqffv/store-after-tomb",
+      "hybrid"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  }
+]

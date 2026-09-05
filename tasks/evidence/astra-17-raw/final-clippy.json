@@ -1,0 +1,13 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "-p",
+    "zeppelin-embed",
+    "--lib",
+    "--test",
+    "lexical_stats_consistency"
+  ],
+  "exit_code": 0,
+  "seconds": 2.962554693222046
+}

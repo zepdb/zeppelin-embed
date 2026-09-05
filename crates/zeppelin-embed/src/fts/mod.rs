@@ -27,6 +27,8 @@ pub mod dict;
 /// The lexical index across segments.
 pub mod index;
 
+pub(crate) mod live_df;
+
 /// The sealed segment: the persisted posting format on the query path.
 pub mod sealed;
 

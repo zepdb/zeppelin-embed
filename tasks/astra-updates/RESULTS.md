@@ -25,8 +25,8 @@ block the current plan or a trustworthy required comparison.
 | [13](13-bounded-fuzzy/plan.md) | Implemented, bfc2945 | Length/scratch RED to GREEN; five focused release tests and seven vocabulary/public regressions pass | [Evidence](../evidence/astra-13-bounded-fuzzy.md): same-length near expansion p95 -89.08%; Store fuzzy -48.62%, hybrid -39.22%; 2610 exact core payloads and 1152 unchanged native controls | Cache +65,576 bytes; prefix initial/update overhead extends issue 015 |
 | [14](14-phonetic-index/plan.md) | Implemented, 2ca47fc | Warm-encoding RED to GREEN; five release tests, public/reuse controls and actual reservation plant pass | [Evidence](../evidence/astra-14-phonetic-index.md): Store rare phonetic p95 -97.87%, hybrid -85.81%; warm encodes 4100 -> 1; 3480 exact core payloads and 1152 unchanged native results/work | Cache +65,664 bytes; collision p95 +1.18%, cold/update tradeoff extends 015; unrelated formatting 016 |
 | [15](15-bitmap-validation/plan.md) | Implemented, 818a433 | Two executed work REDs to GREEN; six focused tests; exact first-invalid/error order and BM25 controls pass | [Evidence](../evidence/astra-15-bitmap-validation.md): 58,980-row setup p95 178.042 -> 0.125 us; assembly 343.750 -> 178.459 us; six uninstrumented processes, 240 exact scored control hits | Core setup only; unchanged memory layout, no new cache; pause lifted by user |
-| [16](16-incremental-lexical-assembly/plan.md) | Implemented, 87421b7 | Actual row-walk RED to GREEN; seven focused and six affected cases pass; memory/stale plants fire | [Evidence](../evidence/astra-16-lexical-assembly.md): post-update core setup p95 -59.85% to -75.22%, zero unchanged sealed statistics walks; 11,520 identical scored hits | Warm absent p95 +0.041-0.042 us; cache +320/+1,488 bytes; issue 018 logged; native checkpoint after 17 |
-| [17](17-live-document-frequency/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
+| [16](16-incremental-lexical-assembly/plan.md) | Implemented, 87421b7 | Actual row-walk RED to GREEN; seven focused and six affected cases pass; memory/stale plants fire | [Evidence](../evidence/astra-16-lexical-assembly.md): post-update core setup p95 -59.85% to -75.22%, zero unchanged sealed statistics walks; 11,520 identical scored hits | Warm absent p95 +0.041-0.042 us; cache +320/+1,488 bytes; issue 018 logged; combined native checkpoint with 17 complete |
+| [17](17-live-document-frequency/plan.md) | Implemented and retained in this change | Literal reuse/admission RED to GREEN; 9 focused tests, 2 firing plants, 5 selected integration cases GREEN | [Evidence](../evidence/astra-17-live-df.md): final tombstoned common core p95 -93.18% to -99.53%; 24 native processes / all 648 queries preserve full payloads; fixed-deletion lexical/hybrid p95 -9.23%/-6.10%; intact APIs unchanged | Initial unique-term regressions rejected; final all-live core control +0.125us; cache +6,768B per partial contribution; broad qualification pending |
 | [18](18-query-cancellation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [19](19-embedding-lexical-overlap/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [20](20-query-runtime-isolation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
@@ -59,16 +59,13 @@ from the focused implementation and benchmark pass, as specified in README.md.
 
 ## Current execution checkpoint
 
-HEAD 818a433. Plans 00-15 and prerequisite repairs are committed with focused
-GREEN and per-change measurements. The after-03 and after-07 selected integration
-checkpoints passed; the next shared checkpoint follows 17. Step 15 is implemented
-and measured with focused GREEN; the user has now authorized resuming at 16 after committing the query-budget work.
-Plans 16-33 and the
-final assembled held-out/graph confirmation remain required. Step 06 retains
-its explicit hybrid/small-store negative results without changing defaults.
-The corrected Step 08 corpus was rebuilt and all 648-query comparisons passed.
-Step 14 retains the lazy phonetic map for repeated queries, with collision and
-cold/update costs recorded. Unrelated examples/python is untouched.
+The implementation queue through Step 17 has focused GREEN and per-change
+measurements. Selected after-03, after-07 and after-17 integration checkpoints
+pass. The Step17 commit contains exact live-frequency caching, rejected admission
+experiments and the full native Step16+17 confirmation. Plans 18-33 and the final
+assembled held-out/graph confirmation remain required. Step06 retains its hybrid/
+small-store negative results without changing defaults. Corrected Step08 corpus
+comparisons cover all 648 queries. Unrelated examples/python remains untouched.
 
 Step 05's final matched 64-query full-FiQA screen measures Exact dense p95
 15.510958->5.463792 ms (-64.77%) and hybrid 15.670000->5.737000 ms (-63.39%).
@@ -132,14 +129,15 @@ accepts approximately 1 ms and rejects FiQA-specific tuning.
 The default clean71 graph is published, but refinement/comparison is pending
 at a preserved checkpoint. This is not a qualified graph result. The completed
 diagnostics and pending status are committed before resuming Step 16. Plans
-16-33 remain uncompleted until their individual contracts are met.
+18-33 remain uncompleted until their individual contracts are met.
 
 Step 16 retains immutable contribution sharing after public-path RED/GREEN,
 13 distinct focused/regression cases, two firing fault plants and six matched
 normal-feature core processes. Post-update setup p95 improves 59.85-75.22%;
 warm absent p95 rises one approximate timer tick and remains an explicit
-negative result. Step 17 is next; native TextStore confirmation belongs to its
-shared integration checkpoint. Step 16 landed as `87421b7`; Step 17 is next.
+negative result. Step16 landed as `87421b7`. The shared after-17 native checkpoint
+is complete: on fixed deletions, lexical/hybrid p95 improve 9.23%/6.10%; intact
+controls are unchanged and all 15,552 full payloads are identical. Step 18 is next.
 
 
 The user-requested pre-Step-16 all-API comparison is complete: [report](../evidence/query-api-pre16-before-after.md).

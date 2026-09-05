@@ -11,6 +11,117 @@ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 
 const REMOVED: DocId = DocId::new(1);
 
+#[test]
+fn astra_17_live_df_scans_once_for_repeated_immutable_term() {
+    use zeppelin_embed::fts::preparation_observer as observer;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            (1..=2048)
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                    .with_text("common pair")
+                })
+                .collect(),
+        ))
+        .expect("corpus");
+    store.seal().expect("seal");
+    store
+        .delete(DeleteBatch::new(vec![REMOVED]))
+        .expect("tombstone");
+    observer::begin();
+    let cold = query_scores(&store);
+    let cold_work = observer::live_df_work();
+    observer::take();
+    assert_eq!(cold_work.walks, 1, "one exact cold DF");
+    assert_eq!(cold_work.docids, 2048, "including deleted posting");
+    assert!(cold_work.blocks > 0, "actual compressed DF blocks");
+    observer::begin();
+    let warm = query_scores(&store);
+    let warm_work = observer::live_df_work();
+    observer::take();
+    assert_eq!(cold, warm, "scores and IDs unchanged");
+    assert_eq!(
+        warm_work,
+        observer::LiveDfWork::default(),
+        "unchanged immutable membership must reuse exact live DF"
+    );
+    let literal_idf = (1.0_f64 + 0.5 / 2047.5).ln();
+    for (_, score) in warm {
+        assert!(
+            (score - literal_idf).abs() < 1e-12,
+            "N=DF=2047 and dl=avgdl=2: {score} versus {literal_idf}"
+        );
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_17_live_df_invalidates_on_delete_and_not_unrelated_query() {
+    use zeppelin_embed::fts::preparation_observer as observer;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    for id in 1..=8 {
+        astra_16_ingest(&store, id, "common pair");
+    }
+    store.seal().expect("seal first");
+    for id in 9..=12 {
+        astra_16_ingest(&store, id, "common triple pair");
+    }
+    store.seal().expect("seal second");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(1)]))
+        .expect("delete first");
+    query_scores(&store);
+    astra_16_absent_query(&store);
+    astra_16_ingest(&store, 100, "unrelated active");
+    observer::begin();
+    let reused = query_scores(&store);
+    let work = observer::live_df_work();
+    observer::take();
+    assert_eq!(
+        work,
+        observer::LiveDfWork::default(),
+        "unrelated terms and active publication preserve sealed DF"
+    );
+    assert!(!reused.iter().any(|(id, _)| *id == DocId::new(1)));
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(2)]))
+        .expect("delete second");
+    observer::begin();
+    let changed = query_scores(&store);
+    let work = observer::live_df_work();
+    observer::take();
+    assert_eq!(work.walks, 1, "only changed tombstoned contribution");
+    assert_eq!(work.docids, 8, "first segment posting stream");
+    assert!(!changed.iter().any(|(id, _)| *id == DocId::new(2)));
+    // Literal live model: six length-2 common rows, four length-3 common
+    // rows, and one length-2 unrelated active row. N=11, tokens=26, DF=10.
+    let idf = (1.0_f64 + 1.5 / 10.5).ln();
+    for (id, score) in changed {
+        let length = if id.get() < 9 { 2.0 } else { 3.0 };
+        let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * length / (26.0 / 11.0)));
+        assert!(
+            (score - expected).abs() < 1e-12,
+            "exact live BM25: {score} versus {expected}"
+        );
+    }
+    observer::begin();
+    query_scores(&store);
+    let work = observer::live_df_work();
+    observer::take();
+    assert_eq!(
+        work,
+        observer::LiveDfWork::default(),
+        "new identity now warm"
+    );
+    store.close().expect("close");
+}
+
 fn astra_16_ingest(store: &Store, id: u128, text: &str) {
     store
         .ingest(IngestBatch::new(vec![
@@ -260,6 +371,50 @@ fn astra_16_retention_reuses_survivor_with_new_source_ordinal() {
     assert_eq!(results.len(), 1);
     assert_eq!(results.first().expect("survivor").0, DocId::new(2));
     assert!((results.first().expect("score").1 - (1.0_f64 + 0.5 / 1.5).ln()).abs() < 1e-12);
+    let after = store.lexical_contribution_cache_counters();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_17_retention_reuses_tombstoned_survivor_df() {
+    use zeppelin_embed::fts::preparation_observer as observer;
+    use zeppelin_embed::ingest::RetentionPolicy;
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    for batch in [vec![(1, 0)], vec![(2, 25), (3, 25)]] {
+        let docs = batch
+            .into_iter()
+            .map(|(id, timestamp)| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_timestamp(timestamp)
+                .with_text("common pair")
+            })
+            .collect();
+        store.ingest(IngestBatch::new(docs)).expect("ingest");
+        store.seal().expect("seal");
+    }
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(3)]))
+        .expect("partial live second segment");
+    assert_eq!(query_scores(&store).len(), 2);
+    let before = store.lexical_contribution_cache_counters();
+    store
+        .apply_retention(RetentionPolicy::new(10).expect("window"), 30)
+        .expect("retention");
+    observer::begin();
+    let results = query_scores(&store);
+    let work = observer::live_df_work();
+    observer::take();
+    assert_eq!(work, observer::LiveDfWork::default());
+    assert_eq!(results.len(), 1);
+    let (id, score) = results.first().expect("survivor");
+    assert_eq!(*id, DocId::new(2));
+    // Global N and token totals change; the surviving segment's exact DF does not.
+    assert!((*score - (1.0_f64 + 0.5 / 1.5).ln()).abs() < 1e-12);
     let after = store.lexical_contribution_cache_counters();
     assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
     store.close().expect("close");

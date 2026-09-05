@@ -195,3 +195,59 @@ fn astra_16_refused_contribution_leaves_previous_cache_and_no_charge() {
     drop(old);
     store.close().expect("close");
 }
+
+#[test]
+fn astra_17_live_df_cache_memory_released_with_reader() {
+    let (_directory, store) = fixture();
+    store
+        .delete(crate::ingest::DeleteBatch::new(vec![DocId::new(1)]))
+        .expect("tombstone");
+    let admission = store.admit_lexical_query().expect("query");
+    let assembly = assemble(&store, &admission);
+    assert_eq!(
+        assembly
+            .index
+            .prepared_document_frequency(b"common", &[crate::fts::index::DEFAULT_FIELD])
+            .expect("DF"),
+        2
+    );
+    let cache = assembly
+        .contributions
+        .iter()
+        .find_map(|c| c.statistics.frequency_cache.as_ref())
+        .cloned()
+        .expect("tombstoned contribution cache");
+    let bytes = cache.charged_bytes();
+    assert!(bytes > 4096, "keys, entries and Arc storage stay reserved");
+    let before = store.accounting.audit().expect("audit").cache_bytes;
+    store
+        .lexical_index_cache
+        .entry
+        .lock()
+        .expect("cache")
+        .take();
+    assert_eq!(
+        store.accounting.audit().expect("held assembly").cache_bytes,
+        before
+    );
+    drop(assembly);
+    drop(admission);
+    let held = store
+        .accounting
+        .audit()
+        .expect("last cache owner")
+        .cache_bytes;
+    assert!(held >= bytes);
+    drop(cache);
+    assert_eq!(
+        store
+            .accounting
+            .audit()
+            .expect("cache released")
+            .cache_bytes,
+        held - bytes
+    );
+    let accounting = Arc::clone(&store.accounting);
+    store.close().expect("close");
+    assert_eq!(accounting.audit().expect("closed").cache_bytes, 0);
+}

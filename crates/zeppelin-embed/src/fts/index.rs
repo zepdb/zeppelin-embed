@@ -58,6 +58,12 @@ pub struct TermKey {
 /// An index construction failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndexError {
+    /// Exact live-frequency memoization refused inconsistent state or a
+    /// poisoned lock. No cache failure is interpreted as a zero frequency.
+    LiveFrequencyCache {
+        /// Failed cache invariant or synchronization boundary.
+        reason: &'static str,
+    },
     /// A posting list rejected an append.
     Postings(PostingsError),
     /// The corpus had no documents or no tokens.
@@ -88,6 +94,9 @@ pub enum IndexError {
 impl std::fmt::Display for IndexError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::LiveFrequencyCache { reason } => {
+                write!(formatter, "live document frequency cache failed: {reason}")
+            }
             Self::Postings(error) => write!(formatter, "postings rejected: {error}"),
             Self::Stats(error) => write!(formatter, "corpus statistics unavailable: {error}"),
             Self::RowsNotAscending { row } => {
@@ -566,6 +575,7 @@ impl SegmentIndex {
 pub struct LexicalIndex {
     segments: Vec<Arc<SealedSegment>>,
     statistics: Vec<Arc<LiveSegmentStatistics>>,
+    has_frequency_cache: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -579,6 +589,7 @@ struct LiveSegmentCounters {
 pub(crate) struct LiveSegmentStatistics {
     pub(crate) rows: DocBitmap,
     counters: LiveSegmentCounters,
+    pub(crate) frequency_cache: Option<Arc<super::live_df::LiveFrequencyCache>>,
 }
 
 impl LiveSegmentStatistics {
@@ -590,6 +601,7 @@ impl LiveSegmentStatistics {
         Ok(Self {
             counters: live_segment_counters(ordinal, segment, rows)?,
             rows: rows.clone(),
+            frequency_cache: None,
         })
     }
 
@@ -628,6 +640,7 @@ impl LexicalIndex {
     fn push_shared(&mut self, segment: Arc<SealedSegment>) {
         self.statistics.push(Arc::new(LiveSegmentStatistics {
             rows: DocBitmap::full(segment.row_count()),
+            frequency_cache: None,
             counters: LiveSegmentCounters {
                 documents: u64::from(segment.row_count()),
                 tokens: segment.total_tokens(),
@@ -677,6 +690,7 @@ impl LexicalIndex {
         segment: Arc<SealedSegment>,
         statistics: Arc<LiveSegmentStatistics>,
     ) {
+        self.has_frequency_cache |= statistics.frequency_cache.is_some();
         self.segments.push(segment);
         self.statistics.push(statistics);
     }
@@ -774,6 +788,47 @@ impl LexicalIndex {
                 }
             })
             .fold(0_u32, u32::saturating_add)
+    }
+
+    /// Scoring can report cache synchronization errors without changing the
+    /// public infallible, uncached statistics inspection method. Callers pass
+    /// the canonical field list from FieldWeights.
+    #[inline]
+    pub(crate) fn prepared_document_frequency(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+    ) -> Result<u32, IndexError> {
+        // Preserve the original dictionary/statistics loop when no contribution
+        // owns a cache. Cache synchronization and fallible accumulation belong
+        // only to snapshots that can actually use them.
+        if !self.has_frequency_cache {
+            return Ok(self.document_frequency(term, fields));
+        }
+        self.cached_document_frequency(term, fields)
+    }
+
+    fn cached_document_frequency(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+    ) -> Result<u32, IndexError> {
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::frequency();
+        self.segments.iter().zip(&self.statistics).try_fold(
+            0_u32,
+            |total, (segment, statistics)| {
+                let live = &statistics.rows;
+                let frequency = if live.cardinality() == u64::from(segment.row_count()) {
+                    segment.document_frequency(term, fields)
+                } else if let Some(cache) = &statistics.frequency_cache {
+                    cache.frequency(segment, live, term, fields)?
+                } else {
+                    segment.live_document_frequency(term, fields, live)
+                };
+                Ok(total.saturating_add(frequency))
+            },
+        )
     }
 }
 

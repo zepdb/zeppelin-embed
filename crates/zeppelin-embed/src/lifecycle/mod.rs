@@ -4443,14 +4443,21 @@ impl CachedLexicalContribution {
             stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
                 .map_err(LexicalAssemblyError::Store)?;
         memory.set(bytes).map_err(LexicalAssemblyError::Store)?;
-        let statistics = Arc::new(
-            crate::fts::index::LiveSegmentStatistics::build(
-                ordinal,
-                postings,
-                alive.alive_bitmap(),
-            )
-            .map_err(LexicalAssemblyError::Lexical)?,
-        );
+        let mut statistics = crate::fts::index::LiveSegmentStatistics::build(
+            ordinal,
+            postings,
+            alive.alive_bitmap(),
+        )
+        .map_err(LexicalAssemblyError::Lexical)?;
+        if statistics.rows.cardinality() != 0
+            && statistics.rows.cardinality() != u64::from(postings.row_count())
+        {
+            statistics.frequency_cache = Some(
+                crate::fts::live_df::LiveFrequencyCache::new(accounting)
+                    .map_err(LexicalAssemblyError::Store)?,
+            );
+        }
+        let statistics = Arc::new(statistics);
         Ok(Arc::new(Self {
             key,
             statistics,

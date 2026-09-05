@@ -1,8 +1,10 @@
 # Step 16: reuse immutable lexical contributions
 
 Implementation: retained. Focused validation: GREEN. Matched core measurement:
-complete. Full native TextStore confirmation is deferred to the shared after-17
-checkpoint; broad qualification is NOT RUN. Commit: `87421b7`.
+complete. Full native TextStore confirmation is complete in the shared after-17
+checkpoint ([combined evidence](astra-17-live-df.md)): fixed-deletion lexical/
+hybrid p95 improve 9.23%/6.10%, with unchanged intact controls and full payloads.
+This measures16+17 together. Broad qualification is NOT RUN. Commit: `87421b7`.
 
 ## Result and contract
 

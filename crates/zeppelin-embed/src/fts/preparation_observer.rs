@@ -14,6 +14,9 @@ struct Counts {
     structured_bound_terms: AtomicUsize,
     corpus_statistics: AtomicUsize,
     live_statistics_rows: AtomicUsize,
+    live_df_walks: AtomicUsize,
+    live_df_docids: AtomicUsize,
+    live_df_blocks: AtomicUsize,
     phrase_reanalyses: AtomicUsize,
     phrase_text_bytes: AtomicUsize,
     phrase_positions: AtomicUsize,
@@ -194,6 +197,41 @@ pub(crate) fn phonetic_bucket(count: usize) {
         if let Some(o) = current.borrow().as_ref() {
             o.0.phonetic_bucket_terms
                 .fetch_add(count, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Document-frequency work, separate from result retrieval cursors.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LiveDfWork {
+    /// Exact live-document-frequency walks opened.
+    pub walks: usize,
+    /// Union document identifiers examined by these walks.
+    pub docids: usize,
+    /// Compressed document-identifier blocks decoded by these walks.
+    pub blocks: usize,
+}
+
+/// Reads actual live DF work in the armed observation window.
+pub fn live_df_work() -> LiveDfWork {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(LiveDfWork::default(), |o| LiveDfWork {
+                walks: o.0.live_df_walks.load(Ordering::Relaxed),
+                docids: o.0.live_df_docids.load(Ordering::Relaxed),
+                blocks: o.0.live_df_blocks.load(Ordering::Relaxed),
+            })
+    })
+}
+
+pub(crate) fn live_df_walk(docids: usize, blocks: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.live_df_walks.fetch_add(1, Ordering::Relaxed);
+            o.0.live_df_docids.fetch_add(docids, Ordering::Relaxed);
+            o.0.live_df_blocks.fetch_add(blocks, Ordering::Relaxed);
         }
     });
 }

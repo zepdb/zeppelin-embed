@@ -1,0 +1,146 @@
+[
+  {
+    "label": "before-rep1",
+    "arm": "before",
+    "rep": 1,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-before",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/before-rep1"
+    ],
+    "exit_code": 0,
+    "seconds": 20.45495915412903,
+    "maximum_rss_bytes": 203030528,
+    "load_before": [
+      2.701171875,
+      2.73095703125,
+      2.74462890625
+    ],
+    "load_after": [
+      2.35986328125,
+      2.650390625,
+      2.71533203125
+    ]
+  },
+  {
+    "label": "after-rep1",
+    "arm": "after",
+    "rep": 1,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-after",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/after-rep1"
+    ],
+    "exit_code": 0,
+    "seconds": 20.46701717376709,
+    "maximum_rss_bytes": 204046336,
+    "load_before": [
+      2.35986328125,
+      2.650390625,
+      2.71533203125
+    ],
+    "load_after": [
+      2.1708984375,
+      2.59033203125,
+      2.69189453125
+    ]
+  },
+  {
+    "label": "after-rep2",
+    "arm": "after",
+    "rep": 2,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-after",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/after-rep2"
+    ],
+    "exit_code": 0,
+    "seconds": 20.319869995117188,
+    "maximum_rss_bytes": 205619200,
+    "load_before": [
+      2.1708984375,
+      2.59033203125,
+      2.69189453125
+    ],
+    "load_after": [
+      1.97900390625,
+      2.5185546875,
+      2.66259765625
+    ]
+  },
+  {
+    "label": "before-rep2",
+    "arm": "before",
+    "rep": 2,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-before",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/before-rep2"
+    ],
+    "exit_code": 0,
+    "seconds": 20.305144786834717,
+    "maximum_rss_bytes": 200966144,
+    "load_before": [
+      1.97900390625,
+      2.5185546875,
+      2.66259765625
+    ],
+    "load_after": [
+      1.9775390625,
+      2.4833984375,
+      2.64697265625
+    ]
+  },
+  {
+    "label": "before-rep3",
+    "arm": "before",
+    "rep": 3,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-before",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/before-rep3"
+    ],
+    "exit_code": 0,
+    "seconds": 20.252591133117676,
+    "maximum_rss_bytes": 200998912,
+    "load_before": [
+      1.9775390625,
+      2.4833984375,
+      2.64697265625
+    ],
+    "load_after": [
+      2.04345703125,
+      2.466796875,
+      2.63720703125
+    ]
+  },
+  {
+    "label": "after-rep3",
+    "arm": "after",
+    "rep": 3,
+    "command": [
+      "/usr/bin/time",
+      "-l",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-after",
+      "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/after-rep3"
+    ],
+    "exit_code": 0,
+    "seconds": 20.238582134246826,
+    "maximum_rss_bytes": 204013568,
+    "load_before": [
+      2.04345703125,
+      2.466796875,
+      2.63720703125
+    ],
+    "load_after": [
+      1.96240234375,
+      2.419921875,
+      2.61572265625
+    ]
+  }
+]

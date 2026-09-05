@@ -374,8 +374,8 @@ fn search_pruned_inner(
                 query
                     .terms
                     .iter()
-                    .map(|term| index.document_frequency(term, &fields))
-                    .collect::<Vec<_>>(),
+                    .map(|term| index.prepared_document_frequency(term, &fields))
+                    .collect::<Result<Vec<_>, _>>()?,
             )
         }
     };

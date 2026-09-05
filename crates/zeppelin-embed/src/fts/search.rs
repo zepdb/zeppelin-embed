@@ -249,7 +249,7 @@ pub fn search(
     // Document frequency is store-wide, computed once per term.
     let mut frequencies: Vec<(usize, u32)> = Vec::with_capacity(query.terms.len());
     for (position, term) in query.terms.iter().enumerate() {
-        frequencies.push((position, index.document_frequency(term, &fields)));
+        frequencies.push((position, index.prepared_document_frequency(term, &fields)?));
     }
 
     for (segment_ordinal, segment) in index.segments().iter().enumerate() {
@@ -411,8 +411,8 @@ impl PreparedTermQuery {
         let frequencies: Vec<_> = query
             .terms
             .iter()
-            .map(|term| index.document_frequency(term, &fields))
-            .collect();
+            .map(|term| index.prepared_document_frequency(term, &fields))
+            .collect::<Result<Vec<_>, _>>()?;
         let scorers = frequencies
             .iter()
             .map(|df| TermScorer::new(Df(*df), &stats, params))
@@ -503,8 +503,8 @@ impl<'query> CandidateScoring<'query> {
         let frequencies = query
             .terms
             .iter()
-            .map(|term| index.document_frequency(term, &fields))
-            .collect();
+            .map(|term| index.prepared_document_frequency(term, &fields))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             query,
             stats,

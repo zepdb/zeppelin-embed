@@ -1,0 +1,45 @@
+[
+  {
+    "arm": "before",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--offline",
+      "--manifest-path",
+      "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra17-fwmvvueo/before/Cargo.toml",
+      "--message-format=json"
+    ],
+    "env": {
+      "CARGO_TARGET_DIR": "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra17-fwmvvueo/target"
+    },
+    "exit_code": 0,
+    "seconds": 33.89666485786438,
+    "core_features": [],
+    "binary": "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-measured/screen-before",
+    "sha256": "0c70264516507ea68c78bcc652cb463bb47d05b5fb99f81d4e238d78c6f70925",
+    "bytes": 1429664,
+    "reused_from": "astra-17-measured"
+  },
+  {
+    "arm": "after",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--offline",
+      "--manifest-path",
+      "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra17-fwmvvueo/after/Cargo.toml",
+      "--message-format=json"
+    ],
+    "env": {
+      "CARGO_TARGET_DIR": "/var/folders/z_/fscz84rs53z5_2klsmkmv2vw0000gn/T/ze-astra17-fwmvvueo/target"
+    },
+    "exit_code": 0,
+    "seconds": 31.97048282623291,
+    "core_features": [],
+    "binary": "/Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/astra-17-admitted/screen-after",
+    "sha256": "58a34f1c2cddac280276da799eb5814c726939c9ac747eb4dd41a8f3e57f2831",
+    "bytes": 1446192
+  }
+]
