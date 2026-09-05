@@ -208,7 +208,12 @@ fn block_max_wand_skips_blocks_it_can_prove_unreachable() {
     let index = index_of(&texts);
     let params = Bm25Params::default();
     let query = TermQuery::flat(
-        vec![b"t0".to_vec(), b"t2".to_vec(), b"t4".to_vec(), b"t6".to_vec()],
+        vec![
+            b"t0".to_vec(),
+            b"t2".to_vec(),
+            b"t4".to_vec(),
+            b"t6".to_vec(),
+        ],
         &[DEFAULT_FIELD],
     );
 
@@ -244,7 +249,12 @@ fn block_max_wand_skips_less_as_k_rises() {
     let index = index_of(&texts);
     let params = Bm25Params::default();
     let query = TermQuery::flat(
-        vec![b"t0".to_vec(), b"t2".to_vec(), b"t4".to_vec(), b"t6".to_vec()],
+        vec![
+            b"t0".to_vec(),
+            b"t2".to_vec(),
+            b"t4".to_vec(),
+            b"t6".to_vec(),
+        ],
         &[DEFAULT_FIELD],
     );
 

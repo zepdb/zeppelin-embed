@@ -25,7 +25,7 @@ fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
 fn query(id: usize) -> LexicalQuery {
-    let prefix = if id % 8 == 0 {
+    let prefix = if id.is_multiple_of(8) {
         "mrare".to_string()
     } else {
         format!("aaa{}", suffix(id * 71 % 6000))

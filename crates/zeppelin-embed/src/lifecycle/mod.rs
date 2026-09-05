@@ -8197,7 +8197,7 @@ mod tests {
                         .expect("dispatch");
                     assert_eq!(
                         resolve_hybrid_leg_results(vector_result, lexical_result.expect("joined")),
-                        Err(failures[a.max(b)].clone()),
+                        Err(failures.get(a.max(b)).expect("known failure index").clone()),
                         "vector={a} lexical={b} lexical_first={lexical_first}",
                     );
                 }

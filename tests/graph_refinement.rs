@@ -517,9 +517,9 @@ fn a_valid_refinement_checkpoint_resumes_when_only_the_generation_moved() {
     );
     assert!(matches!(
         interrupted,
-        Err(RefinementError::Graph(
-            GraphBuildError::BudgetExhausted { rows_completed: 2 }
-        ))
+        Err(RefinementError::Graph(GraphBuildError::BudgetExhausted {
+            rows_completed: 2
+        }))
     ));
     assert!(checkpoint.exists());
     let bytes = std::fs::read(&checkpoint).expect("checkpoint persisted");

@@ -1586,7 +1586,7 @@ fn astra_04_exact_scan_boundary_ties_survive_identity_join() {
     )
     .expect("open tie fixture");
     // f64 distinguishes 1 and 1 + 2^-26; both distances narrow to f32 1.
-    let high = [1.0, 0.0001220703125, 0.0];
+    let high = [1.0, 1.0_f32 / 8_192.0, 0.0];
     assert_ne!(
         1_f64.to_bits(),
         (1.0 + f64::from(high[1]).powi(2)).to_bits()
@@ -1821,13 +1821,13 @@ fn astra_04_exact_scan_measurement() {
         let mut oracle = (0..n)
             .map(|row| {
                 let mut distance = 0_f64;
-                for j in 0..16 {
+                for (j, query_value) in query.iter().copied().enumerate() {
                     let v = if tied {
                         1.0
                     } else {
                         ((row * 31 + j * 17) % 65521) as f32 * 0.001
                     };
-                    let delta = f64::from(query[j]) - f64::from(v);
+                    let delta = f64::from(query_value) - f64::from(v);
                     distance += delta * delta;
                 }
                 ((n - row) as u128, (-distance as f32).to_bits())

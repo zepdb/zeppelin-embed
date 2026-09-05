@@ -49,10 +49,8 @@ fn main() {
             let started = Instant::now();
             let batch = mlx.embed_batch(&tokens).expect("mlx embed");
             mlx_samples.push(started.elapsed().as_secs_f64() * 1000.0);
-            if mlx_vectors.len() < QUERIES.len() * dims {
-                if mlx_samples.len() % 40 == 1 {
-                    mlx_vectors.extend_from_slice(batch.values());
-                }
+            if mlx_vectors.len() < QUERIES.len() * dims && mlx_samples.len() % 40 == 1 {
+                mlx_vectors.extend_from_slice(batch.values());
             }
         }
     }

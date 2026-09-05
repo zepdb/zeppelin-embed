@@ -20,7 +20,7 @@ pub(crate) fn forward(runtime: &MlxRuntime, tokens: &TokenBatch) -> Result<Array
         .map_err(mlx)?;
     let positions = (0..tokens.rows)
         .flat_map(|_| 0..tokens.tokens_per_row)
-        .map(|position| i32::try_from(position))
+        .map(i32::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| RuntimeError::Shape("position exceeds i32".to_owned()))?;
     let position_ids = Array::from_slice(&positions, &[batch, sequence]);

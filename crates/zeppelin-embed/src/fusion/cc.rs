@@ -1014,8 +1014,7 @@ mod reuse_tests {
                 None,
                 None,
             )
-            .err()
-            .expect("two old plus six new exceed seven");
+            .expect_err("two old plus six new exceed seven");
         assert!(matches!(
             error,
             FusionError::Leg {

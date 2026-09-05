@@ -599,12 +599,12 @@ impl TextStore {
                                             break;
                                         }
                                     }
-                                    if control.fire(TextFaultSite::SealFailureMidStream) {
-                                        if let Err(error) = self.store.close() {
-                                            first_error = Some(TextError::Store(error));
-                                            control.cancel();
-                                            break;
-                                        }
+                                    if control.fire(TextFaultSite::SealFailureMidStream)
+                                        && let Err(error) = self.store.close()
+                                    {
+                                        first_error = Some(TextError::Store(error));
+                                        control.cancel();
+                                        break;
                                     }
                                     match self.store.seal() {
                                         Ok(_) => {}
@@ -1555,7 +1555,7 @@ fn check_runtime_control(
 /// returning the same vectors. MLX is used when no compiled model is
 /// present.
 enum QueryRuntime {
-    Mlx(MlxRuntime),
+    Mlx(Box<MlxRuntime>),
     #[cfg(target_os = "macos")]
     CoreMl(Box<crate::runtime::coreml::CoreMlRuntime>),
 }
@@ -1716,6 +1716,7 @@ impl RuntimeClient {
                                 ));
                             }
                             None => MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)
+                                .map(Box::new)
                                 .map(QueryRuntime::Mlx)?,
                         };
                         Ok(RuntimeSet::Pair { document, query })
@@ -1923,7 +1924,7 @@ mod tests {
         assert_eq!(chunks, ["one two three", "three four five"]);
         assert_eq!(
             chunks_for_text(&document, ChunkPolicy::None).expect("no chunks"),
-            [document.text.clone()]
+            std::slice::from_ref(&document.text)
         );
         assert!(
             build_jobs(
@@ -1963,10 +1964,7 @@ mod tests {
         let control = IngestControl::new();
         control.cancel();
         assert_eq!(acquire_buffer_slot(&AtomicUsize::new(0), 1, &control), None);
-        assert_eq!(
-            IngestControl::default().fault_fired(TextFaultSite::EmbedWorkerPanic),
-            false
-        );
+        assert!(!IngestControl::default().fault_fired(TextFaultSite::EmbedWorkerPanic));
     }
 }
 

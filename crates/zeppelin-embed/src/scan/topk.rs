@@ -315,7 +315,7 @@ fn allocation_error(capacity: usize) -> StoreError {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use rand::seq::SliceRandom;
 

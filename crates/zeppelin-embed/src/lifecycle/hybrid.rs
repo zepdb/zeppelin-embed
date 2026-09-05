@@ -1109,8 +1109,7 @@ mod tests {
             .expect("four bytes");
         buffer.push(7).expect("one element");
         let error = reserve_candidate_buffer(&mut buffer, 8, &accounting, &mut resident, &mut peak)
-            .err()
-            .expect("growth refused");
+            .expect_err("growth refused");
         assert!(matches!(
             error,
             FusionError::Leg {

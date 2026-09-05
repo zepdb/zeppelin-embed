@@ -655,7 +655,7 @@ mod tests {
                         .expect("phonetic slot")
                         .is_none()
                 );
-                assert!(calls >= 64 && calls <= 128);
+                assert!((64..=128).contains(&calls));
             } else {
                 assert!(cached.is_none());
                 assert!(groups > 0);

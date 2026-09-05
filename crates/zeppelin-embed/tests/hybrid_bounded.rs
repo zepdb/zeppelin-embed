@@ -125,7 +125,7 @@ fn astra_03_fixture() -> (tempfile::TempDir, Store) {
             DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(revision)),
             vec![astra_03_coordinate(row), 1.0],
         )
-        .with_text(&words.join(" "))
+        .with_text(words.join(" "))
     };
     store
         .ingest(IngestBatch::new(
@@ -424,7 +424,7 @@ fn astra_03_structured_anchor_uses_the_exact_combined_maximum() {
                 DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
                 vec![1.0, 0.0],
             )
-            .with_text(&words.join(" "))
+            .with_text(words.join(" "))
         })
         .collect();
     store.ingest(IngestBatch::new(documents)).expect("ingest");
@@ -1634,7 +1634,7 @@ fn astra_09_query_reuse_never_crosses_epoch_source_or_revision() {
                     if row < 200 {
                         document
                     } else {
-                        document.with_text(&vec!["zeppelin"; 1 + (400 - row) % 5].join(" "))
+                        document.with_text(vec!["zeppelin"; 1 + (400 - row) % 5].join(" "))
                     }
                 })
                 .collect();

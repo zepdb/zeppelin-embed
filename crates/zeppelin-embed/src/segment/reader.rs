@@ -845,7 +845,7 @@ impl SegmentReader {
         &'a self,
         header: super::layout::VectorHeader,
         payload: &'a [u8],
-    ) -> Result<&[u8], SegmentError> {
+    ) -> Result<&'a [u8], SegmentError> {
         if self.meta.scheme != 4 {
             return Err(SegmentError::Geometry(format!(
                 "Bit4 codes requested for scheme {}",
@@ -887,7 +887,7 @@ impl SegmentReader {
         &'a self,
         header: super::layout::VectorHeader,
         payload: &'a [u8],
-    ) -> Result<&[f32], SegmentError> {
+    ) -> Result<&'a [f32], SegmentError> {
         if self.meta.scheme != 0 {
             return Err(SegmentError::Geometry(format!(
                 "F32 codes requested for scheme {}",
@@ -928,7 +928,7 @@ impl SegmentReader {
         &'a self,
         header: super::layout::VectorHeader,
         payload: &'a [u8],
-    ) -> Result<&[i8], SegmentError> {
+    ) -> Result<&'a [i8], SegmentError> {
         if self.meta.scheme != 2 {
             return Err(SegmentError::Geometry(format!(
                 "Int8 codes requested for scheme {}",
@@ -966,7 +966,7 @@ impl SegmentReader {
         &'a self,
         header: super::layout::VectorHeader,
         payload: &'a [u8],
-    ) -> Result<&[Bit4Factors], SegmentError> {
+    ) -> Result<&'a [Bit4Factors], SegmentError> {
         if self.meta.scheme != 4 {
             return Err(SegmentError::Geometry(format!(
                 "Bit4 factors requested for scheme {}",

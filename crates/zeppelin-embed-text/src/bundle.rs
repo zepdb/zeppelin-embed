@@ -558,7 +558,7 @@ fn parse_tower(cursor: &mut Cursor<'_>) -> Result<TowerSpec, BundleError> {
             "tower dimensions must be non-zero".to_owned(),
         ));
     }
-    if config.hidden % u32::from(config.heads) != 0 {
+    if !config.hidden.is_multiple_of(u32::from(config.heads)) {
         return Err(BundleError::Format(
             "hidden width is not divisible by heads".to_owned(),
         ));

@@ -49,7 +49,12 @@ impl WeightedCursor<'_> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::items_after_test_module,
+    clippy::panic
+)]
 mod tests {
     use super::*;
     use crate::fts::index::{Document, FieldId, SegmentIndex};

@@ -210,6 +210,7 @@ impl LiveFrequencyCache {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::items_after_test_module,
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::panic

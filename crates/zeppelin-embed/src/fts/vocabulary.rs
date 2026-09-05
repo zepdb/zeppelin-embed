@@ -230,7 +230,7 @@ impl Vocabulary {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::items_after_test_module)]
 mod cancellation_tests {
     use super::*;
 
