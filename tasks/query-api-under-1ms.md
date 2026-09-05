@@ -22,6 +22,24 @@ record. Original proposal: `/private/tmp/ze-query-budget-hsslyrjg/original-plan.
 Both waves use the custom clean71 worktree detached at `cf312af`; these are not
 current-main latency claims.
 
+## Completed pre-Step-16 all-API follow-up
+
+[Matched all-API comparison](evidence/query-api-pre16-before-after.md) now
+compares pre-Astra `0a8caf5`, pre-copy-fix `818a433`, and `7d0f9ef`, with the
+same clean71/CoreML model, corrected tokenizer and index. All 27 processes and
+17,496 timed calls pass. Step 08 tokenizer quality is held fixed; Step 16 is
+excluded. Whole-API warm p50/p95 in milliseconds:
+
+| API | Pre-Astra | Before output-copy fix | After pre-Step-16 work |
+| --- | ---: | ---: | ---: |
+| Dense default | 1.178583 / 1.338542 | 1.150125 / 1.294125 | 0.958833 / 1.076667 |
+| Lexical | 1.110958 / 3.546209 | 0.941375 / 3.331875 | 0.926042 / 3.323084 |
+| Hybrid | 18.417917 / 18.715125 | 5.721417 / 7.010542 | 5.524125 / 6.866458 |
+
+Dense is approximately 1 ms and lexical's median is below 1 ms on this setup.
+Lexical p95 and hybrid remain higher. These are matched production-feature
+controls; the earlier fault-instrumented numbers are not the before cells.
+
 ## What the measurements change
 
 The full scan is the largest measured term. The output-copy change provides a

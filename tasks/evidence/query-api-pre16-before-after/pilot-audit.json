@@ -1,0 +1,20 @@
+{
+  "dense": {
+    "same_epoch": true,
+    "same_token_ids": true,
+    "identical_payload_queries": 3,
+    "queries": 3
+  },
+  "lexical": {
+    "same_epoch": true,
+    "same_token_ids": true,
+    "identical_payload_queries": 3,
+    "queries": 3
+  },
+  "hybrid": {
+    "same_epoch": true,
+    "same_token_ids": true,
+    "identical_payload_queries": 0,
+    "queries": 3
+  }
+}

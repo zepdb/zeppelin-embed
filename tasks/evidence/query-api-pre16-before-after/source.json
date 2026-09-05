@@ -1,0 +1,38 @@
+[
+  {
+    "arm": "before",
+    "revision": "0a8caf52635cbd8e277904c960b5f2a7e3db9295",
+    "patched_files_sha256": {
+      "crates/zeppelin-embed-text/src/bundle.rs": "0691067667549b9759230eb8e80f9ebc654354e063eeafd82d3befc098fb3598",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/Cargo.toml": "684a9a9393349bbfc89002c6a57ffab50efdca6f0b1ce47db1ba31194cd6d323"
+    },
+    "adapter_patch_sha256": "272a23a5060476ab7171911f125d100754433411476a3e54bd7f65b9c3e39aa9",
+    "harness_sha256": "3e112c492dbfd17bae94450825a1cf4009d3eb006ad6188ad1135b8eb4ce4281"
+  },
+  {
+    "arm": "recent",
+    "revision": "818a4337f07b80a5dfbf5994b893ad4356a9754a",
+    "patched_files_sha256": {
+      "crates/zeppelin-embed-text/src/bundle.rs": "0691067667549b9759230eb8e80f9ebc654354e063eeafd82d3befc098fb3598",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/Cargo.toml": "f869afad5ef8c06e4684a49393f3b4e6840b26e602acca5589e1570a27a0eb8d"
+    },
+    "adapter_patch_sha256": "599fdffabb90160b731ff9e239057829507c6bd7210ca06ee84de75ef79571ec",
+    "harness_sha256": "3e112c492dbfd17bae94450825a1cf4009d3eb006ad6188ad1135b8eb4ce4281"
+  },
+  {
+    "arm": "after",
+    "revision": "7d0f9efd9d7fab2cbd507665c7e8384cfb39d51f",
+    "patched_files_sha256": {
+      "crates/zeppelin-embed-text/src/bundle.rs": "0691067667549b9759230eb8e80f9ebc654354e063eeafd82d3befc098fb3598",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/Cargo.toml": "f869afad5ef8c06e4684a49393f3b4e6840b26e602acca5589e1570a27a0eb8d"
+    },
+    "adapter_patch_sha256": "599fdffabb90160b731ff9e239057829507c6bd7210ca06ee84de75ef79571ec",
+    "harness_sha256": "3e112c492dbfd17bae94450825a1cf4009d3eb006ad6188ad1135b8eb4ce4281"
+  }
+]

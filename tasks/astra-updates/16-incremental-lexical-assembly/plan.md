@@ -1,6 +1,6 @@
 # 16. Reuse sealed lexical statistics across active mutations
 
-Status: implemented with focused GREEN and matched core measurements; commit pending.
+Status: implemented with focused GREEN and matched core measurements; committed as `87421b7`.
 Native after-17 confirmation and broad qualification remain NOT RUN.
 
 - Stage: Lexical setup.

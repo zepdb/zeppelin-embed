@@ -2,7 +2,7 @@
 
 Implementation: retained. Focused validation: GREEN. Matched core measurement:
 complete. Full native TextStore confirmation is deferred to the shared after-17
-checkpoint; broad qualification is NOT RUN. Commit: pending.
+checkpoint; broad qualification is NOT RUN. Commit: `87421b7`.
 
 ## Result and contract
 
