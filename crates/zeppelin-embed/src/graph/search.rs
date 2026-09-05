@@ -10,6 +10,102 @@ use crate::quant::{
 };
 use crate::scan::ScanError;
 
+/// Actual graph traversals and successful query preparations on one explicitly
+/// observed caller thread. Shipping builds retain no observation state.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+#[doc(hidden)]
+pub struct GraphQueryTestObservations {
+    /// Actual traversal entries after request and cancellation checks.
+    pub traversals: usize,
+    /// Original dimensions, padded dimensions and stochastic rounding seed.
+    pub preparations: Vec<(usize, usize, u64)>,
+    /// Rows actually evaluated by the canonical f64 exact-scoring kernel.
+    pub exact_rows: Vec<usize>,
+    /// Full retained pools submitted to the immutable-row integrity validator.
+    pub validated_pools: Vec<Vec<u32>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn observe_exact_score(row: usize) {
+    GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
+        if let Some(observations) = observations.borrow_mut().as_mut() {
+            observations.exact_rows.push(row);
+        }
+    });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static GRAPH_QUERY_TEST_OBSERVATIONS: std::cell::RefCell<Option<GraphQueryTestObservations>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Starts a caller-thread observation window at actual graph call sites.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn begin_graph_query_test_observations() {
+    GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
+        *observations.borrow_mut() = Some(GraphQueryTestObservations::default());
+    });
+}
+
+/// Returns the observed calls and disables further collection.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn take_graph_query_test_observations() -> GraphQueryTestObservations {
+    GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| observations.take().unwrap_or_default())
+}
+
+/// Query data independent of graph nodes, frontiers and retained candidates.
+pub(crate) struct PreparedGraphQuery {
+    query: Bit4Query,
+    norm: f64,
+}
+
+impl PreparedGraphQuery {
+    pub(crate) fn new(
+        query: &[f32],
+        padded_dimensions: usize,
+        seed: u64,
+    ) -> Result<Self, GraphSearchError> {
+        if padded_dimensions < query.len() {
+            return Err(GraphSearchError::Geometry(
+                "query padding is smaller than its original dimensions".to_owned(),
+            ));
+        }
+        let padded = if padded_dimensions == query.len() {
+            None
+        } else {
+            let mut values = Vec::with_capacity(padded_dimensions);
+            values.extend_from_slice(query);
+            values.resize(padded_dimensions, 0.0);
+            Some(values)
+        };
+        let prepared = prepare_bit4_query(padded.as_deref().unwrap_or(query), seed)?;
+        #[cfg(any(test, feature = "test-support"))]
+        GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                observations
+                    .preparations
+                    .push((query.len(), padded_dimensions, seed));
+            }
+        });
+        Ok(Self {
+            query: prepared,
+            norm: squared_norm(query),
+        })
+    }
+
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.query.resident_bytes()
+    }
+
+    pub(crate) fn bit4(&self) -> &Bit4Query {
+        &self.query
+    }
+}
+
 /// Research lower-bound multiplier from `tasks/reports/index-design-research.md` section 3.1.
 const SIFT_RESEARCH_FLOOR_TENTHS: usize = 14;
 /// Denominator for the section-3.1 `1.4 * k` lower bound.
@@ -630,6 +726,14 @@ impl FilteredGraphSearchOutcome {
             Self::VisitedBudgetExceeded { counters, .. } => *counters,
         }
     }
+}
+
+enum TraversalOutcome {
+    Retained {
+        counters: GraphSearchCounters,
+        candidate_sequence: Option<Vec<u32>>,
+    },
+    Budget(SearchInnerOutcome),
 }
 
 enum SearchInnerOutcome {
@@ -1325,23 +1429,129 @@ impl<'a> GraphSearcher<'a> {
         filtered_visited_budget: Option<usize>,
         cancellation: Option<&QueryCancellation<'_>>,
     ) -> Result<SearchInnerOutcome, GraphSearchError> {
-        let ef = self.validate_request(request)?;
-        check_cancellation(cancellation)?;
-        let (qos_class, qos_relative_priority) = observed_qos();
-        let padded_dimensions = self.graph.layout().padded_dims() as usize;
-        let padded_query = if padded_dimensions == request.query.len() {
-            None
-        } else {
-            let mut values = Vec::with_capacity(padded_dimensions);
-            values.extend_from_slice(request.query);
-            values.resize(padded_dimensions, 0.0);
-            Some(values)
-        };
-        let prepared = prepare_bit4_query(
-            padded_query.as_deref().unwrap_or(request.query),
+        let entry = self.begin_traversal(request, cancellation)?;
+        let prepared = PreparedGraphQuery::new(
+            request.query,
+            self.graph.layout().padded_dims() as usize,
             request.seed,
         )?;
-        let query_norm = squared_norm(request.query);
+        match self.traverse_prepared(
+            request,
+            allow_list,
+            filtered_visited_budget,
+            cancellation,
+            entry,
+            &prepared,
+        )? {
+            TraversalOutcome::Retained {
+                counters,
+                candidate_sequence,
+            } => self.finalize_traversal(
+                request,
+                allow_list,
+                cancellation,
+                counters,
+                candidate_sequence,
+            ),
+            TraversalOutcome::Budget(outcome) => Ok(outcome),
+        }
+    }
+
+    pub(crate) fn search_reusing(
+        &mut self,
+        request: GraphSearchRequest<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
+        context: &mut crate::lifecycle::prepared::PreparedVectorQuery<'_>,
+        segment: &crate::segment::reader::SegmentReader,
+        source: crate::ingest::RowSource,
+    ) -> Result<GraphSearchResult, crate::lifecycle::QueryError> {
+        use crate::lifecycle::map_graph_error;
+        let entry = self
+            .begin_traversal(request, cancellation)
+            .map_err(map_graph_error)?;
+        let prepared = context.graph(
+            request.query,
+            self.graph.layout().padded_dims() as usize,
+            request.seed,
+        )?;
+        let traversal = self
+            .traverse_prepared(request, None, None, cancellation, entry, prepared)
+            .map_err(map_graph_error)?;
+        let TraversalOutcome::Retained {
+            counters,
+            candidate_sequence,
+        } = traversal
+        else {
+            return Err(map_graph_error(GraphSearchError::Geometry(
+                "unfiltered traversal produced a filtered-budget disposition".to_owned(),
+            )));
+        };
+        // The validator still sees the complete retained pool on every round,
+        // including rows whose exact score is already cached.
+        let rows = self.rescore;
+        let dimensions = self.graph.layout().dims() as usize;
+        let pool = self
+            .prepare_rescore(request, cancellation, counters)
+            .map_err(map_graph_error)?;
+        let rescored = context.rescore_graph(
+            request.query,
+            rows,
+            dimensions,
+            pool,
+            request.k,
+            segment,
+            source,
+        )?;
+        match self
+            .finish_rescore(
+                request,
+                None,
+                cancellation,
+                counters,
+                candidate_sequence,
+                Ok(rescored),
+            )
+            .map_err(map_graph_error)?
+        {
+            SearchInnerOutcome::Traversed(result) => Ok(result),
+            SearchInnerOutcome::VisitedBudgetExceeded { .. } => {
+                Err(map_graph_error(GraphSearchError::Geometry(
+                    "rescore produced a filtered-budget disposition".to_owned(),
+                )))
+            }
+        }
+    }
+
+    fn begin_traversal(
+        &self,
+        request: GraphSearchRequest<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
+    ) -> Result<(usize, QueryQosClass, i32), GraphSearchError> {
+        let ef = self.validate_request(request)?;
+        check_cancellation(cancellation)?;
+        #[cfg(any(test, feature = "test-support"))]
+        GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                observations.traversals += 1;
+            }
+        });
+        let (qos_class, qos_relative_priority) = observed_qos();
+        Ok((ef, qos_class, qos_relative_priority))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn traverse_prepared(
+        &mut self,
+        request: GraphSearchRequest<'_>,
+        allow_list: Option<&DocBitmap>,
+        filtered_visited_budget: Option<usize>,
+        cancellation: Option<&QueryCancellation<'_>>,
+        entry: (usize, QueryQosClass, i32),
+        prepared: &PreparedGraphQuery,
+    ) -> Result<TraversalOutcome, GraphSearchError> {
+        let (ef, qos_class, qos_relative_priority) = entry;
+        let query_norm = prepared.norm;
+        let prepared = prepared.bit4();
         let visited_cap = ef
             .checked_mul(usize::from(self.graph.layout().max_degree()))
             .and_then(|value| value.checked_mul(4))
@@ -1391,7 +1601,7 @@ impl<'a> GraphSearcher<'a> {
             }
         }
         self.score_and_push_group(
-            &prepared,
+            prepared,
             query_norm,
             &seed_group,
             seed_count,
@@ -1452,7 +1662,7 @@ impl<'a> GraphSearcher<'a> {
                     *destination = source;
                 }
                 self.score_and_push_group(
-                    &prepared,
+                    prepared,
                     query_norm,
                     &group,
                     group_count,
@@ -1465,13 +1675,10 @@ impl<'a> GraphSearcher<'a> {
                 group_start += group_count;
             }
         }
-        self.finalize_traversal(
-            request,
-            allow_list,
-            cancellation,
+        Ok(TraversalOutcome::Retained {
             counters,
             candidate_sequence,
-        )
+        })
     }
 
     fn finalize_traversal(
@@ -1479,9 +1686,29 @@ impl<'a> GraphSearcher<'a> {
         request: GraphSearchRequest<'_>,
         allow_list: Option<&DocBitmap>,
         cancellation: Option<&QueryCancellation<'_>>,
-        mut counters: GraphSearchCounters,
+        counters: GraphSearchCounters,
         candidate_sequence: Option<Vec<u32>>,
     ) -> Result<SearchInnerOutcome, GraphSearchError> {
+        let rows = self.rescore;
+        let dimensions = self.graph.layout().dims() as usize;
+        let pool = self.prepare_rescore(request, cancellation, counters)?;
+        let rescored = rescore_top_k(request.query, rows, dimensions, pool, request.k);
+        self.finish_rescore(
+            request,
+            allow_list,
+            cancellation,
+            counters,
+            candidate_sequence,
+            rescored,
+        )
+    }
+
+    fn prepare_rescore(
+        &mut self,
+        request: GraphSearchRequest<'_>,
+        cancellation: Option<&QueryCancellation<'_>>,
+        counters: GraphSearchCounters,
+    ) -> Result<RescorePool<'_>, GraphSearchError> {
         check_cancellation(cancellation)?;
         self.scratch.rescore_row_ids.clear();
         self.scratch.rescore_coarse_scores.clear();
@@ -1511,6 +1738,14 @@ impl<'a> GraphSearcher<'a> {
             validator
                 .validate_rows(&self.scratch.rescore_row_ids)
                 .map_err(GraphSearchError::ExactRescoreUnavailable)?;
+            #[cfg(any(test, feature = "test-support"))]
+            GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
+                if let Some(observations) = observations.borrow_mut().as_mut() {
+                    observations
+                        .validated_pools
+                        .push(self.scratch.rescore_row_ids.clone());
+                }
+            });
         }
         let coarse_bytes_per_row = self
             .graph
@@ -1526,13 +1761,26 @@ impl<'a> GraphSearcher<'a> {
             coarse_bytes_per_row,
         )
         .with_prefetch(request.prefetch.is_enabled());
-        let rescored = match rescore_top_k(
-            request.query,
-            self.rescore,
-            self.graph.layout().dims() as usize,
-            pool,
-            request.k,
-        ) {
+        Ok(pool)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_rescore(
+        &self,
+        _request: GraphSearchRequest<'_>,
+        allow_list: Option<&DocBitmap>,
+        cancellation: Option<&QueryCancellation<'_>>,
+        mut counters: GraphSearchCounters,
+        candidate_sequence: Option<Vec<u32>>,
+        rescored: Result<crate::quant::RescoreResult, RescoreError>,
+    ) -> Result<SearchInnerOutcome, GraphSearchError> {
+        let coarse_bytes_per_row = self
+            .graph
+            .layout()
+            .code_bytes()
+            .checked_add(12)
+            .ok_or_else(|| GraphSearchError::Geometry("coarse row bytes overflow".to_owned()))?;
+        let rescored = match rescored {
             Ok(rescored) => rescored,
             Err(RescoreError::InsufficientCandidates { k, candidates }) if allow_list.is_some() => {
                 counters.candidates_rescored = 0;
@@ -1593,7 +1841,7 @@ impl<'a> GraphSearcher<'a> {
         &self,
         mut counters: GraphSearchCounters,
         filtered_visited_budget: Option<usize>,
-    ) -> Result<SearchInnerOutcome, GraphSearchError> {
+    ) -> Result<TraversalOutcome, GraphSearchError> {
         let budget = filtered_visited_budget.ok_or_else(|| {
             GraphSearchError::Geometry(
                 "filtered budget disposition has no configured budget".to_owned(),
@@ -1614,11 +1862,13 @@ impl<'a> GraphSearcher<'a> {
             .checked_mul(coarse_bytes_per_row)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| GraphSearchError::Geometry("byte counter exceeds u64".to_owned()))?;
-        Ok(SearchInnerOutcome::VisitedBudgetExceeded {
-            visited: counters.visited,
-            budget,
-            counters,
-        })
+        Ok(TraversalOutcome::Budget(
+            SearchInnerOutcome::VisitedBudgetExceeded {
+                visited: counters.visited,
+                budget,
+                counters,
+            },
+        ))
     }
 
     fn validate_request(&self, request: GraphSearchRequest<'_>) -> Result<usize, GraphSearchError> {

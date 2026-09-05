@@ -199,6 +199,8 @@ pub(crate) fn expand(
     query: &LexicalQuery,
     vocabulary: &BTreeSet<Vec<u8>>,
 ) -> Result<Vec<LexicalExpansion>, LexicalQueryError> {
+    #[cfg(any(test, feature = "test-support"))]
+    super::preparation_observer::expansion();
     let expansions = match query {
         LexicalQuery::Term(query) => {
             if query.terms.is_empty() || query.terms.iter().any(Vec::is_empty) {

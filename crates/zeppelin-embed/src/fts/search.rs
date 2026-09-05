@@ -382,13 +382,114 @@ pub(crate) struct CandidateScores {
     pub(crate) counters: SearchCounters,
 }
 
+/// Owned analyzed terms and corpus-dependent constants for one pinned query.
+/// All three term arrays are constructed together and remain immutable.
+pub(crate) struct PreparedTermQuery {
+    query: TermQuery,
+    stats: super::bm25::CorpusStats,
+    frequencies: Vec<u32>,
+    scorers: Vec<TermScorer>,
+    params: Bm25Params,
+}
+
+impl PreparedTermQuery {
+    pub(crate) fn new(
+        index: &LexicalIndex,
+        query: &TermQuery,
+        params: Bm25Params,
+    ) -> Result<Self, IndexError> {
+        Self::from_owned(index, query.clone(), params)
+    }
+
+    pub(crate) fn from_owned(
+        index: &LexicalIndex,
+        query: TermQuery,
+        params: Bm25Params,
+    ) -> Result<Self, IndexError> {
+        let stats = index.corpus_stats()?;
+        let fields = query.fields.fields();
+        let frequencies: Vec<_> = query
+            .terms
+            .iter()
+            .map(|term| index.document_frequency(term, &fields))
+            .collect();
+        let scorers = frequencies
+            .iter()
+            .map(|df| TermScorer::new(Df(*df), &stats, params))
+            .collect();
+        Ok(Self {
+            query,
+            stats,
+            frequencies,
+            scorers,
+            params,
+        })
+    }
+
+    pub(crate) fn query(&self) -> &TermQuery {
+        &self.query
+    }
+    pub(crate) fn stats(&self) -> super::bm25::CorpusStats {
+        self.stats
+    }
+    pub(crate) fn frequencies(&self) -> &[u32] {
+        &self.frequencies
+    }
+    pub(crate) fn scorer(&self, slot: usize) -> Option<TermScorer> {
+        self.scorers.get(slot).copied()
+    }
+    pub(crate) fn params(&self) -> Bm25Params {
+        self.params
+    }
+
+    pub(crate) fn allocation_bytes(query: &TermQuery) -> Option<usize> {
+        let term_bytes = query
+            .terms
+            .iter()
+            .try_fold(0_usize, |sum, term| sum.checked_add(term.len()))?;
+        query
+            .terms
+            .len()
+            .checked_mul(
+                std::mem::size_of::<Vec<u8>>()
+                    + std::mem::size_of::<u32>()
+                    + std::mem::size_of::<TermScorer>(),
+            )?
+            .checked_add(term_bytes)?
+            .checked_add(
+                query
+                    .fields
+                    .weights
+                    .len()
+                    .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
+            )
+    }
+
+    pub(crate) fn single_allocation_bytes(
+        fields: &FieldWeights,
+        term_bytes: usize,
+    ) -> Option<usize> {
+        (std::mem::size_of::<Vec<u8>>()
+            + std::mem::size_of::<u32>()
+            + std::mem::size_of::<TermScorer>())
+        .checked_add(term_bytes)?
+        .checked_add(
+            fields
+                .weights
+                .len()
+                .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
+        )
+    }
+}
+
 /// Frozen query statistics shared by candidate batches across segments.
 /// Eligibility is a caller contract; row bounds are checked before scoring.
 pub(crate) struct CandidateScoring<'query> {
     query: &'query TermQuery,
     stats: super::bm25::CorpusStats,
-    frequencies: Vec<u32>,
+    frequencies: Cow<'query, [u32]>,
     params: Bm25Params,
+    scorers: Option<&'query [TermScorer]>,
 }
 
 impl<'query> CandidateScoring<'query> {
@@ -407,9 +508,27 @@ impl<'query> CandidateScoring<'query> {
         Ok(Self {
             query,
             stats,
-            frequencies,
+            frequencies: Cow::Owned(frequencies),
             params,
+            scorers: None,
         })
+    }
+
+    pub(crate) fn prepared(prepared: &'query PreparedTermQuery) -> Self {
+        Self {
+            query: &prepared.query,
+            stats: prepared.stats,
+            frequencies: Cow::Borrowed(&prepared.frequencies),
+            params: prepared.params,
+            scorers: Some(&prepared.scorers),
+        }
+    }
+
+    fn term_scorer(&self, slot: usize, df: u32) -> TermScorer {
+        self.scorers
+            .and_then(|scorers| scorers.get(slot))
+            .copied()
+            .unwrap_or_else(|| TermScorer::new(Df(df), &self.stats, self.params))
     }
 
     pub(crate) fn score_rows<Control>(
@@ -451,12 +570,20 @@ impl<'query> CandidateScoring<'query> {
         }
         let mut streams = Vec::with_capacity(self.query.terms.len());
         // Preserve query-term occurrences and order, including repeated terms.
-        for (slot, (term, &df)) in self.query.terms.iter().zip(&self.frequencies).enumerate() {
+        for (slot, (term, &df)) in self
+            .query
+            .terms
+            .iter()
+            .zip(self.frequencies.iter())
+            .enumerate()
+        {
             if df != 0 {
                 if let Some(stream) = TermStream::open(segment, term, &self.query.fields) {
                     work.streams_opened = work.streams_opened.saturating_add(1);
-                    let scorer = TermScorer::new(Df(df), &self.stats, self.params);
-                    work.scorers_prepared = work.scorers_prepared.saturating_add(1);
+                    let scorer = self.term_scorer(slot, df);
+                    work.scorers_prepared = work
+                        .scorers_prepared
+                        .saturating_add(u64::from(self.scorers.is_none()));
                     streams.push((stream, scorer));
                 }
             }
@@ -556,9 +683,35 @@ pub(crate) fn search_allow_list_driven_controlled<Control>(
         allow_lists,
         branch,
         checkpoint,
+        None,
     )
 }
 
+pub(crate) fn search_allow_list_prepared_controlled<Control>(
+    index: &LexicalIndex,
+    prepared: &PreparedTermQuery,
+    k: usize,
+    allow_lists: &[&crate::meta::DocBitmap],
+    checkpoint: impl FnMut() -> Result<(), Control>,
+) -> Result<SearchResult, ControlledSearchError<Control>> {
+    let allowed = allow_lists
+        .iter()
+        .map(|list| list.cardinality())
+        .fold(0_u64, u64::saturating_add);
+    let branch = allow_list_scoring_branch(allowed, index.document_count());
+    search_allow_list_driven_controlled_with_branch(
+        index,
+        prepared.query(),
+        k,
+        prepared.params,
+        allow_lists,
+        branch,
+        checkpoint,
+        Some(prepared),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn search_allow_list_driven_controlled_with_branch<Control>(
     index: &LexicalIndex,
     query: &TermQuery,
@@ -567,11 +720,15 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
     allow_lists: &[&crate::meta::DocBitmap],
     branch: AllowListScoringBranch,
     mut checkpoint: impl FnMut() -> Result<(), Control>,
+    prepared_query: Option<&PreparedTermQuery>,
 ) -> Result<SearchResult, ControlledSearchError<Control>> {
     checkpoint().map_err(ControlledSearchError::Control)?;
-    let prepared =
-        CandidateScoring::new(index, query, params).map_err(ControlledSearchError::Index)?;
-    let stats = prepared.stats;
+    let prepared = match prepared_query {
+        Some(prepared) => CandidateScoring::prepared(prepared),
+        None => {
+            CandidateScoring::new(index, query, params).map_err(ControlledSearchError::Index)?
+        }
+    };
     let frequencies = &prepared.frequencies;
     let mut counters = SearchCounters::default();
     let mut accumulator = Vec::<(GlobalDocId, f64)>::new();
@@ -644,7 +801,7 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
                     let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
                         continue;
                     };
-                    let scorer = TermScorer::new(Df(df), &stats, params);
+                    let scorer = prepared.term_scorer(slot, df);
                     while let Some(row) = stream.current_row() {
                         work_units = work_units.saturating_add(1);
                         if work_units.is_multiple_of(64) {
@@ -996,6 +1153,103 @@ mod tests {
     }
 
     #[test]
+    fn astra_09_prepared_lexical_paths_keep_weighted_repeated_term_scores() {
+        let (index, query) = astra_weighted_live_fixture();
+        let prepared =
+            PreparedTermQuery::new(&index, &query, Bm25Params::beir()).expect("prepared query");
+        let idf = (1.0_f64 + 0.5 / 5.5).ln();
+        let mut expected = Vec::new();
+        let mut work = CandidateScoringWork::default();
+        for (ordinal, row, length, alpha, beta) in [
+            (0, 0, 5, 4, 0),
+            (0, 2, 3, 1, 2),
+            (1, 0, 3, 0, 0),
+            (1, 1, 5, 2, 3),
+            (1, 3, 3, 2, 1),
+        ] {
+            let mut score = 0.0_f64;
+            let mut matched = false;
+            for tf in [alpha, beta, alpha] {
+                if tf != 0 {
+                    let tf = f64::from(tf);
+                    score += idf * (tf * 2.2)
+                        / (tf + 1.2 * (0.25 + 0.75 * f64::from(length) / (18.0 / 5.0)));
+                    matched = true;
+                }
+            }
+            let batch = CandidateScoring::prepared(&prepared)
+                .score_rows(
+                    ordinal,
+                    &index.segments()[ordinal],
+                    &[row],
+                    &mut work,
+                    |_| Ok::<(), Infallible>(()),
+                )
+                .unwrap_or_else(|error| match error {
+                    ControlledSearchError::Index(error) => {
+                        panic!("prepared scoring failed: {error}")
+                    }
+                    ControlledSearchError::Control(never) => match never {},
+                });
+            assert_eq!(
+                batch.scores[0].map(f64::to_bits),
+                matched.then_some(score.to_bits())
+            );
+            if matched {
+                expected.push(ScoredDoc {
+                    doc: GlobalDocId {
+                        segment: ordinal as u32,
+                        row,
+                    },
+                    score,
+                });
+            }
+        }
+        assert_eq!(
+            work.scorers_prepared, 0,
+            "all constants came from query preparation"
+        );
+        expected.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc.cmp(&b.doc)));
+        let allow = [
+            crate::meta::DocBitmap::from_ids([0, 2]),
+            crate::meta::DocBitmap::from_ids([0, 1, 3]),
+        ];
+        let allow = [&allow[0], &allow[1]];
+        for branch in [
+            AllowListScoringBranch::RowDriven,
+            AllowListScoringBranch::PostingDriven,
+        ] {
+            let result = search_allow_list_driven_controlled_with_branch(
+                &index,
+                prepared.query(),
+                10,
+                Bm25Params::beir(),
+                &allow,
+                branch,
+                || Ok::<(), Infallible>(()),
+                Some(&prepared),
+            )
+            .unwrap_or_else(|error| match error {
+                ControlledSearchError::Index(error) => panic!("prepared scoring failed: {error}"),
+                ControlledSearchError::Control(never) => match never {},
+            });
+            assert_eq!(result.hits, expected);
+        }
+        for strategy in [
+            crate::fts::prune::Strategy::BlockMaxWand,
+            crate::fts::prune::Strategy::BlockMaxMaxscore,
+        ] {
+            for k in [1, 3, 10] {
+                let result = crate::fts::prune::search_pruned_prepared_filtered(
+                    &index, &prepared, k, strategy, &allow,
+                )
+                .expect("fresh wider cursors");
+                assert_eq!(result.hits, expected[..k.min(expected.len())]);
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "explicit paired release-process candidate screen"]
     fn astra_02_selective_batch_screen() {
         let documents = (0..65_536)
@@ -1080,6 +1334,7 @@ mod tests {
             allow_lists,
             branch,
             || Ok::<(), Infallible>(()),
+            None,
         ) {
             Ok(result) => result,
             Err(ControlledSearchError::Index(error)) => {

@@ -7,6 +7,11 @@
 
 pub mod tokenizer;
 
+/// Explicit test-only observations propagated to this query's lexical worker.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod preparation_observer;
+
 /// The BM25 scorer and corpus statistics.
 pub mod bm25;
 

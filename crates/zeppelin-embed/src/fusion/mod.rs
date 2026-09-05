@@ -11,6 +11,7 @@
 //! See the local [architecture-decision ledger](ARCHITECTURE.md).
 
 mod cc;
+pub(crate) use cc::StoreFusionScratch;
 mod normalize;
 mod rrf;
 mod rules;
@@ -709,6 +710,7 @@ pub(crate) fn fuse_store_bounded<K, V, L, VectorJoin, LexicalJoin>(
     bounds: LegBounds,
     mut vector_join: VectorJoin,
     mut lexical_join: LexicalJoin,
+    scratch: &mut StoreFusionScratch<K>,
 ) -> Result<FusionOutcome<K>, FusionError>
 where
     K: Clone + Ord,
@@ -718,7 +720,7 @@ where
     let (alpha, rules) = rules::effective_alpha(query)?;
     let vector = join_vector(vector_window, &mut vector_join)?;
     let lexical = join_lexical(lexical_window, &mut lexical_join)?;
-    cc::fuse_store_bounded_joined(query, &vector, &lexical, bounds, alpha, rules)
+    cc::fuse_store_bounded_joined(query, &vector, &lexical, bounds, alpha, rules, scratch)
 }
 
 fn join_vector<K, V, Join>(

@@ -757,6 +757,541 @@ fn astra_disjoint_windows_store() -> (tempfile::TempDir, Store) {
 }
 
 #[test]
+fn astra_09_widening_cross_scores_each_candidate_once() {
+    use std::collections::BTreeSet;
+    use zeppelin_embed::lifecycle::{
+        begin_hybrid_score_test_observations, take_hybrid_score_test_observations,
+    };
+    let (_directory, store) = astra_disjoint_windows_store();
+    begin_hybrid_score_test_observations();
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("three disjoint producer windows");
+    assert_eq!(
+        outcome.diagnostics.fusion.as_ref().expect("fusion").rounds,
+        3
+    );
+    let observed = take_hybrid_score_test_observations();
+    let unique_vector = observed
+        .vector_rows
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let unique_lexical = observed
+        .lexical_rows
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    eprintln!(
+        "vector calls={} unique={}; lexical calls={} unique={}",
+        observed.vector_rows.len(),
+        unique_vector.len(),
+        observed.lexical_rows.len(),
+        unique_lexical.len()
+    );
+    // Three windows contain 50, 100 and 200 rows from each disjoint half.
+    // Each required physical row/leg pair needs exactly one cross-score.
+    assert_eq!(unique_vector.len(), 200);
+    assert_eq!(unique_lexical.len(), 200);
+    assert_eq!(
+        observed.vector_rows.len(),
+        200,
+        "repeated vector cross-scores"
+    );
+    assert_eq!(
+        observed.lexical_rows.len(),
+        200,
+        "repeated lexical cross-scores"
+    );
+    assert_eq!(outcome.diagnostics.counters.scan.dims_touched, 8_400);
+    assert_eq!(outcome.diagnostics.counters.scan.bytes_read, 33_600);
+    store.close().expect("close store");
+}
+
+#[test]
+fn astra_09_supported_scan_round_prepares_once_across_active_and_sealed_sources() {
+    use zeppelin_embed::quant::{
+        begin_query_preparation_test_observations, take_query_preparation_test_observations,
+    };
+    for layout in ["active", "sealed", "mixed"] {
+        let (_directory, store) = astra_disjoint_windows_store();
+        if layout != "active" {
+            store.seal().expect("same vectors in a sealed scan");
+        }
+        if layout == "mixed" {
+            store
+                .ingest(IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(999), Revision::new(1)),
+                        vec![2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    )
+                    .with_text("zeppelin"),
+                ]))
+                .expect("active rows alongside sealed rows");
+        }
+        begin_query_preparation_test_observations();
+        let result = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(1).with_max_rounds(3),
+                SearchOptions::default().with_scan_rescore(
+                    zeppelin_embed::lifecycle::ScanRescoreOptions::new(1, 400)
+                        .expect("exact candidate scores"),
+                ),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("one supported approximate scan round");
+        let calls = take_query_preparation_test_observations();
+        let rounds = result
+            .diagnostics
+            .fusion
+            .as_ref()
+            .expect("fusion rounds")
+            .rounds;
+        assert_eq!(rounds, 1);
+        eprintln!("layout={layout} rounds={rounds} preparation_calls={calls:?}");
+        assert_eq!(
+            calls.bit4,
+            vec![(DIMENSION, 0)],
+            "same prepared vector across physical scan sources"
+        );
+        assert!(calls.int8.is_empty());
+        assert_eq!(
+            store.stats().expect("released preparation").temporary_bytes,
+            0
+        );
+        store.close().expect("close");
+    }
+}
+
+#[test]
+fn astra_09_widening_prepares_lexical_statistics_once_for_both_legs() {
+    use zeppelin_embed::fts::preparation_observer;
+    let (_directory, store) = astra_disjoint_windows_store();
+    preparation_observer::begin();
+    let result = store
+        .search_hybrid(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("three exact widening rounds");
+    let (scorers, frequencies) = preparation_observer::take();
+    assert_eq!(
+        result.diagnostics.fusion.as_ref().expect("fusion").rounds,
+        3
+    );
+    eprintln!(
+        "rounds=3 actual_scorer_preparations={scorers} actual_frequency_lookups={frequencies}"
+    );
+    assert_eq!(
+        (scorers, frequencies),
+        (1, 1),
+        "one preparation shared by producer and cross-scorer"
+    );
+    assert_eq!(
+        store
+            .stats()
+            .expect("released lexical query")
+            .temporary_bytes,
+        0
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_09_structured_widening_reuses_expansions_and_constants() {
+    use zeppelin_embed::fts::{preparation_observer, query::LexicalQuery};
+    let (_directory, store) = astra_disjoint_windows_store();
+    preparation_observer::begin();
+    let result = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            &LexicalQuery::prefix(b"zep".to_vec(), DEFAULT_FIELD),
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("three structured widening rounds");
+    let (scorers, frequencies, expansions) = preparation_observer::take_with_expansions();
+    assert_eq!(
+        result.diagnostics.fusion.as_ref().expect("fusion").rounds,
+        3
+    );
+    assert_eq!(result.lexical_expansions.len(), 1);
+    assert_eq!(result.lexical_expansions[0].term, b"zeppelin");
+    eprintln!("rounds=3 scorers={scorers} frequencies={frequencies} expansions={expansions}");
+    assert_eq!((scorers, frequencies, expansions), (1, 1, 1));
+    assert_eq!(
+        store
+            .stats()
+            .expect("released structured preparation")
+            .temporary_bytes,
+        0
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_09_widening_retains_candidate_buffers_between_rounds() {
+    use zeppelin_embed::lifecycle::{
+        begin_hybrid_score_test_observations, take_hybrid_score_test_observations,
+    };
+    let (_directory, store) = astra_disjoint_windows_store();
+    for _ in 0..2 {
+        begin_hybrid_score_test_observations();
+        let result = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(1),
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("three widening rounds");
+        assert_eq!(
+            result.diagnostics.fusion.as_ref().expect("fusion").rounds,
+            3
+        );
+        let observed = take_hybrid_score_test_observations();
+        eprintln!(
+            "candidate_start_capacities={:?}",
+            observed.candidate_start_capacities
+        );
+        eprintln!(
+            "union_start_capacities={:?} candidate_peak={} union_peak={}",
+            observed.union_start_capacities,
+            observed.candidate_peak_bytes,
+            observed.union_peak_bytes
+        );
+        assert_eq!(observed.union_start_capacities, vec![0, 200, 400]);
+        assert!(observed.candidate_peak_bytes > 0);
+        assert!(observed.union_peak_bytes > 0);
+        assert_eq!(observed.candidate_start_capacities.len(), 3);
+        assert_eq!(
+            observed.candidate_start_capacities[0],
+            [0, 0],
+            "new admission"
+        );
+        assert!(
+            observed.candidate_start_capacities[1]
+                .iter()
+                .all(|&capacity| capacity >= 100),
+            "second round must retain its predecessor's complete disjoint union"
+        );
+        assert!(
+            observed.candidate_start_capacities[2]
+                .iter()
+                .all(|&capacity| capacity >= 200),
+            "third round must retain its predecessor's complete disjoint union"
+        );
+        assert_eq!(store.stats().expect("released scratch").temporary_bytes, 0);
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_09_small_then_large_query_releases_accounted_capacity_on_drop() {
+    use zeppelin_embed::lifecycle::{
+        begin_hybrid_score_test_observations, take_hybrid_score_test_observations,
+    };
+    let (_directory, store) = astra_disjoint_windows_store();
+    let before = store.stats().expect("initial accounting").temporary_bytes;
+    let mut small_peak = None;
+    for k in [1, 400, 1] {
+        begin_hybrid_score_test_observations();
+        let result = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(k),
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("accounted hybrid query");
+        let calls = take_hybrid_score_test_observations();
+        let after = store
+            .stats()
+            .expect("post-query accounting")
+            .temporary_bytes;
+        assert_eq!(after, before, "query-owned capacity survives the admission");
+        let rounds = result.diagnostics.fusion.as_ref().expect("fusion").rounds;
+        eprintln!(
+            "k={k} rounds={rounds} cache_peak_bytes={} temporary_after={after}",
+            calls.cache_peak_bytes
+        );
+        if k == 400 {
+            assert_eq!(rounds, 1);
+            assert_eq!(
+                calls.cache_peak_bytes, 0,
+                "exhaustive one-round query cannot reuse new scores"
+            );
+        } else {
+            assert_eq!(rounds, 3);
+            assert!(
+                calls.cache_peak_bytes > 0,
+                "widening cache observation must fire"
+            );
+            if let Some(expected) = small_peak {
+                assert_eq!(
+                    calls.cache_peak_bytes, expected,
+                    "later query must start with fresh capacity"
+                );
+            } else {
+                small_peak = Some(calls.cache_peak_bytes);
+            }
+        }
+    }
+    store.close().expect("close accounted fixture");
+}
+
+#[test]
+fn astra_09_query_reuse_never_crosses_epoch_source_or_revision() {
+    use std::collections::BTreeSet;
+    use zeppelin_embed::epoch::{
+        ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
+    };
+    use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+    use zeppelin_embed::lifecycle::{
+        begin_hybrid_fresh_round_test_observations, begin_hybrid_score_test_observations,
+        take_hybrid_score_test_observations,
+    };
+    let mut prior_epoch = None;
+    for epoch_number in [1_u8, 2] {
+        let scale = f32::from(epoch_number);
+        let tower = EmbeddingTower {
+            model_id: "astra-09-identity-fixture".to_owned(),
+            model_version: epoch_number.to_string(),
+            weights_digest: vec![epoch_number],
+            dims: DIMENSION as u32,
+            normalization: Normalization::None,
+            prompt_prefix: String::new(),
+            max_tokens: 32,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        };
+        let epoch = StoreEpoch {
+            embedding: EmbeddingEpoch {
+                query: tower.clone(),
+                document: tower,
+                alignment_digest: Vec::new(),
+            },
+            tokenizer: TokenizerConfig::text_default().epoch(),
+        };
+        assert_ne!(prior_epoch, Some(epoch.identity()));
+        prior_epoch = Some(epoch.identity());
+        let directory = tempdir().expect("identity fixture");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::default().with_epoch(epoch.clone()),
+        )
+        .expect("stamped store");
+        for part in 0..2 {
+            let documents = (0..400)
+                .filter(|row| (row % 200) / 100 == part)
+                .map(|row| {
+                    let mut vector = vec![0.0_f32; DIMENSION];
+                    vector[0] = scale;
+                    vector[1] = scale * row as f32 * 0.0025;
+                    let document = IngestDocument::new(
+                        DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                        vector,
+                    );
+                    if row < 200 {
+                        document
+                    } else {
+                        document.with_text(&vec!["zeppelin"; 1 + (400 - row) % 5].join(" "))
+                    }
+                })
+                .collect();
+            store
+                .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+                .expect("two physical namespaces with overlapping local rows");
+            if part == 0 {
+                store.seal().expect("first namespace is sealed");
+            }
+        }
+        let vector = [scale, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+        let run = || {
+            store
+                .search_hybrid(
+                    SearchRequest::new(&vector),
+                    &lexical,
+                    &HybridQuery::new(1),
+                    SearchOptions::default().with_tier(SearchTier::Exact),
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("pinned identity query")
+        };
+        for phase in 0..3 {
+            if phase == 1 {
+                store
+                    .ingest(
+                        IngestBatch::new(vec![
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(202), Revision::new(2)),
+                                vec![scale, 2.0 * scale, 0.0, 0.0, 0.0, 0.0],
+                            )
+                            .with_text("zeppelin zeppelin zeppelin zeppelin zeppelin"),
+                        ])
+                        .with_epoch(epoch.identity()),
+                    )
+                    .expect("replace a previously cross-scored sealed revision");
+            } else if phase == 2 {
+                store
+                    .seal()
+                    .expect("move active rows to a new physical source");
+            }
+            begin_hybrid_fresh_round_test_observations();
+            let fresh = run();
+            let fresh_calls = take_hybrid_score_test_observations();
+            begin_hybrid_score_test_observations();
+            let reused = run();
+            let calls = take_hybrid_score_test_observations();
+            assert_eq!(store.epoch_identity(), Some(epoch.identity()));
+            assert_same_hits(
+                &reused.hits,
+                &fresh.hits,
+                "fresh scores for current identities",
+            );
+            let expected = fresh.diagnostics.fusion.as_ref().expect("fresh fusion");
+            let actual = reused.diagnostics.fusion.as_ref().expect("reused fusion");
+            assert_eq!(actual.rounds, expected.rounds);
+            assert_eq!(actual.termination, expected.termination);
+            for (scored, fresh_scored) in [
+                (&calls.vector_rows, &fresh_calls.vector_rows),
+                (&calls.lexical_rows, &fresh_calls.lexical_rows),
+            ] {
+                let distinct = scored.iter().copied().collect::<BTreeSet<_>>();
+                assert_eq!(
+                    scored.len(),
+                    distinct.len(),
+                    "each current identity scored once"
+                );
+                assert!(fresh_scored.len() >= scored.len());
+            }
+            if phase == 0 {
+                assert_eq!(
+                    actual.rounds, 3,
+                    "the mixed-source widening witness must fire"
+                );
+                assert_eq!(calls.vector_rows.len(), 200);
+                assert_eq!(calls.lexical_rows.len(), 200);
+                let sources = calls
+                    .vector_rows
+                    .iter()
+                    .map(|(row, _)| row.source())
+                    .collect::<BTreeSet<_>>();
+                let locals = calls
+                    .vector_rows
+                    .iter()
+                    .map(|(row, _)| row.local_row())
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(sources.len(), 2);
+                assert!(
+                    locals.len() < calls.vector_rows.len(),
+                    "physical local-row collision must fire"
+                );
+            }
+            let target_versions = calls
+                .vector_rows
+                .iter()
+                .filter_map(|(_, version)| *version)
+                .filter(|version| version.doc_id() == DocId::new(202))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                target_versions,
+                vec![DocumentVersion::new(
+                    DocId::new(202),
+                    Revision::new(if phase == 0 { 1 } else { 2 }),
+                )],
+                "the current revision must be scored after source replacement"
+            );
+            assert_eq!(
+                store
+                    .stats()
+                    .expect("released query memory")
+                    .temporary_bytes,
+                0
+            );
+        }
+        store.close().expect("close identity fixture");
+    }
+}
+
+#[test]
+fn astra_09_reused_rounds_match_fresh_rounds_in_scores_and_termination() {
+    use zeppelin_embed::lifecycle::{
+        begin_hybrid_fresh_round_test_observations, begin_hybrid_score_test_observations,
+        take_hybrid_score_test_observations,
+    };
+    let (_directory, store) = astra_disjoint_windows_store();
+    let run = || {
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(1),
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("three-round differential query")
+    };
+    begin_hybrid_fresh_round_test_observations();
+    let fresh = run();
+    let fresh_calls = take_hybrid_score_test_observations();
+    begin_hybrid_score_test_observations();
+    let reused = run();
+    let reused_calls = take_hybrid_score_test_observations();
+    assert_eq!(
+        fresh_calls.vector_rows.len(),
+        350,
+        "fresh control must fire"
+    );
+    assert_eq!(
+        fresh_calls.lexical_rows.len(),
+        350,
+        "fresh control must fire"
+    );
+    assert_eq!(reused_calls.vector_rows.len(), 200);
+    assert_eq!(reused_calls.lexical_rows.len(), 200);
+    assert_same_hits(
+        &reused.hits,
+        &fresh.hits,
+        "same producer frontiers with reuse",
+    );
+    let fresh_fusion = fresh.diagnostics.fusion.as_ref().expect("fresh fusion");
+    let reused_fusion = reused.diagnostics.fusion.as_ref().expect("reused fusion");
+    assert_eq!(fresh_fusion.rounds, 3);
+    assert_eq!(reused_fusion.rounds, fresh_fusion.rounds);
+    assert_eq!(reused_fusion.termination, fresh_fusion.termination);
+    assert_eq!(reused.diagnostics.plan, fresh.diagnostics.plan);
+    let fresh_report = fresh.diagnostics.hybrid.as_ref().expect("fresh report");
+    let reused_report = reused.diagnostics.hybrid.as_ref().expect("reused report");
+    assert_eq!(reused_report.provenance, fresh_report.provenance);
+    assert_eq!(reused_report.window, fresh_report.window);
+    assert_eq!(reused_report.vector_returned, fresh_report.vector_returned);
+    assert_eq!(
+        reused_report.lexical_returned,
+        fresh_report.lexical_returned
+    );
+    assert_eq!(fresh.diagnostics.counters.scan.dims_touched, 9_300);
+    assert_eq!(reused.diagnostics.counters.scan.dims_touched, 8_400);
+    store.close().expect("close differential store");
+}
+
+#[test]
 fn astra_00_lexical_window_survives_worker_handoff() {
     let (_directory, store) = astra_disjoint_windows_store();
     let mut query = HybridQuery::new(1).with_alpha(1.0);
@@ -904,9 +1439,10 @@ fn astra_01_exact_hybrid_can_still_certify() {
     assert_same_hits(&bounded.hits, &reference, "exact widened certificate");
     assert_eq!(report.rounds, 3);
     assert_eq!(bounded.diagnostics.plan.len(), 3);
-    // Three full 400x6 scans plus cross-fills of 50, 100 and 200 rows.
-    assert_eq!(bounded.diagnostics.counters.scan.dims_touched, 9_300);
-    assert_eq!(bounded.diagnostics.counters.scan.bytes_read, 37_200);
+    // Three full 400x6 scans plus 200 distinct cross-filled rows. Earlier
+    // rounds' 50 and 100 lexical winners reuse their already computed scores.
+    assert_eq!(bounded.diagnostics.counters.scan.dims_touched, 8_400);
+    assert_eq!(bounded.diagnostics.counters.scan.bytes_read, 33_600);
     // Independent exhaustive fusion arithmetic over the raw fixture vectors
     // and complete BM25 receipts. No product fusion/range/sort helper is used.
     // The producer's published ceiling is the declared normalization anchor;

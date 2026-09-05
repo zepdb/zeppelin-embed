@@ -729,6 +729,8 @@ impl LexicalIndex {
     /// rows in the same live bitmap used for `N` and `avgdl`.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::frequency();
         self.segments
             .iter()
             .zip(&self.live_rows)

@@ -372,7 +372,39 @@ pub(crate) fn rescore_top_k_with_check<E>(
     dimension: usize,
     pool: RescorePool<'_>,
     k: usize,
+    check: impl FnMut(usize, bool) -> Result<(), E>,
+) -> Result<RescoreResult, RescoreCheckError<E>> {
+    rescore_top_k_reusing(query, rows, dimension, pool, k, check, &mut NoScoreReuse)
+}
+
+/// The owner binds this cache to one query, physical source, revision, epoch
+/// and metric. Values retain f64 precision through ranking.
+pub(crate) trait ExactScoreReuse<E> {
+    fn get(&mut self, row: usize) -> Result<Option<f64>, E>;
+    fn insert(&mut self, row: usize, score: f64) -> Result<(), E>;
+}
+
+struct NoScoreReuse;
+
+impl<E> ExactScoreReuse<E> for NoScoreReuse {
+    fn get(&mut self, _row: usize) -> Result<Option<f64>, E> {
+        Ok(None)
+    }
+
+    fn insert(&mut self, _row: usize, _score: f64) -> Result<(), E> {
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rescore_top_k_reusing<E>(
+    query: &[f32],
+    rows: &[f32],
+    dimension: usize,
+    pool: RescorePool<'_>,
+    k: usize,
     mut check: impl FnMut(usize, bool) -> Result<(), E>,
+    reuse: &mut impl ExactScoreReuse<E>,
 ) -> Result<RescoreResult, RescoreCheckError<E>> {
     let (row_count, candidate_count) = validate_rescore_request(query, rows, dimension, &pool, k)?;
 
@@ -392,6 +424,7 @@ pub(crate) fn rescore_top_k_with_check<E>(
     let mut exact = Vec::with_capacity(candidate_count);
     let mut batch: Vec<(usize, &[f32])> = Vec::with_capacity(ROW_BATCH);
     let mut scores: Vec<f64> = Vec::with_capacity(ROW_BATCH);
+    let mut candidates_rescored = 0_usize;
     let mut position = 0;
     while position < candidate_count {
         let batch_end = position.saturating_add(ROW_BATCH).min(candidate_count);
@@ -432,14 +465,41 @@ pub(crate) fn rescore_top_k_with_check<E>(
         // Scoring is pure, so hoisting the whole batch ahead of the checks
         // is invisible: the checks, the non-finite rejection, and the pushes
         // below still run in strict position order.
-        score_batch(query, &batch, pool.metric, &mut scores);
-        for (offset, ((row_id, _), score)) in batch.iter().zip(scores.iter()).enumerate() {
+        let mut prior = [None; ROW_BATCH];
+        let mut missing = [(0, &[][..]); ROW_BATCH];
+        let mut missing_count = 0;
+        for (resolved, cached) in batch.iter().zip(&mut prior) {
+            *cached = reuse.get(resolved.0).map_err(RescoreCheckError::Check)?;
+            if cached.is_none() {
+                *missing
+                    .get_mut(missing_count)
+                    .ok_or(RescoreError::ArithmeticOverflow)? = *resolved;
+                missing_count += 1;
+            }
+        }
+        let missing = missing
+            .get(..missing_count)
+            .ok_or(RescoreError::ArithmeticOverflow)?;
+        score_batch(query, missing, pool.metric, &mut scores);
+        candidates_rescored = candidates_rescored
+            .checked_add(missing.len())
+            .ok_or(RescoreError::ArithmeticOverflow)?;
+        let mut new_scores = scores.iter();
+        for (offset, ((row_id, _), cached)) in batch.iter().zip(prior).enumerate() {
             let row_id = *row_id;
-            let score = *score;
+            let score = match cached {
+                Some(score) => score,
+                None => *new_scores.next().ok_or(RescoreError::ArithmeticOverflow)?,
+            };
             let scored_position = position.saturating_add(offset);
             check(row_id, scored_position.is_multiple_of(64)).map_err(RescoreCheckError::Check)?;
             if !score.is_finite() {
                 return Err(RescoreError::NonFiniteExactScore { row_index: row_id }.into());
+            }
+            if cached.is_none() {
+                reuse
+                    .insert(row_id, score)
+                    .map_err(RescoreCheckError::Check)?;
             }
             exact.push(RescoreHit {
                 row_index: row_id,
@@ -461,7 +521,7 @@ pub(crate) fn rescore_top_k_with_check<E>(
         .coarse_rows_touched
         .checked_mul(pool.coarse_bytes_per_row)
         .ok_or(RescoreError::ArithmeticOverflow)?;
-    let rescore = candidate_count
+    let rescore = candidates_rescored
         .checked_mul(dimension)
         .and_then(|values| values.checked_mul(std::mem::size_of::<f32>()))
         .ok_or(RescoreError::ArithmeticOverflow)?;
@@ -471,7 +531,7 @@ pub(crate) fn rescore_top_k_with_check<E>(
 
     Ok(RescoreResult {
         hits: exact,
-        candidates_rescored: candidate_count,
+        candidates_rescored,
         bytes: SearchByteCounts {
             coarse,
             rescore,
@@ -574,6 +634,10 @@ fn score_batch(
     metric: RescoreMetric,
     scores: &mut Vec<f64>,
 ) {
+    #[cfg(any(test, feature = "test-support"))]
+    for (row, _) in batch {
+        crate::graph::search::observe_exact_score(*row);
+    }
     scores.clear();
     match metric {
         RescoreMetric::InnerProduct => {
@@ -775,5 +839,129 @@ mod exact_sink_tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+mod reuse_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Cache(std::collections::BTreeMap<usize, f64>);
+
+    impl ExactScoreReuse<usize> for Cache {
+        fn get(&mut self, row: usize) -> Result<Option<f64>, usize> {
+            Ok(self.0.get(&row).copied())
+        }
+        fn insert(&mut self, row: usize, score: f64) -> Result<(), usize> {
+            assert!(
+                self.0.insert(row, score).is_none(),
+                "only new rows are retained"
+            );
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn astra_09_reused_rescores_preserve_f64_order_checks_and_new_row_work() {
+        let rows = [
+            1.0_f32,
+            2.0_f32.powi(-13),
+            1.0,
+            0.0,
+            2.0,
+            0.0,
+            3.0,
+            0.0,
+            4.0,
+            0.0,
+            5.0,
+            0.0,
+        ];
+        let query = [0.0_f32; 2];
+        let mut cache = Cache::default();
+        for (ids, expected_calls) in [
+            (&[0_u32, 1, 2, 3][..], 4),
+            (&[0, 1, 2, 3, 4, 5][..], 2),
+            (&[0, 1, 2, 3, 4, 5][..], 0),
+        ] {
+            let coarse = vec![0.0; ids.len()];
+            let pool = RescorePool::retained(ids, &coarse, RescoreMetric::SquaredL2, ids.len(), 13);
+            let mut checked = Vec::new();
+            let result = rescore_top_k_reusing(
+                &query,
+                &rows,
+                2,
+                pool,
+                2,
+                |row, _| {
+                    checked.push(row);
+                    Ok(())
+                },
+                &mut cache,
+            )
+            .expect("valid retained pool");
+            assert_eq!(
+                checked,
+                ids.iter().map(|row| *row as usize).collect::<Vec<_>>()
+            );
+            assert_eq!(result.candidates_rescored, expected_calls);
+            assert_eq!(result.bytes.rescore, expected_calls * 2 * 4);
+            assert_eq!(
+                result
+                    .hits
+                    .iter()
+                    .map(|hit| hit.row_index)
+                    .collect::<Vec<_>>(),
+                vec![1, 0]
+            );
+            assert_eq!(result.hits[0].score, -1.0);
+            assert_eq!(result.hits[1].score, -1.0 - 2.0_f64.powi(-26));
+            assert_eq!(
+                (result.hits[0].score as f32).to_bits(),
+                (result.hits[1].score as f32).to_bits(),
+                "a premature f32 cache would choose the wrong row on the next round"
+            );
+            let fresh = rescore_top_k(&query, &rows, 2, pool, 2).expect("fresh control");
+            assert_eq!(fresh.hits, result.hits);
+        }
+        let cancelled = rescore_top_k_reusing(
+            &query,
+            &rows,
+            2,
+            RescorePool::retained(&[0, 1], &[0.0, 0.0], RescoreMetric::SquaredL2, 2, 13),
+            1,
+            |row, _| if row == 1 { Err(row) } else { Ok(()) },
+            &mut cache,
+        );
+        assert!(
+            matches!(cancelled, Err(RescoreCheckError::Check(1))),
+            "cached rows still run checks"
+        );
+        let mut checked = Vec::new();
+        let malformed = rescore_top_k_reusing(
+            &query,
+            &rows,
+            2,
+            RescorePool::retained(&[0, 99], &[0.0, 0.0], RescoreMetric::SquaredL2, 2, 13),
+            1,
+            |row, _| {
+                checked.push(row);
+                Ok(())
+            },
+            &mut cache,
+        );
+        assert_eq!(checked, vec![0]);
+        assert!(matches!(
+            malformed,
+            Err(RescoreCheckError::Rescore(
+                RescoreError::CandidateRowOutOfRange {
+                    position: 1,
+                    row_index: 99,
+                    row_count: 6
+                }
+            ))
+        ));
     }
 }

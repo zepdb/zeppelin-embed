@@ -302,7 +302,7 @@ pub fn search_pruned(
     params: Bm25Params,
     strategy: Strategy,
 ) -> Result<SearchResult, IndexError> {
-    search_pruned_inner(index, query, k, params, strategy, None)
+    search_pruned_inner(index, query, k, params, strategy, None, None)
 }
 
 pub(crate) fn search_pruned_filtered(
@@ -313,9 +313,28 @@ pub(crate) fn search_pruned_filtered(
     strategy: Strategy,
     allow_lists: &[&DocBitmap],
 ) -> Result<SearchResult, IndexError> {
-    search_pruned_inner(index, query, k, params, strategy, Some(allow_lists))
+    search_pruned_inner(index, query, k, params, strategy, Some(allow_lists), None)
 }
 
+pub(crate) fn search_pruned_prepared_filtered(
+    index: &LexicalIndex,
+    prepared: &crate::fts::search::PreparedTermQuery,
+    k: usize,
+    strategy: Strategy,
+    allow_lists: &[&DocBitmap],
+) -> Result<SearchResult, IndexError> {
+    search_pruned_inner(
+        index,
+        prepared.query(),
+        k,
+        prepared.params(),
+        strategy,
+        Some(allow_lists),
+        Some(prepared),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn search_pruned_inner(
     index: &LexicalIndex,
     query: &TermQuery,
@@ -323,6 +342,7 @@ fn search_pruned_inner(
     params: Bm25Params,
     strategy: Strategy,
     allow_lists: Option<&[&DocBitmap]>,
+    prepared: Option<&crate::fts::search::PreparedTermQuery>,
 ) -> Result<SearchResult, IndexError> {
     if strategy == Strategy::Exhaustive {
         return allow_lists.map_or_else(
@@ -332,17 +352,27 @@ fn search_pruned_inner(
             },
         );
     }
-    let stats = index.corpus_stats()?;
-    let fields = query.fields.fields();
+    let stats = match prepared {
+        Some(prepared) => prepared.stats(),
+        None => index.corpus_stats()?,
+    };
     let mut counters = SearchCounters::default();
     let mut heap = TopK::new(k.max(1));
 
     // Store-wide document frequency, computed once per term.
-    let frequencies: Vec<u32> = query
-        .terms
-        .iter()
-        .map(|term| index.document_frequency(term, &fields))
-        .collect();
+    let frequencies = match prepared {
+        Some(prepared) => std::borrow::Cow::Borrowed(prepared.frequencies()),
+        None => {
+            let fields = query.fields.fields();
+            std::borrow::Cow::Owned(
+                query
+                    .terms
+                    .iter()
+                    .map(|term| index.document_frequency(term, &fields))
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
         let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
@@ -364,7 +394,9 @@ fn search_pruned_inner(
             if stream.exhausted() {
                 continue;
             }
-            let scorer = TermScorer::new(df, &stats, params);
+            let scorer = prepared
+                .and_then(|prepared| prepared.scorer(slot))
+                .unwrap_or_else(|| TermScorer::new(df, &stats, params));
             // Read, never rebuilt. The term's bound comes from the stored
             // impact pairs, which costs O(blocks) metadata reads; the
             // previous form scored every posting in order to bound it, and

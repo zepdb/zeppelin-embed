@@ -10,6 +10,8 @@ mod hybrid;
 pub mod lock;
 mod materialize;
 mod pool;
+pub(crate) mod prepared;
+mod prepared_lexical;
 pub(crate) mod rescored_scan;
 #[cfg(test)]
 mod shared_bound_tests;
@@ -23,6 +25,11 @@ pub use cancel::{
 #[cfg(any(test, feature = "test-support"))]
 pub use clock::ManualMonotonicClock;
 pub use clock::{MonotonicClock, SystemMonotonicClock};
+#[cfg(any(test, feature = "test-support"))]
+pub use hybrid::{
+    HybridScoreTestObservations, begin_hybrid_fresh_round_test_observations,
+    begin_hybrid_score_test_observations, take_hybrid_score_test_observations,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use materialize::MaterializationTestCounters;
 pub use materialize::{MaterializationError, MaterializedRow, QueryMaterializer};
@@ -3585,7 +3592,21 @@ impl Store {
             active: &admitted.active_segment,
             accounting: &self.accounting,
         };
-        let run_lexical_leg = |bound, queued| {
+        #[cfg(any(test, feature = "test-support"))]
+        let preparation_observer = crate::fts::preparation_observer::current();
+        let mut lexical_preparation = prepared_lexical::PreparedLexicalQuery::new(lexical_query);
+        #[cfg(any(test, feature = "test-support"))]
+        let fresh_preparation = hybrid::fresh_round_test_control();
+        let run_lexical_leg = |preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
+                               bound,
+                               queued| {
+            #[cfg(any(test, feature = "test-support"))]
+            if fresh_preparation {
+                preparation.reset_for_test();
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            let _preparation_scope =
+                crate::fts::preparation_observer::enter(preparation_observer.clone());
             let queue_time = timing_elapsed(self.clock.as_ref(), queued);
             let lexical_started = timing_start(self.clock.as_ref());
             let name = std::thread::current().name().map(str::to_owned);
@@ -3599,8 +3620,8 @@ impl Store {
                     .map_err(QueryError::Scan)
                     .map_err(crate::fusion::FusionError::from)?;
                 match lexical_query {
-                    PinnedLexicalQuery::Term(query) => {
-                        exact_lexical_leg(lexical_inputs, query, bound, &cancellation)
+                    PinnedLexicalQuery::Term(_) => {
+                        exact_lexical_leg(lexical_inputs, bound, &cancellation, preparation)
                     }
                     PinnedLexicalQuery::Structured(query) => exact_structured_lexical_leg(
                         lexical_inputs,
@@ -3608,6 +3629,7 @@ impl Store {
                         query,
                         bound,
                         &cancellation,
+                        preparation,
                     ),
                 }
             })();
@@ -3619,7 +3641,12 @@ impl Store {
             )
         };
         let caller_chose_tier = requested_tier.is_some();
-        let run_vector_leg = |k: usize| {
+        let mut vector_preparation = prepared::PreparedVectorQuery::new(
+            vector_query.vector(),
+            self.epoch_identity(),
+            &self.accounting,
+        );
+        let mut run_vector_leg = |k: usize| {
             let graph_available = snapshot_has_graph(&admitted.snapshot);
             let scan_reason_override = if caller_chose_tier || !graph_available {
                 None
@@ -3664,6 +3691,7 @@ impl Store {
                 scan_reason_override,
                 started,
                 self.clock.as_ref(),
+                &mut vector_preparation,
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
             )
@@ -3671,7 +3699,13 @@ impl Store {
         };
         let lexical_queued = timing_start(self.clock.as_ref());
         let (vector_result, lexical_result) = lexical_worker.run_scoped(
-            || run_lexical_leg(width.saturating_add(1), lexical_queued),
+            || {
+                run_lexical_leg(
+                    &mut lexical_preparation,
+                    width.saturating_add(1),
+                    lexical_queued,
+                )
+            },
             || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     maybe_trigger_hybrid_leg_panic(
@@ -3708,13 +3742,7 @@ impl Store {
         let _ = lexical_thread_name;
         let (
             mut vector_outcome,
-            (
-                mut lexical_hits,
-                mut lexical_assembly,
-                mut lexical_counters,
-                lexical_expansions,
-                mut lexical_cache_hit,
-            ),
+            (mut lexical_hits, mut lexical_assembly, mut lexical_counters, mut lexical_cache_hit),
         ) = resolve_hybrid_leg_results(vector_result, lexical_result)?;
 
         timings.lexical_queue = queue_time;
@@ -3727,6 +3755,9 @@ impl Store {
             SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
         let fusion_cancellation = QueryCancellation::new(&control, &fusion_lease);
         let mut work = hybrid::HybridWork::new();
+        let mut cross_scores = hybrid::CrossScoreCache::new(vector_outcome.epoch);
+        let mut round_buffers = hybrid::HybridRoundBuffers::new();
+        let mut fusion_scratch = crate::fusion::StoreFusionScratch::new(Arc::clone(&self.accounting));
         let mut rescore_counters = crate::diag::ScanRescoreCounters::default();
         let mut rounds = 1_usize;
         let mut budget_exhausted = false;
@@ -3739,6 +3770,7 @@ impl Store {
                 &admitted.snapshot,
                 &admitted.active_segment,
                 &lexical_assembly,
+                &lexical_preparation,
                 lexical_query,
                 vector_query.vector(),
                 &vector_outcome.candidates,
@@ -3748,11 +3780,13 @@ impl Store {
                 &fusion_cancellation,
                 capture_rows,
                 &self.accounting,
+                &mut cross_scores,
+                &mut round_buffers,
             )?;
             // Cross-fill reads full-precision rows on the caller thread,
             // outside the vector producer. Include those actual reads in
             // the same scan work receipt as the producer's scored rows.
-            let cross_fill_dims = u64::try_from(round.cross_filled_vector)
+            let cross_fill_dims = u64::try_from(round.vector_scores_computed)
                 .ok()
                 .and_then(|rows| rows.checked_mul(vector_query.vector().len() as u64))
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
@@ -3790,11 +3824,11 @@ impl Store {
             work.plans.append(&mut vector_outcome.diagnostics.plan);
             work.cross_filled_vector = work
                 .cross_filled_vector
-                .checked_add(round.cross_filled_vector)
+                .checked_add(round.vector_scores_computed)
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
             work.cross_filled_lexical = work
                 .cross_filled_lexical
-                .checked_add(round.cross_filled_lexical)
+                .checked_add(round.lexical_scores_computed)
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
             work.vector_candidates_produced = work
                 .vector_candidates_produced
@@ -3810,6 +3844,7 @@ impl Store {
                 &round,
                 provenance,
                 requested_tier == Some(SearchTier::Exact),
+                &mut fusion_scratch,
             )?;
             timings.fusion_cross_fill += timing_elapsed(self.clock.as_ref(), fusion_started);
             if fused.report.termination != crate::fusion::FusionTermination::WindowUnproven
@@ -3823,7 +3858,7 @@ impl Store {
                         lexical_full_materializations: if matches!(
                             lexical_query,
                             PinnedLexicalQuery::Structured(_)
-                        ) && !lexical_expansions.is_empty()
+                        ) && lexical_preparation.has_expansions()
                             && !lexical_assembly.index.segments().is_empty()
                         {
                             rounds
@@ -3853,7 +3888,13 @@ impl Store {
             rounds = rounds.saturating_add(1);
             let lexical_queued = timing_start(self.clock.as_ref());
             let (vector_result, lexical_result) = lexical_worker.run_scoped(
-                || run_lexical_leg(width.saturating_add(1), lexical_queued),
+                || {
+                    run_lexical_leg(
+                        &mut lexical_preparation,
+                        width.saturating_add(1),
+                        lexical_queued,
+                    )
+                },
                 || run_vector_leg(width.saturating_add(1)),
             )?;
             let (_, lexical_result, queue_time, lexical_time) =
@@ -3865,7 +3906,7 @@ impl Store {
                         std::time::Duration::ZERO,
                     )
                 });
-            let (next_vector, (next_hits, next_sources, next_counters, _, next_cache_hit)) =
+            let (next_vector, (next_hits, next_sources, next_counters, next_cache_hit)) =
                 resolve_hybrid_leg_results(vector_result, lexical_result)?;
             timings.lexical_queue += queue_time;
             timings.lexical += lexical_time;
@@ -3917,7 +3958,7 @@ impl Store {
         diagnostics.timings = crate::diag::QUERY_TIMING_ENABLED.then_some(timings);
         let outcome = crate::ingest::StoreHybridSearchOutcome {
             hits: fused.hits,
-            lexical_expansions,
+            lexical_expansions: lexical_preparation.take_expansions()?,
             generation,
             diagnostics,
         };
@@ -3996,6 +4037,11 @@ impl Store {
         let admission_started = timing_start(self.clock.as_ref());
         let admitted = self.admit_vector_search(options)?;
         let admission_time = timing_elapsed(self.clock.as_ref(), admission_started);
+        let mut vector_preparation = prepared::PreparedVectorQuery::new(
+            request.vector(),
+            self.epoch_identity(),
+            &self.accounting,
+        );
         let score = || {
             let mut outcome = search_pinned(
                 admitted.pool.as_deref(),
@@ -4013,6 +4059,7 @@ impl Store {
                 None,
                 started,
                 self.clock.as_ref(),
+                &mut vector_preparation,
                 #[cfg(any(test, feature = "test-support"))]
                 self.vector_fault_controller.as_ref(),
             )?;
@@ -4790,7 +4837,6 @@ type ExactLexicalLeg = (
     Vec<hybrid::LexicalHit>,
     Arc<LexicalAssembly>,
     crate::fts::search::SearchCounters,
-    Vec<crate::fts::query::LexicalExpansion>,
     bool,
 );
 
@@ -4834,6 +4880,7 @@ fn exact_structured_lexical_leg(
     query: &crate::fts::query::LexicalQuery,
     _bound: usize,
     cancellation: &QueryCancellation<'_>,
+    preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
     let (snapshot, active) = (inputs.snapshot, inputs.active);
     let lexical_error = |detail: String| crate::fusion::FusionError::Leg {
@@ -4841,20 +4888,17 @@ fn exact_structured_lexical_leg(
         kind: crate::fusion::LegFailureKind::Lexical,
         detail,
     };
-    let assembly = assemble_lexical_index(inputs, false, Some(cancellation))
-        .map_err(map_fusion_lexical_assembly_error)?;
+    let (prepared, cache_hit) = preparation.prepare_structured(inputs, cancellation)?;
+    let assembly = &prepared.assembly;
     let index = &assembly.index;
     let sources = &assembly.sources;
-    let vocabulary = crate::fts::query::vocabulary(query, index.terms());
-    let expansions = crate::fts::query::expand(query, &vocabulary)
-        .map_err(|error| lexical_error(error.to_string()))?;
+    let expansions = &prepared.expansions;
     if index.segments().is_empty() || expansions.is_empty() {
         return Ok((
             Vec::new(),
-            Arc::clone(&assembly.assembly),
+            Arc::clone(assembly),
             crate::fts::search::SearchCounters::default(),
-            expansions,
-            assembly.cache_hit,
+            cache_hit,
         ));
     }
     let allow_lists = assembly
@@ -4862,19 +4906,13 @@ fn exact_structured_lexical_leg(
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    let fields = query.fields();
     // Exact combined maximum and cross-scores require complete expansion lists.
     // Plan 10 replaces this interim full aggregation with combined top-k.
     let k = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
     let mut counters = crate::fts::search::SearchCounters::default();
     let mut aggregate = BTreeMap::<crate::fts::search::GlobalDocId, f64>::new();
-    for expansion in &expansions {
-        let term_query = crate::fts::search::TermQuery {
-            terms: vec![expansion.term.clone()],
-            fields: fields.clone(),
-        };
-        let result =
-            exact_hybrid_lexical_search(index, &term_query, k, &allow_lists, cancellation)?;
+    for (expansion, term) in expansions.iter().zip(&prepared.terms) {
+        let result = exact_hybrid_lexical_search(index, term, k, &allow_lists, cancellation)?;
         accumulate_search_counters(&mut counters, &result.counters);
         let boost = f64::from(expansion.boost_thousandths) / 1_000.0;
         for hit in result.hits {
@@ -4911,42 +4949,26 @@ fn exact_structured_lexical_leg(
             bm25: score,
         });
     }
-    Ok((
-        joined,
-        Arc::clone(&assembly.assembly),
-        counters,
-        expansions,
-        assembly.cache_hit,
-    ))
+    Ok((joined, Arc::clone(assembly), counters, cache_hit))
 }
 
 fn exact_lexical_leg(
     inputs: LexicalInputs<'_>,
-    query: &crate::fts::search::TermQuery,
     bound: usize,
     cancellation: &QueryCancellation<'_>,
+    preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
 ) -> Result<ExactLexicalLeg, crate::fusion::FusionError> {
     let (snapshot, active) = (inputs.snapshot, inputs.active);
-    let assembly = assemble_lexical_index(inputs, false, Some(cancellation))
-        .map_err(map_fusion_lexical_assembly_error)?;
+    let (prepared, cache_hit) = preparation.prepare_term(inputs, cancellation)?;
+    let assembly = &prepared.assembly;
     let index = &assembly.index;
     let sources = &assembly.sources;
     if index.segments().is_empty() {
         return Ok((
             Vec::new(),
-            Arc::clone(&assembly.assembly),
+            Arc::clone(assembly),
             crate::fts::search::SearchCounters::default(),
-            query
-                .terms
-                .iter()
-                .cloned()
-                .map(|term| crate::fts::query::LexicalExpansion {
-                    term,
-                    boost_thousandths: 1_000,
-                    kind: crate::fts::query::LexicalMatchKind::Term,
-                })
-                .collect(),
-            assembly.cache_hit,
+            cache_hit,
         ));
     }
     let k = bound.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
@@ -4955,7 +4977,8 @@ fn exact_lexical_leg(
         .iter()
         .map(|alive| alive.alive_bitmap())
         .collect::<Vec<_>>();
-    let result = exact_hybrid_lexical_search(index, query, k, &allow_lists, cancellation)?;
+    let result =
+        exact_hybrid_lexical_search(index, prepared.scoring()?, k, &allow_lists, cancellation)?;
     let mut joined = Vec::with_capacity(result.hits.len());
     for hit in result.hits {
         let document = structured_lexical_document(snapshot, active, sources, hit.doc, false)
@@ -4966,27 +4989,12 @@ fn exact_lexical_leg(
             bm25: hit.score,
         });
     }
-    Ok((
-        joined,
-        Arc::clone(&assembly.assembly),
-        result.counters,
-        query
-            .terms
-            .iter()
-            .cloned()
-            .map(|term| crate::fts::query::LexicalExpansion {
-                term,
-                boost_thousandths: 1_000,
-                kind: crate::fts::query::LexicalMatchKind::Term,
-            })
-            .collect(),
-        assembly.cache_hit,
-    ))
+    Ok((joined, Arc::clone(assembly), result.counters, cache_hit))
 }
 
 fn exact_hybrid_lexical_search(
     index: &crate::fts::index::LexicalIndex,
-    query: &crate::fts::search::TermQuery,
+    prepared: &crate::fts::search::PreparedTermQuery,
     k: usize,
     allow_lists: &[&crate::meta::DocBitmap],
     cancellation: &QueryCancellation<'_>,
@@ -4997,27 +5005,24 @@ fn exact_hybrid_lexical_search(
         .fold(0_u64, u64::saturating_add);
     if allowed.saturating_mul(crate::planner::LEXICAL_ALLOW_LIST_DIVISOR) <= index.document_count()
     {
-        return crate::fts::search::search_allow_list_driven_controlled(
+        return crate::fts::search::search_allow_list_prepared_controlled(
             index,
-            query,
+            prepared,
             k,
-            crate::fts::bm25::Bm25Params::beir(),
             allow_lists,
             || cancellation.check_graph(),
         )
         .map_err(map_fusion_controlled_lexical_error);
     }
-
     cancellation
         .check_graph()
         .map_err(QueryError::Scan)
         .map_err(crate::fusion::FusionError::from)?;
-    let result = crate::fts::prune::search_pruned_filtered(
+    let result = crate::fts::prune::search_pruned_prepared_filtered(
         index,
-        query,
+        prepared,
         k,
-        crate::fts::bm25::Bm25Params::beir(),
-        crate::fts::prune::select_strategy(query.terms.len(), k),
+        crate::fts::prune::select_strategy(prepared.query().terms.len(), k),
         allow_lists,
     )
     .map_err(|error| crate::fusion::FusionError::Leg {
@@ -5049,6 +5054,7 @@ fn search_pinned(
     hybrid_scan_reason: Option<crate::planner::ScanReason>,
     started: std::time::Instant,
     clock: &dyn MonotonicClock,
+    vector_preparation: &mut prepared::PreparedVectorQuery<'_>,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -5084,6 +5090,7 @@ fn search_pinned(
     quantized_query_validation
         .map_err(crate::scan::ScanError::Quant)
         .map_err(QueryError::Scan)?;
+    vector_preparation.validate_binding(query, epoch)?;
     let bit4_query = std::cell::OnceCell::new();
     let int8_query = std::cell::OnceCell::new();
     let mut candidates = Vec::new();
@@ -5315,6 +5322,7 @@ fn search_pinned(
                 graph_bound_mode,
                 request,
                 k,
+                vector_preparation,
                 accounting,
                 snapshot,
                 generation,
@@ -5819,6 +5827,7 @@ fn traverse_segment_graph<'a>(
     graph_bound_mode: GraphBoundMode,
     request: crate::ingest::SearchRequest<'_>,
     k: usize,
+    vector_preparation: &mut prepared::PreparedVectorQuery<'_>,
     accounting: &Arc<stats::Accounting>,
     snapshot: &Arc<PublishedSnapshot>,
     generation: u64,
@@ -5977,9 +5986,13 @@ fn traverse_segment_graph<'a>(
     let mut traversal_candidates_scored = 0_usize;
     let mut traversal_candidates_rescored = 0_usize;
     let result = loop {
-        let result = searcher
-            .search(graph_request, Some(&cancellation))
-            .map_err(map_graph_error)?;
+        let result = searcher.search_reusing(
+            graph_request,
+            Some(&cancellation),
+            vector_preparation,
+            segment,
+            source,
+        )?;
         let counters = result.counters();
         traversal_dims_touched = traversal_dims_touched
             .checked_add(counters.dims_touched())
@@ -6449,7 +6462,7 @@ fn map_graph_cache_error(error: graph_cache::GraphCacheError) -> QueryError {
     }
 }
 
-fn map_graph_error(error: crate::graph::search::GraphSearchError) -> QueryError {
+pub(crate) fn map_graph_error(error: crate::graph::search::GraphSearchError) -> QueryError {
     match error {
         crate::graph::search::GraphSearchError::ExactRescoreUnavailable(detail) => {
             QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(

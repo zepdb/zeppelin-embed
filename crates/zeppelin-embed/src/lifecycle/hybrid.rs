@@ -4,6 +4,7 @@
 //! following item describes only its retained list. Producer coverage and
 //! complete cross-scores must establish that a fusion stop is a certificate.
 
+use super::stats::{Accounted, Accounting, AllocationComponent};
 use crate::fusion::{
     FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K, LegBounds, LegFailureKind,
     LexicalBounds, LexicalCandidate, VectorBounds, VectorCandidate,
@@ -12,6 +13,188 @@ use crate::ingest::{
     ActiveSegment, DocId, DocumentVersion, GlobalRowId, RowSource, SearchCandidate,
 };
 use crate::lifecycle::{PublishedSnapshot, QueryError, StructuredLexicalSource};
+use std::sync::Arc;
+
+/// Literal scoring calls on this caller thread, independent of work receipts.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+#[doc(hidden)]
+pub struct HybridScoreTestObservations {
+    /// Pinned rows actually read by the vector cross-scorer.
+    pub vector_rows: Vec<(GlobalRowId, Option<DocumentVersion>)>,
+    /// Pinned rows actually sent to the lexical candidate scorer.
+    pub lexical_rows: Vec<(GlobalRowId, Option<DocumentVersion>)>,
+    /// Peak simultaneous reservations for this query's cross-score cache,
+    /// including both old and replacement buffers during a capacity increase.
+    pub cache_peak_bytes: u64,
+    /// Vector/lexical candidate capacities available before each round fills them.
+    pub candidate_start_capacities: Vec<[usize; 2]>,
+    /// Peak candidate scratch reservations, including a growing buffer's old allocation.
+    pub candidate_peak_bytes: u64,
+    /// Fusion union capacity available before each round.
+    pub union_start_capacities: Vec<usize>,
+    /// Fusion union high-water, including old and replacement allocations.
+    pub union_peak_bytes: u64,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static SCORE_TEST_OBSERVATIONS: std::cell::RefCell<Option<HybridScoreTestObservations>> =
+        const { std::cell::RefCell::new(None) };
+    static FRESH_ROUND_TEST_CONTROL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts an explicit caller-thread observation window; ordinary tests retain
+/// no score trace and shipping builds contain no observer.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn begin_hybrid_score_test_observations() {
+    FRESH_ROUND_TEST_CONTROL.with(|fresh| fresh.set(false));
+    SCORE_TEST_OBSERVATIONS.with(|observations| {
+        *observations.borrow_mut() = Some(HybridScoreTestObservations::default());
+    });
+}
+
+/// Observes the same public query while discarding cross-score reuse before
+/// every round. Producer frontiers and fusion termination remain unchanged.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn begin_hybrid_fresh_round_test_observations() {
+    begin_hybrid_score_test_observations();
+    FRESH_ROUND_TEST_CONTROL.with(|fresh| fresh.set(true));
+}
+
+/// Takes the calling thread's observations and disables further collection.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn take_hybrid_score_test_observations() -> HybridScoreTestObservations {
+    FRESH_ROUND_TEST_CONTROL.with(|fresh| fresh.set(false));
+    SCORE_TEST_OBSERVATIONS.with(|observations| observations.take().unwrap_or_default())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn fresh_round_test_control() -> bool {
+    FRESH_ROUND_TEST_CONTROL.with(std::cell::Cell::get)
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum CrossScorePolicy {
+    SquaredL2F32,
+    Bm25Beir,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct CrossScoreKey {
+    row: GlobalRowId,
+    document: Option<DocumentVersion>,
+    epoch: Option<crate::epoch::EpochIdentity>,
+    policy: CrossScorePolicy,
+}
+
+#[derive(Clone, Copy)]
+struct CachedScore {
+    key: CrossScoreKey,
+    score: f64,
+}
+
+/// Exact cross-scores owned by one pinned admission. Query vectors, lexical
+/// terms and scoring parameters remain fixed for this context's lifetime.
+pub(crate) struct CrossScoreCache {
+    epoch: Option<crate::epoch::EpochIdentity>,
+    entries: super::stats::Accounted<Vec<CachedScore>>,
+    sorted: usize,
+}
+
+impl CrossScoreCache {
+    pub(crate) fn new(epoch: Option<crate::epoch::EpochIdentity>) -> Self {
+        Self {
+            epoch,
+            entries: super::stats::Accounted::unaccounted_empty(),
+            sorted: 0,
+        }
+    }
+
+    fn key(
+        &self,
+        identity: (GlobalRowId, Option<DocumentVersion>),
+        policy: CrossScorePolicy,
+    ) -> CrossScoreKey {
+        CrossScoreKey {
+            row: identity.0,
+            document: identity.1,
+            epoch: self.epoch,
+            policy,
+        }
+    }
+
+    fn get(&self, key: CrossScoreKey) -> Option<f64> {
+        let sorted = self.entries.get(..self.sorted)?;
+        sorted
+            .binary_search_by_key(&key, |entry| entry.key)
+            .ok()
+            .and_then(|index| sorted.get(index))
+            .map(|entry| entry.score)
+    }
+
+    fn reserve_round(
+        &mut self,
+        additional: usize,
+        accounting: &std::sync::Arc<super::stats::Accounting>,
+    ) -> Result<(), FusionError> {
+        let capacity = self
+            .entries
+            .len()
+            .checked_add(additional)
+            .ok_or_else(overflow)?;
+        if capacity > self.entries.capacity() {
+            let mut replacement = super::stats::Accounted::try_with_capacity(
+                accounting,
+                capacity,
+                super::stats::AllocationComponent::Temporary,
+            )
+            .map_err(QueryError::Store)?;
+            replacement
+                .extend_from_slice(&self.entries)
+                .map_err(QueryError::Store)?;
+            #[cfg(any(test, feature = "test-support"))]
+            SCORE_TEST_OBSERVATIONS.with(|observations| {
+                if let Some(observations) = observations.borrow_mut().as_mut() {
+                    observations.cache_peak_bytes = observations.cache_peak_bytes.max(
+                        self.entries
+                            .resident_bytes()
+                            .saturating_add(replacement.resident_bytes()),
+                    );
+                }
+            });
+            self.entries = replacement;
+        }
+        Ok(())
+    }
+
+    fn insert(&mut self, key: CrossScoreKey, score: f64) -> Result<(), FusionError> {
+        self.entries
+            .push(CachedScore { key, score })
+            .map_err(QueryError::Store)?;
+        Ok(())
+    }
+
+    fn finish_round(&mut self) -> Result<(), FusionError> {
+        self.entries
+            .as_mut_slice()
+            .sort_unstable_by_key(|entry| entry.key);
+        if self
+            .entries
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left.key == right.key))
+        {
+            return Err(lexical_invariant(
+                "hybrid cross-score cache contains a duplicate physical row/policy",
+            ));
+        }
+        self.sorted = self.entries.len();
+        Ok(())
+    }
+}
 
 /// Completed producer work retained by the hybrid loop. Keeping this seam
 /// independent of fusion termination lets counter receipts be tested even
@@ -137,13 +320,13 @@ pub(crate) struct LexicalHit {
 }
 
 /// Cross-filled windows and the ranges used to score them.
-pub(crate) struct HybridRound {
+pub(crate) struct HybridRound<'a> {
     /// Source/version payload retained through fusion only for scoped hydration.
     pub(crate) addresses: Option<super::materialize::HybridAddresses>,
     /// Vector window plus every lexical-window document's exact squared-L2.
-    pub(crate) vector: Vec<VectorCandidate<Option<DocId>>>,
+    pub(crate) vector: &'a [VectorCandidate<Option<DocId>>],
     /// Lexical window plus every vector-window document's exact BM25.
-    pub(crate) lexical: Vec<LexicalCandidate<Option<DocId>>>,
+    pub(crate) lexical: &'a [LexicalCandidate<Option<DocId>>],
     /// Producer-supplied ranges and following values. Approximate producer
     /// values are not certificates about unseen corpus rows.
     pub(crate) bounds: LegBounds,
@@ -152,6 +335,129 @@ pub(crate) struct HybridRound {
     /// Documents the vector window contributed to the lexical list.
     pub(crate) cross_filled_lexical: usize,
     pub(crate) lexical_counters: crate::fts::search::SearchCounters,
+    /// Actual new score evaluations, excluding cached union contributions.
+    pub(crate) vector_scores_computed: usize,
+    pub(crate) lexical_scores_computed: usize,
+}
+
+type PhysicalIdentity = (GlobalRowId, Option<DocumentVersion>);
+
+/// Candidate and physical-union bookkeeping retained only within one admission.
+pub(crate) struct HybridRoundBuffers {
+    vector_keys: Accounted<Vec<PhysicalIdentity>>,
+    lexical_keys: Accounted<Vec<PhysicalIdentity>>,
+    vector: Accounted<Vec<VectorCandidate<Option<DocId>>>>,
+    lexical: Accounted<Vec<LexicalCandidate<Option<DocId>>>>,
+    missing: Accounted<Vec<SearchCandidate>>,
+    newly_missing: Accounted<Vec<SearchCandidate>>,
+    resident_bytes: u64,
+    peak_bytes: u64,
+}
+
+impl HybridRoundBuffers {
+    pub(crate) fn new() -> Self {
+        Self {
+            vector_keys: Accounted::unaccounted_empty(),
+            lexical_keys: Accounted::unaccounted_empty(),
+            vector: Accounted::unaccounted_empty(),
+            lexical: Accounted::unaccounted_empty(),
+            missing: Accounted::unaccounted_empty(),
+            newly_missing: Accounted::unaccounted_empty(),
+            resident_bytes: 0,
+            peak_bytes: 0,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        vector: usize,
+        lexical: usize,
+        accounting: &Arc<Accounting>,
+    ) -> Result<(), FusionError> {
+        #[cfg(any(test, feature = "test-support"))]
+        SCORE_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                observations
+                    .candidate_start_capacities
+                    .push([self.vector.capacity(), self.lexical.capacity()]);
+            }
+        });
+        let union = vector.checked_add(lexical).ok_or_else(overflow)?;
+        reserve_candidate_buffer(
+            &mut self.vector_keys,
+            vector,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        reserve_candidate_buffer(
+            &mut self.lexical_keys,
+            lexical,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        reserve_candidate_buffer(
+            &mut self.vector,
+            union,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        reserve_candidate_buffer(
+            &mut self.lexical,
+            union,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        reserve_candidate_buffer(
+            &mut self.missing,
+            vector,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        reserve_candidate_buffer(
+            &mut self.newly_missing,
+            vector,
+            accounting,
+            &mut self.resident_bytes,
+            &mut self.peak_bytes,
+        )?;
+        #[cfg(any(test, feature = "test-support"))]
+        SCORE_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                observations.candidate_peak_bytes =
+                    observations.candidate_peak_bytes.max(self.peak_bytes);
+            }
+        });
+        Ok(())
+    }
+}
+
+fn reserve_candidate_buffer<T>(
+    buffer: &mut Accounted<Vec<T>>,
+    capacity: usize,
+    accounting: &Arc<Accounting>,
+    resident: &mut u64,
+    peak: &mut u64,
+) -> Result<(), FusionError> {
+    buffer.clear();
+    let old_bytes = buffer.resident_bytes();
+    buffer
+        .try_reserve_total(accounting, capacity, AllocationComponent::Temporary)
+        .map_err(QueryError::Store)?;
+    let new_bytes = buffer.resident_bytes();
+    if new_bytes != old_bytes {
+        // try_reserve_total held both allocations until the move completed.
+        *peak = (*peak).max(resident.checked_add(new_bytes).ok_or_else(overflow)?);
+        *resident = resident
+            .checked_sub(old_bytes)
+            .and_then(|bytes| bytes.checked_add(new_bytes))
+            .ok_or_else(overflow)?;
+    }
+    Ok(())
 }
 
 /// Frozen once after both first-round producers join, before any widening.
@@ -195,19 +501,33 @@ pub(crate) fn round_provenance(
 
 pub(crate) fn fuse_round(
     query: &crate::fusion::HybridQuery,
-    round: &HybridRound,
+    round: &HybridRound<'_>,
     provenance: crate::fusion::HybridProvenance,
     require_exact: bool,
+    scratch: &mut crate::fusion::StoreFusionScratch<DocId>,
 ) -> Result<crate::fusion::FusionOutcome<DocId>, FusionError> {
     use crate::fusion::{CandidateCoverage, FusionTermination, ScorePrecision};
+    #[cfg(any(test, feature = "test-support"))]
+    SCORE_TEST_OBSERVATIONS.with(|observations| {
+        if let Some(observations) = observations.borrow_mut().as_mut() {
+            observations.union_start_capacities.push(scratch.capacity());
+        }
+    });
     let mut outcome = crate::fusion::fuse_store_bounded(
         query,
-        &round.vector,
-        &round.lexical,
+        round.vector,
+        round.lexical,
         round.bounds,
         |document: &Option<DocId>| *document,
         |document: &Option<DocId>| *document,
+        scratch,
     )?;
+    #[cfg(any(test, feature = "test-support"))]
+    SCORE_TEST_OBSERVATIONS.with(|observations| {
+        if let Some(observations) = observations.borrow_mut().as_mut() {
+            observations.union_peak_bytes = observations.union_peak_bytes.max(scratch.peak_bytes());
+        }
+    });
     let bounded_producers = provenance.vector_coverage != CandidateCoverage::Approximate
         && provenance.lexical_coverage != CandidateCoverage::Approximate;
     let can_certify = bounded_producers
@@ -235,10 +555,11 @@ pub(crate) fn fuse_round(
     clippy::too_many_arguments,
     reason = "one round names both producers' output, the pinned snapshot, and the width"
 )]
-pub(crate) fn build_round(
+pub(crate) fn build_round<'scratch>(
     snapshot: &PublishedSnapshot,
     active: &ActiveSegment,
     assembly: &super::LexicalAssembly,
+    preparation: &super::prepared_lexical::PreparedLexicalQuery<'_>,
     lexical_query: super::PinnedLexicalQuery<'_>,
     query: &[f32],
     vector: &[SearchCandidate],
@@ -248,76 +569,171 @@ pub(crate) fn build_round(
     cancellation: &super::QueryCancellation<'_>,
     capture_rows: bool,
     accounting: &std::sync::Arc<super::stats::Accounting>,
-) -> Result<HybridRound, FusionError> {
+    scores: &mut CrossScoreCache,
+    buffers: &'scratch mut HybridRoundBuffers,
+) -> Result<HybridRound<'scratch>, FusionError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if FRESH_ROUND_TEST_CONTROL.with(std::cell::Cell::get) {
+        *scores = CrossScoreCache::new(scores.epoch);
+    }
     let sources = &assembly.sources;
     let vector_window = vector.get(..width.min(vector.len())).unwrap_or_default();
     let lexical_window = lexical.get(..width.min(lexical.len())).unwrap_or_default();
     let vector_next = vector.get(width).map(candidate_squared_l2);
     let lexical_next = lexical.get(width).map(|hit| hit.bm25);
+    // When both producers are exhausted, no later round can reuse a new
+    // score. Existing entries can still serve this final round.
+    let retain_scores = vector_next.is_some() || lexical_next.is_some();
 
-    let vector_keys = vector_window
-        .iter()
-        .map(|candidate| (candidate.row_id(), candidate.document()))
-        .collect::<std::collections::BTreeSet<_>>();
-    let lexical_keys = lexical_window
-        .iter()
-        .map(|hit| lexical_identity(snapshot, sources, hit))
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    buffers.prepare(vector_window.len(), lexical_window.len(), accounting)?;
+    let HybridRoundBuffers {
+        vector_keys,
+        lexical_keys,
+        vector: vector_candidates,
+        lexical: lexical_candidates,
+        missing,
+        newly_missing,
+        ..
+    } = buffers;
+    for candidate in vector_window {
+        vector_keys
+            .push((candidate.row_id(), candidate.document()))
+            .map_err(QueryError::Store)?;
+    }
+    for hit in lexical_window {
+        lexical_keys
+            .push(lexical_identity(snapshot, sources, hit)?)
+            .map_err(QueryError::Store)?;
+    }
+    vector_keys.as_mut_slice().sort_unstable();
+    lexical_keys.as_mut_slice().sort_unstable();
+    vector_keys.dedup();
+    lexical_keys.dedup();
+    if retain_scores {
+        scores.reserve_round(
+            vector_window
+                .len()
+                .checked_add(lexical_window.len())
+                .ok_or_else(overflow)?,
+            accounting,
+        )?;
+    }
 
-    let mut vector_candidates = vector_window
-        .iter()
-        .map(|candidate| {
-            let document = candidate.document().map(|version| version.doc_id());
-            let squared_l2 = candidate_squared_l2(candidate);
-            if candidate.exact_score() {
-                VectorCandidate::exact(document, squared_l2)
-            } else {
-                VectorCandidate::estimated(document, squared_l2)
-            }
-        })
-        .collect::<Vec<_>>();
+    for candidate in vector_window {
+        let document = candidate.document().map(|version| version.doc_id());
+        let squared_l2 = candidate_squared_l2(candidate);
+        let candidate = if candidate.exact_score() {
+            VectorCandidate::exact(document, squared_l2)
+        } else {
+            VectorCandidate::estimated(document, squared_l2)
+        };
+        vector_candidates
+            .push(candidate)
+            .map_err(QueryError::Store)?;
+    }
     let mut cross_filled_vector = 0_usize;
+    let mut vector_scores_computed = 0_usize;
     for hit in lexical_window {
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        if vector_keys.contains(&lexical_identity(snapshot, sources, hit)?) {
+        let identity = lexical_identity(snapshot, sources, hit)?;
+        if vector_keys.binary_search(&identity).is_ok() {
             continue;
         }
-        let squared_l2 = exact_squared_l2(snapshot, active, sources, query, hit.doc)?;
-        vector_candidates.push(VectorCandidate::exact(
-            hit.document.map(|version| version.doc_id()),
-            squared_l2,
-        ));
+        let key = scores.key(identity, CrossScorePolicy::SquaredL2F32);
+        let squared_l2 = match scores.get(key) {
+            Some(score) => score,
+            None => {
+                let score = exact_squared_l2(snapshot, active, sources, query, hit.doc)?;
+                if retain_scores {
+                    scores.insert(key, score)?;
+                }
+                vector_scores_computed = vector_scores_computed.saturating_add(1);
+                score
+            }
+        };
+        vector_candidates
+            .push(VectorCandidate::exact(
+                hit.document.map(|version| version.doc_id()),
+                squared_l2,
+            ))
+            .map_err(QueryError::Store)?;
         cross_filled_vector = cross_filled_vector.saturating_add(1);
     }
 
-    let mut lexical_candidates = lexical_window
-        .iter()
-        .map(|hit| LexicalCandidate::new(hit.document.map(|version| version.doc_id()), hit.bm25))
-        .collect::<Vec<_>>();
-    let missing = vector_window
-        .iter()
-        .filter(|candidate| !lexical_keys.contains(&(candidate.row_id(), candidate.document())))
-        .copied()
-        .collect::<Vec<_>>();
-    let (scores, lexical_counters) = cross_score_lexical(
+    for hit in lexical_window {
+        lexical_candidates
+            .push(LexicalCandidate::new(
+                hit.document.map(|version| version.doc_id()),
+                hit.bm25,
+            ))
+            .map_err(QueryError::Store)?;
+    }
+    for &candidate in vector_window {
+        let identity = (candidate.row_id(), candidate.document());
+        if lexical_keys.binary_search(&identity).is_ok() {
+            continue;
+        }
+        missing.push(candidate).map_err(QueryError::Store)?;
+        if scores
+            .get(scores.key(identity, CrossScorePolicy::Bm25Beir))
+            .is_none()
+        {
+            newly_missing.push(candidate).map_err(QueryError::Store)?;
+        }
+    }
+    let (new_scores, lexical_counters) = cross_score_lexical(
         snapshot,
         active,
         assembly,
+        preparation,
         lexical_query,
         lexical,
-        &missing,
+        newly_missing,
         cancellation,
     )?;
+    let lexical_scores_computed = newly_missing.len();
+    let mut new_scores = new_scores.into_iter();
     let cross_filled_lexical = missing.len();
-    for (candidate, score) in missing.iter().zip(scores) {
-        lexical_candidates.push(LexicalCandidate::new(
-            candidate.document().map(|version| version.doc_id()),
-            score,
+    for candidate in missing.iter() {
+        let key = scores.key(
+            (candidate.row_id(), candidate.document()),
+            CrossScorePolicy::Bm25Beir,
+        );
+        let score = match scores.get(key) {
+            Some(score) => score,
+            None => {
+                // CandidateScoring returns the uncached rows in their
+                // supplied order. Materialize directly instead of allocating
+                // a persistent cache solely to read these values back.
+                let score = new_scores.next().ok_or_else(|| {
+                    lexical_invariant("hybrid candidate has no completed exact lexical score")
+                })?;
+                if retain_scores {
+                    scores.insert(key, score)?;
+                }
+                score
+            }
+        };
+        lexical_candidates
+            .push(LexicalCandidate::new(
+                candidate.document().map(|version| version.doc_id()),
+                score,
+            ))
+            .map_err(QueryError::Store)?;
+    }
+    if new_scores.next().is_some() {
+        return Err(lexical_invariant(
+            "hybrid cross-scorer returned an unexpected extra lexical score",
         ));
     }
+    scores.finish_round()?;
 
-    vector_candidates.sort_by(|left, right| left.squared_l2().total_cmp(&right.squared_l2()));
-    lexical_candidates.sort_by(|left, right| right.bm25().total_cmp(&left.bm25()));
+    vector_candidates
+        .as_mut_slice()
+        .sort_by(|left, right| left.squared_l2().total_cmp(&right.squared_l2()));
+    lexical_candidates
+        .as_mut_slice()
+        .sort_by(|left, right| right.bm25().total_cmp(&left.bm25()));
 
     let vector_bounds = match vector_candidates.first() {
         None => None,
@@ -357,7 +773,7 @@ pub(crate) fn build_round(
             super::stats::AllocationComponent::Temporary,
         )
         .map_err(QueryError::Store)?;
-        for &(row_id, document) in vector_keys.iter().chain(&lexical_keys) {
+        for &(row_id, document) in vector_keys.iter().chain(lexical_keys.iter()) {
             if let Some(version) = document {
                 addresses
                     .push((
@@ -398,6 +814,8 @@ pub(crate) fn build_round(
         cross_filled_vector,
         cross_filled_lexical,
         lexical_counters,
+        vector_scores_computed,
+        lexical_scores_computed,
     })
 }
 
@@ -436,6 +854,7 @@ fn cross_score_lexical(
     snapshot: &PublishedSnapshot,
     active: &ActiveSegment,
     assembly: &super::LexicalAssembly,
+    preparation: &super::prepared_lexical::PreparedLexicalQuery<'_>,
     query: super::PinnedLexicalQuery<'_>,
     lexical: &[LexicalHit],
     missing: &[SearchCandidate],
@@ -510,13 +929,7 @@ fn cross_score_lexical(
     if batches.iter().all(Vec::is_empty) {
         return Ok((scores, counters));
     }
-    let prepared =
-        CandidateScoring::new(&assembly.index, query, crate::fts::bm25::Bm25Params::beir())
-            .map_err(|error| FusionError::Leg {
-                leg: FusionLeg::Lexical,
-                kind: LegFailureKind::Lexical,
-                detail: error.to_string(),
-            })?;
+    let prepared = CandidateScoring::prepared(preparation.term_scoring(assembly, query)?);
     let mut work = CandidateScoringWork::default();
     for (ordinal, batch) in batches
         .iter()
@@ -529,6 +942,18 @@ fn cross_score_lexical(
             .segments()
             .get(ordinal)
             .ok_or_else(|| lexical_invariant("hybrid lexical segment is absent"))?;
+        #[cfg(any(test, feature = "test-support"))]
+        SCORE_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                for (_, position) in batch {
+                    if let Some(candidate) = missing.get(*position) {
+                        observations
+                            .lexical_rows
+                            .push((candidate.row_id(), candidate.document()));
+                    }
+                }
+            }
+        });
         let result = prepared
             .score_rows(ordinal, segment, &rows, &mut work, |_| {
                 cancellation.check_graph()
@@ -585,6 +1010,25 @@ fn exact_squared_l2(
         .and_then(|start| start.checked_add(dimension).map(|end| start..end))
         .and_then(|range| rows.get(range))
         .ok_or_else(|| invariant("hybrid cross-fill row is outside its segment"))?;
+    #[cfg(any(test, feature = "test-support"))]
+    if SCORE_TEST_OBSERVATIONS.with(|observations| observations.borrow().is_some()) {
+        let document = super::structured_lexical_document(snapshot, active, sources, doc, false)
+            .map_err(super::map_term_leg_document_error)?;
+        let key = lexical_identity(
+            snapshot,
+            sources,
+            &LexicalHit {
+                doc,
+                document,
+                bm25: 0.0,
+            },
+        )?;
+        SCORE_TEST_OBSERVATIONS.with(|observations| {
+            if let Some(observations) = observations.borrow_mut().as_mut() {
+                observations.vector_rows.push(key);
+            }
+        });
+    }
     let squared_l2 = crate::quant::squared_l2_f64(query, row) as f32;
     if !squared_l2.is_finite() {
         return Err(invariant(
@@ -599,6 +1043,75 @@ fn exact_squared_l2(
 mod tests {
     use super::{HYBRID_WINDOW_FLOOR, HybridWindow, hybrid_window};
     use crate::fusion::{FusionError, LegFailureKind};
+
+    #[test]
+    fn astra_09_candidate_capacity_is_accounted_through_reuse_and_failed_growth() {
+        use super::{Accounted, Accounting, HybridRoundBuffers, reserve_candidate_buffer};
+        use std::sync::Arc;
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let mut buffers = HybridRoundBuffers::new();
+        buffers.prepare(50, 50, &accounting).expect("first window");
+        let first = buffers.resident_bytes;
+        assert!(first > 0);
+        assert_eq!(
+            accounting.audit().expect("first charge").temporary_bytes,
+            first
+        );
+        let pointer = buffers.vector.as_ptr();
+        buffers
+            .prepare(25, 25, &accounting)
+            .expect("smaller window");
+        assert_eq!(buffers.vector.as_ptr(), pointer, "same allocation reused");
+        assert_eq!(buffers.resident_bytes, first);
+        buffers
+            .prepare(100, 100, &accounting)
+            .expect("wider window");
+        assert_eq!(buffers.resident_bytes, first * 2);
+        assert!(
+            buffers.peak_bytes > buffers.resident_bytes,
+            "old allocation charged during growth"
+        );
+        assert_eq!(
+            accounting.audit().expect("wider charge").temporary_bytes,
+            buffers.resident_bytes
+        );
+        eprintln!(
+            "first={first} retained={} growth_peak={}",
+            buffers.resident_bytes, buffers.peak_bytes
+        );
+        drop(buffers);
+        assert_eq!(accounting.audit().expect("released").temporary_bytes, 0);
+
+        // Four old bytes plus eight replacement bytes need twelve, even though
+        // only eight will remain. A failed reservation leaves the old owner intact.
+        let accounting = Arc::new(Accounting::new(u64::MAX, 11));
+        let mut buffer = Accounted::<Vec<u8>>::unaccounted_empty();
+        let (mut resident, mut peak) = (0, 0);
+        reserve_candidate_buffer(&mut buffer, 4, &accounting, &mut resident, &mut peak)
+            .expect("four bytes");
+        buffer.push(7).expect("one element");
+        let error = reserve_candidate_buffer(&mut buffer, 8, &accounting, &mut resident, &mut peak)
+            .err()
+            .expect("growth refused");
+        assert!(matches!(
+            error,
+            FusionError::Leg {
+                kind: LegFailureKind::Store(crate::lifecycle::StoreErrorKind::BudgetExceeded),
+                ..
+            }
+        ));
+        assert_eq!(buffer.capacity(), 4);
+        assert!(buffer.is_empty(), "failed round publishes no elements");
+        assert_eq!(accounting.audit().expect("old owner").temporary_bytes, 4);
+        drop(buffer);
+        assert_eq!(
+            accounting
+                .audit()
+                .expect("failed query released")
+                .temporary_bytes,
+            0
+        );
+    }
 
     #[test]
     fn astra_01_ann_boundary_is_not_an_unseen_certificate() {
@@ -618,11 +1131,11 @@ mod tests {
         for next in [None, Some(9.0)] {
             let round = super::HybridRound {
                 addresses: None,
-                vector: vec![
+                vector: &[
                     super::VectorCandidate::exact(Some(DocId::new(1)), 1.0),
                     super::VectorCandidate::exact(Some(DocId::new(2)), 4.0),
                 ],
-                lexical: Vec::new(),
+                lexical: &[],
                 bounds: super::LegBounds {
                     vector: Some(super::VectorBounds {
                         min_squared_l2: 1.0,
@@ -634,6 +1147,8 @@ mod tests {
                 cross_filled_vector: 0,
                 cross_filled_lexical: 0,
                 lexical_counters: crate::fts::search::SearchCounters::default(),
+                vector_scores_computed: 0,
+                lexical_scores_computed: 0,
             };
             let outcome = super::fuse_round(
                 &HybridQuery::new(1),
@@ -645,6 +1160,9 @@ mod tests {
                     cross_scores_complete: true,
                 },
                 false,
+                &mut crate::fusion::StoreFusionScratch::new(super::Arc::new(
+                    super::Accounting::new(u64::MAX, u64::MAX),
+                )),
             )
             .expect("ANN round");
             assert_eq!(

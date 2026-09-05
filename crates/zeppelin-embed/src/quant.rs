@@ -4,6 +4,38 @@ mod bits4;
 mod int8;
 mod rescore;
 
+/// Actual query quantizer calls on an explicitly observed caller thread.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default, Debug)]
+#[doc(hidden)]
+pub struct QueryPreparationTestObservations {
+    /// Logical dimensions and rounding seed at each Bit4 preparation.
+    pub bit4: Vec<(usize, u64)>,
+    /// Logical dimensions at each affine Int8 preparation.
+    pub int8: Vec<usize>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static QUERY_PREPARATIONS: std::cell::RefCell<Option<QueryPreparationTestObservations>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Starts observing actual quantizer calls; ordinary execution retains no trace.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn begin_query_preparation_test_observations() {
+    QUERY_PREPARATIONS
+        .with(|calls| *calls.borrow_mut() = Some(QueryPreparationTestObservations::default()));
+}
+
+/// Returns recorded calls and disables collection.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn take_query_preparation_test_observations() -> QueryPreparationTestObservations {
+    QUERY_PREPARATIONS.with(|calls| calls.take().unwrap_or_default())
+}
+
 pub use bits4::{
     Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query,
     quantize_bit4,
@@ -11,7 +43,10 @@ pub use bits4::{
 pub use int8::{
     Int8Query, Int8Vec, dequantize_int8, dot_int8_query, prepare_int8_query, quantize_int8,
 };
-pub(crate) use rescore::{RescoreCheckError, exact_squared_l2_with_sink, squared_l2_f64};
+pub(crate) use rescore::{
+    ExactScoreReuse, RescoreCheckError, exact_squared_l2_with_sink, rescore_top_k_reusing,
+    squared_l2_f64,
+};
 pub use rescore::{
     RescoreError, RescoreHit, RescoreMetric, RescorePool, RescoreResult, SearchByteCounts,
     rescore_top_k,

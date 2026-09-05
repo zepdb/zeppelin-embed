@@ -69,10 +69,14 @@ fn columns(rows: usize) -> zeppelin_embed::meta::ColumnStore {
 }
 
 fn fixture_vectors(rows: usize) -> Vec<f32> {
-    let mut vectors = Vec::with_capacity(rows * DIMS);
+    fixture_vectors_at_dimensions(rows, DIMS)
+}
+
+fn fixture_vectors_at_dimensions(rows: usize, dimensions: usize) -> Vec<f32> {
+    let mut vectors = Vec::with_capacity(rows * dimensions);
     for row in 0..rows {
         let amplitude = row as f32;
-        for dimension in 0..DIMS {
+        for dimension in 0..dimensions {
             let sign = if dimension.is_multiple_of(2) {
                 1.0
             } else {
@@ -93,11 +97,19 @@ fn unit_fixture_vectors(rows: usize) -> Vec<f32> {
 }
 
 fn quantize_rows(vectors: &[f32], rows: usize) -> (Vec<u8>, Vec<Bit4Factors>) {
-    let row_bytes = DIMS.div_ceil(2);
+    quantize_rows_at_dimensions(vectors, rows, DIMS)
+}
+
+fn quantize_rows_at_dimensions(
+    vectors: &[f32],
+    rows: usize,
+    dimensions: usize,
+) -> (Vec<u8>, Vec<Bit4Factors>) {
+    let row_bytes = dimensions.div_ceil(2);
     let mut codes = vec![0_u8; rows * row_bytes];
     let mut factors = Vec::with_capacity(rows);
     for (row, encoded) in vectors
-        .chunks_exact(DIMS)
+        .chunks_exact(dimensions)
         .zip(codes.chunks_exact_mut(row_bytes))
     {
         factors.push(quantize_bit4(row, encoded).expect("finite fixture vector"));
@@ -110,17 +122,26 @@ fn publish_graph_fixture(alive: AliveSet) -> GraphFixture {
 }
 
 fn publish_graph_fixture_with_epoch(alive: AliveSet, epoch: Option<&StoreEpoch>) -> GraphFixture {
+    publish_graph_fixture_at_dimensions(alive, epoch, DIMS)
+}
+
+fn publish_graph_fixture_at_dimensions(
+    alive: AliveSet,
+    epoch: Option<&StoreEpoch>,
+    dimensions: usize,
+) -> GraphFixture {
     let directory = tempdir().expect("graph store directory");
     let input_id = SegmentId::new(0x0001_9000_0000, [0x30; 10]);
     let id = SegmentId::new(0x0001_9000_0001, [0x31; 10]);
     let vectors = if epoch
         .is_some_and(|declared| declared.embedding.document.normalization == Normalization::L2)
     {
+        assert_eq!(dimensions, DIMS, "existing unit-vector epoch fixture");
         unit_fixture_vectors(ROWS)
     } else {
-        fixture_vectors(ROWS)
+        fixture_vectors_at_dimensions(ROWS, dimensions)
     };
-    let (codes, factors) = quantize_rows(&vectors, ROWS);
+    let (codes, factors) = quantize_rows_at_dimensions(&vectors, ROWS, dimensions);
     let columns = columns(ROWS);
     alive.debug_assert_consistent();
     let mut input_meta = write_segment(
@@ -129,7 +150,7 @@ fn publish_graph_fixture_with_epoch(alive: AliveSet, epoch: Option<&StoreEpoch>)
         SegmentBuild {
             id: input_id,
             scheme: 4,
-            dims: DIMS as u32,
+            dims: dimensions as u32,
             codes: &codes,
             factors: SegmentFactors::Bit4(&factors),
             rescore: &vectors,
@@ -1163,6 +1184,287 @@ fn graph_tier_returns_full_k_when_many_rows_are_tombstoned() {
         "requested k=4 with three tombstoned rows at the front of the ranking"
     );
     store.close().expect("close store");
+}
+
+#[test]
+fn astra_09_widening_prepares_each_geometry_once() {
+    use zeppelin_embed::graph::search::{
+        begin_graph_query_test_observations, take_graph_query_test_observations,
+    };
+    // One store has one original vector dimension. Exercise both an aligned
+    // and a genuinely padded persisted graph in separate valid admissions.
+    for dimensions in [128, 129] {
+        let mut alive = AliveSet::new(ROWS as u32);
+        for row in 0..3 {
+            alive.tombstone(row).expect("three nearest rows deleted");
+        }
+        let fixture = publish_graph_fixture_at_dimensions(alive, None, dimensions);
+        let store =
+            Store::open(fixture.directory.path(), OpenOptions::default()).expect("open store");
+        let vector = vec![0.0; dimensions];
+        for seed in [0, 71] {
+            begin_graph_query_test_observations();
+            let result = store
+                .search(
+                    SearchRequest::new(&vector),
+                    1,
+                    SearchOptions::default().with_tier(SearchTier::Graph(
+                        GraphSearchOptions::new(GraphSearchProfile::SiftClass)
+                            .with_ef(ROWS)
+                            .with_seed(seed),
+                    )),
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("widen one, two, then four retained rows");
+            let calls = take_graph_query_test_observations();
+            assert_eq!(result.candidates.len(), 1);
+            assert_eq!(result.candidates[0].row_id().local_row(), 3);
+            assert_eq!(
+                calls.traversals, 3,
+                "the repeated preparation path must fire"
+            );
+            eprintln!(
+                "seed={seed} traversals={} preparations={:?}",
+                calls.traversals, calls.preparations
+            );
+            let padding = dimensions.div_ceil(128) * 128;
+            assert_eq!(calls.preparations, vec![(dimensions, padding, seed)]);
+            assert_eq!(
+                store
+                    .stats()
+                    .expect("query capacity released")
+                    .temporary_bytes,
+                0
+            );
+        }
+        store.close().expect("close graph preparation store");
+    }
+}
+
+#[test]
+fn astra_09_graph_widening_exact_scores_each_retained_row_once() {
+    use zeppelin_embed::graph::search::{
+        begin_graph_query_test_observations, take_graph_query_test_observations,
+    };
+    let mut alive = AliveSet::new(ROWS as u32);
+    for row in 0..3 {
+        alive.tombstone(row).expect("three nearest rows deleted");
+    }
+    let fixture = publish_graph_fixture(alive);
+    let store = Store::open(fixture.directory.path(), OpenOptions::default()).expect("open");
+    let vector = vec![0.0; DIMS];
+    begin_graph_query_test_observations();
+    let result = store
+        .search(
+            SearchRequest::new(&vector),
+            1,
+            SearchOptions::default().with_tier(SearchTier::Graph(
+                GraphSearchOptions::new(GraphSearchProfile::SiftClass).with_ef(ROWS),
+            )),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("three widening traversals");
+    let observed = take_graph_query_test_observations();
+    assert_eq!(observed.traversals, 3);
+    assert_eq!(observed.validated_pools.len(), 3);
+    for pool in &observed.validated_pools {
+        assert_eq!(
+            pool.iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            (0..ROWS as u32).collect()
+        );
+    }
+    assert_eq!(result.candidates.len(), 1);
+    assert_eq!(result.candidates[0].row_id().local_row(), 3);
+    assert_eq!(
+        result.candidates[0].score().to_bits(),
+        (-1152.0_f32).to_bits()
+    );
+    let unique = observed
+        .exact_rows
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(unique, (0..ROWS).collect());
+    eprintln!(
+        "traversals={} actual_exact_calls={} unique_rows={} reported_rescores={}",
+        observed.traversals,
+        observed.exact_rows.len(),
+        unique.len(),
+        result.graph_stats.candidates_rescored
+    );
+    assert_eq!(
+        observed.exact_rows.len(),
+        ROWS,
+        "one actual f64 score per retained physical row"
+    );
+    assert_eq!(result.graph_stats.candidates_rescored, ROWS);
+    assert_eq!(result.graph_stats.candidates_scored, 3 * ROWS);
+    assert_eq!(result.stats.dims_touched, 6_144);
+    assert_eq!(result.stats.bytes_read, 8_880);
+    assert_eq!(
+        store.stats().expect("released query cache").temporary_bytes,
+        0
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_09_mixed_graph_padding_keeps_preparation_and_physical_scores_distinct() {
+    use zeppelin_embed::graph::search::{
+        begin_graph_query_test_observations, take_graph_query_test_observations,
+    };
+    use zeppelin_embed::segment::writer::{
+        SegmentDocumentVersions, write_segment_with_graph_and_documents,
+    };
+    const DIMENSIONS: usize = 129;
+    let directory = tempdir().expect("mixed padding store");
+    let columns = columns(ROWS);
+    let mut metas = Vec::new();
+    let mut source_ids = Vec::new();
+    for (ordinal, padding) in [256_usize, 512].into_iter().enumerate() {
+        let id = SegmentId::new(0x0001_9090_0000 + ordinal as u64, [0x39; 10]);
+        source_ids.push(id);
+        let mut vectors = fixture_vectors_at_dimensions(ROWS, DIMENSIONS);
+        for (row, values) in vectors.chunks_exact_mut(DIMENSIONS).enumerate() {
+            for (dim, value) in values.iter_mut().enumerate() {
+                *value = (row as f32 + ordinal as f32 * 0.5)
+                    * if dim.is_multiple_of(2) { 1.0 } else { -1.0 };
+            }
+        }
+        let (codes, factors) = quantize_rows_at_dimensions(&vectors, ROWS, DIMENSIONS);
+        // Persisted graph padding is zero bytes beyond the logical code,
+        // not an independently quantized padded vector.
+        let graph_codes = codes
+            .chunks_exact(DIMENSIONS.div_ceil(2))
+            .flat_map(|row| {
+                let mut padded = row.to_vec();
+                padded.resize(padding / 2, 0);
+                padded
+            })
+            .collect::<Vec<_>>();
+        let neighbors = (0..ROWS)
+            .map(|row| {
+                (0..ROWS as u32)
+                    .filter(|other| *other != row as u32)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let nodes = graph_codes
+            .chunks_exact(padding / 2)
+            .zip(&factors)
+            .zip(&neighbors)
+            .enumerate()
+            .map(|(row, ((codes, factors), neighbors))| GraphNodeBlockInput {
+                codes,
+                factors: *factors,
+                flags: u8::from(row < 4),
+                neighbors,
+            })
+            .collect::<Vec<_>>();
+        let mut alive = AliveSet::new(ROWS as u32);
+        for row in 0..3 {
+            alive.tombstone(row).expect("nearest tombstones");
+        }
+        let doc_ids = (0..ROWS)
+            .map(|row| DocId::new(100 * (ordinal as u128 + 1) + row as u128))
+            .collect::<Vec<_>>();
+        let revisions = vec![Revision::new(ordinal as u64 + 1); ROWS];
+        metas.push(
+            write_segment_with_graph_and_documents(
+                &StdVfs,
+                directory.path(),
+                SegmentBuild {
+                    id,
+                    scheme: 4,
+                    dims: DIMENSIONS as u32,
+                    codes: &codes,
+                    factors: SegmentFactors::Bit4(&factors),
+                    rescore: &vectors,
+                    columns: &columns,
+                    alive: &alive,
+                },
+                GraphNodeBlockBuild {
+                    layout: GraphNodeLayout::new(
+                        DIMENSIONS as u32,
+                        padding as u32,
+                        (ROWS - 1) as u8,
+                    )
+                    .expect("compatible graph layout"),
+                    nodes: &nodes,
+                },
+                SegmentDocumentVersions {
+                    doc_ids: &doc_ids,
+                    revisions: &revisions,
+                },
+                policy(),
+            )
+            .expect("publish mixed graph segment"),
+        );
+    }
+    commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &Manifest {
+            generation: 1,
+            log_seq: 0,
+            segments: metas,
+            epochs: vec![],
+            epoch_alias: None,
+            schema: columns.schema().clone(),
+        },
+        policy(),
+    )
+    .expect("publish both geometries");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open mixed store");
+    let vector = vec![0.0_f32; DIMENSIONS];
+    for seed in [0, 71] {
+        begin_graph_query_test_observations();
+        let result = store
+            .search(
+                SearchRequest::new(&vector),
+                2,
+                SearchOptions::default().with_tier(SearchTier::Graph(
+                    GraphSearchOptions::new(GraphSearchProfile::SiftClass)
+                        .with_ef(ROWS)
+                        .with_seed(seed),
+                )),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("widen each segment three times");
+        let calls = take_graph_query_test_observations();
+        assert_eq!(calls.traversals, 6);
+        let mut geometries = calls.preparations;
+        geometries.sort_unstable();
+        assert_eq!(
+            geometries,
+            vec![(DIMENSIONS, 256, seed), (DIMENSIONS, 512, seed)]
+        );
+        assert_eq!(calls.exact_rows.len(), 2 * ROWS);
+        assert_eq!(calls.validated_pools.len(), 6);
+        assert_eq!(result.graph_stats.candidates_rescored, 2 * ROWS);
+        assert_eq!(result.candidates.len(), 2);
+        for (ordinal, candidate) in result.candidates.iter().enumerate() {
+            assert_eq!(
+                candidate.row_id().source(),
+                RowSource::Sealed(source_ids[ordinal])
+            );
+            assert_eq!(candidate.row_id().local_row(), 3);
+            let amplitude = 3.0_f64 + ordinal as f64 * 0.5;
+            let independent = -(DIMENSIONS as f64 * amplitude * amplitude) as f32;
+            assert_eq!(candidate.score().to_bits(), independent.to_bits());
+        }
+        assert_eq!(
+            store
+                .stats()
+                .expect("release all query-owned capacities")
+                .temporary_bytes,
+            0
+        );
+        eprintln!("seed={seed} traversals=6 geometries={geometries:?} actual_rescores=24");
+    }
+    store.close().expect("close mixed store");
 }
 
 #[test]

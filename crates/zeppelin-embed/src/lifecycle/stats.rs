@@ -455,6 +455,31 @@ impl<T> Accounted<Vec<T>> {
             .map_or(0, |reservation| reservation.bytes)
     }
 
+    /// Grows retained capacity while charging both old and replacement
+    /// allocations until the old buffer has actually been released.
+    pub(crate) fn try_reserve_total(
+        &mut self,
+        accounting: &Arc<Accounting>,
+        capacity: usize,
+        component: AllocationComponent,
+    ) -> Result<(), StoreError> {
+        if capacity <= self.element_limit.unwrap_or(0) {
+            return Ok(());
+        }
+        let mut replacement = Self::try_with_capacity(accounting, capacity, component)?;
+        if self.value.len() > capacity {
+            return Err(StoreError::AllocationFailed {
+                needed: self.value.len() as u64,
+                component: "accounted vector capacity",
+            });
+        }
+        // The destination was reserved for every element. Moving them keeps
+        // nested allocation owners intact and cannot trigger another growth.
+        replacement.value.append(&mut self.value);
+        *self = replacement;
+        Ok(())
+    }
+
     pub(crate) fn push(&mut self, value: T) -> Result<(), StoreError> {
         let accounted_elements = self.element_limit.unwrap_or(usize::MAX);
         if self.value.len() >= accounted_elements || self.value.len() == self.value.capacity() {
@@ -532,6 +557,18 @@ impl<T> Accounted<Vec<T>> {
 
     pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
         self.value.as_mut_slice()
+    }
+
+    /// Drops elements while retaining the complete accounted allocation.
+    pub(crate) fn clear(&mut self) {
+        self.value.clear();
+    }
+
+    pub(crate) fn dedup(&mut self)
+    where
+        T: PartialEq,
+    {
+        self.value.dedup();
     }
 
     pub(crate) fn reserve_additional_bytes(&mut self, additional: u64) -> Result<(), StoreError> {

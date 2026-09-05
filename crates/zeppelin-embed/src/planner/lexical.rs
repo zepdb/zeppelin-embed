@@ -138,6 +138,8 @@ pub(crate) fn search_lexical_filtered_refs(
     Ok(LexicalSearchOutcome { result, branch })
 }
 
+// Keep this loop's stack layout independent of the larger query caller.
+#[inline(never)]
 fn validate_allow_lists(
     index: &LexicalIndex,
     allow_lists: &[&DocBitmap],

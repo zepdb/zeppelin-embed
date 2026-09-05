@@ -250,9 +250,9 @@ pub struct HybridReport {
     pub cross_filled_vector: usize,
     /// Vector-window documents given an exact BM25 they lacked.
     pub cross_filled_lexical: usize,
-    /// Exact vector cross-fills across all completed rounds, including repeats.
+    /// New exact vector cross-scores across all completed rounds, excluding reuse.
     pub total_cross_filled_vector: usize,
-    /// Computed lexical cross-scores across all completed rounds, including zeros.
+    /// New lexical cross-scores across all completed rounds, including zeros.
     pub total_cross_filled_lexical: usize,
     /// Sum of vector producer candidate counts before each round's fusion cut.
     pub vector_candidates_produced: usize,

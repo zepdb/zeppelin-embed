@@ -118,6 +118,10 @@ impl Bit4Query {
         self.codes.is_empty()
     }
 
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.codes.capacity()
+    }
+
     /// Returns the prepared code bytes, pre-interleave sum, and half-scale
     /// exactly as consumed by the scoring kernel.
     #[cfg(any(test, feature = "test-support"))]
@@ -302,6 +306,12 @@ pub fn dequantize_bit4(
 /// [`quantize_bit4`].
 pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError> {
     validate_vector(q)?;
+    #[cfg(any(test, feature = "test-support"))]
+    super::QUERY_PREPARATIONS.with(|calls| {
+        if let Some(calls) = calls.borrow_mut().as_mut() {
+            calls.bit4.push((q.len(), seed));
+        }
+    });
     let max_absolute = q.iter().map(|value| value.abs()).fold(0.0_f32, f32::max);
     if max_absolute == 0.0 {
         return Ok(Bit4Query {

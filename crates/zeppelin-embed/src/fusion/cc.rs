@@ -14,6 +14,122 @@ struct Accumulator {
     fused_score: f64,
 }
 
+/// One store admission's score union. Standalone fusion keeps its owned API.
+pub(crate) struct StoreFusionScratch<K> {
+    hits: crate::lifecycle::stats::Accounted<Vec<FusedHit<K>>>,
+    accounting: std::sync::Arc<crate::lifecycle::stats::Accounting>,
+    peak_bytes: u64,
+}
+
+impl<K: Clone + Ord> StoreFusionScratch<K> {
+    pub(crate) fn new(accounting: std::sync::Arc<crate::lifecycle::stats::Accounting>) -> Self {
+        Self {
+            hits: crate::lifecycle::stats::Accounted::unaccounted_empty(),
+            accounting,
+            peak_bytes: 0,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn capacity(&self) -> usize {
+        self.hits.capacity()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn peak_bytes(&self) -> u64 {
+        self.peak_bytes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn score_prefix(
+        &mut self,
+        vector: &[JoinedVector<K>],
+        lexical: &[JoinedLexical<K>],
+        vector_take: usize,
+        lexical_take: usize,
+        method: FusionMethod,
+        alpha: f64,
+        vector_range: Option<ScoreRange>,
+        lexical_range: Option<ScoreRange>,
+    ) -> Result<&[FusedHit<K>], FusionError> {
+        use crate::lifecycle::{QueryError, StoreError, stats::AllocationComponent};
+        let overflow = || {
+            QueryError::Store(StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "fusion union",
+            })
+        };
+        self.hits.clear();
+        let capacity = vector_take.checked_add(lexical_take).ok_or_else(overflow)?;
+        let old_bytes = self.hits.resident_bytes();
+        self.hits
+            .try_reserve_total(&self.accounting, capacity, AllocationComponent::Temporary)
+            .map_err(QueryError::Store)?;
+        let bytes = self.hits.resident_bytes();
+        self.peak_bytes = self.peak_bytes.max(if bytes != old_bytes {
+            old_bytes.checked_add(bytes).ok_or_else(overflow)?
+        } else {
+            bytes
+        });
+        for (rank, hit) in vector.iter().take(vector_take).enumerate() {
+            self.hits
+                .push(FusedHit {
+                    key: hit.key.clone(),
+                    vector_squared_l2: Some(hit.squared_l2),
+                    lexical_bm25: None,
+                    fused_score: 0.0
+                        + vector_contribution(rank, hit.squared_l2, method, alpha, vector_range),
+                })
+                .map_err(QueryError::Store)?;
+        }
+        // Validation has already rejected duplicate identities within each leg.
+        // Search the fixed vector prefix; lexical-only keys can append without
+        // moving it, since no later lexical entry can repeat an appended key.
+        self.hits
+            .as_mut_slice()
+            .sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        let vector_len = self.hits.len();
+        for (rank, hit) in lexical.iter().take(lexical_take).enumerate() {
+            let contribution = lexical_contribution(rank, hit.bm25, method, alpha, lexical_range);
+            let position = self.hits.get(..vector_len).and_then(|prefix| {
+                prefix
+                    .binary_search_by(|entry| entry.key.cmp(&hit.key))
+                    .ok()
+            });
+            if let Some(position) = position {
+                let accumulator =
+                    self.hits
+                        .as_mut_slice()
+                        .get_mut(position)
+                        .ok_or_else(|| FusionError::Leg {
+                            leg: FusionLeg::Lexical,
+                            kind: super::LegFailureKind::Invariant,
+                            detail: "fusion union lost a validated candidate".to_owned(),
+                        })?;
+                accumulator.lexical_bm25 = Some(hit.bm25);
+                accumulator.fused_score += contribution;
+            } else {
+                self.hits
+                    .push(FusedHit {
+                        key: hit.key.clone(),
+                        vector_squared_l2: None,
+                        lexical_bm25: Some(hit.bm25),
+                        fused_score: 0.0 + contribution,
+                    })
+                    .map_err(QueryError::Store)?;
+            }
+        }
+        self.hits.as_mut_slice().sort_unstable_by(|left, right| {
+            right
+                .fused_score
+                .total_cmp(&left.fused_score)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        Ok(&self.hits)
+    }
+}
+
 pub(crate) fn fuse_joined<K>(
     query: &HybridQuery,
     vector: &[JoinedVector<K>],
@@ -157,7 +273,16 @@ pub(crate) fn fuse_bounded_joined<K>(
 where
     K: Clone + Ord,
 {
-    fuse_bounded_policy(query, vector, lexical, bounds, alpha, applied_rules, false)
+    fuse_bounded_policy(
+        query,
+        vector,
+        lexical,
+        bounds,
+        alpha,
+        applied_rules,
+        false,
+        None,
+    )
 }
 
 pub(crate) fn fuse_store_bounded_joined<K>(
@@ -167,13 +292,24 @@ pub(crate) fn fuse_store_bounded_joined<K>(
     bounds: LegBounds,
     alpha: f64,
     applied_rules: Vec<FusionRule>,
+    scratch: &mut StoreFusionScratch<K>,
 ) -> Result<FusionOutcome<K>, FusionError>
 where
     K: Clone + Ord,
 {
-    fuse_bounded_policy(query, vector, lexical, bounds, alpha, applied_rules, true)
+    fuse_bounded_policy(
+        query,
+        vector,
+        lexical,
+        bounds,
+        alpha,
+        applied_rules,
+        true,
+        Some(scratch),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fuse_bounded_policy<K>(
     query: &HybridQuery,
     vector: &[JoinedVector<K>],
@@ -182,6 +318,7 @@ fn fuse_bounded_policy<K>(
     alpha: f64,
     applied_rules: Vec<FusionRule>,
     fixed_anchors: bool,
+    scratch: Option<&mut StoreFusionScratch<K>>,
 ) -> Result<FusionOutcome<K>, FusionError>
 where
     K: Clone + Ord,
@@ -262,17 +399,32 @@ where
             lexical_prefix_len(lexical, lexical_next),
         ),
     };
-    let all_hits = score_prefix(
-        vector,
-        lexical,
-        vector_take,
-        lexical_take,
-        method,
-        alpha,
-        vector_range,
-        lexical_range,
-    );
-    let hits = top_k(all_hits.clone(), query.k);
+    let fresh_hits;
+    let all_hits = if let Some(scratch) = scratch {
+        scratch.score_prefix(
+            vector,
+            lexical,
+            vector_take,
+            lexical_take,
+            method,
+            alpha,
+            vector_range,
+            lexical_range,
+        )?
+    } else {
+        fresh_hits = score_prefix(
+            vector,
+            lexical,
+            vector_take,
+            lexical_take,
+            method,
+            alpha,
+            vector_range,
+            lexical_range,
+        );
+        &fresh_hits
+    };
+    let hits = all_hits.iter().take(query.k).cloned().collect::<Vec<_>>();
     if exhausted {
         return Ok(FusionOutcome {
             hits,
@@ -305,7 +457,7 @@ where
             cross_filled_stable(&hits, query.k, next_vector.max(0.0) + next_lexical.max(0.0))
         }
         FusionMethod::ReciprocalRankFusion => prefix_stable(
-            &all_hits,
+            all_hits,
             &hits,
             query.k,
             vector,
@@ -558,23 +710,13 @@ where
 {
     let mut scores = BTreeMap::<K, Accumulator>::new();
     for (rank, hit) in vector.iter().take(vector_take).enumerate() {
-        let contribution = match (method, vector_range) {
-            (FusionMethod::ConvexCombination, Some(range)) => alpha * range.vector(hit.squared_l2),
-            (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(rank),
-            (FusionMethod::ConvexCombination, None) => 0.0,
-        };
+        let contribution = vector_contribution(rank, hit.squared_l2, method, alpha, vector_range);
         let accumulator = scores.entry(hit.key.clone()).or_default();
         accumulator.vector_squared_l2 = Some(hit.squared_l2);
         accumulator.fused_score += contribution;
     }
     for (rank, hit) in lexical.iter().take(lexical_take).enumerate() {
-        let contribution = match (method, lexical_range) {
-            (FusionMethod::ConvexCombination, Some(range)) => {
-                (1.0 - alpha) * range.lexical(hit.bm25)
-            }
-            (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(rank),
-            (FusionMethod::ConvexCombination, None) => 0.0,
-        };
+        let contribution = lexical_contribution(rank, hit.bm25, method, alpha, lexical_range);
         let accumulator = scores.entry(hit.key.clone()).or_default();
         accumulator.lexical_bm25 = Some(hit.bm25);
         accumulator.fused_score += contribution;
@@ -595,6 +737,34 @@ where
             .then_with(|| left.key.cmp(&right.key))
     });
     hits
+}
+
+fn vector_contribution(
+    rank: usize,
+    score: f64,
+    method: FusionMethod,
+    alpha: f64,
+    range: Option<ScoreRange>,
+) -> f64 {
+    match (method, range) {
+        (FusionMethod::ConvexCombination, Some(range)) => alpha * range.vector(score),
+        (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(rank),
+        (FusionMethod::ConvexCombination, None) => 0.0,
+    }
+}
+
+fn lexical_contribution(
+    rank: usize,
+    score: f64,
+    method: FusionMethod,
+    alpha: f64,
+    range: Option<ScoreRange>,
+) -> f64 {
+    match (method, range) {
+        (FusionMethod::ConvexCombination, Some(range)) => (1.0 - alpha) * range.lexical(score),
+        (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(rank),
+        (FusionMethod::ConvexCombination, None) => 0.0,
+    }
 }
 
 fn top_k<K>(mut hits: Vec<FusedHit<K>>, k: usize) -> Vec<FusedHit<K>> {
@@ -695,5 +865,178 @@ fn next_lexical_bound<K>(
         (FusionMethod::ConvexCombination, Some(range)) => (1.0 - alpha) * range.lexical(hit.bm25),
         (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(take),
         (FusionMethod::ConvexCombination, None) => 0.0,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod reuse_tests {
+    use super::*;
+    use crate::lifecycle::stats::Accounting;
+    use std::sync::Arc;
+
+    #[test]
+    fn astra_09_fusion_union_reuse_matches_literal_scores_and_old_accumulator() {
+        let vector = [(1_u32, 1.0), (2, 4.0), (3, 9.0)]
+            .map(|(key, squared_l2)| JoinedVector { key, squared_l2 });
+        let lexical =
+            [(2_u32, 8.0), (4, 4.0), (1, 0.0)].map(|(key, bm25)| JoinedLexical { key, bm25 });
+        let vr = Some(ScoreRange::fixed_zero(10.0, 1.0));
+        let lr = Some(ScoreRange::fixed_zero(8.0, 0.0));
+        for alpha in [0.0, 0.25, 1.0] {
+            let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+            let mut scratch = StoreFusionScratch::new(Arc::clone(&accounting));
+            for width in [1, 2, 3, 1, 0, 3] {
+                let previous_capacity = scratch.hits.capacity();
+                let previous_pointer = scratch.hits.as_ptr();
+                let actual = scratch
+                    .score_prefix(
+                        &vector,
+                        &lexical,
+                        width,
+                        width,
+                        FusionMethod::ConvexCombination,
+                        alpha,
+                        vr,
+                        lr,
+                    )
+                    .expect("reusable union");
+                // Independent literal corpus formula, including one-leg-only
+                // identities and zero-valued contributions. Preserve f64 order.
+                let mut expected = Vec::new();
+                for key in 1..=4 {
+                    let distance = vector
+                        .iter()
+                        .take(width)
+                        .find(|hit| hit.key == key)
+                        .map(|hit| hit.squared_l2);
+                    let bm25 = lexical
+                        .iter()
+                        .take(width)
+                        .find(|hit| hit.key == key)
+                        .map(|hit| hit.bm25);
+                    if distance.is_none() && bm25.is_none() {
+                        continue;
+                    }
+                    let mut fused_score = 0.0;
+                    if let Some(distance) = distance {
+                        fused_score += alpha * ((10.0 - distance) / 10.0);
+                    }
+                    if let Some(bm25) = bm25 {
+                        fused_score += (1.0 - alpha) * (bm25 / 8.0);
+                    }
+                    expected.push(FusedHit {
+                        key,
+                        vector_squared_l2: distance,
+                        lexical_bm25: bm25,
+                        fused_score,
+                    });
+                }
+                expected.sort_by(|left, right| {
+                    right
+                        .fused_score
+                        .total_cmp(&left.fused_score)
+                        .then_with(|| left.key.cmp(&right.key))
+                });
+                let bits = |hits: &[FusedHit<u32>]| {
+                    hits.iter()
+                        .map(|hit| {
+                            (
+                                hit.key,
+                                hit.vector_squared_l2.map(f64::to_bits),
+                                hit.lexical_bm25.map(f64::to_bits),
+                                hit.fused_score.to_bits(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(actual), bits(&expected));
+                assert_eq!(
+                    bits(actual),
+                    bits(&score_prefix(
+                        &vector,
+                        &lexical,
+                        width,
+                        width,
+                        FusionMethod::ConvexCombination,
+                        alpha,
+                        vr,
+                        lr
+                    ))
+                );
+                if width * 2 <= previous_capacity {
+                    assert_eq!(scratch.hits.as_ptr(), previous_pointer);
+                }
+                assert_eq!(
+                    accounting.audit().expect("live charge").temporary_bytes,
+                    scratch.hits.resident_bytes()
+                );
+            }
+            drop(scratch);
+            assert_eq!(
+                accounting.audit().expect("released union").temporary_bytes,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn astra_09_fusion_union_growth_reserves_both_allocations_and_releases_failure() {
+        let vector = [1_u32, 2, 3].map(|key| JoinedVector {
+            key,
+            squared_l2: 0.0,
+        });
+        let lexical = [1_u32, 2, 3].map(|key| JoinedLexical { key, bm25: 1.0 });
+        let bytes = std::mem::size_of::<FusedHit<u32>>() as u64;
+        let accounting = Arc::new(Accounting::new(u64::MAX, bytes * 7));
+        let mut scratch = StoreFusionScratch::new(Arc::clone(&accounting));
+        scratch
+            .score_prefix(
+                &vector,
+                &lexical,
+                1,
+                1,
+                FusionMethod::ConvexCombination,
+                0.5,
+                Some(ScoreRange::fixed_zero(0.0, 1.0)),
+                Some(ScoreRange::fixed_zero(1.0, 0.0)),
+            )
+            .expect("initial union");
+        assert_eq!(scratch.hits.resident_bytes(), bytes * 2);
+        let error = scratch
+            .score_prefix(
+                &vector,
+                &lexical,
+                3,
+                3,
+                FusionMethod::ConvexCombination,
+                0.5,
+                None,
+                None,
+            )
+            .err()
+            .expect("two old plus six new exceed seven");
+        assert!(matches!(
+            error,
+            FusionError::Leg {
+                kind: super::super::LegFailureKind::Store(
+                    crate::lifecycle::StoreErrorKind::BudgetExceeded
+                ),
+                ..
+            }
+        ));
+        assert!(scratch.hits.is_empty());
+        assert_eq!(
+            accounting.audit().expect("old allocation").temporary_bytes,
+            bytes * 2
+        );
+        drop(scratch);
+        assert_eq!(
+            accounting
+                .audit()
+                .expect("released failure")
+                .temporary_bytes,
+            0
+        );
     }
 }
