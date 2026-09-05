@@ -22,6 +22,10 @@ struct Counts {
     vocabulary_terms_visited: AtomicUsize,
     vocabulary_seek_steps: AtomicUsize,
     vocabulary_group_checks: AtomicUsize,
+    fuzzy_candidates: AtomicUsize,
+    fuzzy_dp_cells: AtomicUsize,
+    fuzzy_row_allocations: AtomicUsize,
+    fuzzy_scratch_constructions: AtomicUsize,
 }
 
 /// Actual dictionary construction and prefix traversal in one query window.
@@ -93,6 +97,54 @@ pub(crate) fn record_vocabulary_group_checks(count: usize) {
         if let Some(o) = current.borrow().as_ref() {
             o.0.vocabulary_group_checks
                 .fetch_add(count, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Actual fuzzy candidate distance calls, DP cells and row-buffer allocations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FuzzyWork {
+    /// Candidates submitted to the edit-distance matcher.
+    pub candidates: usize,
+    /// Evaluated dynamic-programming cells.
+    pub dp_cells: usize,
+    /// Heap row buffers constructed in the matcher.
+    pub row_allocations: usize,
+    /// Query-local bounded scratch objects constructed.
+    pub scratch_constructions: usize,
+}
+
+/// Reads the armed query's fuzzy matching work.
+pub fn fuzzy_work() -> FuzzyWork {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(FuzzyWork::default(), |o| FuzzyWork {
+                candidates: o.0.fuzzy_candidates.load(Ordering::Relaxed),
+                dp_cells: o.0.fuzzy_dp_cells.load(Ordering::Relaxed),
+                row_allocations: o.0.fuzzy_row_allocations.load(Ordering::Relaxed),
+                scratch_constructions: o.0.fuzzy_scratch_constructions.load(Ordering::Relaxed),
+            })
+    })
+}
+
+pub(crate) fn fuzzy_scratch() {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.fuzzy_scratch_constructions
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+pub(crate) fn fuzzy_distance(cells: usize, allocations: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.fuzzy_candidates.fetch_add(1, Ordering::Relaxed);
+            o.0.fuzzy_dp_cells.fetch_add(cells, Ordering::Relaxed);
+            o.0.fuzzy_row_allocations
+                .fetch_add(allocations, Ordering::Relaxed);
         }
     });
 }

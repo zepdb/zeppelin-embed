@@ -45,6 +45,122 @@ use super::dict::TermDictionary;
 /// Largest edit distance this engine will ever consider.
 pub const MAX_EDIT_DISTANCE: u32 = 2;
 
+/// Query-local fixed-width rows for the structured operator's byte distance.
+/// This matcher has no first-character, minimum-length or no-fuzzy policy.
+/// Only cells within the allowed diagonal band can belong to an accepted path.
+pub(crate) struct BoundedDistance {
+    previous: [u32; 5],
+    current: [u32; 5],
+    #[cfg(any(test, feature = "test-support"))]
+    cells: usize,
+}
+
+impl BoundedDistance {
+    pub(crate) fn new() -> Self {
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::fuzzy_scratch();
+        Self {
+            previous: [0; 5],
+            current: [0; 5],
+            #[cfg(any(test, feature = "test-support"))]
+            cells: 0,
+        }
+    }
+
+    /// Returns the exact accepted distance, or None when the budget is exceeded.
+    /// The structured query validates the maximum before constructing scratch.
+    pub(crate) fn distance(&mut self, left: &[u8], right: &[u8], maximum: u32) -> Option<u32> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.cells = 0;
+        }
+        let result = self.bounded(left, right, maximum);
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::fuzzy_distance(self.cells, 0);
+        result
+    }
+
+    fn bounded(&mut self, left: &[u8], right: &[u8], maximum: u32) -> Option<u32> {
+        let band = maximum as usize;
+        if maximum > MAX_EDIT_DISTANCE || left.len().abs_diff(right.len()) > band {
+            return None;
+        }
+        let infinity = maximum + 1;
+        let mut previous_start = 0;
+        let mut previous_end = band.min(right.len());
+        for (column, cell) in self.previous.iter_mut().enumerate() {
+            *cell = if column <= previous_end {
+                column as u32
+            } else {
+                infinity
+            };
+        }
+        for (row, byte) in left.iter().enumerate() {
+            let row = row + 1;
+            let start = row.saturating_sub(band);
+            let end = row.saturating_add(band).min(right.len());
+            let mut row_minimum = infinity;
+            let mut preceding = infinity;
+            for (column, cell) in (start..=end).zip(self.current.iter_mut()) {
+                let value = if column == 0 {
+                    row as u32 // This column exists only while row <= maximum.
+                } else {
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        self.cells += 1;
+                    }
+                    let up = band_cell(
+                        &self.previous,
+                        previous_start,
+                        previous_end,
+                        column,
+                        infinity,
+                    );
+                    let diagonal = band_cell(
+                        &self.previous,
+                        previous_start,
+                        previous_end,
+                        column - 1,
+                        infinity,
+                    );
+                    let substitution = u32::from(right.get(column - 1) != Some(byte));
+                    (up + 1)
+                        .min(preceding + 1)
+                        .min(diagonal + substitution)
+                        .min(infinity)
+                };
+                *cell = value;
+                preceding = value;
+                row_minimum = row_minimum.min(value);
+            }
+            if row_minimum > maximum {
+                return None;
+            }
+            std::mem::swap(&mut self.previous, &mut self.current);
+            previous_start = start;
+            previous_end = end;
+        }
+        let distance = band_cell(
+            &self.previous,
+            previous_start,
+            previous_end,
+            right.len(),
+            infinity,
+        );
+        (distance <= maximum).then_some(distance)
+    }
+}
+
+fn band_cell(row: &[u32; 5], start: usize, end: usize, column: usize, infinity: u32) -> u32 {
+    // Cells outside the active band are deliberately infinite, not missing data.
+    column
+        .checked_sub(start)
+        .filter(|_| column <= end)
+        .and_then(|offset| row.get(offset))
+        .copied()
+        .unwrap_or(infinity)
+}
+
 /// Minimum term length for distance 1.
 pub const MIN_LENGTH_DISTANCE_1: usize = 5;
 

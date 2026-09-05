@@ -325,21 +325,25 @@ pub(crate) fn expand(
                     maximum: fuzzy::MAX_EDIT_DISTANCE,
                 });
             }
-            vocabulary
-                .iter()
+            let mut scratch = fuzzy::BoundedDistance::new();
+            let mut matches = vocabulary
+                .fuzzy_candidates(term.len(), *max_distance)
                 .filter_map(|candidate| {
-                    let distance = wagner_fischer(term, candidate);
-                    (distance <= *max_distance).then(|| LexicalExpansion {
-                        term: candidate.to_vec(),
-                        boost_thousandths: match distance {
-                            0 => 1_000,
-                            1 => 500,
-                            _ => 250,
-                        },
-                        kind: LexicalMatchKind::Fuzzy { distance },
-                    })
+                    scratch
+                        .distance(term, candidate, *max_distance)
+                        .map(|distance| LexicalExpansion {
+                            term: candidate.to_vec(),
+                            boost_thousandths: match distance {
+                                0 => 1_000,
+                                1 => 500,
+                                _ => 250,
+                            },
+                            kind: LexicalMatchKind::Fuzzy { distance },
+                        })
                 })
-                .collect()
+                .collect::<Vec<_>>();
+            matches.sort_unstable_by(|left, right| left.term.cmp(&right.term));
+            matches
         }
         LexicalQuery::Phonetic { term, .. } => {
             let term =
@@ -389,14 +393,25 @@ pub(crate) fn phrase_matches(
     phrase::streams_match(&streams, slop)
 }
 
+#[cfg(test)]
 fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
+    #[cfg(any(test, feature = "test-support"))]
+    let (mut cells, mut allocations) = (0, 1);
     let mut previous = (0..=right.len())
         .map(|value| u32::try_from(value).unwrap_or(u32::MAX))
         .collect::<Vec<_>>();
     for (row, left_byte) in left.iter().enumerate() {
         let mut current = Vec::with_capacity(right.len() + 1);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            allocations += 1;
+        }
         current.push(u32::try_from(row + 1).unwrap_or(u32::MAX));
         for (column, right_byte) in right.iter().enumerate() {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                cells += 1;
+            }
             let (Some(up), Some(left), Some(diagonal)) = (
                 previous.get(column + 1).copied(),
                 current.get(column).copied(),
@@ -411,6 +426,8 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
         }
         previous = current;
     }
+    #[cfg(any(test, feature = "test-support"))]
+    super::preparation_observer::fuzzy_distance(cells, allocations);
     previous.last().copied().unwrap_or(u32::MAX)
 }
 
@@ -418,6 +435,265 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_13_fuzzy_scratch_is_reused_per_query() {
+        let query = LexicalQuery::fuzzy(b"abcdefgh".to_vec(), 2, field());
+        let terms = (b'a'..=b'z')
+            .map(|last| {
+                let mut term = b"abcdefg".to_vec();
+                term.push(last);
+                term
+            })
+            .collect::<Vec<_>>();
+        let dictionary = vocabulary(&query, terms.iter().map(Vec::as_slice));
+        for _ in 0..2 {
+            super::super::preparation_observer::begin();
+            assert_eq!(expand(&query, &dictionary).expect("query").len(), 26);
+            let work = super::super::preparation_observer::fuzzy_work();
+            super::super::preparation_observer::take();
+            assert_eq!(work.scratch_constructions, 1, "one per query: {work:?}");
+            assert_eq!(work.row_allocations, 0, "stack rows: {work:?}");
+            assert_eq!(work.candidates, 26);
+            assert!(work.dp_cells < 26 * 8 * 8, "banded cells: {work:?}");
+        }
+    }
+
+    #[test]
+    fn astra_13_fuzzy_bounded_matches_full_distance_expansions() {
+        use rand::RngCore;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut tiny = vec![Vec::new()];
+        for len in 1..=4 {
+            for bits in 0..(1 << len) {
+                tiny.push((0..len).map(|bit| b'a' + ((bits >> bit) & 1)).collect());
+            }
+        }
+        let dictionary = tiny.iter().cloned().collect::<Vocabulary>();
+        // Primary oracle enumerates actual edit operations, with no DP recurrence.
+        for term in tiny.iter().filter(|term| !term.is_empty()) {
+            let mut distances = BTreeMap::from([(term.clone(), 0_u32)]);
+            let mut frontier = BTreeSet::from([term.clone()]);
+            for distance in 0..=2 {
+                let query = LexicalQuery::fuzzy(term.clone(), distance, field());
+                let expected = dictionary
+                    .iter()
+                    .filter_map(|candidate| {
+                        distances.get(candidate).map(|&distance| LexicalExpansion {
+                            term: candidate.to_vec(),
+                            boost_thousandths: match distance {
+                                0 => 1000,
+                                1 => 500,
+                                _ => 250,
+                            },
+                            kind: LexicalMatchKind::Fuzzy { distance },
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    expand(&query, &dictionary).expect("tiny query"),
+                    expected,
+                    "{query:?}"
+                );
+                if distance == 2 {
+                    break;
+                }
+                let mut next = BTreeSet::new();
+                for word in frontier {
+                    for at in 0..=word.len() {
+                        for byte in b"ab" {
+                            let mut inserted = word.clone();
+                            inserted.insert(at, *byte);
+                            next.insert(inserted);
+                            if at < word.len() {
+                                let mut replaced = word.clone();
+                                *replaced.get_mut(at).expect("within word") = *byte;
+                                next.insert(replaced);
+                            }
+                        }
+                        if at < word.len() {
+                            let mut removed = word.clone();
+                            removed.remove(at);
+                            next.insert(removed);
+                        }
+                    }
+                }
+                for word in &next {
+                    distances.entry(word.clone()).or_insert(distance + 1);
+                }
+                frontier = next;
+            }
+        }
+        // Secondary full-distance oracle covers arbitrary bytes, lengths and mutations.
+        let mut rng = crate::test_support::seeded_rng(
+            "astra_13_fuzzy_bounded_matches_full_distance_expansions",
+        );
+        for _ in 0..256 {
+            let len = 1 + (rng.next_u32() % 80) as usize;
+            let term = (0..len)
+                .map(|_| (rng.next_u32() % 256) as u8)
+                .collect::<Vec<_>>();
+            let mut terms = vec![term.clone(), Vec::new()];
+            for _ in 0..12 {
+                let mut candidate = term.clone();
+                for _ in 0..rng.next_u32() % 5 {
+                    let at = (rng.next_u32() as usize) % (candidate.len() + 1);
+                    match rng.next_u32() % 3 {
+                        0 => candidate.insert(at, rng.next_u32() as u8),
+                        1 if at < candidate.len() => {
+                            candidate.remove(at);
+                        }
+                        _ => {
+                            if let Some(byte) = candidate.get_mut(at) {
+                                *byte = rng.next_u32() as u8;
+                            }
+                        }
+                    }
+                }
+                terms.push(candidate);
+            }
+            let dictionary = terms.into_iter().collect::<Vocabulary>();
+            for maximum in 0..=2 {
+                let query = LexicalQuery::fuzzy(term.clone(), maximum, field());
+                let expected = dictionary
+                    .iter()
+                    .filter_map(|candidate| {
+                        let distance = wagner_fischer(&term, candidate);
+                        (distance <= maximum).then(|| LexicalExpansion {
+                            term: candidate.to_vec(),
+                            boost_thousandths: match distance {
+                                0 => 1000,
+                                1 => 500,
+                                _ => 250,
+                            },
+                            kind: LexicalMatchKind::Fuzzy { distance },
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(expand(&query, &dictionary).expect("seeded query"), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn astra_13_fuzzy_distance_boundaries_preserve_boosts() {
+        let dictionary = [
+            b"ab".to_vec(),
+            b"ba".to_vec(),
+            b"xb".to_vec(),
+            b"zzab".to_vec(),
+            b"zzzab".to_vec(),
+        ]
+        .into_iter()
+        .collect::<Vocabulary>();
+        let query = LexicalQuery::fuzzy(b"ab".to_vec(), 2, field());
+        let actual = expand(&query, &dictionary).expect("boundary query");
+        assert_eq!(
+            actual
+                .iter()
+                .map(|e| (e.term.as_slice(), e.boost_thousandths))
+                .collect::<Vec<_>>(),
+            vec![
+                (b"ab".as_slice(), 1000),
+                (b"ba".as_slice(), 250),
+                (b"xb".as_slice(), 500),
+                (b"zzab".as_slice(), 250)
+            ]
+        );
+        let utf8 = [
+            b"e".to_vec(),
+            "é".as_bytes().to_vec(),
+            "ê".as_bytes().to_vec(),
+        ]
+        .into_iter()
+        .collect::<Vocabulary>();
+        let query = LexicalQuery::fuzzy("é".as_bytes().to_vec(), 1, FieldId(99));
+        let actual = expand(&query, &utf8).expect("byte distance, global fields");
+        assert_eq!(
+            actual
+                .iter()
+                .map(|e| (e.term.as_slice(), e.boost_thousandths))
+                .collect::<Vec<_>>(),
+            vec![("é".as_bytes(), 1000), ("ê".as_bytes(), 500)]
+        );
+        assert_eq!(
+            expand(&LexicalQuery::fuzzy(Vec::new(), 2, field()), &utf8),
+            Err(LexicalQueryError::Empty)
+        );
+        assert_eq!(
+            expand(&LexicalQuery::fuzzy(b"ab".to_vec(), 3, field()), &utf8),
+            Err(LexicalQueryError::FuzzyDistance {
+                requested: 3,
+                maximum: 2
+            })
+        );
+    }
+
+    #[test]
+    fn astra_13_fuzzy_length_filter_avoids_impossible_dp_work() {
+        let query = LexicalQuery::fuzzy(b"ab".to_vec(), 2, field());
+        let terms = [vec![b'x'; 64], vec![b'y'; 128]];
+        let dictionary = vocabulary(&query, terms.iter().map(Vec::as_slice));
+        super::super::preparation_observer::begin();
+        let actual = expand(&query, &dictionary).expect("valid fuzzy query");
+        let work = super::super::preparation_observer::fuzzy_work();
+        super::super::preparation_observer::take();
+        assert!(actual.is_empty());
+        assert_eq!(
+            work.dp_cells, 0,
+            "impossible byte lengths performed DP: {work:?}"
+        );
+        assert_eq!(work.row_allocations, 0);
+        assert_eq!(work.candidates, 0);
+    }
+
+    #[test]
+    fn astra_13_fuzzy_expansion_cost_screen() {
+        use std::time::Instant;
+        let terms = (0..4096)
+            .map(|mut n| {
+                let mut term = vec![b'a'; 60];
+                for _ in 0..4 {
+                    term.push(b'a' + (n % 26) as u8);
+                    n /= 26;
+                }
+                term
+            })
+            .collect::<Vec<_>>();
+        let seed_query = LexicalQuery::fuzzy(vec![b'a'; 64], 2, field());
+        let dictionary = vocabulary(&seed_query, terms.iter().map(Vec::as_slice));
+        for (name, term) in [
+            ("length_mismatch", vec![b'z'; 4]),
+            ("same_length_far", vec![b'z'; 64]),
+            ("same_length_near", vec![b'a'; 64]),
+        ] {
+            let query = LexicalQuery::fuzzy(term, 2, field());
+            for _ in 0..2 {
+                drop(expand(&query, &dictionary).expect("warm"));
+            }
+            super::super::preparation_observer::begin();
+            let expected = expand(&query, &dictionary).expect("work probe");
+            let work = super::super::preparation_observer::fuzzy_work();
+            super::super::preparation_observer::take();
+            if name != "same_length_near" {
+                assert!(expected.is_empty());
+            }
+            let mut samples = Vec::new();
+            for _ in 0..8 {
+                let start = Instant::now();
+                let actual = expand(&query, &dictionary).expect("timed expansion");
+                samples.push(start.elapsed().as_secs_f64() * 1e6);
+                assert_eq!(actual, expected);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "FUZZY_SCREEN {name} vocabulary=4096 warmups=2 samples=8 p50_us={} p95_us={} expansions={} work={work:?}",
+                (samples.get(3).expect("sample") + samples.get(4).expect("sample")) / 2.0,
+                samples.last().expect("sample"),
+                expected.len()
+            );
+        }
+    }
 
     #[test]
     fn astra_12_vocabulary_groups_memberships_with_linear_work() {

@@ -14,6 +14,8 @@ pub(crate) struct Vocabulary {
     entries: Vec<Entry>,
     terms: Vec<u8>,
     fields: Vec<FieldId>,
+    // Offsets into the same term bytes, ordered by (byte length, lexical order).
+    by_length: Vec<std::ops::Range<usize>>,
 }
 
 impl Vocabulary {
@@ -22,6 +24,7 @@ impl Vocabulary {
             entries: Vec::new(),
             terms: Vec::new(),
             fields: Vec::new(),
+            by_length: Vec::new(),
         }
     }
 
@@ -50,6 +53,11 @@ impl Vocabulary {
         }
         let retained = term_count
             .checked_mul(std::mem::size_of::<Entry>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    term_count.checked_mul(std::mem::size_of::<std::ops::Range<usize>>())?,
+                )
+            })
             .and_then(|bytes| bytes.checked_add(term_bytes?))
             .and_then(|bytes| {
                 bytes.checked_add(sorted.len().checked_mul(std::mem::size_of::<FieldId>())?)
@@ -57,7 +65,7 @@ impl Vocabulary {
         reserve(temporary, retained)?;
         let mut entries = Vec::with_capacity(term_count);
         // The reservation callback rejects overflow before construction.
-        // Three contiguous buffers avoid two heap allocations per term.
+        // Contiguous buffers avoid per-term heap allocations.
         let mut terms = Vec::with_capacity(term_bytes.unwrap_or(0));
         let mut fields = Vec::with_capacity(sorted.len());
         let mut remaining = sorted.as_slice();
@@ -90,10 +98,14 @@ impl Vocabulary {
             super::preparation_observer::vocabulary_build(terms.len());
             super::preparation_observer::record_vocabulary_group_checks(group_checks);
         }
+        let mut by_length = Vec::with_capacity(term_count);
+        by_length.extend(entries.iter().map(|entry| entry.term.clone()));
+        by_length.sort_unstable_by_key(|range| (range.len(), range.start));
         Ok(Self {
             entries,
             terms,
             fields,
+            by_length,
         })
     }
 
@@ -122,6 +134,27 @@ impl Vocabulary {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &[u8]> {
         self.entries().map(|(term, _)| term)
+    }
+
+    /// Only byte lengths that can be within the requested edit budget.
+    /// Returned terms are length-ordered; the caller restores lexical result order.
+    pub(crate) fn fuzzy_candidates(
+        &self,
+        length: usize,
+        distance: u32,
+    ) -> impl Iterator<Item = &[u8]> {
+        let minimum = length.saturating_sub(distance as usize);
+        let maximum = length.saturating_add(distance as usize);
+        let start = self
+            .by_length
+            .partition_point(|range| range.len() < minimum);
+        let remaining = self.by_length.split_at(start).1;
+        let count = remaining.partition_point(|range| range.len() <= maximum);
+        remaining
+            .split_at(count)
+            .0
+            .iter()
+            .map(|range| self.terms.split_at(range.start).1.split_at(range.len()).0)
     }
 
     pub(crate) fn prefix<'a>(&'a self, prefix: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
