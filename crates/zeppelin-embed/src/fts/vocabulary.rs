@@ -136,6 +136,15 @@ impl Vocabulary {
         self.entries().map(|(term, _)| term)
     }
 
+    /// IDs come only from an index built from this exact immutable vocabulary.
+    pub(crate) fn select<'a>(
+        &'a self,
+        ids: impl Iterator<Item = usize> + 'a,
+    ) -> impl Iterator<Item = &'a [u8]> {
+        ids.flat_map(|id| self.entries.split_at(id).1.split_at(1).0.iter())
+            .map(|entry| self.term(entry))
+    }
+
     /// Only byte lengths that can be within the requested edit budget.
     /// Returned terms are length-ordered; the caller restores lexical result order.
     pub(crate) fn fuzzy_candidates(

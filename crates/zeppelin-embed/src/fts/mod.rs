@@ -53,6 +53,7 @@ pub mod fuzzy;
 
 /// Double Metaphone phonetic encoding.
 pub mod phonetic;
+pub(crate) mod phonetic_index;
 
 /// Snippets and match offsets.
 pub mod snippet;

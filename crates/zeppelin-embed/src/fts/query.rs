@@ -263,16 +263,17 @@ fn vocabulary<'a>(query: &LexicalQuery, terms: impl Iterator<Item = &'a [u8]>) -
     }
 }
 
-pub(crate) fn expand(
+pub(crate) fn expand_with_phonetic<E: From<LexicalQueryError>>(
     query: &LexicalQuery,
     vocabulary: &Vocabulary,
-) -> Result<Vec<LexicalExpansion>, LexicalQueryError> {
+    phonetic_lookup: impl FnOnce(&str) -> Result<Vec<LexicalExpansion>, E>,
+) -> Result<Vec<LexicalExpansion>, E> {
     #[cfg(any(test, feature = "test-support"))]
     super::preparation_observer::expansion();
     let expansions = match query {
         LexicalQuery::Term(query) => {
             if query.terms.is_empty() || query.terms.iter().any(Vec::is_empty) {
-                return Err(LexicalQueryError::Empty);
+                return Err(LexicalQueryError::Empty.into());
             }
             query
                 .terms
@@ -287,7 +288,7 @@ pub(crate) fn expand(
         }
         LexicalQuery::Phrase { terms, .. } => {
             if terms.is_empty() || terms.iter().any(Vec::is_empty) {
-                return Err(LexicalQueryError::Empty);
+                return Err(LexicalQueryError::Empty.into());
             }
             terms
                 .iter()
@@ -301,7 +302,7 @@ pub(crate) fn expand(
         }
         LexicalQuery::Prefix { prefix, .. } => {
             if prefix.is_empty() {
-                return Err(LexicalQueryError::Empty);
+                return Err(LexicalQueryError::Empty.into());
             }
             vocabulary
                 .prefix(prefix)
@@ -317,13 +318,14 @@ pub(crate) fn expand(
             term, max_distance, ..
         } => {
             if term.is_empty() {
-                return Err(LexicalQueryError::Empty);
+                return Err(LexicalQueryError::Empty.into());
             }
             if *max_distance > fuzzy::MAX_EDIT_DISTANCE {
                 return Err(LexicalQueryError::FuzzyDistance {
                     requested: *max_distance,
                     maximum: fuzzy::MAX_EDIT_DISTANCE,
-                });
+                }
+                .into());
             }
             let mut scratch = fuzzy::BoundedDistance::new();
             let mut matches = vocabulary
@@ -350,24 +352,48 @@ pub(crate) fn expand(
                 std::str::from_utf8(term).map_err(|_| LexicalQueryError::InvalidPhoneticUtf8)?;
             let code = phonetic::encode(term);
             if code.is_empty() {
-                return Err(LexicalQueryError::EmptyPhoneticCode);
+                return Err(LexicalQueryError::EmptyPhoneticCode.into());
             }
-            vocabulary
-                .iter()
-                .filter(|candidate| {
-                    std::str::from_utf8(candidate)
-                        .is_ok_and(|candidate| phonetic::encode(candidate) == code)
-                })
-                .map(<[u8]>::to_vec)
-                .map(|term| LexicalExpansion {
-                    term,
-                    boost_thousandths: 250,
-                    kind: LexicalMatchKind::Phonetic,
-                })
-                .collect()
+            phonetic_lookup(&code)?
         }
     };
     Ok(expansions)
+}
+
+pub(crate) fn phonetic_expansions(
+    vocabulary: &Vocabulary,
+    index: &super::phonetic_index::PhoneticIndex,
+    code: &str,
+) -> Vec<LexicalExpansion> {
+    vocabulary
+        .select(index.terms(code))
+        .map(|term| LexicalExpansion {
+            term: term.to_vec(),
+            boost_thousandths: 250,
+            kind: LexicalMatchKind::Phonetic,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn expand(
+    query: &LexicalQuery,
+    vocabulary: &Vocabulary,
+) -> Result<Vec<LexicalExpansion>, LexicalQueryError> {
+    // Existing small query tests retain the independent full encoder-scan control.
+    expand_with_phonetic(query, vocabulary, |code| {
+        Ok(vocabulary
+            .iter()
+            .filter(|term| {
+                std::str::from_utf8(term).is_ok_and(|term| phonetic::encode(term) == code)
+            })
+            .map(|term| LexicalExpansion {
+                term: term.to_vec(),
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Phonetic,
+            })
+            .collect())
+    })
 }
 
 #[cfg(test)]
@@ -435,6 +461,62 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_14_phonetic_expansion_cost_screen() {
+        use std::time::Instant;
+        let mut terms = vec![b"night".to_vec(), b"knight".to_vec()];
+        for mut n in 0..4096 {
+            let mut term = if n < 2048 {
+                b"smithson".to_vec()
+            } else {
+                b"robert".to_vec()
+            };
+            for _ in 0..4 {
+                term.push(b'a' + (n % 26) as u8);
+                n /= 26;
+            }
+            terms.push(term);
+        }
+        let dictionary = terms.into_iter().collect::<Vocabulary>();
+        let index = super::super::phonetic_index::PhoneticIndex::build(&dictionary, |_, _| {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("cached map");
+        let cached_expand = |query: &LexicalQuery| {
+            expand_with_phonetic::<LexicalQueryError>(query, &dictionary, |code| {
+                Ok(phonetic_expansions(&dictionary, &index, code))
+            })
+        };
+        for (name, term, count) in [
+            ("rare", b"night".as_slice(), 2),
+            ("collision", b"smithson".as_slice(), 2048),
+        ] {
+            let query = LexicalQuery::phonetic(term.to_vec(), field());
+            for _ in 0..2 {
+                drop(cached_expand(&query).expect("warm"));
+            }
+            super::super::preparation_observer::begin();
+            let expected = cached_expand(&query).expect("probe");
+            let encodings = super::super::preparation_observer::phonetic_encoding_calls();
+            super::super::preparation_observer::take();
+            assert_eq!(expected.len(), count);
+            let mut samples = Vec::new();
+            for _ in 0..8 {
+                let start = Instant::now();
+                let actual = cached_expand(&query).expect("measure");
+                samples.push(start.elapsed().as_secs_f64() * 1e6);
+                assert_eq!(actual, expected);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "PHONETIC_SCREEN {name} vocabulary=4098 warmups=2 samples=8 p50_us={} p95_us={} expansions={} encodings={encodings}",
+                (samples.get(3).expect("sample") + samples.get(4).expect("sample")) / 2.0,
+                samples.last().expect("sample"),
+                expected.len()
+            );
+        }
+    }
 
     #[test]
     fn astra_13_fuzzy_scratch_is_reused_per_query() {

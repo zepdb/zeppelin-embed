@@ -5,6 +5,7 @@ mod cancel;
 mod clock;
 mod close;
 pub mod durability;
+mod expansion;
 pub(crate) mod graph_cache;
 mod hybrid;
 pub mod lock;
@@ -3343,19 +3344,16 @@ impl Store {
         .map_err(map_store_lexical_assembly_error)?;
         let index = &assembly.index;
         let sources = &assembly.sources;
-        let vocabulary = if query.needs_vocabulary() {
-            Some(assembly.vocabulary(&self.accounting, &cancellation)?)
-        } else {
-            None
-        };
-        let empty_vocabulary = crate::fts::vocabulary::Vocabulary::empty();
-        let mut expansions = crate::fts::query::expand(
-            query,
-            vocabulary
-                .as_ref()
-                .map_or(&empty_vocabulary, |cached| &cached.view),
-        )?;
-        drop(vocabulary);
+        let mut expansions = assembly
+            .expand(query, &self.accounting, &cancellation)
+            .map_err(|error| match error {
+                expansion::ExpansionError::Query(error) => {
+                    crate::ingest::StoreLexicalError::Query(error)
+                }
+                expansion::ExpansionError::Shape(error) => {
+                    crate::ingest::StoreLexicalError::Structured(error)
+                }
+            })?;
         let allow_lists = assembly
             .alive_sets
             .iter()
@@ -4308,6 +4306,7 @@ struct LexicalAssembly {
 
 struct CachedVocabulary {
     view: crate::fts::vocabulary::Vocabulary,
+    phonetic: Mutex<Option<Arc<expansion::CachedPhonetic>>>,
     // Charged for as long as any query or assembly retains the dictionary.
     _memory: stats::AccountedCounter,
 }
@@ -4349,6 +4348,7 @@ impl LexicalAssembly {
         )?;
         let value = Arc::new(CachedVocabulary {
             view,
+            phonetic: Mutex::new(None),
             _memory: memory,
         });
         *cached = Some(Arc::clone(&value));

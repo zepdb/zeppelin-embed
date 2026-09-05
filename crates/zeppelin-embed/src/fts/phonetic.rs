@@ -28,6 +28,9 @@
 /// Longest code this encoder emits.
 pub const MAX_CODE_LENGTH: usize = 4;
 
+/// Identity of the current primary-code rule set for in-memory reverse indexes.
+pub(crate) const ENCODER_VERSION: u32 = 1;
+
 const fn is_vowel(value: u8) -> bool {
     matches!(value, b'A' | b'E' | b'I' | b'O' | b'U' | b'Y')
 }
@@ -56,6 +59,8 @@ fn starts_with_at(word: &[u8], index: usize, text: &str) -> bool {
 /// everything.
 #[must_use]
 pub fn encode(term: &str) -> String {
+    #[cfg(any(test, feature = "test-support"))]
+    super::preparation_observer::phonetic_encoding();
     let word = normalize(term);
     if word.is_empty() {
         return String::new();

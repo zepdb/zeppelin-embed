@@ -26,6 +26,9 @@ struct Counts {
     fuzzy_dp_cells: AtomicUsize,
     fuzzy_row_allocations: AtomicUsize,
     fuzzy_scratch_constructions: AtomicUsize,
+    phonetic_encodings: AtomicUsize,
+    phonetic_builds: AtomicUsize,
+    phonetic_bucket_terms: AtomicUsize,
 }
 
 /// Actual dictionary construction and prefix traversal in one query window.
@@ -145,6 +148,51 @@ pub(crate) fn fuzzy_distance(cells: usize, allocations: usize) {
             o.0.fuzzy_dp_cells.fetch_add(cells, Ordering::Relaxed);
             o.0.fuzzy_row_allocations
                 .fetch_add(allocations, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Calls to the existing encoder in one explicitly observed query.
+pub fn phonetic_encoding_calls() -> usize {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(0, |o| o.0.phonetic_encodings.load(Ordering::Relaxed))
+    })
+}
+
+pub(crate) fn phonetic_encoding() {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.phonetic_encodings.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Actual reverse-map builds and selected bucket terms in the armed query.
+pub fn phonetic_index_work() -> (usize, usize) {
+    CURRENT.with(|current| {
+        current.borrow().as_ref().map_or((0, 0), |o| {
+            (
+                o.0.phonetic_builds.load(Ordering::Relaxed),
+                o.0.phonetic_bucket_terms.load(Ordering::Relaxed),
+            )
+        })
+    })
+}
+pub(crate) fn phonetic_index_build() {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.phonetic_builds.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+pub(crate) fn phonetic_bucket(count: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.phonetic_bucket_terms
+                .fetch_add(count, Ordering::Relaxed);
         }
     });
 }

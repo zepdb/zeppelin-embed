@@ -132,6 +132,52 @@ fn astra_12_term_and_phrase_still_build_no_vocabulary() {
     store.close().expect("close");
 }
 
+#[test]
+fn astra_14_phonetic_encodes_vocabulary_once() {
+    use zeppelin_embed::fts::{preparation_observer as observer, query::LexicalQuery};
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("smith smyth night knight robert rupert alpha"),
+        ]))
+        .expect("ingest");
+    store.seal().expect("seal");
+    let query = LexicalQuery::phonetic(b"night".to_vec(), DEFAULT_FIELD);
+    let search = || {
+        observer::begin();
+        let result = store
+            .search_lexical_structured(&query, 10, 64, QueryControl::Cancel(CancelToken::new()))
+            .expect("phonetic query");
+        let encodings = observer::phonetic_encoding_calls();
+        observer::take();
+        (result, encodings)
+    };
+    let (first, cold) = search();
+    let (second, warm) = search();
+    assert_eq!(first.candidates, second.candidates);
+    assert_eq!(
+        first
+            .expansions
+            .iter()
+            .map(|e| e.term.as_slice())
+            .collect::<Vec<_>>(),
+        vec![b"knight".as_slice(), b"night".as_slice()]
+    );
+    assert!(cold > 1, "first query builds the vocabulary map");
+    assert_eq!(
+        warm, 1,
+        "unchanged vocabulary was re-encoded: cold={cold}, warm={warm}"
+    );
+    store.close().expect("close");
+}
+
 /// Words the corpus and query generators draw from.
 const WORDS: [&str; 12] = [
     "alpha",
