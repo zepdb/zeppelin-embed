@@ -633,6 +633,36 @@ impl SealedSegment {
         Ok(retained)
     }
 
+    pub(crate) fn position_reader_bytes(&self, term: &[u8], field: FieldId) -> Option<usize> {
+        let (start, end) = self.term_span_range(term);
+        let span = self
+            .spans
+            .get(start..end)?
+            .iter()
+            .find(|span| span.field == field);
+        span.map_or(Some(0), |span| {
+            (span.block_count as usize).checked_mul(std::mem::size_of::<BlockMeta>())
+        })
+    }
+
+    pub(crate) fn position_reader(
+        &self,
+        term: &[u8],
+        field: FieldId,
+    ) -> Result<Option<PostingsReader<'_>>, SealedSegmentError> {
+        let (start, end) = self.term_span_range(term);
+        for index in start..end {
+            if self
+                .spans
+                .get(index)
+                .is_some_and(|span| span.field == field)
+            {
+                return Ok(Some(PostingsReader::open(self.list_bytes(index)?)?));
+            }
+        }
+        Ok(None)
+    }
+
     fn list_bytes(&self, index: usize) -> Result<&[u8], SealedSegmentError> {
         let span = self
             .spans

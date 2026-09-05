@@ -10,9 +10,11 @@ use std::collections::BTreeSet;
 use super::fuzzy;
 use super::index::FieldId;
 use super::phonetic;
+#[cfg(test)]
 use super::phrase;
 use super::search::{FieldWeights, TermQuery};
 use super::snippet::Highlight;
+#[cfg(test)]
 use super::tokenizer::Analyzer;
 
 /// Expansion order and one set of pinned BM25 statistics, shared by the
@@ -160,6 +162,7 @@ impl LexicalQuery {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn phrase_constraint(&self) -> Option<(&[Vec<u8>], u32)> {
         match self {
             Self::Phrase { terms, slop, .. } => Some((terms, *slop)),
@@ -360,12 +363,15 @@ pub(crate) fn expand(
     Ok(expansions)
 }
 
+#[cfg(test)]
 pub(crate) fn phrase_matches(
     analyzer: &Analyzer,
     text: &str,
     terms: &[Vec<u8>],
     slop: u32,
 ) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    super::preparation_observer::phrase_reanalysis(text.len());
     let analyzed = analyzer.analyze(text);
     let streams = terms
         .iter()

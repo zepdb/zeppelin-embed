@@ -35,6 +35,175 @@
 
 use super::index::{FieldId, SegmentIndex};
 
+pub(crate) enum PhraseReadError<Control> {
+    Storage(super::sealed::SealedSegmentError),
+    Control(Control),
+}
+
+struct SegmentPhrase<'index> {
+    readers: Vec<Option<super::postings::PostingsReader<'index>>>,
+    order: Vec<usize>,
+    rows: u32,
+}
+
+/// Prepared metadata is query-owned; packed payloads remain borrowed from the
+/// pinned immutable index. Only rows surviving term intersection read positions.
+pub(crate) struct PreparedPhrase<'index> {
+    segments: Vec<SegmentPhrase<'index>>,
+    slop: u32,
+    bytes: usize,
+}
+
+impl<'index> PreparedPhrase<'index> {
+    pub(crate) fn allocation_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn new<Control>(
+        index: &'index super::index::LexicalIndex,
+        query: &super::query::LexicalQuery,
+        mut reserve: impl FnMut(Option<usize>) -> Result<(), Control>,
+        mut checkpoint: impl FnMut() -> Result<(), Control>,
+    ) -> Result<Option<Self>, PhraseReadError<Control>> {
+        let super::query::LexicalQuery::Phrase { terms, slop, field } = query else {
+            return Ok(None);
+        };
+        let mut bytes = index
+            .segments()
+            .len()
+            .checked_mul(std::mem::size_of::<SegmentPhrase<'_>>());
+        for segment in index.segments() {
+            checkpoint().map_err(PhraseReadError::Control)?;
+            bytes = bytes.and_then(|bytes| {
+                terms
+                    .len()
+                    .checked_mul(
+                        std::mem::size_of::<Option<super::postings::PostingsReader<'_>>>()
+                            + std::mem::size_of::<usize>(),
+                    )
+                    .and_then(|extra| bytes.checked_add(extra))
+            });
+            for term in terms {
+                bytes = bytes.and_then(|bytes| {
+                    segment
+                        .position_reader_bytes(term, *field)
+                        .and_then(|extra| bytes.checked_add(extra))
+                });
+            }
+        }
+        reserve(bytes).map_err(PhraseReadError::Control)?;
+        let bytes = bytes.ok_or(PhraseReadError::Storage(
+            super::sealed::SealedSegmentError::Geometry("phrase allocation size overflow"),
+        ))?;
+        let mut segments = Vec::with_capacity(index.segments().len());
+        for segment in index.segments() {
+            let mut readers = Vec::with_capacity(terms.len());
+            for term in terms {
+                checkpoint().map_err(PhraseReadError::Control)?;
+                readers.push(
+                    segment
+                        .position_reader(term, *field)
+                        .map_err(PhraseReadError::Storage)?,
+                );
+            }
+            let mut order = (0..terms.len()).collect::<Vec<_>>();
+            order.sort_unstable_by_key(|slot| {
+                readers
+                    .get(*slot)
+                    .and_then(Option::as_ref)
+                    .map_or(0, |reader| reader.document_frequency())
+            });
+            segments.push(SegmentPhrase {
+                readers,
+                order,
+                rows: segment.row_count(),
+            });
+        }
+        Ok(Some(Self {
+            segments,
+            slop: *slop,
+            bytes,
+        }))
+    }
+
+    pub(crate) fn matches<Control>(
+        &self,
+        doc: super::search::GlobalDocId,
+        mut reserve: impl FnMut(Option<usize>) -> Result<(), Control>,
+        mut checkpoint: impl FnMut() -> Result<(), Control>,
+    ) -> Result<bool, PhraseReadError<Control>> {
+        let invalid = || {
+            PhraseReadError::Storage(super::sealed::SealedSegmentError::Geometry(
+                "phrase candidate is outside its pinned segment",
+            ))
+        };
+        let segment = self
+            .segments
+            .get(doc.segment as usize)
+            .ok_or_else(invalid)?;
+        if doc.row >= segment.rows {
+            return Err(invalid());
+        }
+        let views_bytes = segment
+            .readers
+            .len()
+            .checked_mul(std::mem::size_of::<Option<super::postings::RowPositions<'_>>>());
+        let scratch = views_bytes.and_then(|bytes| self.bytes.checked_add(bytes));
+        reserve(scratch).map_err(PhraseReadError::Control)?;
+        let mut views = vec![None; segment.readers.len()];
+        let mut positions = 0_usize;
+        let mut maximum = 1_usize;
+        // Check membership from the rarest term first; do not decode any
+        // positions until the row is in every required term/field stream.
+        for slot in &segment.order {
+            checkpoint().map_err(PhraseReadError::Control)?;
+            let Some(reader) = segment.readers.get(*slot).and_then(Option::as_ref) else {
+                return Ok(false);
+            };
+            let Some(view) = reader
+                .positions(doc.row)
+                .map_err(|error| PhraseReadError::Storage(error.into()))?
+            else {
+                return Ok(false);
+            };
+            positions = positions.checked_add(view.len()).ok_or_else(invalid)?;
+            maximum = maximum.max(view.len());
+            *views.get_mut(*slot).ok_or_else(invalid)? = Some(view);
+        }
+        // Original-order position vectors plus the existing alignment DP's
+        // two simultaneous arrays. Its arrays have exact reserved capacities.
+        let bytes = scratch
+            .and_then(|bytes| {
+                segment
+                    .readers
+                    .len()
+                    .checked_mul(std::mem::size_of::<Vec<u32>>())
+                    .and_then(|extra| bytes.checked_add(extra))
+            })
+            .and_then(|bytes| {
+                positions
+                    .checked_mul(std::mem::size_of::<u32>())
+                    .and_then(|extra| bytes.checked_add(extra))
+            })
+            .and_then(|bytes| {
+                maximum
+                    .checked_mul(2 * std::mem::size_of::<(u32, u32)>())
+                    .and_then(|extra| bytes.checked_add(extra))
+            });
+        reserve(bytes).map_err(PhraseReadError::Control)?;
+        let mut streams = Vec::with_capacity(views.len());
+        for view in views {
+            checkpoint().map_err(PhraseReadError::Control)?;
+            streams.push(
+                view.ok_or_else(invalid)?
+                    .decode()
+                    .map_err(|error| PhraseReadError::Storage(error.into()))?,
+            );
+        }
+        Ok(streams_match(&streams, self.slop))
+    }
+}
+
 /// A phrase query over already-analyzed terms.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhraseQuery {
@@ -86,7 +255,7 @@ pub fn minimum_displacement(streams: &[Vec<u32>]) -> Option<u32> {
         let mut previous: Vec<(u32, u32)> = vec![(*anchor, 0)];
         for (offset, stream) in streams.iter().enumerate().skip(1) {
             let expected = u32::try_from(offset).unwrap_or(u32::MAX);
-            let mut current: Vec<(u32, u32)> = Vec::new();
+            let mut current: Vec<(u32, u32)> = Vec::with_capacity(stream.len());
             for candidate in stream {
                 // Only alignments that stay non-decreasing are legal.
                 let Some(best_previous) = previous
@@ -180,6 +349,127 @@ mod tests {
     use super::*;
     use crate::fts::index::{DEFAULT_FIELD, Document};
     use crate::fts::tokenizer::{Analyzer, Profile, TokenizerConfig, Vocabulary};
+
+    #[test]
+    fn astra_11_phrase_slop_repetition_and_field_boundaries_match_oracle() {
+        use crate::fts::index::LexicalIndex;
+        use crate::fts::query::LexicalQuery;
+        use crate::fts::sealed::SealedSegment;
+        use crate::fts::search::GlobalDocId;
+        let texts = [
+            "alpha beta alpha",
+            "alpha filler beta alpha",
+            "beta alpha",
+            "alpha alpha beta",
+            "alpha the beta",
+        ];
+        // Literal positions include the stop-word gap in row four. A second
+        // field reverses order, and must never contribute to field zero.
+        let literal = [
+            [vec![0, 2], vec![1]],
+            [vec![0, 3], vec![2]],
+            [vec![1], vec![0]],
+            [vec![0, 1], vec![2]],
+            [vec![0], vec![2]],
+        ];
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+        let mut active = SegmentIndex::new();
+        for text in texts {
+            let mut doc = Document::with_text(text);
+            doc.set(FieldId(1), "beta alpha");
+            active.push_document(&analyzer, &doc).expect("document");
+        }
+        let bytes = SealedSegment::seal(&active)
+            .expect("seal")
+            .encode_region()
+            .expect("persist");
+        let mut index = LexicalIndex::new();
+        index
+            .push_sealed(SealedSegment::decode_region(&bytes).expect("reopen persisted positions"));
+        fn enumerate(streams: &[Vec<u32>], chosen: &mut Vec<u32>, slop: u32) -> bool {
+            if chosen.len() == streams.len() {
+                let first = chosen[0];
+                return chosen
+                    .iter()
+                    .enumerate()
+                    .map(|(i, value)| value.saturating_sub(first).abs_diff(i as u32))
+                    .sum::<u32>()
+                    <= slop;
+            }
+            for value in &streams[chosen.len()] {
+                if chosen.last().is_none_or(|last| value >= last) {
+                    chosen.push(*value);
+                    if enumerate(streams, chosen, slop) {
+                        return true;
+                    }
+                    chosen.pop();
+                }
+            }
+            false
+        }
+        for field in [DEFAULT_FIELD, FieldId(1), FieldId(2)] {
+            for words in [vec![0, 1], vec![0, 0], vec![1, 0], vec![0, 1, 0]] {
+                let terms = words
+                    .iter()
+                    .map(|word| {
+                        if *word == 0 {
+                            b"alpha".to_vec()
+                        } else {
+                            b"beta".to_vec()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for slop in [0, 1, 2, 6] {
+                    let query = LexicalQuery::phrase(terms.clone(), slop, field);
+                    let prepared =
+                        PreparedPhrase::new(&index, &query, |_| Ok::<_, ()>(()), || Ok(()))
+                            .unwrap_or_else(|_| panic!("prepare"))
+                            .expect("phrase");
+                    for (row, source) in literal.iter().enumerate() {
+                        let streams = words
+                            .iter()
+                            .map(|word| match field.0 {
+                                0 => source[*word].clone(),
+                                1 => vec![if *word == 0 { 1 } else { 0 }],
+                                _ => vec![],
+                            })
+                            .collect::<Vec<_>>();
+                        let expected = enumerate(&streams, &mut Vec::new(), slop);
+                        let actual = prepared
+                            .matches(
+                                GlobalDocId {
+                                    segment: 0,
+                                    row: row as u32,
+                                },
+                                |_| Ok::<_, ()>(()),
+                                || Ok(()),
+                            )
+                            .unwrap_or_else(|_| panic!("positions"));
+                        assert_eq!(
+                            actual, expected,
+                            "row={row} field={field:?} words={words:?} slop={slop}"
+                        );
+                        if field.0 < 2 {
+                            assert_eq!(
+                                actual,
+                                crate::fts::query::phrase_matches(
+                                    &analyzer,
+                                    if field.0 == 0 {
+                                        texts[row]
+                                    } else {
+                                        "beta alpha"
+                                    },
+                                    &terms,
+                                    slop
+                                ),
+                                "old text matcher secondary control"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn segment_of(analyzer: &Analyzer, texts: &[&str]) -> SegmentIndex {
         let mut segment = SegmentIndex::new();

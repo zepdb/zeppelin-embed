@@ -649,6 +649,87 @@ pub struct PostingsReader<'bytes> {
 }
 
 impl<'bytes> PostingsReader<'bytes> {
+    /// Locates only one row's position deltas. Other rows' positions are not
+    /// decoded; their frequencies establish the offset within this block.
+    ///
+    /// # Errors
+    /// Returns a typed posting error for malformed frequencies or geometry.
+    pub fn positions(&self, row: u32) -> Result<Option<RowPositions<'bytes>>, PostingsError> {
+        let block = self.blocks.partition_point(|meta| meta.last_docid < row);
+        let Some(meta) = self.blocks.get(block) else {
+            return Ok(None);
+        };
+        let docids =
+            self.docids
+                .get(meta.docids_offset as usize..)
+                .ok_or(PostingsError::Truncated {
+                    needed: meta.docids_offset as usize,
+                    available: self.docids.len(),
+                })?;
+        let tfs = self
+            .tfs
+            .get(meta.tfs_offset as usize..)
+            .ok_or(PostingsError::Truncated {
+                needed: meta.tfs_offset as usize,
+                available: self.tfs.len(),
+            })?;
+        let mut docid = block
+            .checked_sub(1)
+            .and_then(|previous| self.blocks.get(previous))
+            .map_or(0, |meta| meta.last_docid);
+        let mut first = 0_usize;
+        for slot in 0..usize::from(meta.count) {
+            let delta = packed_value_at(docids, meta.docid_bits, slot)?;
+            docid = docid
+                .checked_add(delta)
+                .ok_or(PostingsError::DocidsNotAscending { docid })?;
+            if docid > row {
+                return Ok(None);
+            }
+            let count = packed_value_at(tfs, meta.tf_bits, slot)? as usize;
+            if count == 0 {
+                return Err(PostingsError::ZeroTermFrequency);
+            }
+            let end = first.checked_add(count).ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: meta.positions_count as usize,
+            })?;
+            if end > meta.positions_count as usize {
+                return Err(PostingsError::Truncated {
+                    needed: end,
+                    available: meta.positions_count as usize,
+                });
+            }
+            if docid == row {
+                let start = meta.positions_offset as usize;
+                let end = start
+                    .checked_add(packed_len(
+                        meta.positions_count as usize,
+                        meta.position_bits,
+                    ))
+                    .ok_or(PostingsError::Truncated {
+                        needed: usize::MAX,
+                        available: self.positions.len(),
+                    })?;
+                let bytes = self
+                    .positions
+                    .get(start..end)
+                    .ok_or(PostingsError::Truncated {
+                        needed: end,
+                        available: self.positions.len(),
+                    })?;
+                return Ok(Some(RowPositions {
+                    bytes,
+                    bits: meta.position_bits,
+                    first,
+                    count,
+                }));
+            }
+            first = end;
+        }
+        Ok(None)
+    }
+
     /// Validates and opens an encoded posting list.
     ///
     /// Every structural claim the bytes make is checked here, so the
@@ -944,6 +1025,198 @@ impl<'bytes> PostingsReader<'bytes> {
             }
         }
         Ok(list)
+    }
+}
+
+/// Borrowed packed positions for one requested posting. Locating this view
+/// does not decode position values or allocate a position array.
+#[derive(Clone, Copy, Debug)]
+pub struct RowPositions<'bytes> {
+    bytes: &'bytes [u8],
+    bits: u8,
+    first: usize,
+    count: usize,
+}
+
+impl RowPositions<'_> {
+    /// Number of positions of the requested term in this row.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether this view contains no positions.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Decodes only the requested row, validating strict position ordering.
+    ///
+    /// # Errors
+    /// Returns a typed posting error for truncation, invalid widths or order.
+    pub fn decode(&self) -> Result<Vec<u32>, PostingsError> {
+        let mut positions = Vec::with_capacity(self.count);
+        let mut position = 0_u32;
+        for offset in 0..self.count {
+            let delta = packed_value_at(self.bytes, self.bits, self.first + offset)?;
+            if offset > 0 && delta == 0 {
+                return Err(PostingsError::PositionsNotAscending { position });
+            }
+            position = position
+                .checked_add(delta)
+                .ok_or(PostingsError::PositionsNotAscending { position })?;
+            positions.push(position);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let first_bit = self.first * usize::from(self.bits);
+            let last_bit = (self.first + self.count) * usize::from(self.bits);
+            super::preparation_observer::phrase_positions(
+                self.count,
+                last_bit.div_ceil(8) - first_bit / 8,
+            );
+        }
+        Ok(positions)
+    }
+}
+
+/// A bit-addressed read can start mid-byte, including 32-bit values spanning
+/// five bytes. It never expands preceding position values to find this one.
+fn packed_value_at(bytes: &[u8], bits: u8, slot: usize) -> Result<u32, PostingsError> {
+    if bits > 32 {
+        return Err(PostingsError::BitWidthTooLarge { bits });
+    }
+    if bits == 0 {
+        return Ok(0);
+    }
+    let first = slot
+        .checked_mul(usize::from(bits))
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })?;
+    let end = first
+        .checked_add(usize::from(bits))
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })?
+        .div_ceil(8);
+    let selected = bytes.get(first / 8..end).ok_or(PostingsError::Truncated {
+        needed: end,
+        available: bytes.len(),
+    })?;
+    let word = selected
+        .iter()
+        .enumerate()
+        .fold(0_u64, |word, (offset, byte)| {
+            word | (u64::from(*byte) << (offset * 8))
+        });
+    let mask = (1_u64 << bits) - 1;
+    Ok(((word >> (first % 8)) & mask) as u32)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
+mod astra_11_tests {
+    use super::*;
+
+    #[test]
+    fn astra_11_position_reader_only_decodes_requested_row() {
+        for per_block in [1, 2, 64] {
+            let mut list = PostingList::new();
+            let expected = (0..130)
+                .map(|row| {
+                    if row % 3 == 0 {
+                        vec![0, 1, 31, u32::MAX]
+                    } else {
+                        vec![row * 3]
+                    }
+                })
+                .collect::<Vec<_>>();
+            for (row, positions) in expected.iter().enumerate() {
+                list.push(Posting {
+                    docid: row as u32 * 2,
+                    tf: positions.len() as u32,
+                    positions: positions.clone(),
+                })
+                .expect("posting");
+            }
+            let encoded = encode(&list, per_block, &[]).expect("encoded positions");
+            let reader = PostingsReader::open(encoded.as_bytes()).expect("persisted reader");
+            for row in [0, 1, 63, 64, 65, 129] {
+                crate::fts::preparation_observer::begin();
+                let view = reader
+                    .positions(row as u32 * 2)
+                    .expect("locate")
+                    .expect("present");
+                assert_eq!(
+                    crate::fts::preparation_observer::phrase_position_work(),
+                    (0, 0)
+                );
+                assert_eq!(view.decode().expect("selective decode"), expected[row]);
+                assert_eq!(
+                    crate::fts::preparation_observer::phrase_position_work().0,
+                    expected[row].len()
+                );
+                crate::fts::preparation_observer::take();
+                assert!(
+                    reader
+                        .positions(row as u32 * 2 + 1)
+                        .expect("absent")
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn astra_11_corrupt_position_payload_is_typed() {
+        let mut list = PostingList::new();
+        for (docid, positions) in [(0, vec![1, 3]), (1, vec![2, 5])] {
+            list.push(Posting {
+                docid,
+                tf: 2,
+                positions,
+            })
+            .expect("posting");
+        }
+        let encoded = encode(&list, 64, &[]).expect("encoded");
+        let clean = PostingsReader::open(encoded.as_bytes()).expect("open");
+        assert_eq!(
+            clean
+                .positions(0)
+                .expect("locate")
+                .expect("present")
+                .decode()
+                .expect("clean"),
+            vec![1, 3]
+        );
+        let positions_start = HEADER_LEN + BLOCK_META_LEN + clean.docids.len() + clean.tfs.len();
+        assert_eq!(clean.blocks()[0].position_bits, 2);
+        let mut corrupt = encoded.as_bytes().to_vec();
+        // Delta two becomes zero in the actual packed payload, while all
+        // structural lengths and row/frequency data remain intact.
+        corrupt[positions_start] &= !(3 << 2);
+        let reader = PostingsReader::open(&corrupt).expect("geometry unchanged");
+        assert_eq!(
+            reader
+                .positions(0)
+                .expect("locate corrupt row")
+                .expect("present")
+                .decode(),
+            Err(PostingsError::PositionsNotAscending { position: 1 })
+        );
+        assert_eq!(
+            reader
+                .positions(1)
+                .expect("next row")
+                .expect("present")
+                .decode()
+                .expect("unaffected row"),
+            vec![2, 5]
+        );
     }
 }
 

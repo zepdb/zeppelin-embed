@@ -430,6 +430,220 @@ fn stored_text_returns_the_exact_active_and_sealed_document_versions() {
 }
 
 #[test]
+fn astra_11_phrase_matches_persisted_positions_without_reanalysis() {
+    use zeppelin_embed::fts::preparation_observer;
+    let directory = tempdir().expect("phrase store");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(
+            [
+                "alpha beta",
+                "alpha filler beta",
+                "beta alpha",
+                "alpha beta",
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(row, text)| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text(text)
+            })
+            .collect(),
+        ))
+        .expect("ingest positions");
+    store.seal().expect("persist positions");
+    store.close().expect("close");
+    let store =
+        Store::open(directory.path(), OpenOptions::default()).expect("reopen persisted rows");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(4)]))
+        .expect("tombstone phrase match");
+    let query = LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD);
+    preparation_observer::begin();
+    let result = store
+        .search_lexical_structured(&query, 1, 64, QueryControl::Cancel(CancelToken::new()))
+        .expect("phrase top1");
+    assert_eq!(
+        result
+            .candidates
+            .iter()
+            .map(|hit| hit.document.doc_id())
+            .collect::<Vec<_>>(),
+        vec![DocId::new(1)]
+    );
+    let standalone = preparation_observer::phrase_reanalysis_work();
+    assert!(
+        preparation_observer::phrase_position_work().0 > 0,
+        "actual persisted position decode"
+    );
+    preparation_observer::take();
+    preparation_observer::begin();
+    let result = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &query,
+            &HybridQuery::new(1).with_alpha(0.0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid phrase top1");
+    assert_eq!(
+        result.hits.iter().map(|hit| hit.key).collect::<Vec<_>>(),
+        vec![DocId::new(1)]
+    );
+    let hybrid = preparation_observer::phrase_reanalysis_work();
+    assert!(
+        preparation_observer::phrase_position_work().0 > 0,
+        "hybrid uses persisted positions"
+    );
+    preparation_observer::take();
+    eprintln!(
+        "phrase eligibility reanalysis calls/bytes: standalone={standalone:?}, hybrid={hybrid:?}"
+    );
+    assert_eq!(
+        (standalone, hybrid),
+        ((0, 0), (0, 0)),
+        "persisted phrase eligibility must not reanalyze stored text"
+    );
+    preparation_observer::begin();
+    store
+        .search_lexical(
+            &TermQuery::flat(vec![b"alpha".to_vec(), b"beta".to_vec()], &[DEFAULT_FIELD]),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("ordinary BM25");
+    assert_eq!(
+        preparation_observer::phrase_position_work(),
+        (0, 0),
+        "ordinary BM25 must not decode position bytes"
+    );
+    preparation_observer::take();
+    assert_eq!(store.stats().expect("accounting").temporary_bytes, 0);
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_11_phrase_rejection_fetches_replacement_topk() {
+    let directory = tempdir().expect("phrase replacement");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let mut rows = (1..=20)
+        .map(|id| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("beta beta beta alpha alpha alpha")
+        })
+        .collect::<Vec<_>>();
+    for id in 21..=24 {
+        rows.push(
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(format!("alpha beta {}", "filler ".repeat(32))),
+        );
+    }
+    store.ingest(IngestBatch::new(rows)).expect("ingest");
+    store.seal().expect("seal");
+    store.close().expect("close");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("reopen");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(21)]))
+        .expect("delete earliest eligible row");
+    let phrase = LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD);
+    let result = store
+        .search_lexical_structured(&phrase, 2, 128, QueryControl::Cancel(CancelToken::new()))
+        .expect("replace rejected higher scores");
+    assert_eq!(
+        result
+            .candidates
+            .iter()
+            .map(|hit| hit.document.doc_id())
+            .collect::<Vec<_>>(),
+        vec![DocId::new(22), DocId::new(23)]
+    );
+    let hybrid = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &phrase,
+            &HybridQuery::new(2).with_alpha(0.0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid replacements");
+    assert_eq!(
+        hybrid.hits.iter().map(|hit| hit.key).collect::<Vec<_>>(),
+        vec![DocId::new(22), DocId::new(23)]
+    );
+    for (lexical, fused) in result.candidates.iter().zip(hybrid.hits) {
+        assert_eq!(
+            Some(lexical.score.to_bits()),
+            fused.lexical_bm25.map(f64::to_bits)
+        );
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn astra_11_phrase_scratch_budget_refusal_releases_query_memory() {
+    use zeppelin_embed::ingest::StoreLexicalError;
+    use zeppelin_embed::lifecycle::{QueryError, StoreError};
+    let directory = tempdir().expect("phrase budget");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(format!("{} beta", "alpha ".repeat(5000))),
+        ]))
+        .expect("long position stream");
+    store.seal().expect("seal");
+    store.close().expect("close");
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::default().with_max_temp_bytes(8192),
+    )
+    .expect("bounded reader");
+    let phrase = LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD);
+    let result =
+        store.search_lexical_structured(&phrase, 1, 64, QueryControl::Cancel(CancelToken::new()));
+    assert!(
+        matches!(
+            result,
+            Err(StoreLexicalError::Query(QueryError::Store(
+                StoreError::BudgetExceeded {
+                    component: "temporary",
+                    ..
+                }
+            )))
+        ),
+        "position scratch exceeds budget: {result:?}"
+    );
+    assert_eq!(store.stats().expect("released").temporary_bytes, 0);
+    assert_eq!(
+        store
+            .search_lexical(
+                &TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]),
+                1,
+                QueryControl::Cancel(CancelToken::new())
+            )
+            .expect("ordinary query still works")
+            .candidates
+            .len(),
+        1
+    );
+    assert_eq!(store.stats().expect("released again").temporary_bytes, 0);
+    store.close().expect("close");
+}
+
+#[test]
 fn structured_phrase_query_returns_owned_utf8_snippet_and_provenance() {
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");

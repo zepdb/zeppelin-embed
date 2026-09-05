@@ -691,6 +691,7 @@ pub(crate) fn build_round<'scratch>(
         lexical_query,
         newly_missing,
         cancellation,
+        accounting,
     )?;
     let lexical_scores_computed = newly_missing.len();
     let mut new_scores = new_scores.into_iter();
@@ -856,10 +857,11 @@ fn cross_score_lexical(
     active: &ActiveSegment,
     assembly: &super::LexicalAssembly,
     preparation: &super::prepared_lexical::PreparedLexicalQuery<'_>,
-    analyzer: &crate::fts::tokenizer::Analyzer,
+    _analyzer: &crate::fts::tokenizer::Analyzer,
     query: super::PinnedLexicalQuery<'_>,
     missing: &[SearchCandidate],
     cancellation: &super::QueryCancellation<'_>,
+    accounting: &std::sync::Arc<super::stats::Accounting>,
 ) -> Result<(Vec<f64>, crate::fts::search::SearchCounters), FusionError> {
     use crate::fts::search::{CandidateScoring, CandidateScoringWork, GlobalDocId, SearchCounters};
     let mut scores = vec![0.0; missing.len()];
@@ -918,6 +920,16 @@ fn cross_score_lexical(
         }
     };
     let prepared = CandidateScoring::prepared(scoring);
+    let phrase_query = match query {
+        super::PinnedLexicalQuery::Term(_) => None,
+        super::PinnedLexicalQuery::Structured(query) => Some(query),
+    };
+    let mut phrase = super::prepared_lexical::PhraseEligibility::new(
+        &assembly.index,
+        phrase_query,
+        accounting,
+        cancellation,
+    )?;
     let mut work = CandidateScoringWork::default();
     for (ordinal, batch) in batches
         .iter()
@@ -958,22 +970,12 @@ fn cross_score_lexical(
         .map_err(super::map_fusion_controlled_lexical_error)?;
         super::accumulate_search_counters(&mut counters, &result.counters);
         for ((row, position), mut score) in batch.iter().zip(result.scores) {
-            if let super::PinnedLexicalQuery::Structured(query) = query
-                && let Some((terms, slop)) = query.phrase_constraint()
-                && score.is_some()
-            {
+            if score.is_some() {
                 let doc = GlobalDocId {
                     segment: u32::try_from(ordinal).map_err(|_| overflow())?,
                     row: *row,
                 };
-                let (text, _) =
-                    super::structured_lexical_row(snapshot, active, &assembly.sources, doc)
-                        .map_err(|error| FusionError::Leg {
-                            leg: FusionLeg::Lexical,
-                            kind: LegFailureKind::Lexical,
-                            detail: error.to_string(),
-                        })?;
-                if !crate::fts::query::phrase_matches(analyzer, text, terms, slop) {
+                if !phrase.matches(doc, cancellation)? {
                     score = None;
                 }
             }

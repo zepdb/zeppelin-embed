@@ -13,6 +13,10 @@ struct Counts {
     structured_retained_rows: AtomicUsize,
     structured_bound_terms: AtomicUsize,
     corpus_statistics: AtomicUsize,
+    phrase_reanalyses: AtomicUsize,
+    phrase_text_bytes: AtomicUsize,
+    phrase_positions: AtomicUsize,
+    phrase_position_bytes: AtomicUsize,
 }
 
 /// Opaque handle passed to the same query's worker; no global counting window.
@@ -79,6 +83,60 @@ pub fn corpus_statistics_calls() -> usize {
             observer.0.corpus_statistics.load(Ordering::Relaxed)
         })
     })
+}
+
+/// Actual phrase eligibility analyzer calls and their input bytes. Snippet
+/// analysis is separate and deliberately excluded.
+pub fn phrase_reanalysis_work() -> (usize, usize) {
+    CURRENT.with(|current| {
+        current.borrow().as_ref().map_or((0, 0), |observer| {
+            (
+                observer.0.phrase_reanalyses.load(Ordering::Relaxed),
+                observer.0.phrase_text_bytes.load(Ordering::Relaxed),
+            )
+        })
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn phrase_reanalysis(bytes: usize) {
+    CURRENT.with(|current| {
+        if let Some(observer) = current.borrow().as_ref() {
+            observer.0.phrase_reanalyses.fetch_add(1, Ordering::Relaxed);
+            observer
+                .0
+                .phrase_text_bytes
+                .fetch_add(bytes, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Requested-row positions and logical packed byte ranges decoded for phrase
+/// eligibility; immutable index validation and snippets are separate work.
+pub fn phrase_position_work() -> (usize, usize) {
+    CURRENT.with(|current| {
+        current.borrow().as_ref().map_or((0, 0), |observer| {
+            (
+                observer.0.phrase_positions.load(Ordering::Relaxed),
+                observer.0.phrase_position_bytes.load(Ordering::Relaxed),
+            )
+        })
+    })
+}
+
+pub(crate) fn phrase_positions(positions: usize, bytes: usize) {
+    CURRENT.with(|current| {
+        if let Some(observer) = current.borrow().as_ref() {
+            observer
+                .0
+                .phrase_positions
+                .fetch_add(positions, Ordering::Relaxed);
+            observer
+                .0
+                .phrase_position_bytes
+                .fetch_add(bytes, Ordering::Relaxed);
+        }
+    });
 }
 
 pub(crate) fn corpus_statistics() {

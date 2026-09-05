@@ -48,6 +48,67 @@ pub(super) fn reserve_weighted_scratch(
         .map_err(QueryError::Store)
 }
 
+pub(super) struct PhraseEligibility<'index> {
+    phrase: Option<crate::fts::phrase::PreparedPhrase<'index>>,
+    memory: AccountedCounter,
+}
+
+impl<'index> PhraseEligibility<'index> {
+    pub(super) fn new(
+        index: &'index crate::fts::index::LexicalIndex,
+        query: Option<&crate::fts::query::LexicalQuery>,
+        accounting: &Arc<super::stats::Accounting>,
+        cancellation: &QueryCancellation<'_>,
+    ) -> Result<Self, QueryError> {
+        let mut memory = AccountedCounter::new(accounting, AllocationComponent::Temporary)
+            .map_err(QueryError::Store)?;
+        let phrase = match query {
+            None => None,
+            Some(query) => crate::fts::phrase::PreparedPhrase::new(
+                index,
+                query,
+                |bytes| reserve_weighted_scratch(&mut memory, bytes),
+                || cancellation.check_graph().map_err(QueryError::Scan),
+            )
+            .map_err(phrase_error)?,
+        };
+        Ok(Self { phrase, memory })
+    }
+
+    pub(super) fn matches(
+        &mut self,
+        doc: crate::fts::search::GlobalDocId,
+        cancellation: &QueryCancellation<'_>,
+    ) -> Result<bool, QueryError> {
+        let Some(phrase) = &self.phrase else {
+            return Ok(true);
+        };
+        let result = phrase
+            .matches(
+                doc,
+                |bytes| reserve_weighted_scratch(&mut self.memory, bytes),
+                || cancellation.check_graph().map_err(QueryError::Scan),
+            )
+            .map_err(phrase_error);
+        let release = self
+            .memory
+            .set(phrase.allocation_bytes())
+            .map_err(QueryError::Store);
+        let matches = result?;
+        release?;
+        Ok(matches)
+    }
+}
+
+fn phrase_error(error: crate::fts::phrase::PhraseReadError<QueryError>) -> QueryError {
+    match error {
+        crate::fts::phrase::PhraseReadError::Control(error) => error,
+        crate::fts::phrase::PhraseReadError::Storage(error) => {
+            QueryError::Store(StoreError::Segment(error.into()))
+        }
+    }
+}
+
 impl<'query> PreparedLexicalQuery<'query> {
     pub(super) fn new(query: PinnedLexicalQuery<'query>) -> Self {
         Self {

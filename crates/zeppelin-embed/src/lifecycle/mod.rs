@@ -3375,6 +3375,12 @@ impl Store {
         let mut scratch_memory =
             stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
                 .map_err(QueryError::Store)?;
+        let mut phrase = prepared_lexical::PhraseEligibility::new(
+            index,
+            Some(query),
+            &self.accounting,
+            &cancellation,
+        )?;
         let result = match &prepared {
             None => crate::fts::prune::weighted::WeightedResult::default(),
             Some(prepared) => crate::fts::prune::weighted::search(
@@ -3389,17 +3395,9 @@ impl Store {
                         .map_err(crate::ingest::StoreLexicalError::from)
                 },
                 |doc| {
-                    if let Some((terms, slop)) = query.phrase_constraint() {
-                        let (text, _) = structured_lexical_row(&snapshot, &active, sources, doc)?;
-                        Ok(crate::fts::query::phrase_matches(
-                            &self.tokenizer,
-                            text,
-                            terms,
-                            slop,
-                        ))
-                    } else {
-                        Ok(true)
-                    }
+                    phrase
+                        .matches(doc, &cancellation)
+                        .map_err(crate::ingest::StoreLexicalError::from)
                 },
                 |bytes| {
                     prepared_lexical::reserve_weighted_scratch(&mut scratch_memory, bytes)
@@ -4917,7 +4915,7 @@ fn resolve_hybrid_leg_results<Vector, Lexical>(
 
 fn exact_structured_lexical_leg(
     inputs: LexicalInputs<'_>,
-    analyzer: &crate::fts::tokenizer::Analyzer,
+    _analyzer: &crate::fts::tokenizer::Analyzer,
     query: &crate::fts::query::LexicalQuery,
     bound: usize,
     cancellation: &QueryCancellation<'_>,
@@ -4949,6 +4947,12 @@ fn exact_structured_lexical_leg(
     let mut scratch_memory =
         stats::AccountedCounter::new(inputs.accounting, stats::AllocationComponent::Temporary)
             .map_err(QueryError::Store)?;
+    let mut phrase = prepared_lexical::PhraseEligibility::new(
+        index,
+        Some(query),
+        inputs.accounting,
+        cancellation,
+    )?;
     let result = crate::fts::prune::weighted::search(
         index,
         query_scoring,
@@ -4961,15 +4965,9 @@ fn exact_structured_lexical_leg(
                 .map_err(crate::fusion::FusionError::from)
         },
         |doc| {
-            if let Some((terms, slop)) = query.phrase_constraint() {
-                let (text, _) = structured_lexical_row(snapshot, active, sources, doc)
-                    .map_err(|error| lexical_error(error.to_string()))?;
-                Ok(crate::fts::query::phrase_matches(
-                    analyzer, text, terms, slop,
-                ))
-            } else {
-                Ok(true)
-            }
+            phrase
+                .matches(doc, cancellation)
+                .map_err(crate::fusion::FusionError::from)
         },
         |bytes| {
             prepared_lexical::reserve_weighted_scratch(&mut scratch_memory, bytes)
