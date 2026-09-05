@@ -1,5 +1,12 @@
 # Query API latency: first measured wave
 
+> Follow-up correction: these historical API clocks include the benchmark
+> crate's core `test-support` fault observers. A matched feature-only comparison
+> measures roughly 1 ms through the normal-feature dense API. The output-copy
+> change remains committed, but the 2.3 ms scan and worker/direct gap below must
+> not be treated as ordinary application costs. See
+> [the follow-up and experiment register](query-api-scan-embedding.md).
+
 2026-09-05. **Complete for the declared first-wave scope; the sub-1 ms target
 is not achieved.** All 84 benchmark processes exited successfully. No graph,
 caller-thread TextStore integration, concurrent-load qualification or training

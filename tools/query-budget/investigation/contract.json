@@ -1,0 +1,21 @@
+{
+  "scope": [
+    "scan stage attribution and 1/2/4/8/12 worker sweep",
+    "matched clean71 graph versus scan and Exact",
+    "CoreML worker versus direct gap attribution and isolated controls"
+  ],
+  "excluded": [
+    "training",
+    "depth changes",
+    "weight quantization",
+    "sequence buckets",
+    "Astra steps 16+"
+  ],
+  "fixture": "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+  "quality_gate": {
+    "graph_chunk_recall_vs_exact_at10": 0.99,
+    "graph_ndcg_at10_max_absolute_loss": 0.005
+  },
+  "protocol": "20 warmups, 648 queries, three independent process repetitions, alternating order; no timing overlap; probe-on/off calibration",
+  "graph_policy": "current shipped graph profile; no tuning on all 648 queries"
+}

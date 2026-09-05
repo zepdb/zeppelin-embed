@@ -1,0 +1,173 @@
+[
+  {
+    "label": "graph-compare-scan-r1",
+    "arm": "scan",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-scan-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  },
+  {
+    "label": "graph-compare-graph-r1",
+    "arm": "graph",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-graph-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-graph",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "1"
+    }
+  },
+  {
+    "label": "graph-compare-exact-r1",
+    "arm": "exact",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-exact-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "exact"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  },
+  {
+    "label": "graph-compare-exact-r2",
+    "arm": "exact",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-exact-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "exact"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  },
+  {
+    "label": "graph-compare-graph-r2",
+    "arm": "graph",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-graph-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-graph",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "1"
+    }
+  },
+  {
+    "label": "graph-compare-scan-r2",
+    "arm": "scan",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-scan-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  },
+  {
+    "label": "graph-compare-scan-r3",
+    "arm": "scan",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-scan-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  },
+  {
+    "label": "graph-compare-graph-r3",
+    "arm": "graph",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-graph-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-graph",
+      "dense"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "1"
+    }
+  },
+  {
+    "label": "graph-compare-exact-r3",
+    "arm": "exact",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-compare-exact-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "exact"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_GRAPH_COVERAGE": "0"
+    }
+  }
+]

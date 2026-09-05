@@ -1,7 +1,39 @@
 # Query budget experiments
 
-[Results and limitations](../../tasks/evidence/query-api-under-1ms.md).
+[First-wave results](../../tasks/evidence/query-api-under-1ms.md),
+[follow-up and experiment register](../../tasks/evidence/query-api-scan-embedding.md).
 These scripts do not change model or retrieval defaults.
+
+## API timings without fault-test instrumentation
+
+Use the standalone manifest for production-feature timing:
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/ze-query-budget-api-target \
+  cargo build --offline --manifest-path tools/query-budget/Cargo.toml \
+  --profile bench --features query-timing
+cargo tree --offline --manifest-path tools/query-budget/Cargo.toml \
+  --features query-timing -e features -i zeppelin-embed
+```
+
+The dependency tree must not contain `test-support`. Omit `--features
+query-timing` for the matching control with stage timers disabled. The binary
+is `release/query-budget-api` under the selected target directory.
+
+The regular benchmark crate unconditionally enables the engine's
+`test-support` feature. On the measured revision, its Bit4 kernel observers
+take two global mutex locks and allocate a result vector per four-row batch
+even with no fault controller installed. Such timings include test machinery;
+they are not a measurement of a normal application build. The standalone
+workspace prevents those benchmark/dev features from being unified into this
+API control. Keep the existing benchmark configuration for adversarial tests.
+
+The standalone target uses the same query harness and does not bypass
+validation, checksums, cancellation, or the public API. Clean71 still requires
+its custom runtime adapters; the follow-up investigation uses a separate
+run-specific manifest in that existing experimental worktree.
+
+## Reproducing the first-wave instrumented baseline
 
 The clean71 bundles require the custom adapters in
 `/private/tmp/ze-clean71-smoke-bmoljupi/worktree`, detached at `cf312af`.

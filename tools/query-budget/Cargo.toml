@@ -1,0 +1,29 @@
+[package]
+name = "query-budget-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A separate workspace prevents benchmark/dev features from enabling the
+# engine's fault observers in the production API timing control.
+[workspace]
+
+[features]
+default = []
+query-timing = ["zeppelin-embed/query-timing"]
+
+[dependencies]
+serde_json = "=1.0.151"
+zeppelin-embed = { path = "../../crates/zeppelin-embed" }
+zeppelin-embed-text = { path = "../../crates/zeppelin-embed-text" }
+
+[[bin]]
+name = "query-budget-api"
+path = "../../crates/zeppelin-embed-bench/examples/query-budget.rs"
+
+[profile.bench]
+opt-level = 3
+debug = true
+lto = "fat"
+codegen-units = 1
+strip = "none"

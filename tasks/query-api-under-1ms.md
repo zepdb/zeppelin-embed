@@ -1,17 +1,26 @@
 # Query API under 1 ms
 
-Updated 2026-09-05 after the first measured experiment wave. Target:
-`TextStore::query_text`, dense leg, steady-state single-query p50 below 1 ms.
-**The target is not yet demonstrated.** The matched experiment reaches
-3.529 ms p50 / 3.751 ms p95 on the full FiQA query set.
+Updated 2026-09-05 after the scan/embedding follow-up. The user accepts roughly
+1 ms and does not want FiQA-specific tuning. The normal-feature dense API
+measures 0.966 ms p50 / 1.113 ms p95 in attribution and 1.020 ms / 1.215 ms in
+an independent timers/probes-off repetition set. A strict sub-1 ms guarantee
+and broader workload qualification are not demonstrated.
 
-[Measured evidence](evidence/query-api-under-1ms.md) contains results and raw
-artifact paths. The original proposal is preserved verbatim at
-`/private/tmp/ze-query-budget-hsslyrjg/original-plan.md`.
-The measured runtime is the existing clean71 worktree, detached at `cf312af`,
-with its original adapters plus the benchmark/shim patch. The first-wave main base is `818a433`.
-These timings are not a performance claim for main's later retrieval changes.
-Astra work remains paused after Step 15.
+The earlier ~3.5 ms API and ~2.3 ms scan included benchmark-only fault observers.
+Use the standalone manifest in `tools/query-budget/Cargo.toml` for future
+production-feature timing. This corrects measurement, not normal application
+execution. Keep current worker count, QoS, model and retrieval defaults.
+
+[Follow-up results and complete experiment register](evidence/query-api-scan-embedding.md)
+separate completed, negative and not-run experiments. The original first-wave
+findings below are retained as historical instrumented measurements; their
+proposed next steps are superseded by that register and the user's no-tuning
+direction. Astra is authorized to resume at 16 after this work is committed.
+
+[First-wave evidence](evidence/query-api-under-1ms.md) preserves the 84-process
+record. Original proposal: `/private/tmp/ze-query-budget-hsslyrjg/original-plan.md`.
+Both waves use the custom clean71 worktree detached at `cf312af`; these are not
+current-main latency claims.
 
 ## What the measurements change
 
@@ -75,7 +84,7 @@ qrels and parent-dedup policy. Compare both scan and Exact rankings. Exact
 rescoring does not make graph candidate membership exact. Retrieval p50 below
 0.35 ms remains a target, not a measured prediction.
 
-Start with the existing profile. If tuning is needed, freeze a seeded 64-query
+Start with the existing profile. Do not tune ef/R for FiQA in this follow-up. The earlier proposal to freeze a seeded 64-query
 calibration set and reserve 584 queries for final evaluation. Proposed gate,
 to declare before running: recall of Exact top-10 at least 0.99 and nDCG@10
 loss at most 0.005 absolute, with paired-query bootstrap intervals. These
@@ -180,5 +189,5 @@ prove every sub-1 ms path impossible. Measure CPU-only alternatives too.
 
 Hybrid, lexical and Exact are selectable in the harness but were not timed in
 this first wave. Hybrid remains the API default and is outside this dense
-target. Do not label older timings current or resume paused Astra steps under
-this experiment's name.
+target. Do not label older timings current. The user separately authorized resuming
+Astra at 16 after committing the completed experiment work.

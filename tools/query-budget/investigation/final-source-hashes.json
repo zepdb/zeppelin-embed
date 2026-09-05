@@ -1,0 +1,12 @@
+{
+  "crates/zeppelin-embed/Cargo.toml": "2c7ee623e7afb6797a25d3711fb3ecb5d61e7eb220d031fc5011d1020a97a0f7",
+  "crates/zeppelin-embed/src/lib.rs": "6e11f63c3a2e37973c9958a793f1a15fee69dfd6b5a72c53fff628d6b836ec5a",
+  "crates/zeppelin-embed/src/lifecycle/pool.rs": "eb92923bdcd43128e9214f58a7ca0da9bc58acb6e1f2e8b87895cdbf093e4e16",
+  "crates/zeppelin-embed-text/objc/ze_coreml.m": "99f7da004a34c4806fd469c887b48837fa97b84856483d83a3c1bc953e355888",
+  "crates/zeppelin-embed-text/src/ingest.rs": "e0ee2110ceeb32ac164ea8b43d9445d6fe73ad5b6667487f5b0d2c6d259c4153",
+  "crates/zeppelin-embed-text/src/runtime/coreml.rs": "9b5e22d0e992f6a4ca9c4765ced4d28ccf8c25c7eccb8c06e3698fd40d0a0abe",
+  "crates/zeppelin-embed-bench/examples/query-budget.rs": "ce8ccbdb6af585eaf93ee218c9083ae5842913dfa993233698ac9ddff8547feb",
+  "crates/zeppelin-embed/src/budget_probe.rs": "3797fcc747b6001d15d3b06b31de779283c8ada8e63f400816446a19fc8620f3",
+  "tools/query-investigate/Cargo.toml": "7744d13f2baf4278ad221cb4cb9de36e76abe757df9ab4639fd835a5f65634c8",
+  "tools/query-investigate/Cargo.lock": "6c1e07d7d8464257059466cb00c436708eb028599776a0fa0efcb96ea731f6b0"
+}

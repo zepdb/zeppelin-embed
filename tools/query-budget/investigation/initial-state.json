@@ -1,0 +1,33 @@
+{
+  "main": {
+    "head": "6b38f0292df4ad22765ea6151490f81ec0ccd7bc",
+    "branch": "main",
+    "files": {
+      "examples/python/five_vectors_search.py": "b18f9d4e4994a57ed5d68c0d7c3e19ee6b082fafc4d91426c7cdb6c13ee3c272"
+    }
+  },
+  "experimental": {
+    "head": "cf312af668e31e352a90a30eb2ce53a29bf0451d",
+    "branch": "",
+    "files": {
+      "crates/zeppelin-embed-bench/examples/clean71_api.rs": "6107916e54d8bd8c712cbc06fab9b85059b878070f0c52c82c86a5464d5592aa",
+      "crates/zeppelin-embed-bench/examples/clean71_compare.rs": "bc44d841b155d0e0f635ec9e35f960ee35db8d8d81fcd8e24ed1909624f05ff9",
+      "crates/zeppelin-embed-bench/examples/clean71_coreml_compare.rs": "60973caf866f4f7c14a65a6ec1018e3b259001521ce5a0c8aedcd566e716290d",
+      "crates/zeppelin-embed-bench/examples/clean71_reference.rs": "220957a63933ff960daa2bd8decac4c82d5e63eac45cb9caafe94363ed324397",
+      "crates/zeppelin-embed-bench/examples/query-budget.rs": "189d6b151ee80a397d1596f51128caf0b125b0bf5da78e8a941bded624a6f6fd",
+      "crates/zeppelin-embed-text/examples/clean71_parity.rs": "ced888fe3431bc516cdbbe5d2b733cd536c64f1e9d76f0b6e5c79797868416b7",
+      "crates/zeppelin-embed-text/tests/coreml_output_copy.m": "db52db3532e757dffd8ce263ddd4c14bb684790277908a0c3d0c95a3ef14015e",
+      "Cargo.lock": "d22da291b6099bc1bababe618e2f2617263d4add3752aa08cc403c35937976d6",
+      "crates/zeppelin-embed-bench/Cargo.toml": "5df86903c67d613f43ede282b2c6274c9d9fbf31268fa600c0ccd9775b89d5ef",
+      "crates/zeppelin-embed-text/CLAUDE.md": "9f7de728b950b608a1230d7fad7b059a4ad739abf56b32e5c48535289ea7dbf5",
+      "crates/zeppelin-embed-text/Cargo.toml": "43fc7617b1519c5bf7882282bead24cd278d225fb0c47dadca471048a5b2b79d",
+      "crates/zeppelin-embed-text/objc/ze_coreml.m": "a56db21494540debfe91942195d0c6e87dc89a04866e787cf54cf6405fe946f0",
+      "crates/zeppelin-embed-text/src/arch/bert.rs": "030fad463f7d36312821dbdf2fe869fe156839a10aab92381a49cfbf1c275a06",
+      "crates/zeppelin-embed-text/src/arch/gte.rs": "5338c9c5c2a30b149e0d76c5bf503767fc0c6b2632908f8721b529f3926f0ad0",
+      "crates/zeppelin-embed-text/src/bundle.rs": "e94b648f751c06cc94bca1d5d86d84cd5c287173ae12a2da82339f73f3de9f57",
+      "crates/zeppelin-embed-text/src/epoch.rs": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+      "crates/zeppelin-embed-text/src/runtime/mlx.rs": "7c108ed0683c0e4153d50b4267adbcc3e353414fe11c99709bbde96529753660",
+      "crates/zeppelin-embed-text/src/tokenizer.rs": "6b9eb8b3b327708f4177d36877b6a75ac67cb5da9bcfd333b68fec111fe31d9f"
+    }
+  }
+}

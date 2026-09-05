@@ -21,7 +21,7 @@ def run(manifest, output, load_limit=3.0):
             time.sleep(5)
         env=os.environ.copy()
         for key in list(env):
-            if key.startswith('ZE_QUERY_') or key in ['ZE_MLX_DEVICE','ZE_KERNEL','ZE_EXACT_WORKERS','ZE_BUDGET_QUERY_MAX_TOKENS','ZE_BUDGET_GRAPH_COVERAGE']:
+            if key.startswith('ZE_QUERY_') or key.startswith('ZE_BUDGET_') or key in ['ZE_MLX_DEVICE','ZE_KERNEL','ZE_EXACT_WORKERS','ZE_BUDGET_QUERY_MAX_TOKENS','ZE_BUDGET_GRAPH_COVERAGE']:
                 env.pop(key)
         env.update(cell.get('environment',{}))
         label=cell['label'];command=cell['command']

@@ -1,0 +1,671 @@
+[
+  {
+    "label": "core-fault-w12-r1",
+    "arm": "core-fault-w12",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-fault-w12-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "query-fault-w12-r1",
+    "arm": "query-fault-w12",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-fault-w12-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "core-normal-w1-r1",
+    "arm": "core-normal-w1",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w1-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "1"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w2-r1",
+    "arm": "core-normal-w2",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w2-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "2"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w4-r1",
+    "arm": "core-normal-w4",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w4-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "4"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w8-r1",
+    "arm": "core-normal-w8",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w8-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "8"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w12-r1",
+    "arm": "core-normal-w12",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w12-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "query-normal-w12-r1",
+    "arm": "query-normal-w12",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-w12-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "query-normal-qos33-r1",
+    "arm": "query-normal-qos33",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-qos33-r1",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_EMBED_QOS": "33",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "tower-normal-qos21-r1",
+    "arm": "tower-normal-qos21",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos21-r1",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "21"
+    }
+  },
+  {
+    "label": "tower-normal-qos33-r1",
+    "arm": "tower-normal-qos33",
+    "rep": 1,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos33-r1",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "33"
+    }
+  },
+  {
+    "label": "tower-normal-qos33-r2",
+    "arm": "tower-normal-qos33",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos33-r2",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "33"
+    }
+  },
+  {
+    "label": "tower-normal-qos21-r2",
+    "arm": "tower-normal-qos21",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos21-r2",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "21"
+    }
+  },
+  {
+    "label": "query-normal-qos33-r2",
+    "arm": "query-normal-qos33",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-qos33-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_EMBED_QOS": "33",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "query-normal-w12-r2",
+    "arm": "query-normal-w12",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-w12-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "core-normal-w12-r2",
+    "arm": "core-normal-w12",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w12-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w8-r2",
+    "arm": "core-normal-w8",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w8-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "8"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w4-r2",
+    "arm": "core-normal-w4",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w4-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "4"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w2-r2",
+    "arm": "core-normal-w2",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w2-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "2"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w1-r2",
+    "arm": "core-normal-w1",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w1-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "1"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "query-fault-w12-r2",
+    "arm": "query-fault-w12",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-fault-w12-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "core-fault-w12-r2",
+    "arm": "core-fault-w12",
+    "rep": 2,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-fault-w12-r2",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-fault-w12-r3",
+    "arm": "core-fault-w12",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-fault-w12-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "query-fault-w12-r3",
+    "arm": "query-fault-w12",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/fault-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-fault-w12-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "core-normal-w1-r3",
+    "arm": "core-normal-w1",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w1-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "1"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w2-r3",
+    "arm": "core-normal-w2",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w2-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "2"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w4-r3",
+    "arm": "core-normal-w4",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w4-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "4"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w8-r3",
+    "arm": "core-normal-w8",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w8-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "8"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "core-normal-w12-r3",
+    "arm": "core-normal-w12",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "core",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/core-normal-w12-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "/private/tmp/ze-query-budget-hsslyrjg/e3-tower-ane-r1/results.json",
+      "12"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  },
+  {
+    "label": "query-normal-w12-r3",
+    "arm": "query-normal-w12",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-w12-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "query-normal-qos33-r3",
+    "arm": "query-normal-qos33",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "query",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/query-normal-qos33-r3",
+      "/private/tmp/ze-query-investigate-vci05npf/store-scan",
+      "dense"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_EMBED_QOS": "33",
+      "ZE_BUDGET_SCAN_WORKERS": "12"
+    }
+  },
+  {
+    "label": "tower-normal-qos21-r3",
+    "arm": "tower-normal-qos21",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos21-r3",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "21"
+    }
+  },
+  {
+    "label": "tower-normal-qos33-r3",
+    "arm": "tower-normal-qos33",
+    "rep": 3,
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-timed",
+      "tower",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/tower-normal-qos33-r3",
+      "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "64",
+      "ane"
+    ],
+    "environment": {
+      "ZE_BUDGET_PROBE": "1",
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64",
+      "ZE_BUDGET_CALLER_QOS": "33"
+    }
+  }
+]

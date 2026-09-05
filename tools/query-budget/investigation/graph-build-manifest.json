@@ -1,0 +1,17 @@
+[
+  {
+    "label": "graph-build",
+    "command": [
+      "/private/tmp/ze-query-investigate-vci05npf/normal-untimed",
+      "promote",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/clean71-fp32-normalizer.zem",
+      "/private/tmp/ze-clean71-4bit-mscs_8rg/faithful/full-fixture.json",
+      "/private/tmp/ze-query-investigate-vci05npf/graph-build",
+      "/private/tmp/ze-query-investigate-vci05npf/store-graph"
+    ],
+    "environment": {
+      "ZE_QUERY_COREML": "/private/tmp/ze-clean71-coreml4-_r2_rxbl/clean71-fp16.mlmodelc",
+      "ZE_QUERY_COREML_TOKENS": "64"
+    }
+  }
+]
