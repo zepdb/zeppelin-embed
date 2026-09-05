@@ -593,16 +593,33 @@ pub(crate) struct LiveSegmentStatistics {
 }
 
 impl LiveSegmentStatistics {
+    pub(crate) fn build_controlled<E: From<IndexError>>(
+        ordinal: usize,
+        segment: &SealedSegment,
+        rows: &DocBitmap,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
+        let value = Self {
+            counters: live_segment_counters_controlled(ordinal, segment, rows, work)?,
+            rows: rows.clone(),
+            frequency_cache: None,
+        };
+        work.check_now()?;
+        Ok(value)
+    }
+
     pub(crate) fn build(
         ordinal: usize,
         segment: &SealedSegment,
         rows: &DocBitmap,
     ) -> Result<Self, IndexError> {
-        Ok(Self {
-            counters: live_segment_counters(ordinal, segment, rows)?,
-            rows: rows.clone(),
-            frequency_cache: None,
-        })
+        Self::build_controlled(
+            ordinal,
+            segment,
+            rows,
+            &mut super::control::WorkCheck::new(|| Ok(())),
+        )
     }
 
     pub(crate) fn allocation_bytes(rows: &DocBitmap) -> Option<usize> {
@@ -808,6 +825,36 @@ impl LexicalIndex {
         self.cached_document_frequency(term, fields)
     }
 
+    pub(crate) fn prepared_document_frequency_controlled<E>(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, super::search::ControlledSearchError<E>> {
+        use super::search::ControlledSearchError;
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::frequency();
+        check().map_err(ControlledSearchError::Control)?;
+        let mut total = 0_u32;
+        for (segment, statistics) in self.segments.iter().zip(&self.statistics) {
+            let live = &statistics.rows;
+            let frequency = if live.cardinality() == u64::from(segment.row_count()) {
+                segment
+                    .document_frequency_controlled(term, fields, &mut check)
+                    .map_err(ControlledSearchError::Control)?
+            } else if let Some(cache) = &statistics.frequency_cache {
+                cache.frequency_controlled(segment, live, term, fields, &mut check)?
+            } else {
+                segment
+                    .live_document_frequency_controlled(term, fields, live, &mut check)
+                    .map_err(ControlledSearchError::Control)?
+            };
+            total = total.saturating_add(frequency);
+        }
+        check().map_err(ControlledSearchError::Control)?;
+        Ok(total)
+    }
+
     fn cached_document_frequency(
         &self,
         term: &[u8],
@@ -832,20 +879,24 @@ impl LexicalIndex {
     }
 }
 
-fn live_segment_counters(
+fn live_segment_counters_controlled<E: From<IndexError>>(
     ordinal: usize,
     segment: &SealedSegment,
     live_rows: &DocBitmap,
-) -> Result<LiveSegmentCounters, IndexError> {
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<LiveSegmentCounters, E> {
+    work.check_now()?;
     if let Some(row) = live_rows.first_at_or_after(segment.row_count()) {
         return Err(IndexError::LiveRowOutOfRange {
             segment: ordinal,
             row,
             row_count: segment.row_count(),
-        });
+        }
+        .into());
     }
     let tokens =
         live_rows.iter().try_fold(0_u64, |total, row| {
+            work.step()?;
             #[cfg(any(test, feature = "test-support"))]
             super::preparation_observer::live_statistics_row();
             let slot = usize::try_from(row).map_err(|_| IndexError::LiveLengthMissing {
@@ -858,8 +909,9 @@ fn live_segment_counters(
                     row,
                 },
             )?;
-            Ok::<u64, IndexError>(total.saturating_add(u64::from(length)))
+            Ok::<u64, E>(total.saturating_add(u64::from(length)))
         })?;
+    work.check_now()?;
     Ok(LiveSegmentCounters {
         documents: live_rows.cardinality(),
         tokens,
@@ -933,6 +985,57 @@ mod tests {
 
     use super::*;
     use crate::fts::tokenizer::{Profile, TokenizerConfig};
+
+    #[test]
+    fn astra_18_live_statistics_cancel_inside_row_walk() {
+        #[derive(Debug)]
+        enum Error {
+            Index(IndexError),
+            Cancelled,
+        }
+        impl From<IndexError> for Error {
+            fn from(error: IndexError) -> Self {
+                Self::Index(error)
+            }
+        }
+        let segment = SealedSegment::seal(&segment_of(&analyzer(), &vec!["alpha beta"; 4_097]))
+            .expect("sealed row fixture");
+        let live = DocBitmap::from_ids(0..4_096);
+        super::super::preparation_observer::begin();
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if super::super::preparation_observer::live_statistics_rows() >= 64 {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        let result = LiveSegmentStatistics::build_controlled(7, &segment, &live, &mut work);
+        let visited = super::super::preparation_observer::live_statistics_rows();
+        super::super::preparation_observer::take();
+        println!("live statistics rows={visited}");
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!((64..=128).contains(&visited));
+        let mut clean = super::super::control::WorkCheck::new(|| Ok::<(), Error>(()));
+        let value = LiveSegmentStatistics::build_controlled(7, &segment, &live, &mut clean)
+            .expect("fresh control");
+        assert_eq!(value.counters.documents, 4_096);
+        assert_eq!(value.counters.tokens, 8_192);
+        assert_eq!(value.rows, live);
+        assert!(value.frequency_cache.is_none());
+        assert!(matches!(
+            LiveSegmentStatistics::build_controlled(
+                7,
+                &segment,
+                &DocBitmap::from_ids([4_097]),
+                &mut clean
+            ),
+            Err(Error::Index(IndexError::LiveRowOutOfRange {
+                segment: 7,
+                row: 4_097,
+                row_count: 4_097
+            }))
+        ));
+    }
 
     fn analyzer() -> Analyzer {
         Analyzer::new(TokenizerConfig::text_default()).expect("valid config")

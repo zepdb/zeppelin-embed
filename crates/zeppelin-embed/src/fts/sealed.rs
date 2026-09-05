@@ -155,6 +155,16 @@ pub struct SealedSegment {
 
 impl SealedSegment {
     pub(crate) fn resident_bytes(&self) -> Result<usize, SealedSegmentError> {
+        self.resident_bytes_controlled(&mut super::control::WorkCheck::new(|| {
+            Ok::<(), SealedSegmentError>(())
+        }))
+    }
+
+    pub(crate) fn resident_bytes_controlled<E: From<SealedSegmentError>>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<usize, E> {
+        work.check_now()?;
         let direct = self
             .terms
             .capacity()
@@ -181,6 +191,7 @@ impl SealedSegment {
                 "sealed lexical resident bytes overflow",
             ))?;
         self.lengths.iter().try_fold(direct, |total, entry| {
+            work.step()?;
             entry
                 .lengths
                 .capacity()
@@ -189,6 +200,7 @@ impl SealedSegment {
                 .ok_or(SealedSegmentError::Geometry(
                     "sealed lexical resident bytes overflow",
                 ))
+                .map_err(E::from)
         })
     }
 
@@ -220,6 +232,17 @@ impl SealedSegment {
     /// conditions rather than bad input, and they fail loudly here rather
     /// than becoming a decode fault at query time.
     pub fn seal(segment: &SegmentIndex) -> Result<Self, PostingsError> {
+        Self::seal_controlled(
+            segment,
+            &mut super::control::WorkCheck::new(|| Ok::<(), PostingsError>(())),
+        )
+    }
+
+    pub(crate) fn seal_controlled<E: From<PostingsError>>(
+        segment: &SegmentIndex,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
         let per_block = DEFAULT_POSTINGS_PER_BLOCK;
         let mut sealed = Self {
             terms: Vec::new(),
@@ -231,14 +254,26 @@ impl SealedSegment {
             postings_per_block: per_block,
         };
         for field in segment.fields() {
-            let lengths = segment.field_lengths(field).unwrap_or(&[]).to_vec();
+            work.step()?;
+            let source = segment.field_lengths(field).unwrap_or(&[]);
+            let mut lengths = Vec::with_capacity(source.len());
+            for length in source {
+                work.step()?;
+                #[cfg(test)]
+                SEAL_LENGTH_PROBES.with(|value| value.set(value.get() + 1));
+                lengths.push(*length);
+            }
             sealed.lengths.push(FieldLengths { field, lengths });
         }
 
         let rows = usize::try_from(sealed.row_count).unwrap_or(0);
         sealed.total_lengths = vec![0_u32; rows];
         for entry in &sealed.lengths {
+            work.step()?;
             for (slot, length) in entry.lengths.iter().enumerate() {
+                work.step()?;
+                #[cfg(test)]
+                SEAL_TOTAL_PROBES.with(|value| value.set(value.get() + 1));
                 if let Some(total) = sealed.total_lengths.get_mut(slot) {
                     *total = total.saturating_add(*length);
                 }
@@ -254,47 +289,54 @@ impl SealedSegment {
         let mut group_start = 0_usize;
         let mut group_lists: Vec<&PostingList> = Vec::new();
         for (key, list) in segment.postings() {
+            work.step()?;
             if list.is_empty() {
                 continue;
             }
             if group_term != Some(key.term.as_slice()) {
-                finish_union_group(&mut sealed.spans, group_start, &group_lists);
+                finish_union_group(&mut sealed.spans, group_start, &group_lists, work)?;
                 group_term = Some(key.term.as_slice());
                 group_start = sealed.spans.len();
                 group_lists.clear();
             }
             group_lists.push(list);
-            let field_lengths = sealed
-                .lengths
-                .iter()
-                .find(|entry| entry.field == key.field)
-                .map_or(&[][..], |entry| entry.lengths.as_slice());
-            let impacts = block_impacts(list, per_block, field_lengths);
-            let encoded = encode_v2(list, per_block, &[], &impacts)?;
+            let mut field_lengths = &[][..];
+            for entry in &sealed.lengths {
+                work.step()?;
+                if entry.field == key.field {
+                    field_lengths = entry.lengths.as_slice();
+                    break;
+                }
+            }
+            let impacts =
+                super::postings::block_impacts_controlled(list, per_block, field_lengths, work)?;
+            let encoded =
+                super::postings::encode_v2_controlled(list, per_block, &[], &impacts, work)?;
             let bytes = encoded.as_bytes();
             // Validate once, here, and resolve the stream boundaries the
             // query path will address by arithmetic.
-            let reader = PostingsReader::open(bytes)?;
+            let reader = PostingsReader::open_controlled(bytes, work)?;
             let base = u32::try_from(sealed.blob.len()).unwrap_or(u32::MAX);
             let block_count = u32::try_from(reader.blocks().len()).unwrap_or(u32::MAX);
             let meta_start = base.saturating_add(HEADER_LEN_U32);
             let streams = meta_start.saturating_add(block_count.saturating_mul(META_LEN_U32));
-            let docid_bytes = reader
-                .blocks()
-                .iter()
-                .map(|meta| stream_end(meta.docids_offset, meta.count, meta.docid_bits))
-                .max()
-                .unwrap_or(0);
+            let mut docid_bytes = 0;
+            for meta in reader.blocks() {
+                work.step()?;
+                docid_bytes =
+                    docid_bytes.max(stream_end(meta.docids_offset, meta.count, meta.docid_bits));
+            }
             let mut overall_max_tf = 0_u32;
             let mut overall_min_len = u16::MAX;
             for meta in reader.blocks() {
+                work.step()?;
                 let impact = BlockImpact::from_meta(meta);
                 overall_max_tf = overall_max_tf.max(impact.max_tf);
                 overall_min_len = overall_min_len.min(impact.min_len);
             }
 
             let term_start = u32::try_from(sealed.terms.len()).unwrap_or(u32::MAX);
-            sealed.terms.extend_from_slice(&key.term);
+            super::control::extend_bytes(&mut sealed.terms, &key.term, work)?;
             sealed.spans.push(ListSpan {
                 field: key.field,
                 term_start,
@@ -310,9 +352,10 @@ impl SealedSegment {
                 union_doc_freq: 0,
                 field_count: 0,
             });
-            sealed.blob.extend_from_slice(bytes);
+            super::control::extend_bytes(&mut sealed.blob, bytes, work)?;
         }
-        finish_union_group(&mut sealed.spans, group_start, &group_lists);
+        finish_union_group(&mut sealed.spans, group_start, &group_lists, work)?;
+        work.check_now()?;
         Ok(sealed)
     }
 
@@ -640,31 +683,47 @@ impl SealedSegment {
         Ok(retained)
     }
 
-    pub(crate) fn position_reader_bytes(&self, term: &[u8], field: FieldId) -> Option<usize> {
-        let (start, end) = self.term_span_range(term);
-        let span = self
-            .spans
-            .get(start..end)?
-            .iter()
-            .find(|span| span.field == field);
-        span.map_or(Some(0), |span| {
-            (span.block_count as usize).checked_mul(std::mem::size_of::<BlockMeta>())
-        })
-    }
-
-    pub(crate) fn position_reader(
+    pub(crate) fn position_reader_bytes_controlled<E>(
         &self,
         term: &[u8],
         field: FieldId,
-    ) -> Result<Option<PostingsReader<'_>>, SealedSegmentError> {
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<usize>, E> {
+        work.check_now()?;
+        let (start, end) = self.term_span_range(term);
+        let Some(spans) = self.spans.get(start..end) else {
+            return Ok(None);
+        };
+        for span in spans {
+            work.step()?;
+            if span.field == field {
+                return Ok(
+                    (span.block_count as usize).checked_mul(std::mem::size_of::<BlockMeta>())
+                );
+            }
+        }
+        Ok(Some(0))
+    }
+
+    pub(crate) fn position_reader_controlled<E: From<SealedSegmentError> + From<PostingsError>>(
+        &self,
+        term: &[u8],
+        field: FieldId,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<PostingsReader<'_>>, E> {
+        work.check_now()?;
         let (start, end) = self.term_span_range(term);
         for index in start..end {
+            work.step()?;
             if self
                 .spans
                 .get(index)
                 .is_some_and(|span| span.field == field)
             {
-                return Ok(Some(PostingsReader::open(self.list_bytes(index)?)?));
+                return Ok(Some(PostingsReader::open_controlled(
+                    self.list_bytes(index)?,
+                    work,
+                )?));
             }
         }
         Ok(None)
@@ -740,6 +799,20 @@ impl SealedSegment {
             .map(|entry| entry.lengths.as_slice())
     }
 
+    pub(crate) fn field_lengths_controlled<E>(
+        &self,
+        field: FieldId,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<&[u32]>, E> {
+        for entry in &self.lengths {
+            work.step()?;
+            if entry.field == field {
+                return Ok(Some(entry.lengths.as_slice()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Returns every row's length summed over every field.
     ///
     /// Precomputed at seal; see the field's own documentation.
@@ -811,10 +884,27 @@ impl SealedSegment {
     /// makes this a *document* frequency rather than a posting count.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
+        match self
+            .document_frequency_controlled(term, fields, || Ok::<(), std::convert::Infallible>(()))
+        {
+            Ok(frequency) => frequency,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn document_frequency_controlled<E>(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+        check: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, E> {
+        let mut work = super::control::WorkCheck::new(check);
+        work.check_now()?;
         let (start, end) = self.term_span_range(term);
         let mut matched: Option<usize> = None;
         let mut count = 0_usize;
         for index in start..end {
+            work.step()?;
             let Some(span) = self.spans.get(index) else {
                 continue;
             };
@@ -823,7 +913,7 @@ impl SealedSegment {
                 count = count.saturating_add(1);
             }
         }
-        match count {
+        let frequency = match count {
             0 => 0,
             1 => matched
                 .and_then(|index| self.spans.get(index))
@@ -836,23 +926,27 @@ impl SealedSegment {
                     .is_some_and(|span| span.field_count == total);
                 if all_fields {
                     // The precomputed union already answers this exactly.
-                    return self.spans.get(start).map_or(0, |span| span.union_doc_freq);
-                }
-                // A strict subset of the term's fields: rare, and exact.
-                let mut cursors: Vec<ListCursor<'_>> = Vec::new();
-                for index in start..end {
-                    let Some(span) = self.spans.get(index) else {
-                        continue;
-                    };
-                    if fields.contains(&span.field)
-                        && let Some(cursor) = self.cursor_at(index, 1_000)
-                    {
-                        cursors.push(cursor);
+                    self.spans.get(start).map_or(0, |span| span.union_doc_freq)
+                } else {
+                    // A strict subset of the term's fields: rare, and exact.
+                    let mut cursors: Vec<ListCursor<'_>> = Vec::new();
+                    for index in start..end {
+                        work.step()?;
+                        let Some(span) = self.spans.get(index) else {
+                            continue;
+                        };
+                        if fields.contains(&span.field)
+                            && let Some(cursor) = self.cursor_at(index, 1_000)
+                        {
+                            cursors.push(cursor);
+                        }
                     }
+                    union_count_controlled(&mut cursors, &mut work)?
                 }
-                union_count(&mut cursors)
             }
-        }
+        };
+        work.check_now()?;
+        Ok(frequency)
     }
 
     /// No cache lookup or eviction is worthwhile for zero or one posting.
@@ -897,29 +991,51 @@ impl SealedSegment {
         fields: &[FieldId],
         live_rows: &DocBitmap,
     ) -> u32 {
+        match self.live_document_frequency_controlled(term, fields, live_rows, || {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(frequency) => frequency,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn live_document_frequency_controlled<E>(
+        &self,
+        term: &[u8],
+        fields: &[FieldId],
+        live_rows: &DocBitmap,
+        check: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, E> {
+        let mut work = super::control::WorkCheck::new(check);
+        work.check_now()?;
         let weights = FieldWeights::flat(fields);
-        let Some(mut stream) = TermStream::open(self, term, &weights) else {
-            return 0;
+        let Some(mut stream) = TermStream::open_controlled(self, term, &weights, &mut work)? else {
+            return Ok(0);
         };
         let mut count = 0_u32;
         #[cfg(any(test, feature = "test-support"))]
         let mut visited = 0_usize;
-        while let Some(row) = stream.current_row() {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                visited = visited.saturating_add(1);
+        let result = (|| {
+            while let Some(row) = stream.current_row() {
+                work.step()?;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    visited = visited.saturating_add(1);
+                }
+                if live_rows.contains(row) {
+                    count = count.saturating_add(1);
+                }
+                stream.advance_controlled(&mut work)?;
             }
-            if live_rows.contains(row) {
-                count = count.saturating_add(1);
-            }
-            stream.advance();
-        }
+            work.check_now()?;
+            Ok(count)
+        })();
         #[cfg(any(test, feature = "test-support"))]
         super::preparation_observer::live_df_walk(
             visited,
             usize::try_from(stream.blocks_decoded()).unwrap_or(usize::MAX),
         );
-        count
+        result
     }
 
     /// Opens a cursor over the span at `index`, scaled by `weight`.
@@ -1245,32 +1361,46 @@ fn stream_end(offset: u32, count: u16, bits: u8) -> u32 {
 /// term, in field order; `lists` are the same posting lists, still in
 /// memory. A single-field term's union is its own document frequency; a
 /// multi-field term's is one linear merge over already-sorted lists.
-fn finish_union_group(spans: &mut [ListSpan], start: usize, lists: &[&PostingList]) {
+fn finish_union_group<E>(
+    spans: &mut [ListSpan],
+    start: usize,
+    lists: &[&PostingList],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<(), E> {
     let end = spans.len();
     if end <= start {
-        return;
+        return Ok(());
     }
     let count = u32::try_from(end.saturating_sub(start)).unwrap_or(u32::MAX);
     let union = if count == 1 {
         spans.get(start).map_or(0, |span| span.doc_freq)
     } else {
-        union_postings(lists)
+        union_postings_controlled(lists, work)?
     };
     if let Some(range) = spans.get_mut(start..end) {
         for span in range {
+            work.step()?;
             span.union_doc_freq = union;
             span.field_count = count;
         }
     }
+    Ok(())
 }
 
 /// Counts the distinct docids across in-memory sorted posting lists.
-fn union_postings(lists: &[&PostingList]) -> u32 {
+fn union_postings_controlled<E>(
+    lists: &[&PostingList],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<u32, E> {
+    work.check_now()?;
     let mut positions = vec![0_usize; lists.len()];
     let mut distinct = 0_u32;
     loop {
         let mut lowest: Option<u32> = None;
         for (slot, list) in lists.iter().enumerate() {
+            work.step()?;
+            #[cfg(test)]
+            SEAL_UNION_PROBES.with(|value| value.set(value.get() + 1));
             let position = positions.get(slot).copied().unwrap_or(usize::MAX);
             if let Some(posting) = list.postings().get(position) {
                 lowest = Some(lowest.map_or(posting.docid, |low| low.min(posting.docid)));
@@ -1281,6 +1411,7 @@ fn union_postings(lists: &[&PostingList]) -> u32 {
         };
         distinct = distinct.saturating_add(1);
         for (slot, list) in lists.iter().enumerate() {
+            work.step()?;
             let Some(position) = positions.get_mut(slot) else {
                 continue;
             };
@@ -1293,27 +1424,47 @@ fn union_postings(lists: &[&PostingList]) -> u32 {
             }
         }
     }
-    distinct
+    work.check_now()?;
+    Ok(distinct)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static SEAL_LENGTH_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SEAL_TOTAL_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SEAL_UNION_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Counts the distinct rows across a set of cursors by linear merge.
-fn union_count(cursors: &mut [ListCursor<'_>]) -> u32 {
+fn union_count_controlled<E>(
+    cursors: &mut [ListCursor<'_>],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<u32, E> {
     for cursor in cursors.iter_mut() {
+        work.step()?;
         cursor.reset();
     }
     let mut distinct = 0_u32;
     loop {
-        let Some(row) = cursors.iter().filter_map(ListCursor::current).min() else {
+        let mut first = None;
+        for cursor in cursors.iter() {
+            work.step()?;
+            if let Some(row) = cursor.current() {
+                first = Some(first.map_or(row, |held: u32| held.min(row)));
+            }
+        }
+        let Some(row) = first else {
             break;
         };
         distinct = distinct.saturating_add(1);
         for cursor in cursors.iter_mut() {
+            work.step()?;
             if cursor.current() == Some(row) {
                 cursor.advance();
             }
         }
     }
-    distinct
+    Ok(distinct)
 }
 
 /// A decoding cursor over one `(term, field)` posting list.
@@ -1683,7 +1834,21 @@ pub struct TermStream<'segment> {
     head_tf: Option<u32>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static ZERO_TF_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'segment> TermStream<'segment> {
+    pub(crate) fn open_controlled<E>(
+        segment: &'segment SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<Self>, E> {
+        Self::open_with_capacity_controlled(segment, term, weights, 0, work)
+    }
+
     /// Opens the stream for `term` over the weighted fields of `segment`.
     ///
     /// Returns `None` when no weighted field carries the term.
@@ -1724,17 +1889,32 @@ impl<'segment> TermStream<'segment> {
             .count()
     }
 
+    #[cfg(test)]
     pub(crate) fn open_sized(
         segment: &'segment SealedSegment,
         term: &[u8],
         weights: &FieldWeights,
     ) -> Option<Self> {
-        Self::open_with_capacity(
-            segment,
-            term,
-            weights,
-            Self::run_count(segment, term, weights),
-        )
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match Self::open_sized_controlled(segment, term, weights, &mut work) {
+            Ok(stream) => stream,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn open_sized_controlled<E>(
+        segment: &'segment SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<Self>, E> {
+        let (start, end) = segment.term_span_range(term);
+        let mut capacity = 0;
+        for span in segment.spans.get(start..end).unwrap_or_default() {
+            work.step()?;
+            capacity += usize::from(weights.weight(span.field) != 0);
+        }
+        Self::open_with_capacity_controlled(segment, term, weights, capacity, work)
     }
 
     fn open_with_capacity(
@@ -1743,21 +1923,41 @@ impl<'segment> TermStream<'segment> {
         weights: &FieldWeights,
         capacity: usize,
     ) -> Option<Self> {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match Self::open_with_capacity_controlled(segment, term, weights, capacity, &mut work) {
+            Ok(stream) => stream,
+            Err(never) => match never {},
+        }
+    }
+
+    fn open_with_capacity_controlled<E>(
+        segment: &'segment SealedSegment,
+        term: &[u8],
+        weights: &FieldWeights,
+        capacity: usize,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<Self>, E> {
+        work.step()?;
         let (start, end) = segment.term_span_range(term);
         let mut runs: Vec<ListCursor<'segment>> = Vec::with_capacity(capacity);
         let mut scales: Vec<u64> = Vec::with_capacity(capacity);
         for index in start..end {
-            let span = segment.spans.get(index)?;
+            work.step()?;
+            let Some(span) = segment.spans.get(index) else {
+                return Ok(None);
+            };
             let weight = u64::from(weights.weight(span.field));
             if weight == 0 {
                 continue;
             }
-            let cursor = segment.cursor_at(index, weight)?;
+            let Some(cursor) = segment.cursor_at(index, weight) else {
+                return Ok(None);
+            };
             runs.push(cursor);
             scales.push(weight);
         }
         if runs.is_empty() {
-            return None;
+            return Ok(None);
         }
         let unit_single = runs.len() == 1 && scales.first().copied() == Some(1_000);
         let heads_always_valid = scales.iter().all(|weight| *weight >= 1_000);
@@ -1769,16 +1969,28 @@ impl<'segment> TermStream<'segment> {
             head: None,
             head_tf: None,
         };
-        stream.reset();
-        Some(stream)
+        stream.reset_controlled(work)?;
+        Ok(Some(stream))
     }
 
     /// Rewinds every run to the first posting.
     pub fn reset(&mut self) {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.reset_controlled(&mut work) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn reset_controlled<E>(
+        &mut self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<(), E> {
         for run in &mut self.runs {
+            work.step()?;
             run.reset();
         }
-        self.refresh();
+        self.refresh_controlled(work)
     }
 
     /// Recomputes the merged head, skipping rows whose weighted tf rounds
@@ -1787,23 +1999,27 @@ impl<'segment> TermStream<'segment> {
     /// When every weight is at least unit the zero-tf filter cannot fire,
     /// so the head is declared from docids alone and its tf is left for
     /// [`Self::current_tf`] to compute if the row is ever scored.
-    fn refresh(&mut self) {
+    fn refresh_controlled<E>(
+        &mut self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<(), E> {
         self.head_tf = None;
         if self.heads_always_valid {
             self.head = if self.unit_single {
                 self.runs.first().and_then(ListCursor::current)
             } else {
-                self.runs.iter().filter_map(ListCursor::current).min()
+                self.first_row_controlled(work)?
             };
-            return;
+            return Ok(());
         }
         loop {
-            let Some(row) = self.runs.iter().filter_map(ListCursor::current).min() else {
+            let Some(row) = self.first_row_controlled(work)? else {
                 self.head = None;
-                return;
+                return Ok(());
             };
             let mut total = 0_u64;
             for run in &mut self.runs {
+                work.step()?;
                 if run.current() == Some(row) {
                     total = total.saturating_add(run.current_weighted_tf().unwrap_or(0));
                 }
@@ -1812,19 +2028,41 @@ impl<'segment> TermStream<'segment> {
             if tf > 0 {
                 self.head = Some(row);
                 self.head_tf = Some(tf);
-                return;
+                return Ok(());
             }
-            self.step(row);
+            #[cfg(test)]
+            ZERO_TF_ROWS.with(|count| count.set(count.get() + 1));
+            self.step_controlled(row, work)?;
         }
     }
 
+    fn first_row_controlled<E>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<u32>, E> {
+        let mut first = None;
+        for run in &self.runs {
+            work.step()?;
+            if let Some(row) = run.current() {
+                first = Some(first.map_or(row, |held: u32| held.min(row)));
+            }
+        }
+        Ok(first)
+    }
+
     /// Advances every run sitting on `row`.
-    fn step(&mut self, row: u32) {
+    fn step_controlled<E>(
+        &mut self,
+        row: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<(), E> {
         for run in &mut self.runs {
+            work.step()?;
             if run.current() == Some(row) {
                 run.advance();
             }
         }
+        Ok(())
     }
 
     /// Returns the merged row at the head.
@@ -1837,36 +2075,74 @@ impl<'segment> TermStream<'segment> {
     /// demand. This is the only place a traversal pays a tf decode.
     #[must_use]
     pub fn current_tf(&mut self) -> Option<u32> {
-        let row = self.head?;
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.current_tf_controlled(&mut work) {
+            Ok(tf) => tf,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn current_tf_controlled<E>(
+        &mut self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<u32>, E> {
+        let Some(row) = self.head else {
+            return Ok(None);
+        };
         if let Some(tf) = self.head_tf {
-            return Some(tf);
+            return Ok(Some(tf));
         }
         let mut total = 0_u64;
         for run in &mut self.runs {
+            work.step()?;
             if run.current() == Some(row) {
                 total = total.saturating_add(run.current_weighted_tf().unwrap_or(0));
             }
         }
         let tf = u32::try_from(total / 1_000).unwrap_or(u32::MAX);
         self.head_tf = Some(tf);
-        Some(tf)
+        Ok(Some(tf))
     }
 
     /// Advances past the current row.
     pub fn advance(&mut self) {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.advance_controlled(&mut work) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn advance_controlled<E>(
+        &mut self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<(), E> {
         let Some(row) = self.head else {
-            return;
+            return Ok(());
         };
-        self.step(row);
-        self.refresh();
+        self.step_controlled(row, work)?;
+        self.refresh_controlled(work)
     }
 
     /// Advances to the first merged row at or after `row`.
     pub fn seek(&mut self, row: u32) {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.seek_controlled(row, &mut work) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn seek_controlled<E>(
+        &mut self,
+        row: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<(), E> {
         for run in &mut self.runs {
+            work.step()?;
             run.seek(row);
         }
-        self.refresh();
+        self.refresh_controlled(work)
     }
 
     /// Returns true when every run is spent.
@@ -1922,6 +2198,54 @@ impl<'segment> TermStream<'segment> {
                     )
             })
             .fold(0_usize, usize::saturating_add)
+    }
+
+    pub(crate) fn block_bound_controlled<E>(
+        &self,
+        scorer: &TermScorer,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<f64, E> {
+        self.bound_from_controlled(
+            scorer,
+            |run| (!run.exhausted()).then(|| run.current_impact()),
+            work,
+        )
+    }
+
+    pub(crate) fn upper_bound_controlled<E>(
+        &self,
+        scorer: &TermScorer,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<f64, E> {
+        self.bound_from_controlled(
+            scorer,
+            |run| (!run.exhausted()).then(|| run.overall_impact()),
+            work,
+        )
+    }
+
+    pub(crate) fn bound_for_controlled<E>(
+        &self,
+        row: u32,
+        scorer: &TermScorer,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<f64, E> {
+        self.bound_from_controlled(scorer, |run| run.impact_for(row), work)
+    }
+
+    pub(crate) fn bound_horizon_for_controlled<E>(
+        &self,
+        row: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<u32>, E> {
+        let mut edge = None;
+        for run in &self.runs {
+            work.step()?;
+            if let Some(found) = run.impact_horizon_for(row) {
+                edge = Some(edge.map_or(found, |held: u32| held.min(found)));
+            }
+        }
+        Ok(edge)
     }
 
     /// The bound over the blocks the runs currently sit in.
@@ -1991,9 +2315,23 @@ impl<'segment> TermStream<'segment> {
         scorer: &TermScorer,
         pick: impl Fn(&ListCursor<'segment>) -> Option<BlockImpact>,
     ) -> f64 {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.bound_from_controlled(scorer, pick, &mut work) {
+            Ok(bound) => bound,
+            Err(never) => match never {},
+        }
+    }
+
+    fn bound_from_controlled<E>(
+        &self,
+        scorer: &TermScorer,
+        pick: impl Fn(&ListCursor<'segment>) -> Option<BlockImpact>,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<f64, E> {
         let mut max_tf = 0_u64;
         let mut min_len = u64::MAX;
         for (run, weight) in self.runs.iter().zip(self.weights.iter()) {
+            work.step()?;
             let Some(impact) = pick(run) else {
                 continue;
             };
@@ -2007,12 +2345,12 @@ impl<'segment> TermStream<'segment> {
             min_len = min_len.min(u64::from(impact.min_len).saturating_mul(*weight) / 1_000);
         }
         if min_len == u64::MAX {
-            return 0.0;
+            return Ok(0.0);
         }
-        scorer.score(
+        Ok(scorer.score(
             super::bm25::Tf(u32::try_from(max_tf).unwrap_or(u32::MAX)),
             super::bm25::DocLen(u32::try_from(min_len).unwrap_or(u32::MAX)),
-        )
+        ))
     }
 }
 
@@ -2042,6 +2380,196 @@ mod tests {
                 .expect("indexable");
         }
         segment
+    }
+
+    #[test]
+    fn astra_18_sealing_cancels_inside_row_preparation() {
+        let source = segment_of(&vec!["alpha beta".to_owned(); 4_096]);
+        let reference = SealedSegment::seal(&source)
+            .expect("reference")
+            .encode_region()
+            .expect("bytes");
+        let mut observed = Vec::new();
+        for (phase, probes) in [
+            ("length copy", &SEAL_LENGTH_PROBES),
+            ("total lengths", &SEAL_TOTAL_PROBES),
+        ] {
+            probes.with(|value| value.set(0));
+            let mut work = super::super::control::WorkCheck::new(|| {
+                if probes.with(std::cell::Cell::get) >= 64 {
+                    Err(PostingsError::ZeroBlockSize)
+                } else {
+                    Ok(())
+                }
+            });
+            let result = SealedSegment::seal_controlled(&source, &mut work);
+            let count = probes.with(std::cell::Cell::get);
+            println!("{phase}: canceled={}, rows={count}", result.is_err());
+            observed.push((
+                phase,
+                matches!(result, Err(PostingsError::ZeroBlockSize)),
+                count,
+            ));
+        }
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), PostingsError>(()));
+        assert_eq!(
+            SealedSegment::seal_controlled(&source, &mut work)
+                .expect("clean")
+                .encode_region()
+                .expect("clean bytes"),
+            reference
+        );
+        for (phase, canceled, count) in observed {
+            assert!(canceled, "{phase}");
+            assert!((64..=128).contains(&count), "{phase}: {count}");
+        }
+    }
+
+    #[test]
+    fn astra_18_sealing_union_cancels_inside_merge() {
+        let mut even = PostingList::new();
+        let mut all = PostingList::new();
+        for docid in 0..4_096 {
+            let posting = Posting {
+                docid,
+                tf: 1,
+                positions: vec![0],
+            };
+            all.push(posting.clone()).expect("all");
+            if docid % 2 == 0 {
+                even.push(posting).expect("even");
+            }
+        }
+        SEAL_UNION_PROBES.with(|value| value.set(0));
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if SEAL_UNION_PROBES.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = union_postings_controlled(&[&even, &all], &mut work);
+        let probes = SEAL_UNION_PROBES.with(std::cell::Cell::get);
+        println!("union probes={probes}");
+        assert_eq!(result, Err("cancelled"));
+        assert!((64..=128).contains(&probes));
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            union_postings_controlled(&[&even, &all], &mut work),
+            Ok(4_096)
+        );
+    }
+
+    #[test]
+    fn astra_18_field_subset_df_cancellation_preserves_union() {
+        let mut source = SegmentIndex::new();
+        let analyzer = analyzer();
+        for row in 0..4_096 {
+            let mut document = Document::new();
+            document.set(FieldId(0), if row % 2 == 0 { "alpha" } else { "beta" });
+            document.set(FieldId(1), if row % 3 == 0 { "alpha" } else { "beta" });
+            document.set(FieldId(2), "alpha");
+            source.push_document(&analyzer, &document).unwrap();
+        }
+        let segment = SealedSegment::seal(&source).unwrap();
+        let fields = [FieldId(0), FieldId(1)];
+        let expected = (0..4_096)
+            .filter(|row| row % 2 == 0 || row % 3 == 0)
+            .count() as u32;
+        assert_eq!(segment.document_frequency(b"alpha", &fields), expected);
+        assert_eq!(
+            segment.document_frequency_controlled(b"alpha", &fields, || Ok::<(), ()>(())),
+            Ok(expected)
+        );
+        let mut checks = 0;
+        assert_eq!(
+            segment.document_frequency_controlled(b"alpha", &fields, || {
+                checks += 1;
+                if checks == 3 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            }),
+            Err("cancelled")
+        );
+        assert_eq!(checks, 3);
+        // Single-field and complete-union dictionary shortcuts stay exact.
+        for (fields, expected) in [
+            (vec![FieldId(0)], 2_048),
+            (vec![FieldId(0), FieldId(1), FieldId(2)], 4_096),
+        ] {
+            assert_eq!(
+                segment.document_frequency_controlled(b"alpha", &fields, || Ok::<(), ()>(())),
+                Ok(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn astra_18_fractional_stream_cancels_in_hidden_zero_tf_walk() {
+        let analyzer = analyzer();
+        let fields = FieldWeights::new(&[(DEFAULT_FIELD, 500)]);
+        let mut observed = Vec::new();
+        for action in ["open", "reset", "seek", "advance"] {
+            let mut source = SegmentIndex::new();
+            for row in 0..4_096 {
+                let text = if row == 4_095 || (matches!(action, "advance" | "seek") && row == 0) {
+                    "alpha alpha"
+                } else {
+                    "alpha"
+                };
+                source
+                    .push_document(&analyzer, &Document::with_text(text))
+                    .unwrap();
+            }
+            let segment = SealedSegment::seal(&source).unwrap();
+            let mut stream = TermStream::open(&segment, b"alpha", &fields).unwrap();
+            assert_eq!(
+                stream.current_row(),
+                Some(if matches!(action, "advance" | "seek") {
+                    0
+                } else {
+                    4_095
+                })
+            );
+            ZERO_TF_ROWS.with(|count| count.set(0));
+            let mut checks = 0;
+            let mut work = super::super::control::WorkCheck::new(|| {
+                checks += 1;
+                if checks == 3 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            });
+            let result = match action {
+                "open" => TermStream::open_controlled(&segment, b"alpha", &fields, &mut work)
+                    .map(|stream| stream.and_then(|stream| stream.current_row())),
+                "reset" => stream
+                    .reset_controlled(&mut work)
+                    .map(|()| stream.current_row()),
+                "seek" => stream
+                    .seek_controlled(1, &mut work)
+                    .map(|()| stream.current_row()),
+                "advance" => stream
+                    .advance_controlled(&mut work)
+                    .map(|()| stream.current_row()),
+                _ => unreachable!(),
+            };
+            let rows = ZERO_TF_ROWS.with(std::cell::Cell::get);
+            println!("{action}: result={result:?}, checks={checks}, zero_tf_rows={rows}");
+            observed.push((action, result, rows));
+        }
+        // Run every seam before asserting so the RED receipt proves reach for
+        // all four hidden walks, rather than stopping at the first failure.
+        for (action, result, rows) in observed {
+            assert_eq!(result, Err("cancelled"), "{action}");
+            assert!(
+                rows > 0 && rows <= 128,
+                "{action} walked {rows} zero-TF rows"
+            );
+        }
     }
 
     #[test]

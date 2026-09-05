@@ -41,6 +41,11 @@ use crate::meta::DocBitmap;
 
 use super::{TermCursor, TopK};
 
+#[cfg(test)]
+thread_local! {
+    static METADATA_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn length_of(lengths: &[u32], row: u32) -> u32 {
     usize::try_from(row)
         .ok()
@@ -62,8 +67,34 @@ pub fn run(
     counters: &mut SearchCounters,
     allow_list: Option<&DocBitmap>,
 ) {
+    match run_controlled(
+        cursors,
+        lengths,
+        segment,
+        heap,
+        counters,
+        allow_list,
+        || Ok::<(), std::convert::Infallible>(()),
+    ) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn run_controlled<E>(
+    cursors: &mut [TermCursor<'_>],
+    lengths: &[u32],
+    segment: u32,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
+    check: impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    let mut work = crate::fts::control::WorkCheck::new(check);
+    work.check_now()?;
     for cursor in cursors.iter_mut() {
-        cursor.reset();
+        work.step()?;
+        cursor.stream.reset_controlled(&mut work)?;
     }
 
     // Hoisted to the query frame. This buffer used to be allocated and freed
@@ -77,9 +108,11 @@ pub fn run(
     let mut live: Vec<(u32, usize)> = Vec::with_capacity(cursors.len());
 
     loop {
+        work.step()?;
         // Order live cursors by current document.
         live.clear();
         for (slot, cursor) in cursors.iter().enumerate() {
+            work.step()?;
             if let Some(row) = cursor.current() {
                 live.push((row, slot));
             }
@@ -101,6 +134,7 @@ pub fn run(
         let mut accumulated = 0.0_f64;
         let mut pivot: Option<usize> = None;
         for (position, (_, slot)) in live.iter().enumerate() {
+            work.step()?;
             let Some(cursor) = cursors.get(*slot) else {
                 continue;
             };
@@ -185,15 +219,18 @@ pub fn run(
         // equal to `pivot_row` are therefore one contiguous run, and
         // walking it is the entire cost of the pre-test: one block read per
         // cursor actually on the pivot, no second pass over `live`.
-        let condemnable = || {
+        let mut condemnable = || -> Result<bool, E> {
             let mut cheap = accumulated;
             let mut position = pivot_position;
             while let Some((row, slot)) = live.get(position).copied() {
+                work.step()?;
                 if row != pivot_row {
                     break;
                 }
                 if let Some(cursor) = cursors.get(slot) {
-                    cheap += cursor.current_block_max();
+                    cheap += cursor
+                        .stream
+                        .block_bound_controlled(&cursor.scorer, &mut work)?;
                     if position <= pivot_position {
                         cheap -= cursor.upper_bound;
                     }
@@ -202,6 +239,7 @@ pub fn run(
             }
             let mut position = pivot_position;
             while position > 0 {
+                work.step()?;
                 position = position.saturating_sub(1);
                 let Some((row, slot)) = live.get(position).copied() else {
                     break;
@@ -210,11 +248,13 @@ pub fn run(
                     break;
                 }
                 if let Some(cursor) = cursors.get(slot) {
-                    cheap += cursor.current_block_max();
+                    cheap += cursor
+                        .stream
+                        .block_bound_controlled(&cursor.scorer, &mut work)?;
                     cheap -= cursor.upper_bound;
                 }
             }
-            cheap <= threshold
+            Ok(cheap <= threshold)
         };
         // The refinement is worth asking only once the pivot set has
         // gathered on the pivot row. Asking on every iteration -- including
@@ -222,18 +262,28 @@ pub fn run(
         // costs one BM25 evaluation per run per iteration, which on a
         // seventeen-term query is most of the traversal and buys a skip
         // only where the impact pairs are skewed enough to condemn one.
-        if heap.is_full() && first_row == pivot_row && condemnable() {
+        if heap.is_full() && first_row == pivot_row && condemnable()? {
             let mut target = pivot_row;
             let mut condemned = false;
             loop {
+                work.step()?;
                 let mut bound = 0.0_f64;
                 let mut edge: Option<u32> = None;
                 for cursor in cursors.iter() {
+                    work.step()?;
                     if cursor.exhausted() {
                         continue;
                     }
-                    bound += cursor.stream.bound_for(target, &cursor.scorer);
-                    if let Some(found) = cursor.stream.bound_horizon_for(target) {
+                    #[cfg(test)]
+                    METADATA_PROBES.with(|count| count.set(count.get() + 1));
+                    bound +=
+                        cursor
+                            .stream
+                            .bound_for_controlled(target, &cursor.scorer, &mut work)?;
+                    if let Some(found) = cursor
+                        .stream
+                        .bound_horizon_for_controlled(target, &mut work)?
+                    {
                         edge = Some(edge.map_or(found, |held: u32| held.min(found)));
                     }
                 }
@@ -259,10 +309,11 @@ pub fn run(
             }
             if condemned {
                 for cursor in cursors.iter_mut() {
+                    work.step()?;
                     if cursor.current().is_some_and(|row| row < target) {
                         // Blocks jumped are tallied on the stream itself
                         // and collected once the segment finishes.
-                        cursor.seek(target);
+                        cursor.stream.seek_controlled(target, &mut work)?;
                     }
                 }
                 continue;
@@ -272,16 +323,17 @@ pub fn run(
         if first_row == pivot_row {
             let mut total = 0.0_f64;
             for cursor in cursors.iter_mut() {
+                work.step()?;
                 if cursor.current() != Some(pivot_row) {
                     continue;
                 }
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                if let Some(tf) = cursor.current_tf() {
+                if let Some(tf) = cursor.stream.current_tf_controlled(&mut work)? {
                     total += cursor
                         .scorer
                         .score(Tf(tf), DocLen(length_of(lengths, pivot_row)));
                 }
-                cursor.advance();
+                cursor.stream.advance_controlled(&mut work)?;
             }
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             if allow_list.is_none_or(|allowed| allowed.contains(pivot_row)) {
@@ -296,6 +348,7 @@ pub fn run(
         } else {
             // Advance the cursors that trail the pivot straight to it.
             for (row, slot) in live.iter().take(pivot_position.saturating_add(1)) {
+                work.step()?;
                 if *row >= pivot_row {
                     continue;
                 }
@@ -304,7 +357,90 @@ pub fn run(
                 };
                 // Blocks jumped are tallied on the stream itself and
                 // collected once the segment finishes.
-                cursor.seek(pivot_row);
+                cursor.stream.seek_controlled(pivot_row, &mut work)?;
+            }
+        }
+    }
+    work.check_now()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::fts::bm25::{Bm25Params, Df, TermScorer};
+    use crate::fts::index::{DEFAULT_FIELD, Document, LexicalIndex, SegmentIndex};
+    use crate::fts::sealed::TermStream;
+    use crate::fts::search::FieldWeights;
+    use crate::fts::tokenizer::{Analyzer, TokenizerConfig};
+
+    #[test]
+    fn astra_18_wand_cancels_during_metadata_only_skip() {
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+        let mut source = SegmentIndex::new();
+        for _ in 0..16_384 {
+            source
+                .push_document(&analyzer, &Document::with_text("alpha"))
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(source).expect("seal");
+        let segment = index.segments().first().expect("segment");
+        let stats = index.corpus_stats().expect("stats");
+        let scorer = TermScorer::new(Df(16_384), &stats, Bm25Params::default());
+        let fields = FieldWeights::flat(&[DEFAULT_FIELD]);
+        let lengths = crate::fts::search::weighted_lengths(segment, &fields);
+        for cancel in [false, true] {
+            let stream = TermStream::open(segment, b"alpha", &fields).expect("stream");
+            assert!(stream.upper_bound(&scorer) < 1.0);
+            // A valid conservative whole-term ceiling keeps the pivot alive;
+            // every actual block lies below the prior segment's winning hit.
+            let mut cursors = [TermCursor {
+                stream,
+                df: Df(16_384),
+                scorer,
+                upper_bound: 2.0,
+            }];
+            let mut heap = TopK::new(1);
+            heap.offer(GlobalDocId { segment: 9, row: 0 }, 1.0);
+            let mut counters = SearchCounters::default();
+            let mut checks = 0;
+            METADATA_PROBES.with(|count| count.set(0));
+            let result = run_controlled(
+                &mut cursors,
+                &lengths,
+                0,
+                &mut heap,
+                &mut counters,
+                None,
+                || {
+                    checks += 1;
+                    if cancel && checks == 3 {
+                        Err("cancelled")
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            let probes = METADATA_PROBES.with(std::cell::Cell::get);
+            println!(
+                "cancel={cancel}, checks={checks}, metadata_probes={probes}, postings={}",
+                counters.postings_decoded
+            );
+            assert_eq!(
+                counters.postings_decoded, 0,
+                "fixture must only visit metadata"
+            );
+            if cancel {
+                assert_eq!(result, Err("cancelled"));
+                assert!(
+                    probes <= 128,
+                    "metadata work must be bounded even with no matches"
+                );
+            } else {
+                assert_eq!(result, Ok(()));
+                assert!(probes > 128, "clean control must reach the long skip walk");
+                assert_eq!(heap.into_hits().first().expect("winner").doc.segment, 9);
             }
         }
     }

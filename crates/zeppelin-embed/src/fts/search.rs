@@ -94,6 +94,37 @@ impl FieldWeights {
         self.weights.iter().map(|(field, _)| *field).collect()
     }
 
+    pub(crate) fn fields_controlled<E>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Vec<FieldId>, E> {
+        work.check_now()?;
+        let mut fields = Vec::with_capacity(self.weights.len());
+        for (field, _) in &self.weights {
+            work.step()?;
+            fields.push(*field);
+        }
+        work.check_now()?;
+        Ok(fields)
+    }
+
+    pub(crate) fn clone_controlled<E>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
+        let mut weights = Vec::with_capacity(self.weights.len());
+        for entry in &self.weights {
+            work.step()?;
+            #[cfg(test)]
+            PREPARED_FIELD_COPIES.with(|count| count.set(count.get() + 1));
+            weights.push(*entry);
+        }
+        work.check_now()?;
+        // The source already has normalized order and first-weight semantics.
+        Ok(Self { weights })
+    }
+
     /// Returns the `(field, weight)` pairs, ascending by field.
     ///
     /// The allocation-free counterpart of [`Self::fields`]. Because the
@@ -101,6 +132,12 @@ impl FieldWeights {
     /// disagree.
     pub fn iter(&self) -> impl Iterator<Item = (FieldId, u32)> + '_ {
         self.weights.iter().copied()
+    }
+
+    pub(crate) fn allocation_bytes(&self) -> Option<usize> {
+        self.weights
+            .len()
+            .checked_mul(std::mem::size_of::<(FieldId, u32)>())
     }
 
     /// Returns one field's weight in thousandths.
@@ -200,13 +237,26 @@ pub fn weighted_lengths<'segment>(
     segment: &'segment SealedSegment,
     weights: &FieldWeights,
 ) -> Cow<'segment, [u32]> {
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match weighted_lengths_controlled(segment, weights, &mut work) {
+        Ok(lengths) => lengths,
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn weighted_lengths_controlled<'segment, E>(
+    segment: &'segment SealedSegment,
+    weights: &FieldWeights,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Cow<'segment, [u32]>, E> {
+    work.check_now()?;
     let row_count = usize::try_from(segment.row_count()).unwrap_or(0);
     let mut entries = weights.iter();
     if let (Some((field, 1_000)), None) = (entries.next(), entries.next())
-        && let Some(lengths) = segment.field_lengths(field)
+        && let Some(lengths) = segment.field_lengths_controlled(field, work)?
         && lengths.len() == row_count
     {
-        return Cow::Borrowed(lengths);
+        return Ok(Cow::Borrowed(lengths));
     }
     // The flat MULTI-field case, which is what every BEIR run uses: unit
     // weight over a set of fields covering the segment. The weighted length
@@ -216,17 +266,46 @@ pub fn weighted_lengths<'segment>(
     // Without this the scorer rebuilt a row-count-long array on EVERY
     // query -- 171,332 entries on TREC-COVID, each costing a linear scan of
     // the field table per field.
-    if weights.is_unit()
-        && segment.fields().all(|field| weights.weight(field) == 1_000)
-        && segment.total_lengths().len() == row_count
-    {
-        return Cow::Borrowed(segment.total_lengths());
+    let mut all_unit = !weights.weights.is_empty();
+    for (_, weight) in weights.iter() {
+        work.step()?;
+        if weight != 1_000 {
+            all_unit = false;
+            break;
+        }
     }
-    Cow::Owned(
-        (0..row_count)
-            .map(|row| weighted_length(segment, u32::try_from(row).unwrap_or(u32::MAX), weights))
-            .collect(),
-    )
+    if all_unit {
+        for field in segment.fields() {
+            work.step()?;
+            let mut found = false;
+            for (candidate, _) in weights.iter() {
+                work.step()?;
+                if candidate == field {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                all_unit = false;
+                break;
+            }
+        }
+        if all_unit && segment.total_lengths().len() == row_count {
+            return Ok(Cow::Borrowed(segment.total_lengths()));
+        }
+    }
+    let mut lengths = Vec::with_capacity(row_count);
+    for row in 0..row_count {
+        work.step()?;
+        lengths.push(row_length_controlled(
+            segment,
+            u32::try_from(row).unwrap_or(u32::MAX),
+            weights,
+            work,
+        )?);
+    }
+    work.check_now()?;
+    Ok(Cow::Owned(lengths))
 }
 
 /// Scores every matching document exhaustively and returns the top `k`.
@@ -368,6 +447,21 @@ pub(crate) enum ControlledSearchError<Control> {
     Control(Control),
 }
 
+impl<Control> From<IndexError> for ControlledSearchError<Control> {
+    fn from(error: IndexError) -> Self {
+        Self::Index(error)
+    }
+}
+
+impl ControlledSearchError<std::convert::Infallible> {
+    pub(crate) fn into_index_error(self) -> IndexError {
+        match self {
+            Self::Index(error) => error,
+            Self::Control(never) => match never {},
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CandidateScoringWork {
     pub(crate) streams_opened: u64,
@@ -392,7 +486,70 @@ pub(crate) struct PreparedTermQuery {
     params: Bm25Params,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static PREPARED_TERM_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PREPARED_FIELD_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PREPARED_SIZE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PreparedTermQuery {
+    pub(crate) fn new_controlled<E>(
+        index: &LexicalIndex,
+        query: &TermQuery,
+        params: Bm25Params,
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, ControlledSearchError<E>> {
+        let mut work =
+            super::control::WorkCheck::new(|| check().map_err(ControlledSearchError::Control));
+        work.check_now()?;
+        let mut terms = Vec::with_capacity(query.terms.len());
+        for term in &query.terms {
+            work.step()?;
+            #[cfg(test)]
+            PREPARED_TERM_COPIES.with(|count| count.set(count.get() + 1));
+            terms.push(term.clone());
+        }
+        let fields = query.fields.clone_controlled(&mut work)?;
+        Self::from_owned_controlled(index, TermQuery { terms, fields }, params, check)
+    }
+
+    pub(crate) fn from_owned_controlled<E>(
+        index: &LexicalIndex,
+        query: TermQuery,
+        params: Bm25Params,
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, ControlledSearchError<E>> {
+        check().map_err(ControlledSearchError::Control)?;
+        let stats = index.corpus_stats()?;
+        let fields = query
+            .fields
+            .fields_controlled(&mut super::control::WorkCheck::new(|| {
+                check().map_err(ControlledSearchError::Control)
+            }))?;
+        let frequencies = query
+            .terms
+            .iter()
+            .map(|term| index.prepared_document_frequency_controlled(term, &fields, &mut check))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut scorers = Vec::with_capacity(frequencies.len());
+        let mut work =
+            super::control::WorkCheck::new(|| check().map_err(ControlledSearchError::Control));
+        for df in &frequencies {
+            work.step()?;
+            scorers.push(TermScorer::new(Df(*df), &stats, params));
+        }
+        work.check_now()?;
+        Ok(Self {
+            query,
+            stats,
+            frequencies,
+            scorers,
+            params,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         index: &LexicalIndex,
         query: &TermQuery,
@@ -401,6 +558,7 @@ impl PreparedTermQuery {
         Self::from_owned(index, query.clone(), params)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_owned(
         index: &LexicalIndex,
         query: TermQuery,
@@ -442,27 +600,49 @@ impl PreparedTermQuery {
         self.params
     }
 
+    #[cfg(test)]
     pub(crate) fn allocation_bytes(query: &TermQuery) -> Option<usize> {
-        let term_bytes = query
-            .terms
-            .iter()
-            .try_fold(0_usize, |sum, term| sum.checked_add(term.len()))?;
-        query
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match Self::allocation_bytes_controlled(query, &mut work) {
+            Ok(bytes) => bytes,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn allocation_bytes_controlled<E>(
+        query: &TermQuery,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<usize>, E> {
+        work.check_now()?;
+        let mut term_bytes = 0_usize;
+        for term in &query.terms {
+            work.step()?;
+            #[cfg(test)]
+            PREPARED_SIZE_VISITS.with(|count| count.set(count.get() + 1));
+            let Some(sum) = term_bytes.checked_add(term.len()) else {
+                return Ok(None);
+            };
+            term_bytes = sum;
+        }
+        work.check_now()?;
+        Ok(query
             .terms
             .len()
             .checked_mul(
                 std::mem::size_of::<Vec<u8>>()
                     + std::mem::size_of::<u32>()
                     + std::mem::size_of::<TermScorer>(),
-            )?
-            .checked_add(term_bytes)?
-            .checked_add(
-                query
-                    .fields
-                    .weights
-                    .len()
-                    .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
             )
+            .and_then(|bytes| bytes.checked_add(term_bytes))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    query
+                        .fields
+                        .weights
+                        .len()
+                        .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
+                )
+            }))
     }
 
     pub(crate) fn single_allocation_bytes(
@@ -493,6 +673,35 @@ pub(crate) struct CandidateScoring<'query> {
 }
 
 impl<'query> CandidateScoring<'query> {
+    pub(crate) fn new_controlled<E>(
+        index: &LexicalIndex,
+        query: &'query TermQuery,
+        params: Bm25Params,
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, ControlledSearchError<E>> {
+        check().map_err(ControlledSearchError::Control)?;
+        let stats = index.corpus_stats()?;
+        let fields = query
+            .fields
+            .fields_controlled(&mut super::control::WorkCheck::new(|| {
+                check().map_err(ControlledSearchError::Control)
+            }))?;
+        let frequencies = query
+            .terms
+            .iter()
+            .map(|term| index.prepared_document_frequency_controlled(term, &fields, &mut check))
+            .collect::<Result<Vec<_>, _>>()?;
+        check().map_err(ControlledSearchError::Control)?;
+        Ok(Self {
+            query,
+            stats,
+            frequencies: Cow::Owned(frequencies),
+            params,
+            scorers: None,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         index: &LexicalIndex,
         query: &'query TermQuery,
@@ -585,14 +794,32 @@ impl<'query> CandidateScoring<'query> {
                 checkpoint(work).map_err(ControlledSearchError::Control)?;
             }
         }
-        let lengths = weighted_lengths(segment, &self.query.fields);
-        let mut routing = rows
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(position, row)| (row, position))
-            .collect::<Vec<_>>();
-        routing.sort_unstable_by_key(|(row, _)| *row);
+        let lengths = {
+            let mut nested = super::control::WorkCheck::new(|| {
+                checkpoint(work).map_err(ControlledSearchError::Control)
+            });
+            weighted_lengths_controlled(segment, &self.query.fields, &mut nested)?
+        };
+        let routing = {
+            let mut nested = super::control::WorkCheck::new(|| {
+                checkpoint(work).map_err(ControlledSearchError::Control)
+            });
+            let mut routing = Vec::with_capacity(rows.len());
+            for (position, &row) in rows.iter().enumerate() {
+                nested.step()?;
+                routing.push((row, position));
+            }
+            super::control::sort_by(
+                &mut routing,
+                |left, right| {
+                    #[cfg(test)]
+                    CANDIDATE_ROUTING_COMPARISONS.with(|value| value.set(value.get() + 1));
+                    left.0.cmp(&right.0)
+                },
+                &mut nested,
+            )?;
+            routing
+        };
         let mut scores = vec![None; rows.len()];
         let mut counters = SearchCounters::default();
         if rows.is_empty() {
@@ -608,7 +835,12 @@ impl<'query> CandidateScoring<'query> {
             .enumerate()
         {
             if df != 0 {
-                if let Some(stream) = TermStream::open(segment, term, &self.query.fields) {
+                let mut nested = super::control::WorkCheck::new(|| {
+                    checkpoint(work).map_err(ControlledSearchError::Control)
+                });
+                if let Some(stream) =
+                    TermStream::open_controlled(segment, term, &self.query.fields, &mut nested)?
+                {
                     work.streams_opened = work.streams_opened.saturating_add(1);
                     let scorer = self.term_scorer(slot, df);
                     work.scorers_prepared = work
@@ -621,10 +853,18 @@ impl<'query> CandidateScoring<'query> {
                 checkpoint(work).map_err(ControlledSearchError::Control)?;
             }
         }
-        for group in routing.chunk_by(|left, right| left.0 == right.0) {
-            let Some(&(row, _)) = group.first() else {
-                continue;
-            };
+        let mut group_start = 0;
+        while let Some(&(row, _)) = routing.get(group_start) {
+            let mut group_end = group_start + 1;
+            {
+                let mut nested = super::control::WorkCheck::new(|| {
+                    checkpoint(work).map_err(ControlledSearchError::Control)
+                });
+                while routing.get(group_end).is_some_and(|&(next, _)| next == row) {
+                    nested.step()?;
+                    group_end += 1;
+                }
+            }
             let length = usize::try_from(row)
                 .ok()
                 .and_then(|slot| lengths.get(slot).copied())
@@ -637,7 +877,12 @@ impl<'query> CandidateScoring<'query> {
             let mut total = 0.0_f64;
             let mut matched = false;
             for (stream, scorer, slot) in &mut streams {
-                stream.seek(row);
+                {
+                    let mut nested = super::control::WorkCheck::new(|| {
+                        checkpoint(work).map_err(ControlledSearchError::Control)
+                    });
+                    stream.seek_controlled(row, &mut nested)?;
+                }
                 work.seeks = work.seeks.saturating_add(1);
                 if work.seeks.is_multiple_of(64) {
                     checkpoint(work).map_err(ControlledSearchError::Control)?;
@@ -646,7 +891,15 @@ impl<'query> CandidateScoring<'query> {
                     counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                     total += contribution(
                         *slot,
-                        scorer.score(Tf(stream.current_tf().unwrap_or(0)), DocLen(length)),
+                        scorer.score(
+                            Tf({
+                                let mut nested = super::control::WorkCheck::new(|| {
+                                    checkpoint(work).map_err(ControlledSearchError::Control)
+                                });
+                                stream.current_tf_controlled(&mut nested)?.unwrap_or(0)
+                            }),
+                            DocLen(length),
+                        ),
                     );
                     matched = true;
                 }
@@ -658,15 +911,32 @@ impl<'query> CandidateScoring<'query> {
             if matched {
                 counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             }
+            let mut nested = super::control::WorkCheck::new(|| {
+                checkpoint(work).map_err(ControlledSearchError::Control)
+            });
+            // These private boundaries come only from successful routing.get
+            // probes above, so both splits remain inside the owned slice.
+            let group = routing
+                .split_at(group_start)
+                .1
+                .split_at(group_end - group_start)
+                .0;
             for &(_, position) in group {
+                nested.step()?;
+                #[cfg(test)]
+                CANDIDATE_DUPLICATE_COPIES.with(|value| value.set(value.get() + 1));
                 // Every position was generated from this exact output length.
                 if let Some(output) = scores.get_mut(position) {
                     *output = matched.then_some(total);
                 }
             }
+            group_start = group_end;
         }
         // Reused cursors own cumulative block receipts; count each once.
-        for (stream, _, _) in streams {
+        for (slot, (stream, _, _)) in streams.into_iter().enumerate() {
+            if slot % 64 == 0 {
+                checkpoint(work).map_err(ControlledSearchError::Control)?;
+            }
             counters.blocks_decoded = counters
                 .blocks_decoded
                 .saturating_add(stream.blocks_decoded());
@@ -758,9 +1028,7 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
     checkpoint().map_err(ControlledSearchError::Control)?;
     let prepared = match prepared_query {
         Some(prepared) => CandidateScoring::prepared(prepared),
-        None => {
-            CandidateScoring::new(index, query, params).map_err(ControlledSearchError::Index)?
-        }
+        None => CandidateScoring::new_controlled(index, query, params, &mut checkpoint)?,
     };
     let frequencies = &prepared.frequencies;
     let mut counters = SearchCounters::default();
@@ -824,25 +1092,35 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
                     continue;
                 };
                 let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
-                let lengths = weighted_lengths(segment, &query.fields);
+                let lengths = {
+                    let mut nested = super::control::WorkCheck::new(|| {
+                        checkpoint().map_err(ControlledSearchError::Control)
+                    });
+                    weighted_lengths_controlled(segment, &query.fields, &mut nested)?
+                };
 
                 for (slot, term) in query.terms.iter().enumerate() {
                     let df = frequencies.get(slot).copied().unwrap_or(0);
                     if df == 0 {
                         continue;
                     }
-                    let Some(mut stream) = TermStream::open(segment, term, &query.fields) else {
+                    let mut nested = super::control::WorkCheck::new(|| {
+                        checkpoint().map_err(ControlledSearchError::Control)
+                    });
+                    let Some(mut stream) =
+                        TermStream::open_controlled(segment, term, &query.fields, &mut nested)?
+                    else {
                         continue;
                     };
                     let scorer = prepared.term_scorer(slot, df);
                     while let Some(row) = stream.current_row() {
                         work_units = work_units.saturating_add(1);
                         if work_units.is_multiple_of(64) {
-                            checkpoint().map_err(ControlledSearchError::Control)?;
+                            nested.check_now()?;
                         }
                         counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                         if allow_list.contains(row) {
-                            let tf = stream.current_tf().unwrap_or(0);
+                            let tf = stream.current_tf_controlled(&mut nested)?.unwrap_or(0);
                             let length = usize::try_from(row)
                                 .ok()
                                 .and_then(|position| lengths.get(position).copied())
@@ -857,7 +1135,7 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
                                 *entry += score;
                             }
                         }
-                        stream.advance();
+                        stream.advance_controlled(&mut nested)?;
                     }
                     counters.blocks_decoded = counters
                         .blocks_decoded
@@ -909,14 +1187,40 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
     })
 }
 
-/// The weighted analyzed length of one row.
+#[cfg(test)]
+thread_local! {
+    static WEIGHTED_LENGTH_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CANDIDATE_ROUTING_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CANDIDATE_DUPLICATE_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn weighted_length(segment: &SealedSegment, row: u32, weights: &FieldWeights) -> u32 {
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match row_length_controlled(segment, row, weights, &mut work) {
+        Ok(length) => length,
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn row_length_controlled<E>(
+    segment: &SealedSegment,
+    row: u32,
+    weights: &FieldWeights,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<u32, E> {
+    #[cfg(test)]
+    WEIGHTED_LENGTH_ROWS.with(|count| count.set(count.get() + 1));
     let mut total = 0_u64;
     for (field, weight) in weights.iter() {
-        total =
-            total.saturating_add(u64::from(segment.field_length(row, field)) * u64::from(weight));
+        work.step()?;
+        let length = segment
+            .field_lengths_controlled(field, work)?
+            .and_then(|lengths| usize::try_from(row).ok().and_then(|slot| lengths.get(slot)))
+            .copied()
+            .unwrap_or(0);
+        total = total.saturating_add(u64::from(length) * u64::from(weight));
     }
-    u32::try_from(total / 1_000).unwrap_or(u32::MAX)
+    Ok(u32::try_from(total / 1_000).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]
@@ -933,9 +1237,124 @@ mod tests {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
 
     use super::*;
+
+    fn prepared_copy_case(fields: bool) {
+        let index = index_of(&["alpha"]);
+        let terms = vec![b"alpha".to_vec(); if fields { 1 } else { 4_096 }];
+        let query = TermQuery {
+            terms,
+            fields: FieldWeights::flat(
+                &(0..if fields { 4_096 } else { 1 })
+                    .map(FieldId)
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        PREPARED_TERM_COPIES.with(|count| count.set(0));
+        PREPARED_FIELD_COPIES.with(|count| count.set(0));
+        let copied = || {
+            if fields {
+                PREPARED_FIELD_COPIES.with(std::cell::Cell::get)
+            } else {
+                PREPARED_TERM_COPIES.with(std::cell::Cell::get)
+            }
+        };
+        let result =
+            PreparedTermQuery::new_controlled(&index, &query, Bm25Params::default(), || {
+                if copied() >= 64 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            });
+        println!("prepared copy fields={fields}, copied={}", copied());
+        assert!(matches!(
+            result,
+            Err(ControlledSearchError::Control("cancelled"))
+        ));
+        assert!(
+            (64..=128).contains(&copied()),
+            "owned copying must check within the query"
+        );
+        let clean =
+            PreparedTermQuery::new_controlled(&index, &query, Bm25Params::default(), || {
+                Ok::<(), Infallible>(())
+            })
+            .unwrap_or_else(|_| panic!("fresh control failed"));
+        assert_eq!(clean.query().terms, query.terms);
+        assert_eq!(clean.query().fields, query.fields);
+    }
+
+    #[test]
+    fn astra_18_prepared_term_copy_cancels_before_statistics() {
+        prepared_copy_case(false);
+    }
+
+    #[test]
+    fn astra_18_prepared_field_copy_cancels_before_statistics() {
+        prepared_copy_case(true);
+    }
+
+    #[test]
+    fn astra_18_prepared_term_size_cancels_inside_walk() {
+        let query = TermQuery::flat(vec![b"alpha".to_vec(); 4_096], &[DEFAULT_FIELD]);
+        PREPARED_SIZE_VISITS.with(|count| count.set(0));
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if PREPARED_SIZE_VISITS.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = PreparedTermQuery::allocation_bytes_controlled(&query, &mut work);
+        let visited = PREPARED_SIZE_VISITS.with(std::cell::Cell::get);
+        println!("prepared size terms visited={visited}");
+        assert_eq!(result, Err("cancelled"));
+        assert!((64..=128).contains(&visited));
+        let mut clean = super::super::control::WorkCheck::new(|| Ok::<(), Infallible>(()));
+        // Fixed 64-bit fixture: 4096 owned five-byte terms, their Vec headers,
+        // u32 frequencies and 32-byte scorers, plus one eight-byte field entry.
+        assert_eq!(
+            PreparedTermQuery::allocation_bytes_controlled(&query, &mut clean),
+            Ok(Some(266_248))
+        );
+    }
     use crate::fts::index::{DEFAULT_FIELD, Document, SegmentIndex};
     use crate::fts::tokenizer::{Analyzer, Profile};
     use crate::meta::DocBitmap;
+
+    #[test]
+    fn astra_18_weighted_length_preparation_is_cancelable() {
+        let index = index_of(&vec!["alpha beta"; 4_096]);
+        let segment = index.segments().first().unwrap();
+        let weights = FieldWeights::new(&[(DEFAULT_FIELD, 500)]);
+        let expected = vec![1_u32; 4_096];
+        assert_eq!(weighted_lengths(segment, &weights).as_ref(), expected);
+        WEIGHTED_LENGTH_ROWS.with(|count| count.set(0));
+        let mut checks = 0;
+        let mut work = super::super::control::WorkCheck::new(|| {
+            checks += 1;
+            if checks == 3 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = weighted_lengths_controlled(segment, &weights, &mut work);
+        let rows = WEIGHTED_LENGTH_ROWS.with(std::cell::Cell::get);
+        println!("checks={checks}, length_rows={rows}");
+        assert_eq!(result, Err("cancelled"));
+        assert!(
+            rows > 0 && rows <= 128,
+            "preparation must stop inside the row loop"
+        );
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            weighted_lengths_controlled(segment, &weights, &mut work)
+                .unwrap()
+                .as_ref(),
+            expected
+        );
+    }
 
     fn analyzer() -> Analyzer {
         Analyzer::new(Profile::Code.config()).expect("valid config")
@@ -972,6 +1391,90 @@ mod tests {
                 Err(ControlledSearchError::Control(never)) => match never {},
             };
         (batch, work)
+    }
+
+    #[test]
+    fn astra_18_candidate_routing_cancels_inside_sort() {
+        let index = index_of(&["alpha", "omega"]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
+        let prepared =
+            CandidateScoring::new(&index, &query, Bm25Params::default()).expect("statistics");
+        let rows = (0..4_096)
+            .map(|i| ((i * 7_919) % 2) as u32)
+            .collect::<Vec<_>>();
+        CANDIDATE_ROUTING_COMPARISONS.with(|value| value.set(0));
+        let mut work = CandidateScoringWork::default();
+        let result = prepared.score_rows(0, &index.segments()[0], &rows, &mut work, |_| {
+            if CANDIDATE_ROUTING_COMPARISONS.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let comparisons = CANDIDATE_ROUTING_COMPARISONS.with(std::cell::Cell::get);
+        println!(
+            "candidate routing comparisons={comparisons}, streams={}",
+            work.streams_opened
+        );
+        assert!(matches!(
+            result,
+            Err(ControlledSearchError::Control("cancelled"))
+        ));
+        assert!(
+            (64..=128).contains(&comparisons),
+            "routing sort must stop within its comparisons"
+        );
+        assert_eq!(work.streams_opened, 0);
+        let (clean, _) = candidate_batch(&index, &query, 0, &rows);
+        assert_eq!(clean.scores.len(), rows.len());
+        for (&row, score) in rows.iter().zip(clean.scores) {
+            if row == 0 {
+                assert!((score.expect("matching literal row") - 2.0_f64.ln()).abs() < 1e-12);
+            } else {
+                assert_eq!(score, None);
+            }
+        }
+    }
+
+    #[test]
+    fn astra_18_candidate_duplicates_cancel_inside_output_walk() {
+        let index = index_of(&["alpha", "omega"]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
+        let prepared =
+            CandidateScoring::new(&index, &query, Bm25Params::default()).expect("statistics");
+        let rows = vec![0; 4_096];
+        CANDIDATE_DUPLICATE_COPIES.with(|value| value.set(0));
+        let mut work = CandidateScoringWork::default();
+        let result = prepared.score_rows(0, &index.segments()[0], &rows, &mut work, |_| {
+            if CANDIDATE_DUPLICATE_COPIES.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let copies = CANDIDATE_DUPLICATE_COPIES.with(std::cell::Cell::get);
+        println!(
+            "candidate duplicate copies={copies}, rows_scored={}",
+            work.rows_visited
+        );
+        assert!(matches!(
+            result,
+            Err(ControlledSearchError::Control("cancelled"))
+        ));
+        assert!(
+            (64..=128).contains(&copies),
+            "one repeated row must not hide an unbounded output walk"
+        );
+        assert_eq!(work.rows_visited, 1);
+        let (clean, clean_work) = candidate_batch(&index, &query, 0, &rows);
+        assert_eq!(clean.scores.len(), rows.len());
+        assert_eq!(clean_work.rows_visited, 1);
+        assert!(
+            clean
+                .scores
+                .iter()
+                .all(|score| score.is_some_and(|score| (score - 2.0_f64.ln()).abs() < 1e-12))
+        );
     }
 
     #[test]

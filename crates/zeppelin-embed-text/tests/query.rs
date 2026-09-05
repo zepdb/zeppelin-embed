@@ -238,3 +238,33 @@ fn astra_00_detailed_text_query_preserves_hits_and_reports_its_boundaries() {
     assert_eq!(empty.embedding_calls, 0);
     store.close().expect("close");
 }
+
+#[test]
+fn astra_18_expired_text_entry_never_returns_partial_hits() {
+    use std::time::Duration;
+    use zeppelin_embed::lifecycle::{Deadline, QueryControl, QueryError};
+    use zeppelin_embed_text::TextError;
+    let directory = tempdir().expect("text deadline fixture");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store =
+        TextStore::open(directory.path().join("store"), &path, Default::default()).expect("open");
+    for legs in [Legs::Lexical, Legs::Dense, Legs::Hybrid] {
+        for k in [0, 1] {
+            let expired =
+                QueryControl::Deadline(Deadline::after(Duration::ZERO).expect("deadline"));
+            assert!(
+                matches!(
+                    store.query_text_controlled(
+                        "bronze",
+                        QueryOptions::new(k).with_legs(legs),
+                        expired
+                    ),
+                    Err(TextError::Query(QueryError::Timeout { partial: false }))
+                ),
+                "an already expired text call must stop before even zero-k work"
+            );
+        }
+    }
+    store.close().expect("close");
+}

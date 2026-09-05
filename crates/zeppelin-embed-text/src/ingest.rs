@@ -771,6 +771,17 @@ impl TextStore {
             .map(|outcome| outcome.hits)
     }
 
+    /// Executes a text query using one caller-owned cancellation or deadline.
+    pub fn query_text_controlled(
+        &self,
+        text: &str,
+        options: QueryOptions,
+        control: QueryControl,
+    ) -> Result<Vec<TextHit>, TextError> {
+        self.query_text_with_diagnostics_controlled(text, options, control)
+            .map(|outcome| outcome.hits)
+    }
+
     /// Executes the same text query with core work and optional outer timing.
     /// Stage timing is enabled by the core `query-timing` feature. This does
     /// not change the query's tier, score policy, snapshot or embedding epoch.
@@ -779,7 +790,23 @@ impl TextStore {
         text: &str,
         options: QueryOptions,
     ) -> Result<TextQueryOutcome, TextError> {
+        self.query_text_with_diagnostics_controlled(
+            text,
+            options,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    }
+
+    /// Executes a diagnostic text query with one control across tokenization,
+    /// embedding admission, retrieval and owned-text materialization.
+    pub fn query_text_with_diagnostics_controlled(
+        &self,
+        text: &str,
+        options: QueryOptions,
+        control: QueryControl,
+    ) -> Result<TextQueryOutcome, TextError> {
         let started = stage_start();
+        control.checkpoint().map_err(TextError::Query)?;
         let mut timings = TextQueryTimings::default();
         if options.k == 0 {
             timings.end_to_end = stage_elapsed(started);
@@ -793,23 +820,25 @@ impl TextStore {
             });
         }
         let mut query_tokens = 0;
-        let (hits, diagnostics) = match options.legs {
+        let result = (|| match options.legs {
             Legs::Lexical => {
                 let query = self.analyzed_query(text, &mut timings);
-                self.lexical_hits(&query, options.k, &mut timings)?
+                self.lexical_hits(&query, options.k, &mut timings, &control)
             }
             Legs::Dense => {
-                let (embedded, tokens) = self.query_vector(text, &mut timings)?;
+                let (embedded, tokens) = self.query_vector(text, &mut timings, &control)?;
                 query_tokens = tokens;
-                self.dense_hits(embedded.values(), options, &mut timings)?
+                self.dense_hits(embedded.values(), options, &mut timings, &control)
             }
             Legs::Hybrid => {
-                let (embedded, tokens) = self.query_vector(text, &mut timings)?;
+                let (embedded, tokens) = self.query_vector(text, &mut timings, &control)?;
                 query_tokens = tokens;
                 let query = self.analyzed_query(text, &mut timings);
-                self.hybrid_hits(embedded.values(), &query, options, &mut timings)?
+                self.hybrid_hits(embedded.values(), &query, options, &mut timings, &control)
             }
-        };
+        })();
+        let (hits, diagnostics) = result?;
+        control.checkpoint().map_err(TextError::Query)?;
         timings.end_to_end = stage_elapsed(started);
         Ok(TextQueryOutcome {
             hits,
@@ -838,24 +867,32 @@ impl TextStore {
         &self,
         text: &str,
         timings: &mut TextQueryTimings,
+        control: &QueryControl,
     ) -> Result<(EmbeddingBatch, usize), TextError> {
+        control.checkpoint().map_err(TextError::Query)?;
         let started = stage_start();
-        let tokens = self.bundle.tokenize_query(text)?;
+        let token_result = self.bundle.tokenize_query(text);
+        control.checkpoint().map_err(TextError::Query)?;
+        let tokens = token_result?;
         timings.tokenization = stage_elapsed(started);
         let count = tokens
             .attention_mask
             .iter()
             .filter(|mask| **mask != 0.0)
             .count();
-        let evaluated = self
-            .runtime
-            .embed_with_timing(TowerRole::Query, tokens, false)?;
+        let evaluated = self.runtime.embed_with_timing_controlled(
+            TowerRole::Query,
+            tokens,
+            false,
+            Some(control.clone()),
+        )?;
         timings.embedding_queue = evaluated.queue_wait;
         timings.embedding_evaluation = evaluated.evaluation;
         let mut embedded = evaluated.batch;
         let started = stage_start();
         normalize_batch(&mut embedded, &self.bundle.query_tower().embedding)?;
         timings.embedding_normalization = stage_elapsed(started);
+        control.checkpoint().map_err(TextError::Query)?;
         Ok((embedded, count))
     }
 
@@ -870,6 +907,7 @@ impl TextStore {
         vector: &[f32],
         options: QueryOptions,
         timings: &mut TextQueryTimings,
+        control: &QueryControl,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
         let (outcome, hits) = self
@@ -878,7 +916,7 @@ impl TextStore {
                 SearchRequest::new(vector),
                 options.k,
                 Self::search_options(options),
-                QueryControl::Cancel(CancelToken::new()),
+                control.clone(),
                 |outcome, materializer| {
                     timings.retrieval = stage_elapsed(retrieval_started);
                     let started = stage_start();
@@ -887,6 +925,7 @@ impl TextStore {
                         .iter()
                         .enumerate()
                         .map(|(rank, candidate)| {
+                            control.checkpoint().map_err(TextError::Query)?;
                             let row = materializer
                                 .text(rank)
                                 .map_err(TextError::Materialization)?;
@@ -907,32 +946,29 @@ impl TextStore {
         query: &TermQuery,
         k: usize,
         timings: &mut TextQueryTimings,
+        control: &QueryControl,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
         let (outcome, hits) = self
             .store
-            .search_lexical_with_text(
-                query,
-                k,
-                QueryControl::Cancel(CancelToken::new()),
-                |outcome, materializer| {
-                    timings.retrieval = stage_elapsed(retrieval_started);
-                    let started = stage_start();
-                    let hits = outcome
-                        .candidates
-                        .iter()
-                        .enumerate()
-                        .map(|(rank, candidate)| {
-                            let row = materializer
-                                .text(rank)
-                                .map_err(TextError::Materialization)?;
-                            self.make_hit(row, candidate.score, None, Some(candidate.score))
-                        })
-                        .collect::<Result<Vec<_>, TextError>>();
-                    timings.materialization = stage_elapsed(started);
-                    hits
-                },
-            )
+            .search_lexical_with_text(query, k, control.clone(), |outcome, materializer| {
+                timings.retrieval = stage_elapsed(retrieval_started);
+                let started = stage_start();
+                let hits = outcome
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, candidate)| {
+                        control.checkpoint().map_err(TextError::Query)?;
+                        let row = materializer
+                            .text(rank)
+                            .map_err(TextError::Materialization)?;
+                        self.make_hit(row, candidate.score, None, Some(candidate.score))
+                    })
+                    .collect::<Result<Vec<_>, TextError>>();
+                timings.materialization = stage_elapsed(started);
+                hits
+            })
             .map_err(TextError::Lexical)?;
         Ok((hits?, outcome.diagnostics))
     }
@@ -943,6 +979,7 @@ impl TextStore {
         query: &TermQuery,
         options: QueryOptions,
         timings: &mut TextQueryTimings,
+        control: &QueryControl,
     ) -> Result<(Vec<TextHit>, zeppelin_embed::diag::QueryDiagnostics), TextError> {
         let retrieval_started = stage_start();
         let (outcome, hits) = self
@@ -954,7 +991,7 @@ impl TextStore {
                     .with_alpha(self.bundle.hybrid_alpha())
                     .with_epoch(self.document_epoch),
                 Self::search_options(options),
-                QueryControl::Cancel(CancelToken::new()),
+                control.clone(),
                 |outcome, materializer| {
                     timings.retrieval = stage_elapsed(retrieval_started);
                     let started = stage_start();
@@ -963,6 +1000,7 @@ impl TextStore {
                         .iter()
                         .enumerate()
                         .map(|(rank, hit)| {
+                            control.checkpoint().map_err(TextError::Query)?;
                             let row = materializer
                                 .text(rank)
                                 .map_err(TextError::Materialization)?;
@@ -1402,9 +1440,86 @@ enum RuntimeCommand {
         tokens: TokenBatch,
         inject_panic: bool,
         queued: Option<Instant>,
-        reply: mpsc::SyncSender<Result<RuntimeEmbedding, RuntimeError>>,
+        control: Option<QueryControl>,
+        reply: mpsc::SyncSender<Result<RuntimeEmbedding, TextError>>,
     },
     Close,
+}
+
+// Keep the command loop independent of native model construction so deterministic
+// barriers can exercise the same queue ownership and panic boundaries in tests.
+fn run_embedding_commands(
+    receiver: mpsc::Receiver<RuntimeCommand>,
+    closed: &AtomicBool,
+    mut embed: impl FnMut(
+        TowerRole,
+        &TokenBatch,
+        Option<&QueryControl>,
+    ) -> Result<EmbeddingBatch, TextError>,
+) {
+    while let Ok(command) = receiver.recv() {
+        match command {
+            RuntimeCommand::Embed {
+                role,
+                tokens,
+                inject_panic,
+                queued,
+                control,
+                reply,
+            } => {
+                let queue_wait = stage_elapsed(queued);
+                let evaluation_started = stage_start();
+                let result = check_runtime_control(closed, control.as_ref()).and_then(|()| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if inject_panic {
+                            std::panic::resume_unwind(Box::new("injected embed panic"));
+                        }
+                        embed(role, &tokens, control.as_ref())
+                    }))
+                    .unwrap_or_else(|_| Err(embedding_error(RuntimeError::WorkerPanicked)))
+                });
+                let evaluation = stage_elapsed(evaluation_started);
+                // A foreign evaluation may finish after the caller stopped.
+                // Its owned output must never become a successful reply.
+                let result = check_runtime_control(closed, control.as_ref())
+                    .and(result)
+                    .map(|batch| RuntimeEmbedding {
+                        batch,
+                        queue_wait,
+                        evaluation,
+                    });
+                let _ = reply.send(result);
+            }
+            RuntimeCommand::Close => break,
+        }
+    }
+}
+
+const QUERY_WAIT_POLL: Duration = Duration::from_millis(1);
+
+fn embedding_error(error: RuntimeError) -> TextError {
+    match error {
+        RuntimeError::WorkerPanicked => TextError::Pipeline {
+            stage: "embed worker",
+            detail: error.to_string(),
+        },
+        other => TextError::Runtime(other),
+    }
+}
+
+fn check_runtime_control(
+    closed: &AtomicBool,
+    control: Option<&QueryControl>,
+) -> Result<(), TextError> {
+    if let Some(control) = control {
+        if closed.load(Ordering::Acquire) {
+            return Err(TextError::Query(
+                zeppelin_embed::lifecycle::QueryError::ReadCancelled { partial: false },
+            ));
+        }
+        control.checkpoint().map_err(TextError::Query)?;
+    }
+    Ok(())
 }
 
 /// Which backend evaluates the query tower.
@@ -1446,6 +1561,25 @@ impl QueryRuntime {
             }
         }
     }
+
+    fn embed_controlled(
+        &mut self,
+        tokens: &TokenBatch,
+        checkpoint: &mut impl FnMut() -> Result<(), TextError>,
+    ) -> Result<EmbeddingBatch, TextError> {
+        match self {
+            Self::Mlx(runtime) => runtime.embed_batch_controlled(tokens, checkpoint),
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(runtime) => {
+                checkpoint()?;
+                let padded = tokens.padded_to(runtime.sequence())?;
+                checkpoint()?;
+                let result = runtime.embed_batch(&padded);
+                checkpoint()?;
+                result.map_err(embedding_error)
+            }
+        }
+    }
 }
 
 enum RuntimeSet {
@@ -1477,6 +1611,26 @@ impl RuntimeSet {
             },
         }
     }
+
+    fn embed_controlled(
+        &mut self,
+        role: TowerRole,
+        tokens: &TokenBatch,
+        closed: &AtomicBool,
+        control: Option<&QueryControl>,
+    ) -> Result<EmbeddingBatch, TextError> {
+        let Some(control) = control else {
+            return self.embed(role, tokens).map_err(embedding_error);
+        };
+        let mut checkpoint = || check_runtime_control(closed, Some(control));
+        match self {
+            Self::Symmetric(runtime) => runtime.embed_batch_controlled(tokens, &mut checkpoint),
+            Self::Pair { document, query } => match role {
+                TowerRole::Document => document.embed_batch_controlled(tokens, &mut checkpoint),
+                TowerRole::Query => query.embed_controlled(tokens, &mut checkpoint),
+            },
+        }
+    }
 }
 
 fn mlx_backend(runtime: &MlxRuntime) -> QueryBackend {
@@ -1497,7 +1651,7 @@ struct RuntimeClient {
     query_backend: QueryBackend,
     sender: mpsc::SyncSender<RuntimeCommand>,
     thread: Mutex<Option<JoinHandle<()>>>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
 }
 
 impl RuntimeClient {
@@ -1507,6 +1661,8 @@ impl RuntimeClient {
     ) -> Result<Self, TextError> {
         let (sender, receiver) = mpsc::sync_channel::<RuntimeCommand>(2);
         let (init_sender, init_receiver) = mpsc::sync_channel(0);
+        let closed = Arc::new(AtomicBool::new(false));
+        let worker_closed = Arc::clone(&closed);
         let thread = std::thread::Builder::new()
             .name("ze-text-embed".to_owned())
             .spawn(move || {
@@ -1550,36 +1706,9 @@ impl RuntimeClient {
                         return;
                     }
                 };
-                while let Ok(command) = receiver.recv() {
-                    match command {
-                        RuntimeCommand::Embed {
-                            role,
-                            tokens,
-                            inject_panic,
-                            queued,
-                            reply,
-                        } => {
-                            let queue_wait = stage_elapsed(queued);
-                            let evaluation_started = stage_start();
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    if inject_panic {
-                                        std::panic::resume_unwind(Box::new("injected embed panic"));
-                                    }
-                                    runtimes.embed(role, &tokens)
-                                }))
-                                .unwrap_or(Err(RuntimeError::WorkerPanicked));
-                            let evaluation = stage_elapsed(evaluation_started);
-                            let result = result.map(|batch| RuntimeEmbedding {
-                                batch,
-                                queue_wait,
-                                evaluation,
-                            });
-                            let _ = reply.send(result);
-                        }
-                        RuntimeCommand::Close => break,
-                    }
-                }
+                run_embedding_commands(receiver, &worker_closed, |role, tokens, control| {
+                    runtimes.embed_controlled(role, tokens, &worker_closed, control)
+                });
             })
             .map_err(|error| TextError::Pipeline {
                 stage: "embed start",
@@ -1593,7 +1722,7 @@ impl RuntimeClient {
             query_backend,
             sender,
             thread: Mutex::new(Some(thread)),
-            closed: AtomicBool::new(false),
+            closed,
         })
     }
 
@@ -1613,38 +1742,74 @@ impl RuntimeClient {
         tokens: TokenBatch,
         inject_panic: bool,
     ) -> Result<RuntimeEmbedding, TextError> {
+        self.embed_with_timing_controlled(role, tokens, inject_panic, None)
+    }
+
+    fn embed_with_timing_controlled(
+        &self,
+        role: TowerRole,
+        tokens: TokenBatch,
+        inject_panic: bool,
+        control: Option<QueryControl>,
+    ) -> Result<RuntimeEmbedding, TextError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TextError::Pipeline {
                 stage: "embed submit",
                 detail: "runtime is closed".to_owned(),
             });
         }
+        check_runtime_control(&self.closed, control.as_ref())?;
         let (reply, receive) = mpsc::sync_channel(0);
-        self.sender
-            .send(RuntimeCommand::Embed {
-                role,
-                tokens,
-                inject_panic,
-                queued: stage_start(),
-                reply,
-            })
-            .map_err(|_| TextError::Pipeline {
-                stage: "embed submit",
-                detail: "runtime channel closed early".to_owned(),
-            })?;
-        receive
-            .recv()
-            .map_err(|_| TextError::Pipeline {
-                stage: "embed receive",
-                detail: "runtime channel closed early".to_owned(),
-            })?
-            .map_err(|error| match error {
-                RuntimeError::WorkerPanicked => TextError::Pipeline {
-                    stage: "embed worker",
-                    detail: error.to_string(),
-                },
-                other => TextError::Runtime(other),
-            })
+        let command = RuntimeCommand::Embed {
+            role,
+            tokens,
+            inject_panic,
+            queued: stage_start(),
+            control: control.clone(),
+            reply,
+        };
+        let disconnected = |stage| TextError::Pipeline {
+            stage,
+            detail: "runtime channel closed early".to_owned(),
+        };
+        if control.is_none() {
+            // Document ingestion retains its existing blocking queue policy.
+            self.sender
+                .send(command)
+                .map_err(|_| disconnected("embed submit"))?;
+            return receive.recv().map_err(|_| disconnected("embed receive"))?;
+        }
+        let mut pending = command;
+        loop {
+            check_runtime_control(&self.closed, control.as_ref())?;
+            match self.sender.try_send(pending) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(command)) => {
+                    #[cfg(all(test, feature = "test-support"))]
+                    query_control_tests::QUEUE_FULL_PROBES.with(|value| value.set(value.get() + 1));
+                    pending = command;
+                    std::thread::park_timeout(QUERY_WAIT_POLL);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    check_runtime_control(&self.closed, control.as_ref())?;
+                    return Err(disconnected("embed submit"));
+                }
+            }
+        }
+        loop {
+            check_runtime_control(&self.closed, control.as_ref())?;
+            match receive.recv_timeout(QUERY_WAIT_POLL) {
+                Ok(result) => {
+                    check_runtime_control(&self.closed, control.as_ref())?;
+                    return result;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    check_runtime_control(&self.closed, control.as_ref())?;
+                    return Err(disconnected("embed receive"));
+                }
+            }
+        }
     }
 
     fn close(&self) -> Result<(), TextError> {
@@ -1779,3 +1944,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "query_control_tests.rs"]
+mod query_control_tests;

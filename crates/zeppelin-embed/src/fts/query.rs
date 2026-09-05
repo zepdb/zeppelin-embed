@@ -24,7 +24,40 @@ pub(crate) struct PreparedWeightedQuery {
     scoring: super::search::PreparedTermQuery,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static WEIGHTED_SIZE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PreparedWeightedQuery {
+    pub(crate) fn new_controlled<E>(
+        index: &super::index::LexicalIndex,
+        expansions: Vec<LexicalExpansion>,
+        fields: FieldWeights,
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, super::search::ControlledSearchError<E>> {
+        use super::search::ControlledSearchError;
+        let mut work =
+            super::control::WorkCheck::new(|| check().map_err(ControlledSearchError::Control));
+        work.check_now()?;
+        let mut terms = Vec::with_capacity(expansions.len());
+        for entry in &expansions {
+            work.step()?;
+            terms.push(entry.term.clone());
+        }
+        let query = TermQuery { terms, fields };
+        Ok(Self {
+            scoring: super::search::PreparedTermQuery::from_owned_controlled(
+                index,
+                query,
+                super::bm25::Bm25Params::beir(),
+                check,
+            )?,
+            expansions,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         index: &super::index::LexicalIndex,
         expansions: Vec<LexicalExpansion>,
@@ -44,6 +77,7 @@ impl PreparedWeightedQuery {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn allocation_bytes(
         expansions: &Vec<LexicalExpansion>,
         fields: &FieldWeights,
@@ -52,6 +86,8 @@ impl PreparedWeightedQuery {
             .capacity()
             .checked_mul(std::mem::size_of::<LexicalExpansion>())?;
         for entry in expansions {
+            #[cfg(test)]
+            WEIGHTED_SIZE_VISITS.with(|count| count.set(count.get() + 1));
             bytes = bytes.checked_add(entry.term.capacity())?.checked_add(
                 super::search::PreparedTermQuery::single_allocation_bytes(
                     &FieldWeights::flat(&[]),
@@ -65,6 +101,38 @@ impl PreparedWeightedQuery {
                 .count()
                 .checked_mul(std::mem::size_of::<(FieldId, u32)>())?,
         )
+    }
+
+    pub(crate) fn allocation_bytes_controlled<E>(
+        expansions: &Vec<LexicalExpansion>,
+        fields: &FieldWeights,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<usize>, E> {
+        work.check_now()?;
+        let Some(mut bytes) = expansions
+            .capacity()
+            .checked_mul(std::mem::size_of::<LexicalExpansion>())
+        else {
+            return Ok(None);
+        };
+        for entry in expansions {
+            work.step()?;
+            #[cfg(test)]
+            WEIGHTED_SIZE_VISITS.with(|count| count.set(count.get() + 1));
+            let Some(next) = bytes.checked_add(entry.term.capacity()).and_then(|bytes| {
+                bytes.checked_add(super::search::PreparedTermQuery::single_allocation_bytes(
+                    &FieldWeights::flat(&[]),
+                    entry.term.len(),
+                )?)
+            }) else {
+                return Ok(None);
+            };
+            bytes = next;
+        }
+        work.check_now()?;
+        Ok(fields
+            .allocation_bytes()
+            .and_then(|field_bytes| bytes.checked_add(field_bytes)))
     }
 
     pub(crate) fn expansions(&self) -> &[LexicalExpansion] {
@@ -159,14 +227,18 @@ impl LexicalQuery {
         )
     }
 
-    pub(crate) fn fields(&self) -> FieldWeights {
-        match self {
-            Self::Term(query) => query.fields.clone(),
+    pub(crate) fn fields_controlled<E>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<FieldWeights, E> {
+        work.check_now()?;
+        Ok(match self {
+            Self::Term(query) => return query.fields.clone_controlled(work),
             Self::Phrase { field, .. }
             | Self::Prefix { field, .. }
             | Self::Fuzzy { field, .. }
             | Self::Phonetic { field, .. } => FieldWeights::flat(&[*field]),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -263,42 +335,53 @@ fn vocabulary<'a>(query: &LexicalQuery, terms: impl Iterator<Item = &'a [u8]>) -
     }
 }
 
+#[cfg(test)]
 pub(crate) fn expand_with_phonetic<E: From<LexicalQueryError>>(
     query: &LexicalQuery,
     vocabulary: &Vocabulary,
     phonetic_lookup: impl FnOnce(&str) -> Result<Vec<LexicalExpansion>, E>,
 ) -> Result<Vec<LexicalExpansion>, E> {
+    let mut work = super::control::WorkCheck::new(|| Ok(()));
+    expand_with_phonetic_controlled(query, vocabulary, &mut work, phonetic_lookup)
+}
+
+pub(crate) fn expand_with_phonetic_controlled<E: From<LexicalQueryError>>(
+    query: &LexicalQuery,
+    vocabulary: &Vocabulary,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    phonetic_lookup: impl FnOnce(&str) -> Result<Vec<LexicalExpansion>, E>,
+) -> Result<Vec<LexicalExpansion>, E> {
+    work.check_now()?;
     #[cfg(any(test, feature = "test-support"))]
     super::preparation_observer::expansion();
     let expansions = match query {
-        LexicalQuery::Term(query) => {
-            if query.terms.is_empty() || query.terms.iter().any(Vec::is_empty) {
+        LexicalQuery::Term(TermQuery { terms, .. }) | LexicalQuery::Phrase { terms, .. } => {
+            if terms.is_empty() {
                 return Err(LexicalQueryError::Empty.into());
             }
-            query
-                .terms
-                .iter()
-                .cloned()
-                .map(|term| LexicalExpansion {
-                    term,
-                    boost_thousandths: 1_000,
-                    kind: LexicalMatchKind::Term,
-                })
-                .collect()
-        }
-        LexicalQuery::Phrase { terms, .. } => {
-            if terms.is_empty() || terms.iter().any(Vec::is_empty) {
-                return Err(LexicalQueryError::Empty.into());
+            // Preserve occurrence order and the validation of every term.
+            for term in terms {
+                work.step()?;
+                if term.is_empty() {
+                    return Err(LexicalQueryError::Empty.into());
+                }
             }
+            let kind = if matches!(query, LexicalQuery::Term(_)) {
+                LexicalMatchKind::Term
+            } else {
+                LexicalMatchKind::Phrase
+            };
             terms
                 .iter()
-                .cloned()
-                .map(|term| LexicalExpansion {
-                    term,
-                    boost_thousandths: 1_000,
-                    kind: LexicalMatchKind::Phrase,
+                .map(|term| {
+                    work.step()?;
+                    Ok(LexicalExpansion {
+                        term: term.clone(),
+                        boost_thousandths: 1_000,
+                        kind,
+                    })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, E>>()?
         }
         LexicalQuery::Prefix { prefix, .. } => {
             if prefix.is_empty() {
@@ -306,13 +389,15 @@ pub(crate) fn expand_with_phonetic<E: From<LexicalQueryError>>(
             }
             vocabulary
                 .prefix(prefix)
-                .map(<[u8]>::to_vec)
-                .map(|term| LexicalExpansion {
-                    term,
-                    boost_thousandths: 1_000,
-                    kind: LexicalMatchKind::Prefix,
+                .map(|term| {
+                    work.step()?;
+                    Ok(LexicalExpansion {
+                        term: term.to_vec(),
+                        boost_thousandths: 1_000,
+                        kind: LexicalMatchKind::Prefix,
+                    })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, E>>()?
         }
         LexicalQuery::Fuzzy {
             term, max_distance, ..
@@ -328,52 +413,81 @@ pub(crate) fn expand_with_phonetic<E: From<LexicalQueryError>>(
                 .into());
             }
             let mut scratch = fuzzy::BoundedDistance::new();
-            let mut matches = vocabulary
-                .fuzzy_candidates(term.len(), *max_distance)
-                .filter_map(|candidate| {
-                    scratch
-                        .distance(term, candidate, *max_distance)
-                        .map(|distance| LexicalExpansion {
-                            term: candidate.to_vec(),
-                            boost_thousandths: match distance {
-                                0 => 1_000,
-                                1 => 500,
-                                _ => 250,
-                            },
-                            kind: LexicalMatchKind::Fuzzy { distance },
-                        })
-                })
-                .collect::<Vec<_>>();
-            matches.sort_unstable_by(|left, right| left.term.cmp(&right.term));
+            let mut matches = Vec::new();
+            for candidate in vocabulary.fuzzy_candidates(term.len(), *max_distance) {
+                work.step()?;
+                if let Some(distance) =
+                    scratch.distance_controlled(term, candidate, *max_distance, work)?
+                {
+                    matches.push(LexicalExpansion {
+                        term: candidate.to_vec(),
+                        boost_thousandths: match distance {
+                            0 => 1_000,
+                            1 => 500,
+                            _ => 250,
+                        },
+                        kind: LexicalMatchKind::Fuzzy { distance },
+                    });
+                }
+            }
+            super::control::sort_by(&mut matches, |left, right| left.term.cmp(&right.term), work)?;
             matches
         }
         LexicalQuery::Phonetic { term, .. } => {
             let term =
                 std::str::from_utf8(term).map_err(|_| LexicalQueryError::InvalidPhoneticUtf8)?;
-            let code = phonetic::encode(term);
+            let code = phonetic::encode_controlled(term, work)?;
             if code.is_empty() {
                 return Err(LexicalQueryError::EmptyPhoneticCode.into());
             }
             phonetic_lookup(&code)?
         }
     };
+    work.check_now()?;
     Ok(expansions)
 }
 
+#[cfg(test)]
 pub(crate) fn phonetic_expansions(
     vocabulary: &Vocabulary,
     index: &super::phonetic_index::PhoneticIndex,
     code: &str,
 ) -> Vec<LexicalExpansion> {
-    vocabulary
-        .select(index.terms(code))
-        .map(|term| LexicalExpansion {
-            term: term.to_vec(),
-            boost_thousandths: 250,
-            kind: LexicalMatchKind::Phonetic,
-        })
-        .collect()
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match phonetic_expansions_controlled(vocabulary, index, code, &mut work) {
+        Ok(expansions) => expansions,
+        Err(never) => match never {},
+    }
 }
+
+pub(crate) fn phonetic_expansions_controlled<E>(
+    vocabulary: &Vocabulary,
+    index: &super::phonetic_index::PhoneticIndex,
+    code: &str,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Vec<LexicalExpansion>, E> {
+    work.check_now()?;
+    let expansions = vocabulary
+        .select(index.terms(code))
+        .map(|term| {
+            work.step()?;
+            Ok(LexicalExpansion {
+                term: {
+                    #[cfg(test)]
+                    PHONETIC_COPIES.with(|count| count.set(count.get() + 1));
+                    term.to_vec()
+                },
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Phonetic,
+            })
+        })
+        .collect::<Result<Vec<_>, E>>()?;
+    work.check_now()?;
+    Ok(expansions)
+}
+
+#[cfg(test)]
+thread_local! { static PHONETIC_COPIES:std::cell::Cell<usize>=const {std::cell::Cell::new(0)}; }
 
 #[cfg(test)]
 fn expand(
@@ -461,6 +575,134 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_18_weighted_query_size_cancels_inside_walk() {
+        let expansions = (0..4_096)
+            .map(|_| LexicalExpansion {
+                term: b"alpha".to_vec(),
+                boost_thousandths: 1_000,
+                kind: LexicalMatchKind::Term,
+            })
+            .collect::<Vec<_>>();
+        let fields = FieldWeights::flat(&[field()]);
+        let expected = PreparedWeightedQuery::allocation_bytes(&expansions, &fields)
+            .expect("fixed allocation fits");
+        WEIGHTED_SIZE_VISITS.with(|count| count.set(0));
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if WEIGHTED_SIZE_VISITS.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result =
+            PreparedWeightedQuery::allocation_bytes_controlled(&expansions, &fields, &mut work);
+        let visited = WEIGHTED_SIZE_VISITS.with(std::cell::Cell::get);
+        println!("weighted size visits={visited}, clean bytes={expected}");
+        assert_eq!(result, Err("cancelled"));
+        assert!((64..=128).contains(&visited));
+        let mut clean = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            PreparedWeightedQuery::allocation_bytes_controlled(&expansions, &fields, &mut clean),
+            Ok(Some(expected))
+        );
+    }
+
+    #[test]
+    fn astra_18_phonetic_selection_cancels_inside_one_bucket() {
+        let dictionary = (0..4_096)
+            .map(|i| format!("night{i:04}").into_bytes())
+            .collect::<Vocabulary>();
+        let index =
+            super::super::phonetic_index::PhoneticIndex::build(
+                &dictionary,
+                |_, _| Ok::<(), ()>(()),
+            )
+            .expect("index");
+        PHONETIC_COPIES.with(|count| count.set(0));
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if PHONETIC_COPIES.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = phonetic_expansions_controlled(&dictionary, &index, "NT", &mut work);
+        let copies = PHONETIC_COPIES.with(std::cell::Cell::get);
+        println!("copied_terms={copies}");
+        assert!(matches!(result, Err("cancelled")));
+        assert!(
+            copies <= 128,
+            "selection must not copy the full bucket after cancellation"
+        );
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        let clean = phonetic_expansions_controlled(&dictionary, &index, "NT", &mut work)
+            .expect("clean selection");
+        assert_eq!(
+            clean.iter().map(|e| e.term.as_slice()).collect::<Vec<_>>(),
+            dictionary.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn astra_18_expansion_cancels_inside_prefix_and_rejected_fuzzy_candidates() {
+        #[derive(Debug, PartialEq)]
+        enum Error {
+            Shape(LexicalQueryError),
+            Cancelled,
+        }
+        impl From<LexicalQueryError> for Error {
+            fn from(error: LexicalQueryError) -> Self {
+                Self::Shape(error)
+            }
+        }
+        let dictionary = (0..4_096)
+            .map(|i| format!("zz{i:06}").into_bytes())
+            .collect::<Vocabulary>();
+        let queries = [
+            LexicalQuery::prefix(b"zz".to_vec(), field()),
+            LexicalQuery::fuzzy(b"aaaaaaaa".to_vec(), 1, field()),
+        ];
+        let mut results = Vec::new();
+        for (slot, query) in queries.iter().enumerate() {
+            let clean = expand(query, &dictionary).expect("clean expansion");
+            assert_eq!(clean.len(), if slot == 0 { 4_096 } else { 0 });
+            super::super::preparation_observer::begin();
+            let mut checks = 0;
+            let mut work = super::super::control::WorkCheck::new(|| {
+                checks += 1;
+                if checks == 3 {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            });
+            let result =
+                expand_with_phonetic_controlled(query, &dictionary, &mut work, |_| Ok(vec![]));
+            let terms = if slot == 0 {
+                super::super::preparation_observer::vocabulary_work().terms_visited
+            } else {
+                super::super::preparation_observer::fuzzy_work().candidates
+            };
+            super::super::preparation_observer::take();
+            println!(
+                "operator={slot}, checks={checks}, examined={terms}, cancelled={}",
+                matches!(result, Err(Error::Cancelled))
+            );
+            results.push((matches!(result, Err(Error::Cancelled)), terms));
+            let mut work = super::super::control::WorkCheck::new(|| Ok::<(), Error>(()));
+            assert_eq!(
+                expand_with_phonetic_controlled(query, &dictionary, &mut work, |_| Ok(vec![]))
+                    .expect("controlled clean"),
+                clean
+            );
+        }
+        for (cancelled, terms) in results {
+            assert!(cancelled, "must stop even when no candidate matches");
+            assert!(terms > 0 && terms <= 128);
+        }
+    }
 
     #[test]
     fn astra_14_phonetic_expansion_cost_screen() {
@@ -1012,7 +1254,12 @@ mod tests {
         .map(<[u8]>::to_vec)
         .collect();
         let term = LexicalQuery::term(TermQuery::flat(vec![b"cat".to_vec()], &[field()]));
-        assert_eq!(term.fields(), FieldWeights::flat(&[field()]));
+        assert_eq!(
+            term.fields_controlled(&mut super::super::control::WorkCheck::new(|| Ok::<(), ()>(
+                ()
+            ))),
+            Ok(FieldWeights::flat(&[field()]))
+        );
         assert!(term.phrase_constraint().is_none());
         assert_eq!(expand(&term, &vocabulary).expect("term expansion").len(), 1);
 

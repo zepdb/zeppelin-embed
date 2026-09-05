@@ -21,14 +21,29 @@ fn key(code: &str) -> [u8; phonetic::MAX_CODE_LENGTH] {
 }
 
 impl PhoneticIndex {
-    /// Reserve the retained term IDs and the encoder's bounded working storage
-    /// before allocation. The caller retains the owned charge with this index.
+    #[cfg(test)]
     pub(crate) fn build<E>(
         vocabulary: &Vocabulary,
-        mut reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
+        reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
     ) -> Result<Self, E> {
-        let count = vocabulary.iter().count();
-        let maximum = vocabulary.iter().map(<[u8]>::len).max().unwrap_or(0);
+        let mut work = super::control::WorkCheck::new(|| Ok(()));
+        Self::build_controlled(vocabulary, reserve, &mut work)
+    }
+
+    /// Reserve retained IDs and encoder working storage before allocation.
+    pub(crate) fn build_controlled<E>(
+        vocabulary: &Vocabulary,
+        mut reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
+        let mut count = 0_usize;
+        let mut maximum = 0;
+        for word in vocabulary.iter() {
+            work.step()?;
+            count += 1;
+            maximum = maximum.max(word.len());
+        }
         let scratch = maximum
             .max(8)
             .checked_mul(2)
@@ -36,8 +51,9 @@ impl PhoneticIndex {
         reserve(count.checked_mul(std::mem::size_of::<Entry>()), scratch)?;
         let mut entries = Vec::with_capacity(count);
         for (term, bytes) in vocabulary.iter().enumerate() {
+            work.step()?;
             if let Ok(word) = std::str::from_utf8(bytes) {
-                let code = phonetic::encode(word);
+                let code = phonetic::encode_controlled(word, work)?;
                 if !code.is_empty() {
                     entries.push(Entry {
                         code: key(&code),
@@ -46,7 +62,8 @@ impl PhoneticIndex {
                 }
             }
         }
-        entries.sort_unstable();
+        super::control::sort_by(&mut entries, Ord::cmp, work)?;
+        work.check_now()?;
         #[cfg(any(test, feature = "test-support"))]
         super::preparation_observer::phonetic_index_build();
         Ok(Self { entries })
@@ -72,6 +89,33 @@ mod tests {
         index::FieldId,
         query::{self, LexicalMatchKind, LexicalQuery, LexicalQueryError},
     };
+
+    #[test]
+    fn astra_18_phonetic_build_cancels_between_encodings() {
+        let vocabulary = (0..4_096)
+            .map(|i| format!("night{i:04}").into_bytes())
+            .collect::<Vocabulary>();
+        super::super::preparation_observer::begin();
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if super::super::preparation_observer::phonetic_encoding_calls() >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = PhoneticIndex::build_controlled(&vocabulary, |_, _| Ok(()), &mut work);
+        let calls = super::super::preparation_observer::phonetic_encoding_calls();
+        let (builds, _) = super::super::preparation_observer::phonetic_index_work();
+        super::super::preparation_observer::take();
+        println!("encodings={calls}, published_builds={builds}");
+        assert!(matches!(result, Err("cancelled")));
+        assert!(calls <= 128, "map build must not finish after cancellation");
+        assert_eq!(builds, 0);
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        let clean = PhoneticIndex::build_controlled(&vocabulary, |_, _| Ok(()), &mut work)
+            .expect("clean build");
+        assert_eq!(clean.terms("NT").count(), 4_096);
+    }
 
     fn index(vocabulary: &Vocabulary) -> PhoneticIndex {
         PhoneticIndex::build(vocabulary, |_, _| Ok::<_, std::convert::Infallible>(()))

@@ -297,23 +297,37 @@ mod tests {
 
 // Monotonic IEEE addition in the SAME order as scoring is the aggregate
 // proof. Outward rounding also encloses each sum; equality is never pruned.
+#[cfg(test)]
 fn sum_bounds(values: impl Iterator<Item = f64>) -> f64 {
-    values.fold(0.0, |sum, value| {
-        if value == 0.0 {
+    match sum_bounds_controlled(values.map(Ok::<f64, std::convert::Infallible>)) {
+        Ok(sum) => sum,
+        Err(never) => match never {},
+    }
+}
+
+fn sum_bounds_controlled<E>(mut values: impl Iterator<Item = Result<f64, E>>) -> Result<f64, E> {
+    values.try_fold(0.0, |sum, value| {
+        let value = value?;
+        Ok(if value == 0.0 {
             sum
         } else {
             (sum + value).next_up()
-        }
+        })
     })
 }
 
-fn bound_through(cursors: &[WeightedCursor<'_>], row: u32) -> f64 {
-    sum_bounds(cursors.iter().map(|cursor| {
-        if cursor.term.current().is_some_and(|head| head <= row) {
+fn bound_through_controlled<E>(
+    cursors: &[WeightedCursor<'_>],
+    row: u32,
+    work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<f64, E> {
+    sum_bounds_controlled(cursors.iter().map(|cursor| {
+        work.step()?;
+        Ok(if cursor.term.current().is_some_and(|head| head <= row) {
             cursor.bound(cursor.term.upper_bound)
         } else {
             0.0
-        }
+        })
     }))
 }
 
@@ -329,7 +343,10 @@ pub(crate) fn search<Control>(
     mut eligible: impl FnMut(GlobalDocId) -> Result<bool, Control>,
     mut reserve: impl FnMut(Option<usize>) -> Result<(), Control>,
 ) -> Result<WeightedResult, ControlledSearchError<Control>> {
-    checkpoint().map_err(ControlledSearchError::Control)?;
+    let mut work = crate::fts::control::WorkCheck::new(|| {
+        checkpoint().map_err(ControlledSearchError::Control)
+    });
+    work.check_now()?;
     let mut counters = SearchCounters::default();
     let capacity = k.min(usize::try_from(index.document_count()).unwrap_or(usize::MAX));
     if capacity == 0 {
@@ -344,7 +361,7 @@ pub(crate) fn search<Control>(
     let mut bound_terms = 0_usize;
     let mut peak_rows = 0_usize;
     for (ordinal, segment) in index.segments().iter().enumerate() {
-        checkpoint().map_err(ControlledSearchError::Control)?;
+        work.check_now()?;
         let segment_id = u32::try_from(ordinal).unwrap_or(u32::MAX);
         let allowed = allow_lists.get(ordinal).copied();
         let fields = &scoring.query().fields;
@@ -368,7 +385,7 @@ pub(crate) fn search<Control>(
         let mut live = Vec::with_capacity(prepared.expansions().len());
         for (slot, expansion) in prepared.expansions().iter().enumerate() {
             if slot.is_multiple_of(64) {
-                checkpoint().map_err(ControlledSearchError::Control)?;
+                work.check_now()?;
             }
             let Some(scorer) = scoring.scorer(slot) else {
                 continue;
@@ -383,7 +400,9 @@ pub(crate) fn search<Control>(
                     .and_then(|stream| bytes.checked_add(stream))
             });
             reserve(scratch_bytes).map_err(ControlledSearchError::Control)?;
-            let Some(stream) = TermStream::open_sized(segment, &expansion.term, fields) else {
+            let Some(stream) =
+                TermStream::open_sized_controlled(segment, &expansion.term, fields, &mut work)?
+            else {
                 scratch_bytes = previous_bytes;
                 reserve(scratch_bytes).map_err(ControlledSearchError::Control)?;
                 continue;
@@ -394,7 +413,7 @@ pub(crate) fn search<Control>(
                 reserve(scratch_bytes).map_err(ControlledSearchError::Control)?;
                 continue;
             }
-            let upper_bound = stream.upper_bound(&scorer);
+            let upper_bound = stream.upper_bound_controlled(&scorer, &mut work)?;
             cursors.push(WeightedCursor {
                 term: TermCursor {
                     stream,
@@ -406,9 +425,14 @@ pub(crate) fn search<Control>(
             });
         }
         loop {
-            checkpoint().map_err(ControlledSearchError::Control)?;
+            work.check_now()?;
             live.clear();
-            live.extend(cursors.iter().filter_map(|cursor| cursor.term.current()));
+            for cursor in &cursors {
+                work.step()?;
+                if let Some(row) = cursor.term.current() {
+                    live.push(row);
+                }
+            }
             live.sort_unstable();
             live.dedup();
             let Some(&first) = live.first() else { break };
@@ -417,10 +441,23 @@ pub(crate) fn search<Control>(
             if heap.is_full() {
                 // This monotone search costs O(terms * log distinct heads),
                 // while keeping each bound in original contribution order.
+                let mut failure = None;
                 let position = live.partition_point(|row| {
+                    if failure.is_some() {
+                        return false;
+                    }
                     bound_terms = bound_terms.saturating_add(cursors.len());
-                    bound_through(&cursors, *row) < threshold
+                    match bound_through_controlled(&cursors, *row, &mut work) {
+                        Ok(bound) => bound < threshold,
+                        Err(error) => {
+                            failure = Some(error);
+                            false
+                        }
+                    }
                 });
+                if let Some(error) = failure {
+                    return Err(error);
+                }
                 let Some(&row) = live.get(position) else {
                     break;
                 };
@@ -428,8 +465,9 @@ pub(crate) fn search<Control>(
             }
             if first < pivot {
                 for cursor in &mut cursors {
+                    work.step()?;
                     if cursor.term.current().is_some_and(|row| row < pivot) {
-                        cursor.term.seek(pivot);
+                        cursor.term.stream.seek_controlled(pivot, &mut work)?;
                     }
                 }
                 continue;
@@ -438,39 +476,53 @@ pub(crate) fn search<Control>(
                 // No all-row accumulator, including short posting lists.
                 // The metadata horizon covers every contributing field run.
                 let mut edge: Option<u32> = None;
-                let bound = sum_bounds(cursors.iter().map(|cursor| {
+                let bound = sum_bounds_controlled(cursors.iter().map(|cursor| {
+                    work.step()?;
                     let stream = &cursor.term.stream;
-                    if let Some(horizon) = stream.bound_horizon_for(pivot) {
+                    if let Some(horizon) = stream.bound_horizon_for_controlled(pivot, &mut work)? {
                         edge = Some(edge.map_or(horizon, |held| held.min(horizon)));
                     }
-                    cursor.bound(stream.bound_for(pivot, &cursor.term.scorer))
-                }));
+                    Ok::<f64, ControlledSearchError<Control>>(cursor.bound(
+                        stream.bound_for_controlled(pivot, &cursor.term.scorer, &mut work)?,
+                    ))
+                }))?;
                 bound_terms = bound_terms.saturating_add(cursors.len());
                 if bound < threshold {
                     let Some(next) = edge.and_then(|row| row.checked_add(1)) else {
                         break;
                     };
                     for cursor in &mut cursors {
+                        work.step()?;
                         if cursor.term.current().is_some_and(|row| row < next) {
-                            cursor.term.seek(next);
+                            cursor.term.stream.seek_controlled(next, &mut work)?;
                         }
                     }
                     continue;
                 }
             }
-            let length = lengths
+            let length = match lengths
                 .and_then(|lengths| lengths.get(pivot as usize))
                 .copied()
-                .unwrap_or_else(|| crate::fts::search::row_length(segment, pivot, fields));
+            {
+                Some(length) => length,
+                None => {
+                    crate::fts::search::row_length_controlled(segment, pivot, fields, &mut work)?
+                }
+            };
             let mut score = 0.0;
             for cursor in &mut cursors {
+                work.step()?;
                 if cursor.term.current() != Some(pivot) {
                     continue;
                 }
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                let tf = Tf(cursor.term.current_tf().unwrap_or(0));
+                let tf = Tf(cursor
+                    .term
+                    .stream
+                    .current_tf_controlled(&mut work)?
+                    .unwrap_or(0));
                 score += cursor.term.scorer.score(tf, DocLen(length)) * cursor.boost;
-                cursor.term.advance();
+                cursor.term.stream.advance_controlled(&mut work)?;
             }
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             let doc = GlobalDocId {
@@ -493,7 +545,7 @@ pub(crate) fn search<Control>(
         }
     }
     reserve(heap_bytes).map_err(ControlledSearchError::Control)?;
-    checkpoint().map_err(ControlledSearchError::Control)?;
+    work.check_now()?;
     #[cfg(any(test, feature = "test-support"))]
     {
         crate::fts::preparation_observer::structured_collection(peak_rows);

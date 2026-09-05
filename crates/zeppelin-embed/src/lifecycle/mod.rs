@@ -3191,25 +3191,39 @@ impl Store {
                 accounting: &self.accounting,
             },
             true,
-            None,
+            Some(&cancellation),
         )
         .map_err(map_store_lexical_assembly_error)?;
-        let allow_lists = assembly
-            .alive_sets
-            .iter()
-            .map(|alive| alive.alive_bitmap())
-            .collect::<Vec<_>>();
-        let lexical = crate::planner::search_lexical_filtered_refs(
+        let mut work = crate::fts::control::WorkCheck::new(|| {
+            cancellation
+                .check_graph()
+                .map_err(QueryError::Scan)
+                .map_err(crate::ingest::StoreLexicalError::from)
+        });
+        work.check_now()?;
+        let mut allow_lists = Vec::with_capacity(assembly.alive_sets.len());
+        for alive in &assembly.alive_sets {
+            work.step()?;
+            allow_lists.push(alive.alive_bitmap());
+        }
+        let lexical = crate::planner::search_lexical_filtered_refs_controlled(
             &assembly.index,
             query,
             k,
             crate::fts::bm25::Bm25Params::beir(),
             &allow_lists,
             None,
+            || {
+                cancellation
+                    .check_graph()
+                    .map_err(QueryError::Scan)
+                    .map_err(crate::ingest::StoreLexicalError::from)
+            },
         )?;
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let mut candidates = Vec::with_capacity(lexical.result.hits.len());
         for hit in &lexical.result.hits {
+            work.step()?;
             let document =
                 structured_lexical_document(&snapshot, &active, &assembly.sources, hit.doc, true)
                     .map_err(map_store_lexical_document_error)?
@@ -3243,6 +3257,7 @@ impl Store {
             generation,
             diagnostics,
         };
+        work.check_now()?;
         let result = finish(
             outcome,
             &snapshot,
@@ -3364,23 +3379,41 @@ impl Store {
         let mut prepared_memory =
             stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
                 .map_err(QueryError::Store)?;
-        let fields = query.fields();
+        let mut work = crate::fts::control::WorkCheck::new(|| cancellation.check_graph());
+        let fields = query
+            .fields_controlled(&mut work)
+            .map_err(QueryError::Scan)?;
         prepared_memory
             .set(
-                crate::fts::query::PreparedWeightedQuery::allocation_bytes(&expansions, &fields)
-                    .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?,
+                crate::fts::query::PreparedWeightedQuery::allocation_bytes_controlled(
+                    &expansions,
+                    &fields,
+                    &mut work,
+                )
+                .map_err(QueryError::Scan)?
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?,
             )
             .map_err(QueryError::Store)?;
         let mut prepared = if index.segments().is_empty() || expansions.is_empty() {
             None
         } else {
             Some(
-                crate::fts::query::PreparedWeightedQuery::new(
+                crate::fts::query::PreparedWeightedQuery::new_controlled(
                     index,
                     std::mem::take(&mut expansions),
                     fields,
+                    || cancellation.check_graph(),
                 )
-                .map_err(crate::planner::LexicalFilterError::from)?,
+                .map_err(|error| match error {
+                    crate::fts::search::ControlledSearchError::Index(error) => {
+                        crate::ingest::StoreLexicalError::from(
+                            crate::planner::LexicalFilterError::from(error),
+                        )
+                    }
+                    crate::fts::search::ControlledSearchError::Control(error) => {
+                        crate::ingest::StoreLexicalError::from(QueryError::Scan(error))
+                    }
+                })?,
             )
         };
         let mut scratch_memory =
@@ -3430,6 +3463,9 @@ impl Store {
             stats::AccountedCounter::new(&self.accounting, stats::AllocationComponent::Temporary)
                 .map_err(QueryError::Store)?;
         let mut candidates = Vec::with_capacity(scored.len());
+        let mut provenance_work = crate::fts::control::WorkCheck::new(|| {
+            cancellation.check_graph().map_err(QueryError::Scan)
+        });
         for (doc, score) in scored {
             let mut provenance = Vec::new();
             let segment = index
@@ -3450,10 +3486,13 @@ impl Store {
                         fields,
                     ),
                 )?;
-                if let Some(mut stream) =
-                    crate::fts::sealed::TermStream::open_sized(segment, &expansion.term, fields)
-                {
-                    stream.seek(doc.row);
+                if let Some(mut stream) = crate::fts::sealed::TermStream::open_sized_controlled(
+                    segment,
+                    &expansion.term,
+                    fields,
+                    &mut provenance_work,
+                )? {
+                    stream.seek_controlled(doc.row, &mut provenance_work)?;
                     if stream.current_row() == Some(doc.row) {
                         provenance.push(expansion.clone());
                         counters.postings_decoded = counters.postings_decoded.saturating_add(1);
@@ -4335,11 +4374,7 @@ impl LexicalAssembly {
         accounting: &Arc<stats::Accounting>,
         cancellation: &QueryCancellation<'_>,
     ) -> Result<Arc<CachedVocabulary>, QueryError> {
-        let mut cached = self.vocabulary.lock().map_err(|_| {
-            QueryError::Store(StoreError::Synchronization {
-                component: "lexical vocabulary cache",
-            })
-        })?;
+        let mut cached = cancellation.cache_lock(&self.vocabulary, "lexical vocabulary cache")?;
         if let Some(value) = cached.as_ref() {
             return Ok(Arc::clone(value));
         }
@@ -4349,7 +4384,10 @@ impl LexicalAssembly {
         let mut temporary =
             stats::AccountedCounter::new(accounting, stats::AllocationComponent::Temporary)
                 .map_err(QueryError::Store)?;
-        let view = crate::fts::vocabulary::Vocabulary::build(
+        let mut work = crate::fts::control::WorkCheck::new(|| {
+            cancellation.check_graph().map_err(QueryError::Scan)
+        });
+        let view = crate::fts::vocabulary::Vocabulary::build_controlled(
             self.index.vocabulary_terms(),
             |scratch, owned| {
                 cancellation.check_graph().map_err(QueryError::Scan)?;
@@ -4363,6 +4401,7 @@ impl LexicalAssembly {
                     }))?;
                 memory.set(bytes).map_err(QueryError::Store)
             },
+            &mut work,
         )?;
         let value = Arc::new(CachedVocabulary {
             view,
@@ -4419,7 +4458,9 @@ impl CachedLexicalContribution {
         alive: &Arc<crate::meta::AliveSet>,
         ordinal: usize,
         accounting: &Arc<stats::Accounting>,
+        work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), LexicalAssemblyError>>,
     ) -> Result<Arc<Self>, LexicalAssemblyError> {
+        work.check_now()?;
         let active = matches!(key, LexicalContributionKey::Active(_));
         let alive_bytes = if active {
             alive
@@ -4443,12 +4484,12 @@ impl CachedLexicalContribution {
             stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
                 .map_err(LexicalAssemblyError::Store)?;
         memory.set(bytes).map_err(LexicalAssemblyError::Store)?;
-        let mut statistics = crate::fts::index::LiveSegmentStatistics::build(
+        let mut statistics = crate::fts::index::LiveSegmentStatistics::build_controlled(
             ordinal,
             postings,
             alive.alive_bitmap(),
-        )
-        .map_err(LexicalAssemblyError::Lexical)?;
+            work,
+        )?;
         if statistics.rows.cardinality() != 0
             && statistics.rows.cardinality() != u64::from(postings.row_count())
         {
@@ -4458,6 +4499,7 @@ impl CachedLexicalContribution {
             );
         }
         let statistics = Arc::new(statistics);
+        work.check_now()?;
         Ok(Arc::new(Self {
             key,
             statistics,
@@ -4472,6 +4514,18 @@ enum LexicalAssemblyError {
     Lexical(crate::fts::index::IndexError),
     MissingDocumentIdentity(crate::segment::SegmentId),
     Cancelled(crate::scan::ScanError),
+}
+
+impl From<crate::fts::index::IndexError> for LexicalAssemblyError {
+    fn from(error: crate::fts::index::IndexError) -> Self {
+        Self::Lexical(error)
+    }
+}
+
+impl From<StoreError> for LexicalAssemblyError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
 }
 
 /// One assembled lexical index, held for as long as the inputs it was built
@@ -4597,6 +4651,38 @@ impl LexicalIndexCache {
             })
         })
     }
+
+    fn lock_controlled(
+        &self,
+        cancellation: Option<&QueryCancellation<'_>>,
+    ) -> Result<std::sync::MutexGuard<'_, Option<CachedLexicalAssembly>>, LexicalAssemblyError>
+    {
+        let Some(cancellation) = cancellation else {
+            return self.lock();
+        };
+        cancellation
+            .check_graph()
+            .map_err(LexicalAssemblyError::Cancelled)?;
+        let guard = loop {
+            match self.entry.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(LexicalAssemblyError::Store(StoreError::Synchronization {
+                        component: "lexical index cache",
+                    }));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+            cancellation
+                .check_graph()
+                .map_err(LexicalAssemblyError::Cancelled)?;
+            std::thread::park_timeout(Duration::from_millis(1));
+        };
+        cancellation
+            .check_graph()
+            .map_err(LexicalAssemblyError::Cancelled)?;
+        Ok(guard)
+    }
 }
 
 /// Everything an assembled lexical index is built from, and the cache that
@@ -4635,7 +4721,7 @@ fn assemble_lexical_index(
         active,
         accounting,
     } = inputs;
-    let mut entry = cache.lock()?;
+    let mut entry = cache.lock_controlled(cancellation)?;
     if let Some(cached) = entry.as_mut()
         && cached.matches(snapshot, active)
     {
@@ -4671,6 +4757,11 @@ fn assemble_lexical_index(
         .memory
         .set(owned_bytes)
         .map_err(LexicalAssemblyError::Store)?;
+    if let Some(cancellation) = cancellation {
+        cancellation
+            .check_graph()
+            .map_err(LexicalAssemblyError::Cancelled)?;
+    }
     let assembly = Arc::new(assembly);
     if entry
         .as_ref()
@@ -4743,6 +4834,12 @@ fn build_lexical_assembly(
     cache: &LexicalIndexCache,
     previous: &[Arc<CachedLexicalContribution>],
 ) -> Result<(LexicalAssembly, usize), LexicalAssemblyError> {
+    let mut work = crate::fts::control::WorkCheck::new(|| {
+        cancellation
+            .map_or(Ok(()), |control| control.check_graph())
+            .map_err(LexicalAssemblyError::Cancelled)
+    });
+    work.check_now()?;
     let mut index = crate::fts::index::LexicalIndex::new();
     let mut alive_sets = Vec::new();
     let mut sources = Vec::new();
@@ -4786,6 +4883,7 @@ fn build_lexical_assembly(
                     &alive,
                     index.segments().len(),
                     accounting,
+                    &mut work,
                 )?,
             };
             index.push_shared_with_statistics(postings, Arc::clone(&contribution.statistics));
@@ -4794,10 +4892,8 @@ fn build_lexical_assembly(
             sources.push(StructuredLexicalSource::Sealed(ordinal));
         }
     }
-    if active.has_text() {
-        let sealed = active
-            .sealed_lexical(accounting)
-            .map_err(LexicalAssemblyError::Store)?;
+    if active.has_text_controlled(&mut work)? {
+        let sealed = active.sealed_lexical_controlled(accounting, &mut work)?;
         let reused = previous.last().filter(|value| {
             matches!(&value.key, LexicalContributionKey::Active(cached)
                 if cached.upgrade().is_some_and(|cached| Arc::ptr_eq(&cached, active)))
@@ -4806,13 +4902,14 @@ fn build_lexical_assembly(
         let contribution = match reused {
             Some(value) => Arc::clone(value),
             None => {
-                let alive = Arc::new(active.alive().map_err(LexicalAssemblyError::Store)?);
+                let alive = Arc::new(active.alive_controlled(&mut work)?);
                 CachedLexicalContribution::build(
                     LexicalContributionKey::Active(Arc::downgrade(active)),
                     &sealed,
                     &alive,
                     index.segments().len(),
                     accounting,
+                    &mut work,
                 )?
             }
         };
@@ -4827,16 +4924,20 @@ fn build_lexical_assembly(
         contributions.push(contribution);
         sources.push(StructuredLexicalSource::Active);
     }
-    contributions.sort_unstable_by(|left, right| match (&left.key, &right.key) {
-        (LexicalContributionKey::Sealed(a, _), LexicalContributionKey::Sealed(b, _)) => {
-            a.id.cmp(&b.id)
-        }
-        (LexicalContributionKey::Active(_), LexicalContributionKey::Active(_)) => {
-            std::cmp::Ordering::Equal
-        }
-        (LexicalContributionKey::Active(_), _) => std::cmp::Ordering::Greater,
-        (_, LexicalContributionKey::Active(_)) => std::cmp::Ordering::Less,
-    });
+    crate::fts::control::sort_by(
+        &mut contributions,
+        |left, right| match (&left.key, &right.key) {
+            (LexicalContributionKey::Sealed(a, _), LexicalContributionKey::Sealed(b, _)) => {
+                a.id.cmp(&b.id)
+            }
+            (LexicalContributionKey::Active(_), LexicalContributionKey::Active(_)) => {
+                std::cmp::Ordering::Equal
+            }
+            (LexicalContributionKey::Active(_), _) => std::cmp::Ordering::Greater,
+            (_, LexicalContributionKey::Active(_)) => std::cmp::Ordering::Less,
+        },
+        &mut work,
+    )?;
     let assembly = LexicalAssembly {
         index,
         alive_sets,
@@ -4854,6 +4955,7 @@ fn build_lexical_assembly(
                 budget: u64::MAX,
                 component: "cache",
             }))?;
+    work.check_now()?;
     Ok((assembly, owned_bytes))
 }
 
@@ -5279,27 +5381,10 @@ fn exact_hybrid_lexical_search(
         )
         .map_err(map_fusion_controlled_lexical_error);
     }
-    cancellation
-        .check_graph()
-        .map_err(QueryError::Scan)
-        .map_err(crate::fusion::FusionError::from)?;
-    let result = crate::fts::prune::search_pruned_prepared_filtered(
-        index,
-        prepared,
-        k,
-        crate::fts::prune::select_strategy(prepared.query().terms.len(), k),
-        allow_lists,
-    )
-    .map_err(|error| crate::fusion::FusionError::Leg {
-        leg: crate::fusion::FusionLeg::Lexical,
-        kind: crate::fusion::LegFailureKind::Lexical,
-        detail: error.to_string(),
-    })?;
-    cancellation
-        .check_graph()
-        .map_err(QueryError::Scan)
-        .map_err(crate::fusion::FusionError::from)?;
-    Ok(result)
+    crate::fts::prune::search_pruned_prepared_controlled(index, prepared, k, allow_lists, || {
+        cancellation.check_graph()
+    })
+    .map_err(map_fusion_controlled_lexical_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7946,6 +8031,100 @@ mod tests {
         assert_eq!(report.allocations, 0, "Exact tier prepared quantized forms");
         assert_eq!(report.attributed_bytes, 0);
         assert_eq!(report.unattributed_bytes, 0);
+    }
+
+    #[test]
+    fn astra_18_scoped_work_is_joined_before_cancel_returns() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        let worker = super::pool::LexicalWorker::start().expect("worker");
+        let token = CancelToken::new();
+        let work_token = token.clone();
+        let finished = AtomicBool::new(false);
+        let mut borrowed_rows = Vec::new();
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let worker_rows = &mut borrowed_rows;
+        let worker_finished = &finished;
+        let (caller, lexical) = worker
+            .run_scoped(
+                move || {
+                    started_tx.send(()).expect("entered borrowed job");
+                    release_rx.recv().expect("caller has cancelled");
+                    assert!(work_token.is_cancelled());
+                    worker_rows.push(42_u32);
+                    worker_finished.store(true, Ordering::Release);
+                    Err::<(), _>(crate::fusion::FusionError::Cancelled { partial: false })
+                },
+                || {
+                    started_rx.recv().expect("worker entered");
+                    token.cancel();
+                    assert!(!finished.load(Ordering::Acquire));
+                    release_tx.send(()).expect("release borrowed job");
+                    Err::<(), _>(crate::fusion::FusionError::Cancelled { partial: false })
+                },
+            )
+            .expect("scoped dispatch");
+        assert!(finished.load(Ordering::Acquire));
+        assert_eq!(borrowed_rows, [42]);
+        assert_eq!(
+            resolve_hybrid_leg_results(caller, lexical.expect("worker returned")),
+            Err(crate::fusion::FusionError::Cancelled { partial: false }),
+        );
+        worker.stop_and_join().expect("join worker");
+    }
+
+    #[test]
+    fn astra_18_control_error_precedence_is_completion_order_independent() {
+        use crate::fusion::{FusionError, FusionLeg, LegFailureKind};
+        use std::sync::mpsc;
+        let failures = [
+            FusionError::Leg {
+                leg: FusionLeg::Vector,
+                kind: LegFailureKind::Scan,
+                detail: "scan".to_owned(),
+            },
+            FusionError::Cancelled { partial: false },
+            FusionError::Timeout { partial: false },
+            FusionError::ReadCancelled { partial: false },
+        ];
+        let worker = super::pool::LexicalWorker::start().expect("worker");
+        for (a, vector) in failures.iter().enumerate() {
+            for (b, lexical) in failures.iter().enumerate() {
+                for lexical_first in [false, true] {
+                    let (lexical_tx, lexical_rx) = mpsc::sync_channel(1);
+                    let (vector_tx, vector_rx) = mpsc::sync_channel(1);
+                    let (vector_result, lexical_result) = worker
+                        .run_scoped(
+                            move || {
+                                if !lexical_first {
+                                    vector_rx.recv().expect("vector completed");
+                                }
+                                if lexical_first {
+                                    lexical_tx.send(()).expect("lexical completed");
+                                }
+                                Err::<(), _>(lexical.clone())
+                            },
+                            || {
+                                if lexical_first {
+                                    lexical_rx.recv().expect("lexical completed");
+                                }
+                                if !lexical_first {
+                                    vector_tx.send(()).expect("vector completed");
+                                }
+                                Err::<(), _>(vector.clone())
+                            },
+                        )
+                        .expect("dispatch");
+                    assert_eq!(
+                        resolve_hybrid_leg_results(vector_result, lexical_result.expect("joined")),
+                        Err(failures[a.max(b)].clone()),
+                        "vector={a} lexical={b} lexical_first={lexical_first}",
+                    );
+                }
+            }
+        }
+        worker.stop_and_join().expect("join worker");
     }
 
     #[test]

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+test-support = ["zeppelin-embed/test-support"]
+
 [lib]
 crate-type = ["rlib", "staticlib"]
 

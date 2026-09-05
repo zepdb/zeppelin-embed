@@ -26,8 +26,8 @@ block the current plan or a trustworthy required comparison.
 | [14](14-phonetic-index/plan.md) | Implemented, 2ca47fc | Warm-encoding RED to GREEN; five release tests, public/reuse controls and actual reservation plant pass | [Evidence](../evidence/astra-14-phonetic-index.md): Store rare phonetic p95 -97.87%, hybrid -85.81%; warm encodes 4100 -> 1; 3480 exact core payloads and 1152 unchanged native results/work | Cache +65,664 bytes; collision p95 +1.18%, cold/update tradeoff extends 015; unrelated formatting 016 |
 | [15](15-bitmap-validation/plan.md) | Implemented, 818a433 | Two executed work REDs to GREEN; six focused tests; exact first-invalid/error order and BM25 controls pass | [Evidence](../evidence/astra-15-bitmap-validation.md): 58,980-row setup p95 178.042 -> 0.125 us; assembly 343.750 -> 178.459 us; six uninstrumented processes, 240 exact scored control hits | Core setup only; unchanged memory layout, no new cache; pause lifted by user |
 | [16](16-incremental-lexical-assembly/plan.md) | Implemented, 87421b7 | Actual row-walk RED to GREEN; seven focused and six affected cases pass; memory/stale plants fire | [Evidence](../evidence/astra-16-lexical-assembly.md): post-update core setup p95 -59.85% to -75.22%, zero unchanged sealed statistics walks; 11,520 identical scored hits | Warm absent p95 +0.041-0.042 us; cache +320/+1,488 bytes; issue 018 logged; combined native checkpoint with 17 complete |
-| [17](17-live-document-frequency/plan.md) | Implemented and retained in this change | Literal reuse/admission RED to GREEN; 9 focused tests, 2 firing plants, 5 selected integration cases GREEN | [Evidence](../evidence/astra-17-live-df.md): final tombstoned common core p95 -93.18% to -99.53%; 24 native processes / all 648 queries preserve full payloads; fixed-deletion lexical/hybrid p95 -9.23%/-6.10%; intact APIs unchanged | Initial unique-term regressions rejected; final all-live core control +0.125us; cache +6,768B per partial contribution; broad qualification pending |
-| [18](18-query-cancellation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
+| [17](17-live-document-frequency/plan.md) | Implemented, ee016e3 | Literal reuse/admission RED to GREEN; 9 focused tests, 2 firing plants, 5 selected integration cases GREEN | [Evidence](../evidence/astra-17-live-df.md): final tombstoned common core p95 -93.18% to -99.53%; 24 native processes / all 648 queries preserve full payloads; fixed-deletion lexical/hybrid p95 -9.23%/-6.10%; intact APIs unchanged | Initial unique-term regressions rejected; final all-live core control +0.125us; cache +6,768B per partial contribution; broad qualification pending |
+| [18](18-query-cancellation/plan.md) | Implemented; scoped implementation commit | 52 cases GREEN:39 core18+6 regressions+7 text controls; seven firing/restored plants | [Evidence](../evidence/astra-18-query-cancellation.md): bounded preparation/queue work;384 native cancellations+recoveries pass; CoreML/MLX residual p95 0.894/5.659ms;48-process ordinary screen has exact payload parity | Lexical p95 +9.24–13.32%,deleted hybrid +10.84%;24-process diagnostic attributes material cost to polling (issue020); full qualification pending |
 | [19](19-embedding-lexical-overlap/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [20](20-query-runtime-isolation/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
 | [21](21-lexical-worker-capacity/plan.md) | Planned | NOT RUN | NOT RUN | None logged |
@@ -137,7 +137,14 @@ normal-feature core processes. Post-update setup p95 improves 59.85-75.22%;
 warm absent p95 rises one approximate timer tick and remains an explicit
 negative result. Step16 landed as `87421b7`. The shared after-17 native checkpoint
 is complete: on fixed deletions, lexical/hybrid p95 improve 9.23%/6.10%; intact
-controls are unchanged and all 15,552 full payloads are identical. Step 18 is next.
+controls are unchanged and all 15,552 full payloads are identical. Step 18 is active
+with implementation and per-change measurements complete. Its64-query full-corpus
+screen has48 successful processes and exact payload parity. Six native processes
+verify384 cancellation/recovery cases;24 diagnostic processes attribute the
+lexical slowdown to cooperative polling. The required cancellation repair is
+retained with issue020 recording that cost;full qualification remains separate.
+The user requests completion of Step19 followed by a stop on this plan.
+Steps20–33 remain unstarted;the separate BEIR preparation task continues.
 
 
 The user-requested pre-Step-16 all-API comparison is complete: [report](../evidence/query-api-pre16-before-after.md).

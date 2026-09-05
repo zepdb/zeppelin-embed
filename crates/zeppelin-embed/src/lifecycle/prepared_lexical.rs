@@ -144,15 +144,21 @@ impl<'query> PreparedLexicalQuery<'query> {
             let scoring = if receipt.index.segments().is_empty() {
                 None
             } else {
-                let bytes = PreparedTermQuery::allocation_bytes(query).ok_or_else(overflow)?;
+                let bytes = PreparedTermQuery::allocation_bytes_controlled(
+                    query,
+                    &mut crate::fts::control::WorkCheck::new(|| cancellation.check_graph()),
+                )
+                .map_err(QueryError::Scan)?
+                .ok_or_else(overflow)?;
                 memory.set(bytes).map_err(QueryError::Store)?;
                 Some(
-                    PreparedTermQuery::new(
+                    PreparedTermQuery::new_controlled(
                         &receipt.index,
                         query,
                         crate::fts::bm25::Bm25Params::beir(),
+                        || cancellation.check_graph(),
                     )
-                    .map_err(|error| lexical_failure(&error.to_string()))?,
+                    .map_err(super::map_fusion_controlled_lexical_error)?,
                 )
             };
             self.term = Some(PreparedTermState {
@@ -196,23 +202,29 @@ impl<'query> PreparedLexicalQuery<'query> {
             let mut memory =
                 AccountedCounter::new(inputs.accounting, AllocationComponent::Temporary)
                     .map_err(QueryError::Store)?;
-            let fields = query.fields();
+            let mut work = crate::fts::control::WorkCheck::new(|| cancellation.check_graph());
+            let fields = query
+                .fields_controlled(&mut work)
+                .map_err(QueryError::Scan)?;
             let query = if receipt.index.segments().is_empty() || expansions.is_empty() {
                 None
             } else {
-                let bytes = crate::fts::query::PreparedWeightedQuery::allocation_bytes(
+                let bytes = crate::fts::query::PreparedWeightedQuery::allocation_bytes_controlled(
                     &expansions,
                     &fields,
+                    &mut work,
                 )
+                .map_err(QueryError::Scan)?
                 .ok_or_else(overflow)?;
                 memory.set(bytes).map_err(QueryError::Store)?;
                 Some(
-                    crate::fts::query::PreparedWeightedQuery::new(
+                    crate::fts::query::PreparedWeightedQuery::new_controlled(
                         &receipt.index,
                         expansions,
                         fields,
+                        || cancellation.check_graph(),
                     )
-                    .map_err(|error| lexical_failure(&error.to_string()))?,
+                    .map_err(super::map_fusion_controlled_lexical_error)?,
                 )
             };
             self.structured = Some(PreparedStructuredState {

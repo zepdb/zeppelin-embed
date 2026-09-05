@@ -409,3 +409,57 @@ boundary-floor plant fire. See astra-03 evidence and regression-receipts.json.
 - Follow-up: make stats distinguish current active ownership from retired
   active generations retained by queries, with independent lifetime/accounting
   tests. No unrelated stats repair is included in Step 16.
+
+### ASTRA-ISSUE-019: bulk text ingestion repeatedly traverses growing active state
+
+- Source-confirmed during the full TREC-COVID competitor build at frozen
+  `501948b4bb55cc581246e7291e083efed7128286`; the same paths remain in main at
+  `ee016e3`. `ActiveSegment::existing` linearly searches active document IDs for
+  every revision decision. Unique new IDs in one initially empty batch therefore
+  produce N(N-1)/2 comparisons. Each text append also calls
+  `refresh_lexical_accounting`, which traverses all accumulated lexical terms,
+  postings and position-vector capacities through `resident_bytes`.
+- Runtime input: 172,267 shared TREC chunks in one public `Store::ingest` batch,
+  followed by sealing. The fixed-vector bridge uses a 200,000-row batch ceiling.
+  Native PID107 was still running after 13m44s; no terminal build or attribution
+  result was available at this observation. This is not an ingestion speed claim.
+  Preserve the eventual terminal receipt instead of treating this observation
+  as a timeout, failed build or complete measurement.
+- Evidence and frozen source pointers:
+  `/private/tmp/ze-beir-7xnojxa3/NATIVE-BULK-INGEST-AUDIT.md`,
+  `/private/tmp/ze-beir-7xnojxa3/requests/import-trec-covid.json`,
+  `/private/tmp/ze-beir-7xnojxa3/run-trec-covid-build/`.
+  Parent independently inspected `ingest/active.rs::existing` and the text-append
+  accounting call. No profiler or modified source touched the timed process.
+- Impact: large ingestion batches can have growing-prefix work; extrapolating
+  linearly from separately sealed 5,000-row preparation shards is unjustified.
+  Severity: performance/scalability. Nonblocking for Step18 correctness and
+  benchmark validity; it lengthens the separately requested full BEIR campaign.
+  The relative CPU cost of lookup, accounting, analysis, quantization and sealing
+  remains NOT MEASURED.
+- Separate follow-up: count active-ID comparisons and accounting terms/postings
+  visited across batch sizes and text distributions; then evaluate indexed lookup
+  and incremental capacity accounting. Preserve revision/replay semantics,
+  allocation ownership and typed failure behavior. Do not omit accounting or
+  retune the current benchmark mid-run. No ingestion repair is included in Step18.
+
+### ASTRA-ISSUE-020: bounded lexical cancellation adds ordinary-query overhead
+
+Plan and observed commit: Step18,base ee016e3,29-file cold-sealing-checkpoint1 source.
+Location: fts/control.rs WorkCheck and its controlled lexical loops.
+Expected: the required cancellation repair preserves results and measures its cost.
+Actual: matched64-query/full-FiQA screen has lexical p95 +13.32% intact,+9.24%
+deleted,and deleted-hybrid +10.84%;all3,072 complete API payloads match.
+Reproduce: /private/tmp/ze-astra18-host-4b960428/manifest.json and run.py;AB/BA/AB,
+normal core features[],20 warmups,identical models/stores,exclusive timing window.
+Evidence: overhead-summary.json,overhead-regression-investigation.json and
+polling-ablation-summary.json under that root. The24-process diagnostic removes
+only WorkCheck.step and lowers lexical p95 11.82–14.47% while preserving payloads;
+its source breaks required loop cancellation and is not a production option.
+Severity: measured performance tradeoff;no result,ownership or integrity failure.
+Blocking: None for current plan/benchmark;the >5% investigation requirement is met.
+Current action: retain required bounded cancellation and disclose its cost.
+Follow-up: optimize controlled-loop code generation/check bookkeeping while
+preserving the same work bounds,errors and ownership;no FiQA-specific dispatch
+or weakening of cancellation. Precise per-helper cost remains unmeasured.
+Status: deferred-follow-up.

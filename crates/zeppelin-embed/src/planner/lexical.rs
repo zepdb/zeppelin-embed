@@ -2,8 +2,10 @@
 
 use crate::fts::bm25::Bm25Params;
 use crate::fts::index::{IndexError, LexicalIndex};
-use crate::fts::prune::{search_pruned_filtered, select_strategy};
-use crate::fts::search::{SearchResult, TermQuery, search_allow_list_driven};
+use crate::fts::prune::{search_pruned_filtered_controlled, select_strategy};
+use crate::fts::search::{
+    ControlledSearchError, SearchResult, TermQuery, search_allow_list_driven_controlled,
+};
 use crate::meta::DocBitmap;
 
 /// Corpus divisor below which the allow-list drives lexical iteration.
@@ -109,11 +111,27 @@ pub(crate) fn search_lexical_filtered_refs(
     allow_lists: &[&DocBitmap],
     forced: Option<LexicalBranch>,
 ) -> Result<LexicalSearchOutcome, LexicalFilterError> {
-    validate_allow_lists(index, allow_lists)?;
-    let allowed = allow_lists
-        .iter()
-        .map(|allow_list| allow_list.cardinality())
-        .fold(0_u64, u64::saturating_add);
+    search_lexical_filtered_refs_controlled(index, query, k, params, allow_lists, forced, || Ok(()))
+}
+
+pub(crate) fn search_lexical_filtered_refs_controlled<E: From<LexicalFilterError>>(
+    index: &LexicalIndex,
+    query: &TermQuery,
+    k: usize,
+    params: Bm25Params,
+    allow_lists: &[&DocBitmap],
+    forced: Option<LexicalBranch>,
+    mut check: impl FnMut() -> Result<(), E>,
+) -> Result<LexicalSearchOutcome, E> {
+    let mut work = crate::fts::control::WorkCheck::new(&mut check);
+    work.check_now()?;
+    validate_allow_lists(index, allow_lists, &mut work)?;
+    let mut allowed = 0_u64;
+    for allow_list in allow_lists {
+        work.step()?;
+        allowed = allowed.saturating_add(allow_list.cardinality());
+    }
+    work.check_now()?;
     let corpus = index.document_count();
     let branch = forced.unwrap_or_else(|| {
         if allowed.saturating_mul(LEXICAL_ALLOW_LIST_DIVISOR) <= corpus {
@@ -124,39 +142,49 @@ pub(crate) fn search_lexical_filtered_refs(
     });
     let result = match branch {
         LexicalBranch::AllowListDrive => {
-            search_allow_list_driven(index, query, k, params, allow_lists)?
+            search_allow_list_driven_controlled(index, query, k, params, allow_lists, &mut check)
         }
-        LexicalBranch::PostCheck => search_pruned_filtered(
+        LexicalBranch::PostCheck => search_pruned_filtered_controlled(
             index,
             query,
             k,
             params,
             select_strategy(query.terms.len(), k),
             allow_lists,
-        )?,
-    };
+            &mut check,
+        ),
+    }
+    .map_err(|error| match error {
+        ControlledSearchError::Index(error) => E::from(LexicalFilterError::Index(error)),
+        ControlledSearchError::Control(error) => error,
+    })?;
+    check()?;
     Ok(LexicalSearchOutcome { result, branch })
 }
 
 // Keep this loop's stack layout independent of the larger query caller.
 #[inline(never)]
-fn validate_allow_lists(
+fn validate_allow_lists<E: From<LexicalFilterError>>(
     index: &LexicalIndex,
     allow_lists: &[&DocBitmap],
-) -> Result<(), LexicalFilterError> {
+    work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<(), E> {
     if index.segments().len() != allow_lists.len() {
         return Err(LexicalFilterError::SegmentCount {
             expected: index.segments().len(),
             actual: allow_lists.len(),
-        });
+        }
+        .into());
     }
     for (segment, (sealed, allow_list)) in index.segments().iter().zip(allow_lists).enumerate() {
+        work.step()?;
         if let Some(row) = allow_list.first_at_or_after(sealed.row_count()) {
             return Err(LexicalFilterError::RowOutOfRange {
                 segment,
                 row,
                 row_count: sealed.row_count(),
-            });
+            }
+            .into());
         }
     }
     Ok(())

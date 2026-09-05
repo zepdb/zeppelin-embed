@@ -50,6 +50,31 @@ pub fn score_all(
     counters: &mut SearchCounters,
     allow_list: Option<&DocBitmap>,
 ) {
+    match score_all_controlled(
+        cursors,
+        lengths,
+        segment,
+        heap,
+        counters,
+        allow_list,
+        || Ok::<(), std::convert::Infallible>(()),
+    ) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn score_all_controlled<E>(
+    cursors: &mut [TermCursor<'_>],
+    lengths: &[u32],
+    segment: u32,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
+    check: impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    let mut work = crate::fts::control::WorkCheck::new(check);
+    work.check_now()?;
     // Kept sorted by row so accumulation is a binary search rather than a
     // linear scan. The list is bounded at SHORT_LIST_POSTINGS today, which
     // makes the quadratic form harmless -- but it is exactly the defect
@@ -57,10 +82,12 @@ pub fn score_all(
     // and being harmless is not the same as being right.
     let mut totals: Vec<(u32, f64)> = Vec::new();
     for cursor in cursors.iter_mut() {
-        cursor.reset();
+        work.step()?;
+        cursor.stream.reset_controlled(&mut work)?;
         while let Some(row) = cursor.stream.current_row() {
+            work.step()?;
             counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-            let tf = cursor.stream.current_tf().unwrap_or(0);
+            let tf = cursor.stream.current_tf_controlled(&mut work)?.unwrap_or(0);
             let score = cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)));
             match totals.binary_search_by_key(&row, |(candidate, _)| *candidate) {
                 Ok(slot) => {
@@ -70,15 +97,17 @@ pub fn score_all(
                 }
                 Err(slot) => totals.insert(slot, (row, score)),
             }
-            cursor.advance();
+            cursor.stream.advance_controlled(&mut work)?;
         }
     }
     for (row, score) in totals {
+        work.step()?;
         counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
         if allow_list.is_none_or(|allowed| allowed.contains(row)) {
             heap.offer(GlobalDocId { segment, row }, score);
         }
     }
+    work.check_now()
 }
 
 /// Runs block-max MAXSCORE over one segment's cursors.
@@ -94,6 +123,31 @@ pub fn run(
     counters: &mut SearchCounters,
     allow_list: Option<&DocBitmap>,
 ) {
+    match run_controlled(
+        cursors,
+        lengths,
+        segment,
+        heap,
+        counters,
+        allow_list,
+        || Ok::<(), std::convert::Infallible>(()),
+    ) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn run_controlled<E>(
+    cursors: &mut [TermCursor<'_>],
+    lengths: &[u32],
+    segment: u32,
+    heap: &mut TopK,
+    counters: &mut SearchCounters,
+    allow_list: Option<&DocBitmap>,
+    check: impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    let mut work = crate::fts::control::WorkCheck::new(check);
+    work.check_now()?;
     // Ascending by upper bound: cheapest terms become non-essential first.
     let mut order: Vec<usize> = (0..cursors.len()).collect();
     order.sort_by(|left, right| {
@@ -103,7 +157,8 @@ pub fn run(
     });
 
     for cursor in cursors.iter_mut() {
-        cursor.reset();
+        work.step()?;
+        cursor.stream.reset_controlled(&mut work)?;
     }
 
     // Both are loop-invariant in shape, and the bound total is invariant in
@@ -118,6 +173,7 @@ pub fn run(
         .sum();
 
     loop {
+        work.step()?;
         let threshold = heap.threshold();
         // Non-essential terms are the longest CHEAP-END PREFIX whose bounds
         // sum to at most the threshold: a document reachable only through
@@ -128,6 +184,7 @@ pub fn run(
         let mut essential_from = 0_usize;
         let mut accumulated = 0.0_f64;
         while essential_from < order.len() {
+            work.step()?;
             let bound = order
                 .get(essential_from)
                 .and_then(|slot| cursors.get(*slot))
@@ -147,6 +204,7 @@ pub fn run(
         // The next candidate is the smallest current row among essentials.
         let mut candidate: Option<u32> = None;
         for slot in essential {
+            work.step()?;
             let Some(cursor) = cursors.get(*slot) else {
                 continue;
             };
@@ -179,6 +237,7 @@ pub fn run(
         // possibly fire; that inversion was most of MAXSCORE's posting
         // traffic.
         for slot in order.iter().rev() {
+            work.step()?;
             let Some(cursor) = cursors.get_mut(*slot) else {
                 continue;
             };
@@ -187,7 +246,9 @@ pub fn run(
                 // still add from the impact pair of the block that would
                 // hold the row, read from metadata without decoding. Zero
                 // when the cursor has passed the row, which is exact.
-                let ceiling = cursor.stream.bound_for(row, &cursor.scorer);
+                let ceiling = cursor
+                    .stream
+                    .bound_for_controlled(row, &cursor.scorer, &mut work)?;
                 if running + ceiling + (remaining_bound - cursor.upper_bound) < threshold {
                     abandoned = true;
                     break;
@@ -195,12 +256,15 @@ pub fn run(
             }
             // Blocks jumped are tallied on the stream itself and collected
             // once the segment finishes.
-            cursor.seek(row);
+            cursor.stream.seek_controlled(row, &mut work)?;
             let contribution = if cursor.current() == Some(row) {
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                cursor.current_tf().map_or(0.0, |tf| {
-                    cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)))
-                })
+                cursor
+                    .stream
+                    .current_tf_controlled(&mut work)?
+                    .map_or(0.0, |tf| {
+                        cursor.scorer.score(Tf(tf), DocLen(length_of(lengths, row)))
+                    })
             } else {
                 0.0
             };
@@ -228,12 +292,14 @@ pub fn run(
 
         // Advance past the candidate everywhere it appears.
         for cursor in cursors.iter_mut() {
+            work.step()?;
             if cursor.current() == Some(row) {
-                cursor.advance();
+                cursor.stream.advance_controlled(&mut work)?;
             }
         }
         if cursors.iter().all(TermCursor::exhausted) {
             break;
         }
     }
+    work.check_now()
 }

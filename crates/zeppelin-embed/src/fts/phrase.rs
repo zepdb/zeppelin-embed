@@ -40,6 +40,18 @@ pub(crate) enum PhraseReadError<Control> {
     Control(Control),
 }
 
+impl<Control> From<super::postings::PostingsError> for PhraseReadError<Control> {
+    fn from(error: super::postings::PostingsError) -> Self {
+        Self::Storage(error.into())
+    }
+}
+
+impl<Control> From<super::sealed::SealedSegmentError> for PhraseReadError<Control> {
+    fn from(error: super::sealed::SealedSegmentError) -> Self {
+        Self::Storage(error)
+    }
+}
+
 struct SegmentPhrase<'index> {
     readers: Vec<Option<super::postings::PostingsReader<'index>>>,
     order: Vec<usize>,
@@ -68,12 +80,15 @@ impl<'index> PreparedPhrase<'index> {
         let super::query::LexicalQuery::Phrase { terms, slop, field } = query else {
             return Ok(None);
         };
+        let mut work =
+            super::control::WorkCheck::new(|| checkpoint().map_err(PhraseReadError::Control));
+        work.check_now()?;
         let mut bytes = index
             .segments()
             .len()
             .checked_mul(std::mem::size_of::<SegmentPhrase<'_>>());
         for segment in index.segments() {
-            checkpoint().map_err(PhraseReadError::Control)?;
+            work.step()?;
             bytes = bytes.and_then(|bytes| {
                 terms
                     .len()
@@ -84,11 +99,9 @@ impl<'index> PreparedPhrase<'index> {
                     .and_then(|extra| bytes.checked_add(extra))
             });
             for term in terms {
-                bytes = bytes.and_then(|bytes| {
-                    segment
-                        .position_reader_bytes(term, *field)
-                        .and_then(|extra| bytes.checked_add(extra))
-                });
+                work.step()?;
+                let extra = segment.position_reader_bytes_controlled(term, *field, &mut work)?;
+                bytes = bytes.and_then(|bytes| extra.and_then(|extra| bytes.checked_add(extra)));
             }
         }
         reserve(bytes).map_err(PhraseReadError::Control)?;
@@ -97,28 +110,35 @@ impl<'index> PreparedPhrase<'index> {
         ))?;
         let mut segments = Vec::with_capacity(index.segments().len());
         for segment in index.segments() {
+            work.step()?;
             let mut readers = Vec::with_capacity(terms.len());
             for term in terms {
-                checkpoint().map_err(PhraseReadError::Control)?;
-                readers.push(
-                    segment
-                        .position_reader(term, *field)
-                        .map_err(PhraseReadError::Storage)?,
-                );
+                work.step()?;
+                readers.push(segment.position_reader_controlled(term, *field, &mut work)?);
             }
-            let mut order = (0..terms.len()).collect::<Vec<_>>();
-            order.sort_unstable_by_key(|slot| {
+            let mut order = Vec::with_capacity(terms.len());
+            for slot in 0..terms.len() {
+                work.step()?;
+                order.push(slot);
+            }
+            let frequency = |slot: &usize| {
                 readers
                     .get(*slot)
                     .and_then(Option::as_ref)
                     .map_or(0, |reader| reader.document_frequency())
-            });
+            };
+            super::control::sort_by(
+                &mut order,
+                |left, right| frequency(left).cmp(&frequency(right)),
+                &mut work,
+            )?;
             segments.push(SegmentPhrase {
                 readers,
                 order,
                 rows: segment.row_count(),
             });
         }
+        work.check_now()?;
         Ok(Some(Self {
             segments,
             slop: *slop,
@@ -137,6 +157,9 @@ impl<'index> PreparedPhrase<'index> {
                 "phrase candidate is outside its pinned segment",
             ))
         };
+        let mut work =
+            super::control::WorkCheck::new(|| checkpoint().map_err(PhraseReadError::Control));
+        work.check_now()?;
         let segment = self
             .segments
             .get(doc.segment as usize)
@@ -156,14 +179,11 @@ impl<'index> PreparedPhrase<'index> {
         // Check membership from the rarest term first; do not decode any
         // positions until the row is in every required term/field stream.
         for slot in &segment.order {
-            checkpoint().map_err(PhraseReadError::Control)?;
+            work.step()?;
             let Some(reader) = segment.readers.get(*slot).and_then(Option::as_ref) else {
                 return Ok(false);
             };
-            let Some(view) = reader
-                .positions(doc.row)
-                .map_err(|error| PhraseReadError::Storage(error.into()))?
-            else {
+            let Some(view) = reader.positions_controlled(doc.row, &mut work)? else {
                 return Ok(false);
             };
             positions = positions.checked_add(view.len()).ok_or_else(invalid)?;
@@ -193,14 +213,11 @@ impl<'index> PreparedPhrase<'index> {
         reserve(bytes).map_err(PhraseReadError::Control)?;
         let mut streams = Vec::with_capacity(views.len());
         for view in views {
-            checkpoint().map_err(PhraseReadError::Control)?;
-            streams.push(
-                view.ok_or_else(invalid)?
-                    .decode()
-                    .map_err(|error| PhraseReadError::Storage(error.into()))?,
-            );
+            work.step()?;
+            streams.push(view.ok_or_else(invalid)?.decode_controlled(&mut work)?);
         }
-        Ok(streams_match(&streams, self.slop))
+        Ok(minimum_displacement_controlled(&streams, &mut work)?
+            .is_some_and(|cost| cost <= self.slop))
     }
 }
 
@@ -236,34 +253,54 @@ impl std::error::Error for PhraseError {}
 /// Returns `None` when no non-decreasing alignment exists at all.
 #[must_use]
 pub fn minimum_displacement(streams: &[Vec<u32>]) -> Option<u32> {
-    let first = streams.first()?;
-    if streams.len() == 1 {
-        return first
-            .is_empty()
-            .then_some(0)
-            .or(Some(0))
-            .filter(|_| !first.is_empty());
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match minimum_displacement_controlled(streams, &mut work) {
+        Ok(displacement) => displacement,
+        Err(never) => match never {},
     }
-    if streams.iter().any(Vec::is_empty) {
-        return None;
+}
+
+pub(crate) fn minimum_displacement_controlled<E>(
+    streams: &[Vec<u32>],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Option<u32>, E> {
+    work.check_now()?;
+    let Some(first) = streams.first() else {
+        return Ok(None);
+    };
+    if streams.len() == 1 {
+        return Ok((!first.is_empty()).then_some(0));
+    }
+    for stream in streams {
+        work.step()?;
+        if stream.is_empty() {
+            return Ok(None);
+        }
     }
 
     let mut best: Option<u32> = None;
     for anchor in first {
-        // costs[j] = least displacement using occurrence j of the current
-        // term, given the anchor. Seeded from the anchor itself.
+        work.step()?;
+        // Retain the exact non-decreasing alignment DP and saturated costs.
         let mut previous: Vec<(u32, u32)> = vec![(*anchor, 0)];
         for (offset, stream) in streams.iter().enumerate().skip(1) {
+            #[cfg(test)]
+            DP_TERM_OFFSET.with(|value| value.set(offset));
+            work.step()?;
             let expected = u32::try_from(offset).unwrap_or(u32::MAX);
             let mut current: Vec<(u32, u32)> = Vec::with_capacity(stream.len());
             for candidate in stream {
-                // Only alignments that stay non-decreasing are legal.
-                let Some(best_previous) = previous
-                    .iter()
-                    .filter(|(position, _)| *position <= *candidate)
-                    .map(|(_, cost)| *cost)
-                    .min()
-                else {
+                work.step()?;
+                let mut best_previous: Option<u32> = None;
+                for (position, cost) in &previous {
+                    work.step()?;
+                    #[cfg(test)]
+                    DP_PREDECESSOR_PROBES.with(|value| value.set(value.get() + 1));
+                    if position <= candidate {
+                        best_previous = Some(best_previous.map_or(*cost, |best| best.min(*cost)));
+                    }
+                }
+                let Some(best_previous) = best_previous else {
                     continue;
                 };
                 let relative = candidate.saturating_sub(*anchor);
@@ -276,11 +313,19 @@ pub fn minimum_displacement(streams: &[Vec<u32>]) -> Option<u32> {
             }
             previous = current;
         }
-        if let Some(cost) = previous.iter().map(|(_, cost)| *cost).min() {
-            best = Some(best.map_or(cost, |current: u32| current.min(cost)));
+        for (_, cost) in previous {
+            work.step()?;
+            best = Some(best.map_or(cost, |current| current.min(cost)));
         }
     }
-    best
+    work.check_now()?;
+    Ok(best)
+}
+
+#[cfg(test)]
+thread_local! {
+    static DP_PREDECESSOR_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DP_TERM_OFFSET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Returns true when the streams admit an alignment within `slop`.
@@ -349,6 +394,100 @@ mod tests {
     use super::*;
     use crate::fts::index::{DEFAULT_FIELD, Document};
     use crate::fts::tokenizer::{Analyzer, Profile, TokenizerConfig, Vocabulary};
+
+    #[test]
+    fn astra_18_prepared_phrase_cancels_during_position_decode() {
+        use crate::fts::index::LexicalIndex;
+        use crate::fts::postings::POSITION_DECODE_PROBES;
+        use crate::fts::query::LexicalQuery;
+        use crate::fts::sealed::SealedSegment;
+        use crate::fts::search::GlobalDocId;
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+        let mut active = SegmentIndex::new();
+        let text = format!("{}beta", "alpha ".repeat(4_096));
+        active
+            .push_document(&analyzer, &Document::with_text(&text))
+            .expect("long row");
+        let bytes = SealedSegment::seal(&active)
+            .expect("seal")
+            .encode_region()
+            .expect("persist");
+        let mut index = LexicalIndex::new();
+        index.push_sealed(SealedSegment::decode_region(&bytes).expect("reopen"));
+        let query =
+            LexicalQuery::phrase(vec![b"alpha".to_vec(), b"beta".to_vec()], 0, DEFAULT_FIELD);
+        let prepared = PreparedPhrase::new(&index, &query, |_| Ok::<_, &str>(()), || Ok(()))
+            .unwrap_or_else(|_| panic!("prepare"))
+            .expect("phrase");
+        POSITION_DECODE_PROBES.with(|value| value.set(0));
+        crate::fts::preparation_observer::begin();
+        let result = prepared.matches(
+            GlobalDocId { segment: 0, row: 0 },
+            |_| Ok(()),
+            || {
+                if POSITION_DECODE_PROBES.with(std::cell::Cell::get) >= 64 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        let probes = POSITION_DECODE_PROBES.with(std::cell::Cell::get);
+        let observed = crate::fts::preparation_observer::phrase_position_work();
+        crate::fts::preparation_observer::take();
+        println!("prepared_decode_probes={probes}, position_work={observed:?}");
+        assert!(matches!(result, Err(PhraseReadError::Control("cancelled"))));
+        assert!(
+            (64..=128).contains(&probes),
+            "prepared phrase must check inside row decode"
+        );
+        assert_eq!(
+            observed.0, probes,
+            "partial work survives the cancellation error"
+        );
+        assert!(
+            prepared
+                .matches(
+                    GlobalDocId { segment: 0, row: 0 },
+                    |_| Ok::<_, ()>(()),
+                    || Ok(())
+                )
+                .unwrap_or_else(|_| panic!("clean phrase")),
+            "last alpha and beta are adjacent"
+        );
+    }
+
+    #[test]
+    fn astra_18_phrase_cancels_inside_predecessor_scan() {
+        let streams = vec![vec![0], (1..=4_096).collect(), vec![4_097]];
+        assert_eq!(minimum_displacement(&streams), Some(4_095));
+        DP_PREDECESSOR_PROBES.with(|value| value.set(0));
+        DP_TERM_OFFSET.with(|value| value.set(0));
+        let mut checks = 0;
+        let mut work = super::super::control::WorkCheck::new(|| {
+            checks += 1;
+            if DP_TERM_OFFSET.with(std::cell::Cell::get) == 2
+                && DP_PREDECESSOR_PROBES.with(std::cell::Cell::get) > 4_096
+            {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = minimum_displacement_controlled(&streams, &mut work);
+        let probes = DP_PREDECESSOR_PROBES.with(std::cell::Cell::get);
+        println!("checks={checks}, predecessor_probes={probes}");
+        assert_eq!(result, Err("cancelled"));
+        assert!(
+            probes > 4_096 && probes <= 4_096 + 128,
+            "must stop within the final predecessor scan"
+        );
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            minimum_displacement_controlled(&streams, &mut work),
+            Ok(Some(4_095))
+        );
+    }
 
     #[test]
     fn astra_11_phrase_slop_repetition_and_field_boundaries_match_oracle() {

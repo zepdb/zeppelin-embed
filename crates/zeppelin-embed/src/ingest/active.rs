@@ -20,6 +20,36 @@ use super::{DocId, DocumentVersion, IngestDocument, IngestError, Revision, wal_p
 type AccountedMetadata = (Accounted<Vec<u64>>, Accounted<Vec<u8>>);
 type AccountedText = (Accounted<Vec<u8>>, Accounted<Vec<u64>>, Accounted<Vec<u8>>);
 
+/// Preserve the caller's control error while translating writer errors at the
+/// active-segment boundary, without adding storage errors to the FTS API.
+enum ActiveSealError<E> {
+    Control(E),
+    Sealed(crate::fts::sealed::SealedSegmentError),
+}
+
+impl<E> From<crate::fts::postings::PostingsError> for ActiveSealError<E> {
+    fn from(error: crate::fts::postings::PostingsError) -> Self {
+        Self::Sealed(crate::fts::sealed::SealedSegmentError::Postings(error))
+    }
+}
+
+impl<E> From<crate::fts::sealed::SealedSegmentError> for ActiveSealError<E> {
+    fn from(error: crate::fts::sealed::SealedSegmentError) -> Self {
+        Self::Sealed(error)
+    }
+}
+
+impl<E: From<StoreError>> ActiveSealError<E> {
+    fn into_caller(self) -> E {
+        match self {
+            Self::Control(error) => error,
+            Self::Sealed(error) => E::from(StoreError::Segment(
+                crate::segment::SegmentError::Postings(error),
+            )),
+        }
+    }
+}
+
 pub(crate) struct ActiveState {
     pub(crate) generation: u64,
     pub(crate) segment: Arc<ActiveSegment>,
@@ -1399,6 +1429,20 @@ impl ActiveSegment {
         self.text_present.contains(&1)
     }
 
+    pub(crate) fn has_text_controlled<E>(
+        &self,
+        work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<bool, E> {
+        work.check_now()?;
+        for present in self.text_present.iter() {
+            work.step()?;
+            if *present == 1 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn tracks_text(&self) -> bool {
         !self.text_present.is_empty()
     }
@@ -1415,17 +1459,30 @@ impl ActiveSegment {
         &self,
         accounting: &Arc<Accounting>,
     ) -> Result<Arc<crate::fts::sealed::SealedSegment>, StoreError> {
+        self.sealed_lexical_controlled(
+            accounting,
+            &mut crate::fts::control::WorkCheck::new(|| Ok::<(), StoreError>(())),
+        )
+    }
+
+    pub(crate) fn sealed_lexical_controlled<E: From<StoreError>>(
+        &self,
+        accounting: &Arc<Accounting>,
+        work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Arc<crate::fts::sealed::SealedSegment>, E> {
+        work.check_now()?;
         if let Some(cached) = self.sealed_lexical.get() {
             return Ok(Arc::clone(&cached.value));
         }
-        let sealed = crate::fts::sealed::SealedSegment::seal(&self.lexical)
-            .map_err(crate::fts::sealed::SealedSegmentError::Postings)
-            .map_err(crate::segment::SegmentError::Postings)
-            .map_err(StoreError::Segment)?;
+        let mut sealing = crate::fts::control::WorkCheck::new(|| {
+            work.check_now().map_err(ActiveSealError::Control)
+        });
+        let sealed =
+            crate::fts::sealed::SealedSegment::seal_controlled(&self.lexical, &mut sealing)
+                .map_err(ActiveSealError::into_caller)?;
         let resident_bytes = sealed
-            .resident_bytes()
-            .map_err(crate::segment::SegmentError::Postings)
-            .map_err(StoreError::Segment)?
+            .resident_bytes_controlled(&mut sealing)
+            .map_err(ActiveSealError::into_caller)?
             .checked_add(std::mem::size_of::<crate::fts::sealed::SealedSegment>())
             .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
             .ok_or(StoreError::BudgetExceeded {
@@ -1441,6 +1498,7 @@ impl ActiveSegment {
             value: Arc::new(sealed),
             accounting: cache_accounting,
         };
+        work.check_now()?;
         if self.sealed_lexical.set(cached).is_err() {
             // A concurrent initializer won. Its value and reservation are authoritative.
         }
@@ -1450,6 +1508,7 @@ impl ActiveSegment {
             .ok_or(StoreError::Synchronization {
                 component: "active lexical query cache",
             })
+            .map_err(E::from)
     }
 
     pub(crate) fn column_values(
@@ -1505,14 +1564,26 @@ impl ActiveSegment {
     }
 
     pub(crate) fn alive(&self) -> Result<AliveSet, StoreError> {
+        self.alive_controlled(&mut crate::fts::control::WorkCheck::new(|| {
+            Ok::<(), StoreError>(())
+        }))
+    }
+
+    pub(crate) fn alive_controlled<E: From<StoreError>>(
+        &self,
+        work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<AliveSet, E> {
+        work.check_now()?;
         let row_count =
             u32::try_from(self.doc_ids.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
         let mut alive = AliveSet::new(row_count);
         for row in self.tombstones.iter().copied() {
+            work.step()?;
             alive
                 .tombstone(row)
                 .map_err(|_| StoreError::ActiveRowOverflow)?;
         }
+        work.check_now()?;
         Ok(alive)
     }
 

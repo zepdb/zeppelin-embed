@@ -36,11 +36,20 @@ const fn is_vowel(value: u8) -> bool {
 }
 
 /// Uppercases and strips anything that is not an ASCII letter.
-fn normalize(term: &str) -> Vec<u8> {
-    term.chars()
-        .filter(char::is_ascii_alphabetic)
-        .map(|value| value.to_ascii_uppercase() as u8)
-        .collect()
+fn normalize<E>(
+    term: &str,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Vec<u8>, E> {
+    let mut word = Vec::new();
+    for value in term.chars() {
+        work.step()?;
+        #[cfg(test)]
+        NORMALIZE_PROBES.with(|count| count.set(count.get() + 1));
+        if value.is_ascii_alphabetic() {
+            word.push(value.to_ascii_uppercase() as u8);
+        }
+    }
+    Ok(word)
 }
 
 fn at(word: &[u8], index: usize) -> u8 {
@@ -59,11 +68,23 @@ fn starts_with_at(word: &[u8], index: usize, text: &str) -> bool {
 /// everything.
 #[must_use]
 pub fn encode(term: &str) -> String {
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match encode_controlled(term, &mut work) {
+        Ok(code) => code,
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn encode_controlled<E>(
+    term: &str,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<String, E> {
+    work.check_now()?;
     #[cfg(any(test, feature = "test-support"))]
     super::preparation_observer::phonetic_encoding();
-    let word = normalize(term);
+    let word = normalize(term, work)?;
     if word.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
     let mut code = String::with_capacity(MAX_CODE_LENGTH);
     let length = word.len();
@@ -84,6 +105,9 @@ pub fn encode(term: &str) -> String {
     }
 
     while index < length && code.len() < MAX_CODE_LENGTH {
+        work.step()?;
+        #[cfg(test)]
+        CODE_PROBES.with(|count| count.set(count.get() + 1));
         let current = at(&word, index);
         let next = at(&word, index + 1);
         let mut step = 1_usize;
@@ -312,7 +336,14 @@ pub fn encode(term: &str) -> String {
     }
 
     code.truncate(MAX_CODE_LENGTH);
-    code
+    work.check_now()?;
+    Ok(code)
+}
+
+#[cfg(test)]
+thread_local! {
+    static NORMALIZE_PROBES:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
+    static CODE_PROBES:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
 }
 
 #[cfg(test)]
@@ -324,6 +355,39 @@ pub fn encode(term: &str) -> String {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_18_phonetic_encoding_cancels_inside_long_terms() {
+        let mut results = Vec::new();
+        for (term, phase, expected) in [("1".repeat(4_096), 0, ""), ("a".repeat(4_096), 1, "A")] {
+            assert_eq!(encode(&term), expected);
+            NORMALIZE_PROBES.with(|count| count.set(0));
+            CODE_PROBES.with(|count| count.set(0));
+            let probes = || {
+                if phase == 0 {
+                    NORMALIZE_PROBES.with(std::cell::Cell::get)
+                } else {
+                    CODE_PROBES.with(std::cell::Cell::get)
+                }
+            };
+            let mut work = super::super::control::WorkCheck::new(|| {
+                if probes() >= 64 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            });
+            let result = encode_controlled(&term, &mut work);
+            println!("phase={phase}, probes={}", probes());
+            results.push((matches!(result, Err("cancelled")), probes()));
+            let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+            assert_eq!(encode_controlled(&term, &mut work), Ok(expected.to_owned()));
+        }
+        for (cancelled, probes) in results {
+            assert!(cancelled);
+            assert!(probes <= 128);
+        }
+    }
 
     /// Hand-checked encodings.
     ///

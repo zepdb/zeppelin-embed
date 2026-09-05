@@ -193,6 +193,27 @@ impl std::error::Error for QueryError {
 }
 
 impl QueryControl {
+    /// Checks the same absolute deadline or cancellation token before admission
+    /// and between caller-owned stages such as tokenization and embedding.
+    ///
+    /// This never extends a deadline. An admitted store query also checks its
+    /// snapshot lease so store-close cancellation retains precedence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Timeout`] or [`QueryError::Cancelled`], always
+    /// with `partial: false`, when the caller's control has stopped the query.
+    pub fn checkpoint(&self) -> Result<(), QueryError> {
+        if self
+            .deadline()
+            .zip(self.now())
+            .is_some_and(|(deadline, now)| now >= deadline)
+        {
+            self.mark_timed_out();
+        }
+        self.error().map_or(Ok(()), Err)
+    }
+
     pub(crate) fn with_clock(mut self, clock: Arc<dyn super::MonotonicClock>) -> Self {
         if let Self::Deadline(deadline) = &mut self {
             deadline.clock = clock;
@@ -243,6 +264,28 @@ pub struct QueryCancellation<'a> {
 }
 
 impl<'a> QueryCancellation<'a> {
+    pub(crate) fn cache_lock<'lock, T>(
+        &self,
+        mutex: &'lock std::sync::Mutex<T>,
+        component: &'static str,
+    ) -> Result<std::sync::MutexGuard<'lock, T>, QueryError> {
+        self.check_graph().map_err(QueryError::Scan)?;
+        let guard = loop {
+            match mutex.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(QueryError::Store(StoreError::Synchronization { component }));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    self.check_graph().map_err(QueryError::Scan)?;
+                    std::thread::park_timeout(Duration::from_millis(1));
+                }
+            }
+        };
+        self.check_graph().map_err(QueryError::Scan)?;
+        Ok(guard)
+    }
+
     /// Binds caller cancellation/deadline state to the admitted snapshot read.
     #[must_use]
     pub const fn new(control: &'a QueryControl, lease: &'a SnapshotLease) -> Self {

@@ -69,21 +69,44 @@ impl BoundedDistance {
 
     /// Returns the exact accepted distance, or None when the budget is exceeded.
     /// The structured query validates the maximum before constructing scratch.
+    #[cfg(test)]
     pub(crate) fn distance(&mut self, left: &[u8], right: &[u8], maximum: u32) -> Option<u32> {
+        let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+        match self.distance_controlled(left, right, maximum, &mut work) {
+            Ok(distance) => distance,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn distance_controlled<E>(
+        &mut self,
+        left: &[u8],
+        right: &[u8],
+        maximum: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<u32>, E> {
+        work.check_now()?;
         #[cfg(any(test, feature = "test-support"))]
         {
             self.cells = 0;
         }
-        let result = self.bounded(left, right, maximum);
+        let result = self.bounded(left, right, maximum, work);
+        // Record the partial work even when a checkpoint stops the candidate.
         #[cfg(any(test, feature = "test-support"))]
         super::preparation_observer::fuzzy_distance(self.cells, 0);
         result
     }
 
-    fn bounded(&mut self, left: &[u8], right: &[u8], maximum: u32) -> Option<u32> {
+    fn bounded<E>(
+        &mut self,
+        left: &[u8],
+        right: &[u8],
+        maximum: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<u32>, E> {
         let band = maximum as usize;
         if maximum > MAX_EDIT_DISTANCE || left.len().abs_diff(right.len()) > band {
-            return None;
+            return Ok(None);
         }
         let infinity = maximum + 1;
         let mut previous_start = 0;
@@ -96,12 +119,14 @@ impl BoundedDistance {
             };
         }
         for (row, byte) in left.iter().enumerate() {
+            work.step()?;
             let row = row + 1;
             let start = row.saturating_sub(band);
             let end = row.saturating_add(band).min(right.len());
             let mut row_minimum = infinity;
             let mut preceding = infinity;
             for (column, cell) in (start..=end).zip(self.current.iter_mut()) {
+                work.step()?;
                 let value = if column == 0 {
                     row as u32 // This column exists only while row <= maximum.
                 } else {
@@ -134,7 +159,7 @@ impl BoundedDistance {
                 row_minimum = row_minimum.min(value);
             }
             if row_minimum > maximum {
-                return None;
+                return Ok(None);
             }
             std::mem::swap(&mut self.previous, &mut self.current);
             previous_start = start;
@@ -147,7 +172,7 @@ impl BoundedDistance {
             right.len(),
             infinity,
         );
-        (distance <= maximum).then_some(distance)
+        Ok((distance <= maximum).then_some(distance))
     }
 }
 
@@ -372,6 +397,37 @@ fn next_term_outside_prefix(dictionary: &TermDictionary, term: &[u8], end: usize
 mod tests {
     use super::*;
     use crate::fts::dict::TermInfo;
+
+    #[test]
+    fn astra_18_fuzzy_distance_cancels_inside_one_long_candidate() {
+        let left = vec![b'a'; 4_096];
+        let mut right = left.clone();
+        *right.last_mut().expect("last byte") = b'b';
+        let mut scratch = BoundedDistance::new();
+        assert_eq!(scratch.distance(&left, &right, 2), Some(1));
+        super::super::preparation_observer::begin();
+        let mut checks = 0;
+        let mut work = super::super::control::WorkCheck::new(|| {
+            checks += 1;
+            if checks == 3 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = scratch.distance_controlled(&left, &right, 2, &mut work);
+        let observed = super::super::preparation_observer::fuzzy_work();
+        super::super::preparation_observer::take();
+        println!("checks={checks}, fuzzy={observed:?}");
+        assert_eq!(result, Err("cancelled"));
+        assert!(observed.dp_cells > 0 && observed.dp_cells <= 128);
+        assert_eq!(observed.candidates, 1);
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            scratch.distance_controlled(&left, &right, 2, &mut work),
+            Ok(Some(1))
+        );
+    }
 
     fn dictionary(terms: &[&str]) -> TermDictionary {
         let mut sorted: Vec<&str> = terms.to_vec();

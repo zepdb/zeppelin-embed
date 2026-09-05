@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use super::index::{FieldId, IndexError};
 use super::sealed::SealedSegment;
+use super::search::ControlledSearchError;
 use crate::lifecycle::{StoreError, stats};
 use crate::meta::DocBitmap;
 
@@ -100,6 +101,32 @@ impl LiveFrequencyCache {
         term: &[u8],
         fields: &[FieldId],
     ) -> Result<u32, IndexError> {
+        self.frequency_inner::<false, std::convert::Infallible>(segment, live, term, fields, || {
+            Ok(())
+        })
+        .map_err(ControlledSearchError::into_index_error)
+    }
+
+    pub(crate) fn frequency_controlled<E>(
+        &self,
+        segment: &SealedSegment,
+        live: &DocBitmap,
+        term: &[u8],
+        fields: &[FieldId],
+        check: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, ControlledSearchError<E>> {
+        self.frequency_inner::<true, E>(segment, live, term, fields, check)
+    }
+
+    fn frequency_inner<const CONTROLLED: bool, E>(
+        &self,
+        segment: &SealedSegment,
+        live: &DocBitmap,
+        term: &[u8],
+        fields: &[FieldId],
+        mut check: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, ControlledSearchError<E>> {
+        check().map_err(ControlledSearchError::Control)?;
         if let Some(frequency) = segment.single_posting_live_frequency(term, fields, live) {
             return Ok(frequency);
         }
@@ -108,18 +135,40 @@ impl LiveFrequencyCache {
             .checked_mul(2)
             .and_then(|n| n.checked_add(term.len()))
         else {
-            return Ok(segment.live_document_frequency(term, fields, live));
+            return segment
+                .live_document_frequency_controlled(term, fields, live, check)
+                .map_err(ControlledSearchError::Control);
         };
         // This limits cache admission, never the accepted query or exact DF.
         if key_bytes > KEY_BYTES {
-            return Ok(segment.live_document_frequency(term, fields, live));
+            return segment
+                .live_document_frequency_controlled(term, fields, live, check)
+                .map_err(ControlledSearchError::Control);
         }
-        let mut table = self
-            .table
-            .lock()
-            .map_err(|_| IndexError::LiveFrequencyCache {
-                reason: "poisoned cache lock",
-            })?;
+        let mut table = if CONTROLLED {
+            loop {
+                match self.table.try_lock() {
+                    Ok(table) => break table,
+                    Err(std::sync::TryLockError::Poisoned(_)) => {
+                        return Err(IndexError::LiveFrequencyCache {
+                            reason: "poisoned cache lock",
+                        }
+                        .into());
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        check().map_err(ControlledSearchError::Control)?;
+                        std::thread::park_timeout(std::time::Duration::from_millis(1));
+                    }
+                }
+            }
+        } else {
+            self.table
+                .lock()
+                .map_err(|_| IndexError::LiveFrequencyCache {
+                    reason: "poisoned cache lock",
+                })?
+        };
+        check().map_err(ControlledSearchError::Control)?;
         table.clock = table.clock.saturating_add(1);
         let clock = table.clock;
         let mut matched = None;
@@ -136,7 +185,9 @@ impl LiveFrequencyCache {
         }
         // Serialize misses for this immutable contribution. No partially built
         // value is published, and concurrent queries cannot multiply capacity.
-        let frequency = segment.live_document_frequency(term, fields, live);
+        let frequency = segment
+            .live_document_frequency_controlled(term, fields, live, &mut check)
+            .map_err(ControlledSearchError::Control)?;
         while table.entries.len() == ENTRIES || table.keys.len() > KEY_BYTES - key_bytes {
             table.evict()?;
         }
@@ -181,6 +232,134 @@ mod tests {
         ["alpha", "alpha", "alpha"],
         ["beta", "beta", "beta"],
     ];
+
+    #[test]
+    fn astra_18_cancelled_live_df_does_not_publish_partial_cache() {
+        let accounting = Arc::new(stats::Accounting::new(u64::MAX, u64::MAX));
+        let cache = LiveFrequencyCache::new(&accounting).unwrap();
+        let analyzer = Analyzer::new(Profile::Code.config()).unwrap();
+        let mut builder = SegmentIndex::new();
+        for _ in 0..4_096 {
+            builder
+                .push_document(&analyzer, &Document::with_text("alpha"))
+                .unwrap();
+        }
+        let segment = SealedSegment::seal(&builder).unwrap();
+        let live = DocBitmap::from_ids((0..4_096).step_by(2));
+        observer::begin();
+        let mut checks = 0;
+        let result = cache.frequency_controlled(&segment, &live, b"alpha", &[FieldId(0)], || {
+            checks += 1;
+            if checks == 5 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let work = observer::live_df_work();
+        observer::take();
+        println!("checks={checks}, DF work={work:?}");
+        assert!(matches!(
+            result,
+            Err(super::super::search::ControlledSearchError::Control(
+                "cancelled"
+            ))
+        ));
+        assert!(
+            work.docids > 0 && work.docids <= 128,
+            "must stop during the exact count"
+        );
+        assert!(
+            cache.table.lock().unwrap().entries.is_empty(),
+            "an aborted count must publish nothing"
+        );
+        assert_eq!(
+            cache
+                .frequency(&segment, &live, b"alpha", &[FieldId(0)])
+                .unwrap(),
+            2_048
+        );
+        assert_eq!(cache.table.lock().unwrap().entries.len(), 1);
+        observer::begin();
+        assert!(matches!(
+            cache.frequency_controlled(&segment, &live, b"alpha", &[FieldId(0)], || Ok::<(), ()>(
+                ()
+            )),
+            Ok(2_048)
+        ));
+        assert_eq!(
+            observer::live_df_work(),
+            observer::LiveDfWork::default(),
+            "complete values remain reusable"
+        );
+        observer::take();
+    }
+
+    #[test]
+    fn astra_18_live_df_lock_wait_is_cancelable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let accounting = Arc::new(stats::Accounting::new(u64::MAX, u64::MAX));
+        let cache = LiveFrequencyCache::new(&accounting).unwrap();
+        let segment = segment();
+        let live = DocBitmap::from_ids([0, 2, 3, 5]);
+        let canceled = AtomicBool::new(false);
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let held = cache.table.lock().unwrap();
+            let (cache, segment, live, canceled) = (&cache, &segment, &live, &canceled);
+            let worker = scope.spawn(move || {
+                let mut checks = 0;
+                let result =
+                    cache.frequency_controlled(segment, live, b"alpha", &[FieldId(0)], || {
+                        checks += 1;
+                        if checks == 2 {
+                            // The second checkpoint is reached after try_lock
+                            // reports WouldBlock. No timing establishes this order.
+                            waiting_tx.send(()).unwrap();
+                            resume_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                        }
+                        if canceled.load(Ordering::SeqCst) {
+                            Err("cancelled")
+                        } else {
+                            Ok(())
+                        }
+                    });
+                finished_tx.send(()).unwrap();
+                result
+            });
+            let reached_wait = waiting_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            canceled.store(true, Ordering::SeqCst);
+            resume_tx.send(()).unwrap();
+            let returned_while_locked = finished_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            // Always release and join before asserting, including a bad wait.
+            drop(held);
+            let result = worker.join().unwrap();
+            assert!(
+                reached_wait,
+                "the contended-lock checkpoint must be reached"
+            );
+            assert!(
+                returned_while_locked,
+                "cancellation must not wait for the lock holder"
+            );
+            assert!(matches!(
+                result,
+                Err(ControlledSearchError::Control("cancelled"))
+            ));
+        });
+        assert!(cache.table.lock().unwrap().entries.is_empty());
+        assert_eq!(
+            cache
+                .frequency(&segment, &live, b"alpha", &[FieldId(0)])
+                .unwrap(),
+            2
+        );
+    }
 
     fn segment() -> Arc<SealedSegment> {
         let analyzer = Analyzer::new(Profile::Code.config()).unwrap();

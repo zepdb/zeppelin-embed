@@ -247,25 +247,42 @@ impl PostingList {
 }
 
 /// Bits needed to represent the largest value in `values`.
-fn required_bits(values: &[u32]) -> u8 {
-    let maximum = values.iter().copied().max().unwrap_or(0);
-    if maximum == 0 {
+fn required_bits_controlled<E>(
+    values: &[u32],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<u8, E> {
+    let mut maximum = 0;
+    for value in values {
+        work.step()?;
+        #[cfg(test)]
+        ENCODE_BITS_PROBES.with(|value| value.set(value.get() + 1));
+        maximum = maximum.max(*value);
+    }
+    Ok(if maximum == 0 {
         0
     } else {
         // 32 - leading_zeros is in 1..=32 for a non-zero value.
         u8::try_from(32 - maximum.leading_zeros()).unwrap_or(32)
-    }
+    })
 }
 
 /// Appends `values` to `output`, packed at `bits` each.
-fn pack_bits(values: &[u32], bits: u8, output: &mut Vec<u8>) {
+fn pack_bits_controlled<E>(
+    values: &[u32],
+    bits: u8,
+    output: &mut Vec<u8>,
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<(), E> {
     if bits == 0 {
-        return;
+        return Ok(());
     }
     let width = u32::from(bits);
     let mut accumulator: u64 = 0;
     let mut filled: u32 = 0;
     for value in values {
+        work.step()?;
+        #[cfg(test)]
+        ENCODE_PACK_PROBES.with(|value| value.set(value.get() + 1));
         accumulator |= u64::from(*value) << filled;
         filled += width;
         while filled >= 8 {
@@ -276,6 +293,16 @@ fn pack_bits(values: &[u32], bits: u8, output: &mut Vec<u8>) {
     }
     if filled > 0 {
         output.push((accumulator & 0xFF) as u8);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn pack_bits(values: &[u32], bits: u8, output: &mut Vec<u8>) {
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match pack_bits_controlled(values, bits, output, &mut work) {
+        Ok(()) => (),
+        Err(never) => match never {},
     }
 }
 
@@ -503,6 +530,7 @@ pub fn encode(
         block_maxima,
         &[],
         POSTINGS_VERSION_V1,
+        &mut super::control::WorkCheck::new(|| Ok::<(), PostingsError>(())),
     )
 }
 
@@ -527,19 +555,39 @@ pub fn encode_v2(
         block_maxima,
         impacts,
         POSTINGS_VERSION,
+        &mut super::control::WorkCheck::new(|| Ok::<(), PostingsError>(())),
+    )
+}
+
+pub(crate) fn encode_v2_controlled<E: From<PostingsError>>(
+    list: &PostingList,
+    postings_per_block: u16,
+    block_maxima: &[u8],
+    impacts: &[BlockImpact],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<EncodedPostings, E> {
+    encode_versioned(
+        list,
+        postings_per_block,
+        block_maxima,
+        impacts,
+        POSTINGS_VERSION,
+        work,
     )
 }
 
 /// The one encoder. Version selects only what the reserved bytes carry.
-fn encode_versioned(
+fn encode_versioned<E: From<PostingsError>>(
     list: &PostingList,
     postings_per_block: u16,
     block_maxima: &[u8],
     impacts: &[BlockImpact],
     version: u16,
-) -> Result<EncodedPostings, PostingsError> {
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<EncodedPostings, E> {
+    work.check_now()?;
     if postings_per_block == 0 {
-        return Err(PostingsError::ZeroBlockSize);
+        return Err(PostingsError::ZeroBlockSize.into());
     }
     let per_block = usize::from(postings_per_block);
     let postings = list.postings();
@@ -552,12 +600,14 @@ fn encode_versioned(
 
     let mut previous_last_docid = 0_u32;
     for (index, chunk) in postings.chunks(per_block).enumerate() {
+        work.step()?;
         let mut deltas: Vec<u32> = Vec::with_capacity(chunk.len());
         let mut frequencies: Vec<u32> = Vec::with_capacity(chunk.len());
         let mut position_deltas: Vec<u32> = Vec::new();
 
         let mut base = previous_last_docid;
         for (offset, posting) in chunk.iter().enumerate() {
+            work.step()?;
             // The very first posting of the list is stored absolutely; every
             // other delta is a gap from the previous document id.
             let delta = if index == 0 && offset == 0 {
@@ -569,6 +619,9 @@ fn encode_versioned(
             frequencies.push(posting.tf);
             let mut previous_position = 0_u32;
             for (slot, position) in posting.positions.iter().enumerate() {
+                work.step()?;
+                #[cfg(test)]
+                ENCODE_POSITION_PROBES.with(|value| value.set(value.get() + 1));
                 let gap = if slot == 0 {
                     *position
                 } else {
@@ -581,9 +634,9 @@ fn encode_versioned(
         }
         previous_last_docid = base;
 
-        let docid_bits = required_bits(&deltas);
-        let tf_bits = required_bits(&frequencies);
-        let position_bits = required_bits(&position_deltas);
+        let docid_bits = required_bits_controlled(&deltas, work)?;
+        let tf_bits = required_bits_controlled(&frequencies, work)?;
+        let position_bits = required_bits_controlled(&position_deltas, work)?;
 
         let meta = BlockMeta {
             last_docid: base,
@@ -600,9 +653,9 @@ fn encode_versioned(
             min_len: impacts.get(index).map_or(0, |impact| impact.min_len),
         };
 
-        pack_bits(&deltas, docid_bits, &mut docid_stream);
-        pack_bits(&frequencies, tf_bits, &mut tf_stream);
-        pack_bits(&position_deltas, position_bits, &mut position_stream);
+        pack_bits_controlled(&deltas, docid_bits, &mut docid_stream, work)?;
+        pack_bits_controlled(&frequencies, tf_bits, &mut tf_stream, work)?;
+        pack_bits_controlled(&position_deltas, position_bits, &mut position_stream, work)?;
         metadata.push(meta);
     }
 
@@ -627,12 +680,14 @@ fn encode_versioned(
             .to_le_bytes(),
     );
     for meta in &metadata {
+        work.step()?;
         meta.write(&mut bytes);
     }
-    bytes.extend_from_slice(&docid_stream);
-    bytes.extend_from_slice(&tf_stream);
-    bytes.extend_from_slice(&position_stream);
+    super::control::extend_bytes(&mut bytes, &docid_stream, work)?;
+    super::control::extend_bytes(&mut bytes, &tf_stream, work)?;
+    super::control::extend_bytes(&mut bytes, &position_stream, work)?;
 
+    work.check_now()?;
     Ok(EncodedPostings { bytes })
 }
 
@@ -648,6 +703,17 @@ pub struct PostingsReader<'bytes> {
     postings_per_block: u16,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static ENCODE_POSITION_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ENCODE_BITS_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ENCODE_PACK_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ENCODE_IMPACT_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static POSITION_OPEN_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static POSITION_MEMBER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static POSITION_DECODE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'bytes> PostingsReader<'bytes> {
     /// Locates only one row's position deltas. Other rows' positions are not
     /// decoded; their frequencies establish the offset within this block.
@@ -655,6 +721,18 @@ impl<'bytes> PostingsReader<'bytes> {
     /// # Errors
     /// Returns a typed posting error for malformed frequencies or geometry.
     pub fn positions(&self, row: u32) -> Result<Option<RowPositions<'bytes>>, PostingsError> {
+        self.positions_controlled(
+            row,
+            &mut super::control::WorkCheck::new(|| Ok::<(), PostingsError>(())),
+        )
+    }
+
+    pub(crate) fn positions_controlled<E: From<PostingsError>>(
+        &self,
+        row: u32,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<RowPositions<'bytes>>, E> {
+        work.check_now()?;
         let block = self.blocks.partition_point(|meta| meta.last_docid < row);
         let Some(meta) = self.blocks.get(block) else {
             return Ok(None);
@@ -679,6 +757,9 @@ impl<'bytes> PostingsReader<'bytes> {
             .map_or(0, |meta| meta.last_docid);
         let mut first = 0_usize;
         for slot in 0..usize::from(meta.count) {
+            work.step()?;
+            #[cfg(test)]
+            POSITION_MEMBER_PROBES.with(|value| value.set(value.get() + 1));
             let delta = packed_value_at(docids, meta.docid_bits, slot)?;
             docid = docid
                 .checked_add(delta)
@@ -688,7 +769,7 @@ impl<'bytes> PostingsReader<'bytes> {
             }
             let count = packed_value_at(tfs, meta.tf_bits, slot)? as usize;
             if count == 0 {
-                return Err(PostingsError::ZeroTermFrequency);
+                return Err(PostingsError::ZeroTermFrequency.into());
             }
             let end = first.checked_add(count).ok_or(PostingsError::Truncated {
                 needed: usize::MAX,
@@ -698,7 +779,8 @@ impl<'bytes> PostingsReader<'bytes> {
                 return Err(PostingsError::Truncated {
                     needed: end,
                     available: meta.positions_count as usize,
-                });
+                }
+                .into());
             }
             if docid == row {
                 let start = meta.positions_offset as usize;
@@ -742,20 +824,31 @@ impl<'bytes> PostingsReader<'bytes> {
     /// zero block size, an oversized bit width, an inconsistent posting
     /// count, or truncation anywhere.
     pub fn open(bytes: &'bytes [u8]) -> Result<Self, PostingsError> {
+        Self::open_controlled(
+            bytes,
+            &mut super::control::WorkCheck::new(|| Ok::<(), PostingsError>(())),
+        )
+    }
+
+    pub(crate) fn open_controlled<E: From<PostingsError>>(
+        bytes: &'bytes [u8],
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
         let header = bytes.get(..HEADER_LEN).ok_or(PostingsError::Truncated {
             needed: HEADER_LEN,
             available: bytes.len(),
         })?;
         if header.get(..4) != Some(&POSTINGS_MAGIC[..]) {
-            return Err(PostingsError::BadMagic);
+            return Err(PostingsError::BadMagic.into());
         }
         let version = read_u16(header, 4)?;
         if version != POSTINGS_VERSION_V1 && version != POSTINGS_VERSION {
-            return Err(PostingsError::UnsupportedVersion { found: version });
+            return Err(PostingsError::UnsupportedVersion { found: version }.into());
         }
         let postings_per_block = read_u16(header, 6)?;
         if postings_per_block == 0 {
-            return Err(PostingsError::ZeroBlockSize);
+            return Err(PostingsError::ZeroBlockSize.into());
         }
         let posting_count = read_u32(header, 8)?;
         let block_count = read_u32(header, 12)?;
@@ -789,6 +882,9 @@ impl<'bytes> PostingsReader<'bytes> {
         let mut tf_bytes = 0_usize;
         let mut position_bytes = 0_usize;
         for index in 0..block_count_usize {
+            work.step()?;
+            #[cfg(test)]
+            POSITION_OPEN_PROBES.with(|value| value.set(value.get() + 1));
             let start = index.saturating_mul(BLOCK_META_LEN);
             let row = metadata_bytes.get(start..start + BLOCK_META_LEN).ok_or(
                 PostingsError::Truncated {
@@ -799,14 +895,15 @@ impl<'bytes> PostingsReader<'bytes> {
             let meta = BlockMeta::read(row)?;
             for bits in [meta.docid_bits, meta.tf_bits, meta.position_bits] {
                 if bits > 32 {
-                    return Err(PostingsError::BitWidthTooLarge { bits });
+                    return Err(PostingsError::BitWidthTooLarge { bits }.into());
                 }
             }
             if meta.count == 0 || meta.count > postings_per_block {
                 return Err(PostingsError::InconsistentPostingCount {
                     declared: posting_count,
                     described: described.saturating_add(u32::from(meta.count)),
-                });
+                }
+                .into());
             }
             described = described.saturating_add(u32::from(meta.count));
             let count = usize::from(meta.count);
@@ -831,7 +928,8 @@ impl<'bytes> PostingsReader<'bytes> {
             return Err(PostingsError::InconsistentPostingCount {
                 declared: posting_count,
                 described,
-            });
+            }
+            .into());
         }
 
         let streams = bytes.get(metadata_end..).ok_or(PostingsError::Truncated {
@@ -856,7 +954,8 @@ impl<'bytes> PostingsReader<'bytes> {
             return Err(PostingsError::Truncated {
                 needed: position_end,
                 available: streams.len(),
-            });
+            }
+            .into());
         }
         let docids = streams.get(..tf_start).ok_or(PostingsError::Truncated {
             needed: tf_start,
@@ -876,6 +975,7 @@ impl<'bytes> PostingsReader<'bytes> {
                     available: streams.len(),
                 })?;
 
+        work.check_now()?;
         Ok(Self {
             version,
             blocks,
@@ -1056,27 +1156,46 @@ impl RowPositions<'_> {
     /// # Errors
     /// Returns a typed posting error for truncation, invalid widths or order.
     pub fn decode(&self) -> Result<Vec<u32>, PostingsError> {
+        self.decode_controlled(&mut super::control::WorkCheck::new(|| {
+            Ok::<(), PostingsError>(())
+        }))
+    }
+
+    pub(crate) fn decode_controlled<E: From<PostingsError>>(
+        &self,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Vec<u32>, E> {
+        work.check_now()?;
         let mut positions = Vec::with_capacity(self.count);
         let mut position = 0_u32;
-        for offset in 0..self.count {
-            let delta = packed_value_at(self.bytes, self.bits, self.first + offset)?;
-            if offset > 0 && delta == 0 {
-                return Err(PostingsError::PositionsNotAscending { position });
+        let result = (|| {
+            for offset in 0..self.count {
+                work.step()?;
+                #[cfg(test)]
+                POSITION_DECODE_PROBES.with(|value| value.set(value.get() + 1));
+                let delta = packed_value_at(self.bytes, self.bits, self.first + offset)?;
+                if offset > 0 && delta == 0 {
+                    return Err(PostingsError::PositionsNotAscending { position }.into());
+                }
+                position = position
+                    .checked_add(delta)
+                    .ok_or(PostingsError::PositionsNotAscending { position })?;
+                positions.push(position);
             }
-            position = position
-                .checked_add(delta)
-                .ok_or(PostingsError::PositionsNotAscending { position })?;
-            positions.push(position);
-        }
+            work.check_now()
+        })();
+        // Record completed decode work even when the next cooperative check
+        // aborts. Partial scratch is never returned to the caller.
         #[cfg(any(test, feature = "test-support"))]
-        {
+        if !positions.is_empty() {
             let first_bit = self.first * usize::from(self.bits);
-            let last_bit = (self.first + self.count) * usize::from(self.bits);
+            let last_bit = (self.first + positions.len()) * usize::from(self.bits);
             super::preparation_observer::phrase_positions(
-                self.count,
+                positions.len(),
                 last_bit.div_ceil(8) - first_bit / 8,
             );
         }
+        result?;
         Ok(positions)
     }
 }
@@ -1115,6 +1234,154 @@ fn packed_value_at(bytes: &[u8], bits: u8, slot: usize) -> Result<u32, PostingsE
         });
     let mask = (1_u64 << bits) - 1;
     Ok(((word >> (first % 8)) & mask) as u32)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod astra_18_tests {
+    use super::*;
+    use crate::fts::control::WorkCheck;
+    use std::cell::Cell;
+
+    #[derive(Debug, PartialEq)]
+    enum TestError {
+        Cancelled,
+        Postings(PostingsError),
+    }
+
+    impl From<PostingsError> for TestError {
+        fn from(error: PostingsError) -> Self {
+            Self::Postings(error)
+        }
+    }
+
+    fn one_position_per_row() -> PostingList {
+        let mut list = PostingList::new();
+        for row in 0..4_096 {
+            list.push(Posting {
+                docid: row,
+                tf: 1,
+                positions: vec![row * 2],
+            })
+            .expect("literal posting");
+        }
+        list
+    }
+
+    #[test]
+    fn astra_18_position_metadata_cancels_inside_block_walk() {
+        let list = one_position_per_row();
+        let encoded = encode(&list, 1, &[]).expect("one row per block");
+        POSITION_OPEN_PROBES.with(|value| value.set(0));
+        let mut work = WorkCheck::new(|| {
+            if POSITION_OPEN_PROBES.with(Cell::get) >= 64 {
+                Err(TestError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        let result = PostingsReader::open_controlled(encoded.as_bytes(), &mut work);
+        let probes = POSITION_OPEN_PROBES.with(Cell::get);
+        println!("metadata_probes={probes}");
+        assert!(matches!(result, Err(TestError::Cancelled)));
+        assert!(
+            (64..=128).contains(&probes),
+            "metadata walk must stop inside the list"
+        );
+        let mut clean = WorkCheck::new(|| Ok::<(), TestError>(()));
+        let reader = PostingsReader::open_controlled(encoded.as_bytes(), &mut clean)
+            .expect("fresh control opens complete metadata");
+        assert_eq!(reader.blocks().len(), 4_096);
+        assert_eq!(reader.document_frequency(), 4_096);
+        assert_eq!(reader.decode_all().expect("complete literal output"), list);
+        assert!(matches!(
+            PostingsReader::open_controlled(&[], &mut clean),
+            Err(TestError::Postings(PostingsError::Truncated { .. }))
+        ));
+    }
+
+    #[test]
+    fn astra_18_position_membership_cancels_inside_one_block() {
+        let list = one_position_per_row();
+        let encoded = encode(&list, 4_096, &[]).expect("one large legal block");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("reader");
+        POSITION_MEMBER_PROBES.with(|value| value.set(0));
+        let mut work = WorkCheck::new(|| {
+            if POSITION_MEMBER_PROBES.with(Cell::get) >= 64 {
+                Err(TestError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        let result = reader.positions_controlled(4_095, &mut work);
+        let probes = POSITION_MEMBER_PROBES.with(Cell::get);
+        println!("membership_probes={probes}");
+        assert!(matches!(result, Err(TestError::Cancelled)));
+        assert!(
+            (64..=128).contains(&probes),
+            "membership must stop inside the block"
+        );
+        let mut clean = WorkCheck::new(|| Ok::<(), TestError>(()));
+        assert_eq!(
+            reader
+                .positions_controlled(4_095, &mut clean)
+                .expect("fresh control")
+                .expect("last row")
+                .decode()
+                .expect("position"),
+            vec![8_190]
+        );
+        assert!(
+            reader
+                .positions_controlled(4_096, &mut clean)
+                .expect("absent row")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn astra_18_position_decode_cancels_inside_one_row() {
+        let literal = (0..4_096).collect::<Vec<_>>();
+        let mut list = PostingList::new();
+        list.push(Posting {
+            docid: 0,
+            tf: 4_096,
+            positions: literal.clone(),
+        })
+        .expect("one long row");
+        let encoded = encode(&list, 64, &[]).expect("encoded positions");
+        let reader = PostingsReader::open(encoded.as_bytes()).expect("reader");
+        let view = reader.positions(0).expect("membership").expect("present");
+        POSITION_DECODE_PROBES.with(|value| value.set(0));
+        crate::fts::preparation_observer::begin();
+        let mut work = WorkCheck::new(|| {
+            if POSITION_DECODE_PROBES.with(Cell::get) >= 64 {
+                Err(TestError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        let result = view.decode_controlled(&mut work);
+        let probes = POSITION_DECODE_PROBES.with(Cell::get);
+        let observed = crate::fts::preparation_observer::phrase_position_work();
+        crate::fts::preparation_observer::take();
+        println!("decode_probes={probes}, position_work={observed:?}");
+        assert_eq!(result, Err(TestError::Cancelled));
+        assert!(
+            (64..=128).contains(&probes),
+            "decode must stop inside the row"
+        );
+        assert_eq!(
+            observed,
+            (probes, probes.div_ceil(8)),
+            "retain actual partial decode work"
+        );
+        let mut clean = WorkCheck::new(|| Ok::<(), TestError>(()));
+        assert_eq!(
+            view.decode_controlled(&mut clean).expect("fresh control"),
+            literal
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1286,32 +1553,48 @@ pub fn block_impacts(
     postings_per_block: u16,
     lengths: &[u32],
 ) -> Vec<BlockImpact> {
-    if postings_per_block == 0 {
-        return Vec::new();
+    let mut work = super::control::WorkCheck::new(|| Ok::<(), std::convert::Infallible>(()));
+    match block_impacts_controlled(list, postings_per_block, lengths, &mut work) {
+        Ok(impacts) => impacts,
+        Err(never) => match never {},
     }
-    list.postings()
-        .chunks(usize::from(postings_per_block))
-        .map(|chunk| {
-            let mut max_tf = 0_u32;
-            let mut min_len = u32::MAX;
-            for posting in chunk {
-                max_tf = max_tf.max(posting.tf);
-                let length = usize::try_from(posting.docid)
-                    .ok()
-                    .and_then(|slot| lengths.get(slot).copied())
-                    .unwrap_or(1);
-                min_len = min_len.min(length);
-            }
-            BlockImpact {
-                max_tf,
-                // Saturating DOWN: a shorter document scores higher, so a
-                // stored length at or below the truth keeps the bound above
-                // it. `try_from` fails exactly when the value exceeds the
-                // slot, and `u16::MAX` is then the largest storable length.
-                min_len: u16::try_from(min_len).unwrap_or(u16::MAX),
-            }
-        })
-        .collect()
+}
+
+pub(crate) fn block_impacts_controlled<E>(
+    list: &PostingList,
+    postings_per_block: u16,
+    lengths: &[u32],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Vec<BlockImpact>, E> {
+    work.check_now()?;
+    if postings_per_block == 0 {
+        return Ok(Vec::new());
+    }
+    let chunks = list.postings().chunks(usize::from(postings_per_block));
+    let mut impacts = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let mut max_tf = 0_u32;
+        let mut min_len = u32::MAX;
+        for posting in chunk {
+            work.step()?;
+            #[cfg(test)]
+            ENCODE_IMPACT_PROBES.with(|value| value.set(value.get() + 1));
+            max_tf = max_tf.max(posting.tf);
+            let length = usize::try_from(posting.docid)
+                .ok()
+                .and_then(|slot| lengths.get(slot).copied())
+                .unwrap_or(1);
+            min_len = min_len.min(length);
+        }
+        impacts.push(BlockImpact {
+            max_tf,
+            // Saturate DOWN: a shorter document scores higher, keeping
+            // this bound at or above the true score.
+            min_len: u16::try_from(min_len).unwrap_or(u16::MAX),
+        });
+    }
+    work.check_now()?;
+    Ok(impacts)
 }
 
 #[cfg(test)]
@@ -1323,6 +1606,89 @@ pub fn block_impacts(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_18_postings_encoding_cancels_inside_positions() {
+        let positions = (0..4_096).collect::<Vec<_>>();
+        let list = list_from(&[(0, &positions)]);
+        let impacts = block_impacts(&list, 64, &[4_096]);
+        let reference = encode_v2(&list, 64, &[], &impacts).expect("reference");
+        let mut observed = Vec::new();
+        for (phase, probes) in [
+            ("position gaps", &ENCODE_POSITION_PROBES),
+            ("bit widths", &ENCODE_BITS_PROBES),
+            ("bit packing", &ENCODE_PACK_PROBES),
+        ] {
+            probes.with(|value| value.set(0));
+            let mut work = super::super::control::WorkCheck::new(|| {
+                if probes.with(std::cell::Cell::get) >= 64 {
+                    Err(PostingsError::ZeroBlockSize)
+                } else {
+                    Ok(())
+                }
+            });
+            let result = encode_v2_controlled(&list, 64, &[], &impacts, &mut work);
+            let count = probes.with(std::cell::Cell::get);
+            println!("{phase}: canceled={}, probes={count}", result.is_err());
+            observed.push((
+                phase,
+                matches!(result, Err(PostingsError::ZeroBlockSize)),
+                count,
+            ));
+        }
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), PostingsError>(()));
+        let clean = encode_v2_controlled(&list, 64, &[], &impacts, &mut work).expect("clean");
+        assert_eq!(clean.as_bytes(), reference.as_bytes());
+        assert_eq!(
+            PostingsReader::open(clean.as_bytes())
+                .expect("reader")
+                .decode_all()
+                .expect("decoded"),
+            list
+        );
+        for (phase, canceled, count) in observed {
+            assert!(canceled, "{phase}");
+            assert!((64..=128).contains(&count), "{phase}: {count}");
+        }
+    }
+
+    #[test]
+    fn astra_18_block_impacts_cancel_inside_rows() {
+        let mut list = PostingList::new();
+        for docid in 0..4_096 {
+            list.push(Posting {
+                docid,
+                tf: 1,
+                positions: vec![0],
+            })
+            .expect("posting");
+        }
+        let lengths = vec![7; 4_096];
+        ENCODE_IMPACT_PROBES.with(|value| value.set(0));
+        let mut work = super::super::control::WorkCheck::new(|| {
+            if ENCODE_IMPACT_PROBES.with(std::cell::Cell::get) >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        let result = block_impacts_controlled(&list, 64, &lengths, &mut work);
+        let count = ENCODE_IMPACT_PROBES.with(std::cell::Cell::get);
+        println!("impact rows={count}");
+        assert_eq!(result, Err("cancelled"));
+        assert!((64..=128).contains(&count));
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        assert_eq!(
+            block_impacts_controlled(&list, 64, &lengths, &mut work),
+            Ok(vec![
+                BlockImpact {
+                    max_tf: 1,
+                    min_len: 7
+                };
+                64
+            ])
+        );
+    }
 
     fn list_from(entries: &[(u32, &[u32])]) -> PostingList {
         let mut list = PostingList::new();

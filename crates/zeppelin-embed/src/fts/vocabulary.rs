@@ -28,23 +28,50 @@ impl Vocabulary {
         }
     }
 
-    /// Reserve temporary sort references and retained storage before allocating.
-    /// The caller owns both reservations, including every failed build.
+    #[cfg(test)]
     pub(crate) fn build<'a, E>(
         terms: impl Iterator<Item = (&'a [u8], FieldId)> + Clone,
-        mut reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
+        reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
     ) -> Result<Self, E> {
-        let count = terms.clone().count();
+        let mut work = super::control::WorkCheck::new(|| Ok(()));
+        Self::build_controlled(terms, reserve, &mut work)
+    }
+
+    /// Reserve temporary references and retained storage before allocating.
+    /// Canceled construction never publishes the partial dictionary.
+    pub(crate) fn build_controlled<'a, E>(
+        terms: impl Iterator<Item = (&'a [u8], FieldId)> + Clone,
+        mut reserve: impl FnMut(Option<usize>, Option<usize>) -> Result<(), E>,
+        work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Self, E> {
+        work.check_now()?;
+        let mut count = 0_usize;
+        for _ in terms.clone() {
+            work.step()?;
+            count += 1;
+        }
         let temporary = count.checked_mul(std::mem::size_of::<(&[u8], FieldId)>());
         reserve(temporary, Some(0))?;
         let mut sorted = Vec::with_capacity(count);
-        sorted.extend(terms);
-        sorted.sort_unstable();
-        sorted.dedup();
+        for term in terms {
+            work.step()?;
+            sorted.push(term);
+        }
+        super::control::sort_by(&mut sorted, Ord::cmp, work)?;
+        let mut unique = 0_usize;
+        for read in 0..sorted.len() {
+            work.step()?;
+            if unique == 0 || sorted.get(read) != sorted.get(unique - 1) {
+                sorted.swap(unique, read);
+                unique += 1;
+            }
+        }
+        sorted.truncate(unique);
         let mut previous = None;
         let mut term_count = 0_usize;
         let mut term_bytes = Some(0_usize);
         for (term, _) in &sorted {
+            work.step()?;
             if previous != Some(*term) {
                 term_count += 1;
                 term_bytes = term_bytes.and_then(|bytes| bytes.checked_add(term.len()));
@@ -72,21 +99,30 @@ impl Vocabulary {
         #[cfg(any(test, feature = "test-support"))]
         let mut group_checks = 0;
         while let Some((term, _)) = remaining.first() {
-            let end = remaining
-                .iter()
-                .take_while(|(candidate, _)| {
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        group_checks += 1;
-                    }
-                    candidate == term
-                })
-                .count();
+            work.step()?;
+            let mut end = 0;
+            for (candidate, _) in remaining {
+                work.step()?;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    group_checks += 1;
+                }
+                if candidate != term {
+                    break;
+                }
+                end += 1;
+            }
             let (group, rest) = remaining.split_at(end);
             let term_start = terms.len();
             let field_start = fields.len();
-            terms.extend_from_slice(term);
-            fields.extend(group.iter().map(|(_, field)| *field));
+            for chunk in term.chunks(4_096) {
+                work.step()?;
+                terms.extend_from_slice(chunk);
+            }
+            for (_, field) in group {
+                work.step()?;
+                fields.push(*field);
+            }
             entries.push(Entry {
                 term: term_start..terms.len(),
                 fields: field_start..fields.len(),
@@ -95,12 +131,21 @@ impl Vocabulary {
         }
         #[cfg(any(test, feature = "test-support"))]
         {
-            super::preparation_observer::vocabulary_build(terms.len());
             super::preparation_observer::record_vocabulary_group_checks(group_checks);
         }
         let mut by_length = Vec::with_capacity(term_count);
-        by_length.extend(entries.iter().map(|entry| entry.term.clone()));
-        by_length.sort_unstable_by_key(|range| (range.len(), range.start));
+        for entry in &entries {
+            work.step()?;
+            by_length.push(entry.term.clone());
+        }
+        super::control::sort_by(
+            &mut by_length,
+            |left, right| (left.len(), left.start).cmp(&(right.len(), right.start)),
+            work,
+        )?;
+        work.check_now()?;
+        #[cfg(any(test, feature = "test-support"))]
+        super::preparation_observer::vocabulary_build(terms.len());
         Ok(Self {
             entries,
             terms,
@@ -181,6 +226,63 @@ impl Vocabulary {
                 self.term(entry).starts_with(prefix)
             })
             .map(|entry| self.term(entry))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn astra_18_vocabulary_build_cancels_during_input_walks() {
+        let terms = (0..4_096)
+            .map(|i| format!("word{i:04}").into_bytes())
+            .collect::<Vec<_>>();
+        for phase in [0, 1] {
+            let visits = std::cell::Cell::new(0);
+            let reservations = std::cell::Cell::new(0);
+            let input = terms
+                .iter()
+                .map(|term| (term.as_slice(), FieldId(0)))
+                .inspect(|_| visits.set(visits.get() + 1));
+            let mut work = super::super::control::WorkCheck::new(|| {
+                if reservations.get() >= phase && visits.get() >= phase * 4_096 + 64 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            });
+            let result = Vocabulary::build_controlled(
+                input,
+                |_, _| {
+                    reservations.set(reservations.get() + 1);
+                    Ok(())
+                },
+                &mut work,
+            );
+            println!(
+                "phase={phase}, visits={}, reservations={}",
+                visits.get(),
+                reservations.get()
+            );
+            assert!(matches!(result, Err("cancelled")));
+            assert!(
+                visits.get() <= phase * 4_096 + 128,
+                "input traversal did not stop"
+            );
+        }
+        let mut work = super::super::control::WorkCheck::new(|| Ok::<(), ()>(()));
+        let clean = Vocabulary::build_controlled(
+            terms.iter().map(|term| (term.as_slice(), FieldId(0))),
+            |_, _| Ok(()),
+            &mut work,
+        )
+        .expect("clean build");
+        assert_eq!(
+            clean.iter().collect::<Vec<_>>(),
+            terms.iter().map(Vec::as_slice).collect::<Vec<_>>()
+        );
     }
 }
 

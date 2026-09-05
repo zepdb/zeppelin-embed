@@ -34,6 +34,7 @@ pub(crate) mod weighted;
 use crate::fts::bm25::{Bm25Params, Df, TermScorer};
 use crate::fts::index::{IndexError, LexicalIndex};
 use crate::fts::sealed::TermStream;
+use crate::fts::search::ControlledSearchError;
 use crate::fts::search::{GlobalDocId, ScoredDoc, SearchCounters, SearchResult, TermQuery};
 use crate::meta::DocBitmap;
 
@@ -308,20 +309,34 @@ pub fn search_pruned(
     params: Bm25Params,
     strategy: Strategy,
 ) -> Result<SearchResult, IndexError> {
-    search_pruned_inner(index, query, k, params, strategy, None, None)
+    search_pruned_inner(index, query, k, params, strategy, None, None, || {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(ControlledSearchError::into_index_error)
 }
 
-pub(crate) fn search_pruned_filtered(
+pub(crate) fn search_pruned_filtered_controlled<E>(
     index: &LexicalIndex,
     query: &TermQuery,
     k: usize,
     params: Bm25Params,
     strategy: Strategy,
     allow_lists: &[&DocBitmap],
-) -> Result<SearchResult, IndexError> {
-    search_pruned_inner(index, query, k, params, strategy, Some(allow_lists), None)
+    check: impl FnMut() -> Result<(), E>,
+) -> Result<SearchResult, ControlledSearchError<E>> {
+    search_pruned_inner(
+        index,
+        query,
+        k,
+        params,
+        strategy,
+        Some(allow_lists),
+        None,
+        check,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn search_pruned_prepared_filtered(
     index: &LexicalIndex,
     prepared: &crate::fts::search::PreparedTermQuery,
@@ -337,11 +352,32 @@ pub(crate) fn search_pruned_prepared_filtered(
         strategy,
         Some(allow_lists),
         Some(prepared),
+        || Ok::<(), std::convert::Infallible>(()),
+    )
+    .map_err(ControlledSearchError::into_index_error)
+}
+
+pub(crate) fn search_pruned_prepared_controlled<E>(
+    index: &LexicalIndex,
+    prepared: &crate::fts::search::PreparedTermQuery,
+    k: usize,
+    allow_lists: &[&DocBitmap],
+    check: impl FnMut() -> Result<(), E>,
+) -> Result<SearchResult, ControlledSearchError<E>> {
+    search_pruned_inner(
+        index,
+        prepared.query(),
+        k,
+        prepared.params(),
+        select_strategy(prepared.query().terms.len(), k),
+        Some(allow_lists),
+        Some(prepared),
+        check,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn search_pruned_inner(
+fn search_pruned_inner<E>(
     index: &LexicalIndex,
     query: &TermQuery,
     k: usize,
@@ -349,14 +385,26 @@ fn search_pruned_inner(
     strategy: Strategy,
     allow_lists: Option<&[&DocBitmap]>,
     prepared: Option<&crate::fts::search::PreparedTermQuery>,
-) -> Result<SearchResult, IndexError> {
+    mut check: impl FnMut() -> Result<(), E>,
+) -> Result<SearchResult, ControlledSearchError<E>> {
+    let mut work =
+        crate::fts::control::WorkCheck::new(|| check().map_err(ControlledSearchError::Control));
+    work.check_now()?;
     if strategy == Strategy::Exhaustive {
-        return allow_lists.map_or_else(
-            || crate::fts::search::search(index, query, k, params),
-            |allow_lists| {
-                crate::fts::search::search_allow_list_driven(index, query, k, params, allow_lists)
-            },
-        );
+        return allow_lists
+            .map_or_else(
+                || crate::fts::search::search(index, query, k, params),
+                |allow_lists| {
+                    crate::fts::search::search_allow_list_driven(
+                        index,
+                        query,
+                        k,
+                        params,
+                        allow_lists,
+                    )
+                },
+            )
+            .map_err(ControlledSearchError::Index);
     }
     let stats = match prepared {
         Some(prepared) => prepared.stats(),
@@ -369,32 +417,45 @@ fn search_pruned_inner(
     let frequencies = match prepared {
         Some(prepared) => std::borrow::Cow::Borrowed(prepared.frequencies()),
         None => {
-            let fields = query.fields.fields();
-            std::borrow::Cow::Owned(
-                query
-                    .terms
-                    .iter()
-                    .map(|term| index.prepared_document_frequency(term, &fields))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
+            let fields = query.fields.fields_controlled(&mut work)?;
+            let mut frequencies = Vec::with_capacity(query.terms.len());
+            for term in &query.terms {
+                work.step()?;
+                frequencies.push(
+                    index
+                        .prepared_document_frequency_controlled(term, &fields, || work.check_now())
+                        .map_err(|error| match error {
+                            ControlledSearchError::Index(error) => {
+                                ControlledSearchError::Index(error)
+                            }
+                            ControlledSearchError::Control(error) => error,
+                        })?,
+                );
+            }
+            std::borrow::Cow::Owned(frequencies)
         }
     };
 
     for (ordinal, segment) in index.segments().iter().enumerate() {
+        work.check_now()?;
         let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
         let allow_list = allow_lists.and_then(|lists| lists.get(ordinal)).copied();
         // Borrowed outright in the flat single-field case; see
         // `crate::fts::search::weighted_lengths`. This used to be an
         // O(row_count) rebuild on every query.
-        let lengths = crate::fts::search::weighted_lengths(segment, &query.fields);
+        let lengths =
+            crate::fts::search::weighted_lengths_controlled(segment, &query.fields, &mut work)?;
 
         let mut cursors: Vec<TermCursor<'_>> = Vec::with_capacity(query.terms.len());
         for (slot, term) in query.terms.iter().enumerate() {
+            work.step()?;
             let df = Df(frequencies.get(slot).copied().unwrap_or(0));
             if df.0 == 0 {
                 continue;
             }
-            let Some(stream) = TermStream::open(segment, term, &query.fields) else {
+            let Some(stream) =
+                TermStream::open_controlled(segment, term, &query.fields, &mut work)?
+            else {
                 continue;
             };
             if stream.exhausted() {
@@ -404,11 +465,11 @@ fn search_pruned_inner(
                 .and_then(|prepared| prepared.scorer(slot))
                 .unwrap_or_else(|| TermScorer::new(df, &stats, params));
             // Read, never rebuilt. The term's bound comes from the stored
-            // impact pairs, which costs O(blocks) metadata reads; the
+            // per-field overall impact pairs; the
             // previous form scored every posting in order to bound it, and
             // that is why pruning was slower than the scan it exists to
             // avoid.
-            let upper_bound = stream.upper_bound(&scorer);
+            let upper_bound = stream.upper_bound_controlled(&scorer, &mut work)?;
             cursors.push(TermCursor {
                 stream,
                 df,
@@ -427,32 +488,35 @@ fn search_pruned_inner(
             .map(|cursor| cursor.stream.posting_count())
             .sum();
         if total <= SHORT_LIST_POSTINGS {
-            maxscore::score_all(
+            maxscore::score_all_controlled(
                 &mut cursors,
                 &lengths,
                 segment_index,
                 &mut heap,
                 &mut counters,
                 allow_list,
-            );
+                || work.check_now(),
+            )?;
         } else {
             match strategy {
-                Strategy::BlockMaxWand => wand::run(
+                Strategy::BlockMaxWand => wand::run_controlled(
                     &mut cursors,
                     &lengths,
                     segment_index,
                     &mut heap,
                     &mut counters,
                     allow_list,
-                ),
-                Strategy::BlockMaxMaxscore => maxscore::run(
+                    || work.check_now(),
+                )?,
+                Strategy::BlockMaxMaxscore => maxscore::run_controlled(
                     &mut cursors,
                     &lengths,
                     segment_index,
                     &mut heap,
                     &mut counters,
                     allow_list,
-                ),
+                    || work.check_now(),
+                )?,
                 Strategy::Exhaustive => {}
             }
         }
@@ -466,6 +530,7 @@ fn search_pruned_inner(
         }
     }
 
+    work.check_now()?;
     Ok(SearchResult {
         hits: heap.into_hits(),
         counters,
@@ -500,6 +565,85 @@ mod tests {
         let mut index = LexicalIndex::new();
         index.push_segment(segment).expect("seals");
         index
+    }
+
+    #[test]
+    fn astra_18_pruned_lexical_cancels_inside_long_traversal() {
+        let texts = vec!["alpha beta gamma delta".to_owned(); 4_096];
+        let index = index_of(&texts);
+        let query = TermQuery::flat(
+            [
+                b"alpha".to_vec(),
+                b"beta".to_vec(),
+                b"gamma".to_vec(),
+                b"delta".to_vec(),
+            ]
+            .into(),
+            &[DEFAULT_FIELD],
+        );
+        let stats = index.corpus_stats().expect("stats");
+        let segment = index.segments().first().expect("one segment");
+        let lengths = crate::fts::search::weighted_lengths(segment, &query.fields);
+        for strategy in [Strategy::BlockMaxWand, Strategy::BlockMaxMaxscore] {
+            let mut cursors: Vec<_> = query
+                .terms
+                .iter()
+                .map(|term| {
+                    let df = Df(index.document_frequency(term, &[DEFAULT_FIELD]));
+                    let scorer = TermScorer::new(df, &stats, Bm25Params::default());
+                    let stream =
+                        TermStream::open(segment, term, &query.fields).expect("term stream");
+                    let upper_bound = stream.upper_bound(&scorer);
+                    TermCursor {
+                        stream,
+                        df,
+                        scorer,
+                        upper_bound,
+                    }
+                })
+                .collect();
+            let mut checks = 0;
+            let mut check = || {
+                checks += 1;
+                if checks >= 3 {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            };
+            let mut counters = SearchCounters::default();
+            let mut heap = TopK::new(4_096);
+            let result = match strategy {
+                Strategy::BlockMaxWand => wand::run_controlled(
+                    &mut cursors,
+                    &lengths,
+                    0,
+                    &mut heap,
+                    &mut counters,
+                    None,
+                    &mut check,
+                ),
+                Strategy::BlockMaxMaxscore => maxscore::run_controlled(
+                    &mut cursors,
+                    &lengths,
+                    0,
+                    &mut heap,
+                    &mut counters,
+                    None,
+                    &mut check,
+                ),
+                Strategy::Exhaustive => unreachable!(),
+            };
+            println!(
+                "{strategy:?}: checks={checks}, postings={}, rows={}",
+                counters.postings_decoded, counters.docs_evaluated
+            );
+            assert_eq!(result, Err("cancelled"), "must check during traversal");
+            assert!(
+                counters.postings_decoded <= 128,
+                "cancellation must bound actual work, not only stop publication"
+            );
+        }
     }
 
     #[test]

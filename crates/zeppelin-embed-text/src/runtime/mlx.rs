@@ -24,6 +24,92 @@ fn mlx_calls() -> &'static Mutex<()> {
     CALLS.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_mlx_calls_controlled<E: From<RuntimeError>>(
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<std::sync::MutexGuard<'static, ()>, E> {
+    checkpoint()?;
+    let guard = loop {
+        match mlx_calls().try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()).into());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        checkpoint()?;
+        std::thread::park_timeout(std::time::Duration::from_millis(1));
+    };
+    checkpoint()?;
+    Ok(guard)
+}
+
+#[cfg(all(test, feature = "test-support"))]
+#[allow(clippy::expect_used)]
+mod astra_18_tests {
+    use super::*;
+    use std::sync::{Barrier, mpsc};
+    use std::time::Duration;
+    use zeppelin_embed::lifecycle::{Deadline, ManualMonotonicClock, QueryControl, QueryError};
+
+    #[test]
+    fn astra_18_mlx_mutex_wait_observes_original_deadline() {
+        let clock = Arc::new(ManualMonotonicClock::new());
+        let deadline = Deadline::after_with_test_clock(Duration::from_secs(1), clock.clone())
+            .expect("original deadline");
+        let control = QueryControl::Deadline(deadline);
+        let entered = Barrier::new(2);
+        let resume = Barrier::new(2);
+        let held = mlx_calls()
+            .lock()
+            .expect("hold actual process-wide MLX lock");
+        let before_unlock = std::thread::scope(|scope| {
+            let (send, receive) = mpsc::sync_channel(1);
+            let control = &control;
+            let entered = &entered;
+            let resume = &resume;
+            let worker = scope.spawn(move || {
+                let mut first = true;
+                let result = lock_mlx_calls_controlled(&mut || {
+                    let observed = control.checkpoint().map_err(crate::TextError::Query);
+                    if first {
+                        first = false;
+                        entered.wait();
+                        resume.wait();
+                    }
+                    observed
+                });
+                send.send(matches!(
+                    result,
+                    Err(crate::TextError::Query(QueryError::Timeout {
+                        partial: false
+                    }))
+                ))
+                .expect("admission result");
+            });
+            entered.wait();
+            clock.advance(Duration::from_secs(2));
+            resume.wait();
+            let before_unlock = receive.recv_timeout(Duration::from_secs(2));
+            drop(held);
+            worker
+                .join()
+                .expect("join even when the watchdog observes RED");
+            before_unlock
+        });
+        println!("MLX deadline returned while holder retained mutex: {before_unlock:?}");
+        assert_eq!(
+            before_unlock,
+            Ok(true),
+            "expired admission must not wait for MLX evaluation to release the lock"
+        );
+        let clean = lock_mlx_calls_controlled(&mut || Ok::<(), RuntimeError>(()));
+        assert!(
+            clean.is_ok(),
+            "uncanceled admission still acquires the same mutex"
+        );
+    }
+}
+
 impl MlxRuntime {
     /// Returns the hard ceiling for one Metal evaluation command buffer.
     #[doc(hidden)]
@@ -124,15 +210,28 @@ impl MlxRuntime {
             .as_ref()
             .ok_or_else(|| RuntimeError::Mlx("MLX stream is closed".to_owned()))
     }
-}
 
-impl ModelRuntime for MlxRuntime {
-    fn embed_batch(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
-        let _call = mlx_calls()
-            .lock()
-            .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;
+    /// Query admission may stop while another runtime owns the process-wide
+    /// lock. Once foreign evaluation starts, retain that guard until it ends.
+    pub(crate) fn embed_batch_controlled<E: From<RuntimeError>>(
+        &mut self,
+        tokens: &TokenBatch,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<EmbeddingBatch, E> {
+        let _call = lock_mlx_calls_controlled(checkpoint)?;
+        self.embed_batch_locked(tokens, checkpoint)
+    }
+
+    fn embed_batch_locked<E: From<RuntimeError>>(
+        &mut self,
+        tokens: &TokenBatch,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<EmbeddingBatch, E> {
+        checkpoint()?;
         if tokens.rows <= MAX_EVAL_ROWS {
-            return self.eval_chunk(tokens);
+            let result = self.eval_chunk(tokens);
+            checkpoint()?;
+            return result.map_err(Into::into);
         }
         let dims = self.tower.embedding.dims as usize;
         let capacity = tokens
@@ -142,6 +241,7 @@ impl ModelRuntime for MlxRuntime {
         let mut values = Vec::with_capacity(capacity);
         let mut start = 0_usize;
         while start < tokens.rows {
+            checkpoint()?;
             let end = start.saturating_add(MAX_EVAL_ROWS).min(tokens.rows);
             let row_start = start.checked_mul(tokens.tokens_per_row).ok_or_else(|| {
                 RuntimeError::Shape("token batch chunk offset overflow".to_owned())
@@ -166,10 +266,21 @@ impl ModelRuntime for MlxRuntime {
                 tokens.tokens_per_row,
             )
             .map_err(|detail| RuntimeError::Shape(detail.to_owned()))?;
-            values.extend(self.eval_chunk(&chunk)?.into_values());
+            let result = self.eval_chunk(&chunk);
+            checkpoint()?;
+            values.extend(result?.into_values());
             start = end;
         }
-        EmbeddingBatch::new(values, tokens.rows, dims)
+        EmbeddingBatch::new(values, tokens.rows, dims).map_err(Into::into)
+    }
+}
+
+impl ModelRuntime for MlxRuntime {
+    fn embed_batch(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
+        let _call = mlx_calls()
+            .lock()
+            .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;
+        self.embed_batch_locked(tokens, &mut || Ok::<(), RuntimeError>(()))
     }
 
     fn warm(&mut self) -> Result<(), RuntimeError> {
