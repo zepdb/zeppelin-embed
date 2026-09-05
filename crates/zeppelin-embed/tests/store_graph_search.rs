@@ -1191,3 +1191,112 @@ fn explicit_ef_equal_to_k_still_answers_when_rows_are_deleted() {
     );
     store.close().expect("close store");
 }
+
+#[test]
+fn astra_01_approximate_stop_does_not_force_full_materialization() {
+    use zeppelin_embed::fts::index::DEFAULT_FIELD;
+    use zeppelin_embed::fts::search::TermQuery;
+    use zeppelin_embed::fusion::{FusionTermination, HybridQuery};
+    use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
+
+    let directory = tempdir().expect("coverage graph directory");
+    let epoch = graph_epoch(Normalization::None);
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::default().with_epoch(epoch.clone()),
+    )
+    .expect("coverage graph store");
+    let rows = 1_024;
+    let vectors = fixture_vectors(rows);
+    let documents = vectors
+        .chunks_exact(DIMS)
+        .enumerate()
+        .map(|(row, vector)| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                vector.to_vec(),
+            )
+            .with_text("zeppelin")
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(epoch.identity()))
+        .expect("ingest graph identities");
+    store.seal().expect("seal graph input");
+    let maintenance = store.maintain_with_test_thresholds(
+        MaintenanceBudget {
+            wall_time: std::time::Duration::from_secs(600),
+            bytes: u64::MAX,
+        },
+        TierThresholds { graph_min_rows: 32 },
+    );
+    assert!(matches!(maintenance.status, MaintenanceStatus::Complete));
+    assert_eq!(maintenance.graphs_built, 1);
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&vec![0.0; DIMS]),
+            &TermQuery::flat(vec![b"absent".to_vec()], &[DEFAULT_FIELD]),
+            &HybridQuery::new(1),
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("default ANN hybrid query");
+    let diagnostics = &outcome.diagnostics;
+    let report = diagnostics.fusion.as_ref().expect("fusion report");
+    assert!(
+        diagnostics.exact_rescore,
+        "retained ANN rows have exact distances"
+    );
+    assert!(
+        diagnostics.approximate,
+        "candidate membership came from ANN"
+    );
+    assert_eq!(diagnostics.counters.graph.segments_traversed, 1);
+    assert_eq!(diagnostics.plan.len(), 1);
+    assert_eq!(diagnostics.plan[0].branch, SegmentBranch::Graph);
+    assert_eq!(report.rounds, 1);
+    assert!(!diagnostics.budget_exhausted);
+    let provenance = diagnostics
+        .hybrid
+        .as_ref()
+        .expect("hybrid provenance")
+        .provenance;
+    assert_eq!(
+        provenance.vector_precision,
+        zeppelin_embed::fusion::ScorePrecision::Exact
+    );
+    assert_eq!(
+        provenance.vector_coverage,
+        zeppelin_embed::fusion::CandidateCoverage::Approximate
+    );
+    assert!(diagnostics.counters.graph.candidates_rescored < rows);
+    assert!(
+        !matches!(
+            report.termination,
+            FusionTermination::StableBound
+                | FusionTermination::ListsExhausted
+                | FusionTermination::BudgetFullMaterialization
+        ),
+        "exact ANN scores cannot certify unseen membership: {:?}",
+        report.termination
+    );
+    // Primitive independent coverage oracle and its false-certificate plant.
+    let accepts = |approximate_membership: bool, claims_certificate: bool| {
+        !approximate_membership || !claims_certificate
+    };
+    let claims_certificate = matches!(
+        report.termination,
+        FusionTermination::StableBound
+            | FusionTermination::ListsExhausted
+            | FusionTermination::BudgetFullMaterialization
+    );
+    assert!(
+        accepts(true, claims_certificate),
+        "actual graph clean control"
+    );
+    assert!(
+        !accepts(true, true),
+        "a planted ANN certificate must be rejected"
+    );
+    store.close().expect("close coverage graph store");
+}

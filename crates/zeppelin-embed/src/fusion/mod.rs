@@ -65,6 +65,31 @@ pub enum ScorePrecision {
     Estimated,
 }
 
+/// What a producer can prove about candidates outside its supplied window.
+/// This is independent of whether the supplied scores are exact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CandidateCoverage {
+    /// Every eligible candidate is represented by the complete producer list.
+    Exhaustive,
+    /// The producer supplies the true ordered boundary of a bounded window.
+    CertifiedBounded,
+    /// Candidate membership or its unseen boundary is not certified.
+    Approximate,
+}
+
+/// Store-owned facts required before a bounded fusion stop is a certificate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HybridProvenance {
+    /// Precision of the vector producer's retained scores.
+    pub vector_precision: ScorePrecision,
+    /// Coverage supplied by the vector producer, independent of precision.
+    pub vector_coverage: CandidateCoverage,
+    /// Coverage supplied by the lexical producer.
+    pub lexical_coverage: CandidateCoverage,
+    /// Every union candidate has its other score or proven nonmembership.
+    pub cross_scores_complete: bool,
+}
+
 /// One ranked vector candidate. Squared-L2 is lower-is-better.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VectorCandidate<I> {
@@ -266,6 +291,8 @@ pub enum FusionTermination {
     BudgetFullMaterialization,
     /// A bounded window could not be proved stable; the caller must widen it.
     WindowUnproven,
+    /// Returned an approximate candidate union without certifying unseen rows.
+    ApproximateCandidates,
 }
 
 /// Exact vector-leg extremes for one bounded window.

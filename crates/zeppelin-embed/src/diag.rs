@@ -193,9 +193,12 @@ impl PartialEq for QueryDiagnostics {
 ///
 /// The window is the final width after any widening. Cross-fill counts are
 /// the documents one leg's window contributed to the other leg's exact
-/// scores, which is what makes a bounded fusion equal the full-list one.
+/// scores. `provenance` states whether all required cross-scores are present
+/// and whether the producers can support a completeness certificate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HybridReport {
+    /// Independent score precision, producer coverage and cross-score facts.
+    pub provenance: crate::fusion::HybridProvenance,
     /// Per-leg window width the producers were finally asked for.
     pub window: usize,
     /// Vector candidates handed to fusion.

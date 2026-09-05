@@ -3670,13 +3670,12 @@ impl Store {
                 .lexical_candidates_produced
                 .checked_add(lexical_hits.len())
                 .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-            let fused = crate::fusion::fuse_bounded(
+            let provenance = hybrid::round_provenance(&vector_outcome, lexical_hits.len(), width);
+            let fused = hybrid::fuse_round(
                 hybrid_query,
-                &round.vector,
-                &round.lexical,
-                round.bounds,
-                |document: &Option<crate::ingest::DocId>| *document,
-                |document: &Option<crate::ingest::DocId>| *document,
+                &round,
+                provenance,
+                requested_tier == Some(SearchTier::Exact),
             )?;
             timings.fusion_cross_fill += timing_elapsed(self.clock.as_ref(), fusion_started);
             if fused.report.termination != crate::fusion::FusionTermination::WindowUnproven
@@ -3685,6 +3684,7 @@ impl Store {
                 break (
                     fused,
                     crate::diag::HybridReport {
+                        provenance,
                         window: width,
                         vector_returned: round.vector.len(),
                         lexical_returned: round.lexical.len(),
@@ -3749,7 +3749,9 @@ impl Store {
                 snapshot_generation: vector_diagnostics.snapshot_generation,
                 indexed_through_seq: vector_diagnostics.indexed_through_seq,
                 plan: work.plans,
-                approximate: vector_diagnostics.approximate,
+                approximate: vector_diagnostics.approximate
+                    || report.termination
+                        == crate::fusion::FusionTermination::ApproximateCandidates,
                 exact_rescore: vector_diagnostics.exact_rescore,
                 requested_k: hybrid_query.k,
                 returned: fused.hits.len(),

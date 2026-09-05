@@ -1,9 +1,8 @@
 //! Bounded producers for `Store::search_hybrid`.
 //!
-//! The hybrid legs are windowed: each produces its own top-W plus the exact
-//! extreme its normalization range needs, and fusion proves the window with
-//! the (W+1)-th element. Nothing here scales with the corpus except the
-//! clamp that keeps a window from exceeding it.
+//! Each leg supplies a candidate window and scoring ranges. An ANN window's
+//! following item describes only its retained list. Producer coverage and
+//! complete cross-scores must establish that a fusion stop is a certificate.
 
 use crate::fusion::{
     FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K, LegBounds, LegFailureKind,
@@ -135,13 +134,14 @@ pub(crate) struct LexicalHit {
     pub(crate) bm25: f64,
 }
 
-/// Cross-filled windows and the exact ranges fusion validates against.
+/// Cross-filled windows and the ranges used to score them.
 pub(crate) struct HybridRound {
     /// Vector window plus every lexical-window document's exact squared-L2.
     pub(crate) vector: Vec<VectorCandidate<Option<DocId>>>,
     /// Lexical window plus every vector-window document's exact BM25.
     pub(crate) lexical: Vec<LexicalCandidate<Option<DocId>>>,
-    /// Corpus-wide extremes and the (W+1)-th values.
+    /// Producer-supplied ranges and following values. Approximate producer
+    /// values are not certificates about unseen corpus rows.
     pub(crate) bounds: LegBounds,
     /// Documents the lexical window contributed to the vector list.
     pub(crate) cross_filled_vector: usize,
@@ -149,11 +149,76 @@ pub(crate) struct HybridRound {
     pub(crate) cross_filled_lexical: usize,
 }
 
+pub(crate) fn round_provenance(
+    vector: &crate::ingest::SearchOutcome,
+    lexical_len: usize,
+    width: usize,
+) -> crate::fusion::HybridProvenance {
+    use crate::fusion::{CandidateCoverage, HybridProvenance, ScorePrecision};
+    let exact = vector.diagnostics.exact_rescore;
+    let bounded_coverage = |len| {
+        if len <= width {
+            CandidateCoverage::Exhaustive
+        } else {
+            CandidateCoverage::CertifiedBounded
+        }
+    };
+    HybridProvenance {
+        vector_precision: if exact {
+            ScorePrecision::Exact
+        } else {
+            ScorePrecision::Estimated
+        },
+        vector_coverage: if vector.diagnostics.approximate || !exact {
+            CandidateCoverage::Approximate
+        } else {
+            bounded_coverage(vector.candidates.len())
+        },
+        lexical_coverage: bounded_coverage(lexical_len),
+        // Until candidate BM25 cross-scoring lands, a truncated lexical list
+        // cannot distinguish a zero from a missing other-leg contribution.
+        cross_scores_complete: lexical_len <= width,
+    }
+}
+
+pub(crate) fn fuse_round(
+    query: &crate::fusion::HybridQuery,
+    round: &HybridRound,
+    provenance: crate::fusion::HybridProvenance,
+    require_exact: bool,
+) -> Result<crate::fusion::FusionOutcome<DocId>, FusionError> {
+    use crate::fusion::{CandidateCoverage, FusionTermination, ScorePrecision};
+    let mut outcome = crate::fusion::fuse_bounded(
+        query,
+        &round.vector,
+        &round.lexical,
+        round.bounds,
+        |document: &Option<DocId>| *document,
+        |document: &Option<DocId>| *document,
+    )?;
+    let bounded_producers = provenance.vector_coverage != CandidateCoverage::Approximate
+        && provenance.lexical_coverage != CandidateCoverage::Approximate;
+    let can_certify = bounded_producers
+        && provenance.vector_precision == ScorePrecision::Exact
+        && provenance.cross_scores_complete;
+    if !can_certify {
+        // Default ANN remains a bounded approximate query. Only an explicit
+        // Exact request may widen to recover missing cross-scores; never use
+        // an ANN list ending as evidence that the corpus was exhausted.
+        outcome.report.termination = if require_exact && bounded_producers {
+            FusionTermination::WindowUnproven
+        } else {
+            FusionTermination::ApproximateCandidates
+        };
+    }
+    Ok(outcome)
+}
+
 /// Builds one round's cross-filled windows from the two producers' output.
 ///
-/// `vector` is the producer's top-(W+1) in ascending squared-L2 and `lexical`
-/// is its hits in descending BM25. Both are truncated to `width` here; the
-/// element just past the window becomes that leg's unseen bound.
+/// `vector` is the supplied list in ascending squared-L2 and `lexical` is
+/// descending BM25. Both are truncated to `width`; the following item can
+/// serve as an unseen bound only when producer coverage certifies it.
 #[allow(
     clippy::too_many_arguments,
     reason = "one round names both producers' output, the pinned snapshot, and the width"
@@ -326,6 +391,112 @@ fn exact_squared_l2(
 mod tests {
     use super::{HYBRID_WINDOW_FLOOR, HybridWindow, hybrid_window};
     use crate::fusion::{FusionError, LegFailureKind};
+
+    #[test]
+    fn astra_01_ann_boundary_is_not_an_unseen_certificate() {
+        use crate::fusion::{
+            CandidateCoverage, FusionTermination, HybridProvenance, HybridQuery, ScorePrecision,
+        };
+        use crate::ingest::DocId;
+        // Independent raw corpus: document 3 is the nearest row but a test-only
+        // ANN producer omitted it. All supplied distances remain exactly right.
+        let corpus = [(1, 1.0_f64), (2, 4.0), (3, 0.0)];
+        let reference = corpus
+            .iter()
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .expect("nonempty reference")
+            .0;
+        assert_eq!(reference, 3);
+        for next in [None, Some(9.0)] {
+            let round = super::HybridRound {
+                vector: vec![
+                    super::VectorCandidate::exact(Some(DocId::new(1)), 1.0),
+                    super::VectorCandidate::exact(Some(DocId::new(2)), 4.0),
+                ],
+                lexical: Vec::new(),
+                bounds: super::LegBounds {
+                    vector: Some(super::VectorBounds {
+                        min_squared_l2: 1.0,
+                        max_squared_l2: 10.0,
+                        next_unseen_squared_l2: next,
+                    }),
+                    lexical: None,
+                },
+                cross_filled_vector: 0,
+                cross_filled_lexical: 0,
+            };
+            let outcome = super::fuse_round(
+                &HybridQuery::new(1),
+                &round,
+                HybridProvenance {
+                    vector_precision: ScorePrecision::Exact,
+                    vector_coverage: CandidateCoverage::Approximate,
+                    lexical_coverage: CandidateCoverage::Exhaustive,
+                    cross_scores_complete: true,
+                },
+                false,
+            )
+            .expect("ANN round");
+            assert_eq!(
+                outcome.hits.first().expect("supplied winner").key,
+                DocId::new(1)
+            );
+            assert_ne!(
+                outcome.hits.first().expect("supplied winner").key,
+                DocId::new(reference)
+            );
+            assert_eq!(
+                outcome.report.termination,
+                FusionTermination::ApproximateCandidates,
+                "an absent ANN next item or an exact retained boundary cannot certify the missing winner"
+            );
+        }
+    }
+
+    #[test]
+    fn astra_01_exact_scores_do_not_imply_complete_candidates() {
+        use crate::fusion::{CandidateCoverage, ScorePrecision};
+        use crate::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+        };
+        use crate::lifecycle::{
+            CancelToken, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
+        };
+        let directory = tempfile::tempdir().expect("omission store");
+        let store =
+            Store::open(directory.path(), OpenOptions::default()).expect("open omission store");
+        let docs = [0.0, 1.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(row, value)| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                    vec![value, 0.0],
+                )
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(docs))
+            .expect("ingest raw reference");
+        let mut supplied = store
+            .search(
+                SearchRequest::new(&[0.0, 0.0]),
+                3,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("exact supplied scores");
+        // Test-only producer seam: omit the literal zero-distance winner and
+        // correctly mark the remaining membership as approximate.
+        supplied.candidates.remove(0);
+        supplied.diagnostics.approximate = true;
+        let provenance = super::round_provenance(&supplied, 0, 50);
+        assert_eq!(provenance.vector_precision, ScorePrecision::Exact);
+        assert_eq!(provenance.vector_coverage, CandidateCoverage::Approximate);
+        assert_eq!(provenance.lexical_coverage, CandidateCoverage::Exhaustive);
+        assert!(provenance.cross_scores_complete);
+        store.close().expect("close omission store");
+    }
 
     #[test]
     fn astra_00_all_hybrid_rounds_contribute_work() {

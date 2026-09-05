@@ -375,6 +375,9 @@ fn report_fact(report: &zeppelin_embed::fusion::FusionReport) -> FusionReportFac
                 FusionTerminationFact::BudgetFullMaterialization
             }
             FusionTermination::WindowUnproven => FusionTerminationFact::WindowUnproven,
+            FusionTermination::ApproximateCandidates => {
+                FusionTerminationFact::ApproximateCandidates
+            }
         },
     }
 }

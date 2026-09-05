@@ -29,6 +29,8 @@ pub enum FusionTerminationFact {
     /// window stable. The oracle never predicts this; observing it is a
     /// finding, not a pass.
     WindowUnproven,
+    /// A supplied candidate union is returned without an unseen certificate.
+    ApproximateCandidates,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

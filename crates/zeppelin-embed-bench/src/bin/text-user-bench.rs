@@ -418,6 +418,12 @@ fn query_sample_json(
             "ef_effective": plan.ef_effective,
         })).collect::<Vec<_>>();
         let hybrid = diag.hybrid.as_ref().map(|report| json!({
+            "provenance": {
+                "vector_precision": format!("{:?}", report.provenance.vector_precision),
+                "vector_coverage": format!("{:?}", report.provenance.vector_coverage),
+                "lexical_coverage": format!("{:?}", report.provenance.lexical_coverage),
+                "cross_scores_complete": report.provenance.cross_scores_complete,
+            },
             "final_window": report.window,
             "final_vector_returned": report.vector_returned,
             "final_lexical_returned": report.lexical_returned,
@@ -440,7 +446,11 @@ fn query_sample_json(
             "returned_scores_full_precision": diag.exact_rescore,
             // Preserve the raw producer report without treating a fusion stop
             // reason as a proof that graph candidate membership is exhaustive.
-            "coverage_certificate": "not emitted by this schema version",
+            "coverage_certificate": diag.fusion.as_ref().filter(|fusion| matches!(fusion.termination,
+                zeppelin_embed::fusion::FusionTermination::StableBound
+                | zeppelin_embed::fusion::FusionTermination::ListsExhausted
+                | zeppelin_embed::fusion::FusionTermination::BudgetFullMaterialization
+            )).map(|fusion| format!("{:?}", fusion.termination)),
             "requested_k": diag.requested_k,
             "returned": diag.returned,
             "budget_exhausted": diag.budget_exhausted,

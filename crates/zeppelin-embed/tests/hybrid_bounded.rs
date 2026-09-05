@@ -352,6 +352,8 @@ fn astra_00_lexical_window_survives_worker_handoff() {
 }
 
 #[test]
+// Keep this a single ordinary bounded round. Explicit Exact now widens when
+// candidate cross-scores are incomplete; astra_01 pins that separate contract.
 fn astra_00_cross_fill_counts_exact_rows_and_bytes() {
     let (_directory, store) = astra_disjoint_windows_store();
     let outcome = store
@@ -359,7 +361,7 @@ fn astra_00_cross_fill_counts_exact_rows_and_bytes() {
             SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
             &HybridQuery::new(1),
-            SearchOptions::default().with_tier(SearchTier::Exact),
+            SearchOptions::default(),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("cross-fill query");
@@ -394,7 +396,7 @@ fn astra_00_cache_receipts_belong_to_the_query() {
                 SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
                 &HybridQuery::new(1),
-                SearchOptions::default().with_tier(SearchTier::Exact),
+                SearchOptions::default(),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .expect("cache query");
@@ -406,4 +408,148 @@ fn astra_00_cache_receipts_belong_to_the_query() {
         );
     }
     store.close().expect("close");
+}
+
+#[test]
+fn astra_01_exact_hybrid_can_still_certify() {
+    use zeppelin_embed::fusion::CandidateCoverage;
+    let (_directory, store) = astra_disjoint_windows_store();
+    let vector = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let lexical = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);
+    let outcome = store
+        .search_hybrid(
+            SearchRequest::new(&vector),
+            &lexical,
+            &HybridQuery::new(1).with_max_rounds(0),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit exhaustive verification");
+    assert_eq!(
+        outcome
+            .diagnostics
+            .fusion
+            .as_ref()
+            .expect("fusion")
+            .termination,
+        FusionTermination::ListsExhausted
+    );
+    let provenance = outcome
+        .diagnostics
+        .hybrid
+        .as_ref()
+        .expect("hybrid")
+        .provenance;
+    assert_eq!(provenance.vector_coverage, CandidateCoverage::Exhaustive);
+    assert_eq!(provenance.lexical_coverage, CandidateCoverage::Exhaustive);
+    assert!(provenance.cross_scores_complete);
+    let reference = offline_full_list_fusion(&store, &vector, &lexical, 1, 400);
+    assert_same_hits(&outcome.hits, &reference, "explicit exact certificate");
+    let bounded = store
+        .search_hybrid(
+            SearchRequest::new(&vector),
+            &lexical,
+            &HybridQuery::new(1),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit exact bounded producers");
+    let report = bounded.diagnostics.fusion.as_ref().expect("bounded fusion");
+    assert!(matches!(
+        report.termination,
+        FusionTermination::StableBound | FusionTermination::ListsExhausted
+    ));
+    assert!(
+        bounded
+            .diagnostics
+            .hybrid
+            .as_ref()
+            .expect("bounded provenance")
+            .provenance
+            .cross_scores_complete
+    );
+    assert_same_hits(&bounded.hits, &reference, "exact widened certificate");
+    assert_eq!(report.rounds, 3);
+    assert_eq!(bounded.diagnostics.plan.len(), 3);
+    // Three full 400x6 scans plus cross-fills of 50, 100 and 200 rows.
+    assert_eq!(bounded.diagnostics.counters.scan.dims_touched, 9_300);
+    assert_eq!(bounded.diagnostics.counters.scan.bytes_read, 37_200);
+    // Independent exhaustive fusion arithmetic over the raw fixture vectors
+    // and complete BM25 receipts. No product fusion/range/sort helper is used.
+    // The producer's published ceiling is the declared normalization anchor;
+    // BM25 scoring itself belongs to the separate candidate-score contract.
+    let raw_lexical = store
+        .search_lexical(&lexical, 400, QueryControl::Cancel(CancelToken::new()))
+        .expect("complete BM25 receipts")
+        .candidates
+        .into_iter()
+        .map(|hit| (hit.document.doc_id().get(), hit.score))
+        .collect::<Vec<_>>();
+    let ceiling = store
+        .search(
+            SearchRequest::new(&vector),
+            400,
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("published normalization anchor")
+        .vector_ceiling
+        .expect("ceiling");
+    let raw_vectors = (0..400)
+        .map(|row| {
+            let coordinate = f64::from(row as f32 * 0.0025);
+            (row as u128 + 1, f64::from((coordinate * coordinate) as f32))
+        })
+        .collect::<Vec<_>>();
+    let std_reference = astra_std_cc_reference(&raw_vectors, &raw_lexical, ceiling);
+    assert_eq!(std_reference[0].0, 202, "literal best balanced fixture row");
+    for certified in [&outcome, &bounded] {
+        assert_eq!(certified.hits[0].key.get(), std_reference[0].0);
+        assert_eq!(
+            certified.hits[0].fused_score.to_bits(),
+            std_reference[0].1.to_bits()
+        );
+    }
+    store.close().expect("close exact certificate store");
+}
+
+fn astra_std_cc_reference(
+    vector: &[(u128, f64)],
+    lexical: &[(u128, f64)],
+    ceiling: f64,
+) -> Vec<(u128, f64)> {
+    let lexical: std::collections::BTreeMap<_, _> = lexical.iter().copied().collect();
+    let minimum_vector = vector
+        .iter()
+        .map(|(_, score)| *score)
+        .min_by(f64::total_cmp)
+        .expect("vectors");
+    let minimum_lexical = lexical
+        .values()
+        .copied()
+        .min_by(f64::total_cmp)
+        .expect("lexical scores");
+    let maximum_lexical = lexical
+        .values()
+        .copied()
+        .max_by(f64::total_cmp)
+        .expect("lexical scores");
+    let mut ranked = vector
+        .iter()
+        .map(|(id, distance)| {
+            let alpha = 0.7_f64; // Declared core default; text queries explicitly choose 0.5.
+            let dense = alpha * ((ceiling - distance) / (ceiling - minimum_vector));
+            let sparse = lexical.get(id).map_or(0.0, |score| {
+                (1.0 - alpha) * ((score - minimum_lexical) / (maximum_lexical - minimum_lexical))
+            });
+            (*id, dense + sparse)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    ranked
 }
