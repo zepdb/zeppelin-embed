@@ -29,6 +29,10 @@ harness = false
 name = "tokenizer-cost"
 required-features = ["text"]
 
+[[example]]
+name = "query-budget"
+required-features = ["text"]
+
 [[bin]]
 name = "wal-throughput"
 path = "src/bin/wal-throughput.rs"

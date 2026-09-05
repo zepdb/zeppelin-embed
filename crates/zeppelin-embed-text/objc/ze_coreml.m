@@ -72,6 +72,45 @@ struct ze_coreml_model *ze_coreml_open(const char *path, int32_t compute_units, 
     }
 }
 
+static void ze_coreml_copy_embedding(MLMultiArray *embedding, float *out, size_t out_len) {
+    __block BOOL copied = NO;
+    MLMultiArrayDataType type = embedding.dataType;
+    if (@available(macOS 12.3, *)) {
+        if (type == MLMultiArrayDataTypeFloat16 || type == MLMultiArrayDataTypeFloat32) {
+            [embedding getBytesWithHandler:^(const void *bytes, NSInteger size) {
+                // A logical embedding may be a strided view. Only contiguous
+                // rows may use the bulk path; singleton strides are irrelevant.
+                NSArray<NSNumber *> *shape = embedding.shape;
+                NSArray<NSNumber *> *strides = embedding.strides;
+                if (shape.count != strides.count || size < 0) return;
+                size_t expected = 1;
+                for (NSUInteger axis = shape.count; axis > 0; axis -= 1) {
+                    size_t extent = [shape[axis - 1] unsignedLongLongValue];
+                    size_t stride = [strides[axis - 1] unsignedLongLongValue];
+                    if (extent == 0 || (extent > 1 && stride != expected)) return;
+                    if (expected > SIZE_MAX / extent) return;
+                    expected *= extent;
+                }
+                size_t width = type == MLMultiArrayDataTypeFloat16 ? sizeof(__fp16) : sizeof(float);
+                if (out_len > (size_t)size / width) return;
+                if (type == MLMultiArrayDataTypeFloat32) {
+                    memcpy(out, bytes, out_len * sizeof(float));
+                } else {
+                    const __fp16 *values = bytes;
+                    for (size_t index = 0; index < out_len; index += 1) {
+                        out[index] = (float)values[index];
+                    }
+                }
+                copied = YES;
+            }];
+        }
+    }
+    if (copied) return;
+    for (size_t index = 0; index < out_len; index += 1) {
+        out[index] = [[embedding objectAtIndexedSubscript:(NSInteger)index] floatValue];
+    }
+}
+
 // Evaluates one row. `ids` and `mask` each hold `sequence` int32 values.
 // `out` receives `out_len` floats. Returns 0 on success.
 int32_t ze_coreml_predict(struct ze_coreml_model *handle,
@@ -131,13 +170,7 @@ int32_t ze_coreml_predict(struct ze_coreml_model *handle,
             if (error_out) *error_out = ze_copy_error(nil, "output embedding has an unexpected width");
             return 7;
         }
-        if (embedding.dataType == MLMultiArrayDataTypeFloat32) {
-            memcpy(out, embedding.dataPointer, out_len * sizeof(float));
-        } else {
-            for (size_t index = 0; index < out_len; index += 1) {
-                out[index] = [[embedding objectAtIndexedSubscript:(NSInteger)index] floatValue];
-            }
-        }
+        ze_coreml_copy_embedding(embedding, out, out_len);
         return 0;
     }
 }
