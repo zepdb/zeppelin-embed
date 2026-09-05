@@ -920,6 +920,27 @@ mod tests {
     use zeppelin_embed_adversarial_oracle::fts as oracle;
 
     #[test]
+    fn astra_02_lexical_cancellation_and_same_seed_clean_control() {
+        let fault = FtsFaultKind::LexicalCancellation;
+        for planted in [Some(fault), None] {
+            let evidence = run_fts_operation(fault.operation(), 11, planted)
+                .expect("directed cancellation probe");
+            assert_eq!(evidence.receipts.len(), usize::from(planted.is_some()));
+            for receipt in evidence.receipts {
+                assert_eq!(receipt.fault, fault);
+                assert_eq!(receipt.cardinality, 1);
+            }
+            assert_eq!(evidence.invariants.len(), 1);
+            for invariant in evidence.invariants {
+                let FtsInvariantEvidence::I44 { input, observed } = invariant else {
+                    panic!("expected cancellation invariant");
+                };
+                oracle::compare_i44(&input, &observed).expect("independent checker");
+            }
+        }
+    }
+
+    #[test]
     fn every_fts_operation_runs_its_independent_checker() {
         for operation in [
             FtsOperationKind::Tokenizer,

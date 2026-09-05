@@ -368,6 +368,157 @@ pub(crate) enum ControlledSearchError<Control> {
     Control(Control),
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CandidateScoringWork {
+    pub(crate) streams_opened: u64,
+    pub(crate) scorers_prepared: u64,
+    pub(crate) seeks: u64,
+    pub(crate) rows_visited: u64,
+}
+
+pub(crate) struct CandidateScores {
+    /// One explicit match/nonmatch in each original caller position.
+    pub(crate) scores: Vec<Option<f64>>,
+    pub(crate) counters: SearchCounters,
+}
+
+/// Frozen query statistics shared by candidate batches across segments.
+/// Eligibility is a caller contract; row bounds are checked before scoring.
+pub(crate) struct CandidateScoring<'query> {
+    query: &'query TermQuery,
+    stats: super::bm25::CorpusStats,
+    frequencies: Vec<u32>,
+    params: Bm25Params,
+}
+
+impl<'query> CandidateScoring<'query> {
+    pub(crate) fn new(
+        index: &LexicalIndex,
+        query: &'query TermQuery,
+        params: Bm25Params,
+    ) -> Result<Self, IndexError> {
+        let stats = index.corpus_stats()?;
+        let fields = query.fields.fields();
+        let frequencies = query
+            .terms
+            .iter()
+            .map(|term| index.document_frequency(term, &fields))
+            .collect();
+        Ok(Self {
+            query,
+            stats,
+            frequencies,
+            params,
+        })
+    }
+
+    pub(crate) fn score_rows<Control>(
+        &self,
+        ordinal: usize,
+        segment: &SealedSegment,
+        rows: &[u32],
+        work: &mut CandidateScoringWork,
+        mut checkpoint: impl FnMut(&CandidateScoringWork) -> Result<(), Control>,
+    ) -> Result<CandidateScores, ControlledSearchError<Control>> {
+        checkpoint(work).map_err(ControlledSearchError::Control)?;
+        // Validate the whole input before any cursor or score is produced.
+        for (position, &row) in rows.iter().enumerate() {
+            if row >= segment.row_count() {
+                return Err(ControlledSearchError::Index(
+                    IndexError::LiveRowOutOfRange {
+                        segment: ordinal,
+                        row,
+                        row_count: segment.row_count(),
+                    },
+                ));
+            }
+            if position % 64 == 63 {
+                checkpoint(work).map_err(ControlledSearchError::Control)?;
+            }
+        }
+        let lengths = weighted_lengths(segment, &self.query.fields);
+        let mut routing = rows
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, row)| (row, position))
+            .collect::<Vec<_>>();
+        routing.sort_unstable_by_key(|(row, _)| *row);
+        let mut scores = vec![None; rows.len()];
+        let mut counters = SearchCounters::default();
+        if rows.is_empty() {
+            return Ok(CandidateScores { scores, counters });
+        }
+        let mut streams = Vec::with_capacity(self.query.terms.len());
+        // Preserve query-term occurrences and order, including repeated terms.
+        for (slot, (term, &df)) in self.query.terms.iter().zip(&self.frequencies).enumerate() {
+            if df != 0 {
+                if let Some(stream) = TermStream::open(segment, term, &self.query.fields) {
+                    work.streams_opened = work.streams_opened.saturating_add(1);
+                    let scorer = TermScorer::new(Df(df), &self.stats, self.params);
+                    work.scorers_prepared = work.scorers_prepared.saturating_add(1);
+                    streams.push((stream, scorer));
+                }
+            }
+            if slot % 64 == 63 {
+                checkpoint(work).map_err(ControlledSearchError::Control)?;
+            }
+        }
+        for group in routing.chunk_by(|left, right| left.0 == right.0) {
+            let Some(&(row, _)) = group.first() else {
+                continue;
+            };
+            let length = usize::try_from(row)
+                .ok()
+                .and_then(|slot| lengths.get(slot).copied())
+                .ok_or(ControlledSearchError::Index(
+                    IndexError::LiveLengthMissing {
+                        segment: ordinal,
+                        row,
+                    },
+                ))?;
+            let mut total = 0.0_f64;
+            let mut matched = false;
+            for (stream, scorer) in &mut streams {
+                stream.seek(row);
+                work.seeks = work.seeks.saturating_add(1);
+                if work.seeks.is_multiple_of(64) {
+                    checkpoint(work).map_err(ControlledSearchError::Control)?;
+                }
+                if stream.current_row() == Some(row) {
+                    counters.postings_decoded = counters.postings_decoded.saturating_add(1);
+                    total += scorer.score(Tf(stream.current_tf().unwrap_or(0)), DocLen(length));
+                    matched = true;
+                }
+            }
+            work.rows_visited = work.rows_visited.saturating_add(1);
+            if work.rows_visited.is_multiple_of(64) {
+                checkpoint(work).map_err(ControlledSearchError::Control)?;
+            }
+            if matched {
+                counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+            }
+            for &(_, position) in group {
+                // Every position was generated from this exact output length.
+                if let Some(output) = scores.get_mut(position) {
+                    *output = matched.then_some(total);
+                }
+            }
+        }
+        // Reused cursors own cumulative block receipts; count each once.
+        for (stream, _) in streams {
+            counters.blocks_decoded = counters
+                .blocks_decoded
+                .saturating_add(stream.blocks_decoded());
+            counters.blocks_skipped = counters
+                .blocks_skipped
+                .saturating_add(stream.blocks_skipped());
+        }
+        checkpoint(work).map_err(ControlledSearchError::Control)?;
+        Ok(CandidateScores { scores, counters })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AllowListScoringBranch {
     RowDriven,
@@ -418,13 +569,10 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
     mut checkpoint: impl FnMut() -> Result<(), Control>,
 ) -> Result<SearchResult, ControlledSearchError<Control>> {
     checkpoint().map_err(ControlledSearchError::Control)?;
-    let stats = index.corpus_stats().map_err(ControlledSearchError::Index)?;
-    let fields = query.fields.fields();
-    let frequencies = query
-        .terms
-        .iter()
-        .map(|term| index.document_frequency(term, &fields))
-        .collect::<Vec<_>>();
+    let prepared =
+        CandidateScoring::new(index, query, params).map_err(ControlledSearchError::Index)?;
+    let stats = prepared.stats;
+    let frequencies = &prepared.frequencies;
     let mut counters = SearchCounters::default();
     let mut accumulator = Vec::<(GlobalDocId, f64)>::new();
     let mut work_units = 0_u64;
@@ -437,54 +585,34 @@ fn search_allow_list_driven_controlled_with_branch<Control>(
                     continue;
                 };
                 let segment_index = u32::try_from(ordinal).unwrap_or(u32::MAX);
-                let lengths = weighted_lengths(segment, &query.fields);
-                for row in allow_list.iter() {
-                    let length = usize::try_from(row)
-                        .ok()
-                        .and_then(|slot| lengths.get(slot).copied())
-                        .unwrap_or(0);
-                    let mut total = 0.0_f64;
-                    let mut matched = false;
-                    for (slot, term) in query.terms.iter().enumerate() {
-                        let df = frequencies.get(slot).copied().unwrap_or(0);
-                        if df == 0 {
-                            continue;
-                        }
-                        let Some(mut stream) = TermStream::open(segment, term, &query.fields)
-                        else {
-                            continue;
-                        };
-                        stream.seek(row);
-                        if stream.current_row() == Some(row) {
-                            work_units = work_units.saturating_add(1);
-                            if work_units.is_multiple_of(64) {
-                                checkpoint().map_err(ControlledSearchError::Control)?;
-                            }
-                            counters.postings_decoded = counters.postings_decoded.saturating_add(1);
-                            let tf = stream.current_tf().unwrap_or(0);
-                            total += TermScorer::new(Df(df), &stats, params)
-                                .score(Tf(tf), DocLen(length));
-                            matched = true;
-                        }
-                        counters.blocks_decoded = counters
-                            .blocks_decoded
-                            .saturating_add(stream.blocks_decoded());
-                        counters.blocks_skipped = counters
-                            .blocks_skipped
-                            .saturating_add(stream.blocks_skipped());
-                    }
-                    work_units = work_units.saturating_add(1);
-                    if work_units.is_multiple_of(64) {
-                        checkpoint().map_err(ControlledSearchError::Control)?;
-                    }
-                    if matched {
-                        counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
+                let rows = allow_list.iter().collect::<Vec<_>>();
+                let batch = prepared.score_rows(
+                    ordinal,
+                    segment,
+                    &rows,
+                    &mut CandidateScoringWork::default(),
+                    |_| checkpoint(),
+                )?;
+                counters.docs_evaluated = counters
+                    .docs_evaluated
+                    .saturating_add(batch.counters.docs_evaluated);
+                counters.postings_decoded = counters
+                    .postings_decoded
+                    .saturating_add(batch.counters.postings_decoded);
+                counters.blocks_decoded = counters
+                    .blocks_decoded
+                    .saturating_add(batch.counters.blocks_decoded);
+                counters.blocks_skipped = counters
+                    .blocks_skipped
+                    .saturating_add(batch.counters.blocks_skipped);
+                for (row, score) in rows.into_iter().zip(batch.scores) {
+                    if let Some(score) = score {
                         accumulator.push((
                             GlobalDocId {
                                 segment: segment_index,
                                 row,
                             },
-                            total,
+                            score,
                         ));
                     }
                 }
@@ -634,6 +762,307 @@ mod tests {
         let mut index = LexicalIndex::new();
         index.push_segment(segment).expect("seals");
         index
+    }
+
+    fn candidate_batch(
+        index: &LexicalIndex,
+        query: &TermQuery,
+        ordinal: usize,
+        rows: &[u32],
+    ) -> (CandidateScores, CandidateScoringWork) {
+        let prepared =
+            CandidateScoring::new(index, query, Bm25Params::default()).expect("frozen statistics");
+        let mut work = CandidateScoringWork::default();
+        let batch =
+            match prepared.score_rows(ordinal, &index.segments()[ordinal], rows, &mut work, |_| {
+                Ok::<(), Infallible>(())
+            }) {
+                Ok(batch) => batch,
+                Err(ControlledSearchError::Index(error)) => panic!("candidate scoring: {error}"),
+                Err(ControlledSearchError::Control(never)) => match never {},
+            };
+        (batch, work)
+    }
+
+    #[test]
+    fn astra_02_candidate_bm25_opens_one_stream_per_term_segment() {
+        let index = index_of(&vec!["alpha beta"; 1_000]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec(), b"beta".to_vec()], &[DEFAULT_FIELD]);
+        let (batch, work) = candidate_batch(&index, &query, 0, &[999, 7, 511, 42]);
+        assert!(batch.scores.iter().all(Option::is_some));
+        assert_eq!(
+            work.streams_opened, 2,
+            "prepare once per term, not once per row"
+        );
+        assert_eq!(work.scorers_prepared, 2);
+        assert_eq!(work.seeks, 8);
+    }
+
+    #[test]
+    fn astra_02_candidate_nonmatch_is_explicit() {
+        let index = index_of(&["alpha", "omega"]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec()], &[DEFAULT_FIELD]);
+        let (batch, _) = candidate_batch(&index, &query, 0, &[1, 0, 1]);
+        assert_eq!(batch.scores.len(), 3);
+        assert_eq!(batch.scores[0], None);
+        assert!(batch.scores[1].is_some());
+        assert_eq!(batch.scores[2], None);
+        let prepared =
+            CandidateScoring::new(&index, &query, Bm25Params::default()).expect("prepare");
+        let mut work = CandidateScoringWork::default();
+        let result = prepared.score_rows(7, &index.segments()[0], &[0, 2], &mut work, |_| {
+            Ok::<(), Infallible>(())
+        });
+        assert!(matches!(
+            result,
+            Err(ControlledSearchError::Index(
+                IndexError::LiveRowOutOfRange {
+                    segment: 7,
+                    row: 2,
+                    row_count: 2
+                }
+            ))
+        ));
+        assert_eq!(
+            work.streams_opened, 0,
+            "reject the entire request before scoring a valid prefix"
+        );
+    }
+
+    #[test]
+    fn astra_02_candidate_scoring_cancels_during_sparse_seeks() {
+        let index = index_of(&["alpha", "omega"]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec(); 128], &[DEFAULT_FIELD]);
+        let prepared =
+            CandidateScoring::new(&index, &query, Bm25Params::default()).expect("prepare");
+        let mut work = CandidateScoringWork::default();
+        let result = prepared.score_rows(0, &index.segments()[0], &[1], &mut work, |receipt| {
+            if receipt.seeks >= 64 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(ControlledSearchError::Control("cancelled"))
+        ));
+        assert_eq!(
+            work.seeks, 64,
+            "unsuccessful seeks must reach cancellation checkpoints"
+        );
+        let (clean, clean_work) = candidate_batch(&index, &query, 0, &[1]);
+        assert_eq!(clean.scores, vec![None]);
+        assert_eq!(clean_work.seeks, 128);
+    }
+
+    #[test]
+    fn astra_02_candidate_work_screen() {
+        let index = index_of(&vec!["alpha beta"; 1_000]);
+        let query = TermQuery::flat(vec![b"alpha".to_vec(), b"beta".to_vec()], &[DEFAULT_FIELD]);
+        for count in [1, 10, 50, 400] {
+            let rows = (0..count).map(|row| row * 2).collect::<Vec<_>>();
+            let (batch, work) = candidate_batch(&index, &query, 0, &rows);
+            assert_eq!(batch.scores.len(), count as usize);
+            assert!(batch.scores.iter().all(Option::is_some));
+            println!(
+                "candidate_rows={count} work={work:?} counters={:?}",
+                batch.counters
+            );
+        }
+    }
+
+    fn astra_weighted_live_fixture() -> (LexicalIndex, TermQuery) {
+        let mut index = LexicalIndex::new();
+        for (documents, live) in [
+            (
+                vec![
+                    ("alpha alpha", "beta gamma"),
+                    ("alpha deleted", "beta beta"),
+                    ("beta", "alpha alpha"),
+                ],
+                vec![0, 2],
+            ),
+            (
+                vec![
+                    ("gamma", "alpha beta"),
+                    ("alpha beta", "beta beta"),
+                    ("omega", "omega"),
+                    ("alpha", "beta beta beta"),
+                ],
+                vec![0, 1, 3],
+            ),
+        ] {
+            let mut segment = SegmentIndex::new();
+            for (title, body) in documents {
+                let mut document = Document::new();
+                document.set(FieldId(0), title);
+                document.set(FieldId(1), body);
+                segment
+                    .push_document(&analyzer(), &document)
+                    .expect("literal fields");
+            }
+            index
+                .push_sealed_with_live_rows(
+                    SealedSegment::seal(&segment).expect("sealed fixture"),
+                    &DocBitmap::from_ids(live),
+                )
+                .expect("frozen live statistics");
+        }
+        let query = TermQuery {
+            terms: vec![b"alpha".to_vec(), b"beta".to_vec(), b"alpha".to_vec()],
+            fields: FieldWeights::new(&[
+                (FieldId(0), 2_000),
+                (FieldId(1), 500),
+                (FieldId(0), 9_000),
+            ]),
+        };
+        (index, query)
+    }
+
+    #[test]
+    fn astra_02_candidate_bm25_matches_exhaustive_scores() {
+        let (index, query) = astra_weighted_live_fixture();
+        let exhaustive =
+            search(&index, &query, usize::MAX, Bm25Params::default()).expect("exhaustive scoring");
+        let expected = exhaustive
+            .hits
+            .iter()
+            .map(|hit| (hit.doc, hit.score.to_bits()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for (ordinal, rows) in [vec![2, 0, 2], vec![3, 0, 1, 3]].iter().enumerate() {
+            let (batch, work) = candidate_batch(&index, &query, ordinal, rows);
+            for (&row, score) in rows.iter().zip(batch.scores) {
+                assert_eq!(
+                    score.map(f64::to_bits),
+                    expected
+                        .get(&GlobalDocId {
+                            segment: ordinal as u32,
+                            row
+                        })
+                        .copied()
+                );
+            }
+            assert_eq!(
+                work.streams_opened, 3,
+                "preserve repeated query-term occurrences"
+            );
+            assert_eq!(
+                work.rows_visited,
+                [2, 3][ordinal],
+                "route duplicate caller rows once"
+            );
+        }
+    }
+
+    #[test]
+    fn astra_02_candidate_scoring_preserves_repeated_terms_and_fields() {
+        let (index, query) = astra_weighted_live_fixture();
+        assert_eq!(
+            index.corpus_stats().expect("live stats").document_count(),
+            5
+        );
+        assert_eq!(index.corpus_stats().expect("live stats").total_tokens(), 18);
+        // Literal live rows have weighted (length, alpha tf, beta tf) below.
+        // Both terms occur in all five live documents before tf weighting.
+        // N=5, raw avgdl=18/5, title weight=2, body weight=1/2 (floor after
+        // merging). Query order is alpha, beta, alpha; no product scorer is
+        // used by this independent BM25 formula.
+        let idf = (1.0_f64 + 0.5 / 5.5).ln();
+        for (ordinal, row, length, alpha, beta) in [
+            (0, 0, 5, 4, 0),
+            (0, 2, 3, 1, 2),
+            (1, 0, 3, 0, 0),
+            (1, 1, 5, 2, 3),
+            (1, 3, 3, 2, 1),
+        ] {
+            let mut expected = 0.0;
+            let mut matched = false;
+            for tf in [alpha, beta, alpha] {
+                if tf != 0 {
+                    let tf = f64::from(tf);
+                    expected += idf * (tf * 2.2)
+                        / (tf + 1.2 * (0.25 + 0.75 * f64::from(length) / (18.0 / 5.0)));
+                    matched = true;
+                }
+            }
+            let (batch, _) = candidate_batch(&index, &query, ordinal, &[row]);
+            assert_eq!(
+                batch.scores[0].map(f64::to_bits),
+                matched.then_some(expected.to_bits()),
+                "segment {ordinal} row {row}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit paired release-process candidate screen"]
+    fn astra_02_selective_batch_screen() {
+        let documents = (0..65_536)
+            .map(|row| ["alpha beta", "alpha gamma", "beta gamma", "omega"][row % 4])
+            .collect::<Vec<_>>();
+        let index = index_of(&documents);
+        let queries = [
+            vec!["alpha", "beta"],
+            vec!["alpha", "alpha", "beta"],
+            vec!["omega", "beta"],
+            vec!["gamma"],
+        ]
+        .into_iter()
+        .map(|terms| {
+            TermQuery::flat(
+                terms
+                    .into_iter()
+                    .map(|term| term.as_bytes().to_vec())
+                    .collect(),
+                &[DEFAULT_FIELD],
+            )
+        })
+        .collect::<Vec<_>>();
+        let references = queries
+            .iter()
+            .map(|query| {
+                search(&index, query, usize::MAX, Bm25Params::default())
+                    .expect("exhaustive reference")
+                    .hits
+                    .into_iter()
+                    .map(|hit| (hit.doc.row, hit.score.to_bits()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "astra02_fixture,v1,rows=65536,queries=64,warm=20,seed=0x5eed,core_candidate_only=true"
+        );
+        for position in 0..84 {
+            let case = position % 64;
+            let count = [1, 10, 50, 400][case % 4];
+            // Fixed arithmetic routing, including unsorted sparse inputs. No
+            // random generator or qrels affect this exact-scoring treatment.
+            let rows = (0..count)
+                .rev()
+                .map(|row| ((row * (65_536 / count) + case * 37 + 0x5eed) % 65_536) as u32)
+                .collect::<Vec<_>>();
+            let started = std::time::Instant::now();
+            let (batch, work) = candidate_batch(&index, &queries[case % queries.len()], 0, &rows);
+            let elapsed = started.elapsed().as_nanos();
+            for (row, score) in rows.iter().zip(&batch.scores) {
+                assert_eq!(
+                    score.map(f64::to_bits),
+                    references[case % queries.len()].get(row).copied()
+                );
+            }
+            if position >= 20 {
+                println!(
+                    "astra02_sample,{case},{count},{elapsed},{},{},{},{},{},{}",
+                    work.streams_opened,
+                    work.scorers_prepared,
+                    work.seeks,
+                    work.rows_visited,
+                    batch.counters.blocks_decoded,
+                    batch.counters.docs_evaluated
+                );
+            }
+        }
     }
 
     fn forced_allow_list_search(

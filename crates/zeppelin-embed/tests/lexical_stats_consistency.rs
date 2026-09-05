@@ -11,6 +11,78 @@ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 
 const REMOVED: DocId = DocId::new(1);
 
+#[test]
+fn astra_02_candidate_bm25_matches_exhaustive_scores() {
+    use zeppelin_embed::fts::bm25::Bm25Params;
+    use zeppelin_embed::fts::index::{Document, LexicalIndex, SegmentIndex};
+    use zeppelin_embed::fts::sealed::SealedSegment;
+    use zeppelin_embed::fts::search::search;
+    use zeppelin_embed::fts::tokenizer::{Analyzer, Profile};
+    use zeppelin_embed::meta::DocBitmap;
+    use zeppelin_embed::planner::LexicalBranch;
+    use zeppelin_embed::planner::search_lexical_filtered;
+
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let mut persisted = SegmentIndex::new();
+    let mut active = SegmentIndex::new();
+    for row in 0..512 {
+        let text = ["alpha beta", "alpha alpha", "omega", "beta"][row % 4];
+        for segment in [&mut persisted, &mut active] {
+            segment
+                .push_document(&analyzer, &Document::with_text(text))
+                .expect("document");
+        }
+    }
+    let bytes = SealedSegment::seal(&persisted)
+        .expect("seal")
+        .encode_region()
+        .expect("persist");
+    let mut index = LexicalIndex::new();
+    index
+        .push_sealed_with_live_rows(
+            SealedSegment::decode_region(&bytes).expect("decode persisted segment"),
+            &DocBitmap::from_ids((0..512).filter(|row| *row != 1)),
+        )
+        .expect("tombstoned segment statistics");
+    index.push_segment(active).expect("active lexical assembly");
+    assert_eq!(index.document_count(), 1023);
+    let allow_lists = [
+        DocBitmap::from_ids([0, 2, 257, 510]),
+        DocBitmap::from_ids([3, 31, 300, 509]),
+    ];
+    let query = TermQuery::flat(
+        vec![b"alpha".to_vec(), b"beta".to_vec(), b"alpha".to_vec()],
+        &[DEFAULT_FIELD],
+    );
+    let expected = search(&index, &query, usize::MAX, Bm25Params::default())
+        .expect("exhaustive")
+        .hits
+        .into_iter()
+        .filter(|hit| {
+            allow_lists
+                .get(hit.doc.segment as usize)
+                .is_some_and(|rows| rows.contains(hit.doc.row))
+        })
+        .map(|hit| (hit.doc, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+    let actual =
+        search_lexical_filtered(&index, &query, 8, Bm25Params::default(), &allow_lists, None)
+            .expect("sparse filtered search");
+    assert_eq!(actual.branch, LexicalBranch::AllowListDrive);
+    // Eight eligible rows in 1,023 live documents also select the inner
+    // row-driven branch (divisor 64), so this reaches the candidate scorer.
+    assert_eq!(
+        actual
+            .result
+            .hits
+            .into_iter()
+            .map(|hit| (hit.doc, hit.score.to_bits()))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(actual.result.counters.docs_evaluated, 6);
+}
+
 fn text_corpus() -> Vec<IngestDocument> {
     [
         (
