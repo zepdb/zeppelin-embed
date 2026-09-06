@@ -321,8 +321,7 @@ bool CreateUint128(napi_env env, ZeDocId id, napi_value *output) {
                 "create document id");
 }
 
-template <typename Result, ze_error_code (*Free)(Result *)>
-class ResultOwner {
+template <typename Result, ze_error_code (*Free)(Result *)> class ResultOwner {
 public:
   explicit ResultOwner(Result *result) : result_(result) {}
   ResultOwner(const ResultOwner &) = delete;
@@ -515,8 +514,7 @@ bool ParseDocumentFields(napi_env env, napi_value value, bool default_all,
   if (!GetOptionalBool(env, value, "vector", false, &include_vector) ||
       !GetOptionalBool(env, value, "text", false, &include_text) ||
       !GetOptionalBool(env, value, "metadata", false, &include_metadata) ||
-      !GetOptionalBool(env, value, "attributes", false,
-                       &include_attributes)) {
+      !GetOptionalBool(env, value, "attributes", false, &include_attributes)) {
     return false;
   }
   *vector = include_vector ? 1 : 0;
@@ -530,8 +528,7 @@ bool CreateByteArray(napi_env env, const uint8_t *data, size_t length,
                      napi_value *output) {
   void *copy = nullptr;
   napi_value array_buffer;
-  if (!NapiOk(env,
-              napi_create_arraybuffer(env, length, &copy, &array_buffer),
+  if (!NapiOk(env, napi_create_arraybuffer(env, length, &copy, &array_buffer),
               "create byte array buffer")) {
     return false;
   }
@@ -583,15 +580,13 @@ bool CreateAttributeValue(napi_env env, const ZeAttributeValue &native,
     break;
   case 1:
     type_name = "u64";
-    if (!NapiOk(env,
-                napi_create_bigint_uint64(env, native.u64_value, &value),
+    if (!NapiOk(env, napi_create_bigint_uint64(env, native.u64_value, &value),
                 "create u64 attribute"))
       return false;
     break;
   case 2:
     type_name = "i64";
-    if (!NapiOk(env,
-                napi_create_bigint_int64(env, native.i64_value, &value),
+    if (!NapiOk(env, napi_create_bigint_int64(env, native.i64_value, &value),
                 "create i64 attribute"))
       return false;
     break;
@@ -610,15 +605,15 @@ bool CreateAttributeValue(napi_env env, const ZeAttributeValue &native,
   case 5:
     type_name = "string";
     {
-      const char *string_value = native.string_value == nullptr
-                                     ? ""
-                                     : reinterpret_cast<const char *>(
-                                           native.string_value);
-    if (!NapiOk(env,
-                napi_create_string_utf8(env, string_value, native.string_len,
-                                        &value),
-                "create string attribute"))
-      return false;
+      const char *string_value =
+          native.string_value == nullptr
+              ? ""
+              : reinterpret_cast<const char *>(native.string_value);
+      if (!NapiOk(env,
+                  napi_create_string_utf8(env, string_value, native.string_len,
+                                          &value),
+                  "create string attribute"))
+        return false;
     }
     break;
   default:
@@ -649,12 +644,10 @@ bool CreateStoredDocument(napi_env env, const ZeStoredDocument &native,
               "create stored document") ||
       !CreateUint128(env, native.doc_id, &id) ||
       !SetNamed(env, document, "id", id) ||
-      !NapiOk(env,
-              napi_create_bigint_uint64(env, native.revision, &revision),
+      !NapiOk(env, napi_create_bigint_uint64(env, native.revision, &revision),
               "create document revision") ||
       !SetNamed(env, document, "revision", revision) ||
-      !NapiOk(env,
-              napi_create_bigint_int64(env, native.timestamp, &timestamp),
+      !NapiOk(env, napi_create_bigint_int64(env, native.timestamp, &timestamp),
               "create document timestamp") ||
       !SetNamed(env, document, "timestamp", timestamp)) {
     return false;
@@ -677,7 +670,8 @@ bool CreateStoredDocument(napi_env env, const ZeStoredDocument &native,
   }
   if (native.metadata != nullptr) {
     napi_value metadata;
-    if (!CreateByteArray(env, native.metadata, native.metadata_len, &metadata) ||
+    if (!CreateByteArray(env, native.metadata, native.metadata_len,
+                         &metadata) ||
         !SetNamed(env, document, "metadata", metadata))
       return false;
   }
@@ -705,8 +699,7 @@ bool CreateStoredDocument(napi_env env, const ZeStoredDocument &native,
 bool CreateStoredDocuments(napi_env env, const ZeStoredDocument *documents,
                            size_t document_count, napi_value *output) {
   napi_value result;
-  if (!NapiOk(env,
-              napi_create_array_with_length(env, document_count, &result),
+  if (!NapiOk(env, napi_create_array_with_length(env, document_count, &result),
               "create stored document array"))
     return false;
   for (size_t index = 0; index < document_count; ++index) {
@@ -910,13 +903,13 @@ bool ParseFilter(napi_env env, napi_value value, FilterStorage *filter) {
     native.values = stored.values.empty() ? nullptr : stored.values.data();
     native.value_count = stored.values.size();
     if (native.has_lower != 0 && native.lower.value_type == 5) {
-      native.lower.string_value = reinterpret_cast<const uint8_t *>(
-          stored.lower_string.data());
+      native.lower.string_value =
+          reinterpret_cast<const uint8_t *>(stored.lower_string.data());
       native.lower.string_len = stored.lower_string.size();
     }
     if (native.has_upper != 0 && native.upper.value_type == 5) {
-      native.upper.string_value = reinterpret_cast<const uint8_t *>(
-          stored.upper_string.data());
+      native.upper.string_value =
+          reinterpret_cast<const uint8_t *>(stored.upper_string.data());
       native.upper.string_len = stored.upper_string.size();
     }
     filter->nodes[index] = native;
@@ -938,8 +931,7 @@ bool ParseTimestampRange(napi_env env, napi_value request,
   if (!present)
     return true;
   napi_valuetype type;
-  if (!NapiOk(env, napi_typeof(env, range, &type),
-              "inspect timestamp range") ||
+  if (!NapiOk(env, napi_typeof(env, range, &type), "inspect timestamp range") ||
       type != napi_object) {
     napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
                           "timestampRange must be an object");
@@ -992,8 +984,9 @@ bool ParseOpenRequest(napi_env env, napi_value options, const std::string &path,
   if (present) {
     const char *names[] = {"derived", "durable", "attached"};
     if (!ParseEnum(value, names, 3, &durability)) {
-      napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
-                             "durability must be derived, durable, or attached");
+      napi_throw_range_error(
+          env, "ERR_OUT_OF_RANGE",
+          "durability must be derived, durable, or attached");
       return false;
     }
   }
@@ -1081,7 +1074,7 @@ bool ParseNamespaceSpec(napi_env env, napi_value value, ZeNamespaceSpec *spec,
     std::string attribute_type;
     if (!GetUtf8(env, field, "attribute type", &attribute_type))
       return false;
-    const char *names[] = {"u64", "i64", "f64", "bool", "dictionaryString",
+    const char *names[] = {"u64",      "i64", "f64", "bool", "dictionaryString",
                            "rawString"};
     int32_t parsed_type = 0;
     if (!ParseEnum(attribute_type, names, 6, &parsed_type)) {
@@ -1092,8 +1085,8 @@ bool ParseNamespaceSpec(napi_env env, napi_value value, ZeNamespaceSpec *spec,
     bool nullable = false;
     if (!GetOptionalBool(env, attribute, "nullable", false, &nullable))
       return false;
-    native.name = reinterpret_cast<const uint8_t *>(
-        (*attribute_names)[index].data());
+    native.name =
+        reinterpret_cast<const uint8_t *>((*attribute_names)[index].data());
     native.name_len = (*attribute_names)[index].size();
     native.attribute_type = parsed_type + 1;
     native.nullable = nullable ? 1 : 0;
@@ -1123,8 +1116,7 @@ bool ParseNamespaceSpec(napi_env env, napi_value value, ZeNamespaceSpec *spec,
                           "vectorSpace.dimensions is required");
     return false;
   }
-  if (!NapiOk(env,
-              napi_get_value_uint32(env, dimensions, &spec->dimensions),
+  if (!NapiOk(env, napi_get_value_uint32(env, dimensions, &spec->dimensions),
               "read vector dimensions")) {
     return false;
   }
@@ -1427,9 +1419,8 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
           return nullptr;
         }
       }
-      native.attributes = attributes[index].empty()
-                              ? nullptr
-                              : attributes[index].data();
+      native.attributes =
+          attributes[index].empty() ? nullptr : attributes[index].data();
       native.attribute_count = attributes[index].size();
     }
 
@@ -1483,7 +1474,8 @@ napi_value Get(napi_env env, napi_callback_info info) {
     uint32_t id_count = 0;
     if (!NapiOk(env, napi_is_array(env, args[0], &is_array), "inspect ids") ||
         !is_array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "ids must be an array");
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "ids must be an array");
       return nullptr;
     }
     if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count),
@@ -1524,7 +1516,8 @@ napi_value Get(napi_env env, napi_callback_info info) {
                                &documents) ||
         !SetNamed(env, result, "documents", documents) ||
         !NapiOk(env,
-                napi_create_double(env, static_cast<double>(native.missing_count),
+                napi_create_double(env,
+                                   static_cast<double>(native.missing_count),
                                    &missing_count),
                 "create missing count") ||
         !SetNamed(env, result, "missingCount", missing_count) ||
@@ -1561,7 +1554,8 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
     uint32_t id_count = 0;
     if (!NapiOk(env, napi_is_array(env, args[0], &is_array), "inspect ids") ||
         !is_array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "ids must be an array");
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "ids must be an array");
       return nullptr;
     }
     if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count),
@@ -1897,8 +1891,7 @@ napi_value SearchFiltered(napi_env env, napi_callback_info info) {
           return nullptr;
         if (present) {
           uint32_t thread_budget = 0;
-          if (!NapiOk(env,
-                      napi_get_value_uint32(env, field, &thread_budget),
+          if (!NapiOk(env, napi_get_value_uint32(env, field, &thread_budget),
                       "read search thread budget"))
             return nullptr;
           request.search.thread_budget = thread_budget;
@@ -1916,13 +1909,11 @@ napi_value SearchFiltered(napi_env env, napi_callback_info info) {
           request.search.has_tier = 1;
         }
         value.clear();
-        if (!GetOptionalString(env, args[2], "graphProfile", &value,
-                               &present))
+        if (!GetOptionalString(env, args[2], "graphProfile", &value, &present))
           return nullptr;
         if (present) {
           const char *profiles[] = {"sift", "angular"};
-          if (!ParseEnum(value, profiles, 2,
-                         &request.search.graph_profile)) {
+          if (!ParseEnum(value, profiles, 2, &request.search.graph_profile)) {
             napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
                                    "graph profile is out of range");
             return nullptr;
@@ -1960,8 +1951,9 @@ napi_value SearchFiltered(napi_env env, napi_callback_info info) {
     for (size_t index = 0; index < native.hit_count; ++index) {
       const ZeSearchHit &hit = native.hits[index];
       if (hit.has_document == 0) {
-        napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
-                         "filtered search returned a hit without a document id");
+        napi_throw_error(
+            env, "ERR_ZEPPELIN_NATIVE",
+            "filtered search returned a hit without a document id");
         return nullptr;
       }
       napi_value result;
@@ -1972,8 +1964,7 @@ napi_value SearchFiltered(napi_env env, napi_callback_info info) {
                   "create filtered search hit") ||
           !CreateUint128(env, hit.doc_id, &id) ||
           !SetNamed(env, result, "id", id) ||
-          !NapiOk(env,
-                  napi_create_bigint_uint64(env, hit.revision, &revision),
+          !NapiOk(env, napi_create_bigint_uint64(env, hit.revision, &revision),
                   "create filtered revision") ||
           !SetNamed(env, result, "revision", revision) ||
           !NapiOk(env, napi_create_double(env, hit.score, &score),
