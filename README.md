@@ -75,7 +75,7 @@ Install the Python package and run the five-vector example:
 
 ```bash
 python -m pip install zeppelin-embed
-python examples/python/five_vectors_search.py
+python bindings/python/examples/five_vectors_search.py
 ```
 
 The example supplies its own document and query vectors. Zeppelin Embed v0.1.0
@@ -94,11 +94,11 @@ cargo add zeppelin-embed
 
 | API | Distribution | Example |
 |---|---|---|
-| Python | PyPI wheel with the native library included | [`five_vectors_search.py`](examples/python/five_vectors_search.py) |
+| Python | PyPI wheel with the native library included | [`five_vectors_search.py`](bindings/python/examples/five_vectors_search.py) |
 | Rust | [`zeppelin-embed`](crates/zeppelin-embed) on crates.io | [`five_vectors_search.rs`](crates/zeppelin-embed/examples/five_vectors_search.rs) |
-| Swift | Swift Package Manager with a downloadable XCFramework | [`five_vectors_search.swift`](examples/swift/Sources/FiveVectorsSearch/five_vectors_search.swift) |
-| C/C++ | GitHub release archive with the header and `.a`/`.dylib` libraries | [`five_vectors_search.c`](examples/c/five_vectors_search.c) |
-| Node.js / TypeScript | [`@zepdb/zeppelin-embed`](https://www.npmjs.com/package/@zepdb/zeppelin-embed) with the native addon included | [`javascript.cjs`](node/examples/javascript.cjs) / [`typescript.ts`](node/examples/typescript.ts) |
+| Swift | Swift Package Manager with a downloadable XCFramework | [`five_vectors_search.swift`](bindings/swift/Examples/FiveVectorsSearch/Sources/FiveVectorsSearch/five_vectors_search.swift) |
+| C/C++ | GitHub release archive with the header and `.a`/`.dylib` libraries | [`five_vectors_search.c`](crates/zeppelin-embed-ffi/examples/five_vectors_search.c) |
+| Node.js / TypeScript | [`@zepdb/zeppelin-embed`](https://www.npmjs.com/package/@zepdb/zeppelin-embed) with the native addon included | [`javascript.cjs`](bindings/node/examples/javascript.cjs) / [`typescript.ts`](bindings/node/examples/typescript.ts) |
 
 The C ABI uses size-versioned requests and responses, typed error codes, and
 matching free functions for every callee-owned result. Python wheels include
@@ -114,26 +114,26 @@ From a source checkout, run each example with:
 ```bash
 # Python
 cargo build --release -p zeppelin-embed-ffi
-PYTHONPATH=python ZEPPELIN_EMBED_LIBRARY=target/release/libzeppelin_embed_ffi.dylib \
-  python examples/python/five_vectors_search.py
+PYTHONPATH=bindings/python ZEPPELIN_EMBED_LIBRARY=target/release/libzeppelin_embed_ffi.dylib \
+  python bindings/python/examples/five_vectors_search.py
 
 # Rust
 cargo run --release -p zeppelin-embed --example five_vectors_search
 
 # Node.js
-cd node
+cd bindings/node
 npm ci
 npm run build:native
 node examples/javascript.cjs
-cd ..
+cd ../..
 
 # Swift
 cargo build --release -p zeppelin-embed-ffi
-ZE_USE_LOCAL_FFI=1 swift run --package-path examples/swift
+ZE_USE_LOCAL_FFI=1 swift run --package-path bindings/swift/Examples/FiveVectorsSearch
 
 # C
 cargo build --release -p zeppelin-embed-ffi
-cc -std=c11 examples/c/five_vectors_search.c \
+cc -std=c11 crates/zeppelin-embed-ffi/examples/five_vectors_search.c \
   -I crates/zeppelin-embed-ffi/include -L target/release -lzeppelin_embed_ffi \
   -o /tmp/zeppelin-c-example
 DYLD_LIBRARY_PATH=target/release /tmp/zeppelin-c-example /tmp/zeppelin-c-index
@@ -158,7 +158,7 @@ cargo build --release -p zeppelin-embed-ffi
 Build a Python wheel:
 
 ```bash
-python -m build --wheel python
+python -m build --wheel bindings/python
 ```
 
 ## License

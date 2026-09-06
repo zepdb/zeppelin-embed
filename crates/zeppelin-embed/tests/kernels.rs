@@ -11,12 +11,13 @@ mod kernels {
     use proptest::collection::vec;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
+    #[cfg(target_arch = "aarch64")]
+    use zeppelin_embed::kernels::detected_features;
     use zeppelin_embed::kernels::{
         Bit4Row, Bit4Rows4, GatherShapeError, InstructionTier, KERNEL_KNOB_SPACE, KernelArm,
-        KernelInitError, KernelVariant, MAX_DOT_I8_DIMENSION, detected_features, dot_bit4,
-        dot_bit4_batch, dot_f16, dot_f32, dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch,
-        initialize, is_arm_supported, prefetch_bit4_row_group, prefetch_bit4_rows, score_bit4_ptrs,
-        selected_arm,
+        KernelInitError, KernelVariant, MAX_DOT_I8_DIMENSION, dot_bit4, dot_bit4_batch, dot_f16,
+        dot_f32, dot_i8, dot_i8_batch, hamming_u1, hamming_u1_batch, initialize, is_arm_supported,
+        prefetch_bit4_row_group, prefetch_bit4_rows, score_bit4_ptrs, selected_arm,
     };
     use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
 

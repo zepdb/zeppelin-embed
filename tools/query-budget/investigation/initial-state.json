@@ -3,7 +3,7 @@
     "head": "6b38f0292df4ad22765ea6151490f81ec0ccd7bc",
     "branch": "main",
     "files": {
-      "examples/python/five_vectors_search.py": "b18f9d4e4994a57ed5d68c0d7c3e19ee6b082fafc4d91426c7cdb6c13ee3c272"
+      "bindings/python/examples/five_vectors_search.py": "b18f9d4e4994a57ed5d68c0d7c3e19ee6b082fafc4d91426c7cdb6c13ee3c272"
     }
   },
   "experimental": {

@@ -4,6 +4,7 @@ use zeppelin_embed::graph::build::GraphBuildPasses;
 use zeppelin_embed_bench::graph_recall::{Sift1mPaths, build_sift1m_graph, measure_sift1m_recall};
 
 #[test]
+#[ignore = "requires the external SIFT1M corpus and stable benchmark hardware"]
 fn sift1m_recall_at_100_reaches_093_at_ef_le_240() {
     let seed = 0x19_0003_51f7_1a00;
     let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tasks/cross-benchmark/data");

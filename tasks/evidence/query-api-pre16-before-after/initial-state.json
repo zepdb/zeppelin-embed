@@ -1,6 +1,0 @@
-{
-  "main_head": "87421b7ef17116ed0302729f30a2c92c6e5ea6a3",
-  "experimental_head": "cf312af668e31e352a90a30eb2ce53a29bf0451d",
-  "experimental_status": " M Cargo.lock\n M crates/zeppelin-embed-bench/Cargo.toml\n M crates/zeppelin-embed-text/CLAUDE.md\n M crates/zeppelin-embed-text/Cargo.toml\n M crates/zeppelin-embed-text/objc/ze_coreml.m\n M crates/zeppelin-embed-text/src/arch/bert.rs\n M crates/zeppelin-embed-text/src/arch/gte.rs\n M crates/zeppelin-embed-text/src/bundle.rs\n M crates/zeppelin-embed-text/src/epoch.rs\n M crates/zeppelin-embed-text/src/ingest.rs\n M crates/zeppelin-embed-text/src/runtime/coreml.rs\n M crates/zeppelin-embed-text/src/runtime/mlx.rs\n M crates/zeppelin-embed-text/src/tokenizer.rs\n M crates/zeppelin-embed/Cargo.toml\n M crates/zeppelin-embed/src/lib.rs\n M crates/zeppelin-embed/src/lifecycle/pool.rs\n?? crates/zeppelin-embed-bench/examples/\n?? crates/zeppelin-embed-text/examples/clean71_parity.rs\n?? crates/zeppelin-embed-text/tests/coreml_output_copy.m\n?? crates/zeppelin-embed/src/budget_probe.rs\n?? tools/query-investigate/\n",
-  "experimental_diff_sha256": "05b961cbd98880cf306661d29694f281b4ed919de8f8657e5e4c6fe194083cfc"
-}

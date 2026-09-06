@@ -447,11 +447,7 @@ fn is_address_mapped(address: usize) -> std::io::Result<bool> {
     let result = unsafe {
         // SAFETY: `page` is aligned to the kernel page size. `mincore` only inspects the
         // supplied address range and writes exactly one residency byte for one page.
-        libc::mincore(
-            page as *mut libc::c_void,
-            page_size,
-            (&raw mut residency).cast::<libc::c_char>(),
-        )
+        libc::mincore(page as *mut libc::c_void, page_size, &raw mut residency)
     };
     if result == 0 {
         return Ok(true);

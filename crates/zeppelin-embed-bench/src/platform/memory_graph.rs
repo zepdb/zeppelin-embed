@@ -37,7 +37,9 @@ const H3_RANKS: [usize; 4] = [16, 32, 48, 64];
 const MAX_RANK: usize = 64;
 const ADJACENCY_SEED_COUNT: usize = 31;
 const MAX_AUTOSCALE_STEPS: usize = 12;
+#[cfg(target_arch = "aarch64")]
 const P_CORE_MIN_GHZ: f64 = 3.40;
+#[cfg(target_arch = "aarch64")]
 const P_CORE_MAX_GHZ: f64 = 4.20;
 
 /// Run the platform-premises memory benchmark from `platform-truth`.

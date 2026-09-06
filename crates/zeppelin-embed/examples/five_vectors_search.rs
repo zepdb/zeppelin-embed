@@ -14,12 +14,16 @@ const VECTORS: [[f32; 4]; 5] = [
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // A store is a persistent directory. This example uses a unique temporary
+    // path so repeated runs do not share data.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
     let path = std::env::temp_dir().join(format!("zeppelin-rust-example-{nonce}"));
     let store = Store::open(&path, OpenOptions::default())?;
 
+    // Zeppelin Embed accepts caller-supplied vectors. Every document also has
+    // a stable ID and a revision used to order later updates.
     let documents = VECTORS
         .into_iter()
         .enumerate()
@@ -31,9 +35,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             .with_timestamp((index as i64 + 1) * 10)
         })
         .collect();
+    // The batch becomes visible together in the generation named by the ack.
     let ack = store.ingest(IngestBatch::new(documents))?;
     println!("ingested 5 vectors at generation {}", ack.generation());
 
+    // Query vectors must use the same dimension and embedding space as the
+    // document vectors. Search returns the three nearest candidates.
     let query = [0.88, 0.12, 0.07, 0.02];
     let result = store.search(
         SearchRequest::new(&query),
@@ -49,6 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{}. document {}, score {:.6}", rank + 1, id, hit.score());
     }
 
+    // Close releases the store lock before removing this example's data.
     store.close()?;
     std::fs::remove_dir_all(path)?;
     Ok(())

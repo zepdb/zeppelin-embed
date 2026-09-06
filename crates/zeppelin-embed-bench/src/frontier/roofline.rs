@@ -10,8 +10,10 @@ use super::attestation::{
 use super::calibration::{CalibrationError, default_calibration_path, load_calibration};
 use super::measure::{
     MachineProbe, MeasurementConfig, MeasurementError, MeasurementResult, PreflightOutcome,
-    SampleSource, measure_source_with_provenance, preflight,
+    preflight,
 };
+#[cfg(target_arch = "aarch64")]
+use super::measure::{SampleSource, measure_source_with_provenance};
 
 /// Adopted BL-013 one-core wide-load denominator in decimal GB/s.
 pub const WIDE_LOAD_SINGLE_CORE_GBPS: f64 = 80.689_179;

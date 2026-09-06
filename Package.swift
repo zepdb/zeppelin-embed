@@ -11,19 +11,19 @@ let ffiArchive = environment["ZE_LOCAL_FFI_ARCHIVE"] ?? repositoryRoot
 let useLocalFFI = environment["ZE_USE_LOCAL_FFI"] == "1"
 let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 let checksumPath = repositoryRoot
-    .appendingPathComponent("swift/ZeppelinEmbed/binary-checksum.txt")
+    .appendingPathComponent("bindings/swift/binary-checksum.txt")
 guard let binaryChecksum = try? String(contentsOf: checksumPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines),
     binaryChecksum.count == 64
 else {
-    fatalError("swift/ZeppelinEmbed/binary-checksum.txt must contain a SHA-256 checksum")
+    fatalError("bindings/swift/binary-checksum.txt must contain a SHA-256 checksum")
 }
 
 let cTarget: Target
 if useLocalFFI {
     cTarget = .systemLibrary(
         name: "CZeppelinEmbed",
-        path: "swift/ZeppelinEmbed/Sources/CZeppelinEmbed"
+        path: "bindings/swift/Sources/CZeppelinEmbed"
     )
 } else if useLocalXCFramework {
     cTarget = .binaryTarget(
@@ -58,13 +58,13 @@ let package = Package(
         .target(
             name: "ZeppelinEmbed",
             dependencies: ["CZeppelinEmbed"],
-            path: "swift/ZeppelinEmbed/Sources/ZeppelinEmbed",
+            path: "bindings/swift/Sources/ZeppelinEmbed",
             linkerSettings: localLinkerSettings
         ),
         .testTarget(
             name: "ZeppelinEmbedTests",
             dependencies: ["ZeppelinEmbed"],
-            path: "swift/ZeppelinEmbed/Tests/ZeppelinEmbedTests"
+            path: "bindings/swift/Tests/ZeppelinEmbedTests"
         ),
     ]
 )

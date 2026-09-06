@@ -246,7 +246,7 @@ zip_kb="$(du -k "$ARCHIVE_ZIP" | awk '{print $1}')"
     echo '```'
 } >> "$SIZE_EVIDENCE"
 
-pin="$ROOT_DIR/swift/ZeppelinEmbed/binary-checksum.txt"
+pin="$ROOT_DIR/bindings/swift/binary-checksum.txt"
 if [ -f "$pin" ] && [ "$(tr -d '[:space:]' < "$pin")" != "$checksum" ]; then
     echo "ERROR: binary-checksum.txt does not match $checksum" >&2
     exit 1

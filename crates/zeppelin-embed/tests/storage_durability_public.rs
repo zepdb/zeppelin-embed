@@ -700,6 +700,9 @@ fn storage_manifest_receipt_checks_the_planned_new_segment() {
 
 #[test]
 fn storage_corrupt_segment_region_can_fire() {
+    // Query checksum verification is intentionally opt-in in production; this
+    // test enables it because the asserted receipt is emitted by that path.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let directory = sealed_fixture();
     let segment = segment_path(directory.path());
     let mut bytes = read(&segment);
@@ -1154,6 +1157,9 @@ fn corrupt_rescore_region(directory: &Path) {
 
 #[test]
 fn segment_checksum_receipts_are_scoped_to_one_store() {
+    // Query checksum verification is intentionally opt-in in production; this
+    // test enables it because the asserted receipt is emitted by that path.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let store_a_directory = sealed_fixture();
     let store_b_directory = sealed_fixture();
     assert_eq!(

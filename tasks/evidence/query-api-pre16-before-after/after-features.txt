@@ -1,7 +1,0 @@
-zeppelin-embed v0.1.0 (/private/tmp/ze-query-pre16-ielk83g_/after/crates/zeppelin-embed)
-└── zeppelin-embed feature "default"
-    ├── matched-query-api v0.1.0 (/private/tmp/ze-query-pre16-ielk83g_/after/tools/matched-api)
-    │   └── matched-query-api feature "default" (command-line)
-    └── zeppelin-embed-text v0.1.0 (/private/tmp/ze-query-pre16-ielk83g_/after/crates/zeppelin-embed-text)
-        └── zeppelin-embed-text feature "default"
-            └── matched-query-api v0.1.0 (/private/tmp/ze-query-pre16-ielk83g_/after/tools/matched-api) (*)

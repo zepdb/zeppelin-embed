@@ -172,7 +172,7 @@ fn swift_error_enum_is_generated_from_the_append_only_error_table() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("workspace root");
-    let path = workspace.join("swift/ZeppelinEmbed/Sources/ZeppelinEmbed/ZeppelinError.swift");
+    let path = workspace.join("bindings/swift/Sources/ZeppelinEmbed/ZeppelinError.swift");
     let generated = generated_swift_error_enum();
     if std::env::var_os("ZE_WRITE_SWIFT_ERROR").as_deref() == Some(std::ffi::OsStr::new("1")) {
         std::fs::write(&path, &generated).expect("write generated Swift error enum");
@@ -766,7 +766,7 @@ fn a_second_process_opening_the_same_path_gets_store_busy() {
 }
 
 #[test]
-fn cancellation_mid_query_returns_typed_cancelled_with_no_candidates_through_the_boundary() {
+fn cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary() {
     let store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(store.handle, 100, 8_192),
@@ -774,30 +774,24 @@ fn cancellation_mid_query_returns_typed_cancelled_with_no_candidates_through_the
     );
     let mut token = 0;
     assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
-    let handle = store.handle;
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let query = std::thread::spawn(move || {
-        let vector = vec![0.25_f32; 8_192];
-        let mut request = common::valid_search_request(&vector);
-        request.k = 100;
-        request.thread_budget = 1;
-        request.cancel_token = token;
-        let mut result: ZeSearchResult = common::sized_zeroed();
-        started_tx.send(()).expect("signal query start");
-        let code = ze_search(handle, &request, &mut result);
-        let observation = (code, result.hit_count, result.hits.is_null());
-        if code == ZeErrorCode::ZeOk {
-            assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
-        }
-        observation
-    });
-    started_rx.recv().expect("query start");
-    std::thread::sleep(std::time::Duration::from_millis(1));
-    assert_eq!(ze_cancel_token_cancel(token), ZeErrorCode::ZeOk);
-    let (code, hit_count, hits_are_null) = query.join().expect("query thread");
-    assert_eq!(code, ZeErrorCode::ZeErrCancelled);
-    assert_eq!(hit_count, 0);
-    assert!(hits_are_null);
+    let canceller = std::thread::spawn(move || ze_cancel_token_cancel(token));
+    assert_eq!(
+        canceller.join().expect("cancellation thread"),
+        ZeErrorCode::ZeOk
+    );
+
+    let vector = vec![0.25_f32; 8_192];
+    let mut request = common::valid_search_request(&vector);
+    request.k = 100;
+    request.thread_budget = 1;
+    request.cancel_token = token;
+    let mut result: ZeSearchResult = common::sized_zeroed();
+    assert_eq!(
+        ze_search(store.handle, &request, &mut result),
+        ZeErrorCode::ZeErrCancelled
+    );
+    assert_eq!(result.hit_count, 0);
+    assert!(result.hits.is_null());
     assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
 }
 

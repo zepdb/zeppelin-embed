@@ -36,7 +36,7 @@ jobs:
           import tomllib
 
           workspace = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
-          project = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())
+          project = tomllib.loads(pathlib.Path("bindings/python/pyproject.toml").read_text())
           rust_version = workspace["workspace"]["package"]["version"]
           python_version = project["project"]["version"]
           if python_version != rust_version:
@@ -50,13 +50,13 @@ jobs:
           PY
       - uses: pypa/cibuildwheel@v4.1.1
         env:
-          CIBW_TEST_COMMAND: python -I python/tests/installed_smoke.py
-          CIBW_TEST_SOURCES: python/tests/installed_smoke.py
+          CIBW_TEST_COMMAND: python -I bindings/python/tests/installed_smoke.py
+          CIBW_TEST_SOURCES: bindings/python/tests/installed_smoke.py
         with:
-          package-dir: python
+          package-dir: bindings/python
           output-dir: wheelhouse
       - name: Verify installed wheel
-        run: python python/tests/verify_wheel.py wheelhouse/*.whl
+        run: python bindings/python/tests/verify_wheel.py wheelhouse/*.whl
       - uses: actions/upload-artifact@v4
         with:
           name: zeppelin-embed-pypi

@@ -1,8 +1,0 @@
-{
-  "pid": 67837,
-  "paused_at_unix": 1788626827.7866392,
-  "reason": "Resume Astra16 after committing completed diagnostics; preserve pending graph comparison and avoid compile/performance overlap.",
-  "checkpoint": "/private/tmp/ze-query-investigate-vci05npf/store-graph/.tier-00000000000000041486cd8193af4896.alpha-reprune.refine.checkpoint",
-  "next_row": 19008,
-  "rows": 58980
-}

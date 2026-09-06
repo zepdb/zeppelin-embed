@@ -40,7 +40,13 @@ jobs:
           toolchain: 1.93.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy supported workspace targets
+        run: |
+          workspace=(--workspace)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            workspace+=(--exclude zeppelin-embed-text --exclude zeppelin-embed-bench)
+          fi
+          cargo clippy "${workspace[@]}" --all-targets -- -D warnings
 
   doc:
     name: doc (${{ matrix.os }})
@@ -55,7 +61,13 @@ jobs:
         with:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+      - name: Document supported workspace targets
+        run: |
+          workspace=(--workspace)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            workspace+=(--exclude zeppelin-embed-text --exclude zeppelin-embed-bench)
+          fi
+          RUSTDOCFLAGS="-D warnings" cargo doc "${workspace[@]}" --no-deps
 
   test:
     name: test (${{ matrix.os }})
@@ -74,7 +86,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cbindgen@0.29.4
-      - run: cargo test --workspace
+      - name: Test supported workspace targets
+        run: |
+          workspace=(--workspace)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            workspace+=(--exclude zeppelin-embed-text --exclude zeppelin-embed-bench)
+          fi
+          cargo test "${workspace[@]}"
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
       - name: Require AVX2 execution on Ubuntu
@@ -100,7 +118,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - run: scripts/coverage.sh
+      - name: Enforce supported workspace coverage
+        run: scripts/coverage.sh
 
   deny:
     name: deny (${{ matrix.os }})
@@ -225,12 +244,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - run: scripts/cargo-fuzz-nightly run fuzz_smoke -- -max_total_time=60
-      - run: scripts/cargo-fuzz-nightly run kernels_equivalence -- -max_total_time=60
-      - run: scripts/cargo-fuzz-nightly run segment_reader -- -max_total_time=60
-      - run: scripts/cargo-fuzz-nightly run graph_node_block_decode -- -max_total_time=60
-      - run: scripts/cargo-fuzz-nightly run manifest_decode -- -max_total_time=60
-      - run: scripts/cargo-fuzz-nightly run ffi_requests -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run fuzz_smoke --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run kernels_equivalence --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run segment_reader --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run graph_node_block_decode --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run manifest_decode --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - run: scripts/cargo-fuzz-nightly run ffi_requests --target x86_64-unknown-linux-gnu -- -max_total_time=60
 
   address-sanitizer:
     name: address-sanitizer-corruption (ubuntu-latest)
@@ -270,5 +289,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo +nightly miri test -p zeppelin-embed --lib
-      - run: cargo +nightly miri test -p zeppelin-embed-ffi --lib marshal
+      - name: Check the core under Miri
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: cargo +nightly miri test -p zeppelin-embed --lib
+      - name: Check FFI marshaling under Miri
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: cargo +nightly miri test -p zeppelin-embed-ffi --lib marshal

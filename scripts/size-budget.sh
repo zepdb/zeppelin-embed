@@ -11,7 +11,11 @@ if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
+else
+    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
+fi
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 MEASURE_DIR="$TARGET_ROOT/size-budget"
@@ -81,7 +85,9 @@ measure_artifact() {
 
 measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
 measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"
-measure_artifact "text" "$TARGET_ROOT/release/libzeppelin_embed_text.a" "report"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    measure_artifact "text" "$TARGET_ROOT/release/libzeppelin_embed_text.a" "report"
+fi
 
 CONSUMER_MANIFEST="$PROJECT_ROOT/tools/size-consumer/Cargo.toml"
 CONSUMER_TARGET="$MEASURE_DIR/consumer-target"

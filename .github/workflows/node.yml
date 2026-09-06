@@ -9,7 +9,7 @@ on:
       - "Cargo.toml"
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
-      - "node/**"
+      - "bindings/node/**"
   push:
     branches: [main]
     paths:
@@ -18,7 +18,7 @@ on:
       - "Cargo.toml"
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
-      - "node/**"
+      - "bindings/node/**"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -41,38 +41,38 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: node/package-lock.json
+          cache-dependency-path: bindings/node/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-        working-directory: node
+        working-directory: bindings/node
       - name: Check native source formatting
-        run: xcrun clang-format --dry-run --Werror node/native/addon.cc
+        run: xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc
       - run: npm run build:native
-        working-directory: node
+        working-directory: bindings/node
       - run: npm test
-        working-directory: node
+        working-directory: bindings/node
       - run: npm run typecheck
-        working-directory: node
+        working-directory: bindings/node
       - name: Match a release tag to the npm version
         if: github.event_name == 'workflow_dispatch'
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: test "${RELEASE_TAG#v}" = "$(node -p "require('./node/package.json').version")"
+        run: test "${RELEASE_TAG#v}" = "$(node -p "require('./bindings/node/package.json').version")"
       - name: Verify the addon contains the FFI implementation
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
-          file node/prebuilds/darwin-arm64/zeppelin_embed.node | grep 'arm64'
-          if otool -L node/prebuilds/darwin-arm64/zeppelin_embed.node | grep -q 'zeppelin_embed_ffi'; then
+          file bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node | grep 'arm64'
+          if otool -L bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node | grep -q 'zeppelin_embed_ffi'; then
             echo 'the addon unexpectedly depends on a separate Zeppelin FFI dylib' >&2
             exit 1
           fi
       - name: Pack and smoke-test the installed artifact
         id: pack
-        working-directory: node
+        working-directory: bindings/node
         run: |
           set -euo pipefail
           tarball=$(npm pack --json | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => console.log(JSON.parse(value)[0].filename));')
@@ -81,16 +81,16 @@ jobs:
           cp test/installed-package-type-smoke.ts "$consumer/type-smoke.ts"
           cd "$consumer"
           npm init --yes >/dev/null
-          npm install "$GITHUB_WORKSPACE/node/$tarball"
+          npm install "$GITHUB_WORKSPACE/bindings/node/$tarball"
           node smoke.cjs
-          "$GITHUB_WORKSPACE/node/node_modules/.bin/tsc" \
+          "$GITHUB_WORKSPACE/bindings/node/node_modules/.bin/tsc" \
             --module node16 --moduleResolution node16 --target es2022 \
             --strict --noEmit type-smoke.ts
           printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: zeppelin-embed-node-darwin-arm64
-          path: node/${{ steps.pack.outputs.tarball }}
+          path: bindings/node/${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
 
   publish:

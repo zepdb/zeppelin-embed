@@ -12,14 +12,29 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-if [[ "${1:-}" == "run" && -n "${2:-}" && ( -z "${3:-}" || "${3:-}" == "--" ) ]]; then
+if [[ "${1:-}" == "run" && -n "${2:-}" ]]; then
     TARGET_NAME="$2"
     SEED_DIR="$PROJECT_ROOT/fuzz/seeds/$TARGET_NAME"
     if [[ -d "$SEED_DIR" ]]; then
         CORPUS_DIR="$PROJECT_ROOT/fuzz/corpus/$TARGET_NAME"
         mkdir -p "$CORPUS_DIR"
-        exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz \
-            run "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR" "${@:3}"
+        RUN_OPTIONS=()
+        FUZZER_ARGS=()
+        AFTER_SEPARATOR=0
+        for argument in "${@:3}"; do
+            if [[ "$argument" == "--" ]]; then
+                AFTER_SEPARATOR=1
+            elif (( AFTER_SEPARATOR == 0 )); then
+                RUN_OPTIONS+=("$argument")
+            else
+                FUZZER_ARGS+=("$argument")
+            fi
+        done
+        COMMAND=(run "${RUN_OPTIONS[@]}" "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR")
+        if (( AFTER_SEPARATOR == 1 )); then
+            COMMAND+=(-- "${FUZZER_ARGS[@]}")
+        fi
+        exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz "${COMMAND[@]}"
     fi
 fi
 

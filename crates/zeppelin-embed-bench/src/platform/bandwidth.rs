@@ -2,6 +2,7 @@
 
 use std::hint::black_box;
 use std::io;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::Barrier;
 use std::thread;

@@ -108,6 +108,7 @@ fn deny_blacklist_rejects_banned_dep() -> Result<(), Box<dyn Error>> {
         "[package]\nname = \"tokio\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
     )?;
     fs::write(fixture.join("tokio/src/lib.rs"), "pub fn runtime() {}\n")?;
+    fs::copy(repo_root().join("deny.toml"), fixture.join("deny.toml"))?;
 
     let output = Command::new("cargo")
         .args([
@@ -118,11 +119,6 @@ fn deny_blacklist_rejects_banned_dep() -> Result<(), Box<dyn Error>> {
                 .to_str()
                 .ok_or("non-UTF-8 path")?,
             "check",
-            "--config",
-            repo_root()
-                .join("deny.toml")
-                .to_str()
-                .ok_or("non-UTF-8 path")?,
             "bans",
         ])
         .current_dir(repo_root())

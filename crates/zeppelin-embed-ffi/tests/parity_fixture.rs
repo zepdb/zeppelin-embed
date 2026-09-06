@@ -325,7 +325,7 @@ fn parity_fixture_is_generated_from_the_ffi_and_matches_the_checked_in_json() {
         .expect("workspace root");
     let generated_path = workspace.join("target/cross_binding_parity_v1.json");
     std::fs::write(&generated_path, &generated).expect("write generated fixture copy");
-    let checked_path = workspace.join("fixtures/cross_binding_parity_v1.json");
+    let checked_path = workspace.join("bindings/fixtures/cross_binding_parity_v1.json");
     let checked = std::fs::read_to_string(&checked_path).unwrap_or_default();
     assert_eq!(
         checked,

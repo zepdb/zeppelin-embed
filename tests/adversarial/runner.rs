@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Read as _, Write as _};
 use std::os::fd::{BorrowedFd, OwnedFd};
+#[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;

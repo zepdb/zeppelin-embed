@@ -11,6 +11,11 @@ fi
 
 cd "$PROJECT_ROOT"
 
+WORKSPACE_ARGS=(--workspace)
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    WORKSPACE_ARGS+=(--exclude zeppelin-embed-text --exclude zeppelin-embed-bench)
+fi
+
 # Line coverage is the contract. LLVM's function count includes closures,
 # generic instantiations, and duplicate test/library symbols, so it is not a
 # source-function coverage percentage.
@@ -27,16 +32,18 @@ cd "$PROJECT_ROOT"
 # below, and that stays), and for "is this path tested" aggregate zero-hit
 # records by SOURCE DEFINITION after demangling rather than trusting the
 # function column.
-ZE_COVERAGE_SMALL_FIXTURE=1 cargo llvm-cov \
-    --workspace \
+cargo llvm-cov \
+    "${WORKSPACE_ARGS[@]}" \
     --fail-under-lines 90 \
     --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)' \
     "$@"
 
-ZE_COVERAGE_SMALL_FIXTURE=1 cargo llvm-cov \
-    -p zeppelin-embed-bench \
-    --lib \
-    --test frontier \
-    --fail-under-lines 90 \
-    --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \
-    "$@"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    cargo llvm-cov \
+        -p zeppelin-embed-bench \
+        --lib \
+        --test frontier \
+        --fail-under-lines 90 \
+        --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \
+        "$@"
+fi

@@ -57,7 +57,7 @@ jobs:
         run: swift test --scratch-path target/swift-xcframework-smoke
       - name: Verify archive checksum
         run: |
-          expected="$(tr -d '[:space:]' < swift/ZeppelinEmbed/binary-checksum.txt)"
+          expected="$(tr -d '[:space:]' < bindings/swift/binary-checksum.txt)"
           actual="$(swift package compute-checksum target/xcframework/ZeppelinEmbed.xcframework.zip)"
           test "$actual" = "$expected"
       - uses: actions/upload-artifact@v4

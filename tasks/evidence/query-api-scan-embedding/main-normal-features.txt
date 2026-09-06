@@ -1,7 +1,0 @@
-zeppelin-embed v0.1.0 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
-└── zeppelin-embed feature "default"
-    ├── query-budget-api v0.1.0 (/Users/aghatage/Documents/code/zeppelin-embed/tools/query-budget)
-    │   └── query-budget-api feature "default" (command-line)
-    └── zeppelin-embed-text v0.1.0 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-text)
-        └── zeppelin-embed-text feature "default"
-            └── query-budget-api v0.1.0 (/Users/aghatage/Documents/code/zeppelin-embed/tools/query-budget) (*)

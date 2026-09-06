@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
+#![cfg(target_os = "macos")]
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::{TempDir, tempdir};
@@ -41,76 +42,67 @@ fn test_guard() -> MutexGuard<'static, ()> {
 #[test]
 #[ignore = "macOS CI phys_footprint gate; intentionally not part of local cargo test"]
 fn rss_flatness() {
-    #[cfg(not(target_os = "macos"))]
-    {
-        eprintln!("NOT MEASURED — phys_footprint is only available on macOS");
-    }
+    let _guard = test_guard();
+    let directory = published_fixture();
+    let query_values = rss_query_values();
+    let query = prepare_bit4_query(&query_values, 0x09c0).expect("prepared query");
+    let load1 = read_load1();
+    let sandboxed = process_is_sandboxed();
+    let baseline = zeppelin_embed::sys::darwin::phys_footprint().expect("baseline footprint");
+    let mut samples = [0_u64; ITERATIONS];
 
-    #[cfg(target_os = "macos")]
-    {
-        let _guard = test_guard();
-        let directory = published_fixture();
-        let query_values = rss_query_values();
-        let query = prepare_bit4_query(&query_values, 0x09c0).expect("prepared query");
-        let load1 = read_load1();
-        let sandboxed = process_is_sandboxed();
-        let baseline = zeppelin_embed::sys::darwin::phys_footprint().expect("baseline footprint");
-        let mut samples = [0_u64; ITERATIONS];
-
-        for (iteration, sample) in samples.iter_mut().enumerate() {
-            let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
-            let lease = store.snapshot().expect("snapshot lease");
-            let segment = lease.segments().first().expect("fixture segment");
-            let hits = top_k(
-                ScanRequest {
-                    query: ScanQuery::Bit4(&query),
-                    rows: ScanRows::Bit4RowMajor {
-                        codes: segment.bit4_codes().expect("mmap-backed codes"),
-                        factors: segment.bit4_factors().expect("mmap-backed factors"),
-                    },
-                    row_mask: None,
+    for (iteration, sample) in samples.iter_mut().enumerate() {
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        let lease = store.snapshot().expect("snapshot lease");
+        let segment = lease.segments().first().expect("fixture segment");
+        let hits = top_k(
+            ScanRequest {
+                query: ScanQuery::Bit4(&query),
+                rows: ScanRows::Bit4RowMajor {
+                    codes: segment.bit4_codes().expect("mmap-backed codes"),
+                    factors: segment.bit4_factors().expect("mmap-backed factors"),
                 },
-                3,
-            )
-            .expect("mmap-backed query");
-            assert_eq!(hits.len(), 3);
-            assert_eq!(
-                hits.iter().map(|hit| hit.row_id).collect::<Vec<_>>(),
-                vec![WINNER_ROW, RUNNER_UP_ROW, 0],
-                "non-degenerate mmap-backed ranking at iteration {iteration}"
-            );
-            drop(lease);
-            store.close().expect("close store");
-            *sample =
-                zeppelin_embed::sys::darwin::phys_footprint().expect("post-close phys_footprint");
-        }
-
-        let final_footprint = samples[ITERATIONS - 1];
-        let peak_footprint = samples.iter().copied().max().expect("non-empty samples");
-        let drift = final_footprint.abs_diff(baseline);
-        let peak_drift = peak_footprint.saturating_sub(baseline);
-        let load_taint = load1.is_none_or(|actual| actual > 1.0);
-        let taints = match (load_taint, sandboxed) {
-            (false, false) => "none",
-            (true, false) => "load",
-            (false, true) => "sandbox",
-            (true, true) => "load,sandbox",
-        };
-        println!(
-            "RSS_FLATNESS iterations={ITERATIONS} rows={ROWS} baseline_bytes={baseline} final_bytes={final_footprint} drift_bytes={drift} peak_drift_bytes={peak_drift} load1={} load_limit=1.00 sandbox={} taints={taints} verdict={} status=PROVISIONAL",
-            load1.map_or_else(|| String::from("NA"), |value| format!("{value:.2}")),
-            if sandboxed { "detected" } else { "clear" },
-            if drift < MAX_DRIFT_BYTES {
-                "PASS"
-            } else {
-                "FAIL"
-            }
+                row_mask: None,
+            },
+            3,
+        )
+        .expect("mmap-backed query");
+        assert_eq!(hits.len(), 3);
+        assert_eq!(
+            hits.iter().map(|hit| hit.row_id).collect::<Vec<_>>(),
+            vec![WINNER_ROW, RUNNER_UP_ROW, 0],
+            "non-degenerate mmap-backed ranking at iteration {iteration}"
         );
-        assert!(
-            drift < MAX_DRIFT_BYTES,
-            "20-iteration phys_footprint drift {drift} bytes is not below the fixed {MAX_DRIFT_BYTES}-byte target"
-        );
+        drop(lease);
+        store.close().expect("close store");
+        *sample = zeppelin_embed::sys::darwin::phys_footprint().expect("post-close phys_footprint");
     }
+
+    let final_footprint = samples[ITERATIONS - 1];
+    let peak_footprint = samples.iter().copied().max().expect("non-empty samples");
+    let drift = final_footprint.abs_diff(baseline);
+    let peak_drift = peak_footprint.saturating_sub(baseline);
+    let load_taint = load1.is_none_or(|actual| actual > 1.0);
+    let taints = match (load_taint, sandboxed) {
+        (false, false) => "none",
+        (true, false) => "load",
+        (false, true) => "sandbox",
+        (true, true) => "load,sandbox",
+    };
+    println!(
+        "RSS_FLATNESS iterations={ITERATIONS} rows={ROWS} baseline_bytes={baseline} final_bytes={final_footprint} drift_bytes={drift} peak_drift_bytes={peak_drift} load1={} load_limit=1.00 sandbox={} taints={taints} verdict={} status=PROVISIONAL",
+        load1.map_or_else(|| String::from("NA"), |value| format!("{value:.2}")),
+        if sandboxed { "detected" } else { "clear" },
+        if drift < MAX_DRIFT_BYTES {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
+    assert!(
+        drift < MAX_DRIFT_BYTES,
+        "20-iteration phys_footprint drift {drift} bytes is not below the fixed {MAX_DRIFT_BYTES}-byte target"
+    );
 }
 
 fn published_fixture() -> TempDir {

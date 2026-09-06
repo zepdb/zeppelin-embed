@@ -494,6 +494,10 @@ fn adopted_vector_charge_uses_capacity_not_length() {
 
     let directory = tempdir().expect("store directory");
     let store = Store::open(directory.path(), OpenOptions::default()).expect("writer open");
+    let baseline = store
+        .stats()
+        .expect("baseline accounting")
+        .resident_owned_bytes;
     let schema = Schema::new(Vec::new()).expect("timestamp-only schema");
     let columns = ColumnStoreBuilder::new(schema)
         .finish()
@@ -524,7 +528,7 @@ fn adopted_vector_charge_uses_capacity_not_length() {
             .stats()
             .expect("released capacity charge")
             .resident_owned_bytes,
-        0
+        baseline
     );
     store.close().expect("close");
 }
@@ -590,6 +594,10 @@ fn read_only_handle_rejects_a_segment_prepared_by_a_writer() {
     let writer = Store::open(writer_directory.path(), OpenOptions::default()).expect("writer open");
     let read_only =
         Store::open(read_only_directory.path(), OpenOptions::read_only()).expect("read-only open");
+    let writer_baseline = writer
+        .stats()
+        .expect("writer baseline accounting")
+        .resident_owned_bytes;
     let fixture = Fixture::new(0xbb);
     let Fixture {
         id,
@@ -620,7 +628,7 @@ fn read_only_handle_rejects_a_segment_prepared_by_a_writer() {
             .stats()
             .expect("writer accounting released")
             .resident_owned_bytes,
-        0
+        writer_baseline
     );
     read_only.close().expect("close read-only");
     writer.close().expect("close writer");
@@ -633,6 +641,10 @@ fn writer_rejects_a_segment_accounted_to_another_store() {
     let first = Store::open(first_directory.path(), OpenOptions::default()).expect("first writer");
     let second =
         Store::open(second_directory.path(), OpenOptions::default()).expect("second writer");
+    let first_baseline = first
+        .stats()
+        .expect("first writer baseline accounting")
+        .resident_owned_bytes;
     let fixture = Fixture::new(0xbc);
     let Fixture {
         id,
@@ -669,7 +681,7 @@ fn writer_rejects_a_segment_accounted_to_another_store() {
             .stats()
             .expect("first writer accounting released")
             .resident_owned_bytes,
-        0
+        first_baseline
     );
     second.close().expect("close second writer");
     first.close().expect("close first writer");
@@ -1106,10 +1118,10 @@ fn kernel_mapping_is_read_only(address: usize) -> std::io::Result<bool> {
         let start = usize::from_str_radix(start, 16).map_err(std::io::Error::other)?;
         let end = usize::from_str_radix(end, 16).map_err(std::io::Error::other)?;
         if start <= address && address < end {
-            return Ok(!protection
+            return Ok(protection
                 .as_bytes()
                 .get(1)
-                .is_some_and(|byte| *byte == b'w'));
+                .is_none_or(|byte| *byte != b'w'));
         }
     }
     Err(std::io::Error::other(

@@ -11,7 +11,6 @@ use zeppelin_embed::graph::search::{GraphSearchRequest, GraphSearchScratch, Grap
 use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed_bench::process_median::ProcessMedian;
 
-const COVERAGE_FIXTURE_ENV: &str = "ZE_COVERAGE_SMALL_FIXTURE";
 const COVERAGE_DIMS: usize = 128;
 
 #[derive(Clone, Debug)]
@@ -25,11 +24,13 @@ struct Observation {
 }
 
 #[test]
+fn graph_search_small_fixture_exercises_the_public_kernel() {
+    exercise_graph_search_with_small_coverage_fixture();
+}
+
+#[test]
+#[ignore = "requires a prepared SIFT1M cache and stable benchmark hardware"]
 fn sift1m_p50_under_250us_at_recall_at_least_093() {
-    if std::env::var_os(COVERAGE_FIXTURE_ENV).is_some() {
-        exercise_graph_search_with_small_coverage_fixture();
-        return;
-    }
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let binary = build_bench_binary(&workspace).expect("bench-profile graph-search binary");
     let observations = (0..3)

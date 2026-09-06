@@ -217,6 +217,7 @@ pub fn prefix_sum(values: &mut [u32], base: u32) {
 }
 
 /// Values per interleaved prefix-sum group: four vectors of four lanes.
+#[cfg(target_arch = "aarch64")]
 const WIDE_GROUP: usize = 16;
 
 /// Turns gaps into absolute ids, sixteen values per group.

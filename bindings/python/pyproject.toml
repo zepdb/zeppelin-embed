@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeppelin-embed"
+version = "0.1.0"
+description = "ctypes bindings for the Zeppelin Embed C ABI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+dependencies = ["numpy>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/zepdb/zeppelin-embed"
+Repository = "https://github.com/zepdb/zeppelin-embed"
+Issues = "https://github.com/zepdb/zeppelin-embed/issues"
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.17",
+    "pytest>=8.4",
+    "ruff>=0.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["zeppelin_embed*"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+strict = true
+files = ["zeppelin_embed"]
+
+[tool.cibuildwheel]
+build = "cp311-macosx_arm64"
+build-verbosity = 1
+test-command = "python -I bindings/python/tests/installed_smoke.py"
+test-sources = ["bindings/python/tests/installed_smoke.py"]
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
