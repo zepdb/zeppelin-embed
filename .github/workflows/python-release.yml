@@ -49,6 +49,9 @@ jobs:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           PY
       - uses: pypa/cibuildwheel@v4.1.1
+        env:
+          CIBW_TEST_COMMAND: python -I python/tests/installed_smoke.py
+          CIBW_TEST_SOURCES: python/tests/installed_smoke.py
         with:
           package-dir: python
           output-dir: wheelhouse

@@ -40,8 +40,8 @@ files = ["zeppelin_embed"]
 [tool.cibuildwheel]
 build = "cp311-macosx_arm64"
 build-verbosity = 1
-test-command = "python -I tests/installed_smoke.py"
-test-sources = ["tests/installed_smoke.py"]
+test-command = "python -I python/tests/installed_smoke.py"
+test-sources = ["python/tests/installed_smoke.py"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
