@@ -32,8 +32,7 @@ persistent directory and serves them without a database server.
 
 Measured on an Apple M3 Max using the native Rust API with warm indexes,
 precomputed query vectors, preanalyzed lexical terms, graph vector search, and
-`k=10`. Each value is the median of three process-level p50 or p95 results. The
-NQ result covers the prepared 140,000-document prefix, not the full corpus.
+`k=10`. Each value is the median of three process-level p50 or p95 results.
 
 The Rust core provides graph and exact vector retrieval, BM25 lexical search,
 and hybrid fusion over the same point-in-time snapshot. Applications supply
