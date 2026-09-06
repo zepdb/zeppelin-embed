@@ -18,6 +18,7 @@ mod astra_08_embeddings;
 mod astra_08_wordpiece;
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn astra_08_reembedded_unicode_documents_match_reference() {
     use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
     use zeppelin_embed::fts::tokenizer::TokenizerConfig;
@@ -151,6 +152,7 @@ fn astra_08_reembedded_unicode_documents_match_reference() {
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn astra_08_source_tokenizer_unicode_ids_match() {
     let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
         .map(PathBuf::from)
@@ -174,6 +176,7 @@ fn astra_08_source_tokenizer_unicode_ids_match() {
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn astra_08_source_tokenizer_normalization_order_matches() {
     let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
         .map(PathBuf::from)
@@ -212,6 +215,7 @@ fn astra_08_source_tokenizer_normalization_order_matches() {
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn astra_08_ascii_tokenization_is_unchanged() {
     let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
         .map(PathBuf::from)
@@ -232,6 +236,7 @@ fn astra_08_ascii_tokenization_is_unchanged() {
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn arctic_v15_batched_cls_matches_reference_across_padding_and_chunk_boundary() {
     let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
         .map(PathBuf::from)
@@ -325,6 +330,7 @@ fn batched_one_dimension_truncation_matches_each_individual_row() {
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1e_4() {
     matches_reference(
         "leaf-v1.5-pair.zem",
@@ -335,6 +341,7 @@ fn bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1
 }
 
 #[test]
+#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
 fn gte_matches_the_fp32_reference_vectors_for_arctic_m_v2_to_1e_4() {
     matches_reference(
         "arctic-m-v2-symmetric.zem",
