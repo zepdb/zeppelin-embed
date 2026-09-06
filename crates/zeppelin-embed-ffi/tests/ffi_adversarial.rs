@@ -151,6 +151,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_get_result_free),
     },
     AbiEntry {
+        name: "ze_scan",
+        coverage: AbiCoverage::InvalidProbe(probe_scan),
+    },
+    AbiEntry {
+        name: "ze_scan_result_free",
+        coverage: AbiCoverage::InvalidProbe(probe_scan_result_free),
+    },
+    AbiEntry {
         name: "ze_delete",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -866,6 +874,18 @@ fn probe_get(context: &MatrixContext) -> ProbeResult {
 
 fn probe_get_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_get_result_free(std::ptr::null_mut()))
+}
+
+fn probe_scan(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_scan(
+        context.store.handle,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_scan_result_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_scan_result_free(std::ptr::null_mut()))
 }
 
 fn probe_query_result_free(_: &MatrixContext) -> ProbeResult {

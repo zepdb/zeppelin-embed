@@ -127,6 +127,36 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         assert_eq!(ze_get_result_free(&mut result), ZeErrorCode::ZeOk);
     });
 
+    let scan_request = ZeScanRequest {
+        abi_size: size_of::<ZeScanRequest>() as u32,
+        abi_reserved: 0,
+        cursor_generation: 0,
+        cursor_segment_id: [0; 16],
+        cursor_next_row: 0,
+        cursor_phase: 0,
+        limit: 16,
+        order: 0,
+        include_vector: 1,
+        include_text: 1,
+        include_metadata: 1,
+        include_attributes: 1,
+        has_timestamp_range: 0,
+        start_ts: 0,
+        end_ts: 0,
+        filter: std::ptr::null(),
+        cancel_token: 0,
+        deadline_ns: 0,
+    };
+    assert_heap_flat("ze_scan/ze_scan_result_free", || {
+        let mut result: ZeScanResult = common::sized_zeroed();
+        assert_eq!(
+            ze_scan(store.handle, &scan_request, &mut result),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.document_count, 16);
+        assert_eq!(ze_scan_result_free(&mut result), ZeErrorCode::ZeOk);
+    });
+
     let namespace_root = tempfile::tempdir().expect("temporary namespace root");
     let root_bytes = namespace_root
         .path()

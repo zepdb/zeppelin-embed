@@ -46,10 +46,14 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
-    AccessMode, CancelToken, Deadline, DocumentFields, GraphSearchOptions, OpenOptions,
-    QueryControl, SearchOptions, SearchTier, Store, StoreState, StoredDocument,
+    AccessMode, CancelToken, Deadline, DocumentFields, DocumentScanCursor, DocumentScanRequest,
+    DocumentScanSource, GraphSearchOptions, MAX_DOCUMENT_SCAN_LIMIT, OpenOptions, QueryControl,
+    ScanOrder, SearchOptions, SearchTier, Store, StoreState, StoredDocument,
 };
-use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, PredicateValue, Schema};
+use zeppelin_embed::meta::{
+    ColumnDefinition, ColumnId, ColumnType, Predicate, PredicateValue, RangeBound, RangePredicate,
+    Schema,
+};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
 
@@ -559,6 +563,296 @@ fn parse_attribute_value(
     Ok(Some((column, value)))
 }
 
+const MAX_FILTER_NODES: usize = 1 << 20;
+const MAX_FILTER_DEPTH: usize = 32;
+
+fn parse_filter_value(
+    schema: &Schema,
+    column: ColumnId,
+    value: ZeAttributeValue,
+) -> Result<PredicateValue, FfiError> {
+    if value.attribute_id != column.get() {
+        return Err(FfiError::invalid(format!(
+            "filter value column {} differs from node column {}",
+            value.attribute_id,
+            column.get()
+        )));
+    }
+    let parsed = match value.value_type {
+        1 => PredicateValue::U64(value.u64_value),
+        2 => PredicateValue::I64(value.i64_value),
+        3 => PredicateValue::F64(value.f64_value),
+        4 => PredicateValue::Bool(parse_flag(value.bool_value, "filter bool value")?),
+        5 => PredicateValue::String(utf8_field(
+            value.string_value,
+            value.string_len,
+            "filter string value",
+        )?),
+        0 => return Err(FfiError::invalid("filter values cannot be null")),
+        _ => {
+            return Err(FfiError::invalid(
+                "filter value_type discriminant is out of range",
+            ));
+        }
+    };
+    let expected = schema
+        .column(column)
+        .ok_or_else(|| FfiError::invalid(format!("unknown column {}", column.get())))?
+        .column_type();
+    let actual = match &parsed {
+        PredicateValue::U64(_) => ColumnType::U64,
+        PredicateValue::I64(_) => ColumnType::I64,
+        PredicateValue::F64(_) => ColumnType::F64,
+        PredicateValue::Bool(_) => ColumnType::Bool,
+        PredicateValue::String(_) => ColumnType::RawString,
+    };
+    if expected != actual
+        && !matches!(
+            (expected, actual),
+            (ColumnType::DictionaryString, ColumnType::RawString)
+        )
+    {
+        return Err(FfiError::invalid(format!(
+            "column {} expects {expected:?}, received {actual:?}",
+            column.get()
+        )));
+    }
+    Ok(parsed)
+}
+
+fn require_filter_leaf(node: ZeFilterNode, operation: &str) -> Result<(), FfiError> {
+    if node.children_count != 0 {
+        return Err(FfiError::invalid(format!(
+            "filter {operation} cannot have children"
+        )));
+    }
+    Ok(())
+}
+
+fn require_filter_no_bounds(node: ZeFilterNode, operation: &str) -> Result<(), FfiError> {
+    if node.has_lower != 0 || node.has_upper != 0 {
+        return Err(FfiError::invalid(format!(
+            "filter {operation} cannot have range bounds"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_filter_values(
+    schema: &Schema,
+    node: ZeFilterNode,
+) -> Result<Vec<PredicateValue>, FfiError> {
+    let values = marshal::read_slice(node.values, node.value_count)?;
+    let column = ColumnId::new(node.attribute_id);
+    let mut parsed = Vec::new();
+    parsed.try_reserve_exact(values.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "filter value allocation failed",
+        )
+    })?;
+    for value in values {
+        parsed.push(parse_filter_value(schema, column, *value)?);
+    }
+    Ok(parsed)
+}
+
+fn filter_children(
+    node: ZeFilterNode,
+    node_count: usize,
+) -> Result<std::ops::Range<usize>, FfiError> {
+    let start = node.children_start as usize;
+    let count = node.children_count as usize;
+    let end = start
+        .checked_add(count)
+        .ok_or_else(|| FfiError::invalid("filter child range overflows"))?;
+    if start > node_count || end > node_count {
+        return Err(FfiError::invalid("filter child index is out of range"));
+    }
+    Ok(start..end)
+}
+
+fn decode_filter_node(
+    nodes: &[ZeFilterNode],
+    schema: &Schema,
+    visited: &mut [bool],
+    index: usize,
+    depth: usize,
+) -> Result<Predicate, FfiError> {
+    if depth > MAX_FILTER_DEPTH {
+        return Err(FfiError::invalid("filter depth exceeds 32"));
+    }
+    let node = nodes
+        .get(index)
+        .copied()
+        .ok_or_else(|| FfiError::invalid("filter node index is out of range"))?;
+    let visit = visited
+        .get_mut(index)
+        .ok_or_else(|| FfiError::invalid("filter node index is out of range"))?;
+    if *visit {
+        return Err(FfiError::invalid(
+            "filter node is reachable more than once or forms a cycle",
+        ));
+    }
+    *visit = true;
+    let column = ColumnId::new(node.attribute_id);
+    match node.op {
+        1 | 2 => {
+            require_filter_leaf(node, "equality")?;
+            require_filter_no_bounds(node, "equality")?;
+            if node.value_count != 1 {
+                return Err(FfiError::invalid(
+                    "filter equality requires exactly one value",
+                ));
+            }
+            let mut values = parse_filter_values(schema, node)?;
+            let value = values
+                .pop()
+                .ok_or_else(|| FfiError::invalid("filter equality value is absent"))?;
+            let equality = Predicate::Eq { column, value };
+            if node.op == 1 {
+                Ok(equality)
+            } else {
+                Ok(Predicate::Not(Box::new(equality)))
+            }
+        }
+        3 | 4 => {
+            require_filter_leaf(node, "membership")?;
+            require_filter_no_bounds(node, "membership")?;
+            let membership = Predicate::In {
+                column,
+                values: parse_filter_values(schema, node)?,
+            };
+            if node.op == 3 {
+                Ok(membership)
+            } else {
+                Ok(Predicate::Not(Box::new(membership)))
+            }
+        }
+        5 => {
+            require_filter_leaf(node, "range")?;
+            if node.value_count != 0 {
+                return Err(FfiError::invalid("filter range cannot have values"));
+            }
+            let has_lower = parse_flag(node.has_lower, "filter has_lower")?;
+            let has_upper = parse_flag(node.has_upper, "filter has_upper")?;
+            if !has_lower && !has_upper {
+                return Err(FfiError::invalid(
+                    "filter range requires at least one bound",
+                ));
+            }
+            let lower = has_lower
+                .then(|| {
+                    Ok::<RangeBound, FfiError>(RangeBound {
+                        value: parse_filter_value(schema, column, node.lower)?,
+                        inclusive: parse_flag(node.lower_inclusive, "filter lower_inclusive")?,
+                    })
+                })
+                .transpose()?;
+            let upper = has_upper
+                .then(|| {
+                    Ok::<RangeBound, FfiError>(RangeBound {
+                        value: parse_filter_value(schema, column, node.upper)?,
+                        inclusive: parse_flag(node.upper_inclusive, "filter upper_inclusive")?,
+                    })
+                })
+                .transpose()?;
+            Ok(Predicate::Range(RangePredicate {
+                column,
+                lower,
+                upper,
+            }))
+        }
+        6 | 7 => {
+            require_filter_leaf(node, "presence")?;
+            require_filter_no_bounds(node, "presence")?;
+            if node.value_count != 0 {
+                return Err(FfiError::invalid("filter presence cannot have values"));
+            }
+            if schema.column(column).is_none() {
+                return Err(FfiError::invalid(format!(
+                    "unknown column {}",
+                    column.get()
+                )));
+            }
+            if node.op == 6 {
+                Ok(Predicate::Exists(column))
+            } else {
+                Ok(Predicate::IsNull(column))
+            }
+        }
+        8..=10 => {
+            require_filter_no_bounds(node, "logical operator")?;
+            if node.value_count != 0 {
+                return Err(FfiError::invalid(
+                    "filter logical operator cannot have values",
+                ));
+            }
+            if node.op == 10 && node.children_count != 1 {
+                return Err(FfiError::invalid("filter not requires exactly one child"));
+            }
+            let children = filter_children(node, nodes.len())?;
+            let mut decoded = Vec::new();
+            decoded.try_reserve_exact(children.len()).map_err(|_| {
+                FfiError::new(
+                    ZeErrorCode::ZeErrOutOfMemory,
+                    "filter child allocation failed",
+                )
+            })?;
+            for child in children {
+                decoded.push(decode_filter_node(
+                    nodes,
+                    schema,
+                    visited,
+                    child,
+                    depth.saturating_add(1),
+                )?);
+            }
+            match node.op {
+                8 => Ok(Predicate::And(decoded)),
+                9 => Ok(Predicate::Or(decoded)),
+                10 => decoded
+                    .pop()
+                    .map(Box::new)
+                    .map(Predicate::Not)
+                    .ok_or_else(|| FfiError::invalid("filter not child is absent")),
+                _ => Err(FfiError::invalid("filter operator is out of range")),
+            }
+        }
+        _ => Err(FfiError::invalid("filter operator is out of range")),
+    }
+}
+
+fn decode_filter(pointer: *const ZeFilter, schema: &Schema) -> Result<Option<Predicate>, FfiError> {
+    if pointer.is_null() {
+        return Ok(None);
+    }
+    let filter = marshal::read_struct(pointer)?;
+    if filter.node_count == 0 {
+        return Err(FfiError::invalid("filter node_count must be nonzero"));
+    }
+    if filter.node_count > MAX_FILTER_NODES {
+        return Err(FfiError::invalid("filter node_count exceeds the ABI limit"));
+    }
+    let nodes = marshal::read_slice(filter.nodes, filter.node_count)?;
+    let root = filter.root as usize;
+    if root >= nodes.len() {
+        return Err(FfiError::invalid("filter root is out of range"));
+    }
+    let mut visited = Vec::new();
+    visited.try_reserve_exact(nodes.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "filter visited-set allocation failed",
+        )
+    })?;
+    visited.resize(nodes.len(), false);
+    let predicate = decode_filter_node(nodes, schema, &mut visited, root, 1)?;
+    zeppelin_embed::planner::validate_predicate(&predicate, schema)
+        .map_err(|error| FfiError::invalid(error.to_string()))?;
+    Ok(Some(predicate))
+}
+
 fn open_store_at(
     path: &Path,
     mut options: OpenOptions,
@@ -692,6 +986,20 @@ fn empty_get_result(abi_size: u32) -> ZeGetResult {
         document_count: 0,
         missing_count: 0,
         generation: 0,
+    }
+}
+
+fn empty_scan_result(abi_size: u32) -> ZeScanResult {
+    ZeScanResult {
+        abi_size,
+        abi_reserved: 0,
+        documents: std::ptr::null_mut(),
+        document_count: 0,
+        generation: 0,
+        has_more: 0,
+        next_segment_id: [0; 16],
+        next_row: 0,
+        next_phase: 0,
     }
 }
 
@@ -2217,6 +2525,236 @@ pub extern "C" fn ze_delete(
     })
 }
 
+fn parse_scan_order(order: i32) -> Result<ScanOrder, FfiError> {
+    match order {
+        0 => Ok(ScanOrder::Storage),
+        1 => Ok(ScanOrder::TimestampAscending),
+        2 => Ok(ScanOrder::TimestampDescending),
+        _ => Err(FfiError::invalid("scan order discriminant is out of range")),
+    }
+}
+
+fn parse_scan_cursor(request: ZeScanRequest) -> Result<Option<DocumentScanCursor>, FfiError> {
+    if request.cursor_generation == 0 {
+        if request.cursor_segment_id != [0; 16]
+            || request.cursor_next_row != 0
+            || request.cursor_phase != 0
+        {
+            return Err(FfiError::invalid(
+                "scan start cursor fields must be zero when cursor_generation is zero",
+            ));
+        }
+        return Ok(None);
+    }
+    let source = match request.cursor_phase {
+        0 => DocumentScanSource::Sealed(zeppelin_embed::segment::SegmentId::from_bytes(
+            request.cursor_segment_id,
+        )),
+        1 => {
+            if request.cursor_segment_id != [0; 16] {
+                return Err(FfiError::invalid(
+                    "active scan cursor segment id must be zero",
+                ));
+            }
+            DocumentScanSource::Active
+        }
+        _ => {
+            return Err(FfiError::invalid(
+                "scan cursor_phase discriminant is out of range",
+            ));
+        }
+    };
+    Ok(Some(DocumentScanCursor {
+        generation: request.cursor_generation,
+        source,
+        next_row: request.cursor_next_row,
+    }))
+}
+
+fn publish_scan_documents(
+    documents: Vec<StoredDocument>,
+) -> Result<(*mut ZeStoredDocument, u32, usize), FfiError> {
+    if documents.is_empty() {
+        let mut arena = Vec::<u64>::new();
+        arena.try_reserve_exact(1).map_err(|_| {
+            FfiError::new(
+                ZeErrorCode::ZeErrOutOfMemory,
+                "empty scan result arena allocation failed",
+            )
+        })?;
+        arena.push(0);
+        let mut arena = arena.into_boxed_slice();
+        let arena_pointer = arena.as_mut_ptr();
+        let generation = registry::register_result_arena(arena_pointer, arena.len(), 0)?;
+        let _raw = Box::into_raw(arena);
+        return Ok((arena_pointer.cast::<ZeStoredDocument>(), generation, 0));
+    }
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(documents.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "scan document-id allocation failed",
+        )
+    })?;
+    let mut optional = Vec::new();
+    optional.try_reserve_exact(documents.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "scan document allocation failed",
+        )
+    })?;
+    for document in documents {
+        ids.push(ffi_doc_id(document.doc_id));
+        optional.push(Some(document));
+    }
+    let (documents, allocation_generation, missing_count) = publish_get_documents(&ids, &optional)?;
+    if missing_count != 0 {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrInternal,
+            "scan materialization produced a missing document",
+        ));
+    }
+    Ok((documents, allocation_generation, ids.len()))
+}
+
+/// Enumerates one ordered, filtered page of live documents. All request and
+/// filter pointers are caller-owned for the call; the returned arena must be
+/// released exactly once with [`ze_scan_result_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_scan(
+    handle: ZeHandle,
+    request: *const ZeScanRequest,
+    out_result: *mut ZeScanResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_scan");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_scan_result(abi_size));
+                if request.limit == 0 {
+                    return Err(FfiError::invalid("scan limit must be nonzero"));
+                }
+                if request.limit > MAX_DOCUMENT_SCAN_LIMIT {
+                    return Err(FfiError::invalid(
+                        "scan limit exceeds MAX_DOCUMENT_SCAN_LIMIT",
+                    ));
+                }
+                let order = parse_scan_order(request.order)?;
+                let cursor = parse_scan_cursor(request)?;
+                let include_vector = parse_flag(request.include_vector, "include_vector")?;
+                let include_text = parse_flag(request.include_text, "include_text")?;
+                let include_metadata = parse_flag(request.include_metadata, "include_metadata")?;
+                let include_attributes =
+                    parse_flag(request.include_attributes, "include_attributes")?;
+                let has_timestamp_range =
+                    parse_flag(request.has_timestamp_range, "has_timestamp_range")?;
+                if !has_timestamp_range && (request.start_ts != 0 || request.end_ts != 0) {
+                    return Err(FfiError::invalid(
+                        "scan timestamp bounds require has_timestamp_range",
+                    ));
+                }
+                let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+                let access = registry::lookup(handle)?;
+                let predicate = decode_filter(request.filter, access.store.schema())?;
+                let record_only =
+                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                let mut fields = DocumentFields::NONE;
+                if include_vector && !record_only {
+                    fields = fields | DocumentFields::VECTOR;
+                }
+                if include_text {
+                    fields = fields | DocumentFields::TEXT;
+                }
+                if include_metadata {
+                    fields = fields | DocumentFields::METADATA;
+                }
+                if include_attributes {
+                    fields = fields | DocumentFields::ATTRIBUTES;
+                }
+                let mut scan =
+                    DocumentScanRequest::new(request.limit, fields, control).with_order(order);
+                if let Some(cursor) = cursor {
+                    scan = scan.with_cursor(cursor);
+                }
+                if has_timestamp_range {
+                    scan = scan.with_timestamp_range(request.start_ts, request.end_ts);
+                }
+                if let Some(predicate) = &predicate {
+                    scan = scan.with_predicate(predicate);
+                }
+                let page = access.store.scan_documents(scan).map_err(FfiError::query)?;
+                let (documents, allocation_generation, document_count) =
+                    publish_scan_documents(page.documents)?;
+                let (has_more, next_segment_id, next_row, next_phase) = match page.continuation {
+                    Some(DocumentScanCursor {
+                        source: DocumentScanSource::Sealed(segment),
+                        next_row,
+                        ..
+                    }) => (1, *segment.as_bytes(), next_row, 0),
+                    Some(DocumentScanCursor {
+                        source: DocumentScanSource::Active,
+                        next_row,
+                        ..
+                    }) => (1, [0; 16], next_row, 1),
+                    None => (0, [0; 16], 0, 0),
+                };
+                marshal::write_output(
+                    out_result,
+                    ZeScanResult {
+                        abi_size,
+                        abi_reserved: allocation_generation,
+                        documents,
+                        document_count,
+                        generation: page.generation,
+                        has_more,
+                        next_segment_id,
+                        next_row,
+                        next_phase,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Releases the single arena owned by a scan result.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_scan_result_free(result: *mut ZeScanResult) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_scan_result_free");
+        finish(
+            None,
+            (|| {
+                if result.is_null() {
+                    return Err(FfiError::invalid("scan result pointer is null"));
+                }
+                if result.align_offset(align_of::<ZeScanResult>()) != 0 {
+                    return Err(FfiError::invalid("scan result pointer is misaligned"));
+                }
+                let abi_size = marshal::read_abi_size(result);
+                marshal::validate_abi_size::<ZeScanResult>(abi_size)?;
+                let current = marshal::read_value(result);
+                if current.documents.is_null() {
+                    return Err(FfiError::invalid(
+                        "scan result was already freed or contains no arena",
+                    ));
+                }
+                registry::take_registered_result(
+                    current.documents.cast::<u64>(),
+                    current.document_count,
+                    current.abi_reserved,
+                )?;
+                marshal::write_output(result, empty_scan_result(abi_size));
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Searches active and immutable store state with optional cancellation.
 /// The query vector is caller-owned for the call. On success `hits` is
 /// callee-owned and must be released exactly once with
@@ -3009,10 +3547,13 @@ pub extern "C" fn ze_search_result_free(result: *mut ZeSearchResult) -> ZeErrorC
 }
 
 const _: () = {
+    assert!(size_of::<ZeFilter>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeGetRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeGetResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeOpenRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeSearchResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeScanRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeScanResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeEpochRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeQueryRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeQueryResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);

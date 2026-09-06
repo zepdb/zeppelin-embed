@@ -1755,6 +1755,109 @@ pub struct StoredDocument {
     pub attributes: Option<Vec<(crate::meta::ColumnId, crate::meta::PredicateValue)>>,
 }
 
+/// Deterministic ordering used by [`Store::scan_documents`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScanOrder {
+    /// Immutable segments in snapshot order and then the active segment, with
+    /// ascending row numbers inside every source.
+    #[default]
+    Storage,
+    /// Ascending timestamp with ascending document id as the tie breaker.
+    TimestampAscending,
+    /// Descending timestamp with ascending document id as the tie breaker.
+    TimestampDescending,
+}
+
+/// Source position named by a document-scan continuation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocumentScanSource {
+    /// An immutable segment and its stable identifier.
+    Sealed(crate::segment::SegmentId),
+    /// The active in-memory segment.
+    Active,
+}
+
+/// Opaque-to-callers continuation for one published store generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DocumentScanCursor {
+    /// Generation pinned by the page that produced this cursor.
+    pub generation: u64,
+    /// Source containing the next matching row.
+    pub source: DocumentScanSource,
+    /// Source-local row at which the next page starts.
+    pub next_row: u32,
+}
+
+/// One bounded document-scan request.
+#[derive(Clone, Debug)]
+pub struct DocumentScanRequest<'a> {
+    limit: usize,
+    fields: DocumentFields,
+    order: ScanOrder,
+    cursor: Option<DocumentScanCursor>,
+    timestamp_range: Option<(i64, i64)>,
+    predicate: Option<&'a crate::meta::Predicate>,
+    control: QueryControl,
+}
+
+impl<'a> DocumentScanRequest<'a> {
+    /// Creates a storage-ordered scan without a filter or timestamp bound.
+    #[must_use]
+    pub fn new(limit: usize, fields: DocumentFields, control: QueryControl) -> Self {
+        Self {
+            limit,
+            fields,
+            order: ScanOrder::Storage,
+            cursor: None,
+            timestamp_range: None,
+            predicate: None,
+            control,
+        }
+    }
+
+    /// Selects the deterministic row ordering.
+    #[must_use]
+    pub const fn with_order(mut self, order: ScanOrder) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// Resumes at a continuation returned by an earlier page.
+    #[must_use]
+    pub const fn with_cursor(mut self, cursor: DocumentScanCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// Restricts timestamps to the half-open interval `[start, end)`.
+    #[must_use]
+    pub const fn with_timestamp_range(mut self, start: i64, end: i64) -> Self {
+        self.timestamp_range = Some((start, end));
+        self
+    }
+
+    /// Applies one exact typed metadata predicate.
+    #[must_use]
+    pub const fn with_predicate(mut self, predicate: &'a crate::meta::Predicate) -> Self {
+        self.predicate = Some(predicate);
+        self
+    }
+}
+
+/// One bounded page returned by [`Store::scan_documents`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentScanPage {
+    /// Materialized live documents in the requested deterministic order.
+    pub documents: Vec<StoredDocument>,
+    /// Store generation pinned for the complete call.
+    pub generation: u64,
+    /// Position of the next matching row, or `None` on the last page.
+    pub continuation: Option<DocumentScanCursor>,
+}
+
+/// Largest document page accepted by the core and C ABI.
+pub const MAX_DOCUMENT_SCAN_LIMIT: usize = 1 << 20;
+
 /// An open, lifecycle, or close operation was rejected.
 #[derive(Debug)]
 pub enum StoreError {
@@ -1797,6 +1900,18 @@ pub enum StoreError {
         persisted: crate::meta::Schema,
         /// Schema supplied by the opening caller.
         declared: crate::meta::Schema,
+    },
+    /// A scan continuation names a different published generation.
+    ScanStale {
+        /// Generation encoded by the caller's continuation.
+        cursor_generation: u64,
+        /// Generation pinned by this scan call.
+        current_generation: u64,
+    },
+    /// A document-scan request or predicate is invalid.
+    InvalidScan {
+        /// Precise validation failure.
+        detail: String,
     },
     /// A referenced immutable segment could not be mapped or validated.
     Segment(crate::segment::SegmentError),
@@ -1987,6 +2102,14 @@ impl std::fmt::Display for StoreError {
                 formatter,
                 "declared store schema {declared:?} does not match persisted schema {persisted:?}"
             ),
+            Self::ScanStale {
+                cursor_generation,
+                current_generation,
+            } => write!(
+                formatter,
+                "scan cursor generation {cursor_generation} differs from current generation {current_generation}"
+            ),
+            Self::InvalidScan { detail } => write!(formatter, "invalid document scan: {detail}"),
             Self::Segment(error) => error.fmt(formatter),
             Self::DuplicateLiveDocument { doc_id } => {
                 write!(
@@ -2173,9 +2296,11 @@ impl StoreError {
             | Self::QueryPoolStart { .. }
             | Self::WalWrite(_)
             | Self::WalRetire(_) => StoreErrorKind::Io,
-            Self::NotDirectory { .. } | Self::Tokenizer(_) | Self::SchemaMismatch { .. } => {
-                StoreErrorKind::InvalidArgument
-            }
+            Self::NotDirectory { .. }
+            | Self::Tokenizer(_)
+            | Self::SchemaMismatch { .. }
+            | Self::ScanStale { .. }
+            | Self::InvalidScan { .. } => StoreErrorKind::InvalidArgument,
             Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
             Self::Durability(_)
             | Self::Kernel(_)
@@ -2242,6 +2367,8 @@ impl std::error::Error for StoreError {
             | Self::EpochUndeclared
             | Self::EpochUnstamped
             | Self::SchemaMismatch { .. }
+            | Self::ScanStale { .. }
+            | Self::InvalidScan { .. }
             | Self::GraphUnavailable { .. }
             | Self::DuplicateLiveDocument { .. }
             | Self::WalRevisionOrder { .. }
@@ -3495,6 +3622,123 @@ impl Store {
         }
         drop(active_query);
         Ok((generation, documents))
+    }
+
+    /// Enumerates one deterministic, bounded page of live documents.
+    ///
+    /// The complete call is pinned to one generation. A continuation from a
+    /// different generation is rejected with [`StoreError::ScanStale`].
+    pub fn scan_documents(
+        &self,
+        request: DocumentScanRequest<'_>,
+    ) -> Result<DocumentScanPage, QueryError> {
+        let DocumentScanRequest {
+            limit,
+            fields,
+            order,
+            cursor,
+            timestamp_range,
+            predicate,
+            control,
+        } = request;
+        if limit == 0 || limit > MAX_DOCUMENT_SCAN_LIMIT {
+            return Err(QueryError::Store(StoreError::InvalidScan {
+                detail: format!("limit must be in 1..={MAX_DOCUMENT_SCAN_LIMIT}, received {limit}"),
+            }));
+        }
+        let predicate = document_scan_predicate(predicate, timestamp_range)?;
+        if let Some(predicate) = &predicate {
+            crate::planner::validate_predicate(predicate, &self.schema).map_err(|error| {
+                QueryError::Store(StoreError::InvalidScan {
+                    detail: error.to_string(),
+                })
+            })?;
+        }
+        let control = control.with_clock(Arc::clone(&self.clock));
+        control.checkpoint()?;
+        let AdmittedDocumentRead {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        } = self.admit_document_read().map_err(QueryError::Store)?;
+        if let Some(cursor) = cursor.filter(|cursor| cursor.generation != generation) {
+            return Err(QueryError::Store(StoreError::ScanStale {
+                cursor_generation: cursor.generation,
+                current_generation: generation,
+            }));
+        }
+        let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
+        let mut work = 0_usize;
+        let rows = match order {
+            ScanOrder::Storage => collect_storage_scan_rows(
+                &snapshot,
+                &active,
+                &self.schema,
+                predicate.as_ref(),
+                cursor,
+                limit,
+                &control,
+                &lease,
+                &mut work,
+            )?,
+            ScanOrder::TimestampAscending | ScanOrder::TimestampDescending => {
+                collect_timestamp_scan_rows(
+                    &snapshot,
+                    &active,
+                    &self.schema,
+                    predicate.as_ref(),
+                    cursor,
+                    limit,
+                    order,
+                    &control,
+                    &lease,
+                    &mut work,
+                )?
+            }
+        };
+        let continuation = rows.get(limit).map(|row| DocumentScanCursor {
+            generation,
+            source: row.source,
+            next_row: row.row,
+        });
+        let result_len = rows.len().min(limit);
+        let mut documents = Vec::new();
+        documents.try_reserve_exact(result_len).map_err(|_| {
+            QueryError::Store(StoreError::AllocationFailed {
+                needed: allocation_bytes::<StoredDocument>(result_len),
+                component: "scan documents",
+            })
+        })?;
+        for row in rows.into_iter().take(result_len) {
+            scan_control_checkpoint(&control, &lease, &mut work)?;
+            let document = match row.source {
+                DocumentScanSource::Active => {
+                    materialize_active_document(&active, row.row as usize, fields)
+                        .map_err(QueryError::Store)?
+                }
+                DocumentScanSource::Sealed(segment_id) => {
+                    let segment = snapshot
+                        .segments()
+                        .iter()
+                        .find(|segment| segment.meta().id == segment_id)
+                        .ok_or_else(|| {
+                            QueryError::Store(StoreError::InvalidScan {
+                                detail: format!("scan row names absent segment {segment_id}"),
+                            })
+                        })?;
+                    materialize_sealed_document(segment, row.row as usize, fields)
+                        .map_err(QueryError::Store)?
+                }
+            };
+            documents.push(document);
+        }
+        drop(active_query);
+        Ok(DocumentScanPage {
+            documents,
+            generation,
+            continuation,
+        })
     }
 
     /// Runs a structured lexical query and returns provenance plus snippets
@@ -7742,6 +7986,379 @@ impl Drop for Store {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DocumentScanRow {
+    source: DocumentScanSource,
+    row: u32,
+    timestamp: i64,
+    doc_id: crate::ingest::DocId,
+}
+
+fn document_scan_predicate(
+    predicate: Option<&crate::meta::Predicate>,
+    timestamp_range: Option<(i64, i64)>,
+) -> Result<Option<crate::meta::Predicate>, QueryError> {
+    use crate::meta::{Predicate, PredicateValue, RangeBound, RangePredicate, TIMESTAMP_COLUMN};
+
+    let timestamp = timestamp_range
+        .map(|(start, end)| {
+            if start > end {
+                return Err(QueryError::Store(StoreError::InvalidScan {
+                    detail: format!("timestamp range start {start} exceeds end {end}"),
+                }));
+            }
+            Ok(Predicate::Range(RangePredicate {
+                column: TIMESTAMP_COLUMN,
+                lower: Some(RangeBound::inclusive(PredicateValue::I64(start))),
+                upper: Some(RangeBound::exclusive(PredicateValue::I64(end))),
+            }))
+        })
+        .transpose()?;
+    Ok(match (predicate, timestamp) {
+        (Some(predicate), Some(timestamp)) => {
+            Some(Predicate::And(vec![predicate.clone(), timestamp]))
+        }
+        (Some(predicate), None) => Some(predicate.clone()),
+        (None, Some(timestamp)) => Some(timestamp),
+        (None, None) => None,
+    })
+}
+
+fn scan_control_checkpoint(
+    control: &QueryControl,
+    lease: &SnapshotLease,
+    work: &mut usize,
+) -> Result<(), QueryError> {
+    *work = work.saturating_add(1);
+    if (*work).is_multiple_of(64) {
+        control.checkpoint()?;
+        lease.check_active().map_err(QueryError::Store)?;
+    }
+    Ok(())
+}
+
+fn active_scan_columns(
+    active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
+) -> Result<crate::meta::ColumnStore, QueryError> {
+    let mut builder = crate::meta::ColumnStoreBuilder::new(schema.clone());
+    for (row, timestamp) in active.timestamps().iter().copied().enumerate() {
+        let values = active.column_values(row).map_err(QueryError::Store)?;
+        builder
+            .push_row(timestamp, &crate::ingest::column_inputs(&values))
+            .map_err(|error| {
+                QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Columns(
+                    error.to_string(),
+                )))
+            })?;
+    }
+    builder.finish().map_err(|error| {
+        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Columns(
+            error.to_string(),
+        )))
+    })
+}
+
+fn sealed_scan_rows(
+    segment: &crate::segment::reader::SegmentReader,
+    predicate: Option<&crate::meta::Predicate>,
+) -> Result<crate::meta::DocBitmap, QueryError> {
+    if predicate.is_some_and(|predicate| {
+        !crate::planner::segment_may_match(segment.meta().clustering_key_range, predicate)
+    }) {
+        return Ok(crate::meta::DocBitmap::new());
+    }
+    let alive = segment.query_alive().map_err(QueryError::Store)?;
+    match predicate {
+        Some(predicate) => {
+            let columns = segment.query_columns().map_err(QueryError::Store)?;
+            crate::meta::evaluate(predicate, &columns, &alive).map_err(|error| {
+                QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Columns(
+                    error.to_string(),
+                )))
+            })
+        }
+        None => Ok(alive.alive_bitmap().clone()),
+    }
+}
+
+fn active_scan_rows(
+    active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
+    predicate: Option<&crate::meta::Predicate>,
+) -> Result<crate::meta::DocBitmap, QueryError> {
+    let alive = active.alive().map_err(QueryError::Store)?;
+    match predicate {
+        Some(predicate) => {
+            let columns = active_scan_columns(active, schema)?;
+            crate::meta::evaluate(predicate, &columns, &alive).map_err(|error| {
+                QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Columns(
+                    error.to_string(),
+                )))
+            })
+        }
+        None => Ok(alive.alive_bitmap().clone()),
+    }
+}
+
+fn sealed_document_scan_row(
+    segment: &crate::segment::reader::SegmentReader,
+    row: u32,
+) -> Result<DocumentScanRow, QueryError> {
+    let version = segment
+        .document_version(row as usize)
+        .map_err(StoreError::Segment)
+        .map_err(QueryError::Store)?
+        .ok_or_else(|| {
+            QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                format!("sealed document row {row} has no identity"),
+            )))
+        })?;
+    let columns = segment.query_columns().map_err(QueryError::Store)?;
+    let timestamp = columns.timestamp(row).ok_or_else(|| {
+        QueryError::Store(StoreError::Segment(crate::segment::SegmentError::Geometry(
+            format!("sealed document row {row} has no timestamp"),
+        )))
+    })?;
+    Ok(DocumentScanRow {
+        source: DocumentScanSource::Sealed(segment.meta().id),
+        row,
+        timestamp,
+        doc_id: version.doc_id(),
+    })
+}
+
+fn active_document_scan_row(
+    active: &crate::ingest::ActiveSegment,
+    row: u32,
+) -> Result<DocumentScanRow, QueryError> {
+    let index = row as usize;
+    let version = active
+        .document(index)
+        .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+    let timestamp = active
+        .timestamps()
+        .get(index)
+        .copied()
+        .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?;
+    Ok(DocumentScanRow {
+        source: DocumentScanSource::Active,
+        row,
+        timestamp,
+        doc_id: version.doc_id(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_storage_scan_rows(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
+    predicate: Option<&crate::meta::Predicate>,
+    cursor: Option<DocumentScanCursor>,
+    limit: usize,
+    control: &QueryControl,
+    lease: &SnapshotLease,
+    work: &mut usize,
+) -> Result<Vec<DocumentScanRow>, QueryError> {
+    let capacity = limit.saturating_add(1);
+    let mut result = Vec::new();
+    result.try_reserve_exact(capacity).map_err(|_| {
+        QueryError::Store(StoreError::AllocationFailed {
+            needed: allocation_bytes::<DocumentScanRow>(capacity),
+            component: "scan positions",
+        })
+    })?;
+    let mut started = cursor.is_none();
+    'segments: for segment in snapshot.segments() {
+        let source = DocumentScanSource::Sealed(segment.meta().id);
+        let rows = sealed_scan_rows(segment, predicate)?;
+        for row in rows.iter() {
+            scan_control_checkpoint(control, lease, work)?;
+            if !started {
+                started =
+                    cursor.is_some_and(|cursor| cursor.source == source && cursor.next_row == row);
+                if !started {
+                    continue;
+                }
+            }
+            result.push(sealed_document_scan_row(segment, row)?);
+            if result.len() == capacity {
+                break 'segments;
+            }
+        }
+    }
+    if result.len() < capacity {
+        let source = DocumentScanSource::Active;
+        let rows = active_scan_rows(active, schema, predicate)?;
+        for row in rows.iter() {
+            scan_control_checkpoint(control, lease, work)?;
+            if !started {
+                started =
+                    cursor.is_some_and(|cursor| cursor.source == source && cursor.next_row == row);
+                if !started {
+                    continue;
+                }
+            }
+            result.push(active_document_scan_row(active, row)?);
+            if result.len() == capacity {
+                break;
+            }
+        }
+    }
+    if !started {
+        return Err(QueryError::Store(StoreError::InvalidScan {
+            detail: "scan cursor does not name a matching row".to_owned(),
+        }));
+    }
+    Ok(result)
+}
+
+fn document_scan_row_cmp(
+    left: &DocumentScanRow,
+    right: &DocumentScanRow,
+    order: ScanOrder,
+) -> std::cmp::Ordering {
+    let timestamp = match order {
+        ScanOrder::Storage | ScanOrder::TimestampAscending => left.timestamp.cmp(&right.timestamp),
+        ScanOrder::TimestampDescending => right.timestamp.cmp(&left.timestamp),
+    };
+    timestamp
+        .then_with(|| left.doc_id.cmp(&right.doc_id))
+        .then_with(|| document_scan_source_cmp(left.source, right.source))
+        .then_with(|| left.row.cmp(&right.row))
+}
+
+fn document_scan_source_cmp(
+    left: DocumentScanSource,
+    right: DocumentScanSource,
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (DocumentScanSource::Sealed(left), DocumentScanSource::Sealed(right)) => left.cmp(&right),
+        (DocumentScanSource::Sealed(_), DocumentScanSource::Active) => std::cmp::Ordering::Less,
+        (DocumentScanSource::Active, DocumentScanSource::Sealed(_)) => std::cmp::Ordering::Greater,
+        (DocumentScanSource::Active, DocumentScanSource::Active) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn insert_timestamp_scan_row(
+    rows: &mut Vec<DocumentScanRow>,
+    candidate: DocumentScanRow,
+    capacity: usize,
+    order: ScanOrder,
+) {
+    let position = rows.partition_point(|row| {
+        document_scan_row_cmp(row, &candidate, order) != std::cmp::Ordering::Greater
+    });
+    if position < capacity {
+        rows.insert(position, candidate);
+        if rows.len() > capacity {
+            let _ = rows.pop();
+        }
+    }
+}
+
+fn clustering_range_cmp(
+    left: crate::segment::ClusteringKeyRange,
+    right: crate::segment::ClusteringKeyRange,
+    order: ScanOrder,
+) -> std::cmp::Ordering {
+    use crate::segment::ClusteringKeyRange::{Bounded, Empty, Unstamped};
+
+    match (left, right) {
+        (Bounded { min_ts: left, .. }, Bounded { min_ts: right, .. })
+            if order == ScanOrder::TimestampAscending =>
+        {
+            left.cmp(&right)
+        }
+        (Bounded { max_ts: left, .. }, Bounded { max_ts: right, .. }) => right.cmp(&left),
+        (Unstamped, Unstamped) | (Empty, Empty) => std::cmp::Ordering::Equal,
+        (Unstamped, _) => std::cmp::Ordering::Less,
+        (_, Unstamped) => std::cmp::Ordering::Greater,
+        (Empty, _) => std::cmp::Ordering::Greater,
+        (_, Empty) => std::cmp::Ordering::Less,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_timestamp_scan_rows(
+    snapshot: &PublishedSnapshot,
+    active: &crate::ingest::ActiveSegment,
+    schema: &crate::meta::Schema,
+    predicate: Option<&crate::meta::Predicate>,
+    cursor: Option<DocumentScanCursor>,
+    limit: usize,
+    order: ScanOrder,
+    control: &QueryControl,
+    lease: &SnapshotLease,
+    work: &mut usize,
+) -> Result<Vec<DocumentScanRow>, QueryError> {
+    let capacity = limit.saturating_add(1);
+    let mut result = Vec::new();
+    result.try_reserve_exact(capacity).map_err(|_| {
+        QueryError::Store(StoreError::AllocationFailed {
+            needed: allocation_bytes::<DocumentScanRow>(capacity),
+            component: "scan positions",
+        })
+    })?;
+    let cursor_row = cursor
+        .map(|cursor| match cursor.source {
+            DocumentScanSource::Active => active_document_scan_row(active, cursor.next_row),
+            DocumentScanSource::Sealed(segment_id) => snapshot
+                .segments()
+                .iter()
+                .find(|segment| segment.meta().id == segment_id)
+                .ok_or_else(|| {
+                    QueryError::Store(StoreError::InvalidScan {
+                        detail: format!("scan cursor names absent segment {segment_id}"),
+                    })
+                })
+                .and_then(|segment| sealed_document_scan_row(segment, cursor.next_row)),
+        })
+        .transpose()?;
+    let mut segments = snapshot.segments().iter().collect::<Vec<_>>();
+    segments.sort_by(|left, right| {
+        clustering_range_cmp(
+            left.meta().clustering_key_range,
+            right.meta().clustering_key_range,
+            order,
+        )
+        .then_with(|| left.meta().id.cmp(&right.meta().id))
+    });
+    for segment in segments {
+        let rows = sealed_scan_rows(segment, predicate)?;
+        for row in rows.iter() {
+            scan_control_checkpoint(control, lease, work)?;
+            let candidate = sealed_document_scan_row(segment, row)?;
+            if cursor_row.as_ref().is_none_or(|cursor_row| {
+                document_scan_row_cmp(&candidate, cursor_row, order) != std::cmp::Ordering::Less
+            }) {
+                insert_timestamp_scan_row(&mut result, candidate, capacity, order);
+            }
+        }
+    }
+    for row in active_scan_rows(active, schema, predicate)?.iter() {
+        scan_control_checkpoint(control, lease, work)?;
+        let candidate = active_document_scan_row(active, row)?;
+        if cursor_row.as_ref().is_none_or(|cursor_row| {
+            document_scan_row_cmp(&candidate, cursor_row, order) != std::cmp::Ordering::Less
+        }) {
+            insert_timestamp_scan_row(&mut result, candidate, capacity, order);
+        }
+    }
+    if let Some(cursor) = cursor {
+        let starts_at_cursor = result
+            .first()
+            .is_some_and(|row| row.source == cursor.source && row.row == cursor.next_row);
+        if !starts_at_cursor {
+            return Err(QueryError::Store(StoreError::InvalidScan {
+                detail: "scan cursor does not name a matching row".to_owned(),
+            }));
+        }
+    }
+    Ok(result)
+}
+
 fn materialize_active_document(
     active: &crate::ingest::ActiveSegment,
     row: usize,
@@ -7998,6 +8615,8 @@ mod lexical_assembly_tests;
 
 #[cfg(test)]
 mod get_tests;
+#[cfg(test)]
+mod scan_document_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]

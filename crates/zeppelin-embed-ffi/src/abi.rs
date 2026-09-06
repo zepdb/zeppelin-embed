@@ -435,6 +435,119 @@ pub struct ZeGetResult {
     pub generation: u64,
 }
 
+/// One flat filter-AST node; child nodes are referenced by an index range.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeFilterNode {
+    /// `1` eq, `2` not-eq, `3` in, `4` not-in, `5` range, `6` exists,
+    /// `7` is-null, `8` and, `9` or, or `10` not.
+    pub op: i32,
+    /// Schema-local column identifier for leaf operators.
+    pub attribute_id: u32,
+    /// Caller-owned values for equality and membership operators.
+    pub values: *const ZeAttributeValue,
+    /// Number of entries in `values`.
+    pub value_count: usize,
+    /// One when `lower` is present.
+    pub has_lower: u32,
+    /// Lower range endpoint.
+    pub lower: ZeAttributeValue,
+    /// One when the lower endpoint is inclusive.
+    pub lower_inclusive: u32,
+    /// One when `upper` is present.
+    pub has_upper: u32,
+    /// Upper range endpoint.
+    pub upper: ZeAttributeValue,
+    /// One when the upper endpoint is inclusive.
+    pub upper_inclusive: u32,
+    /// First child node index for logical operators.
+    pub children_start: u32,
+    /// Number of consecutive child node indices.
+    pub children_count: u32,
+}
+
+/// Caller-owned flat structured filter.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeFilter {
+    /// Caller-provided `sizeof(ZeFilter)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned flat node array.
+    pub nodes: *const ZeFilterNode,
+    /// Number of nodes in `nodes`.
+    pub node_count: usize,
+    /// Root node index.
+    pub root: u32,
+}
+
+/// Ordered, filtered, bounded document-enumeration request.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeScanRequest {
+    /// Caller-provided `sizeof(ZeScanRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Continuation generation, or zero to start.
+    pub cursor_generation: u64,
+    /// Immutable segment id, or all zero for the active phase.
+    pub cursor_segment_id: [u8; 16],
+    /// Source-local row at which to resume.
+    pub cursor_next_row: u32,
+    /// Zero for sealed state or one for active state.
+    pub cursor_phase: u32,
+    /// Maximum number of documents to return; must be nonzero.
+    pub limit: usize,
+    /// Zero storage, one timestamp ascending, or two timestamp descending.
+    pub order: i32,
+    /// One to return full-precision vectors.
+    pub include_vector: u32,
+    /// One to return stored UTF-8 text.
+    pub include_text: u32,
+    /// One to return opaque metadata bytes.
+    pub include_metadata: u32,
+    /// One to return typed schema attributes.
+    pub include_attributes: u32,
+    /// One when `start_ts` and `end_ts` carry a timestamp range.
+    pub has_timestamp_range: u32,
+    /// Inclusive timestamp-range start.
+    pub start_ts: i64,
+    /// Exclusive timestamp-range end.
+    pub end_ts: i64,
+    /// Optional caller-owned structured filter.
+    pub filter: *const ZeFilter,
+    /// Optional generation-tagged cancellation token; zero means absent.
+    pub cancel_token: ZeCancelToken,
+    /// Relative monotonic deadline in nanoseconds; zero means absent.
+    pub deadline_ns: u64,
+}
+
+/// Callee-owned document page returned by `ze_scan`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeScanResult {
+    /// Caller-provided `sizeof(ZeScanResult)`.
+    pub abi_size: u32,
+    /// Caller sets zero; callee returns an opaque allocation generation.
+    pub abi_reserved: u32,
+    /// Arena-owned live documents in requested order.
+    pub documents: *mut ZeStoredDocument,
+    /// Number of entries in `documents`.
+    pub document_count: usize,
+    /// Store generation pinned for the complete scan call.
+    pub generation: u64,
+    /// One when another page is available.
+    pub has_more: u32,
+    /// Segment id of the next row; all zero for active state or no next row.
+    pub next_segment_id: [u8; 16],
+    /// Source-local row at which the next page starts.
+    pub next_row: u32,
+    /// Zero for sealed state or one for active state.
+    pub next_phase: u32,
+}
+
 /// Atomic document-ingest request.
 #[derive(Clone, Copy)]
 #[repr(C)]

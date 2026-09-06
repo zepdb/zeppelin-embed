@@ -328,6 +328,28 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
         missing_count: 24, generation: 32
     });
+    assert_layout!(ZeFilterNode, 168, 8, {
+        op: 0, attribute_id: 4, values: 8, value_count: 16,
+        has_lower: 24, lower: 32, lower_inclusive: 88, has_upper: 92,
+        upper: 96, upper_inclusive: 152, children_start: 156,
+        children_count: 160
+    });
+    assert_layout!(ZeFilter, 32, 8, {
+        abi_size: 0, abi_reserved: 4, nodes: 8, node_count: 16, root: 24
+    });
+    assert_layout!(ZeScanRequest, 112, 8, {
+        abi_size: 0, abi_reserved: 4, cursor_generation: 8,
+        cursor_segment_id: 16, cursor_next_row: 32, cursor_phase: 36,
+        limit: 40, order: 48, include_vector: 52, include_text: 56,
+        include_metadata: 60, include_attributes: 64,
+        has_timestamp_range: 68, start_ts: 72, end_ts: 80, filter: 88,
+        cancel_token: 96, deadline_ns: 104
+    });
+    assert_layout!(ZeScanResult, 64, 8, {
+        abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
+        generation: 24, has_more: 32, next_segment_id: 36, next_row: 52,
+        next_phase: 56
+    });
     assert_layout!(ZeNamespaceSpec, 48, 8, {
         abi_size: 0, abi_reserved: 4, attributes: 8, attribute_count: 16,
         has_vector_space: 24, dimensions: 28, normalization: 32, epoch: 40
@@ -429,6 +451,8 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_maintain",
     "ze_purge",
     "ze_query",
+    "ze_scan",
+    "ze_scan_result_free",
     "ze_seal",
     "ze_search",
     "ze_state",
@@ -662,6 +686,34 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let mut result: ZeQueryResult = common::sized_zeroed();
             ze_query(context.store.handle, &request, &mut result)
         }),
+        ("ze_scan", |context| {
+            let request = ZeScanRequest {
+                abi_size: size_of::<ZeScanRequest>() as u32,
+                abi_reserved: 0,
+                cursor_generation: 0,
+                cursor_segment_id: [0; 16],
+                cursor_next_row: 0,
+                cursor_phase: 0,
+                limit: 1,
+                order: 0,
+                include_vector: 0,
+                include_text: 0,
+                include_metadata: 0,
+                include_attributes: 0,
+                has_timestamp_range: 0,
+                start_ts: 0,
+                end_ts: 0,
+                filter: std::ptr::null(),
+                cancel_token: 0,
+                deadline_ns: 0,
+            };
+            let mut result: ZeScanResult = common::sized_zeroed();
+            ze_scan(context.store.handle, &request, &mut result)
+        }),
+        ("ze_scan_result_free", |_context| {
+            let mut result: ZeScanResult = common::sized_zeroed();
+            ze_scan_result_free(&mut result)
+        }),
         ("ze_epoch_current", |context| {
             let mut identity: ZeEpochIdentity = common::sized_zeroed();
             ze_epoch_current(context.store.handle, &mut identity)
@@ -757,6 +809,14 @@ fn every_entry_point_returns_ze_err_poisoned_after_a_caught_panic() {
             ZeErrorCode::ZeErrPanic,
             "{name} catch wrapper"
         );
+        if name == "ze_scan_result_free" {
+            assert_eq!(
+                call(&mut context),
+                ZeErrorCode::ZeErrInvalidArgument,
+                "{name}"
+            );
+            continue;
+        }
         assert_eq!(call(&mut context), ZeErrorCode::ZeErrPoisoned, "{name}");
     }
 }
@@ -793,18 +853,22 @@ fn the_poison_table_covers_every_exported_handle_taking_symbol() {
             exported.insert(name);
         }
     }
-    let table = poison_function_table()
+    let complete_table = poison_function_table()
         .into_iter()
         .map(|(name, _)| name.to_owned())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(exported, table);
     assert_eq!(
-        table,
+        complete_table,
         POISON_TABLE_NAMES
             .iter()
             .map(|name| (*name).to_owned())
             .collect()
     );
+    let handle_table = complete_table
+        .into_iter()
+        .filter(|name| name != "ze_scan_result_free")
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(exported, handle_table);
 }
 
 #[test]

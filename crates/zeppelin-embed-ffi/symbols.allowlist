@@ -25,6 +25,8 @@ ze_open_with_epoch
 ze_purge
 ze_query
 ze_query_result_free
+ze_scan
+ze_scan_result_free
 ze_seal
 ze_search
 ze_search_result_free

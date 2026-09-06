@@ -63,6 +63,7 @@ impl FfiError {
             zeppelin_embed::lifecycle::StoreError::SchemaMismatch { .. } => {
                 ZeErrorCode::ZeErrSchemaMismatch
             }
+            zeppelin_embed::lifecycle::StoreError::ScanStale { .. } => ZeErrorCode::ZeErrScanStale,
             _ => Self::store_kind_code(error.kind()),
         };
         Self::new(code, message)

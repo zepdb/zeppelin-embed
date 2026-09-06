@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 15 {
+    match bytes.u8() % 16 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -542,6 +542,68 @@ fuzz_target!(|data: &[u8]| {
             let mut result: ZeGetResult = sized(abi_size::<ZeGetResult>(&mut bytes));
             typed(ze_get(handle, &request, &mut result));
             typed(ze_get_result_free(&mut result));
+        }
+        14 => {
+            let rest = bytes.rest();
+            let values = [ZeAttributeValue {
+                attribute_id: bytes.u32() % 3,
+                value_type: bytes.i32() % 7,
+                u64_value: bytes.u64(),
+                i64_value: bytes.u64() as i64,
+                f64_value: f64::from_bits(bytes.u64()),
+                bool_value: bytes.u32() % 3,
+                string_value: rest.as_ptr(),
+                string_len: bytes.len_within(rest.len()),
+            }; 2];
+            let node = ZeFilterNode {
+                op: bytes.i32() % 13,
+                attribute_id: bytes.u32() % 3,
+                values: values.as_ptr(),
+                value_count: bytes.len_within(values.len()),
+                has_lower: bytes.u32() % 3,
+                lower: values[0],
+                lower_inclusive: bytes.u32() % 3,
+                has_upper: bytes.u32() % 3,
+                upper: values[1],
+                upper_inclusive: bytes.u32() % 3,
+                children_start: bytes.u32() % 8,
+                children_count: bytes.u32() % 8,
+            };
+            let nodes = [node; 4];
+            let filter = ZeFilter {
+                abi_size: abi_size::<ZeFilter>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                nodes: nodes.as_ptr(),
+                node_count: bytes.len_within(nodes.len()),
+                root: bytes.u32() % 8,
+            };
+            let request = ZeScanRequest {
+                abi_size: abi_size::<ZeScanRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                cursor_generation: bytes.u64(),
+                cursor_segment_id: [bytes.u8(); 16],
+                cursor_next_row: bytes.u32(),
+                cursor_phase: bytes.u32() % 4,
+                limit: bytes.usize(),
+                order: bytes.i32() % 5,
+                include_vector: bytes.u32() % 3,
+                include_text: bytes.u32() % 3,
+                include_metadata: bytes.u32() % 3,
+                include_attributes: bytes.u32() % 3,
+                has_timestamp_range: bytes.u32() % 3,
+                start_ts: bytes.u64() as i64,
+                end_ts: bytes.u64() as i64,
+                filter: if bytes.u8() % 4 == 0 {
+                    std::ptr::null()
+                } else {
+                    &filter
+                },
+                cancel_token: u64::from(bytes.u8() % 2),
+                deadline_ns: u64::from(bytes.u8()) * 1_000_000,
+            };
+            let mut result: ZeScanResult = sized(abi_size::<ZeScanResult>(&mut bytes));
+            typed(ze_scan(handle, &request, &mut result));
+            typed(ze_scan_result_free(&mut result));
         }
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }

@@ -1314,9 +1314,210 @@ typedef struct ZeDeleteRequest {
 } ZeDeleteRequest;
 
 /*
+ One flat filter-AST node; child nodes are referenced by an index range.
+ */
+typedef struct ZeFilterNode {
+    /*
+     `1` eq, `2` not-eq, `3` in, `4` not-in, `5` range, `6` exists,
+     `7` is-null, `8` and, `9` or, or `10` not.
+     */
+    int32_t op;
+    /*
+     Schema-local column identifier for leaf operators.
+     */
+    uint32_t attribute_id;
+    /*
+     Caller-owned values for equality and membership operators.
+     */
+    const struct ZeAttributeValue *values;
+    /*
+     Number of entries in `values`.
+     */
+    size_t value_count;
+    /*
+     One when `lower` is present.
+     */
+    uint32_t has_lower;
+    /*
+     Lower range endpoint.
+     */
+    struct ZeAttributeValue lower;
+    /*
+     One when the lower endpoint is inclusive.
+     */
+    uint32_t lower_inclusive;
+    /*
+     One when `upper` is present.
+     */
+    uint32_t has_upper;
+    /*
+     Upper range endpoint.
+     */
+    struct ZeAttributeValue upper;
+    /*
+     One when the upper endpoint is inclusive.
+     */
+    uint32_t upper_inclusive;
+    /*
+     First child node index for logical operators.
+     */
+    uint32_t children_start;
+    /*
+     Number of consecutive child node indices.
+     */
+    uint32_t children_count;
+} ZeFilterNode;
+
+/*
+ Caller-owned flat structured filter.
+ */
+typedef struct ZeFilter {
+    /*
+     Caller-provided `sizeof(ZeFilter)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned flat node array.
+     */
+    const struct ZeFilterNode *nodes;
+    /*
+     Number of nodes in `nodes`.
+     */
+    size_t node_count;
+    /*
+     Root node index.
+     */
+    uint32_t root;
+} ZeFilter;
+
+/*
  Opaque generation-tagged cooperative-cancellation handle.
  */
 typedef uint64_t ze_cancel_token;
+
+/*
+ Ordered, filtered, bounded document-enumeration request.
+ */
+typedef struct ZeScanRequest {
+    /*
+     Caller-provided `sizeof(ZeScanRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Continuation generation, or zero to start.
+     */
+    uint64_t cursor_generation;
+    /*
+     Immutable segment id, or all zero for the active phase.
+     */
+    uint8_t cursor_segment_id[16];
+    /*
+     Source-local row at which to resume.
+     */
+    uint32_t cursor_next_row;
+    /*
+     Zero for sealed state or one for active state.
+     */
+    uint32_t cursor_phase;
+    /*
+     Maximum number of documents to return; must be nonzero.
+     */
+    size_t limit;
+    /*
+     Zero storage, one timestamp ascending, or two timestamp descending.
+     */
+    int32_t order;
+    /*
+     One to return full-precision vectors.
+     */
+    uint32_t include_vector;
+    /*
+     One to return stored UTF-8 text.
+     */
+    uint32_t include_text;
+    /*
+     One to return opaque metadata bytes.
+     */
+    uint32_t include_metadata;
+    /*
+     One to return typed schema attributes.
+     */
+    uint32_t include_attributes;
+    /*
+     One when `start_ts` and `end_ts` carry a timestamp range.
+     */
+    uint32_t has_timestamp_range;
+    /*
+     Inclusive timestamp-range start.
+     */
+    int64_t start_ts;
+    /*
+     Exclusive timestamp-range end.
+     */
+    int64_t end_ts;
+    /*
+     Optional caller-owned structured filter.
+     */
+    const struct ZeFilter *filter;
+    /*
+     Optional generation-tagged cancellation token; zero means absent.
+     */
+    ze_cancel_token cancel_token;
+    /*
+     Relative monotonic deadline in nanoseconds; zero means absent.
+     */
+    uint64_t deadline_ns;
+} ZeScanRequest;
+
+/*
+ Callee-owned document page returned by `ze_scan`.
+ */
+typedef struct ZeScanResult {
+    /*
+     Caller-provided `sizeof(ZeScanResult)`.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Arena-owned live documents in requested order.
+     */
+    struct ZeStoredDocument *documents;
+    /*
+     Number of entries in `documents`.
+     */
+    size_t document_count;
+    /*
+     Store generation pinned for the complete scan call.
+     */
+    uint64_t generation;
+    /*
+     One when another page is available.
+     */
+    uint32_t has_more;
+    /*
+     Segment id of the next row; all zero for active state or no next row.
+     */
+    uint8_t next_segment_id[16];
+    /*
+     Source-local row at which the next page starts.
+     */
+    uint32_t next_row;
+    /*
+     Zero for sealed state or one for active state.
+     */
+    uint32_t next_phase;
+} ZeScanResult;
 
 /*
  Vector search request.
@@ -2155,6 +2356,20 @@ ze_error_code ze_get_result_free(struct ZeGetResult *result);
 ze_error_code ze_delete(ze_handle handle,
                         const struct ZeDeleteRequest *request,
                         struct ZeMutationReport *out_report);
+
+/*
+ Enumerates one ordered, filtered page of live documents. All request and
+ filter pointers are caller-owned for the call; the returned arena must be
+ released exactly once with [`ze_scan_result_free`].
+ */
+ze_error_code ze_scan(ze_handle handle,
+                      const struct ZeScanRequest *request,
+                      struct ZeScanResult *out_result);
+
+/*
+ Releases the single arena owned by a scan result.
+ */
+ze_error_code ze_scan_result_free(struct ZeScanResult *result);
 
 /*
  Searches active and immutable store state with optional cancellation.
