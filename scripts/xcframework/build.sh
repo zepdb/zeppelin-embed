@@ -174,8 +174,8 @@ attempt_slice() {
         echo
     } >> "$SLICE_EVIDENCE"
     if [ "$status" -ne 0 ] || [ ! -f "$archive" ]; then
-        echo "slice $label: NOT BUILT (exit $status)"
-        return 0
+        echo "ERROR: required slice $label was not built (exit $status)" >&2
+        return 1
     fi
     check_export_allowlist "$label" "$archive" || return 1
     check_privacy_symbols "$label" "$archive" || return 1
@@ -187,14 +187,10 @@ attempt_slice() {
 
 cd "$ROOT_DIR"
 attempt_slice "macos-arm64" "aarch64-apple-darwin" "macosx" || exit 1
-
-if [ "${#built_archives[@]}" -ne 1 ] || [ "${built_labels[0]}" != "macos-arm64" ]; then
-    echo "ERROR: the release requires exactly the macos-arm64 slice" >&2
-    exit 1
-fi
+attempt_slice "macos-x86_64" "x86_64-apple-darwin" "macosx" || exit 1
 
 macos_archive="$WORK_DIR/libzeppelin_embed_ffi-macos.a"
-cp "${built_archives[0]}" "$macos_archive"
+lipo -create "${built_archives[@]}" -output "$macos_archive" || exit 1
 xcodebuild -create-xcframework \
     -library "$macos_archive" \
     -headers "$HEADERS_DIR" \
@@ -219,6 +215,35 @@ plist["AvailableLibraries"] = sorted(
 with open(path, "wb") as handle:
     plistlib.dump(plist, handle, sort_keys=True)
 NORMALISE_PLIST
+
+packaged_library_relative="$(python3 - "$ARTIFACT/Info.plist" <<'VERIFY_PLIST'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    libraries = plistlib.load(handle).get("AvailableLibraries", [])
+if len(libraries) != 1:
+    raise SystemExit(f"expected exactly one packaged library, found {len(libraries)}")
+library = libraries[0]
+if library.get("LibraryIdentifier") != "macos-arm64_x86_64":
+    raise SystemExit(
+        f"expected LibraryIdentifier macos-arm64_x86_64, found {library.get('LibraryIdentifier')!r}"
+    )
+if sorted(library.get("SupportedArchitectures", [])) != ["arm64", "x86_64"]:
+    raise SystemExit(
+        f"expected architectures arm64 and x86_64, found {library.get('SupportedArchitectures')!r}"
+    )
+print(f"{library['LibraryIdentifier']}/{library['LibraryPath']}")
+VERIFY_PLIST
+)" || exit 1
+packaged_library="$ARTIFACT/$packaged_library_relative"
+packaged_archs="$(lipo -archs "$packaged_library")" || exit 1
+if [ "$(wc -w <<< "$packaged_archs" | tr -d '[:space:]')" -ne 2 ] || \
+    [[ " $packaged_archs " != *" arm64 "* ]] || \
+    [[ " $packaged_archs " != *" x86_64 "* ]]; then
+    echo "ERROR: packaged library must contain exactly arm64 and x86_64; found: $packaged_archs" >&2
+    exit 1
+fi
 
 cp "$PRIVACY_MANIFEST" "$ARTIFACT/PrivacyInfo.xcprivacy"
 while IFS= read -r slice_dir; do
