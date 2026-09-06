@@ -85,6 +85,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           gh release upload "$RELEASE_TAG"
-          dist/ZeppelinEmbed.xcframework.zip
-          dist/zeppelin-embed-macos-arm64.tar.gz
+          dist/xcframework/ZeppelinEmbed.xcframework.zip
+          dist/macos-sdk/zeppelin-embed-macos-arm64.tar.gz
           --repo "$GITHUB_REPOSITORY"
