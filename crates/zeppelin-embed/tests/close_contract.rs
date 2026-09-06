@@ -324,8 +324,29 @@ fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
         // SAFETY: successful `task_threads` returned `count` initialized port names.
         std::slice::from_raw_parts(threads, count_usize)
     };
-    let ids = ports.iter().map(|port| u64::from(*port)).collect();
+    let mut ids = std::collections::BTreeSet::new();
     for port in ports {
+        let pthread = unsafe {
+            // SAFETY: `port` is a live thread right returned by `task_threads`.
+            libc::pthread_from_mach_thread_np(*port)
+        };
+        if pthread != 0 {
+            let mut name = [0_i8; 64];
+            let status = unsafe {
+                // SAFETY: `name` is writable for its full length and pthread is live.
+                libc::pthread_getname_np(pthread, name.as_mut_ptr(), name.len())
+            };
+            if status == 0 {
+                let name = unsafe {
+                    // SAFETY: successful `pthread_getname_np` writes a terminated C string.
+                    std::ffi::CStr::from_ptr(name.as_ptr())
+                }
+                .to_bytes();
+                if name.starts_with(b"ze-lifecycle-") || name.starts_with(b"ze-query-") {
+                    ids.insert(u64::from(*port));
+                }
+            }
+        }
         let _ = unsafe {
             // SAFETY: each name is a send right returned by `task_threads` to this task.
             mach_port_deallocate(task, *port)
