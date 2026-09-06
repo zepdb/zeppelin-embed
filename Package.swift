@@ -10,14 +10,14 @@ let ffiArchive = environment["ZE_LOCAL_FFI_ARCHIVE"] ?? repositoryRoot
     .standardizedFileURL.path
 let useLocalFFI = environment["ZE_USE_LOCAL_FFI"] == "1"
 let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
-let checksumPath = repositoryRoot
-    .appendingPathComponent("bindings/swift/binary-checksum.txt")
-guard let binaryChecksum = try? String(contentsOf: checksumPath, encoding: .utf8)
-    .trimmingCharacters(in: .whitespacesAndNewlines),
-    binaryChecksum.count == 64
-else {
-    fatalError("bindings/swift/binary-checksum.txt must contain a SHA-256 checksum")
-}
+// The checksum has to be a literal. When a consumer depends on this package by
+// URL, SwiftPM compiles the manifest in a sandbox where `#filePath` is
+// `/Package.swift` and the rest of the repository is not reachable, so any
+// attempt to read the checksum from a file next to this one fails and takes the
+// consumer's whole dependency resolution down with it. Kept in sync by
+// `scripts/xcframework/build.sh` and the `swift-release` workflow, which both
+// verify this line against the archive they built.
+let binaryChecksum = "24068e6aa00f0edd2037a8b72588607c360d8e3f322194df9b6aeb729f8e8a9a" // ze:xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {

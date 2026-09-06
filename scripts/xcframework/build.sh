@@ -271,9 +271,15 @@ zip_kb="$(du -k "$ARCHIVE_ZIP" | awk '{print $1}')"
     echo '```'
 } >> "$SIZE_EVIDENCE"
 
-pin="$ROOT_DIR/bindings/swift/binary-checksum.txt"
-if [ -f "$pin" ] && [ "$(tr -d '[:space:]' < "$pin")" != "$checksum" ]; then
-    echo "ERROR: binary-checksum.txt does not match $checksum" >&2
+# Package.swift carries the checksum as a literal because a sandboxed remote
+# manifest cannot read it from a file. This is the gate that keeps it honest.
+pin="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$ROOT_DIR/Package.swift" | cut -d'"' -f2)"
+if [ -z "$pin" ]; then
+    echo "ERROR: Package.swift has no ze:xcframework-checksum literal" >&2
+    exit 1
+fi
+if [ "$pin" != "$checksum" ]; then
+    echo "ERROR: Package.swift checksum literal ($pin) does not match $checksum" >&2
     exit 1
 fi
 
