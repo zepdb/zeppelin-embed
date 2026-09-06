@@ -13,7 +13,7 @@
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93%2B-93450a.svg)](https://www.rust-lang.org)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Search](#one-store-three-ways-to-search) · [APIs](#language-apis) · [Durability](#durability)
+[Quick start](#quick-start) · [Search](#one-store-three-ways-to-search) · [APIs](#language-apis)
 
 </div>
 
@@ -70,27 +70,6 @@ full-precision vectors to score the retained rows. Exact search remains
 available when exhaustive membership is required. Every result reports the
 generation it observed, and diagnostics report the path and work that actually
 ran.
-
-## Durability
-
-The default `Derived` durability mode is intended for indexes that can be
-rebuilt from another authoritative data source. It recovers a structurally
-valid store after interruption, but a power loss can discard a recently
-acknowledged tail.
-
-If Zeppelin Embed is the authoritative copy, select durable commits explicitly:
-
-```python
-with ze.open(
-    "my-search-index",
-    durability=ze.DurabilityMode.DURABLE,
-    commit_tier=ze.CommitTier.DURABLE,
-) as store:
-    ...
-```
-
-Readers search a pinned generation while writes continue. One process owns the
-writer lock; additional processes can open committed snapshots read-only.
 
 ## Quick start
 
