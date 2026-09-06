@@ -1,8 +1,12 @@
 name: Swift Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to package, for example v0.1.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -25,7 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Match release tag to package version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           python3 - <<'PY'
           import os
@@ -78,7 +82,7 @@ jobs:
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           gh release upload "$RELEASE_TAG"
           dist/ZeppelinEmbed.xcframework.zip

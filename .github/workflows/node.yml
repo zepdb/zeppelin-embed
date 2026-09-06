@@ -19,9 +19,12 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "node/**"
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish, for example v0.1.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -33,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -54,9 +57,9 @@ jobs:
       - run: npm run typecheck
         working-directory: node
       - name: Match a release tag to the npm version
-        if: github.event_name == 'release'
+        if: github.event_name == 'workflow_dispatch'
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: test "${RELEASE_TAG#v}" = "$(node -p "require('./node/package.json').version")"
       - name: Verify the addon contains the FFI implementation
         run: |
@@ -92,7 +95,7 @@ jobs:
 
   publish:
     name: Publish npm package
-    if: github.event_name == 'release'
+    if: github.event_name == 'workflow_dispatch'
     needs: package
     runs-on: macos-14
     environment: npm

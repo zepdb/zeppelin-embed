@@ -1,8 +1,12 @@
 name: Rust Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish, for example v0.1.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,13 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
       - name: Match release tag to crate version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           python3 - <<'PY'
           import os

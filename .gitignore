@@ -26,4 +26,5 @@ python/wheelhouse/
 node/node_modules/
 node/*.tgz
 node/prebuilds/
+scripts/release-local.sh
 *.profraw
