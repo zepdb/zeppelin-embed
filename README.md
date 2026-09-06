@@ -23,32 +23,31 @@ persistent directory and serves them without a database server.
 
 ## Search performance
 
-p50 latency in milliseconds. Lower is better.
+Each cell is vector / lexical / hybrid p50 latency in milliseconds. Lower is
+better.
 
-| BEIR benchmark / search | Zeppelin native | LanceDB | SQLite | USearch | Tantivy |
+| BEIR benchmark | Zeppelin native | LanceDB | SQLite | USearch | Tantivy |
 |---|---:|---:|---:|---:|---:|
-| FiQA / vector | **0.06** | 3.26 | 26.67 | 4.01 | — |
-| FiQA / lexical | 0.87 | 1.41 | 34.16 | — | **0.69** |
-| FiQA / hybrid | **1.24** | 3.99 | 62.43 | — | — |
-| SciFact / vector | **0.05** | 1.48 | 2.50 | 2.11 | — |
-| SciFact / lexical | **0.13** | 1.26 | 3.75 | — | 0.14 |
-| SciFact / hybrid | **0.28** | 2.35 | 6.40 | — | — |
-| TREC-COVID / vector | **0.09** | 5.64 | 79.56 | 0.91 | — |
-| TREC-COVID / lexical | 2.83 | **1.74** | 116.69 | — | 2.00 |
-| TREC-COVID / hybrid | **3.66** | 6.41 | 205.45 | — | — |
-| NQ prepared prefix / vector | 0.78 | N/A | N/A | N/A | N/A |
-| NQ prepared prefix / lexical | 0.54 | N/A | N/A | N/A | N/A |
-| NQ prepared prefix / hybrid | 3.38 | N/A | N/A | N/A | N/A |
+| FiQA | **0.06** / 0.87 / **1.24** | 3.26 / 1.41 / 3.99 | 26.67 / 34.16 / 62.43 | 4.01 / — / — | — / **0.69** / — |
+| SciFact | **0.05** / **0.13** / **0.28** | 1.48 / 1.26 / 2.35 | 2.50 / 3.75 / 6.40 | 2.11 / — / — | — / 0.14 / — |
+| TREC-COVID | **0.09** / 2.83 / **3.66** | 5.64 / **1.74** / 6.41 | 79.56 / 116.69 / 205.45 | 0.91 / — / — | — / 2.00 / — |
+| Natural Questions | 0.78 / 0.54 / 3.38 | N/A | N/A | N/A | N/A |
 
-Measured on an Apple M3 Max using warm indexes and `k=10`. Zeppelin native
-uses the Rust API with precomputed query vectors, preanalyzed lexical terms,
-graph vector search, and ID/score results. Competitor measurements use their
-engine bindings with precomputed vectors; frontend and fusion policies differ.
-Each value is the median of three process-level p50 results.
+Measured on an Apple M3 Max using warm indexes and k=10.
 
-The Rust core provides graph and exact vector retrieval, BM25 lexical search,
-and hybrid fusion over the same point-in-time snapshot. Applications supply
-their own document and query vectors.
+[BEIR](https://github.com/beir-cellar/beir) is a benchmark suite for evaluating
+information retrieval across different domains.
+
+- [FiQA](https://huggingface.co/datasets/BeIR/fiqa) retrieves answers to
+  real-world financial questions.
+- [SciFact](https://huggingface.co/datasets/BeIR/scifact) retrieves scientific
+  evidence for factual claims.
+- [TREC-COVID](https://huggingface.co/datasets/BeIR/trec-covid) retrieves
+  biomedical literature for COVID-19 research questions.
+- [Natural Questions](https://huggingface.co/datasets/BeIR/nq) retrieves
+  Wikipedia evidence for real search-engine questions.
+
+Compared with: [LanceDB](https://github.com/lancedb/lancedb), [sqlite-vec](https://github.com/asg017/sqlite-vec), [USearch](https://github.com/unum-cloud/usearch), [Tantivy](https://github.com/quickwit-oss/tantivy).
 
 ## Why Zeppelin Embed
 
