@@ -21,18 +21,30 @@ Zeppelin Embed is an in-process search engine built for macOS and Apple
 silicon. It keeps vectors, text, metadata, and search indexes together in a
 persistent directory and serves them without a database server.
 
-## Native search performance
+## Search performance
 
-| BEIR dataset | Vector p50 / p95 | Lexical p50 / p95 | Hybrid p50 / p95 |
-|---|---:|---:|---:|
-| FiQA | 0.06 / 0.09 ms | 0.87 / 3.13 ms | 1.24 / 3.86 ms |
-| SciFact | 0.05 / 0.06 ms | 0.13 / 0.39 ms | 0.28 / 0.66 ms |
-| TREC-COVID | 0.09 / 0.11 ms | 2.83 / 7.68 ms | 3.66 / 8.94 ms |
-| NQ prepared prefix | 0.78 / 0.88 ms | 0.54 / 1.59 ms | 3.38 / 3.74 ms |
+p50 latency in milliseconds. Lower is better.
 
-Measured on an Apple M3 Max using the native Rust API with warm indexes,
-precomputed query vectors, preanalyzed lexical terms, graph vector search, and
-`k=10`. Each value is the median of three process-level p50 or p95 results.
+| BEIR benchmark / search | Zeppelin native | LanceDB | SQLite | USearch | Tantivy |
+|---|---:|---:|---:|---:|---:|
+| FiQA / vector | **0.06** | 3.26 | 26.67 | 4.01 | — |
+| FiQA / lexical | 0.87 | 1.41 | 34.16 | — | **0.69** |
+| FiQA / hybrid | **1.24** | 3.99 | 62.43 | — | — |
+| SciFact / vector | **0.05** | 1.48 | 2.50 | 2.11 | — |
+| SciFact / lexical | **0.13** | 1.26 | 3.75 | — | 0.14 |
+| SciFact / hybrid | **0.28** | 2.35 | 6.40 | — | — |
+| TREC-COVID / vector | **0.09** | 5.64 | 79.56 | 0.91 | — |
+| TREC-COVID / lexical | 2.83 | **1.74** | 116.69 | — | 2.00 |
+| TREC-COVID / hybrid | **3.66** | 6.41 | 205.45 | — | — |
+| NQ prepared prefix / vector | 0.78 | N/A | N/A | N/A | N/A |
+| NQ prepared prefix / lexical | 0.54 | N/A | N/A | N/A | N/A |
+| NQ prepared prefix / hybrid | 3.38 | N/A | N/A | N/A | N/A |
+
+Measured on an Apple M3 Max using warm indexes and `k=10`. Zeppelin native
+uses the Rust API with precomputed query vectors, preanalyzed lexical terms,
+graph vector search, and ID/score results. Competitor measurements use their
+engine bindings with precomputed vectors; frontend and fusion policies differ.
+Each value is the median of three process-level p50 results.
 
 The Rust core provides graph and exact vector retrieval, BM25 lexical search,
 and hybrid fusion over the same point-in-time snapshot. Applications supply
