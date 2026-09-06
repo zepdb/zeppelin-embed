@@ -339,16 +339,20 @@ fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
 
 #[cfg(target_os = "linux")]
 fn os_thread_ids() -> std::io::Result<std::collections::BTreeSet<u64>> {
-    std::fs::read_dir("/proc/self/task")?
-        .map(|entry| {
-            let entry = entry?;
-            entry
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir("/proc/self/task")? {
+        let entry = entry?;
+        let name = std::fs::read_to_string(entry.path().join("comm"))?;
+        if name.starts_with("ze-lifecycle-") || name.starts_with("ze-query-") {
+            let id = entry
                 .file_name()
                 .to_string_lossy()
                 .parse::<u64>()
-                .map_err(std::io::Error::other)
-        })
-        .collect()
+                .map_err(std::io::Error::other)?;
+            ids.insert(id);
+        }
+    }
+    Ok(ids)
 }
 
 #[cfg(target_os = "macos")]
