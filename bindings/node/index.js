@@ -58,6 +58,30 @@ class Store {
     return callNative(() => this._native.ingest(documents, dimension));
   }
 
+  upsert(documents) {
+    return callNative(() => this._native.upsert(documents));
+  }
+
+  get(ids, fields) {
+    return callNative(() => this._native.get(ids, fields));
+  }
+
+  delete(ids) {
+    return callNative(() => this._native.delete(ids));
+  }
+
+  scan(request) {
+    return callNative(() => this._native.scan(request));
+  }
+
+  count(request) {
+    return callNative(() => this._native.count(request));
+  }
+
+  searchFiltered(vector, filter, options) {
+    return callNative(() => this._native.searchFiltered(vector, filter, options));
+  }
+
   search(vector, k) {
     return callNative(() => this._native.search(vector, k));
   }
@@ -67,9 +91,23 @@ class Store {
   }
 }
 
+function openNamespace(root, name, spec, options = {}) {
+  return callNative(() => {
+    const store = Object.create(Store.prototype);
+    store._native = new binding.NativeStore(root, options, name, spec);
+    return store;
+  });
+}
+
+function listNamespaces(root) {
+  return callNative(() => binding.listNamespaces(root));
+}
+
 module.exports = {
   ABI_VERSION: binding.abiVersion,
   Store,
   UnsupportedPlatformError,
   ZeppelinError,
+  listNamespaces,
+  openNamespace,
 };

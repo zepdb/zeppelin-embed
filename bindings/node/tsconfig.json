@@ -7,5 +7,5 @@
     "strict": true,
     "target": "es2022"
   },
-  "include": ["examples/typescript.ts", "index.d.ts"]
+  "include": ["examples/*.ts", "index.d.ts"]
 }
