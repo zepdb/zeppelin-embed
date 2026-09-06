@@ -1,0 +1,56 @@
+{
+  "name": "@zepdb/zeppelin-embed",
+  "version": "0.1.0",
+  "description": "In-process vector search for macOS and Apple silicon",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zepdb/zeppelin-embed.git",
+    "directory": "node"
+  },
+  "homepage": "https://github.com/zepdb/zeppelin-embed#readme",
+  "bugs": "https://github.com/zepdb/zeppelin-embed/issues",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE",
+    "prebuilds/darwin-arm64/zeppelin_embed.node"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build:native": "node scripts/build-native.mjs",
+    "check:prebuilt": "node scripts/check-prebuilt.mjs",
+    "prepack": "npm run check:prebuilt",
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.1",
+    "typescript": "5.9.2"
+  },
+  "keywords": [
+    "vector-search",
+    "embedded",
+    "search",
+    "macos",
+    "apple-silicon"
+  ]
+}

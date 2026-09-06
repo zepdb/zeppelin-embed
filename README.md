@@ -10,6 +10,7 @@
 [![Python](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml/badge.svg)](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml)
 [![Crates.io](https://img.shields.io/crates/v/zeppelin-embed.svg)](https://crates.io/crates/zeppelin-embed)
 [![PyPI](https://img.shields.io/pypi/v/zeppelin-embed.svg)](https://pypi.org/project/zeppelin-embed/)
+[![npm](https://img.shields.io/npm/v/@zepdb/zeppelin-embed.svg)](https://www.npmjs.com/package/@zepdb/zeppelin-embed)
 [![Rust 1.93+](https://img.shields.io/badge/rust-1.93%2B-93450a.svg)](https://www.rust-lang.org)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
@@ -55,7 +56,8 @@ Compared with: [Chroma](https://github.com/chroma-core/chroma), [hnswlib](https:
 - **Bring your own vectors.** Use embeddings from any model that produces
   compatible document and query vectors.
 - **One native engine, several languages.** Rust, a versioned C ABI, Python,
-  and Swift call the same storage and retrieval implementation.
+  Swift, Node.js, and TypeScript call the same storage and retrieval
+  implementation.
 
 ## One store, three ways to search
 
@@ -100,6 +102,7 @@ cargo add zeppelin-embed
 | Rust | [`zeppelin-embed`](crates/zeppelin-embed) on crates.io | [`five_vectors_search.rs`](crates/zeppelin-embed/examples/five_vectors_search.rs) |
 | Swift | Swift Package Manager with a downloadable XCFramework | [`five_vectors_search.swift`](examples/swift/Sources/FiveVectorsSearch/five_vectors_search.swift) |
 | C/C++ | GitHub release archive with the header and `.a`/`.dylib` libraries | [`five_vectors_search.c`](examples/c/five_vectors_search.c) |
+| Node.js / TypeScript | [`@zepdb/zeppelin-embed`](https://www.npmjs.com/package/@zepdb/zeppelin-embed) with the native addon included | [`javascript.cjs`](node/examples/javascript.cjs) / [`typescript.ts`](node/examples/typescript.ts) |
 
 The C ABI uses size-versioned requests and responses, typed error codes, and
 matching free functions for every callee-owned result. Python wheels include
@@ -120,6 +123,13 @@ PYTHONPATH=python ZEPPELIN_EMBED_LIBRARY=target/release/libzeppelin_embed_ffi.dy
 
 # Rust
 cargo run --release -p zeppelin-embed --example five_vectors_search
+
+# Node.js
+cd node
+npm ci
+npm run build:native
+node examples/javascript.cjs
+cd ..
 
 # Swift
 cargo build --release -p zeppelin-embed-ffi

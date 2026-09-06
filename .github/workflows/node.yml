@@ -1,0 +1,106 @@
+name: Node package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/node.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/zeppelin-embed/**"
+      - "crates/zeppelin-embed-ffi/**"
+      - "node/**"
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - ".github/workflows/node.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/zeppelin-embed/**"
+      - "crates/zeppelin-embed-ffi/**"
+      - "node/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: macOS arm64 package
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: node
+      - name: Check native source formatting
+        run: xcrun clang-format --dry-run --Werror node/native/addon.cc
+      - run: npm run build:native
+        working-directory: node
+      - run: npm test
+        working-directory: node
+      - run: npm run typecheck
+        working-directory: node
+      - name: Match a release tag to the npm version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./node/package.json').version")"
+      - name: Verify the addon contains the FFI implementation
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          file node/prebuilds/darwin-arm64/zeppelin_embed.node | grep 'arm64'
+          if otool -L node/prebuilds/darwin-arm64/zeppelin_embed.node | grep -q 'zeppelin_embed_ffi'; then
+            echo 'the addon unexpectedly depends on a separate Zeppelin FFI dylib' >&2
+            exit 1
+          fi
+      - name: Pack and smoke-test the installed artifact
+        id: pack
+        working-directory: node
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --json | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => console.log(JSON.parse(value)[0].filename));')
+          consumer=$(mktemp -d)
+          cp test/installed-package-smoke.cjs "$consumer/smoke.cjs"
+          cp test/installed-package-type-smoke.ts "$consumer/type-smoke.ts"
+          cd "$consumer"
+          npm init --yes >/dev/null
+          npm install "$GITHUB_WORKSPACE/node/$tarball"
+          node smoke.cjs
+          "$GITHUB_WORKSPACE/node/node_modules/.bin/tsc" \
+            --module node16 --moduleResolution node16 --target es2022 \
+            --strict --noEmit type-smoke.ts
+          printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeppelin-embed-node-darwin-arm64
+          path: node/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish npm package
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: macos-14
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zeppelin-embed-node-darwin-arm64
+          path: package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11
+      - run: npm publish package/*.tgz --access public --provenance

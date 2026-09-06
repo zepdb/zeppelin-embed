@@ -23,4 +23,7 @@ tools/embed-harness/data/*
 python/build/
 python/dist/
 python/wheelhouse/
+node/node_modules/
+node/*.tgz
+node/prebuilds/
 *.profraw
