@@ -4,7 +4,7 @@
 
 # Zeppelin Embed
 
-**Embedded dense, lexical, and hybrid search for applications that own their data.**
+**Embedded vector, lexical, and hybrid search specialized for macOS.**
 
 [![CI](https://github.com/zepdb/zeppelin-embed/actions/workflows/ci.yml/badge.svg)](https://github.com/zepdb/zeppelin-embed/actions/workflows/ci.yml)
 [![Python](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml/badge.svg)](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml)
@@ -17,19 +17,31 @@
 
 </div>
 
-Zeppelin Embed is an in-process search engine for product search, RAG, agents,
-and local-first applications. It keeps vectors, text, metadata, and search
-indexes together in a persistent directory and serves them without a database
-server.
+Zeppelin Embed is an in-process search engine built for macOS and Apple
+silicon. It keeps vectors, text, metadata, and search indexes together in a
+persistent directory and serves them without a database server.
+
+## Native search performance
+
+| BEIR dataset | Vector p50 / p95 | Lexical p50 / p95 | Hybrid p50 / p95 |
+|---|---:|---:|---:|
+| FiQA | 0.06 / 0.09 ms | 0.87 / 3.13 ms | 1.24 / 3.86 ms |
+| SciFact | 0.05 / 0.06 ms | 0.13 / 0.39 ms | 0.28 / 0.66 ms |
+| TREC-COVID | 0.09 / 0.11 ms | 2.83 / 7.68 ms | 3.66 / 8.94 ms |
+| NQ prepared prefix | 0.78 / 0.88 ms | 0.54 / 1.59 ms | 3.38 / 3.74 ms |
+
+Measured on an Apple M3 Max using the native Rust API with warm indexes,
+precomputed query vectors, preanalyzed lexical terms, graph vector search, and
+`k=10`. Each value is the median of three process-level p50 or p95 results. The
+NQ result covers the prepared 140,000-document prefix, not the full corpus.
 
 The Rust core provides graph and exact vector retrieval, BM25 lexical search,
-and hybrid fusion over the same point-in-time snapshot. Applications can bring
-precomputed vectors or use the Apple-native text package to tokenize, embed,
-index, and query raw text through a versioned `.zem` model bundle.
+and hybrid fusion over the same point-in-time snapshot. Applications supply
+their own document and query vectors.
 
 ## Why Zeppelin Embed
 
-- **Dense, lexical, and hybrid retrieval.** Use one store and one document ID
+- **Vector, lexical, and hybrid retrieval.** Use one store and one document ID
   space for vector similarity, BM25, or fused results.
 - **Local and persistent.** The engine runs inside your process, recovers from
   its write-ahead log, and publishes immutable searchable generations.
@@ -38,15 +50,14 @@ index, and query raw text through a versioned `.zem` model bundle.
 - **Production controls.** Typed filters, idempotent document revisions,
   cancellation, deadlines, retention, physical purge, memory budgets, health,
   and query diagnostics.
-- **Bring vectors or bring text.** Use the core directly with embeddings from
-  any model, or bind a compatible document/query tower pair into a `.zem`
-  bundle.
+- **Bring your own vectors.** Use embeddings from any model that produces
+  compatible document and query vectors.
 - **One native engine, several languages.** Rust, a versioned C ABI, Python,
   and Swift call the same storage and retrieval implementation.
 
 ## Quick start
 
-Install the Python package:
+Install the Python bindings for the native core:
 
 ```bash
 python -m pip install zeppelin-embed
@@ -90,6 +101,9 @@ with ze.open(Path("my-search-index")) as store:
         print(hit.doc_id, hit.score)
 ```
 
+The example supplies its own document and query vectors. Zeppelin Embed
+v0.1.0 does not bundle or download an embedding model.
+
 The directory is the database. Reopen the same path to recover its committed
 state and continue ingesting or searching.
 
@@ -108,48 +122,15 @@ exposes the same lifecycle through a stable C ABI.
 
 | Mode | Input | Result |
 |---|---|---|
-| Dense | A precomputed `float32` query vector | Approximate graph retrieval by default, with exact and scan tiers available |
+| Vector | A precomputed `float32` query vector | Approximate graph retrieval by default, with exact and scan tiers available |
 | Lexical | Raw query text or a structured lexical query | BM25 ranking with term, phrase, prefix, and phonetic operators |
-| Hybrid | A query vector plus text | Dense and lexical candidates fused over one pinned store generation |
+| Hybrid | A query vector plus text | Vector and lexical candidates fused over one pinned store generation |
 
-Dense and hybrid graph queries use quantized traversal to select candidates and
+Vector and hybrid graph queries use quantized traversal to select candidates and
 full-precision vectors to score the retained rows. Exact search remains
 available when exhaustive membership is required. Every result reports the
 generation it observed, and diagnostics report the path and work that actually
 ran.
-
-## Raw-text retrieval
-
-`zeppelin-embed-text` adds an end-to-end text API on Apple platforms. A
-`TextStore` loads an immutable `.zem` bundle containing the tokenizer, document
-tower, query tower, alignment identity, and retrieval settings. It then owns
-chunking, embedding, ingest, query embedding, retrieval, and returned-text
-construction.
-
-```rust
-use zeppelin_embed_text::{
-    IngestOptions, Legs, QueryOptions, TextDocument, TextStore,
-};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = TextStore::open("index", "model.zem", Default::default())?;
-    store.ingest_text(
-        &[TextDocument::new(101, 1, "fast embedded hybrid search")],
-        IngestOptions::default(),
-    )?;
-
-    let hits = store.query_text(
-        "hybrid search",
-        QueryOptions::new(10).with_legs(Legs::Hybrid),
-    )?;
-    println!("{}", hits[0].text);
-    Ok(())
-}
-```
-
-Document and query towers are role-bound. Zeppelin rejects incompatible model,
-tokenizer, normalization, and alignment identities instead of silently mixing
-embedding spaces.
 
 ## Durability
 
@@ -177,7 +158,6 @@ writer lock; additional processes can open committed snapshots read-only.
 | API | Package or entry point | Current release targets |
 |---|---|---|
 | Rust core | [`zeppelin-embed`](crates/zeppelin-embed) | macOS and Linux |
-| Text and embedding | [`zeppelin-embed-text`](crates/zeppelin-embed-text) | Apple silicon with MLX and Core ML |
 | C | [`zeppelin_embed.h`](crates/zeppelin-embed-ffi/include/zeppelin_embed.h) | Static and dynamic libraries |
 | Python | [`python/`](python) | macOS Apple silicon and manylinux x86-64 wheels |
 | Swift | [`ZeppelinEmbed`](swift/ZeppelinEmbed) | macOS 14+ and iOS 17+ |
@@ -208,9 +188,6 @@ Build a Python wheel:
 ```bash
 python -m build --wheel python
 ```
-
-The text crate additionally requires Apple Metal. Its Core ML query runtime is
-available when a bundle includes a compatible compiled query model.
 
 ## License
 
