@@ -87,4 +87,5 @@ jobs:
           gh release upload "$RELEASE_TAG"
           dist/xcframework/ZeppelinEmbed.xcframework.zip
           dist/macos-sdk/zeppelin-embed-macos-arm64.tar.gz
+          --clobber
           --repo "$GITHUB_REPOSITORY"

@@ -30,7 +30,7 @@ pub(crate) fn mincore_resident_bytes(range: &[u8]) -> io::Result<u64> {
         .ok_or_else(|| io::Error::other("mapped range underflow"))?
         / page_size;
     const STATUS_CAPACITY: usize = 1_024;
-    let mut statuses = [0 as libc::c_char; STATUS_CAPACITY];
+    let mut statuses = [0_u8; STATUS_CAPACITY];
     let mut first_page = 0_usize;
     let mut resident = 0_u64;
     while first_page < page_count {
@@ -50,7 +50,7 @@ pub(crate) fn mincore_resident_bytes(range: &[u8]) -> io::Result<u64> {
             libc::mincore(
                 chunk_start as *mut libc::c_void,
                 chunk_length,
-                statuses.as_mut_ptr(),
+                statuses.as_mut_ptr().cast(),
             )
         };
         if result == -1 {
