@@ -1,10 +1,6 @@
 <div align="center">
 
-<img src="assets/zeppelin-embed.png" alt="Zeppelin Embed icon" width="112">
-
-# Zeppelin Embed
-
-**Embedded vector, lexical, and hybrid search specialized for macOS.**
+<img src="assets/zeppelin-embed-banner.png" alt="Zeppelin Embed: embedded vector, lexical, and hybrid search for macOS" width="800px">
 
 [![CI](https://github.com/zepdb/zeppelin-embed/actions/workflows/ci.yml/badge.svg)](https://github.com/zepdb/zeppelin-embed/actions/workflows/ci.yml)
 [![Python](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml/badge.svg)](https://github.com/zepdb/zeppelin-embed/actions/workflows/python.yml)
