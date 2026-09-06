@@ -17,6 +17,7 @@ const QUERIES: [&str; 3] = [
 ];
 
 #[test]
+#[ignore = "requires external MLX and CoreML model fixtures"]
 fn gpu_cpu_and_ane_query_vectors_agree_within_tolerance_on_the_golden_queries() {
     let bundle_root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
         .map(PathBuf::from)
