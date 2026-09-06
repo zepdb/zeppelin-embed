@@ -223,6 +223,239 @@ fn generate_fixture() -> String {
     let close_code = ze_close(handle);
     assert_eq!(close_code, ZeErrorCode::ZeOk);
 
+    let namespace_root = directory.path().join("namespaces");
+    std::fs::create_dir(&namespace_root).expect("create namespace root");
+    let namespace_root_bytes = namespace_root.to_string_lossy().into_owned().into_bytes();
+    let namespace_name = b"records";
+    let attribute_name = b"rank";
+    let attributes = [ZeAttributeDefinition {
+        attribute_id: 1,
+        name: attribute_name.as_ptr(),
+        name_len: attribute_name.len(),
+        attribute_type: 1,
+        nullable: 0,
+    }];
+    let namespace_spec = ZeNamespaceSpec {
+        abi_size: size_of::<ZeNamespaceSpec>() as u32,
+        abi_reserved: 0,
+        attributes: attributes.as_ptr(),
+        attribute_count: attributes.len(),
+        has_vector_space: 1,
+        dimensions: 1,
+        normalization: 0,
+        epoch: std::ptr::null(),
+    };
+    let namespace_open = ZeNamespaceOpenRequest {
+        abi_size: size_of::<ZeNamespaceOpenRequest>() as u32,
+        abi_reserved: 0,
+        root: namespace_root_bytes.as_ptr(),
+        root_len: namespace_root_bytes.len(),
+        name: namespace_name.as_ptr(),
+        name_len: namespace_name.len(),
+        open: ZeOpenRequest {
+            abi_size: size_of::<ZeOpenRequest>() as u32,
+            abi_reserved: 0,
+            path: std::ptr::null(),
+            path_len: 0,
+            access_mode: 0,
+            durability_mode: 0,
+            commit_tier: 1,
+            reader_drain_timeout_ms: 250,
+            max_resident_bytes: u64::MAX,
+            max_temp_bytes: u64::MAX,
+        },
+        spec: &namespace_spec,
+    };
+    let mut namespace_handle = 0;
+    let namespace_open_code = ze_namespace_open(&namespace_open, &mut namespace_handle);
+    assert_eq!(namespace_open_code, ZeErrorCode::ZeOk);
+
+    let namespace_list = ZeNamespaceListRequest {
+        abi_size: size_of::<ZeNamespaceListRequest>() as u32,
+        abi_reserved: 0,
+        root: namespace_root_bytes.as_ptr(),
+        root_len: namespace_root_bytes.len(),
+    };
+    let mut namespace_list_result: ZeNamespaceListResult = common::sized_zeroed();
+    let namespace_list_code = ze_namespace_list(&namespace_list, &mut namespace_list_result);
+    assert_eq!(namespace_list_code, ZeErrorCode::ZeOk);
+    let namespace_names = unsafe {
+        std::slice::from_raw_parts(
+            namespace_list_result.entries,
+            namespace_list_result.entry_count,
+        )
+    }
+    .iter()
+    .map(|entry| {
+        String::from_utf8(
+            unsafe { std::slice::from_raw_parts(entry.name, entry.name_len) }.to_vec(),
+        )
+        .expect("namespace name UTF-8")
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(
+        ze_namespace_list_result_free(&mut namespace_list_result),
+        ZeErrorCode::ZeOk
+    );
+
+    let record_vector = [0.5_f32];
+    let record_text = b"parity record";
+    let record_metadata = [0xab_u8, 0xcd];
+    let record_attributes = [ZeAttributeValue {
+        attribute_id: 1,
+        value_type: 1,
+        u64_value: 7,
+        i64_value: 0,
+        f64_value: 0.0,
+        bool_value: 0,
+        string_value: std::ptr::null(),
+        string_len: 0,
+    }];
+    let record = ZeUpsertDocument {
+        abi_size: size_of::<ZeUpsertDocument>() as u32,
+        abi_reserved: 0,
+        document: ZeIngestDocument {
+            abi_size: size_of::<ZeIngestDocument>() as u32,
+            abi_reserved: 0,
+            doc_id: ZeDocId { high: 0, low: 101 },
+            revision: 2,
+            timestamp: 321,
+            vector: record_vector.as_ptr(),
+            vector_len: record_vector.len(),
+            metadata: record_metadata.as_ptr(),
+            metadata_len: record_metadata.len(),
+            text: record_text.as_ptr(),
+            text_len: record_text.len(),
+        },
+        attributes: record_attributes.as_ptr(),
+        attribute_count: record_attributes.len(),
+    };
+    let upsert = ZeUpsertRequest {
+        abi_size: size_of::<ZeUpsertRequest>() as u32,
+        abi_reserved: 0,
+        documents: &record,
+        document_count: 1,
+        dimension: 1,
+    };
+    let mut upsert_report: ZeMutationReport = common::sized_zeroed();
+    let upsert_code = ze_upsert(namespace_handle, &upsert, &mut upsert_report);
+    assert_eq!(upsert_code, ZeErrorCode::ZeOk);
+
+    let requested_ids = [ZeDocId { high: 0, low: 101 }, ZeDocId { high: 0, low: 999 }];
+    let get = ZeGetRequest {
+        abi_size: size_of::<ZeGetRequest>() as u32,
+        abi_reserved: 0,
+        ids: requested_ids.as_ptr(),
+        id_count: requested_ids.len(),
+        include_vector: 1,
+        include_text: 1,
+        include_metadata: 1,
+        include_attributes: 1,
+    };
+    let mut get_result: ZeGetResult = common::sized_zeroed();
+    let get_code = ze_get(namespace_handle, &get, &mut get_result);
+    assert_eq!(get_code, ZeErrorCode::ZeOk);
+    let returned = unsafe { &*get_result.documents };
+    let returned_vector =
+        unsafe { std::slice::from_raw_parts(returned.vector, returned.vector_len) }.to_vec();
+    let returned_text = String::from_utf8(
+        unsafe { std::slice::from_raw_parts(returned.text, returned.text_len) }.to_vec(),
+    )
+    .expect("record text UTF-8");
+    let returned_metadata =
+        unsafe { std::slice::from_raw_parts(returned.metadata, returned.metadata_len) }.to_vec();
+    let returned_attribute = unsafe { *returned.attributes };
+    let get_generation = get_result.generation;
+    let get_missing_count = get_result.missing_count;
+    assert_eq!(ze_get_result_free(&mut get_result), ZeErrorCode::ZeOk);
+
+    let scan = ZeScanRequest {
+        abi_size: size_of::<ZeScanRequest>() as u32,
+        abi_reserved: 0,
+        cursor_generation: 0,
+        cursor_segment_id: [0; 16],
+        cursor_next_row: 0,
+        cursor_phase: 0,
+        limit: 10,
+        order: 0,
+        include_vector: 0,
+        include_text: 0,
+        include_metadata: 0,
+        include_attributes: 0,
+        has_timestamp_range: 0,
+        start_ts: 0,
+        end_ts: 0,
+        filter: std::ptr::null(),
+        cancel_token: 0,
+        deadline_ns: 0,
+    };
+    let mut scan_result: ZeScanResult = common::sized_zeroed();
+    let scan_code = ze_scan(namespace_handle, &scan, &mut scan_result);
+    assert_eq!(scan_code, ZeErrorCode::ZeOk);
+    let scanned_ids =
+        unsafe { std::slice::from_raw_parts(scan_result.documents, scan_result.document_count) }
+            .iter()
+            .map(|document| document.doc_id.low)
+            .collect::<Vec<_>>();
+    let scan_generation = scan_result.generation;
+    let scan_has_more = scan_result.has_more;
+    assert_eq!(ze_scan_result_free(&mut scan_result), ZeErrorCode::ZeOk);
+
+    let filter_values = [record_attributes[0]];
+    let filter_nodes = [ZeFilterNode {
+        op: 1,
+        attribute_id: 1,
+        values: filter_values.as_ptr(),
+        value_count: filter_values.len(),
+        has_lower: 0,
+        lower: unsafe { std::mem::zeroed() },
+        lower_inclusive: 0,
+        has_upper: 0,
+        upper: unsafe { std::mem::zeroed() },
+        upper_inclusive: 0,
+        children_start: 0,
+        children_count: 0,
+    }];
+    let filter = ZeFilter {
+        abi_size: size_of::<ZeFilter>() as u32,
+        abi_reserved: 0,
+        nodes: filter_nodes.as_ptr(),
+        node_count: filter_nodes.len(),
+        root: 0,
+    };
+    let count = ZeCountRequest {
+        abi_size: size_of::<ZeCountRequest>() as u32,
+        abi_reserved: 0,
+        filter: &filter,
+        has_timestamp_range: 0,
+        start_ts: 0,
+        end_ts: 0,
+    };
+    let mut count_result: ZeCountResult = common::sized_zeroed();
+    let count_code = ze_count(namespace_handle, &count, &mut count_result);
+    assert_eq!(count_code, ZeErrorCode::ZeOk);
+
+    let search = ZeSearchFilteredRequest {
+        abi_size: size_of::<ZeSearchFilteredRequest>() as u32,
+        abi_reserved: 0,
+        search: ZeSearchRequest {
+            k: 1,
+            tier: 1,
+            ..common::valid_search_request(&record_vector)
+        },
+        filter: &filter,
+    };
+    let mut filtered_result: ZeSearchResult = common::sized_zeroed();
+    let search_filtered_code = ze_search_filtered(namespace_handle, &search, &mut filtered_result);
+    assert_eq!(search_filtered_code, ZeErrorCode::ZeOk);
+    let filtered_hit = unsafe { *filtered_result.hits };
+    let filtered_generation = filtered_result.generation;
+    assert_eq!(
+        ze_search_result_free(&mut filtered_result),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(ze_close(namespace_handle), ZeErrorCode::ZeOk);
+
     let mut json = String::new();
     writeln!(json, "{{").expect("write JSON");
     writeln!(
@@ -311,6 +544,14 @@ fn generate_fixture() -> String {
         code_name(close_code)
     )
     .expect("write JSON");
+    writeln!(json, ",").expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"namespace_open\", \"root\": \"namespaces\", \"name\": \"records\", \"spec\": {{\"attributes\": [{{\"attribute_id\": 1, \"name\": \"rank\", \"attribute_type\": 1, \"nullable\": false}}], \"vector_space\": {{\"dimensions\": 1, \"normalization\": 0}}}}, \"expected\": {{\"error_code\": \"{}\"}}}},", code_name(namespace_open_code)).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"namespace_list\", \"root\": \"namespaces\", \"expected\": {{\"error_code\": \"{}\", \"names\": [\"{}\"]}}}},", code_name(namespace_list_code), namespace_names.join("\", \"")).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"upsert\", \"documents\": [{{\"doc_id\": {{\"high\": 0, \"low\": 101}}, \"revision\": 2, \"timestamp\": 321, \"vector\": {}, \"text\": \"{}\", \"metadata_hex\": \"{}\", \"attributes\": [{{\"attribute_id\": 1, \"attribute_type\": 1, \"value\": 7}}]}}], \"expected\": {{\"error_code\": \"{}\", \"sequence\": {}, \"generation\": {}}}}},", vector_json(&record_vector), String::from_utf8_lossy(record_text), record_metadata.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), code_name(upsert_code), upsert_report.sequence, upsert_report.generation).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"get\", \"ids\": [{{\"high\": 0, \"low\": 101}}, {{\"high\": 0, \"low\": 999}}], \"expected\": {{\"error_code\": \"{}\", \"generation\": {}, \"missing_count\": {}, \"documents\": [{{\"doc_id\": {{\"high\": 0, \"low\": 101}}, \"revision\": 2, \"timestamp\": 321, \"vector\": {}, \"text\": \"{}\", \"metadata_hex\": \"{}\", \"attributes\": [{{\"attribute_id\": 1, \"attribute_type\": 1, \"value\": {}}}]}}, null]}}}},", code_name(get_code), get_generation, get_missing_count, vector_json(&returned_vector), returned_text, returned_metadata.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), returned_attribute.u64_value).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"scan\", \"request\": {{\"order\": \"storage\", \"limit\": 10}}, \"expected\": {{\"error_code\": \"{}\", \"generation\": {}, \"has_more\": {}, \"doc_ids\": [{}]}}}},", code_name(scan_code), scan_generation, scan_has_more != 0, scanned_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"count\", \"filter\": {{\"op\": \"eq\", \"field\": \"rank\", \"value\": 7}}, \"expected\": {{\"error_code\": \"{}\", \"generation\": {}, \"count\": {}}}}},", code_name(count_code), count_result.generation, count_result.count).expect("write JSON");
+    writeln!(json, "    {{\"kind\": \"search_filtered\", \"request\": {{\"vector\": {}, \"k\": 1, \"tier\": 1, \"filter\": {{\"op\": \"eq\", \"field\": \"rank\", \"value\": 7}}}}, \"expected\": {{\"error_code\": \"{}\", \"generation\": {}, \"hits\": [{{\"doc_id\": {{\"high\": {}, \"low\": {}}}, \"score\": {:.6}}}]}}}}", vector_json(&record_vector), code_name(search_filtered_code), filtered_generation, filtered_hit.doc_id.high, filtered_hit.doc_id.low, filtered_hit.score).expect("write JSON");
     writeln!(json, "  ]").expect("write JSON");
     writeln!(json, "}}").expect("write JSON");
     json

@@ -64,6 +64,64 @@ class ZeEpochRequest(ct.Structure):
     ]
 
 
+class ZeAttributeDefinition(ct.Structure):
+    _fields_ = [
+        ("attribute_id", ct.c_uint32),
+        ("name", UInt8Pointer),
+        ("name_len", ct.c_size_t),
+        ("attribute_type", ct.c_int32),
+        ("nullable", ct.c_uint32),
+    ]
+
+
+class ZeNamespaceSpec(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("attributes", ct.POINTER(ZeAttributeDefinition)),
+        ("attribute_count", ct.c_size_t),
+        ("has_vector_space", ct.c_uint32),
+        ("dimensions", ct.c_uint32),
+        ("normalization", ct.c_int32),
+        ("epoch", ct.POINTER(ZeEpochRequest)),
+    ]
+
+
+class ZeNamespaceOpenRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("root", UInt8Pointer),
+        ("root_len", ct.c_size_t),
+        ("name", UInt8Pointer),
+        ("name_len", ct.c_size_t),
+        ("open", ZeOpenRequest),
+        ("spec", ct.POINTER(ZeNamespaceSpec)),
+    ]
+
+
+class ZeNamespaceListRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("root", UInt8Pointer),
+        ("root_len", ct.c_size_t),
+    ]
+
+
+class ZeNamespaceEntry(ct.Structure):
+    _fields_ = [("name", UInt8Pointer), ("name_len", ct.c_size_t)]
+
+
+class ZeNamespaceListResult(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("entries", ct.POINTER(ZeNamespaceEntry)),
+        ("entry_count", ct.c_size_t),
+    ]
+
+
 class ZeEpochIdentity(ct.Structure):
     _fields_ = [
         ("abi_size", ct.c_uint32),
@@ -236,6 +294,164 @@ ZeIngestRequest._fields_ = [
 ]
 
 
+class ZeAttributeValue(ct.Structure):
+    _fields_ = [
+        ("attribute_id", ct.c_uint32),
+        ("value_type", ct.c_int32),
+        ("u64_value", ct.c_uint64),
+        ("i64_value", ct.c_int64),
+        ("f64_value", ct.c_double),
+        ("bool_value", ct.c_uint32),
+        ("string_value", UInt8Pointer),
+        ("string_len", ct.c_size_t),
+    ]
+
+
+class ZeUpsertDocument(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("document", ZeIngestDocument),
+        ("attributes", ct.POINTER(ZeAttributeValue)),
+        ("attribute_count", ct.c_size_t),
+    ]
+
+
+class ZeUpsertRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("documents", ct.POINTER(ZeUpsertDocument)),
+        ("document_count", ct.c_size_t),
+        ("dimension", ct.c_size_t),
+    ]
+
+
+class ZeGetRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("ids", ct.POINTER(ZeDocId)),
+        ("id_count", ct.c_size_t),
+        ("include_vector", ct.c_uint32),
+        ("include_text", ct.c_uint32),
+        ("include_metadata", ct.c_uint32),
+        ("include_attributes", ct.c_uint32),
+    ]
+
+
+class ZeStoredDocument(ct.Structure):
+    _fields_ = [
+        ("has_document", ct.c_uint32),
+        ("doc_id", ZeDocId),
+        ("revision", ct.c_uint64),
+        ("timestamp", ct.c_int64),
+        ("vector", FloatPointer),
+        ("vector_len", ct.c_size_t),
+        ("text", UInt8Pointer),
+        ("text_len", ct.c_size_t),
+        ("metadata", UInt8Pointer),
+        ("metadata_len", ct.c_size_t),
+        ("attributes", ct.POINTER(ZeAttributeValue)),
+        ("attribute_count", ct.c_size_t),
+    ]
+
+
+class ZeGetResult(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("documents", ct.POINTER(ZeStoredDocument)),
+        ("document_count", ct.c_size_t),
+        ("missing_count", ct.c_size_t),
+        ("generation", ct.c_uint64),
+    ]
+
+
+class ZeFilterNode(ct.Structure):
+    _fields_ = [
+        ("op", ct.c_int32),
+        ("attribute_id", ct.c_uint32),
+        ("values", ct.POINTER(ZeAttributeValue)),
+        ("value_count", ct.c_size_t),
+        ("has_lower", ct.c_uint32),
+        ("lower", ZeAttributeValue),
+        ("lower_inclusive", ct.c_uint32),
+        ("has_upper", ct.c_uint32),
+        ("upper", ZeAttributeValue),
+        ("upper_inclusive", ct.c_uint32),
+        ("children_start", ct.c_uint32),
+        ("children_count", ct.c_uint32),
+    ]
+
+
+class ZeFilter(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("nodes", ct.POINTER(ZeFilterNode)),
+        ("node_count", ct.c_size_t),
+        ("root", ct.c_uint32),
+    ]
+
+
+class ZeScanRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("cursor_generation", ct.c_uint64),
+        ("cursor_segment_id", ct.c_uint8 * 16),
+        ("cursor_next_row", ct.c_uint32),
+        ("cursor_phase", ct.c_uint32),
+        ("limit", ct.c_size_t),
+        ("order", ct.c_int32),
+        ("include_vector", ct.c_uint32),
+        ("include_text", ct.c_uint32),
+        ("include_metadata", ct.c_uint32),
+        ("include_attributes", ct.c_uint32),
+        ("has_timestamp_range", ct.c_uint32),
+        ("start_ts", ct.c_int64),
+        ("end_ts", ct.c_int64),
+        ("filter", ct.POINTER(ZeFilter)),
+        ("cancel_token", ct.c_uint64),
+        ("deadline_ns", ct.c_uint64),
+    ]
+
+
+class ZeScanResult(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("documents", ct.POINTER(ZeStoredDocument)),
+        ("document_count", ct.c_size_t),
+        ("generation", ct.c_uint64),
+        ("has_more", ct.c_uint32),
+        ("next_segment_id", ct.c_uint8 * 16),
+        ("next_row", ct.c_uint32),
+        ("next_phase", ct.c_uint32),
+    ]
+
+
+class ZeCountRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("filter", ct.POINTER(ZeFilter)),
+        ("has_timestamp_range", ct.c_uint32),
+        ("start_ts", ct.c_int64),
+        ("end_ts", ct.c_int64),
+    ]
+
+
+class ZeCountResult(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("count", ct.c_uint64),
+        ("generation", ct.c_uint64),
+    ]
+
+
 class ZeMutationReport(ct.Structure):
     _fields_ = [
         ("abi_size", ct.c_uint32),
@@ -271,6 +487,15 @@ class ZeSearchRequest(ct.Structure):
         ("graph_seed", ct.c_uint64),
         ("cancel_token", ct.c_uint64),
         ("deadline_ns", ct.c_uint64),
+    ]
+
+
+class ZeSearchFilteredRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("search", ZeSearchRequest),
+        ("filter", ct.POINTER(ZeFilter)),
     ]
 
 

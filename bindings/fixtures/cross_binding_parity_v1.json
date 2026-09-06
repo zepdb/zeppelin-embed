@@ -23,5 +23,13 @@
     {"kind": "query", "name": "hybrid", "request": {"vector": [1.000000, 0.250000, 0.250000, 0.375000], "text": "harbour", "k": 4, "tier": null, "rules_enabled": true}, "expected": {"error_code": "ZE_OK", "generation": 1, "mode": 2, "embedding_epoch": 9489301568760753347, "tokenizer_epoch": 1035315901113778624, "hits": [{"doc_id": {"high": 0, "low": 2}, "score": 1.000000, "vector_squared_l2": 0.000000, "lexical_bm25": 0.365470}, {"doc_id": {"high": 0, "low": 1}, "score": 0.933967, "vector_squared_l2": 0.457031, "lexical_bm25": 0.332659}, {"doc_id": {"high": 0, "low": 4}, "score": 0.886709, "vector_squared_l2": 1.324219, "lexical_bm25": 0.365470}, {"doc_id": {"high": 0, "low": 3}, "score": 0.670257, "vector_squared_l2": 0.347656, "lexical_bm25": 0.000000}]}},
     {"kind": "invalid_empty_query", "request": {"vector": null, "text": null}, "expected": {"error_code": "ZE_ERR_INVALID_ARGUMENT"}},
     {"kind": "close", "expected": {"error_code": "ZE_OK"}}
+,
+    {"kind": "namespace_open", "root": "namespaces", "name": "records", "spec": {"attributes": [{"attribute_id": 1, "name": "rank", "attribute_type": 1, "nullable": false}], "vector_space": {"dimensions": 1, "normalization": 0}}, "expected": {"error_code": "ZE_OK"}},
+    {"kind": "namespace_list", "root": "namespaces", "expected": {"error_code": "ZE_OK", "names": ["records"]}},
+    {"kind": "upsert", "documents": [{"doc_id": {"high": 0, "low": 101}, "revision": 2, "timestamp": 321, "vector": [0.500000], "text": "parity record", "metadata_hex": "abcd", "attributes": [{"attribute_id": 1, "attribute_type": 1, "value": 7}]}], "expected": {"error_code": "ZE_OK", "sequence": 1, "generation": 1}},
+    {"kind": "get", "ids": [{"high": 0, "low": 101}, {"high": 0, "low": 999}], "expected": {"error_code": "ZE_OK", "generation": 1, "missing_count": 1, "documents": [{"doc_id": {"high": 0, "low": 101}, "revision": 2, "timestamp": 321, "vector": [0.500000], "text": "parity record", "metadata_hex": "abcd", "attributes": [{"attribute_id": 1, "attribute_type": 1, "value": 7}]}, null]}},
+    {"kind": "scan", "request": {"order": "storage", "limit": 10}, "expected": {"error_code": "ZE_OK", "generation": 1, "has_more": false, "doc_ids": [101]}},
+    {"kind": "count", "filter": {"op": "eq", "field": "rank", "value": 7}, "expected": {"error_code": "ZE_OK", "generation": 1, "count": 1}},
+    {"kind": "search_filtered", "request": {"vector": [0.500000], "k": 1, "tier": 1, "filter": {"op": "eq", "field": "rank", "value": 7}}, "expected": {"error_code": "ZE_OK", "generation": 1, "hits": [{"doc_id": {"high": 0, "low": 101}, "score": -0.000000}]}}
   ]
 }

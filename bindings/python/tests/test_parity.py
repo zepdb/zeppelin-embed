@@ -109,3 +109,125 @@ def test_python_matches_rust_cross_binding_parity_fixture(tmp_path: Path) -> Non
         assert store.epoch_current() == ze.EpochIdentity(**epoch_value["expected_identity"])
 
     assert operations[6] == {"kind": "close", "expected": {"error_code": "ZE_OK"}}
+
+    appended = operations[7:]
+    assert [operation["kind"] for operation in appended] == [
+        "namespace_open",
+        "namespace_list",
+        "upsert",
+        "get",
+        "scan",
+        "count",
+        "search_filtered",
+    ]
+    namespace = appended[0]
+    root = tmp_path / namespace["root"]
+    root.mkdir()
+    spec_value = namespace["spec"]
+    spec = ze.NamespaceSpec(
+        attributes=tuple(
+            ze.AttributeDefinition(
+                value["attribute_id"],
+                value["name"],
+                ze.AttributeType(value["attribute_type"]),
+                nullable=value["nullable"],
+            )
+            for value in spec_value["attributes"]
+        ),
+        vector_space=ze.VectorSpace(
+            spec_value["vector_space"]["dimensions"],
+            ze.Normalization(spec_value["vector_space"]["normalization"]),
+        ),
+    )
+    assert namespace["expected"]["error_code"] == "ZE_OK"
+    with ze.open_namespace(root, namespace["name"], spec) as store:
+        listed = appended[1]
+        assert listed["expected"] == {
+            "error_code": "ZE_OK",
+            "names": ze.list_namespaces(root),
+        }
+
+        upsert = appended[2]
+        upsert_documents = tuple(
+            ze.StoredDocument(
+                doc_id=_doc_id(document["doc_id"]),
+                revision=document["revision"],
+                timestamp=document["timestamp"],
+                vector=np.asarray(document["vector"], dtype=np.float32),
+                text=document["text"],
+                metadata=bytes.fromhex(document["metadata_hex"]),
+                attributes=tuple(
+                    ze.AttributeValue(
+                        attribute["attribute_id"],
+                        ze.AttributeType(attribute["attribute_type"]),
+                        attribute["value"],
+                    )
+                    for attribute in document["attributes"]
+                ),
+            )
+            for document in upsert["documents"]
+        )
+        upsert_result = store.upsert(upsert_documents)
+        assert upsert["expected"] == {
+            "error_code": "ZE_OK",
+            "sequence": upsert_result.sequence,
+            "generation": upsert_result.generation,
+        }
+
+        get = appended[3]
+        get_result = store.get([_doc_id(value) for value in get["ids"]])
+        assert get["expected"]["error_code"] == "ZE_OK"
+        assert get_result.generation == get["expected"]["generation"]
+        assert get_result.missing_count == get["expected"]["missing_count"]
+        expected_document = get["expected"]["documents"][0]
+        document = get_result.documents[0]
+        assert document is not None
+        assert document.doc_id == (
+            expected_document["doc_id"]["high"] << 64
+            | expected_document["doc_id"]["low"]
+        )
+        assert document.revision == expected_document["revision"]
+        assert document.timestamp == expected_document["timestamp"]
+        np.testing.assert_array_equal(document.vector, expected_document["vector"])
+        assert document.text == expected_document["text"]
+        assert document.metadata == bytes.fromhex(expected_document["metadata_hex"])
+        assert document.attributes == upsert_documents[0].attributes
+        assert get_result.documents[1] is None
+
+        scan = appended[4]
+        scan_result = store.scan(**scan["request"])
+        assert scan["expected"] == {
+            "error_code": "ZE_OK",
+            "generation": scan_result.generation,
+            "has_more": scan_result.cursor is not None,
+            "doc_ids": [document.doc_id for document in scan_result.documents],
+        }
+
+        count = appended[5]
+        count_result = store.count(filter=ze.Filter.eq("rank", 7))
+        assert count["expected"] == {
+            "error_code": "ZE_OK",
+            "generation": count_result.generation,
+            "count": count_result.count,
+        }
+
+        search = appended[6]
+        search_request = search["request"]
+        search_result = store.search(
+            np.asarray(search_request["vector"], dtype=np.float32),
+            k=search_request["k"],
+            tier=ze.Tier(search_request["tier"]),
+            filter=ze.Filter.eq("rank", search_request["filter"]["value"]),
+        )
+        assert search["expected"]["error_code"] == "ZE_OK"
+        assert search_result.generation == search["expected"]["generation"]
+        assert [
+            {
+                "doc_id": {
+                    "high": (hit.doc_id or 0) >> 64,
+                    "low": (hit.doc_id or 0) & ((1 << 64) - 1),
+                },
+                "score": round(hit.score, 6),
+            }
+            for hit in search_result.hits
+        ] == search["expected"]["hits"]

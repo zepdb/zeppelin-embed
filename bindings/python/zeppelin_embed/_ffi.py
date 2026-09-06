@@ -21,6 +21,15 @@ def _bind(name: str, arguments: list[object], result: object = Status) -> None:
 _bind("ze_abi_version", [], ct.c_uint32)
 _bind("ze_open", [ct.POINTER(s.ZeOpenRequest), ct.POINTER(Handle)])
 _bind(
+    "ze_namespace_open",
+    [ct.POINTER(s.ZeNamespaceOpenRequest), ct.POINTER(Handle)],
+)
+_bind(
+    "ze_namespace_list",
+    [ct.POINTER(s.ZeNamespaceListRequest), ct.POINTER(s.ZeNamespaceListResult)],
+)
+_bind("ze_namespace_list_result_free", [ct.POINTER(s.ZeNamespaceListResult)])
+_bind(
     "ze_open_with_epoch",
     [ct.POINTER(s.ZeOpenRequest), ct.POINTER(s.ZeEpochRequest), ct.POINTER(Handle)],
 )
@@ -28,8 +37,18 @@ _bind("ze_close", [Handle])
 _bind("ze_state", [Handle, ct.POINTER(s.ZeStateReport)])
 _bind("ze_stats", [Handle, ct.POINTER(s.ZeStatsReport)])
 _bind("ze_ingest", [Handle, ct.POINTER(s.ZeIngestRequest), ct.POINTER(s.ZeMutationReport)])
+_bind("ze_upsert", [Handle, ct.POINTER(s.ZeUpsertRequest), ct.POINTER(s.ZeMutationReport)])
+_bind("ze_get", [Handle, ct.POINTER(s.ZeGetRequest), ct.POINTER(s.ZeGetResult)])
+_bind("ze_get_result_free", [ct.POINTER(s.ZeGetResult)])
 _bind("ze_delete", [Handle, ct.POINTER(s.ZeDeleteRequest), ct.POINTER(s.ZeMutationReport)])
+_bind("ze_scan", [Handle, ct.POINTER(s.ZeScanRequest), ct.POINTER(s.ZeScanResult)])
+_bind("ze_scan_result_free", [ct.POINTER(s.ZeScanResult)])
+_bind("ze_count", [Handle, ct.POINTER(s.ZeCountRequest), ct.POINTER(s.ZeCountResult)])
 _bind("ze_search", [Handle, ct.POINTER(s.ZeSearchRequest), ct.POINTER(s.ZeSearchResult)])
+_bind(
+    "ze_search_filtered",
+    [Handle, ct.POINTER(s.ZeSearchFilteredRequest), ct.POINTER(s.ZeSearchResult)],
+)
 _bind("ze_search_result_free", [ct.POINTER(s.ZeSearchResult)])
 _bind("ze_query", [Handle, ct.POINTER(s.ZeQueryRequest), ct.POINTER(s.ZeQueryResult)])
 _bind("ze_query_result_free", [ct.POINTER(s.ZeQueryResult)])

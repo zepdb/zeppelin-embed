@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes as ct
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Self, TypeVar
@@ -16,8 +16,12 @@ from ._errors import ERROR_TYPES, invalid_argument, last_error_message, raise_fo
 from ._library import LIBRARY
 from ._types import (
     AccessMode,
+    AttributeDefinition,
+    AttributeType,
+    AttributeValue,
     CommitTier,
     ComputeUnits,
+    CountResult,
     DurabilityMode,
     EmbeddingEpoch,
     EmbeddingRuntime,
@@ -27,10 +31,12 @@ from ._types import (
     FusionMethod,
     FusionReport,
     GenerationReport,
+    GetResult,
     GraphProfile,
     MaintainReport,
     MaintenanceStatus,
     MutationReport,
+    NamespaceSpec,
     Normalization,
     PartitionReport,
     PurgeReport,
@@ -38,15 +44,19 @@ from ._types import (
     QueryHit,
     QueryMode,
     QueryResult,
+    ScanCursor,
+    ScanPage,
     SearchHit,
     SearchResult,
     StateReport,
     StatsReport,
+    StoredDocument,
     StoreState,
     TextHit,
     TextLegs,
     TextQueryResult,
     Tier,
+    VectorSpace,
 )
 
 EnumValue = TypeVar("EnumValue", bound=IntEnum)
@@ -211,6 +221,311 @@ def _open_request(
     return request, owner
 
 
+def _attribute_value(
+    attribute: AttributeValue,
+    owners: list[object],
+    *,
+    allow_null: bool = True,
+) -> s.ZeAttributeValue:
+    attribute_type = _enum_value(
+        attribute.attribute_type, AttributeType, "attribute_type"
+    )
+    value = attribute.value
+    result = s.ZeAttributeValue(attribute_id=attribute.attribute_id)
+    if value is None:
+        if not allow_null:
+            invalid_argument("filter values cannot be null")
+        result.value_type = 0
+    elif attribute_type is AttributeType.U64:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 1 << 64:
+            invalid_argument("U64 attribute value must fit an unsigned 64-bit integer")
+        result.value_type = 1
+        result.u64_value = value
+    elif attribute_type is AttributeType.I64:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not -(1 << 63) <= value < 1 << 63
+        ):
+            invalid_argument("I64 attribute value must fit a signed 64-bit integer")
+        result.value_type = 2
+        result.i64_value = value
+    elif attribute_type is AttributeType.F64:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            invalid_argument("F64 attribute value must be numeric")
+        result.value_type = 3
+        result.f64_value = float(value)
+    elif attribute_type is AttributeType.BOOL:
+        if not isinstance(value, bool):
+            invalid_argument("Bool attribute value must be bool")
+        result.value_type = 4
+        result.bool_value = int(value)
+    else:
+        if not isinstance(value, str):
+            invalid_argument("string attribute value must be str")
+        pointer, length, owner = _text_pointer(value)
+        if owner is not None:
+            owners.append(owner)
+        result.value_type = 5
+        result.string_value = pointer
+        result.string_len = length
+    return result
+
+
+def _filter_field(
+    field: str | int,
+    attribute_ids: dict[str, int],
+    attribute_types: dict[int, AttributeType],
+    value: object | None,
+) -> tuple[int, AttributeType]:
+    if isinstance(field, str):
+        if field == "ts":
+            attribute_id = 0
+        else:
+            try:
+                attribute_id = attribute_ids[field]
+            except KeyError:
+                invalid_argument(f"unknown filter field {field!r}")
+    elif isinstance(field, int) and not isinstance(field, bool) and 0 <= field < 1 << 32:
+        attribute_id = field
+    else:
+        invalid_argument("filter field must be an attribute name or u32 id")
+    attribute_type = attribute_types.get(attribute_id)
+    if attribute_type is None:
+        if attribute_id == 0 or (isinstance(value, int) and value < 0):
+            attribute_type = AttributeType.I64
+        elif isinstance(value, bool):
+            attribute_type = AttributeType.BOOL
+        elif isinstance(value, int):
+            attribute_type = AttributeType.U64
+        elif isinstance(value, float):
+            attribute_type = AttributeType.F64
+        elif isinstance(value, str):
+            attribute_type = AttributeType.RAW_STRING
+        else:
+            invalid_argument(f"cannot infer the type of filter field {field!r}")
+    return attribute_id, attribute_type
+
+
+def _flatten_filter(
+    value: dict[str, Any],
+    attribute_ids: dict[str, int],
+    attribute_types: dict[int, AttributeType],
+) -> tuple[s.ZeFilter, list[object]]:
+    if not isinstance(value, dict):
+        invalid_argument("filter must be built with Filter")
+    slots: list[s.ZeFilterNode | None] = [None]
+    owners: list[object] = []
+    active: set[int] = set()
+    operations = {
+        "eq": 1,
+        "not_eq": 2,
+        "in": 3,
+        "not_in": 4,
+        "range": 5,
+        "exists": 6,
+        "is_null": 7,
+        "and": 8,
+        "or": 9,
+        "not": 10,
+    }
+
+    def fill(node: dict[str, Any], index: int, depth: int) -> None:
+        if not isinstance(node, dict):
+            invalid_argument("filter children must be built with Filter")
+        if depth > 32:
+            invalid_argument("filter depth exceeds 32")
+        identity = id(node)
+        if identity in active:
+            invalid_argument("filter tree contains a cycle")
+        active.add(identity)
+        try:
+            operation = node.get("op")
+            try:
+                op = operations[operation]
+            except (KeyError, TypeError):
+                invalid_argument(f"filter operator {operation!r} is not supported")
+            if op >= 8:
+                if op == 10:
+                    if "filter" not in node:
+                        invalid_argument("filter not requires exactly one child")
+                    children = [node["filter"]]
+                else:
+                    children = node.get("filters")
+                    if not isinstance(children, list):
+                        invalid_argument(f"filter {operation} requires a filter list")
+                children_start = len(slots)
+                slots.extend([None] * len(children))
+                slots[index] = s.ZeFilterNode(
+                    op=op,
+                    children_start=children_start,
+                    children_count=len(children),
+                )
+                for offset, child in enumerate(children):
+                    fill(child, children_start + offset, depth + 1)
+                return
+            field = node.get("field")
+            if field is None:
+                invalid_argument(f"filter {operation} requires a field")
+            if op in (1, 2):
+                if "value" not in node:
+                    invalid_argument(f"filter {operation} requires one value")
+                node_values = (node["value"],)
+            elif op in (3, 4):
+                raw_values = node.get("values")
+                if not isinstance(raw_values, (list, tuple)):
+                    invalid_argument(f"filter {operation} requires a value list")
+                node_values = tuple(raw_values)
+            else:
+                node_values = ()
+            if op == 5:
+                if "gte" in node and "gt" in node:
+                    invalid_argument("filter range cannot contain both gte and gt")
+                if "lte" in node and "lt" in node:
+                    invalid_argument("filter range cannot contain both lte and lt")
+                lower = node.get("gte", node.get("gt"))
+                upper = node.get("lte", node.get("lt"))
+                if lower is None and upper is None:
+                    invalid_argument("filter range requires at least one bound")
+                lower_inclusive = "gte" in node
+                upper_inclusive = "lte" in node
+            else:
+                lower = upper = None
+                lower_inclusive = upper_inclusive = False
+            sample = next((item for item in node_values if item is not None), None)
+            if sample is None:
+                sample = lower if lower is not None else upper
+            attribute_id, attribute_type = _filter_field(
+                field, attribute_ids, attribute_types, sample
+            )
+            values = (s.ZeAttributeValue * len(node_values))(
+                *[
+                    _attribute_value(
+                        AttributeValue(attribute_id, attribute_type, item),
+                        owners,
+                        allow_null=False,
+                    )
+                    for item in node_values
+                ]
+            )
+            values_pointer = (
+                ct.cast(values, ct.POINTER(s.ZeAttributeValue))
+                if node_values
+                else ct.POINTER(s.ZeAttributeValue)()
+            )
+            if node_values:
+                owners.append(values)
+            lower_value = s.ZeAttributeValue()
+            if lower is not None:
+                lower_value = _attribute_value(
+                    AttributeValue(attribute_id, attribute_type, lower),
+                    owners,
+                    allow_null=False,
+                )
+            upper_value = s.ZeAttributeValue()
+            if upper is not None:
+                upper_value = _attribute_value(
+                    AttributeValue(attribute_id, attribute_type, upper),
+                    owners,
+                    allow_null=False,
+                )
+            slots[index] = s.ZeFilterNode(
+                op=op,
+                attribute_id=attribute_id,
+                values=values_pointer,
+                value_count=len(node_values),
+                has_lower=int(lower is not None),
+                lower=lower_value,
+                lower_inclusive=int(lower_inclusive),
+                has_upper=int(upper is not None),
+                upper=upper_value,
+                upper_inclusive=int(upper_inclusive),
+            )
+        finally:
+            active.remove(identity)
+
+    fill(value, 0, 1)
+    if any(node is None for node in slots):
+        invalid_argument("filter tree contains an unfilled child index")
+    nodes = (s.ZeFilterNode * len(slots))(*slots)  # type: ignore[arg-type]
+    owners.append(nodes)
+    return (
+        s.ZeFilter(
+            abi_size=ct.sizeof(s.ZeFilter),
+            abi_reserved=0,
+            nodes=ct.cast(nodes, ct.POINTER(s.ZeFilterNode)),
+            node_count=len(nodes),
+            root=0,
+        ),
+        owners,
+    )
+
+
+def _returned_attribute(
+    value: s.ZeAttributeValue,
+    attribute_types: dict[int, AttributeType],
+) -> AttributeValue:
+    attribute_id = int(value.attribute_id)
+    if value.value_type == 0:
+        attribute_type = attribute_types.get(attribute_id, AttributeType.RAW_STRING)
+        payload: int | float | bool | str | None = None
+    elif value.value_type == 1:
+        attribute_type = AttributeType.U64
+        payload = int(value.u64_value)
+    elif value.value_type == 2:
+        attribute_type = AttributeType.I64
+        payload = int(value.i64_value)
+    elif value.value_type == 3:
+        attribute_type = AttributeType.F64
+        payload = float(value.f64_value)
+    elif value.value_type == 4:
+        attribute_type = AttributeType.BOOL
+        payload = bool(value.bool_value)
+    elif value.value_type == 5:
+        attribute_type = attribute_types.get(attribute_id, AttributeType.RAW_STRING)
+        payload = ct.string_at(value.string_value, value.string_len).decode("utf-8")
+    else:
+        invalid_argument("returned attribute value type is invalid")
+    return AttributeValue(attribute_id, attribute_type, payload)
+
+
+def _stored_document(
+    value: s.ZeStoredDocument,
+    attribute_types: dict[int, AttributeType],
+    *,
+    include_vector: bool,
+    include_text: bool,
+    include_metadata: bool,
+    include_attributes: bool,
+) -> StoredDocument | None:
+    if not value.has_document:
+        return None
+    vector = None
+    if include_vector and value.vector and value.vector_len:
+        vector = np.ctypeslib.as_array(value.vector, shape=(value.vector_len,)).copy()
+    text = None
+    if include_text:
+        text = ct.string_at(value.text, value.text_len).decode("utf-8")
+    metadata = None
+    if include_metadata:
+        metadata = ct.string_at(value.metadata, value.metadata_len)
+    attributes = None
+    if include_attributes:
+        attributes = tuple(
+            _returned_attribute(value.attributes[index], attribute_types)
+            for index in range(value.attribute_count)
+        )
+    return StoredDocument(
+        doc_id=_python_doc_id(value.doc_id),
+        revision=int(value.revision),
+        timestamp=int(value.timestamp),
+        vector=vector,
+        text=text,
+        metadata=metadata,
+        attributes=attributes,
+    )
+
+
 def epoch_identity(epoch: EmbeddingEpoch) -> EpochIdentity:
     """Compute the compact ABI identity of an epoch declaration."""
 
@@ -267,10 +582,23 @@ class CancelToken:
 class Store:
     """One deterministic wrapper around a generation-tagged store handle."""
 
-    def __init__(self, handle: int, *, text: bool = False) -> None:
+    def __init__(
+        self,
+        handle: int,
+        *,
+        text: bool = False,
+        attribute_ids: dict[str, int] | None = None,
+        attribute_types: dict[int, AttributeType] | None = None,
+        vector_dimensions: int | None = None,
+        record_only: bool = False,
+    ) -> None:
         self._handle = handle
         self._abi_call_count = 0
         self._text = text
+        self._attribute_ids = {} if attribute_ids is None else dict(attribute_ids)
+        self._attribute_types = {} if attribute_types is None else dict(attribute_types)
+        self._vector_dimensions = vector_dimensions
+        self._record_only = record_only
 
     @property
     def closed(self) -> bool:
@@ -418,6 +746,334 @@ class Store:
             last = MutationReport(int(report.sequence), int(report.generation))
         return last
 
+    def upsert(self, documents: Sequence[StoredDocument]) -> MutationReport:
+        """Atomically upsert documents carrying typed schema attributes."""
+
+        handle = self._live_handle()
+        if self._record_only:
+            dimension = 0
+        elif self._vector_dimensions is not None:
+            dimension = self._vector_dimensions
+        else:
+            first_vector = next(
+                (document.vector for document in documents if document.vector is not None), None
+            )
+            if first_vector is None:
+                invalid_argument("vector namespace upsert requires document vectors")
+            dimension = int(_vector(first_vector, dimensions=1).size)
+        records = (s.ZeUpsertDocument * len(documents))()
+        owners: list[object] = [records]
+        for index, document in enumerate(documents):
+            if not isinstance(document, StoredDocument):
+                invalid_argument("documents must contain StoredDocument values")
+            if self._record_only:
+                if document.vector is not None:
+                    invalid_argument("record-only namespace does not accept document vectors")
+                vector_pointer, vector_len = s.FloatPointer(), 0
+            else:
+                if document.vector is None:
+                    invalid_argument("vector namespace upsert requires document vectors")
+                vector = _vector(document.vector, dimensions=1)
+                if vector.size != dimension:
+                    invalid_argument(
+                        f"document vector length {vector.size} does not match {dimension}"
+                    )
+                owners.append(vector)
+                vector_pointer = vector.ctypes.data_as(s.FloatPointer)
+                vector_len = int(vector.size)
+            if document.text is None:
+                text_pointer, text_len = s.UInt8Pointer(), 0
+            elif isinstance(document.text, str):
+                text_pointer, text_len, owner = _text_pointer(document.text)
+                if owner is not None:
+                    owners.append(owner)
+            else:
+                invalid_argument("document text must be str or None")
+            if document.metadata is None:
+                metadata_pointer, metadata_len = s.UInt8Pointer(), 0
+            elif isinstance(document.metadata, bytes):
+                metadata_pointer, owner = _bytes_pointer(document.metadata)
+                metadata_len = len(document.metadata)
+                if owner is not None:
+                    owners.append(owner)
+            else:
+                invalid_argument("document metadata must be bytes or None")
+            attributes = () if document.attributes is None else document.attributes
+            attribute_array = (s.ZeAttributeValue * len(attributes))(
+                *[_attribute_value(attribute, owners) for attribute in attributes]
+            )
+            if attributes:
+                owners.append(attribute_array)
+                attribute_pointer = ct.cast(
+                    attribute_array, ct.POINTER(s.ZeAttributeValue)
+                )
+            else:
+                attribute_pointer = ct.POINTER(s.ZeAttributeValue)()
+            records[index] = s.ZeUpsertDocument(
+                abi_size=ct.sizeof(s.ZeUpsertDocument),
+                abi_reserved=0,
+                document=s.ZeIngestDocument(
+                    abi_size=ct.sizeof(s.ZeIngestDocument),
+                    abi_reserved=0,
+                    doc_id=_doc_id(document.doc_id),
+                    revision=document.revision,
+                    timestamp=document.timestamp,
+                    vector=vector_pointer,
+                    vector_len=vector_len,
+                    metadata=metadata_pointer,
+                    metadata_len=metadata_len,
+                    text=text_pointer,
+                    text_len=text_len,
+                ),
+                attributes=attribute_pointer,
+                attribute_count=len(attributes),
+            )
+        request = s.ZeUpsertRequest(
+            abi_size=ct.sizeof(s.ZeUpsertRequest),
+            abi_reserved=0,
+            documents=ct.cast(records, ct.POINTER(s.ZeUpsertDocument)),
+            document_count=len(records),
+            dimension=dimension,
+        )
+        report = s.sized(s.ZeMutationReport)
+        status = self._call(LIBRARY.ze_upsert, handle, ct.byref(request), ct.byref(report))
+        del owners
+        raise_for_status(status, handle)
+        return MutationReport(int(report.sequence), int(report.generation))
+
+    def get(
+        self,
+        ids: Sequence[int | tuple[int, int]],
+        *,
+        vector: bool = True,
+        text: bool = True,
+        metadata: bool = True,
+        attributes: bool = True,
+    ) -> GetResult:
+        """Read requested ids in caller order from one pinned generation."""
+
+        handle = self._live_handle()
+        doc_ids = (s.ZeDocId * len(ids))(*[_doc_id(value) for value in ids])
+        request = s.ZeGetRequest(
+            abi_size=ct.sizeof(s.ZeGetRequest),
+            abi_reserved=0,
+            ids=ct.cast(doc_ids, ct.POINTER(s.ZeDocId)),
+            id_count=len(doc_ids),
+            include_vector=int(vector),
+            include_text=int(text),
+            include_metadata=int(metadata),
+            include_attributes=int(attributes),
+        )
+        result = s.sized(s.ZeGetResult)
+        primary: BaseException | None = None
+        try:
+            status = self._call(LIBRARY.ze_get, handle, ct.byref(request), ct.byref(result))
+            raise_for_status(status, handle)
+            returned = tuple(
+                _stored_document(
+                    result.documents[index],
+                    self._attribute_types,
+                    include_vector=vector and not self._record_only,
+                    include_text=text,
+                    include_metadata=metadata,
+                    include_attributes=attributes,
+                )
+                for index in range(result.document_count)
+            )
+            return GetResult(returned, int(result.missing_count), int(result.generation))
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            del doc_ids
+            free_status = self._call(LIBRARY.ze_get_result_free, ct.byref(result))
+            if free_status != 0:
+                if primary is None:
+                    raise_for_status(free_status, handle)
+                primary.add_note(f"ze_get_result_free: {last_error_message(handle)}")
+
+    def scan(
+        self,
+        *,
+        cursor: ScanCursor | None = None,
+        limit: int = 1_024,
+        order: str = "storage",
+        vector: bool = True,
+        text: bool = True,
+        metadata: bool = True,
+        attributes: bool = True,
+        timestamp_range: tuple[int, int] | None = None,
+        filter: dict[str, Any] | None = None,
+        cancel_token: CancelToken | None = None,
+        deadline_ns: int = 0,
+    ) -> ScanPage:
+        """Enumerate one ordered and optionally filtered document page."""
+
+        handle = self._live_handle()
+        orders = {
+            "storage": 0,
+            "timestamp_ascending": 1,
+            "timestamp-ascending": 1,
+            "timestamp_descending": 2,
+            "timestamp-descending": 2,
+        }
+        try:
+            order_value = orders[order.lower()]
+        except (AttributeError, KeyError):
+            invalid_argument(f"scan order {order!r} is not supported")
+        if cursor is None:
+            cursor_generation = cursor_next_row = cursor_phase = 0
+            cursor_segment_id = (ct.c_uint8 * 16)()
+        elif isinstance(cursor, ScanCursor):
+            cursor_generation = cursor._generation
+            cursor_next_row = cursor._next_row
+            cursor_phase = cursor._phase
+            cursor_segment_id = (ct.c_uint8 * 16).from_buffer_copy(cursor._segment_id)
+        else:
+            invalid_argument("cursor must be a ScanCursor or None")
+        if timestamp_range is None:
+            has_timestamp_range, start_ts, end_ts = 0, 0, 0
+        elif isinstance(timestamp_range, tuple) and len(timestamp_range) == 2:
+            has_timestamp_range = 1
+            start_ts, end_ts = timestamp_range
+        else:
+            invalid_argument("timestamp_range must be a (start, end) tuple or None")
+        if filter is None:
+            filter_pointer = ct.POINTER(s.ZeFilter)()
+            filter_owners: list[object] = []
+        else:
+            flat_filter, filter_owners = _flatten_filter(
+                filter, self._attribute_ids, self._attribute_types
+            )
+            filter_pointer = ct.pointer(flat_filter)
+            filter_owners.extend((flat_filter, filter_pointer))
+        request = s.ZeScanRequest(
+            abi_size=ct.sizeof(s.ZeScanRequest),
+            abi_reserved=0,
+            cursor_generation=cursor_generation,
+            cursor_segment_id=cursor_segment_id,
+            cursor_next_row=cursor_next_row,
+            cursor_phase=cursor_phase,
+            limit=limit,
+            order=order_value,
+            include_vector=int(vector),
+            include_text=int(text),
+            include_metadata=int(metadata),
+            include_attributes=int(attributes),
+            has_timestamp_range=has_timestamp_range,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            filter=filter_pointer,
+            cancel_token=0 if cancel_token is None else cancel_token.value,
+            deadline_ns=deadline_ns,
+        )
+        result = s.sized(s.ZeScanResult)
+        primary: BaseException | None = None
+        try:
+            status = self._call(LIBRARY.ze_scan, handle, ct.byref(request), ct.byref(result))
+            raise_for_status(status, handle)
+            returned: list[StoredDocument] = []
+            for index in range(result.document_count):
+                document = _stored_document(
+                    result.documents[index],
+                    self._attribute_types,
+                    include_vector=vector and not self._record_only,
+                    include_text=text,
+                    include_metadata=metadata,
+                    include_attributes=attributes,
+                )
+                if document is None:
+                    raise ERROR_TYPES[22]("scan returned a missing document")
+                returned.append(document)
+            next_cursor = (
+                ScanCursor(
+                    int(result.generation),
+                    bytes(result.next_segment_id),
+                    int(result.next_row),
+                    int(result.next_phase),
+                )
+                if result.has_more
+                else None
+            )
+            return ScanPage(tuple(returned), next_cursor, int(result.generation))
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            del filter_owners
+            free_status = self._call(LIBRARY.ze_scan_result_free, ct.byref(result))
+            if free_status != 0:
+                if primary is None:
+                    raise_for_status(free_status, handle)
+                primary.add_note(f"ze_scan_result_free: {last_error_message(handle)}")
+
+    def iter_documents(
+        self,
+        *,
+        order: str = "storage",
+        vector: bool = True,
+        text: bool = True,
+        metadata: bool = True,
+        attributes: bool = True,
+        filter: dict[str, Any] | None = None,
+    ) -> Iterator[StoredDocument]:
+        """Follow scan cursors until every matching live document is yielded."""
+
+        cursor = None
+        while True:
+            page = self.scan(
+                cursor=cursor,
+                order=order,
+                vector=vector,
+                text=text,
+                metadata=metadata,
+                attributes=attributes,
+                filter=filter,
+            )
+            yield from page.documents
+            cursor = page.cursor
+            if cursor is None:
+                return
+
+    def count(
+        self,
+        *,
+        filter: dict[str, Any] | None = None,
+        timestamp_range: tuple[int, int] | None = None,
+    ) -> CountResult:
+        """Count live documents matching a filter and timestamp range."""
+
+        handle = self._live_handle()
+        if timestamp_range is None:
+            has_timestamp_range, start_ts, end_ts = 0, 0, 0
+        elif isinstance(timestamp_range, tuple) and len(timestamp_range) == 2:
+            has_timestamp_range = 1
+            start_ts, end_ts = timestamp_range
+        else:
+            invalid_argument("timestamp_range must be a (start, end) tuple or None")
+        if filter is None:
+            filter_pointer = ct.POINTER(s.ZeFilter)()
+            filter_owners: list[object] = []
+        else:
+            flat_filter, filter_owners = _flatten_filter(
+                filter, self._attribute_ids, self._attribute_types
+            )
+            filter_pointer = ct.pointer(flat_filter)
+            filter_owners.extend((flat_filter, filter_pointer))
+        request = s.ZeCountRequest(
+            abi_size=ct.sizeof(s.ZeCountRequest),
+            abi_reserved=0,
+            filter=filter_pointer,
+            has_timestamp_range=has_timestamp_range,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        result = s.sized(s.ZeCountResult)
+        status = self._call(LIBRARY.ze_count, handle, ct.byref(request), ct.byref(result))
+        del filter_owners
+        raise_for_status(status, handle)
+        return CountResult(int(result.count), int(result.generation))
+
     def ingest_text(
         self,
         ids: Sequence[int | tuple[int, int]],
@@ -557,6 +1213,7 @@ class Store:
         graph_seed: int = 0,
         cancel_token: CancelToken | None = None,
         deadline_ns: int = 0,
+        filter: dict[str, Any] | None = None,
     ) -> SearchResult:
         handle = self._live_handle()
         probe = _vector(vector, dimensions=1)
@@ -578,9 +1235,26 @@ class Store:
             deadline_ns=deadline_ns,
         )
         result = s.sized(s.ZeSearchResult)
+        if filter is None:
+            function = LIBRARY.ze_search
+            call_request: ct.Structure = request
+            filter_owners: list[object] = []
+        else:
+            flat_filter, filter_owners = _flatten_filter(
+                filter, self._attribute_ids, self._attribute_types
+            )
+            filter_pointer = ct.pointer(flat_filter)
+            filter_owners.extend((flat_filter, filter_pointer))
+            call_request = s.ZeSearchFilteredRequest(
+                abi_size=ct.sizeof(s.ZeSearchFilteredRequest),
+                abi_reserved=0,
+                search=request,
+                filter=filter_pointer,
+            )
+            function = LIBRARY.ze_search_filtered
         primary: BaseException | None = None
         try:
-            status = self._call(LIBRARY.ze_search, handle, ct.byref(request), ct.byref(result))
+            status = self._call(function, handle, ct.byref(call_request), ct.byref(result))
             raise_for_status(status, handle)
             hits = tuple(
                 SearchHit(
@@ -611,6 +1285,7 @@ class Store:
             primary = error
             raise
         finally:
+            del filter_owners
             free_status = self._call(LIBRARY.ze_search_result_free, ct.byref(result))
             if free_status != 0:
                 if primary is None:
@@ -899,6 +1574,156 @@ class Store:
             segments_dropped=int(report.segments_dropped),
             bytes_reclaimed=int(report.bytes_reclaimed),
         )
+
+
+def open_namespace(
+    root: str | Path,
+    name: str,
+    spec: NamespaceSpec,
+    *,
+    access_mode: AccessMode | str = AccessMode.READ_WRITE,
+    durability: DurabilityMode | str = DurabilityMode.DERIVED,
+    commit_tier: CommitTier | str = CommitTier.ORDERED,
+    reader_drain_timeout_ms: int = 250,
+    max_resident_bytes: int = (1 << 64) - 1,
+    max_temp_bytes: int = (1 << 64) - 1,
+) -> Store:
+    """Open or idempotently create one namespace under a database root."""
+
+    if not isinstance(spec, NamespaceSpec):
+        invalid_argument("spec must be a NamespaceSpec")
+    open_request, open_owner = _open_request(
+        root,
+        access_mode,
+        durability,
+        commit_tier,
+        reader_drain_timeout_ms,
+        max_resident_bytes,
+        max_temp_bytes,
+    )
+    root_bytes = os.fspath(root).encode("utf-8", errors="strict")
+    root_pointer, root_owner = _bytes_pointer(root_bytes)
+    name_pointer, name_len, name_owner = _text_pointer(name)
+    owners: list[object] = [open_owner]
+    if root_owner is not None:
+        owners.append(root_owner)
+    if name_owner is not None:
+        owners.append(name_owner)
+    definitions = (s.ZeAttributeDefinition * len(spec.attributes))()
+    attribute_ids: dict[str, int] = {}
+    attribute_types: dict[int, AttributeType] = {0: AttributeType.I64}
+    for index, definition in enumerate(spec.attributes):
+        if not isinstance(definition, AttributeDefinition):
+            invalid_argument("namespace attributes must be AttributeDefinition values")
+        pointer, length, owner = _text_pointer(definition.name)
+        if owner is not None:
+            owners.append(owner)
+        attribute_type = _enum_value(
+            definition.attribute_type, AttributeType, "attribute_type"
+        )
+        definitions[index] = s.ZeAttributeDefinition(
+            attribute_id=definition.attribute_id,
+            name=pointer,
+            name_len=length,
+            attribute_type=int(attribute_type),
+            nullable=int(definition.nullable),
+        )
+        attribute_ids[definition.name] = definition.attribute_id
+        attribute_types[definition.attribute_id] = attribute_type
+    owners.append(definitions)
+    vector_space = spec.vector_space
+    if vector_space is None:
+        has_vector_space = 0
+        dimensions = 0
+        normalization = Normalization.NONE
+        epoch_pointer = ct.POINTER(s.ZeEpochRequest)()
+        vector_dimensions = None
+        record_only = True
+    elif isinstance(vector_space, VectorSpace):
+        has_vector_space = 1
+        dimensions = vector_space.dimensions
+        normalization = _enum_value(
+            vector_space.normalization, Normalization, "normalization"
+        )
+        vector_dimensions = vector_space.dimensions
+        record_only = False
+        if vector_space.epoch is None:
+            epoch_pointer = ct.POINTER(s.ZeEpochRequest)()
+        else:
+            epoch_request, epoch_owners = _epoch_request(vector_space.epoch)
+            epoch_pointer = ct.pointer(epoch_request)
+            owners.extend((epoch_request, epoch_pointer, *epoch_owners))
+    else:
+        invalid_argument("vector_space must be a VectorSpace or None")
+    namespace_spec = s.ZeNamespaceSpec(
+        abi_size=ct.sizeof(s.ZeNamespaceSpec),
+        abi_reserved=0,
+        attributes=ct.cast(definitions, ct.POINTER(s.ZeAttributeDefinition)),
+        attribute_count=len(definitions),
+        has_vector_space=has_vector_space,
+        dimensions=dimensions,
+        normalization=int(normalization),
+        epoch=epoch_pointer,
+    )
+    namespace_spec_pointer = ct.pointer(namespace_spec)
+    owners.extend((namespace_spec, namespace_spec_pointer))
+    request = s.ZeNamespaceOpenRequest(
+        abi_size=ct.sizeof(s.ZeNamespaceOpenRequest),
+        abi_reserved=0,
+        root=root_pointer,
+        root_len=len(root_bytes),
+        name=name_pointer,
+        name_len=name_len,
+        open=open_request,
+        spec=namespace_spec_pointer,
+    )
+    handle = ct.c_uint64()
+    status = LIBRARY.ze_namespace_open(ct.byref(request), ct.byref(handle))
+    del owners
+    raise_for_status(status, int(handle.value))
+    return Store(
+        int(handle.value),
+        attribute_ids=attribute_ids,
+        attribute_types=attribute_types,
+        vector_dimensions=vector_dimensions,
+        record_only=record_only,
+    )
+
+
+def list_namespaces(root: str | Path) -> list[str]:
+    """Return namespace names immediately below one database root."""
+
+    root_bytes = os.fspath(root).encode("utf-8", errors="strict")
+    root_pointer, root_owner = _bytes_pointer(root_bytes)
+    request = s.ZeNamespaceListRequest(
+        abi_size=ct.sizeof(s.ZeNamespaceListRequest),
+        abi_reserved=0,
+        root=root_pointer,
+        root_len=len(root_bytes),
+    )
+    result = s.sized(s.ZeNamespaceListResult)
+    primary: BaseException | None = None
+    try:
+        status = LIBRARY.ze_namespace_list(ct.byref(request), ct.byref(result))
+        raise_for_status(status)
+        return [
+            ct.string_at(result.entries[index].name, result.entries[index].name_len).decode(
+                "utf-8"
+            )
+            for index in range(result.entry_count)
+        ]
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        del root_owner
+        free_status = LIBRARY.ze_namespace_list_result_free(ct.byref(result))
+        if free_status != 0:
+            if primary is None:
+                raise_for_status(free_status)
+            primary.add_note(
+                f"ze_namespace_list_result_free: {last_error_message()}"
+            )
 
 
 def open(

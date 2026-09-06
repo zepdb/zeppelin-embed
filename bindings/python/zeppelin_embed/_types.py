@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class AccessMode(IntEnum):
@@ -79,6 +83,137 @@ class ComputeUnits(IntEnum):
     CPU_AND_GPU = 2
     CPU_AND_NEURAL_ENGINE = 3
     ALL = 4
+
+
+class AttributeType(IntEnum):
+    U64 = 1
+    I64 = 2
+    F64 = 3
+    BOOL = 4
+    DICTIONARY_STRING = 5
+    RAW_STRING = 6
+
+
+@dataclass(frozen=True)
+class AttributeDefinition:
+    attribute_id: int
+    name: str
+    attribute_type: AttributeType
+    nullable: bool = False
+
+
+@dataclass(frozen=True)
+class AttributeValue:
+    attribute_id: int
+    attribute_type: AttributeType
+    value: int | float | bool | str | None
+
+
+@dataclass(frozen=True)
+class VectorSpace:
+    dimensions: int
+    normalization: Normalization = Normalization.NONE
+    epoch: EmbeddingEpoch | None = None
+
+
+@dataclass(frozen=True)
+class NamespaceSpec:
+    attributes: tuple[AttributeDefinition, ...] = ()
+    vector_space: VectorSpace | None = None
+
+
+@dataclass(frozen=True)
+class StoredDocument:
+    doc_id: int | tuple[int, int]
+    revision: int = 1
+    timestamp: int = 0
+    vector: np.ndarray[Any, Any] | None = None
+    text: str | None = None
+    metadata: bytes | None = None
+    attributes: tuple[AttributeValue, ...] | None = None
+
+
+@dataclass(frozen=True)
+class GetResult:
+    documents: tuple[StoredDocument | None, ...]
+    missing_count: int
+    generation: int
+
+
+@dataclass(frozen=True)
+class ScanCursor:
+    _generation: int
+    _segment_id: bytes
+    _next_row: int
+    _phase: int
+
+
+@dataclass(frozen=True)
+class ScanPage:
+    documents: tuple[StoredDocument, ...]
+    cursor: ScanCursor | None
+    generation: int
+
+
+@dataclass(frozen=True)
+class CountResult:
+    count: int
+    generation: int
+
+
+class Filter:
+    """Build structured-filter dictionaries for record-store calls."""
+
+    @staticmethod
+    def eq(field: str | int, value: object) -> dict[str, Any]:
+        return {"op": "eq", "field": field, "value": value}
+
+    @staticmethod
+    def not_eq(field: str | int, value: object) -> dict[str, Any]:
+        return {"op": "not_eq", "field": field, "value": value}
+
+    @staticmethod
+    def in_(field: str | int, values: list[object]) -> dict[str, Any]:
+        return {"op": "in", "field": field, "values": values}
+
+    @staticmethod
+    def not_in(field: str | int, values: list[object]) -> dict[str, Any]:
+        return {"op": "not_in", "field": field, "values": values}
+
+    @staticmethod
+    def range_(
+        field: str | int,
+        *,
+        gte: object | None = None,
+        lte: object | None = None,
+        gt: object | None = None,
+        lt: object | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {"op": "range", "field": field}
+        for name, value in (("gte", gte), ("lte", lte), ("gt", gt), ("lt", lt)):
+            if value is not None:
+                result[name] = value
+        return result
+
+    @staticmethod
+    def exists(field: str | int) -> dict[str, Any]:
+        return {"op": "exists", "field": field}
+
+    @staticmethod
+    def is_null(field: str | int) -> dict[str, Any]:
+        return {"op": "is_null", "field": field}
+
+    @staticmethod
+    def and_(*filters: dict[str, Any]) -> dict[str, Any]:
+        return {"op": "and", "filters": list(filters)}
+
+    @staticmethod
+    def or_(*filters: dict[str, Any]) -> dict[str, Any]:
+        return {"op": "or", "filters": list(filters)}
+
+    @staticmethod
+    def not_(filter: dict[str, Any]) -> dict[str, Any]:
+        return {"op": "not", "filter": filter}
 
 
 @dataclass(frozen=True)
