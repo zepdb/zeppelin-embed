@@ -1985,8 +1985,15 @@ fn astra_05_fixture(controller: VectorFaultController) -> (TempDir, Arc<Store>, 
     astra_05_fixture_with_clock(controller, Arc::new(SystemMonotonicClock))
 }
 
+fn astra_05_exact_worker_capacity() -> usize {
+    zeppelin_embed::scan::physical_thread_capacity()
+        .expect("exact worker capacity")
+        .min(4)
+}
+
 #[test]
 fn astra_05_exact_pool_capacity_is_shared_across_callers() {
+    let worker_capacity = astra_05_exact_worker_capacity();
     let (_directory, store, query) = astra_05_fixture(VectorFaultController::observe_only(11));
     let expected =
         astra_05_query(&store, &query, 7, 1, CancelToken::new()).expect("serial capacity oracle");
@@ -2010,13 +2017,13 @@ fn astra_05_exact_pool_capacity_is_shared_across_callers() {
     let mut threads = std::collections::HashSet::new();
     for outcome in outcomes {
         assert_same_result(&expected, &outcome);
-        assert_eq!(outcome.stats.threads_used, 4);
+        assert_eq!(outcome.stats.threads_used, worker_capacity);
         threads.extend(outcome.stats.worker_thread_ids);
     }
     assert_eq!(
         threads.len(),
-        4,
-        "Exact callers share the measured four-worker capacity"
+        worker_capacity,
+        "Exact callers share the measured worker capacity"
     );
     assert_eq!(
         store
@@ -2060,6 +2067,7 @@ fn astra_05_fixture_with_clock(
 
 #[test]
 fn astra_05_parallel_exact_matches_serial_bits_and_identity_ties() {
+    let worker_capacity = astra_05_exact_worker_capacity();
     let dir = tempdir().expect("parallel ties");
     let controller = VectorFaultController::trace_exact_partitions(11);
     let store = Store::open_with_test_dependencies(
@@ -2103,7 +2111,7 @@ fn astra_05_parallel_exact_matches_serial_bits_and_identity_ties() {
     let _ = controller.take_exact_partitions();
     let parallel = astra_05_query(&store, &query, 7, 4, CancelToken::new()).expect("parallel ties");
     assert_eq!(
-        parallel.stats.threads_used, 4,
+        parallel.stats.threads_used, worker_capacity,
         "one worker lane must be reused across segments"
     );
     assert_same_result(&serial, &parallel);
@@ -2123,7 +2131,7 @@ fn astra_05_parallel_exact_matches_serial_bits_and_identity_ties() {
     );
     assert_eq!(parallel.stats.dims_touched, 3 * 2048 * 129);
     let receipts = controller.take_exact_partitions();
-    assert_eq!(receipts.len(), 12);
+    assert_eq!(receipts.len(), 3 * worker_capacity);
     assert_eq!(
         receipts.iter().map(|r| r.checked_rows.len()).sum::<usize>(),
         3 * 2048
@@ -2177,6 +2185,7 @@ fn astra_05_parallel_narrowing_error_uses_global_f64_order() {
 
 #[test]
 fn astra_05_exact_pool_reservation_failure_leaves_store_reusable() {
+    let worker_capacity = astra_05_exact_worker_capacity();
     let controller = VectorFaultController::observe_only(11);
     let (dir, store, query) = astra_05_fixture(controller.clone());
     let control = astra_05_query(&store, &query, 7, 1, CancelToken::new()).expect("clean serial");
@@ -2201,7 +2210,7 @@ fn astra_05_exact_pool_reservation_failure_leaves_store_reusable() {
     let retry =
         astra_05_query(&store, &query, 7, 4, CancelToken::new()).expect("retry after refusal");
     assert_same_result(&control, &retry);
-    assert_eq!(retry.stats.threads_used, 4);
+    assert_eq!(retry.stats.threads_used, worker_capacity);
     assert_eq!(store.stats().expect("retry scratch").temporary_bytes, 0);
 
     store.seal().expect("seal budget fixture");
@@ -2447,6 +2456,7 @@ fn astra_05_exact_hybrid_widening_admits_required_workers() {
     use zeppelin_embed::fts::tokenizer::TokenizerConfig;
     use zeppelin_embed::fusion::HybridQuery;
     use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus, TierThresholds};
+    let worker_capacity = astra_05_exact_worker_capacity();
     for (n, dim, graph, traverses_first) in [
         (2049, 129, false, false),
         (256, 1024, true, false),
@@ -2548,7 +2558,10 @@ fn astra_05_exact_hybrid_widening_admits_required_workers() {
                 zeppelin_embed::fusion::FusionTermination::ApproximateCandidates
             );
         } else {
-            assert_eq!(result.diagnostics.counters.scan.threads_used, 4);
+            assert_eq!(
+                result.diagnostics.counters.scan.threads_used,
+                worker_capacity
+            );
             assert_eq!(
                 result.diagnostics.counters.scan.dims_touched,
                 (n * dim) as u64
@@ -2561,7 +2574,10 @@ fn astra_05_exact_hybrid_widening_admits_required_workers() {
         assert!(store.stats().expect("pool admitted").query_pool_bytes > 0);
         assert_eq!(result.hits[0].key, DocId::new(1));
         let partitions = controller.take_exact_partitions();
-        assert_eq!(partitions.len(), if traverses_first { 0 } else { 4 });
+        assert_eq!(
+            partitions.len(),
+            if traverses_first { 0 } else { worker_capacity }
+        );
         assert_eq!(
             partitions
                 .iter()
