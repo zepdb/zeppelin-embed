@@ -4,6 +4,7 @@
 mod common;
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use zeppelin_embed_ffi::*;
@@ -100,6 +101,66 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
     });
 
+    let namespace_root = tempfile::tempdir().expect("temporary namespace root");
+    let root_bytes = namespace_root
+        .path()
+        .to_string_lossy()
+        .into_owned()
+        .into_bytes();
+    let name = b"owned";
+    let spec = ZeNamespaceSpec {
+        abi_size: size_of::<ZeNamespaceSpec>() as u32,
+        abi_reserved: 0,
+        attributes: std::ptr::null(),
+        attribute_count: 0,
+        has_vector_space: 1,
+        dimensions: DIMENSION as u32,
+        normalization: 0,
+        epoch: std::ptr::null(),
+    };
+    let open = ZeNamespaceOpenRequest {
+        abi_size: size_of::<ZeNamespaceOpenRequest>() as u32,
+        abi_reserved: 0,
+        root: root_bytes.as_ptr(),
+        root_len: root_bytes.len(),
+        name: name.as_ptr(),
+        name_len: name.len(),
+        open: ZeOpenRequest {
+            abi_size: size_of::<ZeOpenRequest>() as u32,
+            abi_reserved: 0,
+            path: std::ptr::null(),
+            path_len: 0,
+            access_mode: 0,
+            durability_mode: 0,
+            commit_tier: 1,
+            reader_drain_timeout_ms: 250,
+            max_resident_bytes: u64::MAX,
+            max_temp_bytes: u64::MAX,
+        },
+        spec: &spec,
+    };
+    let mut namespace_handle = 0;
+    assert_eq!(
+        ze_namespace_open(&open, &mut namespace_handle),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(ze_close(namespace_handle), ZeErrorCode::ZeOk);
+    let list = ZeNamespaceListRequest {
+        abi_size: size_of::<ZeNamespaceListRequest>() as u32,
+        abi_reserved: 0,
+        root: root_bytes.as_ptr(),
+        root_len: root_bytes.len(),
+    };
+    assert_heap_flat("ze_namespace_list/ze_namespace_list_result_free", || {
+        let mut result: ZeNamespaceListResult = common::sized_zeroed();
+        assert_eq!(ze_namespace_list(&list, &mut result), ZeErrorCode::ZeOk);
+        assert_eq!(result.entry_count, 1);
+        assert_eq!(
+            ze_namespace_list_result_free(&mut result),
+            ZeErrorCode::ZeOk
+        );
+    });
+
     assert_heap_flat("ze_cancel_token_create/ze_cancel_token_free", || {
         let mut token = 0;
         assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
@@ -169,6 +230,19 @@ fn freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_fr
     );
     assert_eq!(
         ze_query_result_free(std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+
+    let mut arena = [0_u64; 4];
+    let mut foreign_namespace: ZeNamespaceListResult = common::sized_zeroed();
+    foreign_namespace.entries = arena.as_mut_ptr().cast::<ZeNamespaceEntry>();
+    foreign_namespace.entry_count = 1;
+    assert_eq!(
+        ze_namespace_list_result_free(&mut foreign_namespace),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(
+        ze_namespace_list_result_free(std::ptr::null_mut()),
         ZeErrorCode::ZeErrInvalidArgument
     );
 }

@@ -33,4 +33,7 @@ public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {
     case bundle = 29
     case model = 30
     case pipeline = 31
+    case scanStale = 32
+    case schemaMismatch = 33
+    case noVectorSpace = 34
 }

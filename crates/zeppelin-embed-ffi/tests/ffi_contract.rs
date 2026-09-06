@@ -83,6 +83,17 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
     (ZeErrorCode::ZeErrBundle, 29, "ZE_ERR_BUNDLE"),
     (ZeErrorCode::ZeErrModel, 30, "ZE_ERR_MODEL"),
     (ZeErrorCode::ZeErrPipeline, 31, "ZE_ERR_PIPELINE"),
+    (ZeErrorCode::ZeErrScanStale, 32, "ZE_ERR_SCAN_STALE"),
+    (
+        ZeErrorCode::ZeErrSchemaMismatch,
+        33,
+        "ZE_ERR_SCHEMA_MISMATCH",
+    ),
+    (
+        ZeErrorCode::ZeErrNoVectorSpace,
+        34,
+        "ZE_ERR_NO_VECTOR_SPACE",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -288,6 +299,24 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
 
 #[test]
 fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
+    assert_layout!(ZeAttributeDefinition, 32, 8, {
+        attribute_id: 0, name: 8, name_len: 16, attribute_type: 24, nullable: 28
+    });
+    assert_layout!(ZeNamespaceSpec, 48, 8, {
+        abi_size: 0, abi_reserved: 4, attributes: 8, attribute_count: 16,
+        has_vector_space: 24, dimensions: 28, normalization: 32, epoch: 40
+    });
+    assert_layout!(ZeNamespaceOpenRequest, 112, 8, {
+        abi_size: 0, abi_reserved: 4, root: 8, root_len: 16, name: 24,
+        name_len: 32, open: 40, spec: 104
+    });
+    assert_layout!(ZeNamespaceListRequest, 24, 8, {
+        abi_size: 0, abi_reserved: 4, root: 8, root_len: 16
+    });
+    assert_layout!(ZeNamespaceEntry, 16, 8, { name: 0, name_len: 8 });
+    assert_layout!(ZeNamespaceListResult, 24, 8, {
+        abi_size: 0, abi_reserved: 4, entries: 8, entry_count: 16
+    });
     assert_layout!(ZeEmbeddingTower, 104, 8, {
         model_id: 0, model_id_len: 8, model_version: 16, model_version_len: 24,
         weights_digest: 32, weights_digest_len: 40, dims: 48, normalization: 52,

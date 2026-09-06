@@ -155,6 +155,18 @@ enum ze_error_code
      A bounded text pipeline stage failed.
      */
     ZE_ERR_PIPELINE = 31,
+    /*
+     A scan continuation no longer names the current store generation.
+     */
+    ZE_ERR_SCAN_STALE = 32,
+    /*
+     A declared namespace schema differs from the persisted schema.
+     */
+    ZE_ERR_SCHEMA_MISMATCH = 33,
+    /*
+     The requested operation requires a vector space.
+     */
+    ZE_ERR_NO_VECTOR_SPACE = 34,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -336,6 +348,166 @@ typedef struct ZeEpochRequest {
      */
     uint32_t reserved;
 } ZeEpochRequest;
+
+/*
+ One caller-owned namespace attribute declaration.
+ */
+typedef struct ZeAttributeDefinition {
+    /*
+     Schema-local identifier; zero is reserved for the `ts` column.
+     */
+    uint32_t attribute_id;
+    /*
+     Caller-owned UTF-8 attribute name.
+     */
+    const uint8_t *name;
+    /*
+     Number of attribute-name bytes.
+     */
+    size_t name_len;
+    /*
+     `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, or `6` raw string.
+     */
+    int32_t attribute_type;
+    /*
+     One when the attribute is nullable.
+     */
+    uint32_t nullable;
+} ZeAttributeDefinition;
+
+/*
+ Schema and vector-space identity declared for one namespace.
+ */
+typedef struct ZeNamespaceSpec {
+    /*
+     Caller-provided `sizeof(ZeNamespaceSpec)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned attribute definitions.
+     */
+    const struct ZeAttributeDefinition *attributes;
+    /*
+     Number of attribute definitions.
+     */
+    size_t attribute_count;
+    /*
+     One for a vector namespace, zero for a record-only namespace.
+     */
+    uint32_t has_vector_space;
+    /*
+     Vector dimensions, or zero or one for a record-only namespace.
+     */
+    uint32_t dimensions;
+    /*
+     `0` for none or `1` for unit-L2 normalization.
+     */
+    int32_t normalization;
+    /*
+     Optional caller-owned epoch; null selects the canonical namespace epoch.
+     */
+    const struct ZeEpochRequest *epoch;
+} ZeNamespaceSpec;
+
+/*
+ Opens or idempotently creates one namespace under a database root.
+ */
+typedef struct ZeNamespaceOpenRequest {
+    /*
+     Caller-provided `sizeof(ZeNamespaceOpenRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned UTF-8 database-root path.
+     */
+    const uint8_t *root;
+    /*
+     Number of root-path bytes.
+     */
+    size_t root_len;
+    /*
+     Caller-owned namespace-name bytes.
+     */
+    const uint8_t *name;
+    /*
+     Number of namespace-name bytes.
+     */
+    size_t name_len;
+    /*
+     Existing store-open settings; its path fields are ignored.
+     */
+    struct ZeOpenRequest open;
+    /*
+     Required namespace schema and vector-space declaration.
+     */
+    const struct ZeNamespaceSpec *spec;
+} ZeNamespaceOpenRequest;
+
+/*
+ Requests namespace discovery immediately below one database root.
+ */
+typedef struct ZeNamespaceListRequest {
+    /*
+     Caller-provided `sizeof(ZeNamespaceListRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned UTF-8 database-root path.
+     */
+    const uint8_t *root;
+    /*
+     Number of root-path bytes.
+     */
+    size_t root_len;
+} ZeNamespaceListRequest;
+
+/*
+ One callee-owned namespace name.
+ */
+typedef struct ZeNamespaceEntry {
+    /*
+     Name bytes owned by the containing result arena.
+     */
+    const uint8_t *name;
+    /*
+     Number of name bytes.
+     */
+    size_t name_len;
+} ZeNamespaceEntry;
+
+/*
+ Callee-owned namespace list; release with `ze_namespace_list_result_free`.
+ */
+typedef struct ZeNamespaceListResult {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Callee-owned entry array, or null when `entry_count` is zero.
+     */
+    struct ZeNamespaceEntry *entries;
+    /*
+     Number of initialized entries.
+     */
+    size_t entry_count;
+} ZeNamespaceListResult;
 
 /*
  Compact epoch identity pair.
@@ -1622,6 +1794,28 @@ ze_error_code ze_open(const struct ZeOpenRequest *request,
 ze_error_code ze_open_with_epoch(const struct ZeOpenRequest *request,
                                  const struct ZeEpochRequest *epoch,
                                  ze_handle *out_handle);
+
+/*
+ Opens or idempotently creates `root/name` with the declared namespace spec.
+ All request data is caller-owned and need only outlive this call. The
+ returned handle is an ordinary store handle accepted by every existing
+ store function.
+ */
+ze_error_code ze_namespace_open(const struct ZeNamespaceOpenRequest *request,
+                                ze_handle *out_handle);
+
+/*
+ Lists direct child directories of `root` that contain a `manifest.ze`, in
+ ascending byte order. The returned names share one callee-owned arena.
+ */
+ze_error_code ze_namespace_list(const struct ZeNamespaceListRequest *request,
+                                struct ZeNamespaceListResult *out_result);
+
+/*
+ Releases the single arena owned by a namespace-list result. A zeroed result
+ is accepted as a successful no-op.
+ */
+ze_error_code ze_namespace_list_result_free(struct ZeNamespaceListResult *result);
 
 /*
  Computes the compact identity of a caller-declared epoch without touching

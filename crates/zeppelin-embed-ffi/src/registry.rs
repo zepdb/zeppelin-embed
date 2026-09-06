@@ -34,6 +34,7 @@ fn cancels() -> &'static Mutex<Vec<CancelSlot>> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResultAllocation {
     length: usize,
+    reported_length: usize,
     element: std::any::TypeId,
     generation: u32,
 }
@@ -52,6 +53,15 @@ impl ResultAllocations {
     }
 
     fn register<T: 'static>(&mut self, pointer: *mut T, length: usize) -> Result<u32, FfiError> {
+        self.register_arena(pointer, length, length)
+    }
+
+    fn register_arena<T: 'static>(
+        &mut self,
+        pointer: *mut T,
+        length: usize,
+        reported_length: usize,
+    ) -> Result<u32, FfiError> {
         if self.allocations.contains_key(&(pointer as usize)) {
             return Err(FfiError::invalid("result allocation is already registered"));
         }
@@ -67,6 +77,7 @@ impl ResultAllocations {
             pointer as usize,
             ResultAllocation {
                 length,
+                reported_length,
                 element: std::any::TypeId::of::<T>(),
                 generation,
             },
@@ -82,6 +93,7 @@ impl ResultAllocations {
     ) -> Result<(), FfiError> {
         let expected = ResultAllocation {
             length,
+            reported_length: length,
             element: std::any::TypeId::of::<T>(),
             generation,
         };
@@ -92,6 +104,29 @@ impl ResultAllocations {
         }
         self.allocations.remove(&(pointer as usize));
         Ok(())
+    }
+
+    fn take_registered<T: 'static>(
+        &mut self,
+        pointer: *mut T,
+        reported_length: usize,
+        generation: u32,
+    ) -> Result<usize, FfiError> {
+        let Some(allocation) = self.allocations.get(&(pointer as usize)).copied() else {
+            return Err(FfiError::invalid(
+                "result was already freed or was not allocated by this ABI",
+            ));
+        };
+        if allocation.element != std::any::TypeId::of::<T>()
+            || allocation.reported_length != reported_length
+            || allocation.generation != generation
+        {
+            return Err(FfiError::invalid(
+                "result was already freed or was not allocated by this ABI",
+            ));
+        }
+        self.allocations.remove(&(pointer as usize));
+        Ok(allocation.length)
     }
 }
 
@@ -310,6 +345,22 @@ pub(crate) fn register_result<T: 'static>(pointer: *mut T, length: usize) -> Res
         .register(pointer, length)
 }
 
+pub(crate) fn register_result_arena<T: 'static>(
+    pointer: *mut T,
+    allocation_length: usize,
+    reported_length: usize,
+) -> Result<u32, FfiError> {
+    result_allocations()
+        .lock()
+        .map_err(|_| {
+            FfiError::new(
+                ZeErrorCode::ZeErrSynchronization,
+                "result allocation registry mutex is poisoned",
+            )
+        })?
+        .register_arena(pointer, allocation_length, reported_length)
+}
+
 pub(crate) fn take_result<T: 'static>(
     pointer: *mut T,
     length: usize,
@@ -334,6 +385,33 @@ pub(crate) fn take_result<T: 'static>(
         )
     })?;
     allocations.take(pointer, length, generation)?;
+    drop(allocations);
+    let slice = std::ptr::slice_from_raw_parts_mut(pointer, length);
+    unsafe { drop(Box::from_raw(slice)) };
+    Ok(())
+}
+
+pub(crate) fn take_registered_result<T: 'static>(
+    pointer: *mut T,
+    reported_length: usize,
+    generation: u32,
+) -> Result<(), FfiError> {
+    if pointer.is_null() {
+        return if generation == 0 {
+            Ok(())
+        } else {
+            Err(FfiError::invalid(
+                "empty result has a nonzero allocation generation",
+            ))
+        };
+    }
+    let mut allocations = result_allocations().lock().map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrSynchronization,
+            "result allocation registry mutex is poisoned",
+        )
+    })?;
+    let length = allocations.take_registered(pointer, reported_length, generation)?;
     drop(allocations);
     let slice = std::ptr::slice_from_raw_parts_mut(pointer, length);
     unsafe { drop(Box::from_raw(slice)) };

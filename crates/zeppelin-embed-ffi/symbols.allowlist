@@ -15,6 +15,9 @@ ze_error_code_name
 ze_ingest
 ze_last_error_message
 ze_maintain
+ze_namespace_list
+ze_namespace_list_result_free
+ze_namespace_open
 ze_open
 ze_open_with_epoch
 ze_purge

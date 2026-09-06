@@ -112,7 +112,7 @@ fn abi_size<T>(bytes: &mut Bytes<'_>) -> u32 {
 
 fn typed(code: ZeErrorCode) {
     let value = code as i32;
-    assert!((0..=28).contains(&value), "unknown status code {value}");
+    assert!((0..=34).contains(&value), "unknown status code {value}");
     assert_ne!(
         code,
         ZeErrorCode::ZeErrPanic,
@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 12 {
+    match bytes.u8() % 13 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -414,6 +414,67 @@ fuzz_target!(|data: &[u8]| {
             typed(ze_state(handle, &mut state));
             let mut stats: ZeStatsReport = sized(abi_size::<ZeStatsReport>(&mut bytes));
             typed(ze_stats(handle, &mut stats));
+        }
+        11 => {
+            let rest = bytes.rest();
+            let (name, name_len) = tail_pointer(rest, &mut bytes);
+            let (attribute_name, attribute_name_len) = tail_pointer(rest, &mut bytes);
+            let attribute = ZeAttributeDefinition {
+                attribute_id: bytes.u32(),
+                name: attribute_name,
+                name_len: attribute_name_len,
+                attribute_type: bytes.i32() % 8,
+                nullable: bytes.u32() % 3,
+            };
+            let attributes = [attribute; 2];
+            let spec = ZeNamespaceSpec {
+                abi_size: abi_size::<ZeNamespaceSpec>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                attributes: attributes.as_ptr(),
+                attribute_count: bytes.len_within(attributes.len()),
+                has_vector_space: bytes.u32() % 3,
+                dimensions: bytes.u32() % 128,
+                normalization: bytes.i32() % 3,
+                epoch: std::ptr::null(),
+            };
+            let open = ZeOpenRequest {
+                abi_size: abi_size::<ZeOpenRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                path: fixture.path.as_ptr(),
+                path_len: fixture.path.len(),
+                access_mode: bytes.i32() % 4,
+                durability_mode: bytes.i32() % 4,
+                commit_tier: bytes.i32() % 4,
+                reader_drain_timeout_ms: bytes.u64(),
+                max_resident_bytes: bytes.u64(),
+                max_temp_bytes: bytes.u64(),
+            };
+            let namespace = ZeNamespaceOpenRequest {
+                abi_size: abi_size::<ZeNamespaceOpenRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                root: fixture.path.as_ptr(),
+                root_len: fixture.path.len(),
+                name,
+                name_len,
+                open,
+                spec: &spec,
+            };
+            let mut opened = 0;
+            let code = ze_namespace_open(&namespace, &mut opened);
+            typed(code);
+            if code == ZeErrorCode::ZeOk {
+                typed(ze_close(opened));
+            }
+            let list = ZeNamespaceListRequest {
+                abi_size: abi_size::<ZeNamespaceListRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                root: fixture.path.as_ptr(),
+                root_len: fixture.path.len(),
+            };
+            let mut result: ZeNamespaceListResult =
+                sized(abi_size::<ZeNamespaceListResult>(&mut bytes));
+            typed(ze_namespace_list(&list, &mut result));
+            typed(ze_namespace_list_result_free(&mut result));
         }
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }

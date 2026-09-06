@@ -66,6 +66,12 @@ pub enum ZeErrorCode {
     ZeErrModel = 30,
     /// A bounded text pipeline stage failed.
     ZeErrPipeline = 31,
+    /// A scan continuation no longer names the current store generation.
+    ZeErrScanStale = 32,
+    /// A declared namespace schema differs from the persisted schema.
+    ZeErrSchemaMismatch = 33,
+    /// The requested operation requires a vector space.
+    ZeErrNoVectorSpace = 34,
 }
 
 /// Opaque generation-tagged store handle.
@@ -107,6 +113,104 @@ pub struct ZeOpenRequest {
     pub max_resident_bytes: u64,
     /// Exact temporary byte ceiling.
     pub max_temp_bytes: u64,
+}
+
+/// One caller-owned namespace attribute declaration.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeAttributeDefinition {
+    /// Schema-local identifier; zero is reserved for the `ts` column.
+    pub attribute_id: u32,
+    /// Caller-owned UTF-8 attribute name.
+    pub name: *const u8,
+    /// Number of attribute-name bytes.
+    pub name_len: usize,
+    /// `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, or `6` raw string.
+    pub attribute_type: i32,
+    /// One when the attribute is nullable.
+    pub nullable: u32,
+}
+
+/// Schema and vector-space identity declared for one namespace.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceSpec {
+    /// Caller-provided `sizeof(ZeNamespaceSpec)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned attribute definitions.
+    pub attributes: *const ZeAttributeDefinition,
+    /// Number of attribute definitions.
+    pub attribute_count: usize,
+    /// One for a vector namespace, zero for a record-only namespace.
+    pub has_vector_space: u32,
+    /// Vector dimensions, or zero or one for a record-only namespace.
+    pub dimensions: u32,
+    /// `0` for none or `1` for unit-L2 normalization.
+    pub normalization: i32,
+    /// Optional caller-owned epoch; null selects the canonical namespace epoch.
+    pub epoch: *const ZeEpochRequest,
+}
+
+/// Opens or idempotently creates one namespace under a database root.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceOpenRequest {
+    /// Caller-provided `sizeof(ZeNamespaceOpenRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned UTF-8 database-root path.
+    pub root: *const u8,
+    /// Number of root-path bytes.
+    pub root_len: usize,
+    /// Caller-owned namespace-name bytes.
+    pub name: *const u8,
+    /// Number of namespace-name bytes.
+    pub name_len: usize,
+    /// Existing store-open settings; its path fields are ignored.
+    pub open: ZeOpenRequest,
+    /// Required namespace schema and vector-space declaration.
+    pub spec: *const ZeNamespaceSpec,
+}
+
+/// Requests namespace discovery immediately below one database root.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceListRequest {
+    /// Caller-provided `sizeof(ZeNamespaceListRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned UTF-8 database-root path.
+    pub root: *const u8,
+    /// Number of root-path bytes.
+    pub root_len: usize,
+}
+
+/// One callee-owned namespace name.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceEntry {
+    /// Name bytes owned by the containing result arena.
+    pub name: *const u8,
+    /// Number of name bytes.
+    pub name_len: usize,
+}
+
+/// Callee-owned namespace list; release with `ze_namespace_list_result_free`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceListResult {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Caller sets zero; callee returns an opaque allocation generation.
+    pub abi_reserved: u32,
+    /// Callee-owned entry array, or null when `entry_count` is zero.
+    pub entries: *mut ZeNamespaceEntry,
+    /// Number of initialized entries.
+    pub entry_count: usize,
 }
 
 /// Store lifecycle state report.

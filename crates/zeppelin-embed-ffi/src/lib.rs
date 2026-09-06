@@ -49,6 +49,7 @@ use zeppelin_embed::lifecycle::{
     AccessMode, CancelToken, Deadline, GraphSearchOptions, OpenOptions, QueryControl,
     SearchOptions, SearchTier, Store, StoreState,
 };
+use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
 
@@ -183,6 +184,20 @@ fn parse_commit_tier(value: i32) -> Result<CommitTier, FfiError> {
             "commit_tier discriminant is out of range",
         )),
     }
+}
+
+fn parse_open_options(request: &ZeOpenRequest) -> Result<OpenOptions, FfiError> {
+    let access = parse_access(request.access_mode)?;
+    let durability = parse_durability(request.durability_mode)?;
+    let tier = parse_commit_tier(request.commit_tier)?;
+    Ok(match access {
+        AccessMode::ReadWrite => OpenOptions::new(),
+        AccessMode::ReadOnly => OpenOptions::read_only(),
+    }
+    .with_durability(durability, tier)
+    .with_reader_drain_timeout(Duration::from_millis(request.reader_drain_timeout_ms))
+    .with_max_resident_bytes(request.max_resident_bytes)
+    .with_max_temp_bytes(request.max_temp_bytes))
 }
 
 fn parse_graph_profile(value: i32) -> Result<GraphSearchProfile, FfiError> {
@@ -379,6 +394,250 @@ fn parse_epoch(request: *const ZeEpochRequest) -> Result<StoreEpoch, FfiError> {
     })
 }
 
+fn canonical_namespace_epoch(
+    model_id: &str,
+    dimensions: u32,
+    normalization: Normalization,
+) -> StoreEpoch {
+    let tower = EmbeddingTower {
+        model_id: model_id.to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: Vec::new(),
+        dims: dimensions,
+        normalization,
+        prompt_prefix: String::new(),
+        max_tokens: 0,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            document: tower.clone(),
+            query: tower,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: TokenizerConfig::text_default().epoch(),
+    }
+}
+
+fn parse_attribute_type(value: i32) -> Result<ColumnType, FfiError> {
+    match value {
+        1 => Ok(ColumnType::U64),
+        2 => Ok(ColumnType::I64),
+        3 => Ok(ColumnType::F64),
+        4 => Ok(ColumnType::Bool),
+        5 => Ok(ColumnType::DictionaryString),
+        6 => Ok(ColumnType::RawString),
+        _ => Err(FfiError::invalid(
+            "attribute_type discriminant is out of range",
+        )),
+    }
+}
+
+fn parse_namespace_spec(request: *const ZeNamespaceSpec) -> Result<(Schema, StoreEpoch), FfiError> {
+    let request = marshal::read_struct(request)?;
+    let attributes = marshal::read_slice(request.attributes, request.attribute_count)?;
+    let mut columns = Vec::new();
+    columns.try_reserve_exact(attributes.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "namespace schema allocation failed",
+        )
+    })?;
+    for attribute in attributes {
+        if attribute.attribute_id == 0 {
+            return Err(FfiError::invalid("attribute_id zero is reserved for ts"));
+        }
+        columns.push(ColumnDefinition::new(
+            ColumnId::new(attribute.attribute_id),
+            utf8_field(attribute.name, attribute.name_len, "attribute name")?,
+            parse_attribute_type(attribute.attribute_type)?,
+            parse_flag(attribute.nullable, "nullable")?,
+        ));
+    }
+    let schema = Schema::new(columns).map_err(|error| FfiError::invalid(error.to_string()))?;
+    let has_vector_space = parse_flag(request.has_vector_space, "has_vector_space")?;
+    let normalization = parse_normalization(request.normalization)?;
+    if !has_vector_space {
+        if request.dimensions > 1 {
+            return Err(FfiError::invalid(
+                "record-only namespace dimensions must be zero or one",
+            ));
+        }
+        if !request.epoch.is_null() {
+            return Err(FfiError::invalid(
+                "record-only namespace cannot declare an epoch",
+            ));
+        }
+        return Ok((
+            schema,
+            canonical_namespace_epoch("zeppelin.record-only", 1, Normalization::None),
+        ));
+    }
+    if request.dimensions == 0 {
+        return Err(FfiError::invalid(
+            "vector namespace dimensions must be nonzero",
+        ));
+    }
+    let epoch = if request.epoch.is_null() {
+        canonical_namespace_epoch("zeppelin.vector-space", request.dimensions, normalization)
+    } else {
+        parse_epoch(request.epoch)?
+    };
+    if epoch.embedding.document.dims != request.dimensions
+        || epoch.embedding.query.dims != request.dimensions
+    {
+        return Err(FfiError::invalid(
+            "declared epoch dimensions do not match the namespace dimensions",
+        ));
+    }
+    if epoch.embedding.document.normalization != normalization
+        || epoch.embedding.query.normalization != normalization
+    {
+        return Err(FfiError::invalid(
+            "declared epoch normalization does not match the namespace normalization",
+        ));
+    }
+    Ok((schema, epoch))
+}
+
+fn validate_namespace_name(name: &[u8]) -> Result<&str, FfiError> {
+    let valid_first = name.first().is_some_and(u8::is_ascii_alphanumeric);
+    let valid_tail = name
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'));
+    if !(valid_first && valid_tail && name.len() <= 255) {
+        return Err(FfiError::invalid("namespace name is invalid"));
+    }
+    std::str::from_utf8(name).map_err(|_| FfiError::invalid("namespace name is not ASCII"))
+}
+
+fn open_store_at(
+    path: &Path,
+    mut options: OpenOptions,
+    epoch: Option<StoreEpoch>,
+    schema: Option<Schema>,
+    out_handle: *mut ZeHandle,
+) -> Result<(), FfiError> {
+    let identity = epoch.as_ref().map(StoreEpoch::identity);
+    if let Some(epoch) = epoch {
+        options = options.with_epoch(epoch);
+    }
+    if let Some(schema) = schema {
+        options = options.with_schema(schema);
+    }
+    let store = Store::open(path, options).map_err(FfiError::store)?;
+    let handle = registry::insert_store(store, identity)?;
+    marshal::write_scalar(out_handle, handle);
+    Ok(())
+}
+
+fn empty_namespace_list_result(abi_size: u32) -> ZeNamespaceListResult {
+    ZeNamespaceListResult {
+        abi_size,
+        abi_reserved: 0,
+        entries: std::ptr::null_mut(),
+        entry_count: 0,
+    }
+}
+
+fn namespace_io(path: &Path, source: std::io::Error) -> FfiError {
+    FfiError::new(
+        ZeErrorCode::ZeErrIo,
+        format!("namespace I/O {}: {source}", path.display()),
+    )
+}
+
+fn namespace_names(root: &Path) -> Result<Vec<Vec<u8>>, FfiError> {
+    let directory = std::fs::read_dir(root).map_err(|source| namespace_io(root, source))?;
+    let mut names = Vec::new();
+    for entry in directory {
+        let entry = entry.map_err(|source| namespace_io(root, source))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| namespace_io(&entry.path(), source))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let manifest = entry.path().join("manifest.ze");
+        let metadata = match std::fs::metadata(&manifest) {
+            Ok(metadata) => metadata,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(namespace_io(&manifest, source)),
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let encoded = file_name.as_encoded_bytes();
+        let mut name = Vec::new();
+        name.try_reserve_exact(encoded.len()).map_err(|_| {
+            FfiError::new(
+                ZeErrorCode::ZeErrOutOfMemory,
+                "namespace name allocation failed",
+            )
+        })?;
+        name.extend_from_slice(encoded);
+        names.try_reserve(1).map_err(|_| {
+            FfiError::new(
+                ZeErrorCode::ZeErrOutOfMemory,
+                "namespace list allocation failed",
+            )
+        })?;
+        names.push(name);
+    }
+    names.sort_unstable();
+    Ok(names)
+}
+
+fn publish_namespace_names(names: &[Vec<u8>]) -> Result<(*mut ZeNamespaceEntry, u32), FfiError> {
+    if names.is_empty() {
+        return Ok((std::ptr::null_mut(), 0));
+    }
+    let entry_bytes = names
+        .len()
+        .checked_mul(size_of::<ZeNamespaceEntry>())
+        .ok_or_else(|| FfiError::invalid("namespace entry bytes overflow"))?;
+    let names_bytes = names.iter().try_fold(0_usize, |total, name| {
+        total
+            .checked_add(name.len())
+            .ok_or_else(|| FfiError::invalid("namespace name bytes overflow"))
+    })?;
+    let arena_bytes = entry_bytes
+        .checked_add(names_bytes)
+        .ok_or_else(|| FfiError::invalid("namespace arena bytes overflow"))?;
+    let words = arena_bytes.div_ceil(size_of::<u64>());
+    let mut arena = Vec::<u64>::new();
+    arena.try_reserve_exact(words).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "namespace result arena allocation failed",
+        )
+    })?;
+    arena.resize(words, 0);
+    let mut arena = arena.into_boxed_slice();
+    let arena_pointer = arena.as_mut_ptr();
+    let entries = arena_pointer.cast::<ZeNamespaceEntry>();
+    let mut name_pointer = unsafe { arena_pointer.cast::<u8>().add(entry_bytes) };
+    for (index, name) in names.iter().enumerate() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), name_pointer, name.len());
+            std::ptr::write(
+                entries.add(index),
+                ZeNamespaceEntry {
+                    name: name_pointer,
+                    name_len: name.len(),
+                },
+            );
+            name_pointer = name_pointer.add(name.len());
+        }
+    }
+    let generation = registry::register_result_arena(arena_pointer, arena.len(), names.len())?;
+    let _raw = Box::into_raw(arena);
+    Ok((entries, generation))
+}
+
 fn open_store(
     request: *const ZeOpenRequest,
     epoch: Option<StoreEpoch>,
@@ -390,25 +649,13 @@ fn open_store(
     if path.is_empty() {
         return Err(FfiError::invalid("store path must not be empty"));
     }
-    let access = parse_access(request.access_mode)?;
-    let durability = parse_durability(request.durability_mode)?;
-    let tier = parse_commit_tier(request.commit_tier)?;
-    let mut options = match access {
-        AccessMode::ReadWrite => OpenOptions::new(),
-        AccessMode::ReadOnly => OpenOptions::read_only(),
-    }
-    .with_durability(durability, tier)
-    .with_reader_drain_timeout(Duration::from_millis(request.reader_drain_timeout_ms))
-    .with_max_resident_bytes(request.max_resident_bytes)
-    .with_max_temp_bytes(request.max_temp_bytes);
-    let identity = epoch.as_ref().map(StoreEpoch::identity);
-    if let Some(epoch) = epoch {
-        options = options.with_epoch(epoch);
-    }
-    let store = Store::open(Path::new(path), options).map_err(FfiError::store)?;
-    let handle = registry::insert_store(store, identity)?;
-    marshal::write_scalar(out_handle, handle);
-    Ok(())
+    open_store_at(
+        Path::new(path),
+        parse_open_options(&request)?,
+        epoch,
+        None,
+        out_handle,
+    )
 }
 
 #[cfg(feature = "text")]
@@ -671,6 +918,124 @@ pub extern "C" fn ze_open_with_epoch(
         finish(
             None,
             parse_epoch(epoch).and_then(|epoch| open_store(request, Some(epoch), out_handle)),
+        )
+    })
+}
+
+/// Opens or idempotently creates `root/name` with the declared namespace spec.
+/// All request data is caller-owned and need only outlive this call. The
+/// returned handle is an ordinary store handle accepted by every existing
+/// store function.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_open(
+    request: *const ZeNamespaceOpenRequest,
+    out_handle: *mut ZeHandle,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_open");
+        finish(
+            None,
+            (|| {
+                let request = marshal::read_struct(request)?;
+                scalar_output(out_handle)?;
+                let root = marshal::utf8_without_nul(request.root, request.root_len)?;
+                if root.is_empty() {
+                    return Err(FfiError::invalid("namespace root must not be empty"));
+                }
+                let name_bytes = marshal::read_slice(request.name, request.name_len)?;
+                let name = validate_namespace_name(name_bytes)?;
+                let open = marshal::read_struct(&request.open)?;
+                let (schema, epoch) = parse_namespace_spec(request.spec)?;
+                let path = Path::new(root).join(name);
+                open_store_at(
+                    &path,
+                    parse_open_options(&open)?,
+                    Some(epoch),
+                    Some(schema),
+                    out_handle,
+                )
+            })(),
+        )
+    })
+}
+
+/// Lists direct child directories of `root` that contain a `manifest.ze`, in
+/// ascending byte order. The returned names share one callee-owned arena.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_list(
+    request: *const ZeNamespaceListRequest,
+    out_result: *mut ZeNamespaceListResult,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_list");
+        finish(
+            None,
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                let root = marshal::utf8_without_nul(request.root, request.root_len)?;
+                if root.is_empty() {
+                    return Err(FfiError::invalid("namespace root must not be empty"));
+                }
+                let names = namespace_names(Path::new(root))?;
+                let (entries, allocation_generation) = publish_namespace_names(&names)?;
+                marshal::write_output(
+                    out_result,
+                    ZeNamespaceListResult {
+                        abi_size,
+                        abi_reserved: allocation_generation,
+                        entries,
+                        entry_count: names.len(),
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Releases the single arena owned by a namespace-list result. A zeroed result
+/// is accepted as a successful no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_list_result_free(result: *mut ZeNamespaceListResult) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_list_result_free");
+        finish(
+            None,
+            (|| {
+                if result.is_null() {
+                    return Err(FfiError::invalid("namespace list result pointer is null"));
+                }
+                if result.align_offset(align_of::<ZeNamespaceListResult>()) != 0 {
+                    return Err(FfiError::invalid(
+                        "namespace list result pointer is misaligned",
+                    ));
+                }
+                let abi_size = marshal::read_abi_size(result);
+                if abi_size == 0 {
+                    let zeroed = marshal::read_value(result);
+                    if zeroed.entries.is_null() && zeroed.entry_count == 0 {
+                        return Ok(());
+                    }
+                    return Err(FfiError::invalid(
+                        "zero-sized namespace list result contains an allocation",
+                    ));
+                }
+                marshal::validate_abi_size::<ZeNamespaceListResult>(abi_size)?;
+                let current = marshal::read_value(result);
+                if current.entries.is_null() != (current.entry_count == 0) {
+                    return Err(FfiError::invalid(
+                        "namespace result pointer and entry count disagree",
+                    ));
+                }
+                registry::take_registered_result(
+                    current.entries.cast::<u64>(),
+                    current.entry_count,
+                    current.abi_reserved,
+                )?;
+                marshal::write_output(result, empty_namespace_list_result(abi_size));
+                Ok(())
+            })(),
         )
     })
 }
@@ -2049,6 +2414,9 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             29 => b"ZE_ERR_BUNDLE\0",
             30 => b"ZE_ERR_MODEL\0",
             31 => b"ZE_ERR_PIPELINE\0",
+            32 => b"ZE_ERR_SCAN_STALE\0",
+            33 => b"ZE_ERR_SCHEMA_MISMATCH\0",
+            34 => b"ZE_ERR_NO_VECTOR_SPACE\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()
@@ -2130,4 +2498,7 @@ const _: () = {
     assert!(size_of::<ZeEpochRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeQueryRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeQueryResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeNamespaceOpenRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeNamespaceListRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeNamespaceListResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
 };

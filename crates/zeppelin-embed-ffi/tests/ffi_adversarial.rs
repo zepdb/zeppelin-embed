@@ -95,6 +95,18 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
+        name: "ze_namespace_open",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_open),
+    },
+    AbiEntry {
+        name: "ze_namespace_list",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_list),
+    },
+    AbiEntry {
+        name: "ze_namespace_list_result_free",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_list_result_free),
+    },
+    AbiEntry {
         name: "ze_epoch_identity",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -828,6 +840,18 @@ fn probe_query_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_query_result_free(std::ptr::null_mut()))
 }
 
+fn probe_namespace_open(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_open(std::ptr::null(), std::ptr::null_mut()))
+}
+
+fn probe_namespace_list(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_list(std::ptr::null(), std::ptr::null_mut()))
+}
+
+fn probe_namespace_list_result_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_list_result_free(std::ptr::null_mut()))
+}
+
 fn probe_last_error_message(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_last_error_message(
         context.store.handle,
@@ -937,7 +961,7 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
                     assert_ne!(code, ZeErrorCode::ZeOk, "{} invalid probe", entry.name);
                     assert_ne!(code, ZeErrorCode::ZeErrPanic, "{} panicked", entry.name);
                     assert!(
-                        (1..=28).contains(&(code as i32)),
+                        (1..=34).contains(&(code as i32)),
                         "{} typed code",
                         entry.name
                     );

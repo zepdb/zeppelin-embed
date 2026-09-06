@@ -59,7 +59,13 @@ impl FfiError {
 
     pub(crate) fn store(error: zeppelin_embed::lifecycle::StoreError) -> Self {
         let message = error.to_string();
-        Self::new(Self::store_kind_code(error.kind()), message)
+        let code = match &error {
+            zeppelin_embed::lifecycle::StoreError::SchemaMismatch { .. } => {
+                ZeErrorCode::ZeErrSchemaMismatch
+            }
+            _ => Self::store_kind_code(error.kind()),
+        };
+        Self::new(code, message)
     }
 
     pub(crate) const fn store_kind_code(
