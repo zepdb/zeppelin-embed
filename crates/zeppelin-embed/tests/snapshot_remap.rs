@@ -836,6 +836,10 @@ fn mapped_resident_bytes_tracks_full_touch_across_chunked_mapping() {
     );
     let before = store.stats().expect("residency before touching mapping");
     assert_eq!(before.mapped_bytes, segment.meta().file_size);
+    // F_NOCACHE gives this fixture a testable cold-start contract on macOS.
+    // Linux POSIX_FADV_DONTNEED is advisory and may retain freshly written
+    // pages, so Linux still exercises the chunked census and full-touch result.
+    #[cfg(target_os = "macos")]
     assert!(
         before.mapped_resident_bytes <= before.mapped_bytes / 10,
         "no-cache fixture must begin at no more than 10% resident: resident={} mapped={}",
@@ -852,10 +856,12 @@ fn mapped_resident_bytes_tracks_full_touch_across_chunked_mapping() {
         after.mapped_resident_bytes,
         after.mapped_bytes
     );
+    #[cfg(target_os = "macos")]
     let resident_rise = after
         .mapped_resident_bytes
         .checked_sub(before.mapped_resident_bytes)
         .expect("touching must not reduce residency");
+    #[cfg(target_os = "macos")]
     assert!(
         resident_rise >= after.mapped_bytes.saturating_mul(8) / 10,
         "mincore residency must rise by at least 80% of the same mapping: before={} after={} rise={resident_rise} mapped={}",
