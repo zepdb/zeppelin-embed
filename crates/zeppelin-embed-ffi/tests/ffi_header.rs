@@ -294,6 +294,7 @@ fn the_committed_header_is_the_exact_cbindgen_output() {
 }
 
 #[test]
+#[ignore = "manual full-build qualification; validates the release static library"]
 fn the_committed_header_matches_the_exported_symbol_table_and_the_allowlist() {
     assert_header_gate();
 }
@@ -365,6 +366,7 @@ fn plant_instrumented_release_archive() -> ArchiveRestore {
 }
 
 #[test]
+#[ignore = "manual full-build qualification; rebuilds two release target directories"]
 fn header_gate_passes_twice_in_a_row_after_an_instrumented_build() {
     let _restore = plant_instrumented_release_archive();
     assert_header_gate();
