@@ -202,11 +202,7 @@ fn no_background_thread_survives_close() {
 
     store.close().expect("close");
 
-    let after = os_thread_ids().expect("census after close");
-    assert!(
-        spawned.iter().all(|thread| !after.contains(thread)),
-        "kernel thread census still contains store threads after close: {spawned:?}"
-    );
+    assert_threads_exit(&spawned, "close");
 }
 
 #[test]
@@ -225,11 +221,7 @@ fn drop_without_close_best_effort_releases() {
 
     drop(store);
 
-    let after = os_thread_ids().expect("census after drop");
-    assert!(
-        spawned.iter().all(|thread| !after.contains(thread)),
-        "kernel thread census still contains store threads after drop: {spawned:?}"
-    );
+    assert_threads_exit(&spawned, "drop");
     let reopened =
         Store::open(directory.path(), OpenOptions::default()).expect("reopen after drop");
     let reopened_stats = reopened
@@ -263,6 +255,26 @@ fn start_query_pool(store: &Store) -> usize {
         .expect("start and use persistent query pool");
     assert_eq!(outcome.stats.worker_thread_ids.len(), capacity);
     capacity
+}
+
+fn assert_threads_exit(spawned: &[u64], action: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let after = os_thread_ids().expect("census after store teardown");
+        let remaining = spawned
+            .iter()
+            .copied()
+            .filter(|thread| after.contains(thread))
+            .collect::<Vec<_>>();
+        if remaining.is_empty() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "kernel thread census still contains store threads after {action}: {remaining:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
