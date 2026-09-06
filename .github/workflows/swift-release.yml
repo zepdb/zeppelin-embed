@@ -60,7 +60,13 @@ jobs:
           expected="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' Package.swift | cut -d'"' -f2)"
           test -n "$expected"
           actual="$(swift package compute-checksum target/xcframework/ZeppelinEmbed.xcframework.zip)"
-          test "$actual" = "$expected"
+          if [ "$actual" != "$expected" ]; then
+              # CI is the source of truth for this value (BL-167). Print it so
+              # the pin can be applied in one round trip instead of guessed.
+              echo "Package.swift pins $expected but CI built $actual" >&2
+              echo "Pin this in Package.swift: $actual" >&2
+              exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: zeppelin-embed-macos-artifacts

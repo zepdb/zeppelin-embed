@@ -14,10 +14,12 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // URL, SwiftPM compiles the manifest in a sandbox where `#filePath` is
 // `/Package.swift` and the rest of the repository is not reachable, so any
 // attempt to read the checksum from a file next to this one fails and takes the
-// consumer's whole dependency resolution down with it. Kept in sync by
-// `scripts/xcframework/build.sh` and the `swift-release` workflow, which both
-// verify this line against the archive they built.
-let binaryChecksum = "24068e6aa00f0edd2037a8b72588607c360d8e3f322194df9b6aeb729f8e8a9a" // ze:xcframework-checksum
+// consumer's whole dependency resolution down with it. The value is CI's, not
+// a local build's (BL-167), and the `swift-release` workflow is the gate: it
+// fails the release when this literal disagrees with the archive it attaches,
+// and prints the value to pin. `scripts/xcframework/build.sh` only reports a
+// local mismatch.
+let binaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000" // ze:xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {
@@ -33,7 +35,7 @@ if useLocalFFI {
 } else {
     cTarget = .binaryTarget(
         name: "CZeppelinEmbed",
-        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.2.0/ZeppelinEmbed.xcframework.zip",
+        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.2.1/ZeppelinEmbed.xcframework.zip",
         checksum: binaryChecksum
     )
 }

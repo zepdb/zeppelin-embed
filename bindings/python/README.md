@@ -27,7 +27,7 @@ wheel loads its bundled library from `zeppelin_embed/.dylibs`. Source-tree use
 also recognizes the workspace's debug and release Cargo outputs for development.
 An invalid override fails loudly and does not fall back to another library.
 
-The v0.2.0 wheel supports macOS 11 or newer on Apple silicon. Other platforms
+The v0.2.1 wheel supports macOS 11 or newer on Apple silicon. Other platforms
 are not part of this PyPI release.
 
 The bundled wheel library does not enable the optional Rust `text` feature.

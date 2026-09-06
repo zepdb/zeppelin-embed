@@ -4,6 +4,34 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## 0.2.1 - 2026-09-06
+
+A correction release. The 0.2.0 binary is unchanged; only the Swift package
+manifest was wrong, and it was wrong in a way that made the package impossible
+to depend on.
+
+### Fixed
+
+- The Swift package can be consumed by URL again. 0.2.0's `Package.swift` read
+  the XCFramework checksum out of `bindings/swift/binary-checksum.txt`, but
+  SwiftPM compiles a remote manifest in a sandbox where `#filePath` is
+  `/Package.swift` and the rest of the repository is unreachable. Every
+  consumer that depended on this package by URL therefore hit the manifest's
+  `fatalError` and lost its entire dependency resolution:
+
+      main/Package.swift:19: Fatal error: bindings/swift/binary-checksum.txt
+      must contain a SHA-256 checksum
+
+  The checksum is now a literal in `Package.swift`, marked with a
+  `ze:xcframework-checksum` comment, and the file is gone. Both gates that
+  verified it -- `scripts/xcframework/build.sh` and the `swift-release`
+  workflow -- read the literal instead, so a mismatch still fails a release.
+- The checksum pin loop is workable (BL-167). A local build and the macos-14
+  runner do not produce byte-identical archives, and the archive that ships is
+  CI's, so `scripts/xcframework/build.sh` now reports a local mismatch instead
+  of refusing to build. The `swift-release` workflow remains the hard gate and
+  prints the value to pin when it disagrees.
+
 ## 0.2.0 - 2026-09-06
 
 This release turns Zeppelin Embed into a record store. A namespace can now

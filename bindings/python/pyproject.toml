@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeppelin-embed"
-version = "0.2.0"
+version = "0.2.1"
 description = "ctypes bindings for the Zeppelin Embed C ABI"
 readme = "README.md"
 requires-python = ">=3.11"

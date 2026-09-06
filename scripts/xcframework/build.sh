@@ -272,15 +272,20 @@ zip_kb="$(du -k "$ARCHIVE_ZIP" | awk '{print $1}')"
 } >> "$SIZE_EVIDENCE"
 
 # Package.swift carries the checksum as a literal because a sandboxed remote
-# manifest cannot read it from a file. This is the gate that keeps it honest.
+# manifest cannot read it from a file.
 pin="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$ROOT_DIR/Package.swift" | cut -d'"' -f2)"
 if [ -z "$pin" ]; then
     echo "ERROR: Package.swift has no ze:xcframework-checksum literal" >&2
     exit 1
 fi
+# BL-167: this machine and the macos-14 runner do not produce byte-identical
+# archives, and the archive that ships is the one CI builds. So the pin is
+# CI's value and a local mismatch is expected -- report it and carry on. The
+# hard gate is the swift-release workflow's own checksum verification, which
+# compares the pin against the archive actually being attached.
 if [ "$pin" != "$checksum" ]; then
-    echo "ERROR: Package.swift checksum literal ($pin) does not match $checksum" >&2
-    exit 1
+    echo "NOTE: Package.swift pins $pin; this local build produced $checksum" >&2
+    echo "NOTE: CI is the source of truth for the pin (BL-167)." >&2
 fi
 
 test -f "$ARTIFACT/PrivacyInfo.xcprivacy"

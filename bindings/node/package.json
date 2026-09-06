@@ -1,6 +1,6 @@
 {
   "name": "@zepdb/zeppelin-embed",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "In-process vector search for macOS and Apple silicon",
   "license": "GPL-3.0-only",
   "repository": {
