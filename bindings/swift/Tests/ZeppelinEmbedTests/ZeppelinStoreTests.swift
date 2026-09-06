@@ -224,7 +224,12 @@ final class ZeppelinStoreTests: XCTestCase {
 
         let path = try storePath(#function)
         defer { try? FileManager.default.removeItem(at: path) }
+        let namespaceParent = try storePath("\(#function)-namespaces")
+        defer { try? FileManager.default.removeItem(at: namespaceParent) }
         var store: ZeppelinStore?
+        var namespaceStore: ZeppelinStore?
+        var namespaceRoot: URL?
+        var namespaceDefinitions: [String: ParityAttributeDefinition] = [:]
 
         for operation in fixture.operations {
             do {
@@ -387,17 +392,360 @@ final class ZeppelinStoreTests: XCTestCase {
                     )
                     try await current.close()
                     store = nil
+
+                case .namespaceOpen(let root, let name, let spec, let expected):
+                    XCTAssertNil(
+                        namespaceStore,
+                        "operation \(operation.label): namespace already open"
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    var definitions: [AttributeDefinition] = []
+                    for attribute in spec.attributes {
+                        guard let type = AttributeType(rawValue: attribute.attributeType) else {
+                            throw ParityFixtureError.invalidValue(
+                                operation: operation.label,
+                                field: "attribute_type",
+                                value: String(attribute.attributeType)
+                            )
+                        }
+                        definitions.append(
+                            AttributeDefinition(
+                                id: attribute.attributeID,
+                                name: attribute.name,
+                                type: type,
+                                nullable: attribute.nullable
+                            )
+                        )
+                        namespaceDefinitions[attribute.name] = attribute
+                    }
+                    var vectorSpace: VectorSpace?
+                    if let space = spec.vectorSpace {
+                        guard
+                            let normalization = VectorNormalization(
+                                rawValue: space.normalization
+                            )
+                        else {
+                            throw ParityFixtureError.invalidValue(
+                                operation: operation.label,
+                                field: "normalization",
+                                value: String(space.normalization)
+                            )
+                        }
+                        vectorSpace = VectorSpace(
+                            dimensions: space.dimensions,
+                            normalization: normalization
+                        )
+                    }
+                    let rootURL = namespaceParent
+                        .appendingPathComponent(root, isDirectory: true)
+                    try FileManager.default.createDirectory(
+                        at: rootURL,
+                        withIntermediateDirectories: true
+                    )
+                    namespaceRoot = rootURL
+                    namespaceStore = try await ZeppelinStore.openNamespace(
+                        root: rootURL,
+                        name: name,
+                        spec: NamespaceSpec(
+                            attributes: definitions,
+                            vectorSpace: vectorSpace
+                        )
+                    )
+
+                case .namespaceList(let root, let expected):
+                    guard let rootURL = namespaceRoot else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    XCTAssertEqual(
+                        rootURL.lastPathComponent,
+                        root,
+                        "operation \(operation.label): root"
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    let names = try await ZeppelinStore.listNamespaces(root: rootURL)
+                    XCTAssertEqual(
+                        names,
+                        expected.names,
+                        "operation \(operation.label): names"
+                    )
+
+                case .upsert(let documents, let expected):
+                    guard let namespaceStore else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let records = try documents.map { document in
+                        IngestDocument(
+                            id: DocumentID(
+                                high: document.docID.high,
+                                low: document.docID.low
+                            ),
+                            revision: document.revision,
+                            timestamp: document.timestamp,
+                            vector: document.vector,
+                            text: document.text,
+                            metadata: try parityData(
+                                hex: document.metadataHex,
+                                operation: operation.label
+                            ),
+                            attributes: try parityAttributes(
+                                document.attributes,
+                                operation: operation.label
+                            )
+                        )
+                    }
+                    let report = try await namespaceStore.upsert(records)
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        report.sequence,
+                        expected.sequence,
+                        "operation \(operation.label): sequence"
+                    )
+                    XCTAssertEqual(
+                        report.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+
+                case .get(let ids, let expected):
+                    guard let namespaceStore else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let result = try await namespaceStore.get(
+                        ids.map { DocumentID(high: $0.high, low: $0.low) }
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        result.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+                    XCTAssertEqual(
+                        result.missingCount,
+                        expected.missingCount,
+                        "operation \(operation.label): missing count"
+                    )
+                    XCTAssertEqual(
+                        result.documents.count,
+                        expected.documents.count,
+                        "operation \(operation.label): document count"
+                    )
+                    for index in 0..<min(result.documents.count, expected.documents.count) {
+                        let document = result.documents[index]
+                        guard let expectedDocument = expected.documents[index] else {
+                            XCTAssertNil(
+                                document,
+                                "operation \(operation.label) document \(index): expected missing"
+                            )
+                            continue
+                        }
+                        guard let document else {
+                            XCTFail(
+                                "operation \(operation.label) document \(index): unexpectedly missing"
+                            )
+                            continue
+                        }
+                        XCTAssertEqual(
+                            document.id,
+                            DocumentID(
+                                high: expectedDocument.docID.high,
+                                low: expectedDocument.docID.low
+                            ),
+                            "operation \(operation.label) document \(index): document id"
+                        )
+                        XCTAssertEqual(
+                            document.revision,
+                            expectedDocument.revision,
+                            "operation \(operation.label) document \(index): revision"
+                        )
+                        XCTAssertEqual(
+                            document.timestamp,
+                            expectedDocument.timestamp,
+                            "operation \(operation.label) document \(index): timestamp"
+                        )
+                        XCTAssertEqual(
+                            document.vector,
+                            expectedDocument.vector,
+                            "operation \(operation.label) document \(index): vector"
+                        )
+                        XCTAssertEqual(
+                            document.text,
+                            expectedDocument.text,
+                            "operation \(operation.label) document \(index): text"
+                        )
+                        XCTAssertEqual(
+                            document.metadata,
+                            try parityData(
+                                hex: expectedDocument.metadataHex,
+                                operation: operation.label
+                            ),
+                            "operation \(operation.label) document \(index): metadata"
+                        )
+                        XCTAssertEqual(
+                            document.attributes,
+                            try parityAttributes(
+                                expectedDocument.attributes,
+                                operation: operation.label
+                            ),
+                            "operation \(operation.label) document \(index): attributes"
+                        )
+                    }
+
+                case .scan(let request, let expected):
+                    guard let namespaceStore else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let page = try await namespaceStore.scan(
+                        limit: request.limit,
+                        order: try parityScanOrder(
+                            request.order,
+                            operation: operation.label
+                        )
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        page.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+                    XCTAssertEqual(
+                        page.next != nil,
+                        expected.hasMore,
+                        "operation \(operation.label): has more"
+                    )
+                    XCTAssertEqual(
+                        page.documents.map(\.id.high),
+                        Array(repeating: 0, count: expected.docIDs.count),
+                        "operation \(operation.label): document id high halves"
+                    )
+                    XCTAssertEqual(
+                        page.documents.map(\.id.low),
+                        expected.docIDs,
+                        "operation \(operation.label): document ids"
+                    )
+
+                case .count(let filter, let expected):
+                    guard let namespaceStore else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let result = try await namespaceStore.count(
+                        filter: try parityFilter(
+                            filter,
+                            definitions: namespaceDefinitions,
+                            operation: operation.label
+                        )
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        result.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+                    XCTAssertEqual(
+                        result.count,
+                        expected.count,
+                        "operation \(operation.label): count"
+                    )
+
+                case .searchFiltered(let request, let expected):
+                    guard let namespaceStore else {
+                        throw ParityFixtureError.missingStore(operation: operation.label)
+                    }
+                    let result = try await namespaceStore.search(
+                        vector: request.vector,
+                        filter: try parityFilter(
+                            request.filter,
+                            definitions: namespaceDefinitions,
+                            operation: operation.label
+                        ),
+                        options: SearchOptions(
+                            k: request.k,
+                            threadBudget: 1,
+                            tier: try parityTier(
+                                request.tier,
+                                operation: operation.label
+                            )
+                        )
+                    )
+                    XCTAssertEqual(
+                        expected.errorCode,
+                        try ZeppelinError.ok.codeName,
+                        "operation \(operation.label): error code"
+                    )
+                    XCTAssertEqual(
+                        result.generation,
+                        expected.generation,
+                        "operation \(operation.label): generation"
+                    )
+                    XCTAssertEqual(
+                        result.hits.count,
+                        expected.hits.count,
+                        "operation \(operation.label): hit count"
+                    )
+                    for index in 0..<min(result.hits.count, expected.hits.count) {
+                        let hit = result.hits[index]
+                        let expectedHit = expected.hits[index]
+                        XCTAssertEqual(
+                            hit.documentID,
+                            DocumentID(
+                                high: expectedHit.docID.high,
+                                low: expectedHit.docID.low
+                            ),
+                            "operation \(operation.label) hit \(index): document id"
+                        )
+                        XCTAssertEqual(
+                            parityRounded(
+                                Double(hit.score),
+                                precision: fixture.scorePrecision
+                            ),
+                            expectedHit.score,
+                            "operation \(operation.label) hit \(index): score"
+                        )
+                    }
                 }
             } catch {
                 XCTFail("operation \(operation.label) failed: \(error)")
                 if let store {
                     try? await store.close()
                 }
+                if let namespaceStore {
+                    try? await namespaceStore.close()
+                }
                 return
             }
         }
 
         XCTAssertNil(store, "operation fixture_complete: close was not replayed")
+        XCTAssertNotNil(
+            namespaceStore,
+            "operation fixture_complete: the record store operations were not replayed"
+        )
+        if let namespaceStore {
+            try await namespaceStore.close()
+        }
     }
 
     func testDefaultOpenExcludesTheStoreFromBackup() async throws {
@@ -776,6 +1124,111 @@ final class ZeppelinStoreTests: XCTestCase {
         return tier
     }
 
+    private func parityAttributeValue(
+        rawType: Int32,
+        scalar: ParityScalar,
+        operation: String
+    ) throws -> AttributeValue {
+        guard let type = AttributeType(rawValue: rawType) else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "attribute_type",
+                value: String(rawType)
+            )
+        }
+        switch (type, scalar) {
+        case (_, .null):
+            return .null
+        case (.u64, .unsignedInteger(let value)):
+            return .u64(value)
+        case (.i64, .unsignedInteger(let value)):
+            return .i64(Int64(value))
+        case (.i64, .signedInteger(let value)):
+            return .i64(value)
+        case (.f64, .unsignedInteger(let value)):
+            return .f64(Double(value))
+        case (.f64, .signedInteger(let value)):
+            return .f64(Double(value))
+        case (.f64, .number(let value)):
+            return .f64(value)
+        case (.bool, .bool(let value)):
+            return .bool(value)
+        case (.dictionaryString, .string(let value)):
+            return .string(value)
+        case (.rawString, .string(let value)):
+            return .string(value)
+        default:
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "attribute value",
+                value: String(describing: scalar)
+            )
+        }
+    }
+
+    private func parityAttributes(
+        _ values: [ParityAttributeValue],
+        operation: String
+    ) throws -> [UInt32: AttributeValue] {
+        var attributes: [UInt32: AttributeValue] = [:]
+        for value in values {
+            attributes[value.attributeID] = try parityAttributeValue(
+                rawType: value.attributeType,
+                scalar: value.value,
+                operation: operation
+            )
+        }
+        return attributes
+    }
+
+    private func parityFilter(
+        _ filter: ParityFilter,
+        definitions: [String: ParityAttributeDefinition],
+        operation: String
+    ) throws -> Filter {
+        guard let definition = definitions[filter.field] else {
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "filter field",
+                value: filter.field
+            )
+        }
+        let value = try parityAttributeValue(
+            rawType: definition.attributeType,
+            scalar: filter.value,
+            operation: operation
+        )
+        switch filter.op {
+        case "eq":
+            return .eq(definition.attributeID, value)
+        case "not_eq":
+            return .notEq(definition.attributeID, value)
+        default:
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "filter op",
+                value: filter.op
+            )
+        }
+    }
+
+    private func parityScanOrder(_ value: String, operation: String) throws -> ScanOrder {
+        switch value {
+        case "storage":
+            return .storage
+        case "timestamp_ascending":
+            return .timestampAscending
+        case "timestamp_descending":
+            return .timestampDescending
+        default:
+            throw ParityFixtureError.invalidValue(
+                operation: operation,
+                field: "order",
+                value: value
+            )
+        }
+    }
+
     private func parityRounded(_ value: Double, precision: Int) -> Double {
         let scale = pow(10, Double(precision))
         return (value * scale).rounded() / scale
@@ -955,12 +1408,196 @@ private struct ParityQueryHit: Decodable {
     }
 }
 
+private enum ParityScalar: Decodable {
+    case null
+    case bool(Bool)
+    case unsignedInteger(UInt64)
+    case signedInteger(Int64)
+    case number(Double)
+    case string(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(UInt64.self) {
+            self = .unsignedInteger(value)
+        } else if let value = try? container.decode(Int64.self) {
+            self = .signedInteger(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+}
+
+private struct ParityAttributeDefinition: Decodable {
+    let attributeID: UInt32
+    let name: String
+    let attributeType: Int32
+    let nullable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case attributeID = "attribute_id"
+        case name
+        case attributeType = "attribute_type"
+        case nullable
+    }
+}
+
+private struct ParityVectorSpace: Decodable {
+    let dimensions: UInt32
+    let normalization: Int32
+}
+
+private struct ParityNamespaceSpec: Decodable {
+    let attributes: [ParityAttributeDefinition]
+    let vectorSpace: ParityVectorSpace?
+
+    private enum CodingKeys: String, CodingKey {
+        case attributes
+        case vectorSpace = "vector_space"
+    }
+}
+
+private struct ParityAttributeValue: Decodable {
+    let attributeID: UInt32
+    let attributeType: Int32
+    let value: ParityScalar
+
+    private enum CodingKeys: String, CodingKey {
+        case attributeID = "attribute_id"
+        case attributeType = "attribute_type"
+        case value
+    }
+}
+
+private struct ParityStoredDocument: Decodable {
+    let docID: ParityDocumentID
+    let revision: UInt64
+    let timestamp: Int64
+    let vector: [Float]
+    let text: String
+    let metadataHex: String
+    let attributes: [ParityAttributeValue]
+
+    private enum CodingKeys: String, CodingKey {
+        case docID = "doc_id"
+        case revision
+        case timestamp
+        case vector
+        case text
+        case metadataHex = "metadata_hex"
+        case attributes
+    }
+}
+
+private struct ParityNamespaceListExpectation: Decodable {
+    let errorCode: String
+    let names: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case names
+    }
+}
+
+private struct ParityGetExpectation: Decodable {
+    let errorCode: String
+    let generation: UInt64
+    let missingCount: Int
+    let documents: [ParityStoredDocument?]
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case generation
+        case missingCount = "missing_count"
+        case documents
+    }
+}
+
+private struct ParityScanRequest: Decodable {
+    let order: String
+    let limit: Int
+}
+
+private struct ParityScanExpectation: Decodable {
+    let errorCode: String
+    let generation: UInt64
+    let hasMore: Bool
+    let docIDs: [UInt64]
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case generation
+        case hasMore = "has_more"
+        case docIDs = "doc_ids"
+    }
+}
+
+private struct ParityFilter: Decodable {
+    let op: String
+    let field: String
+    let value: ParityScalar
+}
+
+private struct ParityCountExpectation: Decodable {
+    let errorCode: String
+    let generation: UInt64
+    let count: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case generation
+        case count
+    }
+}
+
+private struct ParitySearchFilteredRequest: Decodable {
+    let vector: [Float]
+    let k: Int
+    let tier: Int32
+    let filter: ParityFilter
+}
+
+private struct ParitySearchHit: Decodable {
+    let docID: ParityDocumentID
+    let score: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case docID = "doc_id"
+        case score
+    }
+}
+
+private struct ParitySearchFilteredExpectation: Decodable {
+    let errorCode: String
+    let generation: UInt64
+    let hits: [ParitySearchHit]
+
+    private enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code"
+        case generation
+        case hits
+    }
+}
+
 private enum ParityOperation: Decodable {
     case openWithEpoch(ParityErrorExpectation)
     case ingest([ParityDocument], ParityMutationExpectation)
     case query(String, ParityQueryRequest, ParityQueryExpectation)
     case invalidEmptyQuery(ParityEmptyQueryRequest, ParityErrorExpectation)
     case close(ParityErrorExpectation)
+    case namespaceOpen(String, String, ParityNamespaceSpec, ParityErrorExpectation)
+    case namespaceList(String, ParityNamespaceListExpectation)
+    case upsert([ParityStoredDocument], ParityMutationExpectation)
+    case get([ParityDocumentID], ParityGetExpectation)
+    case scan(ParityScanRequest, ParityScanExpectation)
+    case count(ParityFilter, ParityCountExpectation)
+    case searchFiltered(ParitySearchFilteredRequest, ParitySearchFilteredExpectation)
 
     var label: String {
         switch self {
@@ -974,6 +1611,20 @@ private enum ParityOperation: Decodable {
             "invalid_empty_query"
         case .close:
             "close"
+        case .namespaceOpen:
+            "namespace_open"
+        case .namespaceList:
+            "namespace_list"
+        case .upsert:
+            "upsert"
+        case .get:
+            "get"
+        case .scan:
+            "scan"
+        case .count:
+            "count"
+        case .searchFiltered:
+            "search_filtered"
         }
     }
 
@@ -983,6 +1634,10 @@ private enum ParityOperation: Decodable {
         case documents
         case request
         case expected
+        case root
+        case spec
+        case ids
+        case filter
     }
 
     init(from decoder: Decoder) throws {
@@ -1014,6 +1669,52 @@ private enum ParityOperation: Decodable {
             case "close":
                 self = .close(
                     try container.decode(ParityErrorExpectation.self, forKey: .expected)
+                )
+            case "namespace_open":
+                self = .namespaceOpen(
+                    try container.decode(String.self, forKey: .root),
+                    try container.decode(String.self, forKey: .name),
+                    try container.decode(ParityNamespaceSpec.self, forKey: .spec),
+                    try container.decode(ParityErrorExpectation.self, forKey: .expected)
+                )
+            case "namespace_list":
+                self = .namespaceList(
+                    try container.decode(String.self, forKey: .root),
+                    try container.decode(
+                        ParityNamespaceListExpectation.self,
+                        forKey: .expected
+                    )
+                )
+            case "upsert":
+                self = .upsert(
+                    try container.decode([ParityStoredDocument].self, forKey: .documents),
+                    try container.decode(ParityMutationExpectation.self, forKey: .expected)
+                )
+            case "get":
+                self = .get(
+                    try container.decode([ParityDocumentID].self, forKey: .ids),
+                    try container.decode(ParityGetExpectation.self, forKey: .expected)
+                )
+            case "scan":
+                self = .scan(
+                    try container.decode(ParityScanRequest.self, forKey: .request),
+                    try container.decode(ParityScanExpectation.self, forKey: .expected)
+                )
+            case "count":
+                self = .count(
+                    try container.decode(ParityFilter.self, forKey: .filter),
+                    try container.decode(ParityCountExpectation.self, forKey: .expected)
+                )
+            case "search_filtered":
+                self = .searchFiltered(
+                    try container.decode(
+                        ParitySearchFilteredRequest.self,
+                        forKey: .request
+                    ),
+                    try container.decode(
+                        ParitySearchFilteredExpectation.self,
+                        forKey: .expected
+                    )
                 )
             default:
                 throw DecodingError.dataCorruptedError(
