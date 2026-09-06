@@ -1,0 +1,74 @@
+name: Python Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    name: Build macOS arm64 wheel
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Match release tag to package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          workspace = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          project = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())
+          rust_version = workspace["workspace"]["package"]["version"]
+          python_version = project["project"]["version"]
+          if python_version != rust_version:
+              raise SystemExit(
+                  f"Python version {python_version!r} must match Rust {rust_version!r}"
+              )
+          expected = f"v{python_version}"
+          actual = os.environ["RELEASE_TAG"]
+          if actual != expected:
+              raise SystemExit(f"release tag {actual!r} must be {expected!r}")
+          PY
+      - uses: pypa/cibuildwheel@v4.1.1
+        with:
+          package-dir: python
+          output-dir: wheelhouse
+      - name: Verify installed wheel
+        run: python python/tests/verify_wheel.py wheelhouse/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeppelin-embed-pypi
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish wheel to PyPI
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/zeppelin-embed
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zeppelin-embed-pypi
+          path: dist
+      - name: Publish package distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

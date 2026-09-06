@@ -27,9 +27,8 @@ wheel loads its bundled library from `zeppelin_embed/.dylibs`. Source-tree use
 also recognizes the workspace's debug and release Cargo outputs for development.
 An invalid override fails loudly and does not fall back to another library.
 
-The v0.1.0 wheel pipeline builds the core C ABI for macOS 11 or newer on Apple
-silicon and for x86-64 Linux using a manylinux image. Windows, Intel macOS, and
-Linux AArch64 wheels have not been qualified.
+The v0.1.0 wheel supports macOS 11 or newer on Apple silicon. Other platforms
+are not part of the initial PyPI release.
 
 The bundled wheel library does not enable the optional Rust `text` feature.
 `open_text` therefore requires a compatible feature-enabled library supplied
@@ -55,3 +54,10 @@ ZEPPELIN_EMBED_LIBRARY="$PWD/target/debug/libzeppelin_embed_ffi.dylib" \
 On Linux, use `libzeppelin_embed_ffi.so` in that command. The text API test also
 requires the repository's baked model fixture and a library built with
 `--features text`.
+
+## Releasing
+
+Publishing a GitHub release whose tag matches `v<version>` builds and verifies
+the macOS arm64 wheel, then uploads it with PyPI Trusted Publishing. Configure
+the PyPI publisher with owner `zepdb`, repository `zeppelin-embed`, workflow
+`python-release.yml`, and environment `pypi`.

@@ -49,19 +49,14 @@ jobs:
         run: pytest tests --ignore=tests/test_text_api.py
 
   wheels:
-    name: Wheel (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, ubuntu-latest]
+    name: Wheel (macOS arm64)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
-        if: runner.os == 'macOS'
         with:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
@@ -73,5 +68,5 @@ jobs:
         run: python python/tests/verify_wheel.py wheelhouse/*.whl
       - uses: actions/upload-artifact@v4
         with:
-          name: zeppelin-embed-${{ runner.os }}-${{ runner.arch }}
+          name: zeppelin-embed-macos-arm64
           path: wheelhouse/*.whl

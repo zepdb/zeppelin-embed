@@ -11,6 +11,11 @@ requires-python = ">=3.11"
 license = "GPL-3.0-only"
 dependencies = ["numpy>=2.0"]
 
+[project.urls]
+Homepage = "https://github.com/zepdb/zeppelin-embed"
+Repository = "https://github.com/zepdb/zeppelin-embed"
+Issues = "https://github.com/zepdb/zeppelin-embed/issues"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.17",
@@ -33,17 +38,10 @@ strict = true
 files = ["zeppelin_embed"]
 
 [tool.cibuildwheel]
-build = "cp311-*"
+build = "cp311-macosx_arm64"
 build-verbosity = 1
-skip = "*-musllinux_*"
 test-command = "python -I tests/installed_smoke.py"
 test-sources = ["tests/installed_smoke.py"]
-
-[tool.cibuildwheel.linux]
-archs = ["x86_64"]
-before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.93.0"
-environment = { PATH = "$HOME/.cargo/bin:$PATH", RUSTUP_TOOLCHAIN = "1.93.0" }
-manylinux-x86_64-image = "manylinux2014"
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
