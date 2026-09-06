@@ -434,14 +434,18 @@ fn observed_qos_appears_in_every_diagnostics_value() {
         )
         .expect("filtered query");
 
-    assert_ne!(
-        vector.diagnostics.observed_qos.class,
-        QueryQosClass::Unavailable
-    );
-    assert_ne!(
-        filtered.diagnostics.observed_qos.class,
-        QueryQosClass::Unavailable
-    );
+    for observed in [
+        vector.diagnostics.observed_qos,
+        filtered.diagnostics.observed_qos,
+    ] {
+        #[cfg(target_vendor = "apple")]
+        assert_ne!(observed.class, QueryQosClass::Unavailable);
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            assert_eq!(observed.class, QueryQosClass::Unavailable);
+            assert_eq!(observed.relative_priority, 0);
+        }
+    }
     store.close().expect("close store");
 }
 
