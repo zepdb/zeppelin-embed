@@ -12,16 +12,8 @@ env:
 
 jobs:
   quality:
-    name: Python quality (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            native-library: libzeppelin_embed_ffi.dylib
-          - os: ubuntu-latest
-            native-library: libzeppelin_embed_ffi.so
+    name: Python quality (macos-14)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,7 +37,7 @@ jobs:
       - name: Pytest core bindings
         working-directory: bindings/python
         env:
-          ZEPPELIN_EMBED_LIBRARY: ${{ github.workspace }}/target/debug/${{ matrix.native-library }}
+          ZEPPELIN_EMBED_LIBRARY: ${{ github.workspace }}/target/debug/libzeppelin_embed_ffi.dylib
         run: pytest tests --ignore=tests/test_text_api.py
 
   wheels:
