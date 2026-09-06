@@ -302,6 +302,18 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeAttributeDefinition, 32, 8, {
         attribute_id: 0, name: 8, name_len: 16, attribute_type: 24, nullable: 28
     });
+    assert_layout!(ZeAttributeValue, 56, 8, {
+        attribute_id: 0, value_type: 4, u64_value: 8, i64_value: 16,
+        f64_value: 24, bool_value: 32, string_value: 40, string_len: 48
+    });
+    assert_layout!(ZeUpsertDocument, 112, 8, {
+        abi_size: 0, abi_reserved: 4, document: 8, attributes: 96,
+        attribute_count: 104
+    });
+    assert_layout!(ZeUpsertRequest, 32, 8, {
+        abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
+        dimension: 24
+    });
     assert_layout!(ZeNamespaceSpec, 48, 8, {
         abi_size: 0, abi_reserved: 4, attributes: 8, attribute_count: 16,
         has_vector_space: 24, dimensions: 28, normalization: 32, epoch: 40
@@ -406,6 +418,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_search",
     "ze_state",
     "ze_stats",
+    "ze_upsert",
 ];
 
 fn delegate_to_panic_feature(test_name: &str) -> bool {
@@ -569,6 +582,36 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeMutationReport = common::sized_zeroed();
             ze_ingest(context.store.handle, &request, &mut report)
+        }),
+        ("ze_upsert", |context| {
+            let document = ZeUpsertDocument {
+                abi_size: size_of::<ZeUpsertDocument>() as u32,
+                abi_reserved: 0,
+                document: ZeIngestDocument {
+                    abi_size: size_of::<ZeIngestDocument>() as u32,
+                    abi_reserved: 0,
+                    doc_id: context.ids[0],
+                    revision: 1,
+                    timestamp: 0,
+                    vector: context.vector.as_ptr(),
+                    vector_len: context.vector.len(),
+                    metadata: std::ptr::null(),
+                    metadata_len: 0,
+                    text: std::ptr::null(),
+                    text_len: 0,
+                },
+                attributes: std::ptr::null(),
+                attribute_count: 0,
+            };
+            let request = ZeUpsertRequest {
+                abi_size: size_of::<ZeUpsertRequest>() as u32,
+                abi_reserved: 0,
+                documents: &document,
+                document_count: 1,
+                dimension: 1,
+            };
+            let mut report: ZeMutationReport = common::sized_zeroed();
+            ze_upsert(context.store.handle, &request, &mut report)
         }),
         ("ze_delete", |context| {
             let request = ZeDeleteRequest {

@@ -49,7 +49,7 @@ use zeppelin_embed::lifecycle::{
     AccessMode, CancelToken, Deadline, GraphSearchOptions, OpenOptions, QueryControl,
     SearchOptions, SearchTier, Store, StoreState,
 };
-use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, PredicateValue, Schema};
 use zeppelin_embed::scan::ScanOptions;
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceStatus};
 
@@ -421,6 +421,13 @@ fn canonical_namespace_epoch(
     }
 }
 
+fn record_only_epoch_identity() -> EpochIdentity {
+    static IDENTITY: std::sync::OnceLock<EpochIdentity> = std::sync::OnceLock::new();
+    *IDENTITY.get_or_init(|| {
+        canonical_namespace_epoch("zeppelin.record-only", 1, Normalization::None).identity()
+    })
+}
+
 fn parse_attribute_type(value: i32) -> Result<ColumnType, FfiError> {
     match value {
         1 => Ok(ColumnType::U64),
@@ -511,6 +518,45 @@ fn validate_namespace_name(name: &[u8]) -> Result<&str, FfiError> {
         return Err(FfiError::invalid("namespace name is invalid"));
     }
     std::str::from_utf8(name).map_err(|_| FfiError::invalid("namespace name is not ASCII"))
+}
+
+fn parse_attribute_value(
+    schema: &Schema,
+    attribute: ZeAttributeValue,
+) -> Result<Option<(ColumnId, PredicateValue)>, FfiError> {
+    if attribute.attribute_id == 0 {
+        return Err(FfiError::invalid("attribute_id zero is reserved for ts"));
+    }
+    let column = ColumnId::new(attribute.attribute_id);
+    let value = match attribute.value_type {
+        0 => {
+            let definition = schema
+                .column(column)
+                .ok_or_else(|| FfiError::invalid(format!("unknown column {}", column.get())))?;
+            if !definition.is_nullable() {
+                return Err(FfiError::invalid(format!(
+                    "column {} is not nullable",
+                    column.get()
+                )));
+            }
+            return Ok(None);
+        }
+        1 => PredicateValue::U64(attribute.u64_value),
+        2 => PredicateValue::I64(attribute.i64_value),
+        3 => PredicateValue::F64(attribute.f64_value),
+        4 => PredicateValue::Bool(parse_flag(attribute.bool_value, "attribute bool value")?),
+        5 => PredicateValue::String(utf8_field(
+            attribute.string_value,
+            attribute.string_len,
+            "attribute string value",
+        )?),
+        _ => {
+            return Err(FfiError::invalid(
+                "attribute value_type discriminant is out of range",
+            ));
+        }
+    };
+    Ok(Some((column, value)))
 }
 
 fn open_store_at(
@@ -1637,6 +1683,148 @@ pub extern "C" fn ze_ingest(
                         )?);
                     }
                     documents.push(document);
+                }
+                let mut batch = IngestBatch::new(documents);
+                if let Some(epoch) = access.epoch {
+                    batch = batch.with_epoch(epoch);
+                }
+                let ack = access.store.ingest(batch).map_err(FfiError::ingest)?;
+                marshal::write_output(
+                    out_report,
+                    ZeMutationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        sequence: ack.seq().get(),
+                        generation: ack.generation(),
+                    },
+                );
+                Ok(())
+            }),
+        )
+    })
+}
+
+/// Atomically ingests caller-owned document records with typed schema
+/// attributes. Every const pointer is caller-owned and need only outlive the
+/// call. Not cancellable in v1; the engine offers no token here.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_upsert(
+    handle: ZeHandle,
+    request: *const ZeUpsertRequest,
+    out_report: *mut ZeMutationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_upsert");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let record_only =
+                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                if record_only && request.dimension > 1 {
+                    return Err(FfiError::invalid(
+                        "record-only upsert dimension must be zero or one",
+                    ));
+                }
+                if !record_only && request.dimension == 0 {
+                    return Err(FfiError::invalid("upsert dimension must be nonzero"));
+                }
+                let vector_bytes = if record_only {
+                    0
+                } else {
+                    request
+                        .dimension
+                        .checked_mul(size_of::<f32>())
+                        .ok_or_else(|| {
+                            FfiError::invalid("upsert dimension byte length overflows")
+                        })?
+                };
+                let records = marshal::read_slice(request.documents, request.document_count)?;
+                if records.is_empty() {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrEmptyBatch,
+                        "upsert batch is empty",
+                    ));
+                }
+                let mut documents = Vec::new();
+                documents.try_reserve_exact(records.len()).map_err(|_| {
+                    FfiError::new(
+                        ZeErrorCode::ZeErrOutOfMemory,
+                        "upsert document allocation failed",
+                    )
+                })?;
+                for record in records {
+                    let record = marshal::read_struct(record as *const ZeUpsertDocument)?;
+                    let document = marshal::read_struct(&record.document)?;
+                    let vector = if record_only {
+                        if !document.vector.is_null() || document.vector_len != 0 {
+                            return Err(FfiError::new(
+                                ZeErrorCode::ZeErrNoVectorSpace,
+                                "record-only namespace does not accept caller vectors",
+                            ));
+                        }
+                        Vec::from([1.0_f32])
+                    } else {
+                        if document.vector_len != request.dimension {
+                            return Err(FfiError::new(
+                                ZeErrorCode::ZeErrDimensionMismatch,
+                                "upsert vector length does not match request dimension",
+                            ));
+                        }
+                        marshal::checked_buffer_len(
+                            document.vector_len,
+                            size_of::<f32>(),
+                            vector_bytes,
+                        )?;
+                        marshal::copy_slice(document.vector, document.vector_len)?
+                    };
+                    let metadata = marshal::copy_slice(document.metadata, document.metadata_len)?;
+                    let attributes =
+                        marshal::read_slice(record.attributes, record.attribute_count)?;
+                    let mut columns = Vec::new();
+                    columns.try_reserve_exact(attributes.len()).map_err(|_| {
+                        FfiError::new(
+                            ZeErrorCode::ZeErrOutOfMemory,
+                            "upsert attribute allocation failed",
+                        )
+                    })?;
+                    for (position, attribute) in attributes.iter().enumerate() {
+                        let column = ColumnId::new(attribute.attribute_id);
+                        if attributes
+                            .iter()
+                            .take(position)
+                            .any(|prior| prior.attribute_id == attribute.attribute_id)
+                        {
+                            return Err(FfiError::invalid(format!(
+                                "duplicate column {}",
+                                column.get()
+                            )));
+                        }
+                        if let Some(value) =
+                            parse_attribute_value(access.store.schema(), *attribute)?
+                        {
+                            columns.push(value);
+                        }
+                    }
+                    let mut ingested = IngestDocument::new(
+                        DocumentVersion::new(
+                            doc_id(document.doc_id),
+                            Revision::new(document.revision),
+                        ),
+                        vector,
+                    )
+                    .with_timestamp(document.timestamp)
+                    .with_metadata(metadata)
+                    .with_columns(columns);
+                    if document.text_len != 0 {
+                        ingested = ingested.with_text(utf8_field(
+                            document.text,
+                            document.text_len,
+                            "document text",
+                        )?);
+                    }
+                    documents.push(ingested);
                 }
                 let mut batch = IngestBatch::new(documents);
                 if let Some(epoch) = access.epoch {

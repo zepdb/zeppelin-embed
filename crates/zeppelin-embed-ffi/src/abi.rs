@@ -311,6 +311,60 @@ pub struct ZeIngestDocument {
     pub text_len: usize,
 }
 
+/// One typed schema attribute value supplied to an upsert.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeAttributeValue {
+    /// Schema-local identifier; zero is reserved for the `ts` column.
+    pub attribute_id: u32,
+    /// `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, or `5` string.
+    pub value_type: i32,
+    /// Unsigned-integer payload when `value_type` is one.
+    pub u64_value: u64,
+    /// Signed-integer payload when `value_type` is two.
+    pub i64_value: i64,
+    /// Floating-point payload when `value_type` is three.
+    pub f64_value: f64,
+    /// Boolean payload when `value_type` is four.
+    pub bool_value: u32,
+    /// Caller-owned UTF-8 bytes when `value_type` is five.
+    pub string_value: *const u8,
+    /// Number of string bytes.
+    pub string_len: usize,
+}
+
+/// One ingest document plus its typed schema attributes.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeUpsertDocument {
+    /// Caller-provided `sizeof(ZeUpsertDocument)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing v1 ingest document, embedded by value.
+    pub document: ZeIngestDocument,
+    /// Caller-owned attribute-value array.
+    pub attributes: *const ZeAttributeValue,
+    /// Number of attribute values.
+    pub attribute_count: usize,
+}
+
+/// Atomic document upsert request with typed schema attributes.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeUpsertRequest {
+    /// Caller-provided `sizeof(ZeUpsertRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned `ZeUpsertDocument` array.
+    pub documents: *const ZeUpsertDocument,
+    /// Number of document records.
+    pub document_count: usize,
+    /// Vector dimension for every record.
+    pub dimension: usize,
+}
+
 /// Atomic document-ingest request.
 #[derive(Clone, Copy)]
 #[repr(C)]

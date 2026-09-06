@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 13 {
+    match bytes.u8() % 14 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -475,6 +475,51 @@ fuzz_target!(|data: &[u8]| {
                 sized(abi_size::<ZeNamespaceListResult>(&mut bytes));
             typed(ze_namespace_list(&list, &mut result));
             typed(ze_namespace_list_result_free(&mut result));
+        }
+        12 => {
+            let rest = bytes.rest();
+            let attributes = [ZeAttributeValue {
+                attribute_id: bytes.u32(),
+                value_type: bytes.i32() % 7,
+                u64_value: bytes.u64(),
+                i64_value: bytes.u64() as i64,
+                f64_value: f64::from_bits(bytes.u64()),
+                bool_value: bytes.u32() % 3,
+                string_value: rest.as_ptr(),
+                string_len: bytes.len_within(rest.len()),
+            }; 2];
+            let document = ZeUpsertDocument {
+                abi_size: abi_size::<ZeUpsertDocument>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                document: ZeIngestDocument {
+                    abi_size: abi_size::<ZeIngestDocument>(&mut bytes),
+                    abi_reserved: bytes.u32() % 2,
+                    doc_id: ZeDocId {
+                        high: bytes.u64(),
+                        low: bytes.u64(),
+                    },
+                    revision: bytes.u64(),
+                    timestamp: bytes.u64() as i64,
+                    vector: fixture.vector.as_ptr(),
+                    vector_len: bytes.len_within(SCRATCH_DIMS),
+                    metadata: rest.as_ptr(),
+                    metadata_len: bytes.len_within(rest.len()),
+                    text: rest.as_ptr(),
+                    text_len: bytes.len_within(rest.len()),
+                },
+                attributes: attributes.as_ptr(),
+                attribute_count: bytes.len_within(attributes.len()),
+            };
+            let documents = [document; 2];
+            let request = ZeUpsertRequest {
+                abi_size: abi_size::<ZeUpsertRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                documents: documents.as_ptr(),
+                document_count: bytes.len_within(documents.len()),
+                dimension: bytes.len_within(SCRATCH_DIMS),
+            };
+            let mut report: ZeMutationReport = sized(size_of::<ZeMutationReport>() as u32);
+            typed(ze_upsert(handle, &request, &mut report));
         }
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }

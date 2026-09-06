@@ -33,3 +33,4 @@ ze_text_maintain
 ze_text_open
 ze_text_query
 ze_text_query_result_free
+ze_upsert

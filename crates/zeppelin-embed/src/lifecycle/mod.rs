@@ -2729,6 +2729,12 @@ impl Store {
         self.epoch_alias.load()
     }
 
+    /// Returns the immutable schema declared for this store.
+    #[must_use]
+    pub const fn schema(&self) -> &crate::meta::Schema {
+        &self.schema
+    }
+
     /// Returns the current explicit lifecycle state.
     pub fn state(&self) -> Result<StoreState, StoreError> {
         self.state

@@ -1080,6 +1080,96 @@ typedef struct ZeIngestRequest {
 } ZeIngestRequest;
 
 /*
+ One typed schema attribute value supplied to an upsert.
+ */
+typedef struct ZeAttributeValue {
+    /*
+     Schema-local identifier; zero is reserved for the `ts` column.
+     */
+    uint32_t attribute_id;
+    /*
+     `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, or `5` string.
+     */
+    int32_t value_type;
+    /*
+     Unsigned-integer payload when `value_type` is one.
+     */
+    uint64_t u64_value;
+    /*
+     Signed-integer payload when `value_type` is two.
+     */
+    int64_t i64_value;
+    /*
+     Floating-point payload when `value_type` is three.
+     */
+    double f64_value;
+    /*
+     Boolean payload when `value_type` is four.
+     */
+    uint32_t bool_value;
+    /*
+     Caller-owned UTF-8 bytes when `value_type` is five.
+     */
+    const uint8_t *string_value;
+    /*
+     Number of string bytes.
+     */
+    size_t string_len;
+} ZeAttributeValue;
+
+/*
+ One ingest document plus its typed schema attributes.
+ */
+typedef struct ZeUpsertDocument {
+    /*
+     Caller-provided `sizeof(ZeUpsertDocument)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing v1 ingest document, embedded by value.
+     */
+    struct ZeIngestDocument document;
+    /*
+     Caller-owned attribute-value array.
+     */
+    const struct ZeAttributeValue *attributes;
+    /*
+     Number of attribute values.
+     */
+    size_t attribute_count;
+} ZeUpsertDocument;
+
+/*
+ Atomic document upsert request with typed schema attributes.
+ */
+typedef struct ZeUpsertRequest {
+    /*
+     Caller-provided `sizeof(ZeUpsertRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned `ZeUpsertDocument` array.
+     */
+    const struct ZeUpsertDocument *documents;
+    /*
+     Number of document records.
+     */
+    size_t document_count;
+    /*
+     Vector dimension for every record.
+     */
+    size_t dimension;
+} ZeUpsertRequest;
+
+/*
  Atomic document-delete request.
  */
 typedef struct ZeDeleteRequest {
@@ -1910,6 +2000,15 @@ ze_error_code ze_stats(ze_handle handle, struct ZeStatsReport *out_report);
  */
 ze_error_code ze_ingest(ze_handle handle,
                         const struct ZeIngestRequest *request,
+                        struct ZeMutationReport *out_report);
+
+/*
+ Atomically ingests caller-owned document records with typed schema
+ attributes. Every const pointer is caller-owned and need only outlive the
+ call. Not cancellable in v1; the engine offers no token here.
+ */
+ze_error_code ze_upsert(ze_handle handle,
+                        const struct ZeUpsertRequest *request,
                         struct ZeMutationReport *out_report);
 
 /*
