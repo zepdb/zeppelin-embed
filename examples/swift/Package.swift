@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "MacDemo",
+    name: "FiveVectorsSearch",
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(path: "../../swift/ZeppelinEmbed"),
     ],
     targets: [
-        .executableTarget(name: "MacDemo", dependencies: ["ZeppelinEmbed"]),
+        .executableTarget(name: "FiveVectorsSearch", dependencies: ["ZeppelinEmbed"]),
     ]
 )

@@ -23,23 +23,16 @@ persistent directory and serves them without a database server.
 
 ## Search performance
 
-Each cell is vector / lexical / hybrid p50 latency in milliseconds. Lower is
-better.
+![Vector-search p95 latency plotted against nDCG@10 across BEIR benchmarks](assets/beir-vector-p95-linear.svg)
 
-| BEIR benchmark | Zeppelin native | LanceDB | SQLite | USearch | Tantivy |
-|---|---:|---:|---:|---:|---:|
-| FiQA | **0.06** / 0.87 / **1.24** | 3.26 / 1.41 / 3.99 | 26.67 / 34.16 / 62.43 | 4.01 / — / — | — / **0.69** / — |
-| SciFact | **0.05** / **0.13** / **0.28** | 1.48 / 1.26 / 2.35 | 2.50 / 3.75 / 6.40 | 2.11 / — / — | — / 0.14 / — |
-| TREC-COVID | **0.09** / 2.83 / **3.66** | 5.64 / **1.74** / 6.41 | 79.56 / 116.69 / 205.45 | 0.91 / — / — | — / 2.00 / — |
-| Natural Questions | 0.78 / 0.54 / 3.38 | N/A | N/A | N/A | N/A |
-
-Measured on an Apple M3 Max using warm indexes and k=10.
+Vector graph-search p95 latency is plotted against nDCG@10. Lower latency and
+higher nDCG@10 are better. Measured on an Apple M3 Max using warm indexes and
+k=10. The SQLite TREC-COVID result (82.36 ms p95) is omitted to keep the
+remaining results legible on a linear scale.
 
 [BEIR](https://github.com/beir-cellar/beir) is a benchmark suite for evaluating
 information retrieval across different domains.
 
-- [FiQA](https://huggingface.co/datasets/BeIR/fiqa) retrieves answers to
-  real-world financial questions.
 - [SciFact](https://huggingface.co/datasets/BeIR/scifact) retrieves scientific
   evidence for factual claims.
 - [TREC-COVID](https://huggingface.co/datasets/BeIR/trec-covid) retrieves
@@ -47,7 +40,7 @@ information retrieval across different domains.
 - [Natural Questions](https://huggingface.co/datasets/BeIR/nq) retrieves
   Wikipedia evidence for real search-engine questions.
 
-Compared with: [LanceDB](https://github.com/lancedb/lancedb), [sqlite-vec](https://github.com/asg017/sqlite-vec), [USearch](https://github.com/unum-cloud/usearch), [Tantivy](https://github.com/quickwit-oss/tantivy).
+Compared with: [Chroma](https://github.com/chroma-core/chroma), [hnswlib](https://github.com/nmslib/hnswlib), [LanceDB](https://github.com/lancedb/lancedb), [sqlite-vec](https://github.com/asg017/sqlite-vec), and [USearch](https://github.com/unum-cloud/usearch).
 
 ## Why Zeppelin Embed
 
@@ -64,69 +57,6 @@ Compared with: [LanceDB](https://github.com/lancedb/lancedb), [sqlite-vec](https
   compatible document and query vectors.
 - **One native engine, several languages.** Rust, a versioned C ABI, Python,
   and Swift call the same storage and retrieval implementation.
-
-## Quick start
-
-Install the Python bindings for the native core:
-
-```bash
-python -m pip install zeppelin-embed
-```
-
-Create a store, add vectors and text, then run a hybrid query:
-
-```python
-from pathlib import Path
-
-import numpy as np
-import zeppelin_embed as ze
-
-documents = np.asarray(
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.8, 0.2, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-    ],
-    dtype=np.float32,
-)
-
-with ze.open(Path("my-search-index")) as store:
-    store.ingest(
-        [101, 102, 103],
-        documents,
-        texts=[
-            "fast embedded hybrid search",
-            "persistent vector retrieval",
-            "a completely different document",
-        ],
-    )
-
-    result = store.query(
-        vector=np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-        text="fast hybrid search",
-        k=2,
-    )
-
-    for hit in result.hits:
-        print(hit.doc_id, hit.score)
-```
-
-The example supplies its own document and query vectors. Zeppelin Embed
-v0.1.0 does not bundle or download an embedding model.
-
-The directory is the database. Reopen the same path to recover its committed
-state and continue ingesting or searching.
-
-For Rust:
-
-```bash
-cargo add zeppelin-embed
-```
-
-The core Rust API starts with [`Store`](crates/zeppelin-embed/src/lifecycle/mod.rs),
-[`IngestDocument`](crates/zeppelin-embed/src/ingest/mod.rs), and
-[`SearchRequest`](crates/zeppelin-embed/src/ingest/mod.rs). The Python wrapper
-exposes the same lifecycle through a stable C ABI.
 
 ## One store, three ways to search
 
@@ -163,19 +93,64 @@ with ze.open(
 Readers search a pinned generation while writes continue. One process owns the
 writer lock; additional processes can open committed snapshots read-only.
 
+## Quick start
+
+Install the Python package and run the five-vector example:
+
+```bash
+python -m pip install zeppelin-embed
+python examples/python/five_vectors_search.py
+```
+
+The example supplies its own document and query vectors. Zeppelin Embed v0.1.0
+does not bundle or download an embedding model.
+
+The directory is the database. Reopen the same path to recover its committed
+state and continue ingesting or searching.
+
+For Rust, add the native core to an application:
+
+```bash
+cargo add zeppelin-embed
+```
+
 ## Language APIs
 
-| API | Package or entry point | Current release targets |
+| API | Distribution | Example |
 |---|---|---|
-| Rust core | [`zeppelin-embed`](crates/zeppelin-embed) | macOS and Linux |
-| C | [`zeppelin_embed.h`](crates/zeppelin-embed-ffi/include/zeppelin_embed.h) | Static and dynamic libraries |
-| Python | [`python/`](python) | macOS Apple silicon and manylinux x86-64 wheels |
-| Swift | [`ZeppelinEmbed`](swift/ZeppelinEmbed) | macOS 14+ and iOS 17+ |
+| Python | PyPI wheel with the native library included | [`five_vectors_search.py`](examples/python/five_vectors_search.py) |
+| Rust | [`zeppelin-embed`](crates/zeppelin-embed) on crates.io | [`five_vectors_search.rs`](crates/zeppelin-embed/examples/five_vectors_search.rs) |
+| Swift | Swift Package Manager with a downloadable XCFramework | [`five_vectors_search.swift`](examples/swift/Sources/FiveVectorsSearch/five_vectors_search.swift) |
+| C/C++ | GitHub release archive with the header and `.a`/`.dylib` libraries | [`five_vectors_search.c`](examples/c/five_vectors_search.c) |
 
 The C ABI uses size-versioned requests and responses, typed error codes, and
 matching free functions for every callee-owned result. Python wheels include
-the native core library. Swift consumes the same ABI through an actor-based
-interface.
+the native library. Swift consumes the same ABI through an actor-based
+interface. Only the Rust core is published as a crate; the other packages
+embed or link the C ABI.
+
+From a source checkout, run each example with:
+
+```bash
+# Python
+cargo build --release -p zeppelin-embed-ffi
+PYTHONPATH=python ZEPPELIN_EMBED_LIBRARY=target/release/libzeppelin_embed_ffi.dylib \
+  python examples/python/five_vectors_search.py
+
+# Rust
+cargo run --release -p zeppelin-embed --example five_vectors_search
+
+# Swift
+cargo build --release -p zeppelin-embed-ffi
+swift run --package-path examples/swift
+
+# C
+cargo build --release -p zeppelin-embed-ffi
+cc -std=c11 examples/c/five_vectors_search.c \
+  -I crates/zeppelin-embed-ffi/include -L target/release -lzeppelin_embed_ffi \
+  -o /tmp/zeppelin-c-example
+DYLD_LIBRARY_PATH=target/release /tmp/zeppelin-c-example /tmp/zeppelin-c-index
+```
 
 ## Building from source
 
