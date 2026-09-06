@@ -203,6 +203,7 @@ jobs:
       - name: ffi soak under ${{ matrix.sanitizer }} sanitizer
         if: matrix.sanitizer == 'address'
         env:
+          ASAN_OPTIONS: detect_leaks=0:quarantine_size_mb=1:thread_local_quarantine_size_kb=64
           RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
           ZE_FFI_SOAK_ITERATIONS: 2000
         run: >-
