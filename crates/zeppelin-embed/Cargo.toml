@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "In-process vector, lexical, and hybrid search for macOS and Apple silicon"
+repository = "https://github.com/zepdb/zeppelin-embed"
+homepage = "https://github.com/zepdb/zeppelin-embed"
+documentation = "https://docs.rs/zeppelin-embed"
+readme = "README.md"
+keywords = ["vector-search", "full-text-search", "hybrid-search", "embedded", "macos"]
+categories = ["database-implementations", "text-processing"]
 
 [lib]
 crate-type = ["rlib", "staticlib"]

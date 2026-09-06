@@ -817,7 +817,7 @@ fn sealed_graph_filtered(
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
     source: RowSource,
     row_count: usize,
-    options: SearchOptions,
+    _options: SearchOptions,
     candidates: &mut Vec<SearchCandidate>,
     stats: &mut MutableStats,
     graph_stats: &mut crate::ingest::GraphSearchStats,
@@ -930,7 +930,7 @@ fn sealed_graph_filtered(
         #[cfg(any(test, feature = "test-support"))]
         vector_fault_controller,
         #[cfg(any(test, feature = "test-support"))]
-        vector_fault_tier(options.tier()),
+        vector_fault_tier(_options.tier()),
     )?;
     stats.add(execution.stats)?;
     add_graph_stats(graph_stats, execution.graph_stats)?;

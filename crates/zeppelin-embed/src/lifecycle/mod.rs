@@ -6163,7 +6163,7 @@ impl<'a> SegmentGraphResult<'a> {
         #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
             &crate::scan::vector_fault::VectorFaultController,
         >,
-        tier: SearchTier,
+        _tier: SearchTier,
     ) -> Result<MergedSegmentGraph<'a>, QueryError> {
         match self {
             Self::Pruned {
@@ -6210,7 +6210,7 @@ impl<'a> SegmentGraphResult<'a> {
                     #[cfg(any(test, feature = "test-support"))]
                     vector_fault_controller,
                     #[cfg(any(test, feature = "test-support"))]
-                    vector_fault_tier(tier),
+                    vector_fault_tier(_tier),
                 )?;
                 for candidate in result.candidates() {
                     if !alive.is_alive(candidate.row_id()) {
@@ -6265,7 +6265,7 @@ fn traverse_segment_graph<'a>(
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    tier: SearchTier,
+    _tier: SearchTier,
 ) -> Result<SegmentGraphResult<'a>, QueryError> {
     let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
     let cancellation = QueryCancellation::new(control, &lease);
@@ -6298,7 +6298,7 @@ fn traverse_segment_graph<'a>(
         #[cfg(any(test, feature = "test-support"))]
         vector_fault_controller,
         #[cfg(any(test, feature = "test-support"))]
-        vector_fault_tier(tier),
+        vector_fault_tier(_tier),
     )?;
     let node_count = graph.node_count() as usize;
     let segment_k = k.min(node_count);
@@ -6553,8 +6553,8 @@ fn scan_sealed_segment(
     exact_lane: usize,
     accounting: &Arc<stats::Accounting>,
     exact_memory: &mut ExactScanMemory,
-    source: crate::ingest::RowSource,
-    tier: SearchTier,
+    _source: crate::ingest::RowSource,
+    _tier: SearchTier,
     #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
@@ -6568,7 +6568,7 @@ fn scan_sealed_segment(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_tier(tier),
+            vector_fault_tier(_tier),
         )?;
         return scan_squared_l2(
             vectors,
@@ -6588,9 +6588,9 @@ fn scan_sealed_segment(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_source(source),
+            vector_fault_source(_source),
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_tier(tier),
+            vector_fault_tier(_tier),
         );
     }
 
@@ -6617,9 +6617,9 @@ fn scan_sealed_segment(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_source(source),
+            vector_fault_source(_source),
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_tier(tier),
+            vector_fault_tier(_tier),
         ),
         4 => execute_store_scan(
             query_pool,
@@ -6650,9 +6650,9 @@ fn scan_sealed_segment(
             #[cfg(any(test, feature = "test-support"))]
             vector_fault_controller,
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_source(source),
+            vector_fault_source(_source),
             #[cfg(any(test, feature = "test-support"))]
-            vector_fault_tier(tier),
+            vector_fault_tier(_tier),
         ),
         2 => {
             let factors = segment.query_int8_factors().map_err(QueryError::Store)?;
@@ -6682,9 +6682,9 @@ fn scan_sealed_segment(
                 #[cfg(any(test, feature = "test-support"))]
                 vector_fault_controller,
                 #[cfg(any(test, feature = "test-support"))]
-                vector_fault_source(source),
+                vector_fault_source(_source),
                 #[cfg(any(test, feature = "test-support"))]
-                vector_fault_tier(tier),
+                vector_fault_tier(_tier),
             )
         }
         scheme => Err(QueryError::Store(StoreError::Segment(
@@ -7158,16 +7158,16 @@ fn scan_exact_partition<const OFFSET_ROWS: bool>(
     let scored_rows = crate::quant::exact_squared_l2_with_sink(
         query,
         rows,
-        |row, is_checkpoint| {
+        |_row, is_checkpoint| {
             #[cfg(any(test, feature = "test-support"))]
             if let Some(controller) = controller {
                 if let Some(trace) = &mut trace {
-                    trace.checked(row);
+                    trace.checked(_row);
                 }
                 if is_checkpoint {
                     cancellation.check_graph().map_err(map_scan_error)?;
                 }
-                if controller.after_eligible_row(source, tier, row) {
+                if controller.after_eligible_row(source, tier, _row) {
                     return Err(QueryError::Cancelled { partial: false });
                 }
                 return Ok(());
@@ -7310,12 +7310,13 @@ fn scan_serial_squared_l2(
     let scored_rows = crate::quant::exact_squared_l2_with_sink(
         query,
         rows,
-        |row, is_checkpoint| {
+        |_row, is_checkpoint| {
             if is_checkpoint {
                 cancellation.check_graph().map_err(map_scan_error)?;
             }
             #[cfg(any(test, feature = "test-support"))]
-            if controller.is_some_and(|controller| controller.after_eligible_row(source, tier, row))
+            if controller
+                .is_some_and(|controller| controller.after_eligible_row(source, tier, _row))
             {
                 return Err(QueryError::Cancelled { partial: false });
             }
