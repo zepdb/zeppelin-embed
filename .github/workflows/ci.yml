@@ -65,6 +65,18 @@ jobs:
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 
+  swift-test:
+    name: swift-test (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p zeppelin-embed-ffi --release
+      - run: cd bindings/swift && ZE_USE_LOCAL_FFI=1 swift test
+
   deny:
     name: deny (macos-14)
     runs-on: macos-14

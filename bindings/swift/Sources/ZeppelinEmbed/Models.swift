@@ -8,6 +8,39 @@ public struct DocumentID: Hashable, Sendable {
         self.high = high
         self.low = low
     }
+
+    public init(uuid: UUID) {
+        var bytes = uuid.uuid
+        let values = withUnsafeBytes(of: &bytes) { Array($0.prefix(16)) }
+        high = values[0..<8].reduce(0) { ($0 << 8) | UInt64($1) }
+        low = values[8..<16].reduce(0) { ($0 << 8) | UInt64($1) }
+    }
+
+    public var uuid: UUID {
+        get {
+            UUID(uuid: (
+                UInt8(truncatingIfNeeded: high >> 56),
+                UInt8(truncatingIfNeeded: high >> 48),
+                UInt8(truncatingIfNeeded: high >> 40),
+                UInt8(truncatingIfNeeded: high >> 32),
+                UInt8(truncatingIfNeeded: high >> 24),
+                UInt8(truncatingIfNeeded: high >> 16),
+                UInt8(truncatingIfNeeded: high >> 8),
+                UInt8(truncatingIfNeeded: high),
+                UInt8(truncatingIfNeeded: low >> 56),
+                UInt8(truncatingIfNeeded: low >> 48),
+                UInt8(truncatingIfNeeded: low >> 40),
+                UInt8(truncatingIfNeeded: low >> 32),
+                UInt8(truncatingIfNeeded: low >> 24),
+                UInt8(truncatingIfNeeded: low >> 16),
+                UInt8(truncatingIfNeeded: low >> 8),
+                UInt8(truncatingIfNeeded: low)
+            ))
+        }
+        set {
+            self = DocumentID(uuid: newValue)
+        }
+    }
 }
 
 public enum AccessMode: Int32, Sendable {
@@ -180,6 +213,7 @@ public struct IngestDocument: Sendable {
     public var vector: [Float]
     public var text: String?
     public var metadata: Data
+    public var attributes: [UInt32: AttributeValue]
 
     public init(
         id: DocumentID,
@@ -187,7 +221,8 @@ public struct IngestDocument: Sendable {
         timestamp: Int64,
         vector: [Float],
         text: String? = nil,
-        metadata: Data = Data()
+        metadata: Data = Data(),
+        attributes: [UInt32: AttributeValue] = [:]
     ) {
         self.id = id
         self.revision = revision
@@ -195,6 +230,7 @@ public struct IngestDocument: Sendable {
         self.vector = vector
         self.text = text
         self.metadata = metadata
+        self.attributes = attributes
     }
 }
 
@@ -225,6 +261,10 @@ public struct SearchOptions: Sendable {
     public var cancellationToken: ZeppelinCancellationToken?
     public var deadlineNanoseconds: UInt64
 
+    public init() {
+        self.init(k: 10)
+    }
+
     public init(
         k: Int,
         threadBudget: Int = 0,
@@ -244,6 +284,12 @@ public struct SearchOptions: Sendable {
         self.cancellationToken = cancellationToken
         self.deadlineNanoseconds = deadlineNanoseconds
     }
+
+    /// Converts a cosine threshold for unit-normalized vectors to Zeppelin's
+    /// larger-is-better negative-squared-L2 score.
+    public static func scoreFloor(cosine: Float) -> Float {
+        -2 * (1 - cosine)
+    }
 }
 
 public struct SearchHit: Equatable, Sendable {
@@ -253,6 +299,12 @@ public struct SearchHit: Equatable, Sendable {
     public var documentID: DocumentID?
     public var revision: UInt64?
     public var score: Float
+
+    /// Cosine similarity derived as `1 - d² / 2`. Valid only when both
+    /// stored and query vectors are unit-L2 normalized.
+    public var cosineSimilarity: Float {
+        1 + score / 2
+    }
 }
 
 public struct SearchDiagnostics: Equatable, Sendable {
@@ -401,4 +453,42 @@ public struct MaintenanceReport: Equatable, Sendable {
     public var bytesConsumed: UInt64
     public var checkpointsResumed: UInt64
     public var status: MaintenanceStatus
+}
+
+/// Host-invoked maintenance policy. This value schedules no timers or tasks.
+public struct MaintenancePolicy: Sendable {
+    public var sealAtActiveRowCount: UInt64
+    public var idleInterval: Duration?
+    public var wallTimeNanoseconds: UInt64
+    public var byteBudget: UInt64
+
+    public init(
+        sealAtActiveRowCount: UInt64,
+        idleInterval: Duration? = nil,
+        wallTimeNanoseconds: UInt64,
+        byteBudget: UInt64
+    ) {
+        self.sealAtActiveRowCount = sealAtActiveRowCount
+        self.idleInterval = idleInterval
+        self.wallTimeNanoseconds = wallTimeNanoseconds
+        self.byteBudget = byteBudget
+    }
+
+    @available(macOS 14.0, iOS 17.0, *)
+    public func run(
+        on store: ZeppelinStore,
+        idleFor: Duration = .zero
+    ) async throws -> MaintenanceReport {
+        let stats = try await store.stats()
+        let reachedRowThreshold =
+            sealAtActiveRowCount > 0 && stats.activeRowCount >= sealAtActiveRowCount
+        let reachedIdleInterval = idleInterval.map { idleFor >= $0 } ?? false
+        if stats.activeRowCount > 0 && (reachedRowThreshold || reachedIdleInterval) {
+            _ = try await store.seal()
+        }
+        return try await store.maintain(
+            wallTimeNanoseconds: wallTimeNanoseconds,
+            bytes: byteBudget
+        )
+    }
 }

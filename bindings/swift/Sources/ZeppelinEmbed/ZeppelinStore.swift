@@ -1,10 +1,11 @@
 import CZeppelinEmbed
 import Foundation
 
-private struct ReopenConfiguration: Sendable {
+struct ReopenConfiguration: Sendable {
     var path: URL
     var options: OpenOptions
     var epoch: Epoch?
+    var namespace: NamespaceReopenConfiguration? = nil
 }
 
 @available(macOS 14.0, iOS 17.0, *)
@@ -12,7 +13,7 @@ public actor ZeppelinStore {
     private var handle: UInt64?
     private let configuration: ReopenConfiguration
 
-    private init(handle: UInt64, configuration: ReopenConfiguration) {
+    init(handle: UInt64, configuration: ReopenConfiguration) {
         self.handle = handle
         self.configuration = configuration
     }
@@ -548,14 +549,17 @@ public actor ZeppelinStore {
         }
     }
 
-    private static func open(configuration: ReopenConfiguration) async throws -> ZeppelinStore {
+    static func open(configuration: ReopenConfiguration) async throws -> ZeppelinStore {
         let handle = try await openRaw(configuration: configuration)
         return ZeppelinStore(handle: handle, configuration: configuration)
     }
 
-    private static func openRaw(configuration: ReopenConfiguration) async throws -> UInt64 {
+    static func openRaw(configuration: ReopenConfiguration) async throws -> UInt64 {
         try await runBlocking {
             try prepareDirectory(configuration.path, options: configuration.options)
+            if let namespace = configuration.namespace {
+                return try openNamespaceHandle(namespace, options: configuration.options)
+            }
             let path = Array(configuration.path.path.utf8)
             return try path.withUnsafeBufferPointer { pathBuffer in
                 var request = ZeOpenRequest()
@@ -582,20 +586,24 @@ public actor ZeppelinStore {
         }
     }
 
-    private func openHandle() throws -> UInt64 {
+    func openHandle() throws -> UInt64 {
         guard let handle else {
             throw ZeppelinError.closed
         }
         return handle
     }
 
-    private nonisolated static func runBlocking<Result: Sendable>(
+    func lastErrorHandle() -> UInt64 {
+        handle ?? 0
+    }
+
+    nonisolated static func runBlocking<Result: Sendable>(
         _ operation: @escaping @Sendable () throws -> Result
     ) async throws -> Result {
         try await Task.detached(operation: operation).value
     }
 
-    private nonisolated static func prepareDirectory(_ path: URL, options: OpenOptions) throws {
+    nonisolated static func prepareDirectory(_ path: URL, options: OpenOptions) throws {
         do {
             if options.accessMode == .readWrite {
                 try FileManager.default.createDirectory(
@@ -614,14 +622,14 @@ public actor ZeppelinStore {
         }
     }
 
-    private nonisolated static func cDocumentID(_ id: DocumentID) -> ZeDocId {
+    nonisolated static func cDocumentID(_ id: DocumentID) -> ZeDocId {
         var raw = ZeDocId()
         raw.high = id.high
         raw.low = id.low
         return raw
     }
 
-    private nonisolated static func offsets(_ lengths: [Int]) -> [Int] {
+    nonisolated static func offsets(_ lengths: [Int]) -> [Int] {
         var next = 0
         return lengths.map { length in
             defer { next += length }
@@ -629,7 +637,7 @@ public actor ZeppelinStore {
         }
     }
 
-    private nonisolated static func pointer<Element>(
+    nonisolated static func pointer<Element>(
         _ base: UnsafePointer<Element>?,
         offset: Int,
         count: Int
@@ -652,7 +660,7 @@ public actor ZeppelinStore {
         )
     }
 
-    private nonisolated static func copySearchHits(_ result: ZeSearchResult) throws
+    nonisolated static func copySearchHits(_ result: ZeSearchResult) throws
         -> [SearchHit]
     {
         if result.hit_count == 0 {
@@ -695,7 +703,7 @@ public actor ZeppelinStore {
         }
     }
 
-    private nonisolated static func withEpochRequest<Result>(
+    nonisolated static func withEpochRequest<Result>(
         _ epoch: Epoch,
         _ body: (UnsafePointer<ZeEpochRequest>) throws -> Result
     ) rethrows -> Result {
