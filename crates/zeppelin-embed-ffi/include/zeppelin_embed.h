@@ -1520,6 +1520,58 @@ typedef struct ZeScanResult {
 } ZeScanResult;
 
 /*
+ Counts live documents matching an optional filter and timestamp range.
+ */
+typedef struct ZeCountRequest {
+    /*
+     Caller-provided `sizeof(ZeCountRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Optional caller-owned structured filter.
+     */
+    const struct ZeFilter *filter;
+    /*
+     One when `start_ts` and `end_ts` carry a timestamp range.
+     */
+    uint32_t has_timestamp_range;
+    /*
+     Inclusive timestamp-range start.
+     */
+    int64_t start_ts;
+    /*
+     Exclusive timestamp-range end.
+     */
+    int64_t end_ts;
+} ZeCountRequest;
+
+/*
+ Scalar result returned by `ze_count`.
+ */
+typedef struct ZeCountResult {
+    /*
+     Caller-provided `sizeof(ZeCountResult)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Exact number of matching live rows.
+     */
+    uint64_t count;
+    /*
+     Store generation pinned for the complete count.
+     */
+    uint64_t generation;
+} ZeCountResult;
+
+/*
  Vector search request.
  */
 typedef struct ZeSearchRequest {
@@ -1693,6 +1745,28 @@ typedef struct ZeSearchResult {
      */
     uint64_t graph_segments_pruned_by_bound;
 } ZeSearchResult;
+
+/*
+ Exact vector search restricted by a required structured filter.
+ */
+typedef struct ZeSearchFilteredRequest {
+    /*
+     Caller-provided `sizeof(ZeSearchFilteredRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing vector-search request embedded by value.
+     */
+    struct ZeSearchRequest search;
+    /*
+     Required caller-owned structured filter.
+     */
+    const struct ZeFilter *filter;
+} ZeSearchFilteredRequest;
 
 /*
  Structured query request. Encoding decision (task 22 phase 2): a
@@ -2367,6 +2441,14 @@ ze_error_code ze_scan(ze_handle handle,
                       struct ZeScanResult *out_result);
 
 /*
+ Counts live documents matching an optional filter and timestamp range.
+ All request and filter pointers are caller-owned for the call.
+ */
+ze_error_code ze_count(ze_handle handle,
+                       const struct ZeCountRequest *request,
+                       struct ZeCountResult *out_result);
+
+/*
  Releases the single arena owned by a scan result.
  */
 ze_error_code ze_scan_result_free(struct ZeScanResult *result);
@@ -2381,6 +2463,15 @@ ze_error_code ze_scan_result_free(struct ZeScanResult *result);
 ze_error_code ze_search(ze_handle handle,
                         const struct ZeSearchRequest *request,
                         struct ZeSearchResult *out_result);
+
+/*
+ Searches active and immutable store state through a required structured
+ filter. The embedded search request and filter are caller-owned for the
+ call. On success `hits` is released with [`ze_search_result_free`].
+ */
+ze_error_code ze_search_filtered(ze_handle handle,
+                                 const struct ZeSearchFilteredRequest *request,
+                                 struct ZeSearchResult *out_result);
 
 /*
  Runs one structured query: a vector leg, a lexical leg, or exact hybrid

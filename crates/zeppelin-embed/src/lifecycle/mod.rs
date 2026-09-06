@@ -1855,6 +1855,15 @@ pub struct DocumentScanPage {
     pub continuation: Option<DocumentScanCursor>,
 }
 
+/// Exact live-row count from one pinned store generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DocumentCount {
+    /// Number of live rows matching the requested bounds.
+    pub count: u64,
+    /// Store generation pinned for the complete count.
+    pub generation: u64,
+}
+
 /// Largest document page accepted by the core and C ABI.
 pub const MAX_DOCUMENT_SCAN_LIMIT: usize = 1 << 20;
 
@@ -3739,6 +3748,39 @@ impl Store {
             generation,
             continuation,
         })
+    }
+
+    /// Counts live documents matching an optional predicate and timestamp range.
+    pub fn count_documents(
+        &self,
+        predicate: Option<&crate::meta::Predicate>,
+        timestamp_range: Option<(i64, i64)>,
+    ) -> Result<DocumentCount, QueryError> {
+        let predicate = document_scan_predicate(predicate, timestamp_range)?;
+        if let Some(predicate) = &predicate {
+            crate::planner::validate_predicate(predicate, &self.schema).map_err(|error| {
+                QueryError::Store(StoreError::InvalidScan {
+                    detail: error.to_string(),
+                })
+            })?;
+        }
+        let AdmittedDocumentRead {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        } = self.admit_document_read().map_err(QueryError::Store)?;
+        let mut count = 0_u64;
+        for segment in snapshot.segments() {
+            count = count
+                .checked_add(sealed_scan_rows(segment, predicate.as_ref())?.cardinality())
+                .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        }
+        count = count
+            .checked_add(active_scan_rows(&active, &self.schema, predicate.as_ref())?.cardinality())
+            .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
+        drop(active_query);
+        Ok(DocumentCount { count, generation })
     }
 
     /// Runs a structured lexical query and returns provenance plus snippets

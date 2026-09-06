@@ -92,6 +92,43 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
     });
 
+    let filter_node = ZeFilterNode {
+        op: 6,
+        attribute_id: 0,
+        values: std::ptr::null(),
+        value_count: 0,
+        has_lower: 0,
+        lower: unsafe { std::mem::zeroed() },
+        lower_inclusive: 0,
+        has_upper: 0,
+        upper: unsafe { std::mem::zeroed() },
+        upper_inclusive: 0,
+        children_start: 0,
+        children_count: 0,
+    };
+    let filter = ZeFilter {
+        abi_size: size_of::<ZeFilter>() as u32,
+        abi_reserved: 0,
+        nodes: &filter_node,
+        node_count: 1,
+        root: 0,
+    };
+    let filtered_request = ZeSearchFilteredRequest {
+        abi_size: size_of::<ZeSearchFilteredRequest>() as u32,
+        abi_reserved: 0,
+        search: search_request,
+        filter: &filter,
+    };
+    assert_heap_flat("ze_search_filtered/ze_search_result_free", || {
+        let mut result: ZeSearchResult = common::sized_zeroed();
+        assert_eq!(
+            ze_search_filtered(store.handle, &filtered_request, &mut result),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.hit_count, 16);
+        assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
+    });
+
     let mut query_request = common::valid_query_request(&probe);
     query_request.k = 16;
     assert_heap_flat("ze_query/ze_query_result_free", || {

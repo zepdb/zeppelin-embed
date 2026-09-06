@@ -337,6 +337,16 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeFilter, 32, 8, {
         abi_size: 0, abi_reserved: 4, nodes: 8, node_count: 16, root: 24
     });
+    assert_layout!(ZeCountRequest, 40, 8, {
+        abi_size: 0, abi_reserved: 4, filter: 8, has_timestamp_range: 16,
+        start_ts: 24, end_ts: 32
+    });
+    assert_layout!(ZeCountResult, 24, 8, {
+        abi_size: 0, abi_reserved: 4, count: 8, generation: 16
+    });
+    assert_layout!(ZeSearchFilteredRequest, 112, 8, {
+        abi_size: 0, abi_reserved: 4, search: 8, filter: 104
+    });
     assert_layout!(ZeScanRequest, 112, 8, {
         abi_size: 0, abi_reserved: 4, cursor_generation: 8,
         cursor_segment_id: 16, cursor_next_row: 32, cursor_phase: 36,
@@ -441,6 +451,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_apply_retention",
     "ze_await_physical_purge",
     "ze_close",
+    "ze_count",
     "ze_delete",
     "ze_drop_partition",
     "ze_epoch_current",
@@ -455,6 +466,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_scan_result_free",
     "ze_seal",
     "ze_search",
+    "ze_search_filtered",
     "ze_state",
     "ze_stats",
     "ze_upsert",
@@ -681,6 +693,37 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let mut result: ZeSearchResult = common::sized_zeroed();
             ze_search(context.store.handle, &request, &mut result)
         }),
+        ("ze_search_filtered", |context| {
+            let nodes = [ZeFilterNode {
+                op: 8,
+                attribute_id: 0,
+                values: std::ptr::null(),
+                value_count: 0,
+                has_lower: 0,
+                lower: unsafe { std::mem::zeroed() },
+                lower_inclusive: 0,
+                has_upper: 0,
+                upper: unsafe { std::mem::zeroed() },
+                upper_inclusive: 0,
+                children_start: 0,
+                children_count: 0,
+            }];
+            let filter = ZeFilter {
+                abi_size: size_of::<ZeFilter>() as u32,
+                abi_reserved: 0,
+                nodes: nodes.as_ptr(),
+                node_count: nodes.len(),
+                root: 0,
+            };
+            let request = ZeSearchFilteredRequest {
+                abi_size: size_of::<ZeSearchFilteredRequest>() as u32,
+                abi_reserved: 0,
+                search: common::valid_search_request(&context.vector),
+                filter: &filter,
+            };
+            let mut result: ZeSearchResult = common::sized_zeroed();
+            ze_search_filtered(context.store.handle, &request, &mut result)
+        }),
         ("ze_query", |context| {
             let request = common::valid_query_request(&context.vector);
             let mut result: ZeQueryResult = common::sized_zeroed();
@@ -709,6 +752,18 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut result: ZeScanResult = common::sized_zeroed();
             ze_scan(context.store.handle, &request, &mut result)
+        }),
+        ("ze_count", |context| {
+            let request = ZeCountRequest {
+                abi_size: size_of::<ZeCountRequest>() as u32,
+                abi_reserved: 0,
+                filter: std::ptr::null(),
+                has_timestamp_range: 0,
+                start_ts: 0,
+                end_ts: 0,
+            };
+            let mut result: ZeCountResult = common::sized_zeroed();
+            ze_count(context.store.handle, &request, &mut result)
         }),
         ("ze_scan_result_free", |_context| {
             let mut result: ZeScanResult = common::sized_zeroed();

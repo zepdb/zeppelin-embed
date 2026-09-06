@@ -482,6 +482,38 @@ pub struct ZeFilter {
     pub root: u32,
 }
 
+/// Counts live documents matching an optional filter and timestamp range.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCountRequest {
+    /// Caller-provided `sizeof(ZeCountRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Optional caller-owned structured filter.
+    pub filter: *const ZeFilter,
+    /// One when `start_ts` and `end_ts` carry a timestamp range.
+    pub has_timestamp_range: u32,
+    /// Inclusive timestamp-range start.
+    pub start_ts: i64,
+    /// Exclusive timestamp-range end.
+    pub end_ts: i64,
+}
+
+/// Scalar result returned by `ze_count`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCountResult {
+    /// Caller-provided `sizeof(ZeCountResult)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Exact number of matching live rows.
+    pub count: u64,
+    /// Store generation pinned for the complete count.
+    pub generation: u64,
+}
+
 /// Ordered, filtered, bounded document-enumeration request.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -759,6 +791,20 @@ pub struct ZeSearchRequest {
     pub cancel_token: ZeCancelToken,
     /// Relative monotonic deadline in nanoseconds; zero means absent.
     pub deadline_ns: u64,
+}
+
+/// Exact vector search restricted by a required structured filter.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeSearchFilteredRequest {
+    /// Caller-provided `sizeof(ZeSearchFilteredRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing vector-search request embedded by value.
+    pub search: ZeSearchRequest,
+    /// Required caller-owned structured filter.
+    pub filter: *const ZeFilter,
 }
 
 /// One callee-owned search hit.

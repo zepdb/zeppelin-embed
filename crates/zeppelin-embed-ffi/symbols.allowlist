@@ -5,6 +5,7 @@ ze_cancel_token_cancel
 ze_cancel_token_create
 ze_cancel_token_free
 ze_close
+ze_count
 ze_delete
 ze_drop_partition
 ze_epoch_current
@@ -29,6 +30,7 @@ ze_scan
 ze_scan_result_free
 ze_seal
 ze_search
+ze_search_filtered
 ze_search_result_free
 ze_state
 ze_stats

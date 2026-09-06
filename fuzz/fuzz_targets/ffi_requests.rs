@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 16 {
+    match bytes.u8() % 18 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -604,6 +604,116 @@ fuzz_target!(|data: &[u8]| {
             let mut result: ZeScanResult = sized(abi_size::<ZeScanResult>(&mut bytes));
             typed(ze_scan(handle, &request, &mut result));
             typed(ze_scan_result_free(&mut result));
+        }
+        15 => {
+            let value = ZeAttributeValue {
+                attribute_id: bytes.u32() % 3,
+                value_type: bytes.i32() % 7,
+                u64_value: bytes.u64(),
+                i64_value: bytes.u64() as i64,
+                f64_value: f64::from_bits(bytes.u64()),
+                bool_value: bytes.u32() % 3,
+                string_value: std::ptr::null(),
+                string_len: 0,
+            };
+            let node = ZeFilterNode {
+                op: bytes.i32() % 13,
+                attribute_id: bytes.u32() % 3,
+                values: &value,
+                value_count: bytes.len_within(1),
+                has_lower: bytes.u32() % 3,
+                lower: value,
+                lower_inclusive: bytes.u32() % 3,
+                has_upper: bytes.u32() % 3,
+                upper: value,
+                upper_inclusive: bytes.u32() % 3,
+                children_start: bytes.u32() % 3,
+                children_count: bytes.u32() % 3,
+            };
+            let filter = ZeFilter {
+                abi_size: abi_size::<ZeFilter>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                nodes: &node,
+                node_count: bytes.len_within(1),
+                root: bytes.u32() % 3,
+            };
+            let request = ZeCountRequest {
+                abi_size: abi_size::<ZeCountRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                filter: if bytes.u8() % 4 == 0 {
+                    std::ptr::null()
+                } else {
+                    &filter
+                },
+                has_timestamp_range: bytes.u32() % 3,
+                start_ts: bytes.u64() as i64,
+                end_ts: bytes.u64() as i64,
+            };
+            let mut result: ZeCountResult = sized(abi_size::<ZeCountResult>(&mut bytes));
+            typed(ze_count(handle, &request, &mut result));
+        }
+        16 => {
+            let value = ZeAttributeValue {
+                attribute_id: bytes.u32() % 3,
+                value_type: bytes.i32() % 7,
+                u64_value: bytes.u64(),
+                i64_value: bytes.u64() as i64,
+                f64_value: f64::from_bits(bytes.u64()),
+                bool_value: bytes.u32() % 3,
+                string_value: std::ptr::null(),
+                string_len: 0,
+            };
+            let node = ZeFilterNode {
+                op: bytes.i32() % 13,
+                attribute_id: bytes.u32() % 3,
+                values: &value,
+                value_count: bytes.len_within(1),
+                has_lower: bytes.u32() % 3,
+                lower: value,
+                lower_inclusive: bytes.u32() % 3,
+                has_upper: bytes.u32() % 3,
+                upper: value,
+                upper_inclusive: bytes.u32() % 3,
+                children_start: bytes.u32() % 3,
+                children_count: bytes.u32() % 3,
+            };
+            let filter = ZeFilter {
+                abi_size: abi_size::<ZeFilter>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                nodes: &node,
+                node_count: bytes.len_within(1),
+                root: bytes.u32() % 3,
+            };
+            let search = ZeSearchRequest {
+                abi_size: abi_size::<ZeSearchRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                vector: fixture.vector.as_ptr(),
+                vector_len: bytes.len_within(SCRATCH_DIMS),
+                dimension: bytes.len_within(SCRATCH_DIMS),
+                k: bytes.usize(),
+                thread_budget: bytes.usize() % 4,
+                has_tier: bytes.u32() % 3,
+                tier: bytes.i32() % 6,
+                graph_profile: bytes.i32() % 3,
+                reserved: bytes.u32() % 2,
+                graph_ef: bytes.usize() % 512,
+                graph_seed: bytes.u64(),
+                cancel_token: u64::from(bytes.u8() % 2),
+                deadline_ns: u64::from(bytes.u8()) * 1_000_000,
+            };
+            let request = ZeSearchFilteredRequest {
+                abi_size: abi_size::<ZeSearchFilteredRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                search,
+                filter: if bytes.u8() % 4 == 0 {
+                    std::ptr::null()
+                } else {
+                    &filter
+                },
+            };
+            let mut result: ZeSearchResult = sized(abi_size::<ZeSearchResult>(&mut bytes));
+            typed(ze_search_filtered(handle, &request, &mut result));
+            typed(ze_search_result_free(&mut result));
         }
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }

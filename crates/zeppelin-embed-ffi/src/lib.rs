@@ -253,6 +253,15 @@ fn empty_search_result(abi_size: u32) -> ZeSearchResult {
     }
 }
 
+fn empty_count_result(abi_size: u32) -> ZeCountResult {
+    ZeCountResult {
+        abi_size,
+        abi_reserved: 0,
+        count: 0,
+        generation: 0,
+    }
+}
+
 #[cfg(feature = "abi-panic-probe")]
 fn named_panic_probe() -> &'static std::sync::Mutex<Option<&'static str>> {
     static PROBE: std::sync::OnceLock<std::sync::Mutex<Option<&'static str>>> =
@@ -2721,6 +2730,52 @@ pub extern "C" fn ze_scan(
     })
 }
 
+/// Counts live documents matching an optional filter and timestamp range.
+/// All request and filter pointers are caller-owned for the call.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_count(
+    handle: ZeHandle,
+    request: *const ZeCountRequest,
+    out_result: *mut ZeCountResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_count");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_count_result(abi_size));
+                let has_timestamp_range =
+                    parse_flag(request.has_timestamp_range, "has_timestamp_range")?;
+                if !has_timestamp_range && (request.start_ts != 0 || request.end_ts != 0) {
+                    return Err(FfiError::invalid(
+                        "count timestamp bounds require has_timestamp_range",
+                    ));
+                }
+                let access = registry::lookup(handle)?;
+                let predicate = decode_filter(request.filter, access.store.schema())?;
+                let timestamp_range =
+                    has_timestamp_range.then_some((request.start_ts, request.end_ts));
+                let result = access
+                    .store
+                    .count_documents(predicate.as_ref(), timestamp_range)
+                    .map_err(FfiError::query)?;
+                marshal::write_output(
+                    out_result,
+                    ZeCountResult {
+                        abi_size,
+                        abi_reserved: 0,
+                        count: result.count,
+                        generation: result.generation,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Releases the single arena owned by a scan result.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_scan_result_free(result: *mut ZeScanResult) -> ZeErrorCode {
@@ -2869,6 +2924,150 @@ pub extern "C" fn ze_search(
                         )?,
                         graph_segments_pruned_by_bound: usize_u64(
                             outcome.graph_stats.segments_pruned_by_bound,
+                            "graph_segments_pruned_by_bound",
+                        )?,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Searches active and immutable store state through a required structured
+/// filter. The embedded search request and filter are caller-owned for the
+/// call. On success `hits` is released with [`ze_search_result_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_search_filtered(
+    handle: ZeHandle,
+    request: *const ZeSearchFilteredRequest,
+    out_result: *mut ZeSearchResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_search_filtered");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let search = marshal::read_struct(&request.search)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_search_result(abi_size));
+                if request.filter.is_null() {
+                    return Err(FfiError::invalid(
+                        "filtered search requires a non-null filter",
+                    ));
+                }
+                if search.k == 0 {
+                    return Err(FfiError::invalid("search k must be nonzero"));
+                }
+                if search.k > ZE_MAX_K {
+                    return Err(FfiError::invalid("search k exceeds ZE_MAX_K"));
+                }
+                if search.dimension == 0 || search.vector_len != search.dimension {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrDimensionMismatch,
+                        "search vector length does not match a nonzero dimension",
+                    ));
+                }
+                let vector_bytes = search
+                    .dimension
+                    .checked_mul(size_of::<f32>())
+                    .ok_or_else(|| FfiError::invalid("search dimension byte length overflows"))?;
+                marshal::checked_buffer_len(search.vector_len, size_of::<f32>(), vector_bytes)?;
+                let vector = marshal::copy_slice(search.vector, search.vector_len)?;
+                let options = parse_search_options(search)?;
+                let control = query_control_for(search.cancel_token, search.deadline_ns)?;
+                let access = registry::lookup(handle)?;
+                if access.store.epoch_identity() == Some(record_only_epoch_identity()) {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrNoVectorSpace,
+                        "record-only namespace has no vector space",
+                    ));
+                }
+                let predicate =
+                    decode_filter(request.filter, access.store.schema())?.ok_or_else(|| {
+                        FfiError::invalid("filtered search requires a non-null filter")
+                    })?;
+                let outcome = access
+                    .store
+                    .search_filtered(
+                        SearchRequest::new(&vector),
+                        &predicate,
+                        search.k,
+                        options,
+                        control,
+                    )
+                    .map_err(FfiError::filtered)?;
+                let mut hits = Vec::new();
+                hits.try_reserve_exact(outcome.candidates.len())
+                    .map_err(|_| {
+                        FfiError::new(
+                            ZeErrorCode::ZeErrOutOfMemory,
+                            "search hit allocation failed",
+                        )
+                    })?;
+                for candidate in outcome.candidates {
+                    let (source_kind, segment_id) = match candidate.row_id().source() {
+                        RowSource::Active => (0, [0_u8; 16]),
+                        RowSource::Sealed(segment) => (1, *segment.as_bytes()),
+                    };
+                    let (has_document, id, revision) = match candidate.document() {
+                        Some(document) => {
+                            (1, ffi_doc_id(document.doc_id()), document.revision().get())
+                        }
+                        None => (0, ZeDocId { high: 0, low: 0 }, 0),
+                    };
+                    hits.push(ZeSearchHit {
+                        source_kind,
+                        reserved: 0,
+                        segment_id,
+                        local_row: candidate.row_id().local_row(),
+                        has_document,
+                        doc_id: id,
+                        revision,
+                        score: candidate.score(),
+                        reserved_tail: 0,
+                    });
+                }
+                let graph_stats = outcome.diagnostics.counters.graph;
+                let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
+                marshal::write_output(
+                    out_result,
+                    ZeSearchResult {
+                        abi_size,
+                        abi_reserved: allocation_generation,
+                        hits: hit_pointer,
+                        hit_count,
+                        generation: outcome.generation,
+                        dims_touched: outcome.stats.dims_touched,
+                        bytes_read: outcome.stats.bytes_read,
+                        threads_used: usize_u64(outcome.stats.threads_used, "threads_used")?,
+                        graph_segments_traversed: usize_u64(
+                            graph_stats.segments_traversed,
+                            "graph_segments_traversed",
+                        )?,
+                        graph_validations: usize_u64(
+                            graph_stats.graph_validations,
+                            "graph_validations",
+                        )?,
+                        graph_entry_seed_discoveries: usize_u64(
+                            graph_stats.entry_seed_discoveries,
+                            "graph_entry_seed_discoveries",
+                        )?,
+                        graph_visited_epoch_clears: usize_u64(
+                            graph_stats.visited_epoch_clears,
+                            "graph_visited_epoch_clears",
+                        )?,
+                        graph_candidates_scored: usize_u64(
+                            graph_stats.candidates_scored,
+                            "graph_candidates_scored",
+                        )?,
+                        graph_candidates_rescored: usize_u64(
+                            graph_stats.candidates_rescored,
+                            "graph_candidates_rescored",
+                        )?,
+                        graph_segments_pruned_by_bound: usize_u64(
+                            graph_stats.segments_pruned_by_bound,
                             "graph_segments_pruned_by_bound",
                         )?,
                     },
@@ -3547,11 +3746,14 @@ pub extern "C" fn ze_search_result_free(result: *mut ZeSearchResult) -> ZeErrorC
 }
 
 const _: () = {
+    assert!(size_of::<ZeCountRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeCountResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeFilter>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeGetRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeGetResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeOpenRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeSearchResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeSearchFilteredRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeScanRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeScanResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeEpochRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);

@@ -133,6 +133,22 @@ impl FfiError {
         Self::new(code, message)
     }
 
+    pub(crate) fn filtered(error: zeppelin_embed::planner::FilteredSearchError) -> Self {
+        use zeppelin_embed::planner::FilteredSearchError;
+
+        let message = error.to_string();
+        #[allow(unreachable_patterns)]
+        let code = match error {
+            FilteredSearchError::Plan(_) => ZeErrorCode::ZeErrInvalidArgument,
+            FilteredSearchError::Query(error) => Self::query(error).code,
+            FilteredSearchError::ActiveMetadata(_)
+            | FilteredSearchError::PlanReportMismatch { .. }
+            | FilteredSearchError::InvalidPlanNode(_) => ZeErrorCode::ZeErrInternal,
+            _ => ZeErrorCode::ZeErrInternal,
+        };
+        Self::new(code, message)
+    }
+
     pub(crate) fn purge(error: zeppelin_embed::ingest::PurgeError) -> Self {
         use zeppelin_embed::ingest::PurgeError;
 
