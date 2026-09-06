@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
         fixture.handle
     };
     let mut bytes = Bytes { data, cursor: 2 };
-    match bytes.u8() % 14 {
+    match bytes.u8() % 15 {
         0 => {
             let rest = bytes.rest();
             let dimension = bytes.len_within(SCRATCH_DIMS);
@@ -520,6 +520,28 @@ fuzz_target!(|data: &[u8]| {
             };
             let mut report: ZeMutationReport = sized(size_of::<ZeMutationReport>() as u32);
             typed(ze_upsert(handle, &request, &mut report));
+        }
+        13 => {
+            let ids = [
+                ZeDocId {
+                    high: bytes.u64(),
+                    low: bytes.u64(),
+                },
+                ZeDocId { high: 0, low: 1 },
+            ];
+            let request = ZeGetRequest {
+                abi_size: abi_size::<ZeGetRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                ids: ids.as_ptr(),
+                id_count: bytes.len_within(ids.len()),
+                include_vector: bytes.u32() % 3,
+                include_text: bytes.u32() % 3,
+                include_metadata: bytes.u32() % 3,
+                include_attributes: bytes.u32() % 3,
+            };
+            let mut result: ZeGetResult = sized(abi_size::<ZeGetResult>(&mut bytes));
+            typed(ze_get(handle, &request, &mut result));
+            typed(ze_get_result_free(&mut result));
         }
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }

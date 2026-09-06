@@ -104,6 +104,29 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
     });
 
+    let get_ids = (1..=16)
+        .map(|low| ZeDocId { high: 0, low })
+        .collect::<Vec<_>>();
+    let get_request = ZeGetRequest {
+        abi_size: size_of::<ZeGetRequest>() as u32,
+        abi_reserved: 0,
+        ids: get_ids.as_ptr(),
+        id_count: get_ids.len(),
+        include_vector: 1,
+        include_text: 1,
+        include_metadata: 1,
+        include_attributes: 1,
+    };
+    assert_heap_flat("ze_get/ze_get_result_free", || {
+        let mut result: ZeGetResult = common::sized_zeroed();
+        assert_eq!(
+            ze_get(store.handle, &get_request, &mut result),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.document_count, get_ids.len());
+        assert_eq!(ze_get_result_free(&mut result), ZeErrorCode::ZeOk);
+    });
+
     let namespace_root = tempfile::tempdir().expect("temporary namespace root");
     let root_bytes = namespace_root
         .path()

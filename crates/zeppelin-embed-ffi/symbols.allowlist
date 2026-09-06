@@ -12,6 +12,8 @@ ze_epoch_drop
 ze_epoch_identity
 ze_epoch_switch_alias
 ze_error_code_name
+ze_get
+ze_get_result_free
 ze_ingest
 ze_last_error_message
 ze_maintain

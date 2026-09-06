@@ -314,6 +314,20 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
         dimension: 24
     });
+    assert_layout!(ZeGetRequest, 40, 8, {
+        abi_size: 0, abi_reserved: 4, ids: 8, id_count: 16,
+        include_vector: 24, include_text: 28, include_metadata: 32,
+        include_attributes: 36
+    });
+    assert_layout!(ZeStoredDocument, 104, 8, {
+        has_document: 0, doc_id: 8, revision: 24, timestamp: 32,
+        vector: 40, vector_len: 48, text: 56, text_len: 64,
+        metadata: 72, metadata_len: 80, attributes: 88, attribute_count: 96
+    });
+    assert_layout!(ZeGetResult, 40, 8, {
+        abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
+        missing_count: 24, generation: 32
+    });
     assert_layout!(ZeNamespaceSpec, 48, 8, {
         abi_size: 0, abi_reserved: 4, attributes: 8, attribute_count: 16,
         has_vector_space: 24, dimensions: 28, normalization: 32, epoch: 40
@@ -410,6 +424,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_epoch_current",
     "ze_epoch_drop",
     "ze_epoch_switch_alias",
+    "ze_get",
     "ze_ingest",
     "ze_maintain",
     "ze_purge",
@@ -612,6 +627,20 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeMutationReport = common::sized_zeroed();
             ze_upsert(context.store.handle, &request, &mut report)
+        }),
+        ("ze_get", |context| {
+            let request = ZeGetRequest {
+                abi_size: size_of::<ZeGetRequest>() as u32,
+                abi_reserved: 0,
+                ids: context.ids.as_ptr(),
+                id_count: context.ids.len(),
+                include_vector: 0,
+                include_text: 0,
+                include_metadata: 0,
+                include_attributes: 0,
+            };
+            let mut result: ZeGetResult = common::sized_zeroed();
+            ze_get(context.store.handle, &request, &mut result)
         }),
         ("ze_delete", |context| {
             let request = ZeDeleteRequest {

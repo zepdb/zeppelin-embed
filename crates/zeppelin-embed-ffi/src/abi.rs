@@ -365,6 +365,76 @@ pub struct ZeUpsertRequest {
     pub dimension: usize,
 }
 
+/// Requests documents by stable id in caller order.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeGetRequest {
+    /// Caller-provided `sizeof(ZeGetRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned document-id array.
+    pub ids: *const ZeDocId,
+    /// Number of requested ids; must be nonzero.
+    pub id_count: usize,
+    /// One to return full-precision vectors.
+    pub include_vector: u32,
+    /// One to return stored UTF-8 text.
+    pub include_text: u32,
+    /// One to return opaque metadata bytes.
+    pub include_metadata: u32,
+    /// One to return typed schema attributes.
+    pub include_attributes: u32,
+}
+
+/// One read-side document slot corresponding to one requested id.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeStoredDocument {
+    /// One when the requested document is live, zero for a miss or tombstone.
+    pub has_document: u32,
+    /// Requested stable id, including for a missing document.
+    pub doc_id: ZeDocId,
+    /// Live revision, or zero when `has_document` is zero.
+    pub revision: u64,
+    /// Canonical timestamp, or zero when `has_document` is zero.
+    pub timestamp: i64,
+    /// Full-precision vector owned by the result arena.
+    pub vector: *const f32,
+    /// Scalar count in `vector`.
+    pub vector_len: usize,
+    /// Stored UTF-8 bytes owned by the result arena.
+    pub text: *const u8,
+    /// Number of `text` bytes.
+    pub text_len: usize,
+    /// Opaque metadata bytes owned by the result arena.
+    pub metadata: *const u8,
+    /// Number of metadata bytes.
+    pub metadata_len: usize,
+    /// Typed schema values owned by the result arena.
+    pub attributes: *const ZeAttributeValue,
+    /// Number of entries in `attributes`.
+    pub attribute_count: usize,
+}
+
+/// Callee-owned documents returned by `ze_get`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeGetResult {
+    /// Caller-provided `sizeof(ZeGetResult)`.
+    pub abi_size: u32,
+    /// Caller sets zero; callee returns an opaque allocation generation.
+    pub abi_reserved: u32,
+    /// One arena-owned entry per requested id.
+    pub documents: *mut ZeStoredDocument,
+    /// Number of entries in `documents`; always the request's `id_count`.
+    pub document_count: usize,
+    /// Number of entries whose `has_document` is zero.
+    pub missing_count: usize,
+    /// Store generation pinned for the entire read.
+    pub generation: u64,
+}
+
 /// Atomic document-ingest request.
 #[derive(Clone, Copy)]
 #[repr(C)]

@@ -372,6 +372,9 @@ pub struct SegmentReader {
     // and every row offset has been walked; the public `stored_text` never
     // consults it and verifies on every call.
     stored_text_validated: OnceLock<()>,
+    // Set only by the get path after the stored-metadata region has passed its
+    // checksum and full row-offset walk.
+    stored_metadata_validated: OnceLock<()>,
     vector_codes_validated: OnceLock<()>,
     vector_factors_validated: OnceLock<()>,
     rescore_valid_chunks: Mutex<Box<[u64]>>,
@@ -550,6 +553,7 @@ impl SegmentReader {
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
             stored_text_validated: OnceLock::new(),
+            stored_metadata_validated: OnceLock::new(),
             vector_codes_validated: OnceLock::new(),
             vector_factors_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
@@ -623,6 +627,7 @@ impl SegmentReader {
             entries: parsed.entries,
             document_versions_validation: OnceLock::new(),
             stored_text_validated: OnceLock::new(),
+            stored_metadata_validated: OnceLock::new(),
             vector_codes_validated: OnceLock::new(),
             vector_factors_validated: OnceLock::new(),
             rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
@@ -1534,6 +1539,49 @@ impl SegmentReader {
             .map(|row| row as usize))
     }
 
+    /// Finds every live sealed row for `doc_id` through the cached
+    /// identity-ordered row permutation, building it on first use.
+    pub(crate) fn query_rows_for_doc_id(
+        &self,
+        doc_id: DocId,
+    ) -> Result<Vec<usize>, crate::lifecycle::StoreError> {
+        let Some(bytes) = self
+            .document_versions_region()
+            .map_err(crate::lifecycle::StoreError::Segment)?
+        else {
+            return Ok(Vec::new());
+        };
+        let Some(index) = self.query_document_version_index(bytes)? else {
+            return Ok(Vec::new());
+        };
+        let needle = doc_id.get().to_le_bytes();
+        let start = index.partition_point(|&row| document_id_entry(bytes, row) < needle.as_slice());
+        let end = index.partition_point(|&row| document_id_entry(bytes, row) <= needle.as_slice());
+        let matching = index.get(start..end).ok_or_else(|| {
+            crate::lifecycle::StoreError::Segment(SegmentError::Geometry(
+                "document-id index range is invalid".to_owned(),
+            ))
+        })?;
+        let alive = self.query_alive()?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(matching.len()).map_err(|_| {
+            crate::lifecycle::StoreError::AllocationFailed {
+                needed: matching
+                    .len()
+                    .checked_mul(std::mem::size_of::<usize>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .unwrap_or(u64::MAX),
+                component: "document-id rows",
+            }
+        })?;
+        for row in matching {
+            if alive.is_alive(*row) {
+                rows.push(*row as usize);
+            }
+        }
+        Ok(rows)
+    }
+
     fn query_document_version_index(
         &self,
         bytes: &[u8],
@@ -1734,6 +1782,71 @@ impl SegmentReader {
         }
         Ok(view)
     }
+
+    /// Query-path twin of [`Self::stored_metadata`]: checksum and row-offset
+    /// validation run once per reader, then later calls rebuild only the view.
+    pub(crate) fn query_stored_metadata(
+        &self,
+    ) -> Result<Option<StoredMetadataRows<'_>>, SegmentError> {
+        if self.stored_metadata_validated.get().is_some() || !Self::query_checksums_enabled() {
+            let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.kind == RegionKind::StoredMetadata.id())
+            else {
+                return Ok(None);
+            };
+            let region = self.region_slice(entry)?;
+            return stored_metadata_view(region, self.meta.row_count).map(Some);
+        }
+        let view = self.stored_metadata()?;
+        if view.is_some() {
+            let _ = self.stored_metadata_validated.set(());
+        }
+        Ok(view)
+    }
+}
+
+fn stored_metadata_view(
+    region: &[u8],
+    header_rows: u32,
+) -> Result<StoredMetadataRows<'_>, SegmentError> {
+    let declared_rows = region
+        .get(..4)
+        .and_then(|value| value.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| SegmentError::Geometry("stored-metadata header is truncated".to_owned()))?;
+    let reserved = region
+        .get(4..8)
+        .and_then(|value| value.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| {
+            SegmentError::Geometry("stored-metadata reserved field is truncated".to_owned())
+        })?;
+    if declared_rows != header_rows || reserved != 0 {
+        return Err(SegmentError::Geometry(format!(
+            "stored-metadata rows/reserved {declared_rows}/{reserved}, expected {header_rows}/0"
+        )));
+    }
+    let row_count = declared_rows as usize;
+    let offset_bytes = row_count
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(8))
+        .ok_or_else(|| SegmentError::Geometry("stored-metadata offsets overflow".to_owned()))?;
+    let offsets_end = 8_usize
+        .checked_add(offset_bytes)
+        .ok_or_else(|| SegmentError::Geometry("stored-metadata offset end overflow".to_owned()))?;
+    let offsets = region.get(8..offsets_end).ok_or_else(|| {
+        SegmentError::Geometry("stored-metadata offsets are truncated".to_owned())
+    })?;
+    let bytes = region
+        .get(offsets_end..)
+        .ok_or_else(|| SegmentError::Geometry("stored-metadata payload is truncated".to_owned()))?;
+    Ok(StoredMetadataRows {
+        offsets,
+        bytes,
+        row_count,
+    })
 }
 
 /// Parses the stored-text header geometry into a row view without walking rows.
@@ -2062,6 +2175,12 @@ fn document_version_entry(bytes: &[u8], row: u32) -> &[u8] {
     (row as usize)
         .checked_mul(DOCUMENT_VERSION_BYTES)
         .and_then(|start| bytes.get(start..start.checked_add(DOCUMENT_VERSION_BYTES)?))
+        .unwrap_or(&[])
+}
+
+fn document_id_entry(bytes: &[u8], row: u32) -> &[u8] {
+    document_version_entry(bytes, row)
+        .get(..std::mem::size_of::<u128>())
         .unwrap_or(&[])
 }
 

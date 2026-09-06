@@ -1702,6 +1702,59 @@ impl From<crate::scan::ScanOptions> for SearchOptions {
     }
 }
 
+/// Bit-set selecting the optional fields copied by [`Store::get_documents`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DocumentFields(u8);
+
+impl DocumentFields {
+    /// Selects no optional fields.
+    pub const NONE: Self = Self(0);
+    /// Selects the full-precision vector.
+    pub const VECTOR: Self = Self(1 << 0);
+    /// Selects the stored UTF-8 text.
+    pub const TEXT: Self = Self(1 << 1);
+    /// Selects the opaque metadata bytes.
+    pub const METADATA: Self = Self(1 << 2);
+    /// Selects the typed schema attributes.
+    pub const ATTRIBUTES: Self = Self(1 << 3);
+    /// Selects every optional field.
+    pub const ALL: Self =
+        Self(Self::VECTOR.0 | Self::TEXT.0 | Self::METADATA.0 | Self::ATTRIBUTES.0);
+
+    /// Returns whether every bit in `fields` is selected.
+    #[must_use]
+    pub const fn contains(self, fields: Self) -> bool {
+        self.0 & fields.0 == fields.0
+    }
+}
+
+impl std::ops::BitOr for DocumentFields {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// One live document copied from a single pinned store generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredDocument {
+    /// Stable application document identifier.
+    pub doc_id: crate::ingest::DocId,
+    /// Live monotonic revision.
+    pub revision: crate::ingest::Revision,
+    /// Canonical clustering timestamp.
+    pub timestamp: i64,
+    /// Selected full-precision vector, or `None` when not requested.
+    pub vector: Option<Vec<f32>>,
+    /// Selected stored UTF-8 text, or `None` when absent or not requested.
+    pub text: Option<String>,
+    /// Selected opaque metadata, or `None` when absent or not requested.
+    pub metadata: Option<Vec<u8>>,
+    /// Selected non-null typed attributes, or `None` when not requested.
+    pub attributes: Option<Vec<(crate::meta::ColumnId, crate::meta::PredicateValue)>>,
+}
+
 /// An open, lifecycle, or close operation was rejected.
 #[derive(Debug)]
 pub enum StoreError {
@@ -1747,6 +1800,11 @@ pub enum StoreError {
     },
     /// A referenced immutable segment could not be mapped or validated.
     Segment(crate::segment::SegmentError),
+    /// More than one live row carried the same stable document id.
+    DuplicateLiveDocument {
+        /// Stable id whose uniqueness invariant was violated.
+        doc_id: crate::ingest::DocId,
+    },
     /// The caller selected graph traversal for a sealed segment without a graph.
     GraphUnavailable {
         /// Immutable segment that cannot satisfy the explicit graph-tier request.
@@ -1930,6 +1988,13 @@ impl std::fmt::Display for StoreError {
                 "declared store schema {declared:?} does not match persisted schema {persisted:?}"
             ),
             Self::Segment(error) => error.fmt(formatter),
+            Self::DuplicateLiveDocument { doc_id } => {
+                write!(
+                    formatter,
+                    "document {} has multiple live rows",
+                    doc_id.get()
+                )
+            }
             Self::GraphUnavailable { segment_id } => {
                 write!(formatter, "sealed segment {segment_id} has no graph region")
             }
@@ -2118,6 +2183,7 @@ impl StoreError {
             | Self::UnsupportedWalMutation { .. } => StoreErrorKind::Unsupported,
             Self::Manifest(_)
             | Self::Segment(_)
+            | Self::DuplicateLiveDocument { .. }
             | Self::Wal(_)
             | Self::WalRecovery(_)
             | Self::WalRecord { .. }
@@ -2177,6 +2243,7 @@ impl std::error::Error for StoreError {
             | Self::EpochUnstamped
             | Self::SchemaMismatch { .. }
             | Self::GraphUnavailable { .. }
+            | Self::DuplicateLiveDocument { .. }
             | Self::WalRevisionOrder { .. }
             | Self::UnsupportedWalMutation { .. }
             | Self::BudgetExceeded { .. }
@@ -3154,6 +3221,48 @@ impl Store {
         })
     }
 
+    fn admit_document_read(&self) -> Result<AdmittedDocumentRead<'_>, StoreError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(StoreError::Closing),
+            StoreState::Closed => return Err(StoreError::Closed),
+        }
+        let active_guard = self
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?;
+        let active_state = active_guard.as_ref().ok_or(StoreError::Closed)?;
+        let generation = active_state.generation;
+        let active = Arc::clone(&active_state.segment);
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let active_query = ActiveQuery {
+            count: &self.active_queries,
+        };
+        drop(active_guard);
+        drop(state);
+        Ok(AdmittedDocumentRead {
+            generation,
+            active,
+            snapshot: snapshot::ReadSnapshot::new(snapshot),
+            active_query,
+        })
+    }
+
     /// Runs an exact structured lexical query over active and sealed text.
     pub fn search_lexical(
         &self,
@@ -3331,6 +3440,61 @@ impl Store {
         }
         drop(active_query);
         Ok(None)
+    }
+
+    /// Reads live documents by stable id from one pinned generation.
+    ///
+    /// The result preserves request order and length. Unknown and tombstoned
+    /// ids produce `None`; duplicate requested ids produce duplicate results.
+    pub fn get_documents(
+        &self,
+        ids: &[crate::ingest::DocId],
+        fields: DocumentFields,
+    ) -> Result<Vec<Option<StoredDocument>>, StoreError> {
+        self.get_documents_with_generation(ids, fields)
+            .map(|(_, documents)| documents)
+    }
+
+    /// Reads documents and returns the exact generation pinned by the call.
+    ///
+    /// This is the binding-facing form of [`Self::get_documents`].
+    #[doc(hidden)]
+    pub fn get_documents_with_generation(
+        &self,
+        ids: &[crate::ingest::DocId],
+        fields: DocumentFields,
+    ) -> Result<(u64, Vec<Option<StoredDocument>>), StoreError> {
+        let AdmittedDocumentRead {
+            generation,
+            active,
+            snapshot,
+            active_query,
+        } = self.admit_document_read()?;
+        let mut documents = Vec::new();
+        documents
+            .try_reserve_exact(ids.len())
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: allocation_bytes::<Option<StoredDocument>>(ids.len()),
+                component: "get documents",
+            })?;
+        for id in ids {
+            let mut document = active
+                .existing(*id)
+                .filter(|(row, _, _)| !active.is_tombstoned(*row))
+                .map(|(row, _, _)| materialize_active_document(&active, row, fields))
+                .transpose()?;
+            for segment in snapshot.segments() {
+                for row in segment.query_rows_for_doc_id(*id)? {
+                    if document.is_some() {
+                        return Err(StoreError::DuplicateLiveDocument { doc_id: *id });
+                    }
+                    document = Some(materialize_sealed_document(segment, row, fields)?);
+                }
+            }
+            documents.push(document);
+        }
+        drop(active_query);
+        Ok((generation, documents))
     }
 
     /// Runs a structured lexical query and returns provenance plus snippets
@@ -7546,6 +7710,13 @@ struct AdmittedLexicalQuery<'a> {
     active_query: ActiveQuery<'a>,
 }
 
+struct AdmittedDocumentRead<'a> {
+    generation: u64,
+    active: Arc<crate::ingest::ActiveSegment>,
+    snapshot: snapshot::ReadSnapshot,
+    active_query: ActiveQuery<'a>,
+}
+
 struct AdmittedVectorSearch<'a> {
     execution_options: SearchOptions,
     pool: Option<Arc<pool::QueryPool>>,
@@ -7571,8 +7742,262 @@ impl Drop for Store {
     }
 }
 
+fn materialize_active_document(
+    active: &crate::ingest::ActiveSegment,
+    row: usize,
+    fields: DocumentFields,
+) -> Result<StoredDocument, StoreError> {
+    let version = active.document(row).ok_or(StoreError::ActiveRowOverflow)?;
+    let timestamp = active
+        .timestamps()
+        .get(row)
+        .copied()
+        .ok_or(StoreError::ActiveRowOverflow)?;
+    let vector = if fields.contains(DocumentFields::VECTOR) {
+        let dimensions = active.dims().ok_or(StoreError::ActiveRowOverflow)?;
+        let start = row
+            .checked_mul(dimensions)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let end = start
+            .checked_add(dimensions)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let values = active
+            .vectors()
+            .get(start..end)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        Some(copy_slice(values, "get vector")?)
+    } else {
+        None
+    };
+    let text = if fields.contains(DocumentFields::TEXT) {
+        active
+            .text(row)?
+            .map(|value| copy_string(value, "get text"))
+            .transpose()?
+    } else {
+        None
+    };
+    let metadata = if fields.contains(DocumentFields::METADATA) {
+        active
+            .metadata(row)
+            .map(|value| copy_slice(value, "get metadata"))
+            .transpose()?
+    } else {
+        None
+    };
+    let attributes = if fields.contains(DocumentFields::ATTRIBUTES) {
+        Some(active.column_values(row)?)
+    } else {
+        None
+    };
+    Ok(StoredDocument {
+        doc_id: version.doc_id(),
+        revision: version.revision(),
+        timestamp,
+        vector,
+        text,
+        metadata,
+        attributes,
+    })
+}
+
+fn materialize_sealed_document(
+    segment: &crate::segment::reader::SegmentReader,
+    row: usize,
+    fields: DocumentFields,
+) -> Result<StoredDocument, StoreError> {
+    let row_u32 = u32::try_from(row).map_err(|_| {
+        StoreError::Segment(crate::segment::SegmentError::Geometry(
+            "sealed document row exceeds u32".to_owned(),
+        ))
+    })?;
+    let version = segment
+        .document_version(row)
+        .map_err(StoreError::Segment)?
+        .ok_or_else(|| {
+            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                "sealed document row {row} has no identity"
+            )))
+        })?;
+    let columns = segment.query_columns()?;
+    let timestamp = columns.timestamp(row_u32).ok_or_else(|| {
+        StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+            "sealed document row {row} has no timestamp"
+        )))
+    })?;
+    let vector = if fields.contains(DocumentFields::VECTOR) {
+        segment
+            .validate_rescore_rows(&[row_u32])
+            .map_err(StoreError::Segment)?;
+        let dimensions = segment.meta().dims as usize;
+        let start = row.checked_mul(dimensions).ok_or_else(|| {
+            StoreError::Segment(crate::segment::SegmentError::Geometry(
+                "sealed vector row offset overflow".to_owned(),
+            ))
+        })?;
+        let end = start.checked_add(dimensions).ok_or_else(|| {
+            StoreError::Segment(crate::segment::SegmentError::Geometry(
+                "sealed vector row end overflow".to_owned(),
+            ))
+        })?;
+        let rescore = segment.query_rescore_f32().map_err(StoreError::Segment)?;
+        let values = rescore.get(start..end).ok_or_else(|| {
+            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                "sealed vector row {row} is missing"
+            )))
+        })?;
+        Some(copy_slice(values, "get vector")?)
+    } else {
+        None
+    };
+    let text = if fields.contains(DocumentFields::TEXT) {
+        match segment.query_stored_text().map_err(StoreError::Segment)? {
+            Some(rows) => rows
+                .row(row)
+                .ok_or_else(|| {
+                    StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                        "stored-text row {row} is invalid"
+                    )))
+                })?
+                .map(|value| copy_string(value, "get text"))
+                .transpose()?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let metadata = if fields.contains(DocumentFields::METADATA) {
+        match segment
+            .query_stored_metadata()
+            .map_err(StoreError::Segment)?
+        {
+            Some(rows) => Some(copy_slice(
+                rows.row(row).ok_or_else(|| {
+                    StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                        "stored-metadata row {row} is invalid"
+                    )))
+                })?,
+                "get metadata",
+            )?),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let attributes = fields
+        .contains(DocumentFields::ATTRIBUTES)
+        .then(|| materialize_sealed_attributes(&columns, row_u32))
+        .transpose()?;
+    Ok(StoredDocument {
+        doc_id: version.doc_id(),
+        revision: version.revision(),
+        timestamp,
+        vector,
+        text,
+        metadata,
+        attributes,
+    })
+}
+
+fn materialize_sealed_attributes(
+    columns: &crate::meta::ColumnStore,
+    row: u32,
+) -> Result<Vec<(crate::meta::ColumnId, crate::meta::PredicateValue)>, StoreError> {
+    let mut attributes = Vec::new();
+    attributes
+        .try_reserve_exact(columns.schema().user_column_count())
+        .map_err(|_| StoreError::AllocationFailed {
+            needed: allocation_bytes::<(crate::meta::ColumnId, crate::meta::PredicateValue)>(
+                columns.schema().user_column_count(),
+            ),
+            component: "get attributes",
+        })?;
+    for definition in columns
+        .schema()
+        .columns()
+        .iter()
+        .filter(|definition| definition.id() != crate::meta::TIMESTAMP_COLUMN)
+    {
+        let column = columns.column(definition.id()).ok_or_else(|| {
+            StoreError::Segment(crate::segment::SegmentError::Geometry(format!(
+                "sealed attribute column {} is missing",
+                definition.id().get()
+            )))
+        })?;
+        let value = predicate_value_for_row(column, row)?;
+        if value.is_none() && !definition.is_nullable() {
+            return Err(StoreError::Segment(crate::segment::SegmentError::Geometry(
+                format!(
+                    "sealed required attribute {} is null at row {row}",
+                    definition.id().get()
+                ),
+            )));
+        }
+        if let Some(value) = value {
+            attributes.push((definition.id(), value));
+        }
+    }
+    Ok(attributes)
+}
+
+fn predicate_value_for_row(
+    column: &crate::meta::Column,
+    row: u32,
+) -> Result<Option<crate::meta::PredicateValue>, StoreError> {
+    use crate::meta::{Column, PredicateValue};
+
+    match column {
+        Column::U64(values) => Ok(values.get(row).map(PredicateValue::U64)),
+        Column::I64(values) => Ok(values.get(row).map(PredicateValue::I64)),
+        Column::F64(values) => Ok(values.get(row).map(PredicateValue::F64)),
+        Column::Bool(values) => Ok(values.get(row).map(PredicateValue::Bool)),
+        Column::DictionaryString(values) => values
+            .get(row)
+            .map(|value| copy_string(value, "get attribute string").map(PredicateValue::String))
+            .transpose(),
+        Column::RawString(values) => values
+            .get(row)
+            .map(|value| copy_string(value, "get attribute string").map(PredicateValue::String))
+            .transpose(),
+    }
+}
+
+fn copy_slice<T: Copy>(values: &[T], component: &'static str) -> Result<Vec<T>, StoreError> {
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(values.len())
+        .map_err(|_| StoreError::AllocationFailed {
+            needed: allocation_bytes::<T>(values.len()),
+            component,
+        })?;
+    copied.extend_from_slice(values);
+    Ok(copied)
+}
+
+fn copy_string(value: &str, component: &'static str) -> Result<String, StoreError> {
+    let mut copied = String::new();
+    copied
+        .try_reserve_exact(value.len())
+        .map_err(|_| StoreError::AllocationFailed {
+            needed: u64::try_from(value.len()).unwrap_or(u64::MAX),
+            component,
+        })?;
+    copied.push_str(value);
+    Ok(copied)
+}
+
+fn allocation_bytes<T>(count: usize) -> u64 {
+    count
+        .checked_mul(std::mem::size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod lexical_assembly_tests;
+
+#[cfg(test)]
+mod get_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]

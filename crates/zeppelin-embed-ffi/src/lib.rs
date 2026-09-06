@@ -46,8 +46,8 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
-    AccessMode, CancelToken, Deadline, GraphSearchOptions, OpenOptions, QueryControl,
-    SearchOptions, SearchTier, Store, StoreState,
+    AccessMode, CancelToken, Deadline, DocumentFields, GraphSearchOptions, OpenOptions,
+    QueryControl, SearchOptions, SearchTier, Store, StoreState, StoredDocument,
 };
 use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, PredicateValue, Schema};
 use zeppelin_embed::scan::ScanOptions;
@@ -682,6 +682,220 @@ fn publish_namespace_names(names: &[Vec<u8>]) -> Result<(*mut ZeNamespaceEntry, 
     let generation = registry::register_result_arena(arena_pointer, arena.len(), names.len())?;
     let _raw = Box::into_raw(arena);
     Ok((entries, generation))
+}
+
+fn empty_get_result(abi_size: u32) -> ZeGetResult {
+    ZeGetResult {
+        abi_size,
+        abi_reserved: 0,
+        documents: std::ptr::null_mut(),
+        document_count: 0,
+        missing_count: 0,
+        generation: 0,
+    }
+}
+
+fn get_arena_add(total: usize, bytes: usize) -> Result<usize, FfiError> {
+    total
+        .checked_add(bytes)
+        .ok_or_else(|| FfiError::invalid("get result arena size overflows"))
+}
+
+fn get_arena_mul(count: usize, width: usize) -> Result<usize, FfiError> {
+    count
+        .checked_mul(width)
+        .ok_or_else(|| FfiError::invalid("get result arena size overflows"))
+}
+
+fn publish_get_documents(
+    ids: &[ZeDocId],
+    documents: &[Option<StoredDocument>],
+) -> Result<(*mut ZeStoredDocument, u32, usize), FfiError> {
+    if ids.len() != documents.len() || ids.is_empty() {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrInternal,
+            "get result cardinality does not match the nonempty request",
+        ));
+    }
+    let document_bytes = get_arena_mul(documents.len(), size_of::<ZeStoredDocument>())?;
+    let attribute_count = documents.iter().try_fold(0_usize, |total, document| {
+        get_arena_add(
+            total,
+            document
+                .as_ref()
+                .and_then(|document| document.attributes.as_ref())
+                .map_or(0, Vec::len),
+        )
+    })?;
+    let attribute_bytes = get_arena_mul(attribute_count, size_of::<ZeAttributeValue>())?;
+    let vector_count = documents.iter().try_fold(0_usize, |total, document| {
+        get_arena_add(
+            total,
+            document
+                .as_ref()
+                .and_then(|document| document.vector.as_ref())
+                .map_or(0, Vec::len),
+        )
+    })?;
+    let vector_bytes = get_arena_mul(vector_count, size_of::<f32>())?;
+    let payload_bytes =
+        documents.iter().try_fold(0_usize, |total, document| {
+            let Some(document) = document else {
+                return Ok(total);
+            };
+            let total = get_arena_add(total, document.text.as_ref().map_or(0, String::len))?;
+            let total = get_arena_add(total, document.metadata.as_ref().map_or(0, Vec::len))?;
+            document.attributes.as_ref().into_iter().flatten().try_fold(
+                total,
+                |total, (_, value)| match value {
+                    PredicateValue::String(value) => get_arena_add(total, value.len()),
+                    PredicateValue::U64(_)
+                    | PredicateValue::I64(_)
+                    | PredicateValue::F64(_)
+                    | PredicateValue::Bool(_) => Ok(total),
+                },
+            )
+        })?;
+    let vector_offset = get_arena_add(document_bytes, attribute_bytes)?;
+    let payload_offset = get_arena_add(vector_offset, vector_bytes)?;
+    let arena_bytes = get_arena_add(payload_offset, payload_bytes)?;
+    let words = arena_bytes.div_ceil(size_of::<u64>());
+    let mut arena = Vec::<u64>::new();
+    arena.try_reserve_exact(words).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "get result arena allocation failed",
+        )
+    })?;
+    arena.resize(words, 0);
+    let mut arena = arena.into_boxed_slice();
+    let arena_pointer = arena.as_mut_ptr();
+    let output_documents = arena_pointer.cast::<ZeStoredDocument>();
+    let mut attribute_pointer =
+        unsafe { arena_pointer.cast::<u8>().add(document_bytes) }.cast::<ZeAttributeValue>();
+    let mut vector_pointer = unsafe { arena_pointer.cast::<u8>().add(vector_offset) }.cast::<f32>();
+    let mut payload_pointer = unsafe { arena_pointer.cast::<u8>().add(payload_offset) };
+    let mut missing_count = 0_usize;
+    for (index, (requested_id, document)) in ids.iter().zip(documents).enumerate() {
+        let mut output = ZeStoredDocument {
+            has_document: 0,
+            doc_id: *requested_id,
+            revision: 0,
+            timestamp: 0,
+            vector: std::ptr::null(),
+            vector_len: 0,
+            text: std::ptr::null(),
+            text_len: 0,
+            metadata: std::ptr::null(),
+            metadata_len: 0,
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+        };
+        if let Some(document) = document {
+            output.has_document = 1;
+            output.doc_id = ffi_doc_id(document.doc_id);
+            output.revision = document.revision.get();
+            output.timestamp = document.timestamp;
+            if let Some(vector) = document.vector.as_ref().filter(|vector| !vector.is_empty()) {
+                output.vector = vector_pointer;
+                output.vector_len = vector.len();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(vector.as_ptr(), vector_pointer, vector.len());
+                    vector_pointer = vector_pointer.add(vector.len());
+                }
+            }
+            if let Some(text) = document.text.as_ref().filter(|text| !text.is_empty()) {
+                output.text = payload_pointer;
+                output.text_len = text.len();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(text.as_ptr(), payload_pointer, text.len());
+                    payload_pointer = payload_pointer.add(text.len());
+                }
+            }
+            if let Some(metadata) = document
+                .metadata
+                .as_ref()
+                .filter(|metadata| !metadata.is_empty())
+            {
+                output.metadata = payload_pointer;
+                output.metadata_len = metadata.len();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        metadata.as_ptr(),
+                        payload_pointer,
+                        metadata.len(),
+                    );
+                    payload_pointer = payload_pointer.add(metadata.len());
+                }
+            }
+            if let Some(attributes) = document
+                .attributes
+                .as_ref()
+                .filter(|attributes| !attributes.is_empty())
+            {
+                output.attributes = attribute_pointer;
+                output.attribute_count = attributes.len();
+                for (column, value) in attributes {
+                    let mut attribute = ZeAttributeValue {
+                        attribute_id: column.get(),
+                        value_type: 0,
+                        u64_value: 0,
+                        i64_value: 0,
+                        f64_value: 0.0,
+                        bool_value: 0,
+                        string_value: std::ptr::null(),
+                        string_len: 0,
+                    };
+                    match value {
+                        PredicateValue::U64(value) => {
+                            attribute.value_type = 1;
+                            attribute.u64_value = *value;
+                        }
+                        PredicateValue::I64(value) => {
+                            attribute.value_type = 2;
+                            attribute.i64_value = *value;
+                        }
+                        PredicateValue::F64(value) => {
+                            attribute.value_type = 3;
+                            attribute.f64_value = *value;
+                        }
+                        PredicateValue::Bool(value) => {
+                            attribute.value_type = 4;
+                            attribute.bool_value = bool_u32(*value);
+                        }
+                        PredicateValue::String(value) => {
+                            attribute.value_type = 5;
+                            attribute.string_len = value.len();
+                            if !value.is_empty() {
+                                attribute.string_value = payload_pointer;
+                                unsafe {
+                                    std::ptr::copy_nonoverlapping(
+                                        value.as_ptr(),
+                                        payload_pointer,
+                                        value.len(),
+                                    );
+                                    payload_pointer = payload_pointer.add(value.len());
+                                }
+                            }
+                        }
+                    }
+                    unsafe {
+                        std::ptr::write(attribute_pointer, attribute);
+                        attribute_pointer = attribute_pointer.add(1);
+                    }
+                }
+            }
+        } else {
+            missing_count = missing_count.checked_add(1).ok_or_else(|| {
+                FfiError::new(ZeErrorCode::ZeErrInternal, "get missing count overflows")
+            })?;
+        }
+        unsafe { std::ptr::write(output_documents.add(index), output) };
+    }
+    let allocation_generation =
+        registry::register_result_arena(arena_pointer, arena.len(), documents.len())?;
+    let _raw = Box::into_raw(arena);
+    Ok((output_documents, allocation_generation, missing_count))
 }
 
 fn open_store(
@@ -1846,6 +2060,120 @@ pub extern "C" fn ze_upsert(
     })
 }
 
+/// Reads documents by stable id from one pinned generation. Request data is
+/// caller-owned for the call; the returned arena must be released exactly once
+/// with [`ze_get_result_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_get(
+    handle: ZeHandle,
+    request: *const ZeGetRequest,
+    out_result: *mut ZeGetResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_get");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_get_result(abi_size));
+                let requested_ids = marshal::read_slice(request.ids, request.id_count)?;
+                if requested_ids.is_empty() {
+                    return Err(FfiError::invalid("get id_count must be nonzero"));
+                }
+                let include_vector = parse_flag(request.include_vector, "include_vector")?;
+                let include_text = parse_flag(request.include_text, "include_text")?;
+                let include_metadata = parse_flag(request.include_metadata, "include_metadata")?;
+                let include_attributes =
+                    parse_flag(request.include_attributes, "include_attributes")?;
+                let access = registry::lookup(handle)?;
+                let record_only =
+                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                let mut fields = DocumentFields::NONE;
+                if include_vector && !record_only {
+                    fields = fields | DocumentFields::VECTOR;
+                }
+                if include_text {
+                    fields = fields | DocumentFields::TEXT;
+                }
+                if include_metadata {
+                    fields = fields | DocumentFields::METADATA;
+                }
+                if include_attributes {
+                    fields = fields | DocumentFields::ATTRIBUTES;
+                }
+                let mut ids = Vec::new();
+                ids.try_reserve_exact(requested_ids.len()).map_err(|_| {
+                    FfiError::new(
+                        ZeErrorCode::ZeErrOutOfMemory,
+                        "get document-id allocation failed",
+                    )
+                })?;
+                for id in requested_ids {
+                    ids.push(doc_id(*id));
+                }
+                let (generation, documents) = access
+                    .store
+                    .get_documents_with_generation(&ids, fields)
+                    .map_err(FfiError::store)?;
+                let (documents, allocation_generation, missing_count) =
+                    publish_get_documents(requested_ids, &documents)?;
+                marshal::write_output(
+                    out_result,
+                    ZeGetResult {
+                        abi_size,
+                        abi_reserved: allocation_generation,
+                        documents,
+                        document_count: requested_ids.len(),
+                        missing_count,
+                        generation,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Releases the single arena owned by a get result.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_get_result_free(result: *mut ZeGetResult) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_get_result_free");
+        finish(
+            None,
+            (|| {
+                if result.is_null() {
+                    return Err(FfiError::invalid("get result pointer is null"));
+                }
+                if result.align_offset(align_of::<ZeGetResult>()) != 0 {
+                    return Err(FfiError::invalid("get result pointer is misaligned"));
+                }
+                let abi_size = marshal::read_abi_size(result);
+                marshal::validate_abi_size::<ZeGetResult>(abi_size)?;
+                let current = marshal::read_value(result);
+                if current.documents.is_null() || current.document_count == 0 {
+                    return Err(FfiError::invalid(
+                        "get result was already freed or contains no arena",
+                    ));
+                }
+                if current.missing_count > current.document_count {
+                    return Err(FfiError::invalid(
+                        "get result missing count exceeds document count",
+                    ));
+                }
+                registry::take_registered_result(
+                    current.documents.cast::<u64>(),
+                    current.document_count,
+                    current.abi_reserved,
+                )?;
+                marshal::write_output(result, empty_get_result(abi_size));
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Atomically tombstones caller-owned document identifiers. Every const
 /// pointer is caller-owned and need only outlive the call. Not cancellable
 /// in v1; the engine offers no token here.
@@ -2681,6 +3009,8 @@ pub extern "C" fn ze_search_result_free(result: *mut ZeSearchResult) -> ZeErrorC
 }
 
 const _: () = {
+    assert!(size_of::<ZeGetRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeGetResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeOpenRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeSearchResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeEpochRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);

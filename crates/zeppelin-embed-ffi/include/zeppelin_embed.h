@@ -1170,6 +1170,128 @@ typedef struct ZeUpsertRequest {
 } ZeUpsertRequest;
 
 /*
+ Requests documents by stable id in caller order.
+ */
+typedef struct ZeGetRequest {
+    /*
+     Caller-provided `sizeof(ZeGetRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned document-id array.
+     */
+    const struct ZeDocId *ids;
+    /*
+     Number of requested ids; must be nonzero.
+     */
+    size_t id_count;
+    /*
+     One to return full-precision vectors.
+     */
+    uint32_t include_vector;
+    /*
+     One to return stored UTF-8 text.
+     */
+    uint32_t include_text;
+    /*
+     One to return opaque metadata bytes.
+     */
+    uint32_t include_metadata;
+    /*
+     One to return typed schema attributes.
+     */
+    uint32_t include_attributes;
+} ZeGetRequest;
+
+/*
+ One read-side document slot corresponding to one requested id.
+ */
+typedef struct ZeStoredDocument {
+    /*
+     One when the requested document is live, zero for a miss or tombstone.
+     */
+    uint32_t has_document;
+    /*
+     Requested stable id, including for a missing document.
+     */
+    struct ZeDocId doc_id;
+    /*
+     Live revision, or zero when `has_document` is zero.
+     */
+    uint64_t revision;
+    /*
+     Canonical timestamp, or zero when `has_document` is zero.
+     */
+    int64_t timestamp;
+    /*
+     Full-precision vector owned by the result arena.
+     */
+    const float *vector;
+    /*
+     Scalar count in `vector`.
+     */
+    size_t vector_len;
+    /*
+     Stored UTF-8 bytes owned by the result arena.
+     */
+    const uint8_t *text;
+    /*
+     Number of `text` bytes.
+     */
+    size_t text_len;
+    /*
+     Opaque metadata bytes owned by the result arena.
+     */
+    const uint8_t *metadata;
+    /*
+     Number of metadata bytes.
+     */
+    size_t metadata_len;
+    /*
+     Typed schema values owned by the result arena.
+     */
+    const struct ZeAttributeValue *attributes;
+    /*
+     Number of entries in `attributes`.
+     */
+    size_t attribute_count;
+} ZeStoredDocument;
+
+/*
+ Callee-owned documents returned by `ze_get`.
+ */
+typedef struct ZeGetResult {
+    /*
+     Caller-provided `sizeof(ZeGetResult)`.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     One arena-owned entry per requested id.
+     */
+    struct ZeStoredDocument *documents;
+    /*
+     Number of entries in `documents`; always the request's `id_count`.
+     */
+    size_t document_count;
+    /*
+     Number of entries whose `has_document` is zero.
+     */
+    size_t missing_count;
+    /*
+     Store generation pinned for the entire read.
+     */
+    uint64_t generation;
+} ZeGetResult;
+
+/*
  Atomic document-delete request.
  */
 typedef struct ZeDeleteRequest {
@@ -2010,6 +2132,20 @@ ze_error_code ze_ingest(ze_handle handle,
 ze_error_code ze_upsert(ze_handle handle,
                         const struct ZeUpsertRequest *request,
                         struct ZeMutationReport *out_report);
+
+/*
+ Reads documents by stable id from one pinned generation. Request data is
+ caller-owned for the call; the returned arena must be released exactly once
+ with [`ze_get_result_free`].
+ */
+ze_error_code ze_get(ze_handle handle,
+                     const struct ZeGetRequest *request,
+                     struct ZeGetResult *out_result);
+
+/*
+ Releases the single arena owned by a get result.
+ */
+ze_error_code ze_get_result_free(struct ZeGetResult *result);
 
 /*
  Atomically tombstones caller-owned document identifiers. Every const
