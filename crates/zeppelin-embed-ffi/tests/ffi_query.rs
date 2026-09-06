@@ -99,6 +99,44 @@ fn a_vector_only_query_returns_the_same_hits_as_ze_search_with_no_tier_preferenc
 }
 
 #[test]
+fn normal_store_search_result_and_deterministic_counters_are_unchanged() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        common::ingest_rows(store.handle, 3, DIMENSION),
+        ZeErrorCode::ZeOk
+    );
+    let probe = vector(0);
+    let mut request = common::valid_search_request(&probe);
+    request.k = 3;
+    let mut result: ZeSearchResult = common::sized_zeroed();
+    assert_eq!(
+        ze_search(store.handle, &request, &mut result),
+        ZeErrorCode::ZeOk
+    );
+    let hits = unsafe { std::slice::from_raw_parts(result.hits, result.hit_count) }
+        .iter()
+        .map(|hit| (hit.doc_id.low, hit.score.to_bits()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hits,
+        vec![(1, 1_064_347_424), (2, 1_064_347_424), (3, 1_064_347_424)]
+    );
+    assert_eq!(result.hit_count, 3);
+    assert_eq!(result.generation, 1);
+    assert_eq!(result.dims_touched, 12);
+    assert_eq!(result.bytes_read, 6);
+    assert_eq!(result.threads_used, 1);
+    assert_eq!(result.graph_segments_traversed, 0);
+    assert_eq!(result.graph_validations, 0);
+    assert_eq!(result.graph_entry_seed_discoveries, 0);
+    assert_eq!(result.graph_visited_epoch_clears, 0);
+    assert_eq!(result.graph_candidates_scored, 0);
+    assert_eq!(result.graph_candidates_rescored, 0);
+    assert_eq!(result.graph_segments_pruned_by_bound, 0);
+    assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
+#[test]
 fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
     let store = common::TestStore::new();
     let handle = store.handle;

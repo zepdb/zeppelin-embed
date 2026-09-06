@@ -49,7 +49,7 @@ pub(crate) fn insert(store: TextStore) -> Result<ZeHandle, FfiError> {
 }
 
 pub(crate) fn lookup(handle: ZeHandle) -> Result<TextHandleAccess, FfiError> {
-    lock_handles()?.lookup(internal(handle)?)
+    lock_handles()?.lookup(internal(handle)?, |_| false)
 }
 
 pub(crate) fn with_writer<T>(

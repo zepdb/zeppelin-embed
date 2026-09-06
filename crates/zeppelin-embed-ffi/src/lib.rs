@@ -2166,6 +2166,12 @@ pub extern "C" fn ze_ingest(
         finish(
             Some(handle),
             registry::with_writer(handle, |access| {
+                if access.record_only {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrNoVectorSpace,
+                        "record-only namespace has no vector space",
+                    ));
+                }
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
                 if request.dimension == 0 {
@@ -2251,8 +2257,7 @@ pub extern "C" fn ze_upsert(
             registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
-                let record_only =
-                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                let record_only = access.record_only;
                 if record_only && request.dimension > 1 {
                     return Err(FfiError::invalid(
                         "record-only upsert dimension must be zero or one",
@@ -2404,8 +2409,7 @@ pub extern "C" fn ze_get(
                 let include_attributes =
                     parse_flag(request.include_attributes, "include_attributes")?;
                 let access = registry::lookup(handle)?;
-                let record_only =
-                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                let record_only = access.record_only;
                 let mut fields = DocumentFields::NONE;
                 if include_vector && !record_only {
                     fields = fields | DocumentFields::VECTOR;
@@ -2668,8 +2672,7 @@ pub extern "C" fn ze_scan(
                 let control = query_control_for(request.cancel_token, request.deadline_ns)?;
                 let access = registry::lookup(handle)?;
                 let predicate = decode_filter(request.filter, access.store.schema())?;
-                let record_only =
-                    access.store.epoch_identity() == Some(record_only_epoch_identity());
+                let record_only = access.record_only;
                 let mut fields = DocumentFields::NONE;
                 if include_vector && !record_only {
                     fields = fields | DocumentFields::VECTOR;
@@ -2827,6 +2830,13 @@ pub extern "C" fn ze_search(
         finish(
             Some(handle),
             (|| {
+                let access = registry::lookup(handle)?;
+                if access.record_only {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrNoVectorSpace,
+                        "record-only namespace has no vector space",
+                    ));
+                }
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_search_result(abi_size));
@@ -2850,7 +2860,6 @@ pub extern "C" fn ze_search(
                 let vector = marshal::copy_slice(request.vector, request.vector_len)?;
                 let options = parse_search_options(request)?;
                 let control = query_control_for(request.cancel_token, request.deadline_ns)?;
-                let access = registry::lookup(handle)?;
                 let outcome = access
                     .store
                     .search(SearchRequest::new(&vector), request.k, options, control)
@@ -2978,7 +2987,7 @@ pub extern "C" fn ze_search_filtered(
                 let options = parse_search_options(search)?;
                 let control = query_control_for(search.cancel_token, search.deadline_ns)?;
                 let access = registry::lookup(handle)?;
-                if access.store.epoch_identity() == Some(record_only_epoch_identity()) {
+                if access.record_only {
                     return Err(FfiError::new(
                         ZeErrorCode::ZeErrNoVectorSpace,
                         "record-only namespace has no vector space",
@@ -3093,7 +3102,14 @@ pub extern "C" fn ze_query(
         finish(
             Some(handle),
             (|| {
+                let access = registry::lookup(handle)?;
                 let request = marshal::read_struct(request)?;
+                if access.record_only && request.vector_len != 0 {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrNoVectorSpace,
+                        "record-only namespace has no vector space",
+                    ));
+                }
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_query_result(abi_size));
                 if request.reserved != 0 {
@@ -3152,7 +3168,6 @@ pub extern "C" fn ze_query(
                     options = options.with_tier(tier);
                 }
                 let control = query_control_for(request.cancel_token, request.deadline_ns)?;
-                let access = registry::lookup(handle)?;
                 let mut result = empty_query_result(abi_size);
                 let mut hits = Vec::new();
                 match (has_vector, lexical, hybrid) {

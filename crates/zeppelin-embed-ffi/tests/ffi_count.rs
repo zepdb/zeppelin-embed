@@ -747,3 +747,191 @@ fn record_only_filtered_search_is_rejected_and_lexical_query_still_works() {
     assert_eq!(ze_query_result_free(&mut query_result), ZeErrorCode::ZeOk);
     assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
 }
+
+#[test]
+fn record_only_ingest_is_rejected() {
+    let root = tempfile::tempdir().expect("namespace root");
+    let handle = open_namespace(root.path(), b"records", &[], 0);
+    let vector = [1.0_f32];
+    let document = ZeIngestDocument {
+        abi_size: size_of::<ZeIngestDocument>() as u32,
+        abi_reserved: 0,
+        doc_id: ZeDocId { high: 0, low: 1 },
+        revision: 1,
+        timestamp: 1,
+        vector: vector.as_ptr(),
+        vector_len: vector.len(),
+        metadata: std::ptr::null(),
+        metadata_len: 0,
+        text: std::ptr::null(),
+        text_len: 0,
+    };
+    let request = ZeIngestRequest {
+        abi_size: size_of::<ZeIngestRequest>() as u32,
+        abi_reserved: 0,
+        documents: &document,
+        document_count: 1,
+        dimension: 1,
+    };
+    let mut report: ZeMutationReport = common::sized_zeroed();
+
+    assert_eq!(
+        ze_ingest(handle, &request, &mut report),
+        ZeErrorCode::ZeErrNoVectorSpace
+    );
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn record_only_search_is_rejected() {
+    let root = tempfile::tempdir().expect("namespace root");
+    let handle = open_namespace(root.path(), b"records", &[], 0);
+    upsert_record_text(handle, b"needle haystack");
+    let vector = [1.0_f32];
+    let request = common::valid_search_request(&vector);
+    let mut result: ZeSearchResult = common::sized_zeroed();
+
+    let code = ze_search(handle, &request, &mut result);
+    if code == ZeErrorCode::ZeOk {
+        assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
+    }
+    assert_eq!(code, ZeErrorCode::ZeErrNoVectorSpace);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn record_only_vector_and_hybrid_queries_are_rejected_while_lexical_still_works() {
+    let root = tempfile::tempdir().expect("namespace root");
+    let handle = open_namespace(root.path(), b"records", &[], 0);
+    upsert_record_text(handle, b"needle haystack");
+    let vector = [1.0_f32];
+
+    let vector_request = common::valid_query_request(&vector);
+    let mut vector_result: ZeQueryResult = common::sized_zeroed();
+    let vector_code = ze_query(handle, &vector_request, &mut vector_result);
+    if vector_code == ZeErrorCode::ZeOk {
+        assert_eq!(ze_query_result_free(&mut vector_result), ZeErrorCode::ZeOk);
+    }
+
+    let text = b"needle";
+    let hybrid_request = ZeQueryRequest {
+        text: text.as_ptr(),
+        text_len: text.len(),
+        ..common::valid_query_request(&vector)
+    };
+    let mut hybrid_result: ZeQueryResult = common::sized_zeroed();
+    let hybrid_code = ze_query(handle, &hybrid_request, &mut hybrid_result);
+    if hybrid_code == ZeErrorCode::ZeOk {
+        assert_eq!(ze_query_result_free(&mut hybrid_result), ZeErrorCode::ZeOk);
+    }
+
+    let lexical_request = ZeQueryRequest {
+        text: text.as_ptr(),
+        text_len: text.len(),
+        ..common::valid_query_request(&[])
+    };
+    let mut lexical_result: ZeQueryResult = common::sized_zeroed();
+    let lexical_code = ze_query(handle, &lexical_request, &mut lexical_result);
+
+    assert_eq!(
+        (vector_code, hybrid_code, lexical_code),
+        (
+            ZeErrorCode::ZeErrNoVectorSpace,
+            ZeErrorCode::ZeErrNoVectorSpace,
+            ZeErrorCode::ZeOk,
+        )
+    );
+    assert_eq!(lexical_result.mode, 1);
+    assert_eq!(lexical_result.hit_count, 1);
+    let hit = unsafe { &*lexical_result.hits };
+    assert_eq!(hit.doc_id.low, 1);
+    assert_eq!(ze_query_result_free(&mut lexical_result), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn record_only_sealed_storage_reports_measured_bytes_per_row() {
+    const ROWS: usize = 4_096;
+    const VECTOR_HEADER_BYTES: u64 = 32;
+    const REGION_DIRECTORY_START: usize = 64;
+    const REGION_ENTRY_BYTES: usize = 32;
+
+    let root = tempfile::tempdir().expect("namespace root");
+    let handle = open_namespace(root.path(), b"records", &[], 0);
+    let documents = (0..ROWS)
+        .map(|row| ZeUpsertDocument {
+            abi_size: size_of::<ZeUpsertDocument>() as u32,
+            abi_reserved: 0,
+            document: ZeIngestDocument {
+                abi_size: size_of::<ZeIngestDocument>() as u32,
+                abi_reserved: 0,
+                doc_id: ZeDocId {
+                    high: 0,
+                    low: row as u64 + 1,
+                },
+                revision: 1,
+                timestamp: row as i64,
+                vector: std::ptr::null(),
+                vector_len: 0,
+                metadata: std::ptr::null(),
+                metadata_len: 0,
+                text: std::ptr::null(),
+                text_len: 0,
+            },
+            attributes: std::ptr::null(),
+            attribute_count: 0,
+        })
+        .collect::<Vec<_>>();
+    let request = ZeUpsertRequest {
+        abi_size: size_of::<ZeUpsertRequest>() as u32,
+        abi_reserved: 0,
+        documents: documents.as_ptr(),
+        document_count: documents.len(),
+        dimension: 0,
+    };
+    let mut report: ZeMutationReport = common::sized_zeroed();
+    assert_eq!(ze_upsert(handle, &request, &mut report), ZeErrorCode::ZeOk);
+    seal(handle);
+
+    let segment_path = std::fs::read_dir(root.path().join("records"))
+        .expect("list namespace")
+        .map(|entry| entry.expect("read namespace entry").path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".zseg"))
+        })
+        .expect("sealed segment");
+    let bytes = std::fs::read(&segment_path).expect("read sealed segment");
+    let region_count = u16::from_le_bytes(
+        bytes[52..54]
+            .try_into()
+            .expect("segment region-count bytes"),
+    ) as usize;
+    let mut vector_payload_bytes = 0_u64;
+    for position in 0..region_count {
+        let entry = REGION_DIRECTORY_START + position * REGION_ENTRY_BYTES;
+        let kind = u16::from_le_bytes(
+            bytes[entry..entry + 2]
+                .try_into()
+                .expect("segment region-kind bytes"),
+        );
+        if matches!(kind, 3..=5) {
+            let length = u64::from_le_bytes(
+                bytes[entry + 16..entry + 24]
+                    .try_into()
+                    .expect("segment region-length bytes"),
+            );
+            vector_payload_bytes += length
+                .checked_sub(VECTOR_HEADER_BYTES)
+                .expect("vector region includes its geometry header");
+        }
+    }
+    let segment_file_bytes = bytes.len();
+    println!(
+        "record-only sealed storage: rows={ROWS} vector_payload_bytes={vector_payload_bytes} vector_payload_bytes_per_row={:.3} segment_file_bytes={segment_file_bytes} segment_file_bytes_per_row={:.3}",
+        vector_payload_bytes as f64 / ROWS as f64,
+        segment_file_bytes as f64 / ROWS as f64,
+    );
+    assert_eq!(vector_payload_bytes, ROWS as u64 * 17);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+}

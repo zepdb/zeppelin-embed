@@ -157,7 +157,9 @@ pub(crate) fn insert_store(
 }
 
 pub(crate) fn lookup(handle: ZeHandle) -> Result<HandleAccess, FfiError> {
-    lock_handles()?.lookup(handle)
+    lock_handles()?.lookup(handle, |store| {
+        store.epoch_identity() == Some(crate::record_only_epoch_identity())
+    })
 }
 
 pub(crate) fn with_writer<T>(

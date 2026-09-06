@@ -17,6 +17,7 @@ struct Slot<S, P> {
     generation: u32,
     payload: Option<Arc<S>>,
     epoch: Option<EpochIdentity>,
+    record_only: Option<bool>,
     writer: Arc<Mutex<()>>,
     purge_tokens: Arc<Mutex<HashMap<u64, P>>>,
     last_error: String,
@@ -31,6 +32,7 @@ pub(crate) struct Access<S, P> {
     pub(crate) store: Arc<S>,
     /// Identity declared when the handle was opened.
     pub(crate) epoch: Option<EpochIdentity>,
+    pub(crate) record_only: bool,
     pub(crate) writer: Arc<Mutex<()>>,
     pub(crate) purge_tokens: Arc<Mutex<HashMap<u64, P>>>,
 }
@@ -113,6 +115,7 @@ impl<S, P> SlotTable<S, P> {
             let handle = encode(index, slot.generation)?;
             slot.payload = Some(Arc::new(payload));
             slot.epoch = epoch;
+            slot.record_only = None;
             slot.writer = Arc::new(Mutex::new(()));
             slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
             slot.last_error.clear();
@@ -142,6 +145,7 @@ impl<S, P> SlotTable<S, P> {
             generation: 1,
             payload: Some(Arc::new(payload)),
             epoch,
+            record_only: None,
             writer: Arc::new(Mutex::new(())),
             purge_tokens: Arc::new(Mutex::new(HashMap::new())),
             last_error: String::new(),
@@ -151,9 +155,13 @@ impl<S, P> SlotTable<S, P> {
         Ok(handle)
     }
 
-    pub(crate) fn lookup(&self, handle: u64) -> Result<Access<S, P>, FfiError> {
+    pub(crate) fn lookup(
+        &mut self,
+        handle: u64,
+        resolve_record_only: impl FnOnce(&S) -> bool,
+    ) -> Result<Access<S, P>, FfiError> {
         let (index, generation) = decode(handle)?;
-        let slot = self.slots.get(index).ok_or_else(never_allocated)?;
+        let slot = self.slots.get_mut(index).ok_or_else(never_allocated)?;
         if slot.generation != generation || slot.payload.is_none() {
             return Err(closed_or_stale());
         }
@@ -170,9 +178,18 @@ impl<S, P> SlotTable<S, P> {
             ));
         }
         let store = slot.payload.as_ref().cloned().ok_or_else(closed_or_stale)?;
+        let record_only = match slot.record_only {
+            Some(record_only) => record_only,
+            None => {
+                let record_only = resolve_record_only(store.as_ref());
+                slot.record_only = Some(record_only);
+                record_only
+            }
+        };
         Ok(Access {
             store,
             epoch: slot.epoch,
+            record_only,
             writer: Arc::clone(&slot.writer),
             purge_tokens: Arc::clone(&slot.purge_tokens),
         })
@@ -187,6 +204,7 @@ impl<S, P> SlotTable<S, P> {
         if slot.poisoned {
             slot.payload = None;
             slot.epoch = None;
+            slot.record_only = None;
             slot.closing = false;
             slot.poisoned = false;
             slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
@@ -215,6 +233,7 @@ impl<S, P> SlotTable<S, P> {
         }
         slot.payload = None;
         slot.epoch = None;
+        slot.record_only = None;
         slot.closing = false;
         slot.poisoned = false;
         slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
@@ -325,17 +344,36 @@ mod tests {
     }
 
     #[test]
+    fn record_only_flag_is_resolved_once_per_handle() {
+        let mut table = SlotTable::<u32, ()>::new();
+        let handle = table.insert(7, None).expect("insert slot");
+        let resolutions = std::cell::Cell::new(0);
+
+        for _ in 0..3 {
+            let access = table
+                .lookup(handle, |payload| {
+                    resolutions.set(resolutions.get() + 1);
+                    *payload == 8
+                })
+                .expect("lookup slot");
+            assert!(!access.record_only);
+        }
+
+        assert_eq!(resolutions.get(), 1);
+    }
+
+    #[test]
     fn slot_table_exercises_close_poison_error_and_reuse_states() {
         let mut table = SlotTable::<u32, u64>::new();
         let first = table.insert(7, None).expect("insert first slot");
-        let access = table.lookup(first).expect("lookup first slot");
+        let access = table.lookup(first, |_| false).expect("lookup first slot");
         assert_eq!(*access.store, 7);
         assert!(access.epoch.is_none());
         assert!(access.purge_tokens.lock().expect("tokens").is_empty());
         drop(access);
 
         assert_eq!(
-            error_code(table.lookup(encode(99, 1).expect("unknown slot"))),
+            error_code(table.lookup(encode(99, 1).expect("unknown slot"), |_| false)),
             ZeErrorCode::ZeErrInvalidHandle
         );
         assert!(table.set_error(first, "first error".to_owned()).is_none());
@@ -349,21 +387,36 @@ mod tests {
             Some("global panic".to_owned())
         );
         assert!(table.poison(first, "panic".to_owned()).is_none());
-        assert_eq!(error_code(table.lookup(first)), ZeErrorCode::ZeErrPoisoned);
+        assert_eq!(
+            error_code(table.lookup(first, |_| false)),
+            ZeErrorCode::ZeErrPoisoned
+        );
         assert!(matches!(
             table.begin_close(first).expect("release poisoned slot"),
             CloseAccess::Poisoned
         ));
-        assert_eq!(error_code(table.lookup(first)), ZeErrorCode::ZeErrClosed);
+        assert_eq!(
+            error_code(table.lookup(first, |_| false)),
+            ZeErrorCode::ZeErrClosed
+        );
 
         let second = table.insert(11, None).expect("reuse slot");
         assert_ne!(second, first);
-        assert_eq!(*table.lookup(second).expect("lookup reused slot").store, 11);
+        assert_eq!(
+            *table
+                .lookup(second, |_| false)
+                .expect("lookup reused slot")
+                .store,
+            11
+        );
         assert!(matches!(
             table.begin_close(second).expect("begin close"),
             CloseAccess::Store(_)
         ));
-        assert_eq!(error_code(table.lookup(second)), ZeErrorCode::ZeErrClosing);
+        assert_eq!(
+            error_code(table.lookup(second, |_| false)),
+            ZeErrorCode::ZeErrClosing
+        );
         assert_eq!(
             error_code(table.begin_close(second)),
             ZeErrorCode::ZeErrClosing
@@ -420,7 +473,7 @@ mod loom_model {
     }
 
     fn read(table: &Table, handle: u64) -> ZeErrorCode {
-        let looked_up = table.lock().unwrap().lookup(handle);
+        let looked_up = table.lock().unwrap().lookup(handle, |_| false);
         match looked_up {
             Ok(access) => {
                 // The payload outlives a concurrent close through its Arc.
@@ -432,7 +485,7 @@ mod loom_model {
     }
 
     fn write(table: &Table, handle: u64) -> ZeErrorCode {
-        let looked_up = table.lock().unwrap().lookup(handle);
+        let looked_up = table.lock().unwrap().lookup(handle, |_| false);
         match looked_up {
             Ok(access) => match access.writer.try_lock() {
                 Ok(guard) => {
