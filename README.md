@@ -17,9 +17,8 @@
 
 </div>
 
-Zeppelin Embed is an in-process search engine built for macOS and Apple
-silicon. It keeps vectors, text, metadata, and search indexes together in a
-persistent directory and serves them without a database server.
+Zeppelin Embed is the fastest and most accurate in-process search engine built
+for macOS and Apple silicon.
 
 ## Search performance
 
