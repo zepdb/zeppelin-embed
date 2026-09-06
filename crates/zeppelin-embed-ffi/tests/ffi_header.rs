@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
