@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/zeppelin-embed.png" alt="Zeppelin Embed icon" width="112">
+
 # Zeppelin Embed
 
 **Embedded dense, lexical, and hybrid search for applications that own their data.**
