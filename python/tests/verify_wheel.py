@@ -43,7 +43,7 @@ def verify(wheel: Path) -> None:
             name for name in names if name.endswith(".dist-info/METADATA")
         )
         metadata_contents = archive.read(project_metadata).decode("utf-8")
-        assert "License-Expression: Apache-2.0" in metadata_contents
+        assert "License-Expression: GPL-3.0-only" in metadata_contents
         assert "Requires-Python: >=3.11" in metadata_contents
 
     with tempfile.TemporaryDirectory(prefix="zeppelin-wheel-") as temporary:
