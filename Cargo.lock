@@ -1259,7 +1259,7 @@ checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "zeppelin-embed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "libc",
@@ -1274,11 +1274,11 @@ dependencies = [
 
 [[package]]
 name = "zeppelin-embed-adversarial-oracle"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "zeppelin-embed-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "libc",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "zeppelin-embed-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "loom",
  "tempfile",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "zeppelin-embed-text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cc",
  "libc",
@@ -1314,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "zeppelin-embed-workspace-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "rand",

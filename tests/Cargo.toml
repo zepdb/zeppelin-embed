@@ -1,6 +1,6 @@
 [package]
 name = "zeppelin-embed-workspace-tests"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
@@ -26,7 +26,7 @@ proptest.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 tempfile.workspace = true
-zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.1.0" }
-zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.1.0", features = ["test-support"] }
-zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.1.0" }
-zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.1.0", features = ["abi-panic-probe"] }
+zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.2.0" }
+zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.2.0", features = ["test-support"] }
+zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.2.0" }
+zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.2.0", features = ["abi-panic-probe"] }

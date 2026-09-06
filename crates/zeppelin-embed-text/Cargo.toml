@@ -13,7 +13,7 @@ test-support = ["zeppelin-embed/test-support"]
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.1.0" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.2.0" }
 libc.workspace = true
 xxhash-rust.workspace = true
 mlx-rs = { version = "=0.25.3", default-features = false, features = ["metal"] }

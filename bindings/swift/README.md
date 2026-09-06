@@ -1,12 +1,12 @@
 # ZeppelinEmbed for Swift
 
 `ZeppelinStore` is the async Swift actor over the frozen Zeppelin Embed C ABI.
-The package targets macOS 14 or newer on Apple silicon. Release consumers use
-the checksum-pinned XCFramework binary target in the repository's root
+The package targets macOS 14 or newer on Apple silicon and Intel. Release
+consumers use the checksum-pinned XCFramework binary target in the root
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.1.0")
+.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.2.0")
 ```
 
 Local source builds set `ZE_USE_LOCAL_FFI=1` after building the release FFI

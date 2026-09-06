@@ -78,7 +78,7 @@ python -m pip install zeppelin-embed
 python bindings/python/examples/five_vectors_search.py
 ```
 
-The example supplies its own document and query vectors. Zeppelin Embed v0.1.0
+The example supplies its own document and query vectors. Zeppelin Embed v0.2.0
 does not bundle or download an embedding model.
 
 The directory is the database. Reopen the same path to recover its committed
