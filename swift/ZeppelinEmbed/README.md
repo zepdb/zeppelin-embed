@@ -1,21 +1,22 @@
 # ZeppelinEmbed for Swift
 
 `ZeppelinStore` is the async Swift actor over the frozen Zeppelin Embed C ABI.
-The package targets macOS 14 and iOS 17 or newer. Local source builds use the
-system-library target; release consumers set `ZE_USE_XCFRAMEWORK=1` and use the
-checksum-pinned XCFramework binary target in `Package.swift`.
+The package targets macOS 14 or newer on Apple silicon. Release consumers use
+the checksum-pinned XCFramework binary target in the repository's root
+`Package.swift`:
+
+```swift
+.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.1.0")
+```
+
+Local source builds set `ZE_USE_LOCAL_FFI=1` after building the release FFI
+archive. Release validation can set `ZE_USE_LOCAL_XCFRAMEWORK=1` to test the
+artifact in `target/xcframework` before uploading it.
 
 Store databases in Application Support. `OpenOptions.excludeFromBackup`
 defaults to `true`, which applies `NSURLIsExcludedFromBackupKey` to the store
 directory. Do not put a store in iCloud Drive, Dropbox, or another synchronized
 folder: the engine owns its rename, lock, and durability protocol.
 
-The host owns maintenance scheduling. On iOS, submit a `BGProcessingTask`, open
-the store, call `maintain(wallTimeNanoseconds:bytes:)` with explicit budgets,
-then close before completing the task. The package does not register or schedule
+The host owns maintenance scheduling. The package does not register or schedule
 background work.
-
-For file protection, call `quiesce()` from
-`protectedDataWillBecomeUnavailable`; call `resume()` after protected data is
-available again. ABI v1 has no lightweight quiesce primitive, so these methods
-intentionally close and reopen the same path, options, and epoch.

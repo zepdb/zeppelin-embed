@@ -15,12 +15,15 @@ ALLOWLIST="$ROOT_DIR/crates/zeppelin-embed-ffi/symbols.allowlist"
 PRIVACY_MANIFEST="$SCRIPT_DIR/PrivacyInfo.xcprivacy"
 RUST_LLVM_NM="$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm"
 SIZE_BUDGET_KB=5120
+MACOS_DEPLOYMENT_TARGET=11.0
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/tasks/evidence"
 rm -rf "$WORK_DIR" "$ARTIFACT"
 rm -f "$ARCHIVE_ZIP"
 mkdir -p "$HEADERS_DIR"
-cp "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" "$HEADERS_DIR/"
+python3 "$ROOT_DIR/scripts/release/core_header.py" \
+    "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" \
+    "$HEADERS_DIR/zeppelin_embed.h"
 cp "$SCRIPT_DIR/module.modulemap" "$HEADERS_DIR/"
 
 {
@@ -64,10 +67,12 @@ check_export_allowlist() {
     local archive="$2"
     local symbols="$WORK_DIR/$label.symbols"
     local observed="$WORK_DIR/$label.ze-symbols"
+    local expected="$WORK_DIR/$label.expected-ze-symbols"
     compatible_nm "$archive" "$symbols" || return 1
     awk '{ symbol=$NF; sub(/^_/, "", symbol); if (symbol ~ /^ze_/) print symbol }' \
         "$symbols" | LC_ALL=C sort -u > "$observed"
-    if ! diff -u "$ALLOWLIST" "$observed"; then
+    grep -v '^ze_text_' "$ALLOWLIST" > "$expected"
+    if ! diff -u "$expected" "$observed"; then
         echo "ERROR: $label exported C namespace differs from symbols.allowlist" >&2
         return 1
     fi
@@ -153,9 +158,10 @@ attempt_slice() {
         echo "## $label"
         echo
         echo '```text'
-        echo "SDKROOT=$sdk_path cargo build -p zeppelin-embed-ffi --release --target $target"
+        echo "SDKROOT=$sdk_path MACOSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET cargo build --locked -p zeppelin-embed-ffi --release --target $target"
     } >> "$SLICE_EVIDENCE"
-    if SDKROOT="$sdk_path" cargo build -p zeppelin-embed-ffi --release --target "$target" \
+    if SDKROOT="$sdk_path" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+        cargo build --locked -p zeppelin-embed-ffi --release --target "$target" \
         > "$log" 2>&1; then
         status=0
     else
@@ -181,60 +187,18 @@ attempt_slice() {
 
 cd "$ROOT_DIR"
 attempt_slice "macos-arm64" "aarch64-apple-darwin" "macosx" || exit 1
-attempt_slice "macos-x86_64" "x86_64-apple-darwin" "macosx" || exit 1
-attempt_slice "ios-arm64" "aarch64-apple-ios" "iphoneos" || exit 1
-attempt_slice "ios-simulator-arm64" "aarch64-apple-ios-sim" "iphonesimulator" || exit 1
-attempt_slice "ios-simulator-x86_64" "x86_64-apple-ios" "iphonesimulator" || exit 1
 
-if [ "${#built_archives[@]}" -eq 0 ]; then
-    echo "ERROR: no XCFramework slice could be built" >&2
-    exit 1
-fi
-if [[ ! " ${built_labels[*]} " =~ " macos-arm64 " ]]; then
-    echo "ERROR: required macos-arm64 slice did not build" >&2
+if [ "${#built_archives[@]}" -ne 1 ] || [ "${built_labels[0]}" != "macos-arm64" ]; then
+    echo "ERROR: the release requires exactly the macos-arm64 slice" >&2
     exit 1
 fi
 
-macos_inputs=()
-simulator_inputs=()
-ios_device=""
-for index in "${!built_labels[@]}"; do
-    case "${built_labels[$index]}" in
-        macos-*) macos_inputs+=("${built_archives[$index]}") ;;
-        ios-arm64) ios_device="${built_archives[$index]}" ;;
-        ios-simulator-*) simulator_inputs+=("${built_archives[$index]}") ;;
-    esac
-done
-
-xcframework_args=()
-combine_platform() {
-    local output="$1"
-    shift
-    local inputs=("$@")
-    if [ "${#inputs[@]}" -eq 1 ]; then
-        cp "${inputs[0]}" "$output"
-    else
-        lipo -create "${inputs[@]}" -output "$output"
-    fi
-    xcframework_args+=("-library" "$output" "-headers" "$HEADERS_DIR")
-}
-
-if [ "${#macos_inputs[@]}" -gt 0 ]; then
-    combine_platform "$WORK_DIR/libzeppelin_embed_ffi-macos.a" "${macos_inputs[@]}"
-fi
-if [ -n "$ios_device" ]; then
-    cp "$ios_device" "$WORK_DIR/libzeppelin_embed_ffi-ios.a"
-    xcframework_args+=(
-        "-library" "$WORK_DIR/libzeppelin_embed_ffi-ios.a"
-        "-headers" "$HEADERS_DIR"
-    )
-fi
-if [ "${#simulator_inputs[@]}" -gt 0 ]; then
-    combine_platform "$WORK_DIR/libzeppelin_embed_ffi-ios-simulator.a" \
-        "${simulator_inputs[@]}"
-fi
-
-xcodebuild -create-xcframework "${xcframework_args[@]}" -output "$ARTIFACT"
+macos_archive="$WORK_DIR/libzeppelin_embed_ffi-macos.a"
+cp "${built_archives[0]}" "$macos_archive"
+xcodebuild -create-xcframework \
+    -library "$macos_archive" \
+    -headers "$HEADERS_DIR" \
+    -output "$ARTIFACT"
 
 # xcodebuild emits AvailableLibraries in an arbitrary order, so two builds of
 # identical inputs differ only by a permutation of that array. The entries have

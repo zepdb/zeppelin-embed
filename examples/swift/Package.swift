@@ -6,9 +6,14 @@ let package = Package(
     name: "FiveVectorsSearch",
     platforms: [.macOS(.v14)],
     dependencies: [
-        .package(path: "../../swift/ZeppelinEmbed"),
+        .package(path: "../.."),
     ],
     targets: [
-        .executableTarget(name: "FiveVectorsSearch", dependencies: ["ZeppelinEmbed"]),
+        .executableTarget(
+            name: "FiveVectorsSearch",
+            dependencies: [
+                .product(name: "ZeppelinEmbed", package: "zeppelin-embed"),
+            ]
+        ),
     ]
 )

@@ -107,6 +107,9 @@ the native library. Swift consumes the same ABI through an actor-based
 interface. Only the Rust core is published as a crate; the other packages
 embed or link the C ABI.
 
+The macOS SDK archive is language-neutral. Any runtime with C-compatible
+foreign functions can use its header and static or dynamic library.
+
 From a source checkout, run each example with:
 
 ```bash
@@ -120,7 +123,7 @@ cargo run --release -p zeppelin-embed --example five_vectors_search
 
 # Swift
 cargo build --release -p zeppelin-embed-ffi
-swift run --package-path examples/swift
+ZE_USE_LOCAL_FFI=1 swift run --package-path examples/swift
 
 # C
 cargo build --release -p zeppelin-embed-ffi

@@ -3,6 +3,7 @@ research/
 tasks/
 .env
 target/
+.build/
 .claude/
 presentation/
 .DS_Store
