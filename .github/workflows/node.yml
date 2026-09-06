@@ -12,7 +12,6 @@ on:
       - "node/**"
   push:
     branches: [main]
-    tags: ["v*"]
     paths:
       - ".github/workflows/node.yml"
       - "Cargo.lock"
@@ -20,6 +19,8 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "node/**"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -30,10 +31,12 @@ jobs:
     name: macOS arm64 package
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
         with:
-          node-version: 22
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: node/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
@@ -51,8 +54,10 @@ jobs:
       - run: npm run typecheck
         working-directory: node
       - name: Match a release tag to the npm version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./node/package.json').version")"
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: test "${RELEASE_TAG#v}" = "$(node -p "require('./node/package.json').version")"
       - name: Verify the addon contains the FFI implementation
         run: |
           set -euo pipefail
@@ -87,9 +92,10 @@ jobs:
 
   publish:
     name: Publish npm package
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     needs: package
     runs-on: macos-14
+    environment: npm
     permissions:
       contents: read
       id-token: write
@@ -98,9 +104,12 @@ jobs:
         with:
           name: zeppelin-embed-node-darwin-arm64
           path: package
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
       - run: npm install --global npm@11
       - run: npm publish package/*.tgz --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
