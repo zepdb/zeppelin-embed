@@ -5,6 +5,7 @@ mod common;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::mem::size_of;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use zeppelin_embed_ffi::*;
@@ -12,6 +13,7 @@ use zeppelin_embed_ffi::*;
 struct CountingAllocator;
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static HEAP_TEST_GUARD: Mutex<()> = Mutex::new(());
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -70,6 +72,7 @@ fn assert_heap_flat(name: &str, mut round: impl FnMut()) {
 
 #[test]
 fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
+    let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
     let store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(store.handle, 32, DIMENSION),
@@ -186,6 +189,7 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
 
 #[test]
 fn freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_free() {
+    let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
     let store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(store.handle, 4, DIMENSION),
