@@ -1,0 +1,158 @@
+# zeppelin-embed project rules
+
+## Architecture invariants
+
+- Fail loudly. Do not add compatibility fallbacks, silent predicate drops, or
+  best-effort recovery paths that hide violated contracts.
+- Sealed segments and published artifacts are immutable. There is one writer
+  per store, and every mutation eventually returns the generation it changed.
+- Use strong domain types at public seams. Structured queries remain data;
+  string DSLs do not enter the engine.
+- Production engine code is panic-free. `unwrap`, `expect`, indexing, `panic!`,
+  `todo!`, and `unimplemented!` are denied; tests may opt out only at a scoped
+  test module or function.
+- The C ABI will retain `panic = "unwind"` so Task 22 can catch panics, poison
+  handles, and protect the host process. Unwinding is a safety net, not normal
+  control flow.
+- Use the system allocator. Never add jemalloc, GPU/Metal offload, OpenMP/BLAS,
+  C++ interop, build-host CPU probing, or `-C target-cpu=native`. SIMD dispatch
+  is runtime-only.
+- Persisted formats are explicit hand-written layouts. Serde is absent from
+  core production dependencies and JSON is confined to the benchmark tooling.
+- Threading stays explicit; Rayon is prohibited.
+
+## Dependency budget
+
+The only permitted direct core dependencies are `libc`, `roaring`, and
+`xxhash-rust`. Core dev-dependencies may be `proptest`, `criterion`, `rand`,
+`rand_chacha`, and `tempfile`; Criterion currently lives only in the separate
+bench crate so its reporting dependencies never enter the core graph. Adding
+anything requires an explicit decision recorded here and a matching deny-policy
+audit.
+
+Task 01 chose `xxhash-rust` over `crc32c`: it is pure Rust with no build script
+or native wrapper, is compact, and provides deterministic seeded hashing for
+the test harness. Its BSL-1.0 license is narrowly excepted for that explicitly
+allowed crate in `deny.toml`. This is not a persisted-format decision; Task 07
+must specify format checksum semantics before bytes become durable.
+
+Task 08 B2b promoted `tempfile` from a dev-dependency to a regular dependency
+of the benchmark crate only, so the `wal-throughput` binary can create and
+delete a scratch directory per cell. `tempfile` was already an allowed
+dev-dependency, the benchmark crate already carries `serde_json` on the same
+"benchmark tooling only" basis, and `cargo deny check` passes with no new
+package entering `Cargo.lock`. The core crate's dependency graph is unchanged.
+
+Task ANE (2026-09-04) added `cc` as a build-dependency of the outer
+`zeppelin-embed-text` crate only, to compile a 156-line Objective-C shim
+(`objc/ze_coreml.m`) that binds CoreML. The Apple Neural Engine evaluates
+the query tower 14.3x faster than the MLX GPU path at p50 and 77x faster
+at p95, returning vectors that agree with MLX to cosine 0.999980, so this
+is a pure latency win. `cc` is a build-time tool that emits no runtime
+crate, the core crate's graph is unchanged and still exactly `libc`,
+`roaring`, and `xxhash-rust`, and `cargo deny check` passes. C++ and
+Objective-C remain permitted in the outer embedding crate only (owner
+decision 2026-09-03); the core no-C++ rule is unchanged.
+
+The absolute blacklist includes Tokio, Arrow, DataFusion, jemalloc, ONNX
+Runtime, OpenSSL, Ring, Reqwest, Hyper, Axum, Rayon, core/FFI `serde_json`, and
+C++ wrapper crates. `deny.toml` is a hard CI gate. The fuzz workspace is tooling
+and is deliberately excluded from the production workspace graph.
+
+Release builds ship `opt-level = 3`, not `opt-level = "z"`. This is owner
+decision O6, taken 2026-08-24 on measured evidence: size-optimized builds
+cost the lexical query path 1.65x on TREC-COVID and 1.33x on FiQA against
+tantivy, which is the difference between winning three of four BEIR corpora
+and winning two. Level 3 costs +150 KB of linked sections (1,873 to 2,023 KB)
+against a 5,120 KB budget. The rule is best-and-fastest, not smallest; trade
+speed for size only when the static-library gate is under real pressure.
+
+The 5 MB static-library gate measures post-strip linkable sections with the
+platform `size` tool and separately reports physical archive KB from `du`.
+Embedded fat-LTO LLVM bitcode and archive metadata are not runtime footprint;
+the linked-section total still includes Rust `std`, unwind support, and every
+engine section, so later code growth remains gated on each architecture.
+
+The gate was 2 MB from Task 01 through Track L. The repository owner raised it
+to 5 MB on 2026-08-23 by explicit instruction, so that lexical-engine
+structures are sized for retrieval quality and decode speed rather than for
+bytes. This is a deliberate widening of a budget, not a gate relaxed to reach
+green, and it does not authorise a single new dependency: the allowlist above
+is unchanged and adding to it remains an owner decision.
+
+## C ABI (task 22)
+
+- `crates/zeppelin-embed-ffi/include/zeppelin_embed.h` is generated by
+  cbindgen 0.29.x from `cbindgen.toml`; the drift gate
+  `ffi_header::the_committed_header_is_the_exact_cbindgen_output` regenerates
+  and diffs it, so every C-visible change is regenerated and committed. The
+  binary is a build tool for the ffi crate only (CI installs it); no crate
+  entered the dependency graph.
+- `ze_error_code` is append-only. `ffi_contract::error_codes_are_append_only`
+  pins every `(variant, value, C name)` row across the Rust enum, the header
+  enumerators, and `ze_error_code_name`. Never renumber, reuse, or remove.
+- Requests and responses are size-versioned `repr(C)` structs, never a
+  compact binary encoding: fields are fixed-arity scalars and caller-owned
+  buffers, so the C compiler already validates the shape, Swift and Python
+  bind fields instead of maintaining a serializer, and offset goldens pin the
+  layout. Evolution appends a new struct or function; existing layouts are
+  frozen by `every_*_struct_has_the_frozen_size_and_field_offsets`.
+- `ze_query` is the structured entry point. `has_tier = 0` means the caller
+  expressed no tier preference (owner ruling 2026-08-25, BL-160); it is
+  distinct from an explicit tier, including explicit Auto.
+- Every callee-owned return has a matching `ze_*_free`; the allocation
+  registry keys on pointer and element type, and
+  `ffi_ownership` proves the heap is flat across allocate/free loops.
+
+- Phase 3 matrix: ASan and TSan run the ffi suites with `-Zbuild-std` on
+  both platforms; rustc has no UBSan, so Miri covers the raw-pointer marshal
+  layer instead. The handle state machine lives in `slots.rs` as a generic
+  `SlotTable` so loom can drive it with a stand-in payload; `loom` is a
+  `cfg(loom)`-only dependency of the ffi crate (decision taken 2026-08-26:
+  it never enters a default build, `cargo deny check` passes with it in the
+  lockfile). `ffi_requests` fuzzes the extern "C" surface with honest
+  pointer/length pairs; `ffi_soak` is the 10k-round footprint gate.
+
+## Engineering method
+
+- Work strictly RED -> GREEN: write the named test, observe the intended
+  failure, implement the smallest passing change, then rerun it. Commit messages
+  record the test names and one-line RED and GREEN evidence.
+- Maintain at least 90% line coverage per crate from Task 01 onward.
+- Use the component test pyramid: unit and end-to-end tests, `proptest` for
+  algebraic contracts, `cargo-fuzz` for byte parsers, and Criterion for hot
+  paths.
+- Every randomized test uses `test_support::seeded_rng`; `ZE_TEST_SEED` makes a
+  failed run reproducible.
+- From Task 11 onward, use the seeded fault runner; every Task 12+ component
+  extends its operations and invariants.
+- A product change that alters op ordering, concurrency, or failure surface
+  (e.g., turning a sequential step into a parallel one) must be checked
+  against the adversarial runner for required updates first: new fault
+  sites/modes and coverage-registry entries for the changed paths. Run the
+  adversarial suite both before and after the product change to prove the
+  runner still passes and still catches what it should, not just that it
+  compiles against the new code.
+- Gate deterministic performance counters with zero flake budget. Wall-clock
+  gates require at least 2x headroom and remain supporting evidence.
+- Put every measured claim in `tasks/evidence/<task>-<topic>.md`, including
+  hardware, dataset, exact command, and raw numbers.
+
+## Quickstart
+
+```bash
+scripts/ci-gates.sh
+cargo test --workspace
+cargo deny check
+scripts/coverage.sh
+scripts/size-budget.sh
+cargo fuzz run fuzz_smoke -- -max_total_time=60
+```
+
+The repository uses stable Rust (verified as 1.93.0 for Task 01). Cargo-fuzz
+uses the installed nightly toolchain; the repository Cargo alias delegates only
+the `fuzz` subcommand through the excluded std-only dispatcher and
+`scripts/cargo-fuzz-nightly`, so normal builds remain on stable while the
+acceptance command stays unqualified. CI installs nightly plus `rust-src` and
+uses the same wrapper. Miri is an Ubuntu nightly subset, with unsupported tests
+explicitly tagged using `cfg_attr(miri, ...)`.
