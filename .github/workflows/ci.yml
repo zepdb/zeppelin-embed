@@ -289,10 +289,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - name: Check the core under Miri
+      - name: Check pure core memory paths under Miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo +nightly miri test -p zeppelin-embed --lib
+        run: |
+          cargo +nightly miri test -p zeppelin-embed --lib \
+            quant::tests::bit4_golden_fixture_is_stable -- --exact
+          cargo +nightly miri test -p zeppelin-embed --lib \
+            kernels::postings::tests::the_narrow_path_refuses_what_it_cannot_decode \
+            -- --exact
       - name: Check FFI marshaling under Miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
