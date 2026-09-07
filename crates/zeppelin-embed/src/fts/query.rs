@@ -167,6 +167,15 @@ pub enum LexicalQuery {
         /// Field to match.
         field: FieldId,
     },
+    /// Leading exact terms plus a prefix on the trailing term. Used for type-ahead.
+    TermsWithPrefix {
+        /// Analyzed leading terms matched exactly.
+        terms: Vec<Vec<u8>>,
+        /// Non-empty analyzed trailing prefix.
+        prefix: Vec<u8>,
+        /// Fields and weights shared by the exact and prefix legs.
+        fields: FieldWeights,
+    },
     /// Every indexed term within a bounded edit distance.
     Fuzzy {
         /// Analyzed source term.
@@ -223,7 +232,10 @@ impl LexicalQuery {
     pub(crate) fn needs_vocabulary(&self) -> bool {
         matches!(
             self,
-            Self::Prefix { .. } | Self::Fuzzy { .. } | Self::Phonetic { .. }
+            Self::Prefix { .. }
+                | Self::TermsWithPrefix { .. }
+                | Self::Fuzzy { .. }
+                | Self::Phonetic { .. }
         )
     }
 
@@ -234,6 +246,7 @@ impl LexicalQuery {
         work.check_now()?;
         Ok(match self {
             Self::Term(query) => return query.fields.clone_controlled(work),
+            Self::TermsWithPrefix { fields, .. } => return fields.clone_controlled(work),
             Self::Phrase { field, .. }
             | Self::Prefix { field, .. }
             | Self::Fuzzy { field, .. }
@@ -398,6 +411,48 @@ pub(crate) fn expand_with_phonetic_controlled<E: From<LexicalQueryError>>(
                     })
                 })
                 .collect::<Result<Vec<_>, E>>()?
+        }
+        LexicalQuery::TermsWithPrefix { terms, prefix, .. } => {
+            if prefix.is_empty() {
+                return Err(LexicalQueryError::Empty.into());
+            }
+            let mut expansions = Vec::new();
+            for term in terms {
+                work.step()?;
+                if term.is_empty() {
+                    return Err(LexicalQueryError::Empty.into());
+                }
+                expansions.push(LexicalExpansion {
+                    term: term.clone(),
+                    boost_thousandths: 1_000,
+                    kind: LexicalMatchKind::Term,
+                });
+            }
+            let mut prefix_terms = Vec::new();
+            for term in vocabulary.prefix(prefix) {
+                work.step()?;
+                prefix_terms.push(term);
+            }
+            for length in 3..prefix.len() {
+                work.step()?;
+                let Some(candidate) = prefix.get(..length) else {
+                    continue;
+                };
+                if let Some(term) = vocabulary.exact(candidate) {
+                    prefix_terms.push(term);
+                }
+            }
+            let boost_thousandths = if prefix_terms.is_empty() {
+                1_000
+            } else {
+                u16::try_from((1_000 / prefix_terms.len()).max(1)).unwrap_or(1)
+            };
+            expansions.extend(prefix_terms.into_iter().map(|term| LexicalExpansion {
+                term: term.to_vec(),
+                boost_thousandths,
+                kind: LexicalMatchKind::Prefix,
+            }));
+            expansions
         }
         LexicalQuery::Fuzzy {
             term, max_distance, ..
@@ -1169,6 +1224,136 @@ mod tests {
             report.allocations, baseline.allocations,
             "Term expansion built the index vocabulary"
         );
+    }
+
+    #[test]
+    fn terms_with_prefix_expands_exact_terms_before_deterministic_prefix_terms() {
+        let query = LexicalQuery::TermsWithPrefix {
+            terms: vec![b"meeting".to_vec(), b"notes".to_vec()],
+            prefix: b"meetings".to_vec(),
+            fields: FieldWeights::flat(&[field()]),
+        };
+        let dictionary = [
+            b"mee".as_slice(),
+            b"meet",
+            b"meeting",
+            b"meetings",
+            b"meetup",
+        ]
+        .into_iter()
+        .map(<[u8]>::to_vec)
+        .collect::<Vocabulary>();
+        let expected = vec![
+            LexicalExpansion {
+                term: b"meeting".to_vec(),
+                boost_thousandths: 1_000,
+                kind: LexicalMatchKind::Term,
+            },
+            LexicalExpansion {
+                term: b"notes".to_vec(),
+                boost_thousandths: 1_000,
+                kind: LexicalMatchKind::Term,
+            },
+            LexicalExpansion {
+                term: b"meetings".to_vec(),
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Prefix,
+            },
+            LexicalExpansion {
+                term: b"mee".to_vec(),
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Prefix,
+            },
+            LexicalExpansion {
+                term: b"meet".to_vec(),
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Prefix,
+            },
+            LexicalExpansion {
+                term: b"meeting".to_vec(),
+                boost_thousandths: 250,
+                kind: LexicalMatchKind::Prefix,
+            },
+        ];
+
+        assert_eq!(expand(&query, &dictionary), Ok(expected.clone()));
+        assert_eq!(expand(&query, &dictionary), Ok(expected));
+    }
+
+    #[test]
+    fn terms_with_prefix_rejects_an_empty_prefix_but_allows_no_leading_terms() {
+        let dictionary = [b"meeting".to_vec()].into_iter().collect::<Vocabulary>();
+        let empty_prefix = LexicalQuery::TermsWithPrefix {
+            terms: Vec::new(),
+            prefix: Vec::new(),
+            fields: FieldWeights::flat(&[field()]),
+        };
+        assert_eq!(
+            expand(&empty_prefix, &dictionary),
+            Err(LexicalQueryError::Empty)
+        );
+
+        let prefix_only = LexicalQuery::TermsWithPrefix {
+            terms: Vec::new(),
+            prefix: b"mee".to_vec(),
+            fields: FieldWeights::flat(&[field()]),
+        };
+        assert_eq!(
+            expand(&prefix_only, &dictionary),
+            Ok(vec![LexicalExpansion {
+                term: b"meeting".to_vec(),
+                boost_thousandths: 1_000,
+                kind: LexicalMatchKind::Prefix,
+            }])
+        );
+    }
+
+    #[test]
+    fn terms_with_prefix_requires_vocabulary_while_term_does_not() {
+        let prefixed = LexicalQuery::TermsWithPrefix {
+            terms: Vec::new(),
+            prefix: b"mee".to_vec(),
+            fields: FieldWeights::flat(&[field()]),
+        };
+        let term = LexicalQuery::term(TermQuery::flat(vec![b"meeting".to_vec()], &[field()]));
+        assert!(prefixed.needs_vocabulary());
+        assert!(!term.needs_vocabulary());
+    }
+
+    #[test]
+    fn terms_with_prefix_cancels_inside_the_prefix_walk() {
+        #[derive(Debug, PartialEq)]
+        enum Error {
+            Shape(LexicalQueryError),
+            Cancelled,
+        }
+        impl From<LexicalQueryError> for Error {
+            fn from(error: LexicalQueryError) -> Self {
+                Self::Shape(error)
+            }
+        }
+
+        let dictionary = (0..4_096)
+            .map(|index| format!("mee{index:04}").into_bytes())
+            .collect::<Vocabulary>();
+        let query = LexicalQuery::TermsWithPrefix {
+            terms: vec![b"notes".to_vec()],
+            prefix: b"mee".to_vec(),
+            fields: FieldWeights::flat(&[field()]),
+        };
+        let mut checks = 0;
+        let mut work = super::super::control::WorkCheck::new(|| {
+            checks += 1;
+            if checks == 3 {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        let result =
+            expand_with_phonetic_controlled(&query, &dictionary, &mut work, |_| Ok(vec![]));
+        assert_eq!(result, Err(Error::Cancelled));
+        assert_eq!(checks, 3);
     }
 
     #[test]

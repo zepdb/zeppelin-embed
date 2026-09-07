@@ -28,6 +28,59 @@ use zeppelin_embed::wal::WalReader;
 #[path = "test_support/pinned_text.rs"]
 mod pinned_text;
 
+#[test]
+fn hybrid_structured_accepts_terms_with_prefix() {
+    use zeppelin_embed::fts::search::FieldWeights;
+
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("meeting notes"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_text("other document"),
+        ]))
+        .expect("ingest");
+    store.seal().expect("seal");
+    let query = LexicalQuery::TermsWithPrefix {
+        terms: Vec::new(),
+        prefix: b"mee".to_vec(),
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    };
+    let result = store
+        .search_hybrid_structured(
+            SearchRequest::new(&[1.0, 0.0]),
+            &query,
+            &HybridQuery::new(2).with_alpha(0.5),
+            SearchOptions::default().with_tier(SearchTier::Exact),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("hybrid prefix query");
+    assert_eq!(result.hits.len(), 2);
+    assert!(
+        result
+            .hits
+            .iter()
+            .any(|hit| hit.key == DocId::new(1) && hit.lexical_bm25.is_some())
+    );
+    assert_eq!(
+        result
+            .lexical_expansions
+            .iter()
+            .map(|expansion| expansion.term.as_slice())
+            .collect::<Vec<_>>(),
+        vec![b"meet".as_slice()]
+    );
+    store.close().expect("close");
+}
+
 /// Component comparison: the old public per-hit route versus the pinned callback.
 /// Release-only supporting measurements; no wall-clock acceptance threshold.
 #[cfg(feature = "query-timing")]

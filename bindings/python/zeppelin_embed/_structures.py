@@ -550,7 +550,7 @@ class ZeQueryRequest(ct.Structure):
         ("has_tier", ct.c_uint32),
         ("tier", ct.c_int32),
         ("graph_profile", ct.c_int32),
-        ("reserved", ct.c_uint32),
+        ("lexical_flags", ct.c_uint32),
         ("graph_ef", ct.c_size_t),
         ("graph_seed", ct.c_uint64),
         ("has_alpha", ct.c_uint32),

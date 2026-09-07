@@ -252,7 +252,7 @@ fuzz_target!(|data: &[u8]| {
                 has_tier: bytes.u32() % 3,
                 tier: bytes.i32() % 6,
                 graph_profile: bytes.i32() % 3,
-                reserved: bytes.u32() % 2,
+                lexical_flags: bytes.u32() % 4,
                 graph_ef: bytes.usize() % 512,
                 graph_seed: bytes.u64(),
                 has_alpha: bytes.u32() % 3,

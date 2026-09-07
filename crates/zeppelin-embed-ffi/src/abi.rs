@@ -89,6 +89,9 @@ pub const ZE_ABI_MAX_STRUCT_SIZE: u32 = 65_536;
 /// Largest top-k request accepted by ABI v1.
 pub const ZE_MAX_K: usize = 1 << 20;
 
+/// Treat the last analyzed lexical query term as a type-ahead prefix.
+pub const ZE_QUERY_LAST_AS_PREFIX: u32 = 1;
+
 /// Opens one store directory.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -1210,8 +1213,8 @@ pub struct ZeQueryRequest {
     pub tier: i32,
     /// `0` SIFT-class or `1` angular graph defaults.
     pub graph_profile: i32,
-    /// Must be zero.
-    pub reserved: u32,
+    /// Lexical query option bits; unknown bits are rejected.
+    pub lexical_flags: u32,
     /// Explicit graph width, or zero for adaptive width.
     pub graph_ef: usize,
     /// Deterministic graph query-preparation seed.

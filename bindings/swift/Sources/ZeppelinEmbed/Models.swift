@@ -339,6 +339,7 @@ public struct QueryOptions: Sendable {
     public var quotedPhrase: Bool
     public var identifierToken: Bool
     public var rarestExactDocumentFrequency: UInt64?
+    public var lastAsPrefix: Bool
     public var cancellationToken: ZeppelinCancellationToken?
     public var deadlineNanoseconds: UInt64
 
@@ -355,6 +356,7 @@ public struct QueryOptions: Sendable {
         quotedPhrase: Bool = false,
         identifierToken: Bool = false,
         rarestExactDocumentFrequency: UInt64? = nil,
+        lastAsPrefix: Bool = false,
         cancellationToken: ZeppelinCancellationToken? = nil,
         deadlineNanoseconds: UInt64 = 0
     ) {
@@ -370,6 +372,7 @@ public struct QueryOptions: Sendable {
         self.quotedPhrase = quotedPhrase
         self.identifierToken = identifierToken
         self.rarestExactDocumentFrequency = rarestExactDocumentFrequency
+        self.lastAsPrefix = lastAsPrefix
         self.cancellationToken = cancellationToken
         self.deadlineNanoseconds = deadlineNanoseconds
     }

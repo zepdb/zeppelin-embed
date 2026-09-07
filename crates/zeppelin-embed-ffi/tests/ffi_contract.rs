@@ -402,7 +402,7 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeQueryRequest, 160, 8, {
         abi_size: 0, abi_reserved: 4, vector: 8, vector_len: 16, dimension: 24,
         text: 32, text_len: 40, k: 48, thread_budget: 56, has_tier: 64, tier: 68,
-        graph_profile: 72, reserved: 76, graph_ef: 80, graph_seed: 88,
+        graph_profile: 72, lexical_flags: 76, graph_ef: 80, graph_seed: 88,
         has_alpha: 96, rules_enabled: 100, alpha: 104, has_max_rounds: 112,
         quoted_phrase: 116, max_rounds: 120, identifier_token: 128,
         has_rarest_exact_document_frequency: 132,

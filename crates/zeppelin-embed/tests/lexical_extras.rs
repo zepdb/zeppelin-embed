@@ -25,6 +25,120 @@ fn text_analyzer() -> Analyzer {
 }
 
 #[test]
+fn terms_with_prefix_finds_meeting_and_uses_divided_prefix_boosts() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    use zeppelin_embed::fts::search::{FieldWeights, TermQuery};
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("meeting meek"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2), Revision::new(1)),
+                vec![0.0, 1.0],
+            )
+            .with_text("meeting"),
+        ]))
+        .expect("ingest");
+    store.seal().expect("seal");
+
+    let prefixed = LexicalQuery::TermsWithPrefix {
+        terms: Vec::new(),
+        prefix: b"mee".to_vec(),
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    };
+    let result = store
+        .search_lexical_structured(&prefixed, 10, 64, QueryControl::Cancel(CancelToken::new()))
+        .expect("prefix search");
+    let meeting = result
+        .candidates
+        .iter()
+        .find(|candidate| candidate.document.doc_id() == DocId::new(1))
+        .expect("meeting document");
+    let exact_score = |term: &[u8]| {
+        store
+            .search_lexical(
+                &TermQuery::flat(vec![term.to_vec()], &[DEFAULT_FIELD]),
+                10,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("exact term")
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.document.doc_id() == DocId::new(1))
+            .expect("exact hit")
+            .score
+    };
+    let expected = (exact_score(b"meek") + exact_score(b"meet")) / 2.0;
+    assert_eq!(meeting.score.to_bits(), expected.to_bits());
+    assert_eq!(
+        result
+            .expansions
+            .iter()
+            .map(|expansion| (expansion.term.as_slice(), expansion.boost_thousandths))
+            .collect::<Vec<_>>(),
+        vec![(b"meek".as_slice(), 500), (b"meet".as_slice(), 500)]
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn reverse_prefix_expansion_prevents_stemming_flicker() {
+    use zeppelin_embed::fts::query::LexicalQuery;
+    use zeppelin_embed::fts::search::FieldWeights;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("meeting"),
+        ]))
+        .expect("ingest");
+    store.seal().expect("seal");
+
+    for prefix in [b"meeti".as_slice(), b"meetin"] {
+        let query = LexicalQuery::TermsWithPrefix {
+            terms: Vec::new(),
+            prefix: prefix.to_vec(),
+            fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+        };
+        let result = store
+            .search_lexical_structured(&query, 10, 64, QueryControl::Cancel(CancelToken::new()))
+            .expect("reverse prefix search");
+        assert_eq!(
+            result
+                .candidates
+                .iter()
+                .map(|candidate| candidate.document.doc_id())
+                .collect::<Vec<_>>(),
+            vec![DocId::new(1)]
+        );
+        assert_eq!(
+            result
+                .expansions
+                .iter()
+                .map(|expansion| expansion.term.as_slice())
+                .collect::<Vec<_>>(),
+            vec![b"meet".as_slice()]
+        );
+    }
+    store.close().expect("close");
+}
+
+#[test]
 fn astra_12_vocabulary_reused_until_exact_inputs_change() {
     use zeppelin_embed::fts::{preparation_observer as observer, query::LexicalQuery};
     use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};

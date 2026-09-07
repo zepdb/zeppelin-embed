@@ -137,7 +137,7 @@ pub fn valid_query_request(vector: &[f32]) -> ZeQueryRequest {
         has_tier: 0,
         tier: 0,
         graph_profile: 0,
-        reserved: 0,
+        lexical_flags: 0,
         graph_ef: 0,
         graph_seed: 0,
         has_alpha: 0,

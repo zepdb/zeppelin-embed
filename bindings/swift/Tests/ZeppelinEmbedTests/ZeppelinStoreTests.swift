@@ -7,6 +7,45 @@ import Darwin
 @_spi(Testing) @testable import ZeppelinEmbed
 
 final class ZeppelinStoreTests: XCTestCase {
+    func testLastAsPrefixOptionDefaultsOffAndMapsToLexicalFlag() {
+        let defaults = QueryOptions(k: 10)
+        XCTAssertFalse(defaults.lastAsPrefix)
+        XCTAssertEqual(ZeppelinStore.lexicalFlagsForTesting(defaults), 0)
+
+        let enabled = QueryOptions(k: 10, lastAsPrefix: true)
+        XCTAssertTrue(enabled.lastAsPrefix)
+        XCTAssertEqual(ZeppelinStore.lexicalFlagsForTesting(enabled), 1)
+    }
+
+    func testLastAsPrefixQueriesARecordOnlyNamespaceEndToEnd() async throws {
+        let root = try storePath(#function)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try await ZeppelinStore.openNamespace(
+            root: root,
+            name: "records",
+            spec: NamespaceSpec(attributes: [], vectorSpace: nil)
+        )
+        let id = DocumentID(high: 0, low: 1)
+        _ = try await store.upsert([
+            IngestDocument(
+                id: id,
+                revision: 1,
+                timestamp: 1,
+                vector: [],
+                text: "meeting notes"
+            )
+        ])
+
+        let exact = try await store.query(text: "mee", options: QueryOptions(k: 10))
+        XCTAssertTrue(exact.hits.isEmpty)
+        let prefixed = try await store.query(
+            text: "mee",
+            options: QueryOptions(k: 10, lastAsPrefix: true)
+        )
+        XCTAssertEqual(prefixed.hits.map(\.documentID), [id])
+        try await store.close()
+    }
+
     func testOpenIngestQueryCloseRoundTripSucceeds() async throws {
         let path = try storePath(#function)
         defer { try? FileManager.default.removeItem(at: path) }

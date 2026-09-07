@@ -291,6 +291,15 @@ public actor ZeppelinStore {
         )
     }
 
+    private nonisolated static func lexicalFlags(_ options: QueryOptions) -> UInt32 {
+        options.lastAsPrefix ? UInt32(ZE_QUERY_LAST_AS_PREFIX) : 0
+    }
+
+    @_spi(Testing)
+    public nonisolated static func lexicalFlagsForTesting(_ options: QueryOptions) -> UInt32 {
+        lexicalFlags(options)
+    }
+
     private func executeQuery(
         vector: [Float]?,
         text: String?,
@@ -323,6 +332,7 @@ public actor ZeppelinStore {
                     request.alpha = options.alpha ?? 0
                     request.has_max_rounds = options.maximumRounds == nil ? 0 : 1
                     request.quoted_phrase = options.quotedPhrase ? 1 : 0
+                    request.lexical_flags = Self.lexicalFlags(options)
                     request.max_rounds = options.maximumRounds ?? 0
                     request.identifier_token = options.identifierToken ? 1 : 0
                     request.has_rarest_exact_document_frequency =

@@ -1310,6 +1310,7 @@ class Store:
         quoted_phrase: bool = False,
         identifier_token: bool = False,
         rarest_exact_document_frequency: int | None = None,
+        last_as_prefix: bool = False,
         cancel_token: CancelToken | None = None,
         deadline_ns: int = 0,
     ) -> QueryResult:
@@ -1340,7 +1341,7 @@ class Store:
             has_tier=0 if tier is None else 1,
             tier=0 if tier is None else int(_enum_value(tier, Tier, "tier")),
             graph_profile=int(_enum_value(graph_profile, GraphProfile, "graph_profile")),
-            reserved=0,
+            lexical_flags=int(last_as_prefix),
             graph_ef=graph_ef,
             graph_seed=graph_seed,
             has_alpha=0 if alpha is None else 1,

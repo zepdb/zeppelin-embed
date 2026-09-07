@@ -36,8 +36,9 @@ use zeppelin_embed::epoch::{
     StoreEpoch,
 };
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
-use zeppelin_embed::fts::search::TermQuery;
-use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
+use zeppelin_embed::fts::query::LexicalQuery;
+use zeppelin_embed::fts::search::{FieldWeights, TermQuery};
+use zeppelin_embed::fts::tokenizer::{Analyzer, Token, TokenFlags, TokenizerConfig};
 use zeppelin_embed::fusion::{FusionMethod, HybridQuery, RuleSignals};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
@@ -1373,16 +1374,73 @@ fn query_control_for(
     Ok(QueryControl::Cancel(CancelToken::new()))
 }
 
-fn analyze_query_text(pointer: *const u8, length: usize) -> Result<TermQuery, FfiError> {
+fn analyze_query_text(pointer: *const u8, length: usize) -> Result<Vec<Token>, FfiError> {
     let bytes = marshal::read_slice(pointer, length)?;
     let analyzer = Analyzer::new(TokenizerConfig::text_default()).map_err(FfiError::tokenizer)?;
-    let terms = analyzer
-        .analyze_bytes(bytes)
-        .map_err(FfiError::tokenizer)?
+    analyzer.analyze_bytes(bytes).map_err(FfiError::tokenizer)
+}
+
+fn term_query(tokens: Vec<Token>) -> TermQuery {
+    let terms = tokens
         .into_iter()
         .map(|token| token.term.into_bytes())
         .collect();
-    Ok(TermQuery::flat(terms, &[DEFAULT_FIELD]))
+    TermQuery::flat(terms, &[DEFAULT_FIELD])
+}
+
+enum FfiLexicalQuery {
+    Term(TermQuery),
+    Structured(LexicalQuery),
+}
+
+fn last_as_prefix_query(
+    tokens: Vec<Token>,
+    input_bytes: usize,
+) -> Result<FfiLexicalQuery, FfiError> {
+    // Stacked variants (number words, catenations) share the surface word's
+    // position and span; the typed surface form stays the prefix.
+    let trailing = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| usize::try_from(token.offset.end) == Ok(input_bytes))
+        .max_by_key(|(_, token)| {
+            (
+                token.position,
+                token.offset.end,
+                !token.flags.contains(TokenFlags::VARIANT),
+            )
+        })
+        .map(|(index, _)| index);
+    let Some(trailing) = trailing else {
+        return Ok(FfiLexicalQuery::Term(term_query(tokens)));
+    };
+    if tokens
+        .get(trailing)
+        .is_none_or(|token| token.term.len() < 3)
+    {
+        return Ok(FfiLexicalQuery::Term(term_query(tokens)));
+    }
+
+    let mut terms = Vec::with_capacity(tokens.len().saturating_sub(1));
+    let mut prefix = None;
+    for (index, token) in tokens.into_iter().enumerate() {
+        if index == trailing {
+            prefix = Some(token.term.into_bytes());
+        } else {
+            terms.push(token.term.into_bytes());
+        }
+    }
+    let prefix = prefix.ok_or_else(|| {
+        FfiError::new(
+            ZeErrorCode::ZeErrInternal,
+            "analyzed trailing token index was not present",
+        )
+    })?;
+    Ok(FfiLexicalQuery::Structured(LexicalQuery::TermsWithPrefix {
+        terms,
+        prefix,
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    }))
 }
 
 fn empty_query_result(abi_size: u32) -> ZeQueryResult {
@@ -3112,8 +3170,15 @@ pub extern "C" fn ze_query(
                 }
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_query_result(abi_size));
-                if request.reserved != 0 {
-                    return Err(FfiError::invalid("query reserved field must be zero"));
+                if request.lexical_flags & !ZE_QUERY_LAST_AS_PREFIX != 0 {
+                    return Err(FfiError::invalid(
+                        "query lexical_flags contains unknown bits",
+                    ));
+                }
+                if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX != 0 && request.text_len == 0 {
+                    return Err(FfiError::invalid(
+                        "ZE_QUERY_LAST_AS_PREFIX requires a lexical leg",
+                    ));
                 }
                 if request.k == 0 {
                     return Err(FfiError::invalid("query k must be nonzero"));
@@ -3157,7 +3222,12 @@ pub extern "C" fn ze_query(
                     Vec::new()
                 };
                 let lexical = if has_text {
-                    Some(analyze_query_text(request.text, request.text_len)?)
+                    let tokens = analyze_query_text(request.text, request.text_len)?;
+                    Some(if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX == 0 {
+                        FfiLexicalQuery::Term(term_query(tokens))
+                    } else {
+                        last_as_prefix_query(tokens, request.text_len)?
+                    })
                 } else {
                     None
                 };
@@ -3175,16 +3245,25 @@ pub extern "C" fn ze_query(
                         if let Some(epoch) = access.epoch {
                             hybrid = hybrid.with_epoch(epoch);
                         }
-                        let outcome = access
-                            .store
-                            .search_hybrid(
+                        let outcome = match &lexical {
+                            FfiLexicalQuery::Term(lexical) => access.store.search_hybrid(
                                 SearchRequest::new(&vector),
-                                &lexical,
+                                lexical,
                                 &hybrid,
                                 options,
                                 control,
-                            )
-                            .map_err(FfiError::fusion)?;
+                            ),
+                            FfiLexicalQuery::Structured(lexical) => {
+                                access.store.search_hybrid_structured(
+                                    SearchRequest::new(&vector),
+                                    lexical,
+                                    &hybrid,
+                                    options,
+                                    control,
+                                )
+                            }
+                        }
+                        .map_err(FfiError::fusion)?;
                         result.mode = 2;
                         fill_diagnostics(&mut result, &outcome.diagnostics)?;
                         result.generation = outcome.generation;
@@ -3208,35 +3287,66 @@ pub extern "C" fn ze_query(
                             });
                         }
                     }
-                    (false, Some(lexical), None) => {
-                        let outcome = access
-                            .store
-                            .search_lexical(&lexical, request.k, control)
-                            .map_err(FfiError::lexical)?;
-                        result.mode = 1;
-                        fill_diagnostics(&mut result, &outcome.diagnostics)?;
-                        result.generation = outcome.generation;
-                        hits.try_reserve_exact(outcome.candidates.len())
-                            .map_err(|_| {
-                                FfiError::new(
-                                    ZeErrorCode::ZeErrOutOfMemory,
-                                    "query hit allocation failed",
-                                )
-                            })?;
-                        for candidate in outcome.candidates {
-                            hits.push(ZeQueryHit {
-                                has_document: 1,
-                                has_revision: 1,
-                                doc_id: ffi_doc_id(candidate.document.doc_id()),
-                                revision: candidate.document.revision().get(),
-                                score: candidate.score,
-                                has_vector_score: 0,
-                                has_lexical_score: 1,
-                                vector_squared_l2: 0.0,
-                                lexical_bm25: candidate.score,
-                            });
+                    (false, Some(lexical), None) => match lexical {
+                        FfiLexicalQuery::Term(lexical) => {
+                            let outcome = access
+                                .store
+                                .search_lexical(&lexical, request.k, control)
+                                .map_err(FfiError::lexical)?;
+                            result.mode = 1;
+                            fill_diagnostics(&mut result, &outcome.diagnostics)?;
+                            result.generation = outcome.generation;
+                            hits.try_reserve_exact(outcome.candidates.len())
+                                .map_err(|_| {
+                                    FfiError::new(
+                                        ZeErrorCode::ZeErrOutOfMemory,
+                                        "query hit allocation failed",
+                                    )
+                                })?;
+                            for candidate in outcome.candidates {
+                                hits.push(ZeQueryHit {
+                                    has_document: 1,
+                                    has_revision: 1,
+                                    doc_id: ffi_doc_id(candidate.document.doc_id()),
+                                    revision: candidate.document.revision().get(),
+                                    score: candidate.score,
+                                    has_vector_score: 0,
+                                    has_lexical_score: 1,
+                                    vector_squared_l2: 0.0,
+                                    lexical_bm25: candidate.score,
+                                });
+                            }
                         }
-                    }
+                        FfiLexicalQuery::Structured(lexical) => {
+                            let outcome = access
+                                .store
+                                .search_lexical_structured(&lexical, request.k, 64, control)
+                                .map_err(FfiError::lexical)?;
+                            result.mode = 1;
+                            fill_diagnostics(&mut result, &outcome.diagnostics)?;
+                            result.generation = outcome.generation;
+                            hits.try_reserve_exact(outcome.candidates.len())
+                                .map_err(|_| {
+                                    FfiError::new(
+                                        ZeErrorCode::ZeErrOutOfMemory,
+                                        "query hit allocation failed",
+                                    )
+                                })?;
+                            for candidate in outcome.candidates {
+                                hits.push(ZeQueryHit {
+                                    has_document: 1,
+                                    has_revision: 1,
+                                    doc_id: ffi_doc_id(candidate.document.doc_id()),
+                                    revision: candidate.document.revision().get(),
+                                    score: candidate.score,
+                                    has_vector_score: 0,
+                                    has_lexical_score: 1,
+                                    vector_squared_l2: 0.0,
+                                    lexical_bm25: candidate.score,
+                                });
+                            }
+                        }
+                    },
                     (true, None, None) => {
                         let outcome = access
                             .store

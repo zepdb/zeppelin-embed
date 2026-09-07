@@ -20,6 +20,11 @@
 #define ZE_MAX_K (1 << 20)
 
 /*
+ Treat the last analyzed lexical query term as a type-ahead prefix.
+ */
+#define ZE_QUERY_LAST_AS_PREFIX 1
+
+/*
  Frozen append-only status code returned by the C ABI.
  */
 enum ze_error_code
@@ -1836,9 +1841,9 @@ typedef struct ZeQueryRequest {
      */
     int32_t graph_profile;
     /*
-     Must be zero.
+     Lexical query option bits; unknown bits are rejected.
      */
-    uint32_t reserved;
+    uint32_t lexical_flags;
     /*
      Explicit graph width, or zero for adaptive width.
      */

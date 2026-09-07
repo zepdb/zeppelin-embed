@@ -96,6 +96,15 @@ def test_open_ingest_query_close_round_trip(tmp_path: Path) -> None:
         store.stats()
 
 
+def test_query_last_as_prefix_defaults_off_and_finds_trailing_prefix(tmp_path: Path) -> None:
+    vectors = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    with ze.open(tmp_path / "store") as store:
+        store.ingest([1, 2], vectors, texts=["meeting notes", "other document"])
+        assert store.query(text="mee").hits == ()
+        result = store.query(text="mee", last_as_prefix=True)
+        assert [hit.doc_id for hit in result.hits] == [1]
+
+
 def test_numpy_validation_alignment_and_optional_tier_are_typed(tmp_path: Path) -> None:
     vectors = np.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
     with ze.open(tmp_path / "store") as store:

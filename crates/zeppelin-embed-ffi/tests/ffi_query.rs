@@ -53,6 +53,213 @@ fn query(handle: ZeHandle, request: &ZeQueryRequest) -> (ZeErrorCode, ZeQueryRes
     (code, result)
 }
 
+fn lexical_request(text: &[u8], last_as_prefix: bool) -> ZeQueryRequest {
+    let mut request = common::valid_query_request(&[]);
+    request.text = text.as_ptr();
+    request.text_len = text.len();
+    request.k = 10;
+    request.lexical_flags = if last_as_prefix {
+        ZE_QUERY_LAST_AS_PREFIX
+    } else {
+        0
+    };
+    request
+}
+
+fn hit_ids(result: &ZeQueryResult) -> Vec<u64> {
+    if result.hit_count == 0 {
+        return Vec::new();
+    }
+    unsafe { std::slice::from_raw_parts(result.hits, result.hit_count) }
+        .iter()
+        .map(|hit| hit.doc_id.low)
+        .collect()
+}
+
+#[test]
+fn unknown_lexical_flag_is_rejected() {
+    let store = common::TestStore::new();
+    let text = b"harbour";
+    let mut request = lexical_request(text, false);
+    request.lexical_flags = 2;
+    assert_eq!(
+        query(store.handle, &request).0,
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+
+#[test]
+fn last_as_prefix_finds_harbour_while_exact_harb_finds_nothing() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(
+            store.handle,
+            &[
+                "zeppelin airship over the harbour",
+                "harbour lights at dusk"
+            ],
+        ),
+        ZeErrorCode::ZeOk
+    );
+    let text = b"harb";
+    let (code, mut exact) = query(store.handle, &lexical_request(text, false));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(exact.hit_count, 0);
+    assert_eq!(ze_query_result_free(&mut exact), ZeErrorCode::ZeOk);
+
+    let (code, mut prefixed) = query(store.handle, &lexical_request(text, true));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut ids = hit_ids(&prefixed);
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2]);
+    assert_eq!(ze_query_result_free(&mut prefixed), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn surface_word_wins_the_trailing_token_tie_over_its_number_variant() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["seven seas", "seventeen candles"]),
+        ZeErrorCode::ZeOk
+    );
+    let (code, mut partial) = query(store.handle, &lexical_request(b"seve", true));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut partial_ids = hit_ids(&partial);
+    partial_ids.sort_unstable();
+    assert_eq!(partial_ids, vec![1, 2]);
+    assert_eq!(ze_query_result_free(&mut partial), ZeErrorCode::ZeOk);
+
+    // "seven" stacks the number variant "7" at the same position and span;
+    // the typed surface word must stay the prefix, so nothing disappears.
+    let (code, mut full) = query(store.handle, &lexical_request(b"seven", true));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut full_ids = hit_ids(&full);
+    full_ids.sort_unstable();
+    assert_eq!(full_ids, vec![1, 2]);
+    assert_eq!(ze_query_result_free(&mut full), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn last_as_prefix_without_text_is_rejected() {
+    let store = common::TestStore::new();
+    let mut request = common::valid_query_request(&vector(0));
+    request.lexical_flags = ZE_QUERY_LAST_AS_PREFIX;
+    assert_eq!(
+        query(store.handle, &request).0,
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+
+#[test]
+fn last_as_prefix_hybrid_reports_hybrid_fusion() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["harbour lights", "vector index"]),
+        ZeErrorCode::ZeOk
+    );
+    let text = b"harb";
+    let probe = vector(0);
+    let mut request = common::valid_query_request(&probe);
+    request.text = text.as_ptr();
+    request.text_len = text.len();
+    request.k = 2;
+    request.lexical_flags = ZE_QUERY_LAST_AS_PREFIX;
+    let (code, mut result) = query(store.handle, &request);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(result.mode, 2);
+    assert_eq!(result.has_fusion, 1);
+    // Exact "harb" matches nothing, so a lexical score on document 1 proves
+    // the prefix leg ran inside fusion.
+    let hits = unsafe { std::slice::from_raw_parts(result.hits, result.hit_count) };
+    let lexical = hits
+        .iter()
+        .map(|hit| (hit.doc_id.low, hit.lexical_bm25 > 0.0))
+        .collect::<Vec<_>>();
+    assert_eq!(lexical, vec![(1, true), (2, false)]);
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn trailing_separator_disables_last_as_prefix() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["harbour lights", "harbourmaster office"]),
+        ZeErrorCode::ZeOk
+    );
+    let (exact_code, mut exact) = query(store.handle, &lexical_request(b"harbour", false));
+    let (finished_code, mut finished) = query(store.handle, &lexical_request(b"harbour ", true));
+    assert_eq!(
+        (exact_code, finished_code),
+        (ZeErrorCode::ZeOk, ZeErrorCode::ZeOk)
+    );
+    assert_eq!(hit_ids(&finished), hit_ids(&exact));
+    assert_eq!(finished.docs_evaluated, exact.docs_evaluated);
+    assert_eq!(finished.postings_decoded, exact.postings_decoded);
+    assert_eq!(ze_query_result_free(&mut exact), ZeErrorCode::ZeOk);
+    assert_eq!(ze_query_result_free(&mut finished), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn stopword_tail_does_not_expand_the_previous_term() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["harbour lights", "harbourmaster office"]),
+        ZeErrorCode::ZeOk
+    );
+    let (code, mut result) = query(store.handle, &lexical_request(b"harbour the", true));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(hit_ids(&result), vec![1]);
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn one_byte_last_as_prefix_falls_back_to_bounded_exact_search() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["harbour", "hotel", "house", "vector"]),
+        ZeErrorCode::ZeOk
+    );
+    let (code, mut result) = query(store.handle, &lexical_request(b"h", true));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(result.hit_count, 0);
+    assert!(result.docs_evaluated <= 1);
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn flag_off_pins_the_v021_lexical_diagnostics() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(
+            store.handle,
+            &[
+                "zeppelin airship over the harbour",
+                "harbour lights at dusk",
+                "quantized vectors and postings",
+            ],
+        ),
+        ZeErrorCode::ZeOk
+    );
+    let (code, mut result) = query(store.handle, &lexical_request(b"harbour", false));
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(hit_ids(&result), vec![2, 1]);
+    assert_eq!(
+        (
+            result.mode,
+            result.approximate,
+            result.exact_rescore,
+            result.budget_exhausted,
+            result.has_fusion,
+            result.dims_touched,
+            result.bytes_read,
+            result.docs_evaluated,
+            result.postings_decoded,
+        ),
+        (1, 0, 0, 0, 0, 0, 0, 2, 2)
+    );
+    assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
 #[test]
 fn a_vector_only_query_returns_the_same_hits_as_ze_search_with_no_tier_preference() {
     let store = common::TestStore::new();

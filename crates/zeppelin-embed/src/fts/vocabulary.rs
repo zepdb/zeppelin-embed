@@ -181,6 +181,16 @@ impl Vocabulary {
         self.entries().map(|(term, _)| term)
     }
 
+    pub(crate) fn exact(&self, term: &[u8]) -> Option<&[u8]> {
+        let index = self.entries.partition_point(|entry| {
+            #[cfg(any(test, feature = "test-support"))]
+            super::preparation_observer::vocabulary_seek();
+            self.term(entry) < term
+        });
+        let candidate = self.entries.get(index).map(|entry| self.term(entry))?;
+        (candidate == term).then_some(candidate)
+    }
+
     /// IDs come only from an index built from this exact immutable vocabulary.
     pub(crate) fn select<'a>(
         &'a self,
