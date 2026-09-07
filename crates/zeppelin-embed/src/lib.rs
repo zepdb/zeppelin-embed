@@ -117,6 +117,6 @@ mod tests {
 
     #[test]
     fn version_constant_is_current() {
-        assert_eq!(crate::VERSION, "0.1.0");
+        assert_eq!(crate::VERSION, "0.2.1");
     }
 }
