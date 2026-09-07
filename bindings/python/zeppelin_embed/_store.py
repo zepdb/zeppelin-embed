@@ -341,19 +341,19 @@ def _flatten_filter(
         active.add(identity)
         try:
             operation = node.get("op")
-            try:
-                op = operations[operation]
-            except (KeyError, TypeError):
+            if not isinstance(operation, str) or operation not in operations:
                 invalid_argument(f"filter operator {operation!r} is not supported")
+            op = operations[operation]
             if op >= 8:
                 if op == 10:
                     if "filter" not in node:
                         invalid_argument("filter not requires exactly one child")
-                    children = [node["filter"]]
+                    children: list[Any] = [node["filter"]]
                 else:
-                    children = node.get("filters")
-                    if not isinstance(children, list):
+                    raw_children = node.get("filters")
+                    if not isinstance(raw_children, list):
                         invalid_argument(f"filter {operation} requires a filter list")
+                    children = raw_children
                 children_start = len(slots)
                 slots.extend([None] * len(children))
                 slots[index] = s.ZeFilterNode(
@@ -370,7 +370,7 @@ def _flatten_filter(
             if op in (1, 2):
                 if "value" not in node:
                     invalid_argument(f"filter {operation} requires one value")
-                node_values = (node["value"],)
+                node_values: tuple[Any, ...] = (node["value"],)
             elif op in (3, 4):
                 raw_values = node.get("values")
                 if not isinstance(raw_values, (list, tuple)):
@@ -445,9 +445,12 @@ def _flatten_filter(
             active.remove(identity)
 
     fill(value, 0, 1)
-    if any(node is None for node in slots):
-        invalid_argument("filter tree contains an unfilled child index")
-    nodes = (s.ZeFilterNode * len(slots))(*slots)  # type: ignore[arg-type]
+    filled: list[s.ZeFilterNode] = []
+    for slot in slots:
+        if slot is None:
+            invalid_argument("filter tree contains an unfilled child index")
+        filled.append(slot)
+    nodes = (s.ZeFilterNode * len(filled))(*filled)
     owners.append(nodes)
     return (
         s.ZeFilter(
@@ -890,6 +893,7 @@ class Store:
             if free_status != 0:
                 if primary is None:
                     raise_for_status(free_status, handle)
+                assert primary is not None
                 primary.add_note(f"ze_get_result_free: {last_error_message(handle)}")
 
     def scan(
@@ -1005,6 +1009,7 @@ class Store:
             if free_status != 0:
                 if primary is None:
                     raise_for_status(free_status, handle)
+                assert primary is not None
                 primary.add_note(f"ze_scan_result_free: {last_error_message(handle)}")
 
     def iter_documents(
@@ -1722,6 +1727,7 @@ def list_namespaces(root: str | Path) -> list[str]:
         if free_status != 0:
             if primary is None:
                 raise_for_status(free_status)
+            assert primary is not None
             primary.add_note(
                 f"ze_namespace_list_result_free: {last_error_message()}"
             )
