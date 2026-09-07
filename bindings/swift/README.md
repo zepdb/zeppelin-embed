@@ -6,7 +6,7 @@ consumers use the checksum-pinned XCFramework binary target in the root
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.2.1")
+.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.3.0")
 ```
 
 Local source builds set `ZE_USE_LOCAL_FFI=1` after building the release FFI

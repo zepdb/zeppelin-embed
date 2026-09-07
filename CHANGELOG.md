@@ -4,6 +4,45 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## 0.3.0 - 2026-09-07
+
+A feature release: type-ahead search. A new public surface, so a minor
+version.
+
+### Added
+
+- `last_as_prefix`: treat the last typed word of a lexical query as a prefix,
+  so a search box that shows results while the user types finds `meeting`
+  from `mee`. Off by default; with the flag off every query is byte-identical
+  to 0.2.1 (same query, same dispatch, same diagnostics counters). Works for
+  lexical-only and hybrid queries. The index does not change and no reindex
+  is needed.
+  - C ABI: `ZeQueryRequest.lexical_flags`, bit `ZE_QUERY_LAST_AS_PREFIX`.
+  - Swift: `QueryOptions(lastAsPrefix:)`, default `false`.
+  - Python: `Store.query(last_as_prefix=...)`, default `False`.
+  - Node has no text query surface, so nothing changes there.
+  - Rules: the prefix is the analysed token that reaches the end of the raw
+    input, so a trailing space or a stopword tail means the word is finished
+    and the query is the plain exact query. A prefix shorter than three
+    analysed bytes is also treated as exact. Because the index stores stems,
+    the expansion matches both directions (`meeti` still finds the stem
+    `meet`), and the prefix leg's boost is divided by the expansion count so
+    a wide prefix cannot outweigh the finished words.
+  - Core: `LexicalQuery::TermsWithPrefix { terms, prefix, fields }`.
+
+### Changed
+
+- `ZeQueryRequest.reserved` (offset 76) is renamed `lexical_flags`. The
+  struct's size, alignment and every field offset are unchanged, so a 0.2.1
+  caller that zeroed the field is binary compatible. C callers that used the
+  field name in a designated initializer must rename it. Unknown bits are
+  `ZE_ERR_INVALID_ARGUMENT`, as a nonzero `reserved` was.
+
+### Fixed
+
+- The Python binding passes strict mypy 2.x again (the `Python quality`
+  workflow was red on 0.2.1). Typing-only changes, same runtime behaviour.
+
 ## 0.2.1 - 2026-09-06
 
 A correction release. The 0.2.0 binary is unchanged; only the Swift package
