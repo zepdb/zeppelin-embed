@@ -19,7 +19,7 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // fails the release when this literal disagrees with the archive it attaches,
 // and prints the value to pin. `scripts/xcframework/build.sh` only reports a
 // local mismatch.
-let binaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000" // ze:xcframework-checksum
+let binaryChecksum = "73694bd5cdd235b65a1fed7e8597f67a74be9d4a2e5f5a8741be7219c9ccae4c" // ze:xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {
