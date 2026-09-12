@@ -424,14 +424,18 @@ impl Model {
         hits
     }
 
-    /// Independently applies the default alpha contract (0.7) or the
-    /// documented reciprocal-rank fallback (k=60) to complete model legs.
+    /// Independently applies Store policy v1 to complete model legs.
+    ///
+    /// The public vector search supplies its geometric enclosure as an input
+    /// fact, as in the dedicated hybrid oracle. Raw distances and BM25 scores
+    /// still come from this model; no production fusion/normalization is used.
     #[must_use]
     pub fn expected_hybrid(
         &self,
         vector_query: &[f32],
         query_slot: u8,
         k: usize,
+        vector_ceiling: f64,
     ) -> Vec<ExpectedHybridHit> {
         let vector = self
             .expected_exact(vector_query, self.len())
@@ -439,32 +443,29 @@ impl Model {
             .map(|hit| (hit.doc_id, -f64::from(hit.score)))
             .collect::<Vec<_>>();
         let lexical = self.expected_lexical(query_slot, self.len());
-        let vector_range = score_range(vector.iter().map(|(_, score)| *score));
-        let lexical_range = score_range(lexical.iter().map(|hit| hit.score));
-        let reciprocal_rank = vector_range.is_none() || lexical_range.is_none();
+        let lexical_maximum = lexical.first().map_or(0.0, |hit| hit.score);
+        let alpha = if lexical_maximum == 0.0 { 1.0 } else { 0.7 };
         let mut accumulated = BTreeMap::<u32, ExpectedHybridHit>::new();
-        for (rank, (doc_id, squared_l2)) in vector.iter().enumerate() {
-            let contribution = if reciprocal_rank {
-                1.0 / (60.0 + rank.saturating_add(1) as f64)
+        for (doc_id, squared_l2) in &vector {
+            let contribution = if vector_ceiling == 0.0 {
+                alpha
             } else {
-                let (minimum, maximum) = vector_range.expect("non-degenerate vector range");
-                0.7 * (maximum - squared_l2) / (maximum - minimum)
+                alpha * (vector_ceiling - squared_l2) / vector_ceiling
             };
             let hit = accumulated.entry(*doc_id).or_insert(ExpectedHybridHit {
                 doc_id: *doc_id,
                 vector_squared_l2: None,
-                lexical_bm25: None,
+                lexical_bm25: Some(0.0),
                 fused_score: 0.0,
             });
             hit.vector_squared_l2 = Some(*squared_l2);
             hit.fused_score += contribution;
         }
-        for (rank, lexical_hit) in lexical.iter().enumerate() {
-            let contribution = if reciprocal_rank {
-                1.0 / (60.0 + rank.saturating_add(1) as f64)
+        for lexical_hit in &lexical {
+            let contribution = if lexical_maximum == 0.0 {
+                0.0
             } else {
-                let (minimum, maximum) = lexical_range.expect("non-degenerate lexical range");
-                0.3 * (lexical_hit.score - minimum) / (maximum - minimum)
+                (1.0 - alpha) * lexical_hit.score / lexical_maximum
             };
             let hit = accumulated
                 .entry(lexical_hit.doc_id)
@@ -523,15 +524,6 @@ fn lexical_document_len(doc_id: u32, _revision: u64) -> u32 {
     (doc_id % 3 + 1)
         .saturating_add(4)
         .saturating_add(hexadecimal_runs)
-}
-
-fn score_range(scores: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
-    let mut scores = scores;
-    let first = scores.next()?;
-    let (minimum, maximum, count) = scores.fold((first, first, 1_usize), |state, score| {
-        (state.0.min(score), state.1.max(score), state.2 + 1)
-    });
-    (count > 1 && minimum != maximum).then_some((minimum, maximum))
 }
 
 fn predicate_matches(doc_id: u32, predicate: program::PredicateKind) -> bool {

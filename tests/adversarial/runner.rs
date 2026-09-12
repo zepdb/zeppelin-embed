@@ -948,6 +948,7 @@ struct HybridObservation {
 #[derive(Clone, Debug, PartialEq)]
 struct SearchObservation {
     hits: Vec<Hit>,
+    vector_ceiling: Option<f64>,
     generation: u64,
     epoch: Option<EpochIdentity>,
     graph_available: bool,
@@ -1994,6 +1995,7 @@ impl Engine for RealEngine {
             || (matches!(kind, SearchKind::Auto) && graph_available);
         Ok(SearchObservation {
             hits,
+            vector_ceiling: outcome.vector_ceiling,
             generation: outcome.generation,
             epoch: outcome.epoch,
             graph_available,
@@ -2099,6 +2101,7 @@ impl Engine for RealEngine {
         });
         Ok(SearchObservation {
             hits,
+            vector_ceiling: None,
             generation: outcome.generation,
             epoch: None,
             graph_available,
@@ -2178,6 +2181,7 @@ impl Engine for RealEngine {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(SearchObservation {
             hits,
+            vector_ceiling: None,
             generation: outcome.generation,
             epoch: None,
             graph_available: false,
@@ -3779,7 +3783,31 @@ fn run_program_for_with_clock(
                 }
             }
             Err(error) => {
-                if clock_timeout_expected && error.contains("deadline expired") {
+                if simulated_crash_recovered
+                    && matches!(
+                        op,
+                        Op::Search {
+                            kind: SearchKind::Graph,
+                            ..
+                        }
+                    )
+                    && (model.sealed_document_count() < graph_rows
+                        || graph_build_crash_preceded(
+                            &scheduled_vfs.events(),
+                            op_index,
+                            last_graph_publishing_maintain_op,
+                        ))
+                    && error.contains("has no graph region")
+                {
+                    // Explicit Graph validates availability before execution
+                    // checkpoints. A clock fault can fire on its start-time
+                    // read without superseding this preflight refusal.
+                    coverage.hit("crash.graph_preflight_refusal");
+                    if model.sealed_document_count() >= graph_rows {
+                        coverage.hit("crash.graph_build_interrupted_refusal");
+                    }
+                    operation_succeeded = true;
+                } else if clock_timeout_expected && error.contains("deadline expired") {
                     operation_succeeded = true;
                 } else if clock_timeout_expected {
                     violations.push(violation(
@@ -3862,26 +3890,6 @@ fn run_program_for_with_clock(
                     && error == "epoch transition blocked by an uncommitted crashed Seal"
                 {
                     break;
-                } else if simulated_crash_recovered
-                    && matches!(
-                        op,
-                        Op::Search {
-                            kind: SearchKind::Graph,
-                            ..
-                        }
-                    )
-                    && (model.sealed_document_count() < graph_rows
-                        || graph_build_crash_preceded(
-                            &scheduled_vfs.events(),
-                            op_index,
-                            last_graph_publishing_maintain_op,
-                        ))
-                    && error.contains("has no graph region")
-                {
-                    if model.sealed_document_count() >= graph_rows {
-                        coverage.hit("crash.graph_build_interrupted_refusal");
-                    }
-                    operation_succeeded = true;
                 } else if simulated_crash_recovered && wal_rewrite_refusal(&error) {
                     if matches!(op, Op::Purge { .. }) {
                         coverage.hit("purge.refused_after_crash");
@@ -17631,6 +17639,12 @@ fn reconcile_simulated_crash(
     if crash.layer != fault_vfs::Layer::Crash || crash.mode != fault_vfs::FaultMode::Crash {
         return Err("simulated crash recovery received a non-Crash event".to_owned());
     }
+    // A newly created WAL becomes recoverable only after both its bytes and
+    // directory entry are synced. The second Sync receipt names the store
+    // directory (the VFS's stable "." receipt), not wal.ze; that boundary
+    // still preserves the whole batch.
+    let wal_commit_durable = wal_dirent_durable
+        && (crash_path_is(crash, "wal.ze") || crash.path.as_deref() == Some(Path::new(".")));
     match op {
         Op::Ingest {
             first_id,
@@ -17640,7 +17654,7 @@ fn reconcile_simulated_crash(
         } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
+                if wal_commit_durable {
                     for doc_id in *first_id..first_id.saturating_add(*count) {
                         model.acknowledge(doc_id, *revision, *timestamp);
                     }
@@ -17662,7 +17676,7 @@ fn reconcile_simulated_crash(
         } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
+                if wal_commit_durable {
                     model.acknowledge(*doc_id, *revision, *timestamp);
                 }
             }
@@ -17676,7 +17690,7 @@ fn reconcile_simulated_crash(
         Op::Delete { doc_id } => match crash.site {
             fault_vfs::FaultSite::Append => {}
             fault_vfs::FaultSite::Sync => {
-                if wal_dirent_durable && crash_path_is(crash, "wal.ze") {
+                if wal_commit_durable {
                     model.delete(*doc_id);
                 }
             }
@@ -17809,6 +17823,7 @@ pub fn simulated_crash_torn_middle_counterexample() -> Violation {
         })
         .collect::<Vec<_>>();
     let observed = SearchObservation {
+        vector_ceiling: None,
         diagnostics_requested_k: model.len(),
         diagnostics_returned: hits.len(),
         hits,
@@ -17888,7 +17903,18 @@ fn run_hybrid_search(
     });
 
     let actual = engine.hybrid_search(query_slot, k)?;
-    let expected = model.expected_hybrid(&query_vector, query_slot, k);
+    let vector_ceiling = observed
+        .vector_ceiling
+        .filter(|ceiling| ceiling.is_finite() && *ceiling >= 0.0)
+        .ok_or_else(|| "hybrid reference requires a finite public vector enclosure".to_owned())?;
+    if model
+        .expected_exact(&query_vector, model.len())
+        .iter()
+        .any(|hit| -f64::from(hit.score) > vector_ceiling)
+    {
+        return Err("public vector enclosure excludes a model distance".to_owned());
+    }
+    let expected = model.expected_hybrid(&query_vector, query_slot, k, vector_ceiling);
     let hybrid_mismatch = (actual.hits.len() != expected.len()
         || actual.hits.iter().zip(&expected).any(|(actual, expected)| {
             actual.doc_id != expected.doc_id
@@ -18569,6 +18595,7 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
         let exact_rescore = returned == 0 || graph_segments != 0;
         SearchObservation {
             hits,
+            vector_ceiling: None,
             generation: 1,
             epoch: Some(declared_identity()),
             graph_available,
@@ -18761,6 +18788,7 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
         Invariant::I12 => {
             let observed = SearchObservation {
                 hits: Vec::new(),
+                vector_ceiling: None,
                 generation: 1,
                 epoch: None,
                 graph_available: false,

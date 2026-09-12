@@ -704,6 +704,8 @@ fn build_fault_fixture(seed: u64) -> Result<(tempfile::TempDir, StoreEpoch), Str
 }
 
 fn public_corruption_refused(seed: u64, region: u16) -> Result<(), String> {
+    // This fault exercises the product's opt-in query checksum verification.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let (directory, epoch) = build_fault_fixture(seed)?;
     let segment = first_segment_path(directory.path())?;
     let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;
@@ -944,6 +946,8 @@ fn corruption_refused_on_store(
     seed: u64,
     region: u16,
 ) -> Result<(), String> {
+    // Keep retained campaign replay in the same verifying mode as direct probes.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     leg.close()?;
     let segment = first_segment_path(leg.path())?;
     let mut bytes = std::fs::read(&segment).map_err(|error| error.to_string())?;

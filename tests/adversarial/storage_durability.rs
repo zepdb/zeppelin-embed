@@ -3016,7 +3016,7 @@ fn observed_format_error(
             let chunk = mutation
                 .chunk
                 .ok_or_else(|| "segment-region observation lacks chunk".to_owned())?;
-            let expected_artifact = format!("segment:{segment_id}:VectorRescore");
+            let expected_artifact = format!("segment:{segment_id}:VectorRescore:chunk-{chunk}");
             if error.artifact() != expected_artifact {
                 return Err(format!(
                     "public region artifact {:?} differs from {expected_artifact:?}",
@@ -3250,6 +3250,12 @@ fn observe_format_case_from_operation_fixture(
     if operation_fixture.evidence.operation != StorageOperationKind::FormatCheck {
         return Err("format observer received the wrong operation fixture".to_owned());
     }
+    // Query verification is opt-in in the product. This fault family checks
+    // its verifying mode, including the exact checksum receipt, rather than
+    // allowing an unrelated geometry error to stand in for that contract.
+    // Enable only: toggling this process-wide setting back off would race
+    // other corruption fixtures running in the same test binary.
+    zeppelin_embed::segment::reader::set_query_checksum_verification(true);
     let (selected_case, same_family_identity) = match case {
         independent::FormatCase::SegmentRegion => (StorageFaultKind::CorruptSegmentRegion, false),
         independent::FormatCase::ManifestWrongFamily => {

@@ -246,9 +246,18 @@ fn observe_accounting(
         .map_err(|error| error.to_string())?;
     let stats = store.stats().map_err(|error| error.to_string())?;
     let denied_directory = directory.join("allocation-denied");
+    // An empty store now owns accounted snapshot state. Measure that same
+    // fixture before setting a budget that admits open but denies query work.
+    let baseline = Store::open(&denied_directory, OpenOptions::default())
+        .map_err(|error| error.to_string())?;
+    let resident_budget = baseline
+        .stats()
+        .map_err(|error| error.to_string())?
+        .resident_owned_bytes;
+    baseline.close().map_err(|error| error.to_string())?;
     let denied = Store::open(
         &denied_directory,
-        OpenOptions::default().with_max_resident_bytes(0),
+        OpenOptions::default().with_max_resident_bytes(resident_budget),
     )
     .map_err(|error| error.to_string())?;
     let denied_result = denied.top_k_with_options(
@@ -262,9 +271,17 @@ fn observe_accounting(
     observed.query_pool_bytes = stats.query_pool_bytes;
     observed.allocation_denied = matches!(
         denied_result,
-        Err(QueryError::Store(StoreError::BudgetExceeded { .. }))
+        Err(QueryError::Store(StoreError::BudgetExceeded { needed, budget, .. }))
+            if budget == resident_budget && needed > budget
     );
-    let _ = denied.close();
+    let after_denial = denied.stats().map_err(|error| error.to_string())?;
+    if after_denial.active_queries != 0
+        || after_denial.query_pool_bytes != 0
+        || after_denial.resident_owned_bytes != resident_budget
+    {
+        return Err("denied query retained an admission or allocation".to_owned());
+    }
+    denied.close().map_err(|error| error.to_string())?;
     Ok(observed)
 }
 

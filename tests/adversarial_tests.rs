@@ -3100,6 +3100,43 @@ fn storage_durability_first_ack_survives_post_ack_wal_create_crash() {
 }
 
 #[test]
+fn crash_after_first_wal_directory_sync_preserves_the_model_batch() {
+    // Seed 48 crashes after both the WAL file and its first directory entry
+    // are synced. Recovery includes that whole unacknowledged batch; the
+    // model must not lose it merely because the receipt names the directory.
+    let root = tempfile::tempdir().expect("WAL directory-sync replay root");
+    let outcome = adversarial::runner::run_program(48, FaultProfile::Full, root.path())
+        .expect("WAL directory-sync crash episode");
+    let faults = String::from_utf8(outcome.faults_bytes).expect("fault receipts are UTF-8");
+    assert!(
+        faults.lines().any(|line| {
+            let record: zeppelin_embed_bench::harness_json::Value =
+                zeppelin_embed_bench::harness_json::from_str(line).expect("fault receipt");
+            record["op"].as_u64() == Some(1)
+                && record["layer"].as_str() == Some("crash")
+                && record["site"].as_str() == Some("sync")
+                && record["path"].as_str() == Some(".")
+                && record["fire_count"].as_u64() == Some(1)
+        }),
+        "first WAL directory-sync crash did not fire: {faults}"
+    );
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+}
+
+#[test]
+fn clock_jump_does_not_override_a_crashed_graph_preflight_refusal() {
+    // Seed 216 interrupts graph construction, then jumps the clock while the
+    // next explicit Graph query records its start time. Graph validation
+    // rejects before any execution checkpoint; no timeout outcome is owed.
+    let root = tempfile::tempdir().expect("clock and graph-crash replay root");
+    let outcome = adversarial::runner::run_program(216, FaultProfile::Full, root.path())
+        .expect("clock and graph-crash episode");
+    assert_eq!(outcome.coverage.count("crash.graph_preflight_refusal"), 1);
+    assert_eq!(outcome.coverage.count("fault.mode.clock_jump"), 1);
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+}
+
+#[test]
 fn graph_search_refusal_after_crashed_graph_checkpoint_is_not_a_violation() {
     // Seed 2307: crash fires mid-write on .tier-<id>.graph.checkpoint.tmp
     // during op 14 maintain; op 17 explicit graph search must be a typed
