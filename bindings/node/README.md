@@ -1,8 +1,8 @@
 # Zeppelin Embed for Node.js
 
 `@zepdb/zeppelin-embed` provides in-process vector search for macOS on Apple
-silicon. The package uses stable Node-API and includes its native engine, so it
-does not need a separate dynamic library at runtime.
+silicon and for Windows x64. The package uses stable Node-API and includes its
+native engine, so it does not need a separate dynamic library at runtime.
 
 ```bash
 npm install @zepdb/zeppelin-embed
@@ -51,8 +51,15 @@ Omit `vectorSpace` for a record-only namespace. Scan cursors are opaque and
 must be passed back unchanged; a cursor invalidated by a write throws
 `ZE_ERR_SCAN_STALE`.
 
-The initial package supports Node.js 18 or newer on macOS arm64. Unsupported
-platforms fail during installation and report a clear error if the package is
-loaded directly.
+The package supports Node.js 18 or newer on macOS arm64, and Node.js with
+Node-API 8 or later on Windows x64. Unsupported platforms fail during
+installation and report a clear error if the package is loaded directly.
+
+On Windows the loader picks the binary from `process.platform`,
+`process.arch`, and `process.versions.electron`, with no try-each fallback.
+Under Electron it accepts only the majors this package ships a binary for,
+currently 44; any other runtime is refused by name with
+`UnsupportedRuntimeError`. The Windows addon links the Visual C++ runtime, so
+the machine needs the Visual C++ redistributable.
 
 Zeppelin Embed is licensed under GPL-3.0-only.

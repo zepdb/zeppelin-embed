@@ -4,6 +4,68 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## 0.4.0 - 2026-09-17
+
+A platform release: Zeppelin Embed runs natively on Windows x64. The engine,
+the C ABI and the Node package all gain the platform. No search behaviour
+changes and the generated C header is byte-identical to 0.3.0, so an existing
+macOS consumer recompiles against this release unchanged.
+
+### Added
+
+- Windows 10/11 x64 support for the Rust core and the C ABI. The port is
+  native Win32, not a compatibility shim: owned file mappings with explicit
+  unmap, single-writer ownership through an exclusive file handle, the durable
+  publication protocol expressed in `CreateFileW`/`FlushFileBuffers`/
+  `MoveFileExW` terms, and recovery, maintenance and physical purge qualified
+  against retained readers, which is where Windows differs most from POSIX
+  because an open mapping refuses the delete rather than deferring it.
+  - `ZE_KERNEL` dispatch selects AVX2 on x86-64 and refuses `neon` by name.
+    The vectorised arm is compared with the scalar oracle bit-for-bit, with no
+    tolerance introduced.
+  - The on-disk format is unchanged. Both platforms verify it against the same
+    hand-written portable fixture. The macOS-to-Windows hop itself needs two
+    attached machines and has not been run, so cross-platform exchange is
+    checked one side at a time; the two exchange halves ship `#[ignore]`d so an
+    ordinary run reports them as ignored rather than passed.
+- `@zepdb/zeppelin-embed` ships Windows x64 binaries: one for Node with
+  Node-API 8 or later, one for Electron 44. The addon carries the engine
+  inside it and needs no Zeppelin DLL beside it, matching the macOS
+  arrangement. It links the Visual C++ runtime, so a consumer machine needs
+  the Visual C++ redistributable.
+  - The loader selects the binary from `process.platform`, `process.arch` and
+    `process.versions.electron`, and refuses an unsupported pair by name. There
+    is deliberately no try-each-and-catch fallback, which would turn a
+    packaging mistake into a confusing failure somewhere else.
+  - New `UnsupportedRuntimeError` (`ERR_ZEPPELIN_UNSUPPORTED_RUNTIME`) for a
+    supported platform with no shipped binary for the running runtime. The
+    TypeScript declarations export it alongside `UnsupportedPlatformError`.
+  - Qualified from a packaged Electron application, not only from a
+    development tree: a `.node` binary cannot be loaded from inside
+    `app.asar`, so the unpacked layout is checked before the application runs.
+- `.gitattributes` normalises the working tree to LF on every platform and
+  exempts the byte-exact fixtures entirely, so a Windows clone and a
+  macOS clone hold the same bytes.
+
+### Changed
+
+- The npm release now builds on both platforms. `Node package` gained a
+  `windows-latest` job, and a new assemble job combines the two prebuilds into
+  one tarball and runs `verify:release` against it. `npm pack` silently omits
+  `files` entries that are absent, so packing on one machine produced a
+  tarball that advertised both platforms and shipped one; npm would install
+  that on Windows and fail at `require` time. That gate now runs on every
+  change, not only at release.
+
+### Not in this release
+
+- No Windows Python wheel and no Windows C SDK archive. The PyPI wheel and the
+  release archives remain macOS arm64. On Windows, C and C++ consumers build
+  `zeppelin-embed-ffi` from source.
+- The Windows engine and FFI suites do not yet run in CI; `ci.yml` is still
+  macOS-only. They were run on the implementer's Windows 11 26100 host with
+  MSVC 14.29 and the results are recorded in the `W02`-`W10` commit bodies.
+
 ## 0.3.0 - 2026-09-07
 
 A feature release: type-ahead search. A new public surface, so a minor

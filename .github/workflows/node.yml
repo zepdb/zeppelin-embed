@@ -87,16 +87,105 @@ jobs:
             --module node16 --moduleResolution node16 --target es2022 \
             --strict --noEmit type-smoke.ts
           printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
+      # The prebuilt binary, not the tarball. One machine cannot build both
+      # platforms' addons, so the tarball this job packs is a smoke-test
+      # artefact only; `assemble` is what combines the two prebuilds into the
+      # single tarball a release publishes.
       - uses: actions/upload-artifact@v4
         with:
-          name: zeppelin-embed-node-darwin-arm64
+          name: prebuild-darwin-arm64
+          path: bindings/node/prebuilds/darwin-arm64
+          if-no-files-found: error
+
+  windows-package:
+    name: Windows x64 package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: bindings/node
+      # Both variants. The Electron arm downloads Electron's headers, so it is
+      # built only when ZE_ELECTRON_VERSION asks for it, and the loader accepts
+      # only the majors this package actually ships.
+      - run: npm run build:native
+        working-directory: bindings/node
+        env:
+          ZE_ELECTRON_VERSION: 44.4.1
+      - run: npm test
+        working-directory: bindings/node
+      - run: npm run typecheck
+        working-directory: bindings/node
+      - run: npm run check:prebuilt
+        working-directory: bindings/node
+      # Packs, installs into a consumer created outside the repository, runs
+      # the runtime smoke there and type-checks against the installed
+      # declarations. A consumer outside the build tree cannot resolve a
+      # Zeppelin DLL out of `target`, so this also proves the addon carries the
+      # engine inside it, which is what `otool` checks on the macOS side.
+      - run: npm run smoke:install
+        working-directory: bindings/node
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-win32-x64
+          path: bindings/node/prebuilds/win32-x64
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble the release tarball
+    needs: [package, windows-package]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuild-darwin-arm64
+          path: bindings/node/prebuilds/darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuild-win32-x64
+          path: bindings/node/prebuilds/win32-x64
+      - name: Pack every platform into one tarball
+        id: pack
+        working-directory: bindings/node
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --json | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => console.log(JSON.parse(value)[0].filename));')
+          printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
+      # `npm pack` silently omits `files` entries that are absent, so a tarball
+      # can advertise a platform and ship nothing for it; npm would install it
+      # there and the failure would surface at require time. This is the gate
+      # that refuses that tarball, and it reads the binary list from
+      # `package.json` so adding a platform cannot escape it.
+      - name: Verify the tarball contains every advertised binary
+        working-directory: bindings/node
+        run: npm run verify:release -- "${{ steps.pack.outputs.tarball }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeppelin-embed-node-package
           path: bindings/node/${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
 
   publish:
     name: Publish npm package
     if: github.event_name == 'workflow_dispatch'
-    needs: package
+    needs: assemble
     runs-on: macos-14
     environment: npm
     permissions:
@@ -105,7 +194,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: zeppelin-embed-node-darwin-arm64
+          name: zeppelin-embed-node-package
           path: package
       - uses: actions/setup-node@v6
         with:

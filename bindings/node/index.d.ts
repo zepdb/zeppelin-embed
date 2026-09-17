@@ -170,6 +170,16 @@ export declare class UnsupportedPlatformError extends Error {
   readonly code: 'ERR_ZEPPELIN_UNSUPPORTED_PLATFORM';
 }
 
+/**
+ * Thrown when the platform and architecture are supported but this package
+ * ships no binary for the running runtime, such as an Electron major it was
+ * not built for, or a Node-API version older than 8.
+ */
+export declare class UnsupportedRuntimeError extends Error {
+  constructor(detail: string);
+  readonly code: 'ERR_ZEPPELIN_UNSUPPORTED_RUNTIME';
+}
+
 export declare class Store {
   constructor(path: string, options?: OpenOptions);
   ingest(documents: readonly Document[], dimension: number): MutationReport;

@@ -15,7 +15,8 @@
 </div>
 
 Zeppelin Embed is the fastest and most accurate in-process search engine built
-for macOS and Apple silicon.
+for macOS and Apple silicon. Since v0.4.0 the same engine, C ABI, and Node
+package also run natively on Windows x64.
 
 ## Search performance
 
@@ -78,7 +79,7 @@ python -m pip install zeppelin-embed
 python bindings/python/examples/five_vectors_search.py
 ```
 
-The example supplies its own document and query vectors. Zeppelin Embed v0.3.0
+The example supplies its own document and query vectors. Zeppelin Embed v0.4.0
 does not bundle or download an embedding model.
 
 The directory is the database. Reopen the same path to recover its committed
@@ -108,6 +109,25 @@ embed or link the C ABI.
 
 The macOS SDK archive is language-neutral. Any runtime with C-compatible
 foreign functions can use its header and static or dynamic library.
+
+## Platform support
+
+| Package | macOS 11+, Apple silicon | Windows 10/11 x64 |
+|---|---|---|
+| Rust crate `zeppelin-embed` | Yes | Yes |
+| Node.js `@zepdb/zeppelin-embed` | Yes | Yes, Node-API 8 or later and Electron 44 |
+| C ABI | Yes, prebuilt SDK archive on the release | Yes, built from source with `cargo build -p zeppelin-embed-ffi` |
+| Python wheel | Yes | No |
+| Swift package | Yes | Not applicable |
+
+Windows uses the same on-disk format and the same C ABI. Each platform verifies
+the format against the same hand-written portable fixture; the macOS-to-Windows
+hop itself is not yet run on an attached pair of machines, so cross-platform
+exchange is designed for and checked one side at a time rather than measured
+end to end. The published benchmarks were measured on Apple silicon and are not
+restated for Windows. The prebuilt Node addon links the
+Visual C++ runtime, so a consumer machine needs the Visual C++ redistributable.
+There is no Windows SDK archive or Python wheel on the release yet.
 
 From a source checkout, run each example with:
 
