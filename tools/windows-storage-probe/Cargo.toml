@@ -1,0 +1,21 @@
+# Standalone native probe for the Windows durable-publication protocol (W02).
+#
+# Deliberately its own workspace with its own lockfile: the experiment has to
+# compile and run before `zeppelin-embed` itself is portable, so it cannot live
+# in a core integration test. It is std-only and has no dependencies, so it adds
+# nothing to any product dependency graph.
+[workspace]
+
+[package]
+name = "windows-storage-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+
+[lib]
+name = "windows_storage_probe"
+path = "src/lib.rs"
