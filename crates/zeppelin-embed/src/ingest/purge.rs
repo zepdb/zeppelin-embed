@@ -1848,7 +1848,17 @@ fn available_disk_bytes(path: &Path) -> std::io::Result<u64> {
     })
 }
 
-#[cfg(not(unix))]
+/// Bytes available to this caller on the volume that actually holds `path`.
+///
+/// `GetDiskFreeSpaceExW` is quota-aware and resolves the volume from the store
+/// path itself, so a store on a mount point or junction is measured against the
+/// volume it really lives on rather than the one its path prefix suggests.
+#[cfg(windows)]
+fn available_disk_bytes(path: &Path) -> std::io::Result<u64> {
+    crate::sys::windows::available_disk_bytes(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn available_disk_bytes(_path: &Path) -> std::io::Result<u64> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

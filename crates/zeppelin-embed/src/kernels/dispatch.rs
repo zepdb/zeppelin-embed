@@ -164,6 +164,7 @@ fn neon_widen_table(features: KernelFeatures) -> Option<KernelTable> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_widen_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
@@ -187,6 +188,7 @@ fn neon_dotprod_u2_table(features: KernelFeatures) -> Option<KernelTable> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_dotprod_u2_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
@@ -198,6 +200,7 @@ fn neon_dotprod_u6_table(features: KernelFeatures) -> Option<KernelTable> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_dotprod_u6_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
@@ -209,6 +212,7 @@ fn neon_dotprod_u8_table(features: KernelFeatures) -> Option<KernelTable> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_dotprod_u8_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
@@ -220,16 +224,19 @@ fn neon_dotprod_prefetch_table(features: KernelFeatures) -> Option<KernelTable> 
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_dotprod_prefetch_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_i8mm_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(test, feature = "test-support"))]
 fn neon_dotprod_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
