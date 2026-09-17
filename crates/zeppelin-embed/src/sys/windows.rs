@@ -17,11 +17,7 @@
 // identical to the SDK so a reader can diff them against the headers. That is
 // the whole point of a hand-written FFI boundary, so the naming lints are
 // disabled for this module only.
-#![allow(
-    non_snake_case,
-    non_camel_case_types,
-    clippy::upper_case_acronyms
-)]
+#![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
 use std::ffi::c_void;
 use std::io;
@@ -367,7 +363,22 @@ pub(crate) fn directory_identity(path: &Path) -> io::Result<(u64, u64)> {
     Ok((u64::from(info.dwVolumeSerialNumber), index))
 }
 
-/// Byte range the writer lock covers. Fixed and documented so that every
+/// Offset of the byte the writer lock covers.
+///
+/// Deliberately far beyond the end of a zero-length lock file. Windows
+/// byte-range locks are **mandatory**, not advisory like POSIX record locks: a
+/// locked range cannot be read by anyone, including another handle in the same
+/// process. Locking byte zero would therefore make `writer.lock` unreadable
+/// while a writer is open, which is a behaviour difference from Unix that
+/// nothing in the engine's contract asks for — a directory sweep that reads
+/// every file in the store would fail with `ERROR_LOCK_VIOLATION`.
+///
+/// Locking a range past end-of-file is explicitly permitted and gives exactly
+/// the exclusion that is wanted: every `StoreLock` contends for this one byte,
+/// and no ordinary read of the file touches it.
+pub(crate) const WRITER_LOCK_OFFSET: u64 = 0x4000_0000;
+
+/// Length of the writer-lock range. Fixed and documented so that every
 /// participant locks the same range; the lock file's contents are irrelevant,
 /// only the byte-range lock on it matters.
 pub(crate) const WRITER_LOCK_RANGE: u64 = 1;
@@ -389,8 +400,10 @@ pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
     let mut overlapped = OVERLAPPED {
         Internal: 0,
         InternalHigh: 0,
-        Offset: 0,
-        OffsetHigh: 0,
+        // `OVERLAPPED` carries the lock's starting offset as a 64-bit value
+        // split across two `DWORD`s.
+        Offset: (WRITER_LOCK_OFFSET & 0xFFFF_FFFF) as DWORD,
+        OffsetHigh: (WRITER_LOCK_OFFSET >> 32) as DWORD,
         hEvent: std::ptr::null_mut(),
     };
     let low = DWORD::try_from(WRITER_LOCK_RANGE)
@@ -411,7 +424,9 @@ pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
         return Ok(());
     }
     let error = io::Error::last_os_error();
-    let code = error.raw_os_error().and_then(|raw| DWORD::try_from(raw).ok());
+    let code = error
+        .raw_os_error()
+        .and_then(|raw| DWORD::try_from(raw).ok());
     match code {
         Some(ERROR_LOCK_VIOLATION) => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         // `LOCKFILE_FAIL_IMMEDIATELY` is documented never to return this, so
@@ -695,9 +710,7 @@ impl FileMapping {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn corrupt_byte(&mut self, offset: usize, mask: u8) -> io::Result<()> {
         if offset >= self.length {
-            return Err(io::Error::other(
-                "corruption offset is outside the mapping",
-            ));
+            return Err(io::Error::other("corruption offset is outside the mapping"));
         }
         let page_size = page_size()?;
         let page_offset = offset - offset % page_size;
@@ -742,12 +755,47 @@ impl Drop for FileMapping {
     }
 }
 
+/// A read-only file mapping exposed to the crate's integration tests.
+///
+/// [`FileMapping`] itself stays crate-private so no raw handle escapes the
+/// platform boundary. This is the seam the Windows storage-protocol tests use
+/// to hold one live mapping while the artifact behind it is replaced or
+/// unlinked, which is the lifetime property compaction depends on.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct TestMapping(FileMapping);
+
+#[cfg(any(test, feature = "test-support"))]
+impl TestMapping {
+    /// Maps an entire non-empty file read-only, taking ownership of the file.
+    pub fn open(file: std::fs::File, length: u64) -> io::Result<Self> {
+        FileMapping::from_file(file, length).map(Self)
+    }
+
+    /// The mapped bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    /// Exact virtual byte length of this mapping. Never a residency figure.
+    #[must_use]
+    pub const fn length(&self) -> usize {
+        self.0.length()
+    }
+
+    /// Bytes of this mapping whose intersecting pages are actually resident.
+    pub fn resident_bytes(&self) -> io::Result<u64> {
+        self.0.resident_bytes()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::{
-        FileMapping, PROCESS_MEMORY_COUNTERS_EX, PSAPI_WORKING_SET_EX_INFORMATION, available_disk_bytes,
-        page_size, process_memory, resident_bytes, sync_path, wide,
+        FileMapping, PROCESS_MEMORY_COUNTERS_EX, PSAPI_WORKING_SET_EX_INFORMATION,
+        available_disk_bytes, page_size, process_memory, resident_bytes, sync_path, wide,
     };
     use std::path::Path;
 
@@ -764,14 +812,17 @@ mod tests {
         assert_eq!(super::FILE_MAP_READ, 0x0004);
         assert_eq!(super::OPEN_EXISTING, 3);
         assert_eq!(super::ERROR_ACCESS_DENIED, 5);
-            assert_eq!(super::ERROR_LOCK_VIOLATION, 33);
+        assert_eq!(super::ERROR_LOCK_VIOLATION, 33);
         assert_eq!(super::INVALID_HANDLE_VALUE as isize, -1);
     }
 
     #[test]
     fn declared_struct_layouts_match_the_sdk() {
         // Two pointer-width fields.
-        assert_eq!(size_of::<PSAPI_WORKING_SET_EX_INFORMATION>(), 2 * size_of::<usize>());
+        assert_eq!(
+            size_of::<PSAPI_WORKING_SET_EX_INFORMATION>(),
+            2 * size_of::<usize>()
+        );
         // Two DWORDs then nine SIZE_Ts, with the pair padded to alignment.
         assert_eq!(
             size_of::<PROCESS_MEMORY_COUNTERS_EX>(),
@@ -899,7 +950,10 @@ mod tests {
 
         // A `.` round trip and an upper-cased spelling.
         let dotted = nested.join(".");
-        assert_eq!(super::directory_identity(&dotted).expect("dotted"), canonical);
+        assert_eq!(
+            super::directory_identity(&dotted).expect("dotted"),
+            canonical
+        );
         let uppercased = std::path::PathBuf::from(nested.to_string_lossy().to_uppercase());
         assert_eq!(
             super::directory_identity(&uppercased).expect("uppercased"),
@@ -951,7 +1005,10 @@ mod tests {
         let mapping = FileMapping::from_file(file, payload.len() as u64).expect("map");
 
         std::fs::remove_file(&path).expect("a std::fs::File shares deletion by default");
-        assert!(!path.try_exists().expect("exists probe"), "unlinked at once");
+        assert!(
+            !path.try_exists().expect("exists probe"),
+            "unlinked at once"
+        );
         assert_eq!(
             mapping.as_bytes(),
             payload.as_slice(),
@@ -1006,7 +1063,10 @@ mod tests {
         std::fs::write(&path, b"only-sixteen-b!!").expect("seed");
         let file = std::fs::File::open(&path).expect("open");
         let error = FileMapping::from_file(file, 1 << 20).expect_err("over-long mapping");
-        assert!(error.raw_os_error().is_some(), "a real Win32 error: {error}");
+        assert!(
+            error.raw_os_error().is_some(),
+            "a real Win32 error: {error}"
+        );
         std::fs::remove_dir_all(&directory).expect("cleanup");
     }
 }

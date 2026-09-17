@@ -1,0 +1,12 @@
+# Byte-exact golden fixtures must reach the working tree unmodified.
+#
+# Without this, a Windows clone with the default `core.autocrlf=true` rewrites
+# every LF to CRLF on checkout. The persisted formats are unaffected -- these
+# are text renderings of golden bytes, not the bytes themselves -- but a golden
+# compared as a whole string then differs from what the engine renders, and the
+# test fails for a reason that has nothing to do with the engine.
+crates/zeppelin-embed/tests/fixtures/** -text
+
+# Shell scripts must stay LF so they remain executable when a Windows checkout
+# is used from WSL, Git Bash or a container.
+*.sh text eol=lf

@@ -912,6 +912,7 @@ fn touch_every_mapping_page(segment: &SegmentReader) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn page_size() -> std::io::Result<usize> {
     let page_size = unsafe {
         // SAFETY: `_SC_PAGESIZE` takes no pointer arguments and has no preconditions.
@@ -921,6 +922,39 @@ fn page_size() -> std::io::Result<usize> {
         .ok()
         .filter(|size| *size != 0)
         .ok_or_else(|| std::io::Error::other("sysconf returned an invalid page size"))
+}
+
+#[cfg(windows)]
+fn page_size() -> std::io::Result<usize> {
+    #[allow(non_snake_case)]
+    #[repr(C)]
+    #[derive(Default)]
+    struct SYSTEM_INFO {
+        wProcessorArchitecture: u16,
+        wReserved: u16,
+        dwPageSize: u32,
+        lpMinimumApplicationAddress: *mut core::ffi::c_void,
+        lpMaximumApplicationAddress: *mut core::ffi::c_void,
+        dwActiveProcessorMask: usize,
+        dwNumberOfProcessors: u32,
+        dwProcessorType: u32,
+        dwAllocationGranularity: u32,
+        wProcessorLevel: u16,
+        wProcessorRevision: u16,
+    }
+    unsafe extern "system" {
+        fn GetSystemInfo(lpSystemInfo: *mut SYSTEM_INFO);
+    }
+
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: `info` is one writable, fully initialized `SYSTEM_INFO`.
+    unsafe {
+        GetSystemInfo(&raw mut info);
+    }
+    usize::try_from(info.dwPageSize)
+        .ok()
+        .filter(|size| *size != 0)
+        .ok_or_else(|| std::io::Error::other("GetSystemInfo reported an invalid page size"))
 }
 
 struct NoCacheVfs;
@@ -1133,4 +1167,82 @@ fn kernel_mapping_is_read_only(address: usize) -> std::io::Result<bool> {
     Err(std::io::Error::other(
         "target address is absent from /proc/self/maps",
     ))
+}
+
+/// Windows has no way to make an already-open handle uncached: buffering is
+/// chosen at `CreateFile` time with `FILE_FLAG_NO_BUFFERING`, which also
+/// imposes sector-alignment rules this VFS could not satisfy for arbitrary
+/// reads. This is therefore a deliberate no-op rather than a fake success, and
+/// it is sound for the reason below rather than by assumption.
+///
+/// The residency probe it supports is `QueryWorkingSetEx`, which reports
+/// whether a page is in **this process's working set** — unlike Unix `mincore`,
+/// which reports page-cache residency. A freshly created view has no pages in
+/// the working set until they are touched, whatever the file cache holds, so
+/// defeating the cache is not needed to establish the "cold before touching"
+/// precondition on Windows.
+///
+/// That claim is not taken on trust: the caller asserts at most 10% residency
+/// before touching the mapping, so if Windows behaved like the Unix page cache
+/// here, the test would fail loudly instead of passing vacuously.
+///
+/// No flush is issued either. The Unix arms flush before dropping the cache so
+/// the bytes under test are the ones on media; here nothing is being dropped,
+/// and this VFS hands read-only handles to `open_for_map` and `read`, which
+/// Windows refuses to flush with `ERROR_ACCESS_DENIED`. Correctness is
+/// unaffected: a mapping and a buffered write share the same unified cache
+/// pages, so the view always observes the current contents.
+#[cfg(windows)]
+fn disable_file_cache(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Windows counterpart of the `mach_vm_region` / `/proc/self/maps` protection
+/// check: `VirtualQuery` reports the effective protection of the region holding
+/// `address`.
+#[cfg(windows)]
+fn kernel_mapping_is_read_only(address: usize) -> std::io::Result<bool> {
+    #[allow(non_snake_case, non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Default)]
+    struct MEMORY_BASIC_INFORMATION {
+        BaseAddress: *mut core::ffi::c_void,
+        AllocationBase: *mut core::ffi::c_void,
+        AllocationProtect: u32,
+        PartitionId: u16,
+        RegionSize: usize,
+        State: u32,
+        Protect: u32,
+        Type: u32,
+    }
+    unsafe extern "system" {
+        fn VirtualQuery(
+            lpAddress: *const core::ffi::c_void,
+            lpBuffer: *mut MEMORY_BASIC_INFORMATION,
+            dwLength: usize,
+        ) -> usize;
+    }
+    const PAGE_READONLY: u32 = 0x02;
+
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: `info` is one writable struct of the declared layout and
+    // `dwLength` is its exact size. `VirtualQuery` only classifies the address;
+    // it never dereferences it.
+    let written = unsafe {
+        VirtualQuery(
+            address as *const core::ffi::c_void,
+            &raw mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if written == 0 {
+        return Err(std::io::Error::other(
+            "target address is absent from this process's address space",
+        ));
+    }
+    // Only an exactly read-only region passes. `PAGE_WRITECOPY` is deliberately
+    // rejected: a copy-on-write page cannot damage the file, but a stray write
+    // would still corrupt what an admitted reader sees, which is precisely what
+    // this contract exists to exclude.
+    Ok(info.Protect == PAGE_READONLY)
 }

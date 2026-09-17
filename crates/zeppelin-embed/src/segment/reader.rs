@@ -2186,7 +2186,8 @@ impl SegmentReader {
         let bytes = self.mapping.as_bytes().get(start..end).ok_or_else(|| {
             SegmentError::Geometry(format!(
                 "region {} range {start}..{end} exceeds file {}",
-                entry.kind, self.mapping.length()
+                entry.kind,
+                self.mapping.length()
             ))
         })?;
         Ok(bytes)

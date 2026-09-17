@@ -25,7 +25,10 @@ use std::os::unix::process::ExitStatusExt;
 #[cfg(unix)]
 use std::process::{Command, Stdio};
 
+// Only the `#[cfg(unix)]` kill-harness draws random schedules.
+#[cfg(unix)]
 use rand::{Rng, SeedableRng};
+#[cfg(unix)]
 use rand_chacha::ChaCha8Rng;
 use tempfile::tempdir;
 use zeppelin_embed::epoch::{
@@ -38,6 +41,8 @@ use zeppelin_embed::ingest::{
     SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+// Only the `#[cfg(unix)]` kill harness inspects the lock file directly.
+#[cfg(unix)]
 use zeppelin_embed::lifecycle::lock::{STORE_LOCK_FILE, StoreLock};
 use zeppelin_embed::lifecycle::{
     CancelToken, GraphSearchOptions, OpenOptions as StoreOpenOptions, QueryControl, SearchOptions,
@@ -51,7 +56,8 @@ use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs, VfsFile};
 #[cfg(unix)]
 use zeppelin_embed::wal::header::WAL_HEADER_LEN;
-#[cfg(unix)]
+// Used by the portable `wal_bytes_grow_monotonically_without_retirement` as
+// well as by the Unix-only kill harness, so this import is not platform-gated.
 use zeppelin_embed::wal::record::MIN_RECORD_LEN;
 use zeppelin_embed::wal::{
     GROUP_SIZE_HISTOGRAM_BUCKETS, LogSeq, RECENT_GROUP_LIMIT, WalReader, WalRetireError, WalWriter,

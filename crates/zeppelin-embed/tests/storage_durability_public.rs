@@ -111,6 +111,11 @@ fn segment_id(path: &Path) -> zeppelin_embed::segment::SegmentId {
     zeppelin_embed::segment::SegmentId::from_bytes(bytes)
 }
 
+/// Gated on `unix` because its only caller is the `#[cfg(unix)]`
+/// `storage_manifest_abort_child_helper`, which receives the id through an
+/// environment variable set by a parent that hands it an inherited descriptor.
+/// W11 adds the Windows child-abort harness; the gate widens with it.
+#[cfg(unix)]
 fn segment_id_from_hex(hex: &str) -> zeppelin_embed::segment::SegmentId {
     assert_eq!(hex.len(), 32, "segment identity width");
     let mut bytes = [0_u8; 16];

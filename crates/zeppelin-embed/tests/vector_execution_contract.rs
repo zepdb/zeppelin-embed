@@ -2507,12 +2507,23 @@ fn astra_05_exact_hybrid_widening_admits_required_workers() {
         if graph {
             let report = fixture.maintain_with_test_thresholds(
                 MaintenanceBudget {
-                    wall_time: std::time::Duration::from_secs(120),
+                    // 600s matches `tiering::MAINTENANCE_TEST_BUDGET` and the
+                    // structurally identical build in `store_graph_search`.
+                    // The budget is a fixture input meant to be effectively
+                    // unlimited -- the gate is `Complete` with one graph built,
+                    // not a latency bound -- and the former 120s had no headroom
+                    // on a slower host: this build takes ~130s standalone on an
+                    // i7-8750H and exhausted the budget under a parallel run.
+                    wall_time: std::time::Duration::from_secs(600),
                     bytes: u64::MAX,
                 },
                 TierThresholds { graph_min_rows: 32 },
             );
-            assert!(matches!(report.status, MaintenanceStatus::Complete));
+            assert!(
+                matches!(report.status, MaintenanceStatus::Complete),
+                "graph maintenance did not complete: {:?}",
+                report.status
+            );
             assert_eq!(report.graphs_built, 1);
         }
         fixture.close().expect("close prebuilt fixture");

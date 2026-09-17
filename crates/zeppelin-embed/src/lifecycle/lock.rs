@@ -50,11 +50,10 @@ impl StoreLock {
     /// permanently unopenable.
     pub fn acquire(directory: &Path) -> Result<Self, StoreLockError> {
         let path = directory.join(STORE_LOCK_FILE);
-        let registry_key =
-            store_identity(directory).map_err(|source| StoreLockError::Io {
-                path: directory.to_path_buf(),
-                source,
-            })?;
+        let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
         if !held_stores().insert(registry_key) {
             return Err(StoreLockError::Io {
                 path,
