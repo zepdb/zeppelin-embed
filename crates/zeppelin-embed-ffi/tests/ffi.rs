@@ -20,8 +20,16 @@ fn text_feature_off_leaves_the_library_byte_identical() {
             .status()
             .expect("run cargo build");
         assert!(status.success());
-        std::fs::read(target.path().join("release/libzeppelin_embed_ffi.a"))
-            .expect("read release archive")
+        // The static implementation archive, whose name is platform-specific:
+        // `libzeppelin_embed_ffi.a` under Unix toolchains, `zeppelin_embed_ffi.lib`
+        // under MSVC. This is deliberately *not* `zeppelin_embed_ffi.dll.lib`,
+        // which is the DLL's import library and contains no implementation.
+        let archive = if cfg!(target_env = "msvc") {
+            "release/zeppelin_embed_ffi.lib"
+        } else {
+            "release/libzeppelin_embed_ffi.a"
+        };
+        std::fs::read(target.path().join(archive)).expect("read release archive")
     };
 
     let first_archive = build();
