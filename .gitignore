@@ -29,5 +29,6 @@ bindings/python/wheelhouse/
 bindings/node/node_modules/
 bindings/node/*.tgz
 bindings/node/prebuilds/
+bindings/node/native/windows/build/
 scripts/release-local.sh
 *.profraw

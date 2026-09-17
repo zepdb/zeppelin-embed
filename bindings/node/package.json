@@ -1,7 +1,7 @@
 {
   "name": "@zepdb/zeppelin-embed",
   "version": "0.3.0",
-  "description": "In-process vector search for macOS and Apple silicon",
+  "description": "In-process vector search for macOS (Apple silicon) and Windows x64",
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
@@ -24,13 +24,17 @@
     "index.d.ts",
     "README.md",
     "LICENSE",
-    "prebuilds/darwin-arm64/zeppelin_embed.node"
+    "prebuilds/darwin-arm64/zeppelin_embed.node",
+    "prebuilds/win32-x64/node-napi8/zeppelin_embed.node",
+    "prebuilds/win32-x64/electron-44/zeppelin_embed.node"
   ],
   "os": [
-    "darwin"
+    "darwin",
+    "win32"
   ],
   "cpu": [
-    "arm64"
+    "arm64",
+    "x64"
   ],
   "engines": {
     "node": ">=18"
@@ -39,11 +43,14 @@
     "build:native": "node scripts/build-native.mjs",
     "check:prebuilt": "node scripts/check-prebuilt.mjs",
     "prepack": "npm run check:prebuilt",
+    "smoke:install": "node scripts/install-smoke.mjs",
     "test": "node --test test/*.test.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify:release": "node scripts/verify-release-tarball.mjs"
   },
   "devDependencies": {
     "@types/node": "22.18.1",
+    "node-gyp": "11.4.2",
     "typescript": "5.9.2"
   },
   "keywords": [
@@ -51,6 +58,7 @@
     "embedded",
     "search",
     "macos",
-    "apple-silicon"
+    "apple-silicon",
+    "windows"
   ]
 }
