@@ -1,0 +1,40 @@
+{
+  "name": "zeppelin-windows-electron-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal Electron consumer that qualifies the packaged Windows Node addon.",
+  "main": "main.js",
+  "scripts": {
+    "smoke": "node run-smoke.mjs",
+    "smoke:dev": "node run-smoke.mjs --dev-only",
+    "smoke:packaged": "node run-smoke.mjs --packaged-only"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "dev.zepdb.zeppelin.windows.fixture",
+    "productName": "ZeppelinWindowsFixture",
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/@zepdb/zeppelin-embed/**"
+    ],
+    "files": [
+      "main.js",
+      "utility.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "dir",
+      "signAndEditExecutable": false
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "dependencies": {
+    "@zepdb/zeppelin-embed": "file:.staging/zeppelin-embed.tgz"
+  }
+}

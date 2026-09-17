@@ -466,7 +466,7 @@ fn is_address_mapped(address: usize) -> std::io::Result<bool> {
     Ok(region_address <= target && target < region_address.saturating_add(region_size))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn is_address_mapped(address: usize) -> std::io::Result<bool> {
     let page_size = unsafe {
         // SAFETY: `_SC_PAGESIZE` takes no pointer argument and returns a process constant.
@@ -495,4 +495,57 @@ fn is_address_mapped(address: usize) -> std::io::Result<bool> {
     } else {
         Err(error)
     }
+}
+
+/// Windows thread census; the counterpart of the Linux arm's
+/// `/proc/self/task/*/comm` filter. Shared with `store_text_columns` because it
+/// is long enough that duplicating it would be a liability.
+#[cfg(windows)]
+#[path = "test_support/windows_threads.rs"]
+mod windows_threads;
+#[cfg(windows)]
+use windows_threads::named_thread_ids as os_thread_ids;
+
+/// Windows counterpart of the `mincore` / `mach_vm_region` mapped-address probe.
+#[cfg(windows)]
+fn is_address_mapped(address: usize) -> std::io::Result<bool> {
+    #[allow(non_snake_case, non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Default)]
+    struct MEMORY_BASIC_INFORMATION {
+        BaseAddress: *mut core::ffi::c_void,
+        AllocationBase: *mut core::ffi::c_void,
+        AllocationProtect: u32,
+        PartitionId: u16,
+        RegionSize: usize,
+        State: u32,
+        Protect: u32,
+        Type: u32,
+    }
+    unsafe extern "system" {
+        fn VirtualQuery(
+            lpAddress: *const core::ffi::c_void,
+            lpBuffer: *mut MEMORY_BASIC_INFORMATION,
+            dwLength: usize,
+        ) -> usize;
+    }
+    const MEM_COMMIT: u32 = 0x0000_1000;
+
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: `info` is one writable struct of the declared layout and
+    // `dwLength` is its exact size. `VirtualQuery` never dereferences
+    // `lpAddress`; it only classifies the address.
+    let written = unsafe {
+        VirtualQuery(
+            address as *const core::ffi::c_void,
+            &raw mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if written == 0 {
+        // An address outside the process address space is reported as a failed
+        // query; that is a truthful "not mapped", not a probe malfunction.
+        return Ok(false);
+    }
+    Ok(info.State == MEM_COMMIT)
 }

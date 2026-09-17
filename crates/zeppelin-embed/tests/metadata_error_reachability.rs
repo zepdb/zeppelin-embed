@@ -76,7 +76,15 @@ fn rewrite_region(bytes: &mut [u8], entry: usize) {
 }
 
 fn write_and_open(path: &Path, bytes: &[u8], id: SegmentId) -> SegmentReader {
-    std::fs::write(path, bytes).expect("write checked semantic mutation");
+    // Publish through a temporary and a rename rather than truncating in place.
+    // Callers keep an earlier `SegmentReader` alive across these mutations, and
+    // Windows refuses to write a file that has a mapped section open
+    // (ERROR_USER_MAPPED_FILE). The rename is also exactly how the engine
+    // itself replaces a published artifact, and on every platform it leaves an
+    // existing mapping on the bytes that reader already validated.
+    let temporary = path.with_extension("zseg.tmp-mutation");
+    std::fs::write(&temporary, bytes).expect("write checked semantic mutation");
+    std::fs::rename(&temporary, path).expect("publish checked semantic mutation");
     SegmentReader::open(&StdVfs, path, id).expect("outer checksums remain valid")
 }
 

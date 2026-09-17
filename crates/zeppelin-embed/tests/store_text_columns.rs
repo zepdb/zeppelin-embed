@@ -28,6 +28,15 @@ use zeppelin_embed::wal::WalReader;
 #[path = "test_support/pinned_text.rs"]
 mod pinned_text;
 
+/// Windows thread census, shared with `close_contract`. This test isolates
+/// itself in a child process rather than filtering by name, so it takes the
+/// unfiltered census that matches its `/proc/self/task` counterpart.
+#[cfg(windows)]
+#[path = "test_support/windows_threads.rs"]
+mod windows_threads;
+#[cfg(windows)]
+use windows_threads::all_thread_ids as os_thread_ids;
+
 #[test]
 fn hybrid_structured_accepts_terms_with_prefix() {
     use zeppelin_embed::fts::search::FieldWeights;

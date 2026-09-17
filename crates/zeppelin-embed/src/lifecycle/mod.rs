@@ -951,6 +951,14 @@ pub(crate) fn record_storage_segment_identity_fault(
     }
 }
 
+/// Renders a manifest-abort receipt for the child-abort acknowledgement wire.
+///
+/// Gated on `unix` because its only caller is the `#[cfg(unix)]` arm of
+/// [`StorageFaultController::abort_after_manifest_receipt`], which writes the
+/// receipt down an inherited `UnixStream`. Without the gate this is dead code
+/// on every other platform. W11 adds the Windows child-abort channel; the gate
+/// widens with it.
+#[cfg(unix)]
 #[cfg(any(test, feature = "test-support"))]
 fn storage_manifest_abort_wire_receipt(receipt: &StorageFaultReceipt) -> Option<String> {
     let StorageReceiptObserved::ManifestRename {

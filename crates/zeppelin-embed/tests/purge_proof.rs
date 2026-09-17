@@ -15,9 +15,15 @@ use tempfile::tempdir;
 use zeppelin_embed::graph::block::{GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeLayout};
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument,
-    IngestRetentionFaultController, IngestRetentionFaultEffect, IngestRetentionFaultReceiptV1,
-    IngestRetentionPurgeCrashCheckpoint, IngestRetentionTestFault, PurgeError, PurgeUnlinkErrorVfs,
+    IngestRetentionFaultController, IngestRetentionTestFault, PurgeError, PurgeUnlinkErrorVfs,
     Revision, SearchRequest,
+};
+// Only the `#[cfg(unix)]` purge-crash child helper decodes a wire receipt; it
+// is selected as a subprocess by its parent test. W11 adds the Windows
+// equivalent and the gate widens with it.
+#[cfg(unix)]
+use zeppelin_embed::ingest::{
+    IngestRetentionFaultEffect, IngestRetentionFaultReceiptV1, IngestRetentionPurgeCrashCheckpoint,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{

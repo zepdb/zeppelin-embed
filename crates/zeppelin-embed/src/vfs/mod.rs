@@ -176,7 +176,7 @@ impl Vfs for StdVfs {
     }
 
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
-        sync_file(&File::open(path)?, kind)
+        sync_path(path, kind)
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -521,6 +521,26 @@ fn is_segment_path(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
 }
 
+/// Synchronizes whatever `path` names, reopening it with the access the
+/// platform requires.
+///
+/// On Unix a read-only descriptor is enough for `fsync`, including on a
+/// directory. Windows refuses both: `FlushFileBuffers` needs write access, and
+/// a directory handle additionally needs `FILE_FLAG_BACKUP_SEMANTICS`, so the
+/// Windows arm does its own open rather than reusing `File::open`.
+#[cfg(not(windows))]
+fn sync_path(path: &Path, kind: SyncKind) -> std::io::Result<()> {
+    sync_file(&File::open(path)?, kind)
+}
+
+#[cfg(windows)]
+fn sync_path(path: &Path, _kind: SyncKind) -> std::io::Result<()> {
+    // Windows exposes no ordering-only barrier, so `Barrier` is served by the
+    // same full flush as `Full`: stronger and more expensive than a barrier,
+    // never cheaper. See `tasks/evidence/windows/w02-durable-publication-protocol.md`.
+    crate::sys::windows::sync_path(path)
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
     let result = match kind {
@@ -546,7 +566,17 @@ fn sync_file(file: &File, kind: SyncKind) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+/// Flushes an already-open handle without reopening its path.
+///
+/// Both `SyncKind`s map to `FlushFileBuffers`: Windows has no barrier-only
+/// primitive, so `Ordered` durability is served by the full flush. That is
+/// documented as stronger and more expensive, not as a cheap barrier.
+#[cfg(windows)]
+fn sync_file(file: &File, _kind: SyncKind) -> std::io::Result<()> {
+    crate::sys::windows::flush_file(file)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn sync_file(_: &File, kind: SyncKind) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

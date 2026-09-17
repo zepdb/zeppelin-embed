@@ -1,10 +1,12 @@
 //! Read-only memory-mapped segment validation and lazy region access.
 
 use std::fs::File;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::Path;
 #[cfg(any(test, feature = "test-support"))]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -230,12 +232,14 @@ fn account_data_read(bytes: usize) {
     });
 }
 
+#[cfg(unix)]
 struct MappedFile {
     _file: File,
     pointer: NonNull<u8>,
     length: usize,
 }
 
+#[cfg(unix)]
 impl MappedFile {
     fn open(file: File, path: &Path) -> Result<Self, SegmentError> {
         let length = usize::try_from(
@@ -284,6 +288,16 @@ impl MappedFile {
         unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
     }
 
+    /// Exact virtual byte length of this mapping. Never a residency figure.
+    const fn length(&self) -> usize {
+        self.length
+    }
+
+    /// Bytes of this mapping whose intersecting pages are actually resident.
+    fn resident_bytes(&self) -> std::io::Result<u64> {
+        crate::sys::memory::mincore_resident_bytes(self.as_bytes())
+    }
+
     /// Flips `mask` into one byte of the private mapping through copy-on-write,
     /// leaving the file untouched. Test support only: it models bit rot under a
     /// reader that already validated the page, deterministically on every
@@ -329,6 +343,7 @@ impl MappedFile {
     }
 }
 
+#[cfg(unix)]
 impl Drop for MappedFile {
     fn drop(&mut self) {
         // SAFETY: this is the exact pointer/length pair returned by successful
@@ -338,9 +353,66 @@ impl Drop for MappedFile {
 }
 
 // SAFETY: the mapping is immutable for its entire lifetime.
+#[cfg(unix)]
 unsafe impl Send for MappedFile {}
 // SAFETY: all shared access exposes read-only slices.
+#[cfg(unix)]
 unsafe impl Sync for MappedFile {}
+
+/// Windows read-only mapping, delegating to the platform boundary.
+///
+/// The engine's algorithms never see a Win32 handle: `sys::windows` owns the
+/// view, section and file, and releases them in that order. The `File` the VFS
+/// supplied is taken rather than reopened, so crash and fault filesystems keep
+/// controlling what is mapped, and a retired path cannot be re-resolved to a
+/// different file underneath a reader.
+#[cfg(windows)]
+struct MappedFile {
+    inner: crate::sys::windows::FileMapping,
+}
+
+#[cfg(windows)]
+impl MappedFile {
+    fn open(file: File, path: &Path) -> Result<Self, SegmentError> {
+        let length = file
+            .metadata()
+            .map_err(|error| SegmentError::io(path, error))?
+            .len();
+        if length == 0 {
+            return Err(FormatError::new(
+                path.display().to_string(),
+                FormatCheck::Length,
+                "empty segment file",
+            )
+            .into());
+        }
+        let inner = crate::sys::windows::FileMapping::from_file(file, length)
+            .map_err(|error| SegmentError::io(path, error))?;
+        Ok(Self { inner })
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        self.inner.as_bytes()
+    }
+
+    /// Exact virtual byte length of this mapping. Never a residency figure.
+    const fn length(&self) -> usize {
+        self.inner.length()
+    }
+
+    /// Bytes of this mapping whose intersecting pages are actually resident,
+    /// per `QueryWorkingSetEx`.
+    fn resident_bytes(&self) -> std::io::Result<u64> {
+        self.inner.resident_bytes()
+    }
+
+    /// Flips `mask` into one byte of the private view through copy-on-write,
+    /// leaving the segment file untouched. Test support only.
+    #[cfg(any(test, feature = "test-support"))]
+    fn corrupt_byte(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
+        self.inner.corrupt_byte(offset, mask)
+    }
+}
 
 impl crate::graph::search::RescoreValidator for SegmentReader {
     fn validate_rows(&self, rows: &[u32]) -> Result<(), String> {
@@ -540,7 +612,7 @@ impl SegmentReader {
         let parsed = parse_segment_header(
             &artifact,
             mapping.as_bytes(),
-            mapping.length as u64,
+            mapping.length() as u64,
             expected_id,
         )?;
         let rescore_valid_chunks = rescore_validation_words(&parsed.entries)?;
@@ -583,7 +655,7 @@ impl SegmentReader {
             MappedFile::open(file, path).map_err(crate::lifecycle::StoreError::Segment)?;
         let artifact = path.display().to_string();
         let region_count =
-            preflight_region_count(&artifact, mapping.as_bytes(), mapping.length as u64)
+            preflight_region_count(&artifact, mapping.as_bytes(), mapping.length() as u64)
                 .map_err(crate::lifecycle::StoreError::Segment)?;
         let directory_bytes = region_count
             .checked_mul(std::mem::size_of::<RegionEntry>())
@@ -596,7 +668,7 @@ impl SegmentReader {
         let parsed = parse_segment_header(
             &artifact,
             mapping.as_bytes(),
-            mapping.length as u64,
+            mapping.length() as u64,
             expected.id,
         )
         .map_err(crate::lifecycle::StoreError::Segment)?;
@@ -657,12 +729,12 @@ impl SegmentReader {
     /// Returns the exact virtual byte length of this immutable file mapping.
     #[must_use]
     pub(crate) const fn mapped_bytes(&self) -> usize {
-        self.mapping.length
+        self.mapping.length()
     }
 
     /// Returns mapped bytes whose intersecting pages are resident per `mincore`.
     pub(crate) fn mapped_resident_bytes(&self) -> std::io::Result<u64> {
-        crate::sys::memory::mincore_resident_bytes(self.mapping.as_bytes())
+        self.mapping.resident_bytes()
     }
 
     #[cfg(test)]
@@ -2114,7 +2186,8 @@ impl SegmentReader {
         let bytes = self.mapping.as_bytes().get(start..end).ok_or_else(|| {
             SegmentError::Geometry(format!(
                 "region {} range {start}..{end} exceeds file {}",
-                entry.kind, self.mapping.length
+                entry.kind,
+                self.mapping.length()
             ))
         })?;
         Ok(bytes)

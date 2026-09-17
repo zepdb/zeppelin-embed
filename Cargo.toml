@@ -7,7 +7,12 @@ members = [
     "tests/adversarial-oracle",
     "tests",
 ]
-exclude = ["fuzz", "tools/fuzz-dispatch", "tools/size-consumer"]
+exclude = [
+    "fuzz",
+    "tools/fuzz-dispatch",
+    "tools/size-consumer",
+    "tools/windows-storage-probe",
+]
 resolver = "2"
 
 [workspace.package]

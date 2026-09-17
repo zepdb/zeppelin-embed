@@ -1,0 +1,25 @@
+# This repository contains byte-exact text goldens that tests compare as whole
+# strings: rendered hex dumps, a generated Swift enum, a cross-binding parity
+# JSON fixture. On a Windows clone git's default `core.autocrlf=true` rewrites
+# every LF to CRLF on checkout, after which those comparisons fail for a reason
+# that has nothing to do with the engine. Normalising the working tree to LF on
+# every platform is the only setting under which a Windows checkout and the
+# macOS/Linux checkouts hold the same bytes.
+#
+# The persisted binary formats are unaffected either way -- these are text
+# renderings of golden bytes, not the bytes themselves.
+* text=auto eol=lf
+
+# Byte-exact fixtures additionally opt out of normalisation entirely, so
+# nothing can be rewritten on the way into the index either.
+crates/zeppelin-embed/tests/fixtures/** -text
+bindings/fixtures/** -text
+
+# Shell scripts must stay LF so they remain executable when a Windows checkout
+# is used from WSL, Git Bash or a container.
+*.sh text eol=lf
+
+# Binary assets are never line-ending converted.
+*.png binary
+*.svg -text
+*.node binary
