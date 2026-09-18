@@ -50,7 +50,7 @@
   },
   "devDependencies": {
     "@types/node": "22.18.1",
-    "node-gyp": "11.4.2",
+    "node-gyp": "12.4.0",
     "typescript": "5.9.2"
   },
   "keywords": [
