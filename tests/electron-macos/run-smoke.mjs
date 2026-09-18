@@ -179,6 +179,10 @@ try {
     ZE_FIXTURE_REPORT: reportPath,
     ZE_FIXTURE_MODE: mode,
   };
+  // Rosetta translates the whole Electron binary and framework on first run, which is far
+  // slower on a cold CI runner than on a warm developer machine. The native path keeps the
+  // tighter bound so a real hang there is still caught quickly.
+  const emulated = arch === 'x64' && process.arch === 'arm64';
   const launched = spawnSync(
     '/usr/bin/arch',
     [arch === 'x64' ? '-x86_64' : '-arm64', binary],
@@ -186,7 +190,7 @@ try {
       cwd: root,
       env,
       encoding: 'utf8',
-      timeout: 60000,
+      timeout: emulated ? 600000 : 60000,
     },
   );
   writeFileSync(join(evidence, 'stdout.log'), launched.stdout || '');
