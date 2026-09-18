@@ -13,24 +13,34 @@ import { fileURLToPath } from 'node:url';
  * silently assumed.
  */
 const REQUIRED = {
-  darwin: ['../prebuilds/darwin-arm64/zeppelin_embed.node'],
+  darwin: [
+    '../prebuilds/darwin-arm64/zeppelin_embed.node',
+    '../prebuilds/darwin-x64/zeppelin_embed.node',
+  ],
   win32: [
     '../prebuilds/win32-x64/node-napi8/zeppelin_embed.node',
     '../prebuilds/win32-x64/electron-44/zeppelin_embed.node',
   ],
 };
 
-const SUPPORTED_ARCH = { darwin: 'arm64', win32: 'x64' };
+/**
+ * Architectures that can *build* each platform's binaries.
+ *
+ * Both macOS slices cross-compile, so either kind of Mac produces the whole
+ * macOS set and `REQUIRED.darwin` lists both. Windows builds only its own.
+ */
+const BUILD_ARCH = { darwin: ['arm64', 'x64'], win32: ['x64'] };
 
-const expectedArch = SUPPORTED_ARCH[process.platform];
-if (expectedArch === undefined) {
+const buildArch = BUILD_ARCH[process.platform];
+if (buildArch === undefined) {
   throw new Error(
-    `Native packages can be built on macOS arm64 and Windows x64; received ${process.platform}/${process.arch}`,
+    `Native packages can be built on macOS and Windows x64; received ${process.platform}/${process.arch}`,
   );
 }
-if (process.arch !== expectedArch) {
+if (!buildArch.includes(process.arch)) {
   throw new Error(
-    `Native packages for ${process.platform} require ${expectedArch}; received ${process.arch}`,
+    `Native packages for ${process.platform} are built on ${buildArch.join(' or ')}; ` +
+      `received ${process.arch}`,
   );
 }
 

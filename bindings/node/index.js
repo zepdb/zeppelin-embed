@@ -14,8 +14,8 @@ class ZeppelinError extends Error {
 class UnsupportedPlatformError extends Error {
   constructor(platform, arch) {
     super(
-      `@zepdb/zeppelin-embed supports macOS on Apple silicon and Windows x64; ` +
-        `received ${platform}/${arch}`,
+      `@zepdb/zeppelin-embed supports macOS on Apple silicon and Intel, and ` +
+        `Windows x64; received ${platform}/${arch}`,
     );
     this.name = 'UnsupportedPlatformError';
     this.code = 'ERR_ZEPPELIN_UNSUPPORTED_PLATFORM';
@@ -50,8 +50,18 @@ function resolveBindingPath() {
   const { platform, arch } = process;
   const prebuilds = path.join(__dirname, 'prebuilds');
 
-  if (platform === 'darwin' && arch === 'arm64') {
-    return path.join(prebuilds, 'darwin-arm64', 'zeppelin_embed.node');
+  // macOS ships one binary per architecture and no per-runtime variant. The
+  // addon is a bundle with `-undefined dynamic_lookup`, so its Node-API
+  // symbols resolve from the host process, and the same file loads in Node and
+  // in Electron. Windows below needs the runtime distinction because its addon
+  // delay-loads `node.exe`.
+  if (platform === 'darwin') {
+    if (arch === 'arm64') {
+      return path.join(prebuilds, 'darwin-arm64', 'zeppelin_embed.node');
+    }
+    if (arch === 'x64') {
+      return path.join(prebuilds, 'darwin-x64', 'zeppelin_embed.node');
+    }
   }
 
   if (platform === 'win32' && arch === 'x64') {

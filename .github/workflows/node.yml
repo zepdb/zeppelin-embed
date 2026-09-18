@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   package:
-    name: macOS arm64 package
+    name: macOS package
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
         working-directory: bindings/node
@@ -61,15 +62,43 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: test "${RELEASE_TAG#v}" = "$(node -p "require('./bindings/node/package.json').version")"
-      - name: Verify the addon contains the FFI implementation
+      # Both macOS slices are cross-compiled here, so each one is checked for
+      # the architecture it claims as well as for carrying the engine. `file`
+      # is matched on the whole expected description rather than a substring,
+      # because "arm64" appears in an x86_64 build's path and would pass a
+      # looser grep.
+      - name: Verify each macOS addon is the right architecture and self-contained
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
-          file bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node | grep 'arm64'
-          if otool -L bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node | grep -q 'zeppelin_embed_ffi'; then
-            echo 'the addon unexpectedly depends on a separate Zeppelin FFI dylib' >&2
-            exit 1
-          fi
+          for slice in darwin-arm64:arm64 darwin-x64:x86_64; do
+            directory="${slice%%:*}"
+            architecture="${slice##*:}"
+            binary="bindings/node/prebuilds/$directory/zeppelin_embed.node"
+            file -b "$binary" | grep -Fqx "Mach-O 64-bit bundle $architecture"
+            if otool -L "$binary" | grep -q 'zeppelin_embed_ffi'; then
+              echo "$binary unexpectedly depends on a separate Zeppelin FFI dylib" >&2
+              exit 1
+            fi
+            echo "$binary: Mach-O 64-bit bundle $architecture, engine linked in"
+          done
+      # The x86_64 slice is cross-compiled, so building it proves nothing about
+      # loading it. This runs the package's own suite against it under an
+      # x86_64 Node, which is the only step that proves an Intel Mac can use
+      # this package. It deliberately has no skip: a runner that cannot run
+      # x86_64 fails the job rather than quietly shipping an untested binary.
+      - name: Run the package suite against the x86_64 addon
+        working-directory: bindings/node
+        env:
+          X64_NODE_VERSION: v24.21.0
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          curl --proto '=https' --tlsv1.2 --retry 5 --location --silent --show-error --fail \
+            "https://nodejs.org/dist/$X64_NODE_VERSION/node-$X64_NODE_VERSION-darwin-x64.tar.gz" \
+            | tar xz -C "$workdir"
+          x64node="$workdir/node-$X64_NODE_VERSION-darwin-x64/bin/node"
+          test "$(arch -x86_64 "$x64node" -p 'process.arch')" = x64
+          arch -x86_64 "$x64node" --test test/*.test.mjs
       - name: Pack and smoke-test the installed artifact
         id: pack
         working-directory: bindings/node
@@ -87,14 +116,15 @@ jobs:
             --module node16 --moduleResolution node16 --target es2022 \
             --strict --noEmit type-smoke.ts
           printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
-      # The prebuilt binary, not the tarball. One machine cannot build both
-      # platforms' addons, so the tarball this job packs is a smoke-test
-      # artefact only; `assemble` is what combines the two prebuilds into the
-      # single tarball a release publishes.
+      # The prebuilt binaries, not the tarball. A Mac cannot build the Windows
+      # addon, so the tarball this job packs is a smoke-test artefact only;
+      # `assemble` is what combines both platforms' prebuilds into the single
+      # tarball a release publishes. Both macOS slices travel as one artefact
+      # because one job builds both.
       - uses: actions/upload-artifact@v4
         with:
-          name: prebuild-darwin-arm64
-          path: bindings/node/prebuilds/darwin-arm64
+          name: prebuilds-darwin
+          path: bindings/node/prebuilds
           if-no-files-found: error
 
   windows-package:
@@ -155,8 +185,8 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v4
         with:
-          name: prebuild-darwin-arm64
-          path: bindings/node/prebuilds/darwin-arm64
+          name: prebuilds-darwin
+          path: bindings/node/prebuilds
       - uses: actions/download-artifact@v4
         with:
           name: prebuild-win32-x64

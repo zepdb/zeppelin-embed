@@ -18,57 +18,93 @@ const ffiHeaders = join(repository, 'crates', 'zeppelin-embed-ffi', 'include');
 const source = join(packageDirectory, 'native', 'addon.cc');
 const targetDirectory = resolve(process.env.CARGO_TARGET_DIR || join(repository, 'target'));
 
-const isDarwinArm64 = process.platform === 'darwin' && process.arch === 'arm64';
+const isDarwin = process.platform === 'darwin';
 const isWindowsX64 = process.platform === 'win32' && process.arch === 'x64';
 
-if (!isDarwinArm64 && !isWindowsX64) {
+if (!isDarwin && !isWindowsX64) {
   throw new Error(
-    `The native package targets macOS arm64 and Windows x64; received ${process.platform}/${process.arch}`,
+    `The native package targets macOS and Windows x64; received ${process.platform}/${process.arch}`,
   );
 }
 
-if (isDarwinArm64) {
+/**
+ * Every macOS architecture the package ships, built on either kind of Mac.
+ *
+ * The addon is a `-bundle` with `-undefined dynamic_lookup`, so it links
+ * against no Node library and its Node-API symbols resolve from whatever host
+ * process loads it. That makes it a pure cross-compile: one slice per Rust
+ * target plus the matching `clang -arch`, with architecture-independent Node
+ * headers. It is also why macOS needs no per-Electron-major variant the way
+ * Windows does, where the addon delay-loads `node.exe` and the import library
+ * differs per host.
+ *
+ * Both slices are always built, rather than only the host's. A Mac that can
+ * produce one can produce the other, and building both means a local
+ * `npm pack` yields a complete macOS package instead of one that advertises
+ * an architecture it silently omits.
+ */
+const MACOS_SLICES = [
+  { directory: 'darwin-arm64', rustTarget: 'aarch64-apple-darwin', clangArch: 'arm64' },
+  { directory: 'darwin-x64', rustTarget: 'x86_64-apple-darwin', clangArch: 'x86_64' },
+];
+
+if (isDarwin) {
   const nodePrefix = resolve(dirname(process.execPath), '..');
   const nodeHeaders = join(nodePrefix, 'include', 'node');
-  const staticLibrary = join(targetDirectory, 'release', 'libzeppelin_embed_ffi.a');
-  const output = join(packageDirectory, 'prebuilds', 'darwin-arm64', 'zeppelin_embed.node');
   const environment = {
     ...process.env,
     MACOSX_DEPLOYMENT_TARGET: process.env.MACOSX_DEPLOYMENT_TARGET || '11.0',
   };
 
-  run('cargo', ['build', '--locked', '--release', '-p', 'zeppelin-embed-ffi'], {
-    cwd: repository,
-    env: environment,
-  });
-  mkdirSync(dirname(output), { recursive: true });
-  run(
-    'xcrun',
-    [
-      'clang++',
-      '-std=c++17',
-      '-fno-rtti',
-      '-O3',
-      '-Wall',
-      '-Wextra',
-      '-Werror',
-      '-DNAPI_VERSION=8',
-      '-I',
-      nodeHeaders,
-      '-I',
-      ffiHeaders,
-      '-bundle',
-      '-undefined',
-      'dynamic_lookup',
-      source,
-      staticLibrary,
-      '-liconv',
-      '-Wl,-dead_strip',
-      '-o',
-      output,
-    ],
-    { env: environment },
-  );
+  for (const slice of MACOS_SLICES) {
+    const staticLibrary = join(
+      targetDirectory,
+      slice.rustTarget,
+      'release',
+      'libzeppelin_embed_ffi.a',
+    );
+    const output = join(packageDirectory, 'prebuilds', slice.directory, 'zeppelin_embed.node');
+
+    // `--target` is passed even for the host, so both slices land under
+    // `target/<triple>/release` and neither can pick up the other's artifacts
+    // from the bare `target/release` directory.
+    run(
+      'cargo',
+      ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi'],
+      { cwd: repository, env: environment },
+    );
+    mkdirSync(dirname(output), { recursive: true });
+    run(
+      'xcrun',
+      [
+        'clang++',
+        '-std=c++17',
+        '-fno-rtti',
+        '-O3',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-arch',
+        slice.clangArch,
+        '-DNAPI_VERSION=8',
+        '-I',
+        nodeHeaders,
+        '-I',
+        ffiHeaders,
+        '-bundle',
+        '-undefined',
+        'dynamic_lookup',
+        source,
+        staticLibrary,
+        '-liconv',
+        '-Wl,-dead_strip',
+        '-o',
+        output,
+      ],
+      { env: environment },
+    );
+    console.log(`built ${slice.directory} -> ${output}`);
+  }
 } else {
   // Windows x64.
   //

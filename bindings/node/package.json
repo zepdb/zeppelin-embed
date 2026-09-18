@@ -1,7 +1,7 @@
 {
   "name": "@zepdb/zeppelin-embed",
   "version": "0.4.0",
-  "description": "In-process vector search for macOS (Apple silicon) and Windows x64",
+  "description": "In-process vector search for macOS (Apple silicon and Intel) and Windows x64",
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
@@ -25,6 +25,7 @@
     "README.md",
     "LICENSE",
     "prebuilds/darwin-arm64/zeppelin_embed.node",
+    "prebuilds/darwin-x64/zeppelin_embed.node",
     "prebuilds/win32-x64/node-napi8/zeppelin_embed.node",
     "prebuilds/win32-x64/electron-44/zeppelin_embed.node"
   ],
