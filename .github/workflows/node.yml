@@ -10,6 +10,7 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "bindings/node/**"
+      - "tests/electron-macos/**"
   push:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "bindings/node/**"
+      - "tests/electron-macos/**"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -172,6 +174,76 @@ jobs:
           path: bindings/node/prebuilds/win32-x64
           if-no-files-found: error
 
+  electron-package:
+    name: Signed Electron lifecycle (${{ matrix.arch }})
+    needs: package
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/electron-macos/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuilds-darwin
+          path: bindings/node/prebuilds
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/electron-macos
+      - name: Package, sign, verify, and run Electron
+        run: npm run smoke -- ${{ matrix.arch }} single
+        working-directory: tests/electron-macos
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: electron-package-${{ matrix.arch }}
+          path: tests/electron-macos/evidence
+          if-no-files-found: error
+
+  electron-isolation:
+    name: Electron and Node isolation (${{ matrix.arch }})
+    needs: package
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/electron-macos/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuilds-darwin
+          path: bindings/node/prebuilds
+      - name: Prove native reload, worker loading, and finalization in Node
+        run: node --test bindings/node/test/double-load.test.mjs
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/electron-macos
+      - name: Package, sign, verify, and run Electron
+        run: npm run smoke -- ${{ matrix.arch }} concurrent
+        working-directory: tests/electron-macos
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: electron-isolation-${{ matrix.arch }}
+          path: tests/electron-macos/evidence
+          if-no-files-found: error
+
   assemble:
     name: Assemble the release tarball
     needs: [package, windows-package]
@@ -215,7 +287,7 @@ jobs:
   publish:
     name: Publish npm package
     if: github.event_name == 'workflow_dispatch'
-    needs: assemble
+    needs: [assemble, electron-package, electron-isolation]
     runs-on: macos-14
     environment: npm
     permissions:

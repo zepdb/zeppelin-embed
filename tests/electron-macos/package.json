@@ -1,0 +1,14 @@
+{
+  "name": "zeppelin-electron-macos-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal packaged macOS consumer for ADR-012.",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "smoke": "node run-smoke.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.15.3"
+  }
+}

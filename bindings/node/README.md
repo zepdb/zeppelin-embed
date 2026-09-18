@@ -110,4 +110,78 @@ currently 44; any other runtime is refused by name with
 `UnsupportedRuntimeError`. The Windows addon links the Visual C++ runtime, so
 the machine needs the Visual C++ redistributable.
 
+## Electron
+
+The Node package workflow qualifies Electron 44.4.1 on macOS arm64 and x64
+using a minimal electron-builder app with an ASAR archive. It runs the addon
+in the main process, in a utility process, and in two utility processes using
+different stores. Node tests also exercise worker threads, garbage collection,
+and process exit with an unclosed store.
+
+Declare `@zepdb/zeppelin-embed` as a production dependency and include this in
+your electron-builder configuration:
+
+```json
+{
+  "asar": true,
+  "asarUnpack": ["node_modules/@zepdb/zeppelin-embed/prebuilds/**/*.node"],
+  "npmRebuild": false
+}
+```
+
+The unpack pattern is relative to the app directory. It keeps the native files
+in `app.asar.unpacked`; Electron redirects their ASAR paths automatically, so
+keep using `require('@zepdb/zeppelin-embed')`. The published prebuilds need no
+rebuild for macOS Electron. `npmRebuild: false` is appropriate for this minimal
+app; applications with other native dependencies must handle those dependencies'
+rebuild requirements separately. Windows requires the shipped Electron-major
+variant described above.
+
+Call `utilityProcess.fork` after `app.whenReady()`. In the utility entry point:
+
+```js
+const { openNamespace } = require('@zepdb/zeppelin-embed');
+const store = openNamespace('/absolute/writable/data/path', 'notes', {});
+try {
+  store.upsert([{ id: 1n, text: 'harbour lights' }]);
+  console.log(store.query({ text: 'harbour', k: 1 }));
+} finally {
+  store.close();
+}
+```
+
+Keep stores outside the signed app bundle. Each store has one writer; different
+processes must use different stores. Loading the addon twice is tested by
+removing both its JavaScript and native entries from the CommonJS cache and
+asserting two native initializations, independent live stores, and persisted
+results after close and reopen. Ordinary repeated `require` also works.
+
+The macOS addon is built with a macOS 11.0 deployment target. The Electron
+44.4.1 app bundle declares macOS 13.0 as its minimum; the host runtime can
+require a newer OS than the addon. CI executes on macos-14, not every older OS.
+The addon performs no runtime network requests; installation and CI may download
+packages and Electron.
+
+### Signing scope
+
+CI uses only ad-hoc signing (`mac.identity: "-"`), with
+`mac.hardenedRuntime: true` and `mac.notarize: false`. It verifies the app,
+utility helper, and unpacked addon with `codesign --verify --strict`, checks
+that their signatures are ad-hoc and carry the runtime flag, and checks the
+whole bundle with `--deep --strict` before launching it.
+
+The fixture grants `com.apple.security.cs.allow-jit` for Electron/V8 and
+`com.apple.security.cs.disable-library-validation` because ad-hoc code has no
+shared Team ID for library validation. It grants no unsigned-executable-memory
+exception. These are host signing settings, not an addon JIT requirement.
+Hardened runtime remains enabled with those explicit exceptions.
+
+This proves packaged loading and signature integrity under the tested ad-hoc
+configuration. It does not authenticate a publisher, prove Gatekeeper trust,
+provide notarization or stapling, or prove loading with library validation
+enabled. A future Developer ID qualification must sign all nested code with
+one real identity, remove the ad-hoc library-validation exception and retest,
+then separately notarize, staple, and assess distribution. No certificate or
+notarization credentials are required for this CI fixture.
+
 Zeppelin Embed is licensed under GPL-3.0-only.
