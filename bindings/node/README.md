@@ -1,6 +1,6 @@
 # Zeppelin Embed for Node.js
 
-`@zepdb/zeppelin-embed` provides in-process vector search for
+`@zepdb/zeppelin-embed` provides in-process vector, text and hybrid search for
 macOS on Apple silicon and Intel, and for Windows x64. The package uses stable
 Node-API and includes its native engine, so it does not need a separate dynamic
 library at runtime.
@@ -51,6 +51,48 @@ store.close();
 Omit `vectorSpace` for a record-only namespace. Scan cursors are opaque and
 must be passed back unchanged; a cursor invalidated by a write throws
 `ZE_ERR_SCAN_STALE`.
+
+`query` runs one structured query. `text` selects the lexical leg, `vector`
+selects the vector leg, and both together run hybrid fusion; a request with
+neither is refused.
+
+```js
+const { CancellationToken } = require('@zepdb/zeppelin-embed');
+
+// Lexical, with the last term treated as a type-ahead prefix.
+store.query({ text: 'harb', k: 10, lastAsPrefix: true });
+
+// Hybrid, with an explicit fusion weight.
+const result = store.query({
+  text: 'harbour lights',
+  vector: new Float32Array([0.9, 0.1]),
+  k: 10,
+  alpha: 0.75,
+});
+console.log(result.mode, result.fusion.effectiveAlpha, result.hits);
+```
+
+Each hit carries `id`, `score`, and the per-leg `lexicalBm25` and
+`vectorSquaredL2` when that leg ran; `revision` is absent on a fused hit,
+which carries identity only. The result carries the queried `generation`, the
+`mode` that ran, the `approximate`, `exactRescore`, and `budgetExhausted`
+flags, and a `fusion` report when both legs ran.
+
+A query stops early on either a `deadlineNs` or a `cancelToken`, never both.
+A `CancellationToken` owns an engine handle, so close it:
+
+```js
+const token = new CancellationToken();
+try {
+  const hits = store.query({ text: 'harbour', k: 10, cancelToken: token });
+  // token.cancel() from elsewhere asks any query holding it to stop.
+} finally {
+  token.close();
+}
+```
+
+A lexical query works on a record-only namespace. A hybrid query there throws
+`ZE_ERR_NO_VECTOR_SPACE`.
 
 The package supports Node.js 18 or newer on macOS arm64 and macOS x64, and
 Node.js with Node-API 8 or later on Windows x64. Unsupported platforms fail

@@ -391,6 +391,46 @@ bool GetRequiredUint32(napi_env env, napi_value object, const char *name,
                 "read unsigned integer");
 }
 
+bool GetOptionalUint32(napi_env env, napi_value object, const char *name,
+                       uint32_t default_value, uint32_t *output) {
+  napi_value value;
+  bool present = false;
+  if (!GetNamed(env, object, name, &value, &present))
+    return false;
+  if (!present) {
+    *output = default_value;
+    return true;
+  }
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, value, &type), "inspect number") ||
+      type != napi_number) {
+    std::string message(name);
+    message.append(" must be a number");
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", message.c_str());
+    return false;
+  }
+  return NapiOk(env, napi_get_value_uint32(env, value, output),
+                "read unsigned integer");
+}
+
+bool GetOptionalDouble(napi_env env, napi_value object, const char *name,
+                       double *output, bool *present) {
+  napi_value value;
+  if (!GetNamed(env, object, name, &value, present))
+    return false;
+  if (!*present)
+    return true;
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, value, &type), "inspect number") ||
+      type != napi_number) {
+    std::string message(name);
+    message.append(" must be a number");
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", message.c_str());
+    return false;
+  }
+  return NapiOk(env, napi_get_value_double(env, value, output), "read number");
+}
+
 bool ParseAttributeValue(napi_env env, napi_value value,
                          ZeAttributeValue *attribute,
                          std::string *string_storage) {
@@ -2186,6 +2226,395 @@ napi_value Search(napi_env env, napi_callback_info info) {
   });
 }
 
+/**
+ * `ze_query`: one structured query with a vector leg, a lexical leg, or exact
+ * hybrid fusion of both.
+ *
+ * The leg selection is the C ABI's, not a second policy invented here: the
+ * vector leg is present when `vector_len` is nonzero and the lexical leg when
+ * `text_len` is nonzero, and both present selects fusion. A request carrying
+ * neither is refused here by name rather than handed to the engine as an empty
+ * query, because "no legs" is a caller mistake with no useful engine answer.
+ *
+ * `text` is copied into a `std::string` and `vector` into a `std::vector`, so
+ * neither depends on a JavaScript object surviving the call. Every other field
+ * is a scalar read straight into the request.
+ */
+napi_value Query(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read query arguments"))
+      return nullptr;
+    if (argc < 1) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS", "request is required");
+      return nullptr;
+    }
+    napi_valuetype request_type;
+    if (!NapiOk(env, napi_typeof(env, args[0], &request_type),
+                "inspect query request"))
+      return nullptr;
+    if (request_type != napi_object) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "query request must be an object");
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+
+    ZeQueryRequest request{};
+    request.abi_size = sizeof(request);
+
+    std::string text;
+    bool has_text = false;
+    if (!GetOptionalString(env, args[0], "text", &text, &has_text))
+      return nullptr;
+
+    std::vector<float> vector;
+    napi_value vector_value;
+    bool has_vector = false;
+    if (!GetNamed(env, args[0], "vector", &vector_value, &has_vector))
+      return nullptr;
+    if (has_vector) {
+      const float *data = nullptr;
+      size_t length = 0;
+      if (!GetFloat32Array(env, vector_value, "query vector", &data, &length))
+        return nullptr;
+      vector.assign(data, data + length);
+    }
+
+    if (!has_text && !has_vector) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                            "a query needs text, a vector, or both");
+      return nullptr;
+    }
+
+    if (has_text) {
+      request.text = reinterpret_cast<const uint8_t *>(text.data());
+      request.text_len = text.size();
+    }
+    if (!vector.empty()) {
+      request.vector = vector.data();
+      request.vector_len = vector.size();
+      request.dimension = vector.size();
+    }
+
+    uint32_t k = 0;
+    uint32_t thread_budget = 0;
+    if (!GetOptionalUint32(env, args[0], "k", 10, &k) ||
+        !GetOptionalUint32(env, args[0], "threadBudget", 0, &thread_budget))
+      return nullptr;
+    request.k = k;
+    request.thread_budget = thread_budget;
+
+    bool last_as_prefix = false;
+    bool rules_enabled = false;
+    bool quoted_phrase = false;
+    bool identifier_token = false;
+    if (!GetOptionalBool(env, args[0], "lastAsPrefix", false,
+                         &last_as_prefix) ||
+        !GetOptionalBool(env, args[0], "rulesEnabled", false, &rules_enabled) ||
+        !GetOptionalBool(env, args[0], "quotedPhrase", false, &quoted_phrase) ||
+        !GetOptionalBool(env, args[0], "identifierToken", false,
+                         &identifier_token))
+      return nullptr;
+    request.lexical_flags = last_as_prefix ? ZE_QUERY_LAST_AS_PREFIX : 0;
+    request.rules_enabled = rules_enabled ? 1 : 0;
+    request.quoted_phrase = quoted_phrase ? 1 : 0;
+    request.identifier_token = identifier_token ? 1 : 0;
+
+    std::string tier;
+    bool present = false;
+    if (!GetOptionalString(env, args[0], "tier", &tier, &present))
+      return nullptr;
+    if (present) {
+      const char *tiers[] = {"auto", "exact", "scan", "graph"};
+      if (!ParseEnum(tier, tiers, 4, &request.tier)) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "query tier is out of range");
+        return nullptr;
+      }
+      request.has_tier = 1;
+    }
+
+    std::string profile;
+    if (!GetOptionalString(env, args[0], "graphProfile", &profile, &present))
+      return nullptr;
+    if (present) {
+      const char *profiles[] = {"sift", "angular"};
+      if (!ParseEnum(profile, profiles, 2, &request.graph_profile)) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "graph profile is out of range");
+        return nullptr;
+      }
+    }
+
+    uint32_t graph_ef = 0;
+    if (!GetOptionalUint32(env, args[0], "graphEf", 0, &graph_ef))
+      return nullptr;
+    request.graph_ef = graph_ef;
+
+    double alpha = 0.0;
+    if (!GetOptionalDouble(env, args[0], "alpha", &alpha, &present))
+      return nullptr;
+    if (present) {
+      request.alpha = alpha;
+      request.has_alpha = 1;
+    }
+
+    napi_value max_rounds_value;
+    if (!GetNamed(env, args[0], "maxRounds", &max_rounds_value, &present))
+      return nullptr;
+    if (present) {
+      if (!GetOptionalUint64(env, args[0], "maxRounds", 0, &request.max_rounds))
+        return nullptr;
+      request.has_max_rounds = 1;
+    }
+
+    napi_value rarest_value;
+    if (!GetNamed(env, args[0], "rarestExactDocumentFrequency", &rarest_value,
+                  &present))
+      return nullptr;
+    if (present) {
+      if (!GetOptionalUint64(env, args[0], "rarestExactDocumentFrequency", 0,
+                             &request.rarest_exact_document_frequency))
+        return nullptr;
+      request.has_rarest_exact_document_frequency = 1;
+    }
+
+    if (!GetOptionalUint64(env, args[0], "graphSeed", 0, &request.graph_seed) ||
+        !GetOptionalUint64(env, args[0], "deadlineNs", 0,
+                           &request.deadline_ns) ||
+        !GetOptionalUint64(env, args[0], "cancelToken", 0,
+                           &request.cancel_token))
+      return nullptr;
+
+    ZeQueryResult native{};
+    native.abi_size = sizeof(native);
+    const ze_error_code status = ze_query(store->handle, &request, &native);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    ResultOwner<ZeQueryResult, ze_query_result_free> owner(&native);
+
+    napi_value hits;
+    if (!NapiOk(env,
+                napi_create_array_with_length(env, native.hit_count, &hits),
+                "create query hit array"))
+      return nullptr;
+    for (size_t index = 0; index < native.hit_count; ++index) {
+      const ZeQueryHit &hit = native.hits[index];
+      if (hit.has_document == 0) {
+        napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                         "query returned a hit without a document id");
+        return nullptr;
+      }
+      napi_value result;
+      napi_value id;
+      napi_value score;
+      if (!NapiOk(env, napi_create_object(env, &result), "create query hit") ||
+          !CreateUint128(env, hit.doc_id, &id) ||
+          !SetNamed(env, result, "id", id) ||
+          !NapiOk(env, napi_create_double(env, hit.score, &score),
+                  "create query score") ||
+          !SetNamed(env, result, "score", score))
+        return nullptr;
+      // A fused hit carries identity only, so revision and the per-leg scores
+      // are present or absent rather than defaulted to a number the engine
+      // never computed.
+      if (hit.has_revision != 0) {
+        napi_value revision;
+        if (!NapiOk(env,
+                    napi_create_bigint_uint64(env, hit.revision, &revision),
+                    "create query revision") ||
+            !SetNamed(env, result, "revision", revision))
+          return nullptr;
+      }
+      if (hit.has_vector_score != 0) {
+        napi_value vector_score;
+        if (!NapiOk(
+                env,
+                napi_create_double(env, hit.vector_squared_l2, &vector_score),
+                "create vector score") ||
+            !SetNamed(env, result, "vectorSquaredL2", vector_score))
+          return nullptr;
+      }
+      if (hit.has_lexical_score != 0) {
+        napi_value lexical_score;
+        if (!NapiOk(env,
+                    napi_create_double(env, hit.lexical_bm25, &lexical_score),
+                    "create lexical score") ||
+            !SetNamed(env, result, "lexicalBm25", lexical_score))
+          return nullptr;
+      }
+      if (!NapiOk(env, napi_set_element(env, hits, index, result),
+                  "append query hit"))
+        return nullptr;
+    }
+
+    const char *modes[] = {"vector", "lexical", "hybrid"};
+    if (native.mode < 0 ||
+        static_cast<size_t>(native.mode) >= sizeof(modes) / sizeof(modes[0])) {
+      napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                       "query returned an unknown execution mode");
+      return nullptr;
+    }
+
+    napi_value result;
+    napi_value generation;
+    napi_value mode;
+    napi_value approximate;
+    napi_value exact_rescore;
+    napi_value budget_exhausted;
+    if (!NapiOk(env, napi_create_object(env, &result), "create query result") ||
+        !SetNamed(env, result, "hits", hits) ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, native.generation, &generation),
+                "create query generation") ||
+        !SetNamed(env, result, "generation", generation) ||
+        !NapiOk(env,
+                napi_create_string_utf8(env, modes[native.mode],
+                                        NAPI_AUTO_LENGTH, &mode),
+                "create query mode") ||
+        !SetNamed(env, result, "mode", mode) ||
+        !NapiOk(env,
+                napi_get_boolean(env, native.approximate != 0, &approximate),
+                "create approximate flag") ||
+        !SetNamed(env, result, "approximate", approximate) ||
+        !NapiOk(
+            env,
+            napi_get_boolean(env, native.exact_rescore != 0, &exact_rescore),
+            "create exact rescore flag") ||
+        !SetNamed(env, result, "exactRescore", exact_rescore) ||
+        !NapiOk(env,
+                napi_get_boolean(env, native.budget_exhausted != 0,
+                                 &budget_exhausted),
+                "create budget exhausted flag") ||
+        !SetNamed(env, result, "budgetExhausted", budget_exhausted))
+      return nullptr;
+
+    if (native.has_fusion != 0) {
+      const char *methods[] = {"convex", "reciprocalRank"};
+      if (native.fusion_method < 0 ||
+          static_cast<size_t>(native.fusion_method) >=
+              sizeof(methods) / sizeof(methods[0])) {
+        napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                         "query returned an unknown fusion method");
+        return nullptr;
+      }
+      napi_value fusion;
+      napi_value method;
+      napi_value effective_alpha;
+      napi_value rounds;
+      if (!NapiOk(env, napi_create_object(env, &fusion),
+                  "create fusion report") ||
+          !NapiOk(env,
+                  napi_create_string_utf8(env, methods[native.fusion_method],
+                                          NAPI_AUTO_LENGTH, &method),
+                  "create fusion method") ||
+          !SetNamed(env, fusion, "method", method) ||
+          !NapiOk(
+              env,
+              napi_create_double(env, native.effective_alpha, &effective_alpha),
+              "create effective alpha") ||
+          !SetNamed(env, fusion, "effectiveAlpha", effective_alpha) ||
+          !NapiOk(env,
+                  napi_create_bigint_uint64(env, native.fusion_rounds, &rounds),
+                  "create fusion rounds") ||
+          !SetNamed(env, fusion, "rounds", rounds) ||
+          !SetNamed(env, result, "fusion", fusion))
+        return nullptr;
+    }
+
+    const ze_error_code free_status = owner.FreeNow();
+    if (free_status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, free_status);
+    return result;
+  });
+}
+
+/**
+ * Cancellation tokens.
+ *
+ * The C ABI's token is a generation-tagged `uint64_t` handle with an explicit
+ * create/cancel/free lifecycle, so it is exposed as three module functions and
+ * wrapped in JavaScript rather than modelled as an object here. A token is not
+ * tied to one store or one query: the same handle can be handed to several
+ * calls, which is why it is not a `NativeStore` method.
+ */
+napi_value CreateCancelToken(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    (void)info;
+    ze_cancel_token token = 0;
+    const ze_error_code status = ze_cancel_token_create(&token);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, 0, status);
+    napi_value result;
+    if (!NapiOk(env, napi_create_bigint_uint64(env, token, &result),
+                "create cancellation token"))
+      return nullptr;
+    return result;
+  });
+}
+
+bool ReadCancelToken(napi_env env, napi_callback_info info,
+                     ze_cancel_token *token) {
+  size_t argc = 1;
+  napi_value args[1];
+  if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr),
+              "read cancellation token argument"))
+    return false;
+  if (argc < 1) {
+    napi_throw_type_error(env, "ERR_MISSING_ARGS", "token is required");
+    return false;
+  }
+  napi_valuetype type;
+  bool lossless = false;
+  if (!NapiOk(env, napi_typeof(env, args[0], &type), "inspect token") ||
+      type != napi_bigint ||
+      !NapiOk(env, napi_get_value_bigint_uint64(env, args[0], token, &lossless),
+              "read token") ||
+      !lossless) {
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                          "token must be an unsigned 64-bit bigint");
+    return false;
+  }
+  return true;
+}
+
+napi_value CancelToken(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    ze_cancel_token token = 0;
+    if (!ReadCancelToken(env, info, &token))
+      return nullptr;
+    const ze_error_code status = ze_cancel_token_cancel(token);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, 0, status);
+    napi_value undefined;
+    if (!NapiOk(env, napi_get_undefined(env, &undefined), "create undefined"))
+      return nullptr;
+    return undefined;
+  });
+}
+
+napi_value FreeCancelToken(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    ze_cancel_token token = 0;
+    if (!ReadCancelToken(env, info, &token))
+      return nullptr;
+    const ze_error_code status = ze_cancel_token_free(token);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, 0, status);
+    napi_value undefined;
+    if (!NapiOk(env, napi_get_undefined(env, &undefined), "create undefined"))
+      return nullptr;
+    return undefined;
+  });
+}
+
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
       {"ingest", nullptr, Ingest, nullptr, nullptr, nullptr, napi_default,
@@ -2201,6 +2630,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"searchFiltered", nullptr, SearchFiltered, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"search", nullptr, Search, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"query", nullptr, Query, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"close", nullptr, CloseStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
@@ -2221,6 +2652,24 @@ napi_value Initialize(napi_env env, napi_value exports) {
               "create listNamespaces") ||
       !SetNamed(env, exports, "listNamespaces", list_namespaces)) {
     return nullptr;
+  }
+  const struct {
+    const char *name;
+    napi_callback callback;
+  } functions[] = {
+      {"createCancelToken", CreateCancelToken},
+      {"cancelToken", CancelToken},
+      {"freeCancelToken", FreeCancelToken},
+  };
+  for (const auto &entry : functions) {
+    napi_value function;
+    if (!NapiOk(env,
+                napi_create_function(env, entry.name, NAPI_AUTO_LENGTH,
+                                     entry.callback, nullptr, &function),
+                "create module function") ||
+        !SetNamed(env, exports, entry.name, function)) {
+      return nullptr;
+    }
   }
   napi_value abi_version;
   if (!NapiOk(env, napi_create_uint32(env, ze_abi_version(), &abi_version),

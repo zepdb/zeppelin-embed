@@ -112,6 +112,41 @@ function callNative(callback) {
   }
 }
 
+/**
+ * The native token handle, kept off the public shape so a token is used
+ * through its methods rather than by reading a bigint out of it.
+ */
+const nativeToken = Symbol('zeppelin.cancelToken');
+
+/**
+ * A cancellation token that a query can be asked to observe.
+ *
+ * The C ABI's token is a generation-tagged handle with an explicit lifecycle,
+ * so this owns that handle: `cancel` asks any query holding it to stop, and
+ * `close` releases it. Freeing is not left to garbage collection, because the
+ * engine reuses generations and a token released at an unpredictable time
+ * would be a handle whose validity the caller cannot reason about.
+ */
+class CancellationToken {
+  constructor() {
+    this[nativeToken] = callNative(() => binding.createCancelToken());
+    this._closed = false;
+  }
+
+  cancel() {
+    if (this._closed) {
+      throw new ZeppelinError('cancellation token is closed', 'ZE_ERR_CLOSED', 0);
+    }
+    callNative(() => binding.cancelToken(this[nativeToken]));
+  }
+
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    callNative(() => binding.freeCancelToken(this[nativeToken]));
+  }
+}
+
 class Store {
   constructor(storePath, options = {}) {
     this._native = callNative(() => new binding.NativeStore(storePath, options));
@@ -149,6 +184,24 @@ class Store {
     return callNative(() => this._native.search(vector, k));
   }
 
+  /**
+   * One structured query: a vector leg, a lexical leg, or hybrid fusion of
+   * both.
+   *
+   * Which legs run is the engine's rule, not a second policy here: `text`
+   * selects the lexical leg, `vector` the vector leg, and both together
+   * select fusion. A `cancelToken` is unwrapped to the native handle so the
+   * caller passes the token object rather than a bare bigint.
+   */
+  query(request) {
+    const token = request?.cancelToken;
+    const native =
+      token === undefined || token === null
+        ? request
+        : { ...request, cancelToken: token[nativeToken] ?? token };
+    return callNative(() => this._native.query(native));
+  }
+
   close() {
     return callNative(() => this._native.close());
   }
@@ -168,6 +221,7 @@ function listNamespaces(root) {
 
 module.exports = {
   ABI_VERSION: binding.abiVersion,
+  CancellationToken,
   Store,
   UnsupportedPlatformError,
   UnsupportedRuntimeError,

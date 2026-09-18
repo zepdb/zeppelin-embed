@@ -159,6 +159,90 @@ export interface SearchHit {
 
 export type SearchResult = SearchHit[];
 
+/** Which legs a structured query runs, and therefore which mode executes. */
+export type QueryMode = 'vector' | 'lexical' | 'hybrid';
+
+export interface QueryRequest {
+  /**
+   * Query text. Present selects the lexical leg; analysed with the same
+   * tokenizer configuration ingest uses.
+   */
+  readonly text?: string;
+  /** Query vector. Present selects the vector leg. */
+  readonly vector?: Float32Array;
+  /** Requested result count. Defaults to 10. */
+  readonly k?: number;
+  /** Treat the last analysed term as a type-ahead prefix. */
+  readonly lastAsPrefix?: boolean;
+  /** Explicit convex-combination fusion weight in 0..=1. */
+  readonly alpha?: number;
+  /** Enable the query-shape alpha rules. Ignored when `alpha` is set. */
+  readonly rulesEnabled?: boolean;
+  /** Fusion widening round cap; 0n materialises full lists immediately. */
+  readonly maxRounds?: bigint;
+  /** The query contains a quoted phrase. */
+  readonly quotedPhrase?: boolean;
+  /** Token classification found an identifier. */
+  readonly identifierToken?: boolean;
+  /** Lowest exact-token document frequency. */
+  readonly rarestExactDocumentFrequency?: bigint;
+  /** No value lets the engine pick, which is distinct from `'auto'`. */
+  readonly tier?: 'auto' | 'exact' | 'scan' | 'graph';
+  readonly graphProfile?: 'sift' | 'angular';
+  readonly graphEf?: number;
+  readonly graphSeed?: bigint;
+  /** 0 selects every detected physical performance core. */
+  readonly threadBudget?: number;
+  /** Relative monotonic deadline in nanoseconds; 0n means none. */
+  readonly deadlineNs?: bigint;
+  readonly cancelToken?: CancellationToken;
+}
+
+export interface QueryHit {
+  readonly id: bigint;
+  /** Absent on a fused hit, which carries identity only. */
+  readonly revision?: bigint;
+  /** Larger-is-better ranking score of the executed mode. */
+  readonly score: number;
+  /** Squared L2 distance of the vector leg, when it ran. */
+  readonly vectorSquaredL2?: number;
+  /** BM25 score of the lexical leg, when it ran. */
+  readonly lexicalBm25?: number;
+}
+
+export interface QueryFusion {
+  readonly method: 'convex' | 'reciprocalRank';
+  readonly effectiveAlpha: number;
+  readonly rounds: bigint;
+}
+
+export interface QueryResult {
+  readonly hits: QueryHit[];
+  /** The pinned store generation queried. */
+  readonly generation: bigint;
+  readonly mode: QueryMode;
+  /** Some candidate membership came from a non-exhaustive path. */
+  readonly approximate: boolean;
+  /** Every returned score came from full-precision rows. */
+  readonly exactRescore: boolean;
+  /** An execution budget fired. */
+  readonly budgetExhausted: boolean;
+  /** Present only when both legs ran and their results were fused. */
+  readonly fusion?: QueryFusion;
+}
+
+/**
+ * A cancellation token a query can be asked to observe.
+ *
+ * Close every token; the handle is owned by the engine and is not released by
+ * garbage collection.
+ */
+export declare class CancellationToken {
+  constructor();
+  cancel(): void;
+  close(): void;
+}
+
 export declare class ZeppelinError extends Error {
   constructor(message: string, code: string, errorCode: number);
   readonly code: string;
@@ -194,6 +278,12 @@ export declare class Store {
     options?: SearchOptions,
   ): SearchResult;
   search(vector: Float32Array, k: number): SearchHit[];
+  /**
+   * One structured query: `text` runs the lexical leg, `vector` the vector
+   * leg, and both together run hybrid fusion. A request with neither is
+   * rejected.
+   */
+  query(request: QueryRequest): QueryResult;
   close(): void;
 }
 
