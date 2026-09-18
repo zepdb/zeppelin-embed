@@ -35,7 +35,7 @@ if useLocalFFI {
 } else {
     cTarget = .binaryTarget(
         name: "CZeppelinEmbed",
-        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.4.1/ZeppelinEmbed.xcframework.zip",
+        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.4.2/ZeppelinEmbed.xcframework.zip",
         checksum: binaryChecksum
     )
 }

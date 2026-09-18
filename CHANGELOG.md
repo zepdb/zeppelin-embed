@@ -4,6 +4,90 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## 0.4.2 - 2026-09-18
+
+A packaging and binding release: no engine, on-disk format, or C ABI change,
+and the generated C header is unchanged from 0.4.0. The npm package gains an
+Intel Mac binary and a text and hybrid query surface, and every artefact
+returns to one version after 0.4.1 shipped only the Swift package.
+
+`Store.query` is new public surface in the Node binding, which by the 0.x
+rule above would be a minor release. It is numbered 0.4.2 because that is the
+version the consumer this release exists for already pins. Nothing in the
+engine, the format or the C ABI is new, so nothing that a C, Rust, Swift or
+Python consumer compiles against changes.
+
+### Added
+
+- `@zepdb/zeppelin-embed` ships a macOS x64 binary. The published 0.4.0
+  package advertised macOS and carried only `darwin-arm64`, so `require` on
+  an Intel Mac threw `UnsupportedPlatformError` by name. The addon is a
+  `-bundle` built with `-undefined dynamic_lookup`, so each architecture is a
+  plain cross-compile and one binary per architecture serves both Node and
+  Electron; macOS needs no per-Electron-major variant the way Windows does,
+  where the addon delay-loads `node.exe`.
+  - `npm run build:native` now builds both macOS slices on either kind of
+    Mac, so a local `npm pack` yields a complete macOS package rather than
+    one that advertises an architecture it silently omits.
+  - The `Node package` macOS job checks each slice's Mach-O architecture and
+    that it carries the engine with no separate Zeppelin dylib, then runs the
+    package suite against the x86_64 slice under an x86_64 Node. Building a
+    cross-compiled binary proves nothing about loading it, and the step has
+    no skip path.
+- `Store.query` in Node maps to `ze_query`: a vector leg, a lexical leg, or
+  exact hybrid fusion of both, with `lastAsPrefix` type-ahead, an explicit
+  fusion `alpha`, tier and graph controls, `deadlineNs`, and a cancellation
+  token. Each hit carries the id, the score, and the per-leg `lexicalBm25`
+  and `vectorSquaredL2` when that leg ran; the result carries the queried
+  generation, the executed mode, the `approximate`, `exactRescore` and
+  `budgetExhausted` flags, and a fusion report when both legs ran. Node was
+  the only binding without it: the C ABI has had `ze_query` since 0.2.0 and
+  Python and Swift both bind it. See ADR-006.
+  - `CancellationToken` binds `ze_cancel_token_create`, `_cancel` and
+    `_free`. It owns an engine handle and is closed explicitly, not by
+    garbage collection, because the engine reuses generations and a token
+    released at an unpredictable time is a handle whose validity the caller
+    cannot reason about.
+  - `bindings/node/test/query.test.mjs` indexes the corpus from
+    `bindings/fixtures/cross_binding_parity_v1.json`, the fixture the Rust
+    and C side generates and the Python and Swift bindings already check, and
+    asserts the same ids and the same scores to the fixture's six-digit
+    precision for the vector, lexical and hybrid cases. The fixture opens its
+    store with an explicit embedding epoch, which Node does not bind; a
+    namespace with the same vector dimension and the default tokenizer
+    profile is used instead, and the scores agreeing digit for digit is what
+    shows that substitution changes nothing about ranking.
+
+### Changed
+
+- `bindings/node/package.json` and `bindings/python/pyproject.toml` move from
+  0.4.0 to 0.4.2. 0.4.1 bumped the crates and the xcframework but published
+  neither npm nor PyPI, so both lagged a release behind the crates.
+
+### Fixed
+
+- `main` was red from the 0.4.1 release commit onward, and both failures were
+  hand-maintained version artefacts the bump missed rather than engine
+  defects. `tests::version_constant_is_current` asserted `crate::VERSION ==
+  "0.4.0"` against a `CARGO_PKG_VERSION` of 0.4.1, and
+  `tools/size-consumer/Cargo.lock` still pinned `zeppelin-embed 0.4.0`, which
+  failed `scripts/size-budget.sh` under `--locked`. The stale
+  `zeppelin-embed` entries in `fuzz/Cargo.lock` and
+  `tools/query-budget/Cargo.lock` are updated with them.
+
+### Known limits
+
+- Windows: `node.yml`'s one `windows-latest` job builds the addon and runs
+  the package suite, the type-check and an installed-tarball smoke, and that
+  is the whole of what CI proves. No job runs the Rust engine or FFI suites
+  on Windows; `windows_durability`, `windows_reclamation`,
+  `windows_simd_parity`, `windows_storage_protocol` and `ffi_header_windows`
+  are `#![cfg(windows)]` and run nowhere in CI, and no cross-platform store
+  exchange has been executed anywhere. See ZE-86 and ZE-93.
+- A fired deadline and a cancelled token both stop a query and both arrive as
+  `ZE_ERR_INVALID_ARGUMENT` rather than `ZE_ERR_CANCELLED`. That is the C
+  ABI's existing behaviour, unchanged here; see ZE-94.
+
 ## 0.4.1 - 2026-09-17
 
 A packaging release: no source, API, or on-disk format changes. The macOS
