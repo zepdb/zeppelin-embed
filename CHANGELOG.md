@@ -4,6 +4,34 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## 0.4.1 - 2026-09-17
+
+A packaging release: no source, API, or on-disk format changes. The macOS
+`ZeppelinEmbed.xcframework` static library shrinks from 59.3MB to 12.7MB
+(the SPM download drops to a 4.24MB zip) by no longer shipping dead LLVM
+bitcode. Apple has not read Bitcode from any Mach-O since Xcode 14, and the
+5,120KB linked-section size gate already excluded it, so nothing observable
+to a consumer changes: the generated C header is unchanged from 0.4.0, and
+the full test suite (including the FFI panic-boundary and poisoning tests)
+passes unmodified.
+
+### Changed
+
+- `scripts/xcframework/build.sh` builds `zeppelin-embed-ffi`'s two macOS
+  slices with `RUSTFLAGS=-Cembed-bitcode=no` and `-Z build-std=std,
+  panic_unwind` on a pinned nightly toolchain (`nightly-2026-07-01`,
+  requires the `rust-src` component), instead of the stable 1.93.0 toolchain
+  used everywhere else in this repository. `-Z build-std` recompiles
+  `std`/`core`/`alloc` from source with the same flag, since the stable
+  toolchain's prebuilt `std` carries its own embedded bitcode that
+  `-Cembed-bitcode=no` on our own crates cannot reach; it also lets fat LTO
+  dead-strip unused `std` internals for the first time. This pin is scoped
+  to this one build step -- nothing else in development, CI, or the crate's
+  own `rust-version = "1.93"` MSRV changes. `-Z build-std` is an unstable,
+  nightly-only Cargo feature with no committed stabilisation date (see the
+  `build-std` project goal), so this is expected to remain a nightly-pinned
+  step for the foreseeable future, not a temporary workaround.
+
 ## 0.4.0 - 2026-09-17
 
 A platform release: Zeppelin Embed runs natively on Windows x64. The engine,

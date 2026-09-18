@@ -13,9 +13,35 @@ SLICE_EVIDENCE="$ROOT_DIR/tasks/evidence/23-slices.md"
 SIZE_EVIDENCE="$ROOT_DIR/tasks/evidence/23-size.md"
 ALLOWLIST="$ROOT_DIR/crates/zeppelin-embed-ffi/symbols.allowlist"
 PRIVACY_MANIFEST="$SCRIPT_DIR/PrivacyInfo.xcprivacy"
-RUST_LLVM_NM="$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm"
 SIZE_BUDGET_KB=5120
 MACOS_DEPLOYMENT_TARGET=11.0
+
+# The release static library is built with a pinned nightly toolchain so it
+# can pass -Z build-std: this recompiles std/core/alloc from source with the
+# same -Cembed-bitcode=no flag as our own crates, instead of linking the
+# stable toolchain's prebuilt std (which carries its own embedded LLVM
+# bitcode that no Apple platform has read since Xcode 14 dropped Bitcode).
+# Together the two cut the shipped static library from ~30MB to ~6MB per
+# architecture slice. -Z build-std is unstable and nightly-only by policy,
+# with no committed stabilisation date (see the build-std project goal), so
+# this is pinned to one exact dated snapshot rather than a floating
+# "nightly" alias: every release must be reproducible from this file alone,
+# not from whatever nightly happened to be installed on the machine that
+# ran it. Nothing else in this repository's build or test process uses
+# nightly; this pin is scoped to this one artifact-producing step.
+RUST_NIGHTLY_TOOLCHAIN="nightly-2026-07-01"
+RUST_LLVM_NM="$(rustup run "$RUST_NIGHTLY_TOOLCHAIN" rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm"
+
+if ! rustup toolchain list | grep -q "^${RUST_NIGHTLY_TOOLCHAIN}-"; then
+    echo "error: pinned toolchain $RUST_NIGHTLY_TOOLCHAIN is not installed;" >&2
+    echo "       run: rustup toolchain install $RUST_NIGHTLY_TOOLCHAIN && rustup component add rust-src --toolchain $RUST_NIGHTLY_TOOLCHAIN" >&2
+    exit 2
+fi
+if ! rustup component list --toolchain "$RUST_NIGHTLY_TOOLCHAIN" 2>/dev/null | grep -q "^rust-src (installed)"; then
+    echo "error: rust-src is not installed for $RUST_NIGHTLY_TOOLCHAIN (required by -Z build-std);" >&2
+    echo "       run: rustup component add rust-src --toolchain $RUST_NIGHTLY_TOOLCHAIN" >&2
+    exit 2
+fi
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/tasks/evidence"
 rm -rf "$WORK_DIR" "$ARTIFACT"
@@ -158,10 +184,22 @@ attempt_slice() {
         echo "## $label"
         echo
         echo '```text'
-        echo "SDKROOT=$sdk_path MACOSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET cargo build --locked -p zeppelin-embed-ffi --release --target $target"
+        echo "SDKROOT=$sdk_path MACOSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET RUSTFLAGS=-Cembed-bitcode=no cargo +$RUST_NIGHTLY_TOOLCHAIN build -Z build-std=std,panic_unwind --locked -p zeppelin-embed-ffi --release --target $target"
     } >> "$SLICE_EVIDENCE"
+    # macOS has never required Apple Bitcode, and Xcode dropped bitcode
+    # support entirely in Xcode 14 -- rustc's fat-LTO release profile embeds
+    # it anyway on Apple targets by default. It is dead weight: the size
+    # gate below already excludes __LLVM,__bitcode from what it measures, so
+    # dropping it shrinks the shipped archive, not the linked footprint.
+    # -Z build-std additionally rebuilds std/core/alloc from source with the
+    # same flag, since the stable toolchain's prebuilt std carries its own
+    # embedded bitcode that -Cembed-bitcode=no on our own crates cannot
+    # reach. See the RUST_NIGHTLY_TOOLCHAIN comment above for why this one
+    # step alone runs on a pinned nightly.
     if SDKROOT="$sdk_path" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
-        cargo build --locked -p zeppelin-embed-ffi --release --target "$target" \
+        RUSTFLAGS="-Cembed-bitcode=no" \
+        cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
+        --locked -p zeppelin-embed-ffi --release --target "$target" \
         > "$log" 2>&1; then
         status=0
     else

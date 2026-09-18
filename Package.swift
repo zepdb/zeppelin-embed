@@ -19,7 +19,7 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // fails the release when this literal disagrees with the archive it attaches,
 // and prints the value to pin. `scripts/xcframework/build.sh` only reports a
 // local mismatch.
-let binaryChecksum = "b49506bd076bf4dbed2443ae02d14a06ae028cbb5470ce67b9c0a8e2f911921c" // ze:xcframework-checksum
+let binaryChecksum = "cf23001aaac209667a1c36db85cd66b6da9215638eff1cc81122bb657ec1f506" // ze:xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {
@@ -35,7 +35,7 @@ if useLocalFFI {
 } else {
     cTarget = .binaryTarget(
         name: "CZeppelinEmbed",
-        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.4.0/ZeppelinEmbed.xcframework.zip",
+        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.4.1/ZeppelinEmbed.xcframework.zip",
         checksum: binaryChecksum
     )
 }
