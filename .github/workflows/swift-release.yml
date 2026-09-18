@@ -26,6 +26,17 @@ jobs:
         with:
           toolchain: 1.93.0
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Install pinned nightly for -Z build-std
+        # scripts/xcframework/build.sh invokes this exact toolchain by name
+        # (cargo +nightly-2026-07-01) for one step only: producing the
+        # release static library with -Z build-std. Installed alongside,
+        # not as the rustup default, so every other step in this job (the
+        # macOS SDK build, the Swift package test) keeps using the stable
+        # 1.93.0 toolchain set up above.
+        run: |
+          rustup toolchain install nightly-2026-07-01 --profile minimal \
+            --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup component add rust-src --toolchain nightly-2026-07-01
       - uses: Swatinem/rust-cache@v2
       - name: Match release tag to package version
         env:
