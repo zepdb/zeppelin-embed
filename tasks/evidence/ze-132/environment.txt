@@ -1,0 +1,8 @@
+ProductName: macOS
+ProductVersion: 27.0
+BuildVersion: 26A5388g
+Kernel: Darwin 27.0.0 RELEASE_ARM64_T6031 arm64
+rustc: 1.93.0 (254b59607 2026-01-19)
+rustc host: aarch64-apple-darwin
+LLVM: 21.1.8
+cargo-nextest: 0.9.145 (00af4550e 2026-09-16)

@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+mod support;
+
 use std::path::PathBuf;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::property_graph::{
@@ -9,8 +11,7 @@ use zeppelin_embed_cypher::{CompileLimits, ErrorKind, ResourceError, compile_in}
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("ze-55-binding-resources-{}", std::process::id()));
+        let path = support::unique_temp_dir("ze-55-binding-resources");
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }

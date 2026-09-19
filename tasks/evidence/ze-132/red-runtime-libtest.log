@@ -1,0 +1,45 @@
+$ cargo test -p zeppelin-embed-cypher --test runtime_lowering -- --test-threads=4
+   Compiling libc v0.2.189
+   Compiling byteorder v1.5.0
+   Compiling bytemuck v1.25.2
+   Compiling xxhash-rust v0.8.18
+   Compiling roaring v0.10.12
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-132/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-132/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.90s
+     Running tests/runtime_lowering.rs (target/debug/deps/runtime_lowering-307cbe817110f076)
+
+running 4 tests
+test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... FAILED
+test compiled_read_final_check_discards_actual_completed_output_and_all_owners ... FAILED
+test compiled_read_validation_reports_original_cumulative_work_exhaustion ... FAILED
+test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel ... ok
+
+failures:
+
+---- compiled_read_drains_through_the_same_runtime_context_and_real_owners stdout ----
+
+thread 'compiled_read_drains_through_the_same_runtime_context_and_real_owners' (35111286) panicked at crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:20:32:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+---- compiled_read_final_check_discards_actual_completed_output_and_all_owners stdout ----
+
+thread 'compiled_read_final_check_discards_actual_completed_output_and_all_owners' (35111287) panicked at crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:20:32:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- compiled_read_validation_reports_original_cumulative_work_exhaustion stdout ----
+
+thread 'compiled_read_validation_reports_original_cumulative_work_exhaustion' (35111289) panicked at crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:20:32:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+
+failures:
+    compiled_read_drains_through_the_same_runtime_context_and_real_owners
+    compiled_read_final_check_discards_actual_completed_output_and_all_owners
+    compiled_read_validation_reports_original_cumulative_work_exhaustion
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-cypher --test runtime_lowering`
+[exit 101]

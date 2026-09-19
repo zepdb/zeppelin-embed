@@ -1,6 +1,8 @@
 //! Independent ZE-126 review probes by /root/ze55_binder; retained for regression.
 //! Literal compiler-to-plan oracles; these do not execute graph queries.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod support;
+
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::property_graph::{
     GraphGeneration, StoreInstanceId,
@@ -10,7 +12,7 @@ use zeppelin_embed::property_graph::{
 use zeppelin_embed_cypher::{CompileLimits, compile_read_in};
 
 fn with_memory(run: impl FnOnce(&QueryMemory<'_>, &mut ValueContext<'_>)) {
-    let path = std::env::temp_dir().join(format!("ze126-lowering-{}", std::process::id()));
+    let path = support::unique_temp_dir("ze126-lowering");
     std::fs::create_dir(&path).unwrap();
     let options = OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024);
     let store = Store::open(&path, options).unwrap();

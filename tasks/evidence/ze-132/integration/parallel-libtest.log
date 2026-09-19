@@ -1,0 +1,62 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.33s
+     Running tests/binding_resources.rs (target/debug/deps/binding_resources-51f3e487b17dd9fc)
+
+running 4 tests
+test cancelled_consumer_cannot_publish_the_compiler_handoff ... ok
+test shared_compilation_releases_on_timeout_and_late_cancellation ... ok
+test shared_compilation_holds_frontend_and_ir_copies_in_one_budget ... ok
+test binding_faults_fire_after_parsing_with_same_input_clean_controls ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lowering_semantics.rs (target/debug/deps/lowering_semantics-b8d995dfb0c6fef8)
+
+running 8 tests
+test independent_bound_path_self_reference_is_preserved ... ok
+test independent_parameter_order_and_source_mapped_errors ... ok
+test independent_order_alias_priority_and_pattern_identity ... ok
+test independent_completed_routing_walks_lists_index_and_whole_bag ... ok
+test independent_reuse_reprojects_original_slots_and_optional_right_only_nulls ... ok
+test independent_patterns_are_lowered ... ok
+test independent_projections_are_lowered ... ok
+test independent_reuse_and_projection_matrix ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/pattern_contract.rs (target/debug/deps/pattern_contract-1c3dbcd63202d0a1)
+
+running 2 tests
+test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... ok
+test scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/read_lowering.rs (target/debug/deps/read_lowering-480bb7c41d96436b)
+
+running 13 tests
+test read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope ... ok
+test read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation ... ok
+test read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans ... ok
+test read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthesis ... ok
+test read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits ... ok
+test read_lowering_copies_scalar_projection_and_exact_source_spans ... ok
+test read_lowering_real_owner_inventory_admits_without_a_second_context ... ok
+test read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions ... ok
+test read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal ... ok
+test read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities ... ok
+test read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list ... ok
+test read_lowering_stages_grouping_distinct_hidden_order_and_bounds ... ok
+test read_lowering_large_copied_parameter_preserves_split_four_byte_utf8 ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/runtime_lowering.rs (target/debug/deps/runtime_lowering-307cbe817110f076)
+
+running 4 tests
+test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel ... ok
+test compiled_read_final_check_discards_actual_completed_output_and_all_owners ... ok
+test compiled_read_validation_reports_original_cumulative_work_exhaustion ... ok
+test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s

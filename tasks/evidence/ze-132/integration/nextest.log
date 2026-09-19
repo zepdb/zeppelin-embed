@@ -1,0 +1,37 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 2b2e87af-897c-45e6-81ea-25f30b7f50fa with nextest profile: default
+    Starting 31 tests across 5 binaries
+        PASS [   0.008s] ( 1/31) zeppelin-embed-cypher::binding_resources cancelled_consumer_cannot_publish_the_compiler_handoff
+        PASS [   0.009s] ( 2/31) zeppelin-embed-cypher::binding_resources shared_compilation_releases_on_timeout_and_late_cancellation
+        PASS [   0.009s] ( 3/31) zeppelin-embed-cypher::binding_resources shared_compilation_holds_frontend_and_ir_copies_in_one_budget
+        PASS [   0.009s] ( 4/31) zeppelin-embed-cypher::binding_resources binding_faults_fire_after_parsing_with_same_input_clean_controls
+        PASS [   0.009s] ( 5/31) zeppelin-embed-cypher::lowering_semantics independent_bound_path_self_reference_is_preserved
+        PASS [   0.008s] ( 6/31) zeppelin-embed-cypher::lowering_semantics independent_parameter_order_and_source_mapped_errors
+        PASS [   0.009s] ( 7/31) zeppelin-embed-cypher::lowering_semantics independent_order_alias_priority_and_pattern_identity
+        PASS [   0.009s] ( 8/31) zeppelin-embed-cypher::lowering_semantics independent_completed_routing_walks_lists_index_and_whole_bag
+        PASS [   0.009s] ( 9/31) zeppelin-embed-cypher::lowering_semantics independent_reuse_reprojects_original_slots_and_optional_right_only_nulls
+        PASS [   0.011s] (10/31) zeppelin-embed-cypher::lowering_semantics independent_patterns_are_lowered
+        PASS [   0.012s] (11/31) zeppelin-embed-cypher::lowering_semantics independent_projections_are_lowered
+        PASS [   0.014s] (12/31) zeppelin-embed-cypher::lowering_semantics independent_reuse_and_projection_matrix
+        PASS [   0.008s] (13/31) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+        PASS [   0.007s] (14/31) zeppelin-embed-cypher::read_lowering read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope
+        PASS [   0.008s] (15/31) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel
+        PASS [   0.008s] (16/31) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.008s] (17/31) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+        PASS [   0.007s] (18/31) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+        PASS [   0.008s] (19/31) zeppelin-embed-cypher::read_lowering read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthesis
+        PASS [   0.008s] (20/31) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        PASS [   0.008s] (21/31) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+        PASS [   0.007s] (22/31) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.008s] (23/31) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.008s] (24/31) zeppelin-embed-cypher::read_lowering read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities
+        PASS [   0.008s] (25/31) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+        PASS [   0.008s] (26/31) zeppelin-embed-cypher::read_lowering read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list
+        PASS [   0.021s] (27/31) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+        PASS [   0.008s] (28/31) zeppelin-embed-cypher::runtime_lowering compiled_read_final_check_discards_actual_completed_output_and_all_owners
+        PASS [   0.008s] (29/31) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+        PASS [   0.575s] (30/31) zeppelin-embed-cypher::runtime_lowering compiled_read_validation_reports_original_cumulative_work_exhaustion
+        PASS [   0.582s] (31/31) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+────────────
+     Summary [   0.641s] 31 tests run: 31 passed, 0 skipped

@@ -5,6 +5,8 @@
     clippy::indexing_slicing,
     clippy::unreachable
 )]
+mod support;
+
 use std::mem::size_of;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 use zeppelin_embed::property_graph::{
@@ -62,8 +64,7 @@ struct Metrics {
 struct Scratch(std::path::PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("ze123-pattern-consumer-{}", std::process::id()));
+        let path = support::unique_temp_dir("ze123-pattern-consumer");
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }

@@ -1,0 +1,51 @@
+{
+  "base": "51f657c60b2bfde991887643126e88e279a75063",
+  "algorithm": "sha256",
+  "sources": [
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/support/mod.rs",
+      "before": null,
+      "after": "0e6c07e54c0557288de60c7d36d0c84d36395eb99d529ad7c16b6d32e500a926"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+      "before": "b2e71bc85cfd20f186063258f05b9b754f9abff9e1ff0c3d76c089963d4cf5bd",
+      "after": "b0fab9432991a31293f7dd5945ea70743eb48567dd66049c110cc351b3d54704"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
+      "before": "b530efcb5738ca0773344af7c3a9fc0e605c986d4f321b6559efb0f257643228",
+      "after": "e1b07b9ae854c2da9ec60c4fc93c8adbad6d645f393e7b65f0390a3c2d69a0d2"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/lowering_semantics.rs",
+      "before": "1d22ef4e27584fae02bd7a7150688069630a171c5a870f588975195df0470afd",
+      "after": "d7ba7ca43ea32f576f62a8faa6516ee4da05fdbfa3a334d00609c7fdd520d1b9"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/binding_resources.rs",
+      "before": "bc425b186ae4e4d63cfe2b99b9d255c76420df5b5c1d62a82d430c3f8931a803",
+      "after": "87f89e15096f60b24f25c31ab8339de0607e1c662af8ce12cae548f288335f46"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/pattern_contract.rs",
+      "before": "7587dc74a6ed078ee29d32ae4b1cfa0871080194649334a2c54d8f78ec6fdb2d",
+      "after": "012138622d5277bb3ce318b9c5608f0db835a0312a8e97178b5f2560b8698200"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/core_lowering.rs",
+      "before": "8282706c22463e7937798fd3cf286ee22c93c12a5cacae22bb47fab2fce0c12a",
+      "after": "8282706c22463e7937798fd3cf286ee22c93c12a5cacae22bb47fab2fce0c12a"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/lowering_allocation.rs",
+      "before": "96909d9d4657ad82dcfd8f75c02f3ec9d7ed37f92edbd41443c0626d9eff74be",
+      "after": "96909d9d4657ad82dcfd8f75c02f3ec9d7ed37f92edbd41443c0626d9eff74be"
+    }
+  ],
+  "preservation_manifest": {
+    "path": "/tmp/ze-132-preservation.json",
+    "entries": 45,
+    "sha256": "57c7fb2ef567896491b0ce3b1118f8e0f00733ea51130c934c7d84999c13376a"
+  }
+}

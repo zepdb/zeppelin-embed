@@ -6,6 +6,8 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
+mod support;
+
 use std::{cell::Cell, mem::size_of};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SnapshotLease, Store};
 use zeppelin_embed::property_graph::{
@@ -16,7 +18,7 @@ use zeppelin_embed::property_graph::{
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, ResourceError, compile_read_in};
 
 fn fixture(run: impl FnOnce(&Store, &QueryMemory<'_>)) {
-    let path = std::env::temp_dir().join(format!("ze126-runtime-{}", std::process::id()));
+    let path = support::unique_temp_dir("ze126-runtime");
     std::fs::create_dir(&path).unwrap();
     let store = Store::open(
         &path,

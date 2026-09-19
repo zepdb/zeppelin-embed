@@ -1,0 +1,22 @@
+$ cargo clippy -p zeppelin-embed-cypher --no-deps --test runtime_lowering --test read_lowering --test lowering_semantics --test binding_resources --test pattern_contract -- -D warnings
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-132/crates/zeppelin-embed)
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-132/crates/zeppelin-embed-cypher)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.18s
+[exit 0]
+
+$ rustfmt --edition 2024 --check crates/zeppelin-embed-cypher/tests/support/mod.rs crates/zeppelin-embed-cypher/tests/runtime_lowering.rs crates/zeppelin-embed-cypher/tests/read_lowering.rs crates/zeppelin-embed-cypher/tests/lowering_semantics.rs crates/zeppelin-embed-cypher/tests/binding_resources.rs crates/zeppelin-embed-cypher/tests/pattern_contract.rs
+[exit 0; no output]
+
+$ git diff --check
+[exit 0; no output]
+
+$ jq -r '.entries[] | [.sha256, .path] | @tsv' /tmp/ze-132-preservation.json | while IFS=$'\t' read -r expected entry_path; do actual=$(/usr/bin/shasum -a 256 "$entry_path" | /usr/bin/awk '{print $1}'); if [ "$actual" != "$expected" ]; then echo "MISMATCH $entry_path expected=$expected actual=$actual"; exit 1; fi; done; echo "preserved $(jq '.entries | length' /tmp/ze-132-preservation.json) inherited files"
+preserved 45 inherited files
+[exit 0]
+
+An initial otherwise identical Clippy command without `--no-deps` exited 101
+in the unchanged `zeppelin-embed` dependency before the owned test lint. It
+reported 11 `clippy::unit_arg` findings in `src/kernels/mod.rs`, one
+`clippy::drop_non_drop` finding in `src/lifecycle/mod.rs`, and two
+`clippy::needless_lifetimes` findings in `src/lifecycle/mod.rs`. Those 14
+baseline findings are outside ZE-132; no dependency source was changed.

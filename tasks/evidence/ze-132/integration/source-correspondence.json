@@ -1,0 +1,20 @@
+{
+  "base": "51f657c60b2bfde991887643126e88e279a75063",
+  "source": "5c5c3487c0e143084828a09ee45b1242f9cf0d8d",
+  "paths": [
+    "crates/zeppelin-embed-cypher/tests/binding_resources.rs",
+    "crates/zeppelin-embed-cypher/tests/lowering_semantics.rs",
+    "crates/zeppelin-embed-cypher/tests/pattern_contract.rs",
+    "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
+    "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+    "crates/zeppelin-embed-cypher/tests/support/mod.rs",
+    "tasks/evidence/ze-132/environment.txt",
+    "tasks/evidence/ze-132/green-nextest.log",
+    "tasks/evidence/ze-132/green-parallel-libtest.log",
+    "tasks/evidence/ze-132/lint-and-format.log",
+    "tasks/evidence/ze-132/red-runtime-libtest.log",
+    "tasks/evidence/ze-132/report.md",
+    "tasks/evidence/ze-132/source-sha256.json"
+  ],
+  "all_candidate_paths_exact": true
+}
