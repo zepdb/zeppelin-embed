@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+────────────
+ Nextest run ID 64f90888-ad39-441d-b9b2-a7d6fbbf84ac with nextest profile: default
+    Starting 1 test across 6 binaries (109 tests skipped)
+        PASS [   0.012s] (1/1) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 109 skipped

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+────────────
+ Nextest run ID f1a1b94c-2594-41ac-84fb-08f4eb366ad3 with nextest profile: default
+    Starting 1 test across 1 binary (8 tests skipped)
+        FAIL [   0.325s] (1/1) zeppelin-embed::graph_relational sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap
+  stdout ───
+
+    running 1 test
+    test sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap ... FAILED
+
+    failures:
+
+    failures:
+        sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap' (34601128) panicked at crates/zeppelin-embed/tests/graph_relational.rs:571:9:
+    assertion `left == right` failed
+      left: 0
+     right: 70000
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.326s] 1 test run: 0 passed, 1 failed, 8 skipped
+        FAIL [   0.325s] (1/1) zeppelin-embed::graph_relational sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap
+  stdout ───
+
+    running 1 test
+    test sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap ... FAILED
+
+    failures:
+
+    failures:
+        sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap' (34601128) panicked at crates/zeppelin-embed/tests/graph_relational.rs:571:9:
+    assertion `left == right` failed
+      left: 0
+     right: 70000
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

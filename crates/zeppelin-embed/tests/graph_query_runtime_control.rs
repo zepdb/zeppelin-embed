@@ -110,23 +110,286 @@ fn view(store: &Store) -> View<'static> {
         wait_for_close: None,
     }
 }
+
+#[test]
+fn factory_retains_real_buffers_through_three_stages_and_many_batches() {
+    use zeppelin_embed::property_graph::query::QueryValue;
+    struct Retained<'v, 'm, 'g> {
+        buffer: RowBatch<'v, 'm, 'g>,
+        remaining: usize,
+    }
+    impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+        fn node(&self) -> PlanNodeId {
+            PlanNodeId(0)
+        }
+        fn prepare_search(
+            &mut self,
+            _: PlanNodeId,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<(), RuntimeError> {
+            self.buffer.clear();
+            self.buffer
+                .push_row(&[QueryValue::String("retained backing")], context)
+        }
+        fn pull(
+            &mut self,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+            output: &mut RowBatch<'v, 'm, 'g>,
+        ) -> Result<PullState, RuntimeError> {
+            if self.remaining == 0 {
+                return Ok(PullState::Done);
+            }
+            self.remaining -= 1;
+            output.push_row(
+                &[self.buffer.value(0, 0).ok_or(RuntimeError::Batch)?],
+                context,
+            )?;
+            Ok(if self.remaining == 0 {
+                PullState::Done
+            } else {
+                PullState::More
+            })
+        }
+    }
+    struct Stage<'v, 'm, 'g, O> {
+        child: O,
+        buffer: RowBatch<'v, 'm, 'g>,
+        unit: bool,
+    }
+    impl<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g> for Stage<'v, 'm, 'g, O> {
+        fn node(&self) -> PlanNodeId {
+            PlanNodeId(0)
+        }
+        fn prepare_search(
+            &mut self,
+            node: PlanNodeId,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<(), RuntimeError> {
+            self.child.prepare_search(node, context)
+        }
+        fn pull(
+            &mut self,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+            output: &mut RowBatch<'v, 'm, 'g>,
+        ) -> Result<PullState, RuntimeError> {
+            self.buffer.clear();
+            let state = self.child.pull(context, &mut self.buffer)?;
+            for row in 0..self.buffer.rows() {
+                let value = self.buffer.value(row, 0).ok_or(RuntimeError::Batch)?;
+                assert!(matches!(value, QueryValue::String("retained backing")));
+                if self.unit {
+                    output.push_row(&[], context)?;
+                } else {
+                    output.push_row(&[value], context)?;
+                }
+            }
+            Ok(state)
+        }
+    }
+    struct Factory;
+    impl<'m, 'g: 'm> OperatorFactory<'m, 'g> for Factory {
+        type Operator<'v> = Stage<'v, 'm, 'g, Stage<'v, 'm, 'g, Retained<'v, 'm, 'g>>>;
+        fn build<'v>(
+            &mut self,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<Self::Operator<'v>, RuntimeError> {
+            let buffer = |context: &RuntimeContext<'v, 'm, 'g>| {
+                RowBatch::with_arenas(
+                    context,
+                    1,
+                    2,
+                    64,
+                    ArenaCapacity {
+                        string_bytes: 64,
+                        ..ArenaCapacity::default()
+                    },
+                )
+            };
+            let mut source = buffer(context)?;
+            source.push_row(&[QueryValue::String("retained backing")], context)?;
+            Ok(Stage {
+                child: Stage {
+                    child: Retained {
+                        buffer: source,
+                        remaining: 7,
+                    },
+                    buffer: buffer(context)?,
+                    unit: false,
+                },
+                buffer: buffer(context)?,
+                unit: true,
+            })
+        }
+    }
+    struct Count;
+    impl<'m, 'g> Completion<'m, 'g> for Count {
+        type Output = usize;
+        fn complete<'v>(
+            &mut self,
+            rows: &PreparedRows<'v, 'm, 'g>,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<FrozenOutput<usize>, RuntimeError> {
+            FrozenOutput::new(rows.rows(), rows.rows(), 0, 0)
+        }
+    }
+    with_plan(|store, memory, plan| {
+        let control = QueryControl::Cancel(CancelToken::new());
+        let baseline = memory.reserved_bytes();
+        let result = execute_factory(
+            view(store),
+            &control,
+            memory,
+            plan,
+            &mut Factory,
+            &mut Count,
+            ExecutionCapacity {
+                batch_rows: 2,
+                result_rows: 7,
+                ..ExecutionCapacity::default()
+            },
+            RuntimeLimits::default(),
+        )
+        .expect("retained chain");
+        assert_eq!(result.output, 7);
+        assert!(result.peak_query_bytes > baseline + 3 * 64);
+        assert_eq!(memory.reserved_bytes(), baseline);
+    });
+}
+
+#[test]
+fn factory_composes_production_relational_owners_and_releases_failed_preparation() {
+    use zeppelin_embed::property_graph::query::{QueryValue, relational::*};
+    struct Factory {
+        fail: bool,
+    }
+    impl<'m, 'g: 'm> OperatorFactory<'m, 'g> for Factory {
+        type Operator<'v> = MapRows<'v, 'm, 'g, BlockingRows<'v, 'm, 'g, RowSource<'v, 'm, 'g>>>;
+        fn build<'v>(
+            &mut self,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<Self::Operator<'v>, RuntimeError> {
+            let capacity = StorageCapacity {
+                rows: 4,
+                payload_bytes: 1024,
+                variable: ArenaCapacity::default(),
+            };
+            let mut rows = Rows::new(context, &[SlotId(19)], capacity)?;
+            for value in [3, 1, 3, 2] {
+                rows.push(&[QueryValue::I64(value)], context)?;
+            }
+            let source = rows.into_source(PlanNodeId(0), context)?;
+            let unique = BlockingRows::new(
+                context,
+                PlanNodeId(0),
+                source,
+                BlockingOperation::Distinct,
+                StorageCapacity {
+                    rows: 1,
+                    ..capacity
+                },
+                capacity,
+                capacity,
+            )?;
+            let output = MapRows::new(
+                context,
+                PlanNodeId(0),
+                unique,
+                &[],
+                None,
+                1,
+                Some(2),
+                StorageCapacity {
+                    rows: 1,
+                    ..capacity
+                },
+            )?;
+            if self.fail {
+                return Err(RuntimeError::Batch);
+            }
+            Ok(output)
+        }
+    }
+    struct Count<'a>(&'a Cell<usize>);
+    impl<'m, 'g> Completion<'m, 'g> for Count<'_> {
+        type Output = usize;
+        fn complete<'v>(
+            &mut self,
+            rows: &PreparedRows<'v, 'm, 'g>,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<FrozenOutput<usize>, RuntimeError> {
+            self.0.set(self.0.get() + 1);
+            FrozenOutput::new(rows.rows(), rows.rows(), 0, 0)
+        }
+    }
+    with_plan(|store, memory, plan| {
+        let control = QueryControl::Cancel(CancelToken::new());
+        let calls = Cell::new(0);
+        let baseline = memory.reserved_bytes();
+        let result = execute_factory(
+            view(store),
+            &control,
+            memory,
+            plan,
+            &mut Factory { fail: false },
+            &mut Count(&calls),
+            ExecutionCapacity {
+                batch_rows: 1,
+                result_rows: 2,
+                ..ExecutionCapacity::default()
+            },
+            RuntimeLimits::default(),
+        )
+        .expect("production chain");
+        assert_eq!(result.output, 2);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(memory.reserved_bytes(), baseline);
+        let result = execute_factory(
+            view(store),
+            &control,
+            memory,
+            plan,
+            &mut Factory { fail: true },
+            &mut Count(&calls),
+            ExecutionCapacity {
+                batch_rows: 1,
+                result_rows: 2,
+                ..ExecutionCapacity::default()
+            },
+            RuntimeLimits::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(RuntimeFailure {
+                error: RuntimeError::Batch,
+                ..
+            })
+        ));
+        assert_eq!(
+            calls.get(),
+            1,
+            "failed construction cannot reach completion"
+        );
+        assert_eq!(memory.reserved_bytes(), baseline);
+    });
+}
+
 struct Source<'a> {
     pulls: &'a Cell<u8>,
     cancel: Option<&'a CancelToken>,
     fail: bool,
 }
-impl PullOperator for Source<'_> {
+impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Source<'_> {
     fn node(&self) -> PlanNodeId {
         PlanNodeId(0)
     }
     fn prepare_search(
         &mut self,
         _: PlanNodeId,
-        _: &mut RuntimeContext<'_, '_, '_>,
+        _: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), RuntimeError> {
         Err(RuntimeError::Batch)
     }
-    fn pull<'v, 'm, 'g>(
+    fn pull(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
@@ -249,18 +512,18 @@ fn close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel() {
                     cancel: &'a CancelToken,
                     during_completion: bool,
                 }
-                impl PullOperator for Closing<'_> {
+                impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Closing<'_> {
                     fn node(&self) -> PlanNodeId {
                         PlanNodeId(0)
                     }
                     fn prepare_search(
                         &mut self,
                         _: PlanNodeId,
-                        _: &mut RuntimeContext<'_, '_, '_>,
+                        _: &mut RuntimeContext<'v, 'm, 'g>,
                     ) -> Result<(), RuntimeError> {
                         Err(RuntimeError::Batch)
                     }
-                    fn pull<'v, 'm, 'g>(
+                    fn pull(
                         &mut self,
                         context: &mut RuntimeContext<'v, 'm, 'g>,
                         output: &mut RowBatch<'v, 'm, 'g>,
@@ -578,14 +841,14 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
         pulls: u8,
         fail_second: bool,
     }
-    impl PullOperator for Eager<'_, '_> {
+    impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Eager<'_, '_> {
         fn node(&self) -> PlanNodeId {
             PlanNodeId(3)
         }
         fn prepare_search(
             &mut self,
             node: PlanNodeId,
-            _: &mut RuntimeContext<'_, '_, '_>,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
         ) -> Result<(), RuntimeError> {
             self.calls.push(node)?;
             if self.fail_second && node == PlanNodeId(2) {
@@ -593,7 +856,7 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
             }
             Ok(())
         }
-        fn pull<'v, 'm, 'g>(
+        fn pull(
             &mut self,
             _: &mut RuntimeContext<'v, 'm, 'g>,
             _: &mut RowBatch<'v, 'm, 'g>,
@@ -650,6 +913,109 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
                 2
             );
             assert_eq!(source.pulls, 1);
+        }
+    }
+    struct OwnedEager<'a, 'v, 'm, 'g> {
+        buffer: RowBatch<'v, 'm, 'g>,
+        calls: &'a Cell<usize>,
+        pulls: &'a Cell<usize>,
+        fail_second: bool,
+    }
+    impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for OwnedEager<'_, 'v, 'm, 'g> {
+        fn node(&self) -> PlanNodeId {
+            PlanNodeId(3)
+        }
+        fn prepare_search(
+            &mut self,
+            node: PlanNodeId,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<(), RuntimeError> {
+            use zeppelin_embed::property_graph::query::QueryValue;
+            assert_eq!(
+                usize::try_from(node.0).expect("node index"),
+                self.calls.get() + 1
+            );
+            self.buffer
+                .push_row(&[QueryValue::I64(i64::from(node.0))], context)?;
+            self.calls.set(self.calls.get() + 1);
+            if self.fail_second && node == PlanNodeId(2) {
+                return Err(RuntimeError::Batch);
+            }
+            Ok(())
+        }
+        fn pull(
+            &mut self,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
+            _: &mut RowBatch<'v, 'm, 'g>,
+        ) -> Result<PullState, RuntimeError> {
+            use zeppelin_embed::property_graph::query::QueryValue;
+            assert_eq!(self.buffer.rows(), 2);
+            assert!(matches!(self.buffer.value(0, 0), Some(QueryValue::I64(1))));
+            assert!(matches!(self.buffer.value(1, 0), Some(QueryValue::I64(2))));
+            self.pulls.set(self.pulls.get() + 1);
+            Ok(PullState::Done)
+        }
+    }
+    struct OwnedFactory<'a> {
+        calls: &'a Cell<usize>,
+        pulls: &'a Cell<usize>,
+        fail_second: bool,
+    }
+    impl<'a, 'm, 'g: 'm> OperatorFactory<'m, 'g> for OwnedFactory<'a> {
+        type Operator<'v> = OwnedEager<'a, 'v, 'm, 'g>;
+        fn build<'v>(
+            &mut self,
+            context: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<Self::Operator<'v>, RuntimeError> {
+            Ok(OwnedEager {
+                buffer: RowBatch::new(context, 1, 2, 64)?,
+                calls: self.calls,
+                pulls: self.pulls,
+                fail_second: self.fail_second,
+            })
+        }
+    }
+    for fail_second in [false, true] {
+        let calls = Cell::new(0);
+        let pulls = Cell::new(0);
+        let before = memory.reserved_bytes();
+        let result = execute_factory(
+            view(&store),
+            &control,
+            &memory,
+            &admitted,
+            &mut OwnedFactory {
+                calls: &calls,
+                pulls: &pulls,
+                fail_second,
+            },
+            &mut Empty,
+            ExecutionCapacity {
+                result_rows: 0,
+                ..ExecutionCapacity::default()
+            },
+            RuntimeLimits::default(),
+        );
+        assert_eq!(calls.get(), 2);
+        assert_eq!(pulls.get(), usize::from(!fail_second));
+        assert_eq!(memory.reserved_bytes(), before);
+        if fail_second {
+            assert!(matches!(
+                result,
+                Err(RuntimeFailure {
+                    operator: PlanNodeId(2),
+                    error: RuntimeError::Batch,
+                    ..
+                })
+            ));
+        } else {
+            assert_eq!(
+                result
+                    .expect("owned eager reports before LIMIT0")
+                    .counters
+                    .get(WorkKind::SearchInvocations),
+                2
+            );
         }
     }
     store.close().expect("close");

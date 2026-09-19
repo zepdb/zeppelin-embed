@@ -18937,3 +18937,39 @@ fn one_runner_episode_reaches_required_adjacency_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_relational_probe_preserves_order_bags_and_inflight_faults() {
+    for seed in [0, 1, 125, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_relational::probe(seed, &mut coverage)
+            .expect("PG14 independent relational oracle");
+        eprintln!("PG14 seed={seed} {report:?}");
+        assert_eq!(
+            (report.cases, report.fault_fires, report.clean_controls),
+            (6, 3, 3)
+        );
+        for key in adversarial::graph_relational::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_relational_contracts() {
+    let root = tempfile::tempdir().expect("relational runner artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_relational::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG14 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

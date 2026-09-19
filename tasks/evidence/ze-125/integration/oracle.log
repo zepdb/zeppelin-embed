@@ -1,0 +1,43 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.18s
+────────────
+ Nextest run ID 9c8fcf5b-970c-4b3f-b30a-5acba628bdf6 with nextest profile: default
+    Starting 2 tests across 8 binaries (145 tests skipped)
+        PASS [   0.008s] (1/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_orders_signed_values_before_transport_encoding
+  stdout ───
+
+    running 1 test
+    test graph_relational::tests::relational_oracle_orders_signed_values_before_transport_encoding ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (2/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults
+  stdout ───
+
+    running 1 test
+    test graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.009s] 2 tests run: 2 passed, 145 skipped
+        PASS [   0.008s] (1/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_orders_signed_values_before_transport_encoding
+  stdout ───
+
+    running 1 test
+    test graph_relational::tests::relational_oracle_orders_signed_values_before_transport_encoding ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (2/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults
+  stdout ───
+
+    running 1 test
+    test graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
+

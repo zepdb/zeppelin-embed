@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.56s
+────────────
+ Nextest run ID 80c400e7-2583-4277-badd-1541badfc3a3 with nextest profile: default
+    Starting 3 tests across 1 binary (455 tests skipped)
+        PASS [   0.024s] (1/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures
+        PASS [   0.041s] (2/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_relational_probe_preserves_order_bags_and_inflight_faults
+        PASS [   0.893s] (3/3) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_relational_contracts
+────────────
+     Summary [   0.894s] 3 tests run: 3 passed, 455 skipped
+        PASS [   0.024s] (1/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures
+  stdout ───
+
+    running 1 test
+    test property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures ... PG9 cases=4 fires=2 clean_controls=2
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+
+        PASS [   0.041s] (2/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_relational_probe_preserves_order_bags_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_relational_probe_preserves_order_bags_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.03s
+
+  stderr ───
+    PG14 seed=0 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=1 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=125 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=18446744073709551615 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+
+        PASS [   0.893s] (3/3) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_relational_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_relational_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.88s
+
+  stderr ───
+    PG14 actual runner seed=0 operations=59 violations=0
+

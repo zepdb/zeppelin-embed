@@ -332,7 +332,7 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         }
         Self::storage(context, columns, max_rows, payload_limit, capacity)
     }
-    pub(super) fn storage(
+    pub(crate) fn storage(
         context: &RuntimeContext<'v, 'm, 'g>,
         columns: usize,
         max_rows: usize,
@@ -340,7 +340,7 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         capacity: ArenaCapacity,
     ) -> Result<Self, RuntimeError> {
         context.checkpoint()?;
-        if columns > 256 || max_rows > 65_536 || payload_limit > super::super::MAX_QUERY_BYTES {
+        if columns > 256 || payload_limit > super::super::MAX_QUERY_BYTES {
             return Err(RuntimeError::Batch);
         }
         let bytes = std::mem::size_of::<Self>()
@@ -359,7 +359,10 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
                 nodes: QueryArena::new(context.memory(), capacity.node_ids)?,
                 relationships: QueryArena::new(context.memory(), capacity.relationship_ids)?,
             },
-            cells: QueryArena::new(context.memory(), columns * max_rows)?,
+            cells: QueryArena::new(
+                context.memory(),
+                columns.checked_mul(max_rows).ok_or(RuntimeError::Batch)?,
+            )?,
             offsets: QueryArena::new(context.memory(), max_rows)?,
             columns,
             max_rows,
@@ -375,6 +378,14 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
     /// Fixed width of each flat row, including zero-column Unit bindings.
     pub const fn columns(&self) -> usize {
         self.columns
+    }
+    /// Fixed admitted row capacity; scheduling batches remain at most 256.
+    pub const fn capacity(&self) -> usize {
+        self.max_rows
+    }
+    pub(crate) fn belongs_to(&self, context: &RuntimeContext<'_, '_, '_>) -> bool {
+        std::ptr::eq(self.view, context.view())
+            && std::ptr::eq(self._control.owner(), context.memory())
     }
     /// Exact currently initialized scalar/string/list payload, excluding controls.
     pub const fn payload_bytes(&self) -> usize {
@@ -399,21 +410,30 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         row: &[QueryValue<'_>],
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), RuntimeError> {
+        if row.len() != self.columns {
+            return Err(RuntimeError::Batch);
+        }
+        self.push_from(
+            |column| row.get(column).copied().ok_or(RuntimeError::Batch),
+            context,
+        )
+    }
+    pub(crate) fn push_from<'a>(
+        &mut self,
+        mut value: impl FnMut(usize) -> Result<QueryValue<'a>, RuntimeError>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
         context.checkpoint()?;
-        if !std::ptr::eq(self.view, context.view())
-            || !std::ptr::eq(self._control.owner(), context.memory())
-            || row.len() != self.columns
-            || self.rows() >= self.max_rows
-        {
+        if !self.belongs_to(context) || self.rows() >= self.max_rows {
             return Err(RuntimeError::Batch);
         }
         let start = self.cells.len();
         let prior_bytes = self.payload_bytes;
         let prior_variable = self.variable.usage();
         let result = (|| {
-            for value in row {
+            for column in 0..self.columns {
                 let cell = self.variable.copy_value(
-                    *value,
+                    value(column)?,
                     context,
                     &mut self.payload_bytes,
                     self.payload_limit,

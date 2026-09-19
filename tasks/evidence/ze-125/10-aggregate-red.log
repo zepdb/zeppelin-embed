@@ -1,0 +1,131 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+error[E0422]: cannot find struct, variant or union type `AggregateColumn` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:22
+   |
+92 | ...   let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operatio...
+   |                    ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `AggregateColumn` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:94
+   |
+92 | ...   let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operatio...
+   |                                                                                            ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `AggregateColumn` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:199
+   |
+92 | ...::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), ...
+   |                                                   ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `AggregateColumn` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:307
+   |
+92 | ...ollect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), ...
+   |                                                   ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `Aggregate`
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:71
+   |
+92 | ...   let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operatio...
+   |                                                                     ^^^^^^^^^ use of undeclared type `Aggregate`
+   |
+help: there is an enum variant `zeppelin_embed::property_graph::query::plan::Barrier::Aggregate` and 4 others; try using the variant's enum
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: zeppelin_embed::property_graph::query::plan::Barrier::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: zeppelin_embed::property_graph::query::plan::Expression::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: zeppelin_embed::property_graph::query::plan::OperatorKind::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: zeppelin_embed::property_graph::query::plan::PlanError::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+
+error[E0599]: no method named `aggregate` found for struct `zeppelin_embed::property_graph::query::relational::Rows<'v, 'm, 'g>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:96:28
+   |
+96 |         let grouped = rows.aggregate(&keys, &specs, capacity(8), context).expect("aggregate");
+   |                            ^^^^^^^^^ method not found in `zeppelin_embed::property_graph::query::relational::Rows<'_, '_, '_>`
+
+error[E0599]: no method named `aggregate` found for struct `zeppelin_embed::property_graph::query::relational::Rows<'v, 'm, 'g>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_relational.rs:110:28
+    |
+110 |         let global = empty.aggregate(&[], &specs, capacity(1), context).expect("global");
+    |                            ^^^^^^^^^ method not found in `zeppelin_embed::property_graph::query::relational::Rows<'_, '_, '_>`
+
+error[E0599]: no method named `aggregate` found for struct `zeppelin_embed::property_graph::query::relational::Rows<'v, 'm, 'g>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_relational.rs:116:23
+    |
+116 |         assert!(empty.aggregate(&keys,&specs,capacity(0),context).expect("grouped empty").is_empty());
+    |                       ^^^^^^^^^ method not found in `zeppelin_embed::property_graph::query::relational::Rows<'_, '_, '_>`
+
+error[E0433]: failed to resolve: use of undeclared type `Aggregate`
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:356
+   |
+92 | ...egateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |                                                 ^^^^^^^^^ use of undeclared type `Aggregate`
+   |
+help: there is an enum variant `zeppelin_embed::property_graph::query::plan::Barrier::Aggregate` and 4 others; try using the variant's enum
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: zeppelin_embed::property_graph::query::plan::Barrier::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: zeppelin_embed::property_graph::query::plan::Expression::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: zeppelin_embed::property_graph::query::plan::OperatorKind::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: zeppelin_embed::property_graph::query::plan::PlanError::Collect { slot: SlotId(9), distinct: true } }];
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `Aggregate`
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:143
+   |
+92 | ...egateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(...
+   |                                                 ^^^^^^^^^ use of undeclared type `Aggregate`
+   |
+help: there is an enum variant `zeppelin_embed::property_graph::query::plan::Barrier::Aggregate` and 4 others; try using the variant's enum
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: zeppelin_embed::property_graph::query::plan::Barrier::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: zeppelin_embed::property_graph::query::plan::Expression::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: zeppelin_embed::property_graph::query::plan::OperatorKind::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: zeppelin_embed::property_graph::query::plan::PlanError::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `Aggregate`
+  --> crates/zeppelin-embed/tests/graph_relational.rs:92:248
+   |
+92 | ...egateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: Slot...
+   |                                                 ^^^^^^^^^ use of undeclared type `Aggregate`
+   |
+help: there is an enum variant `zeppelin_embed::property_graph::query::plan::Barrier::Aggregate` and 4 others; try using the variant's enum
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: zeppelin_embed::property_graph::query::plan::Barrier::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: zeppelin_embed::property_graph::query::plan::Expression::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: zeppelin_embed::property_graph::query::plan::OperatorKind::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+92 -         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: Aggregate::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+92 +         let specs = [AggregateColumn { output: SlotId(60), operation: Aggregate::CountAll }, AggregateColumn { output: SlotId(61), operation: Aggregate::Count { slot: SlotId(9), distinct: true } }, AggregateColumn { output: SlotId(62), operation: zeppelin_embed::property_graph::query::plan::PlanError::Collect { slot: SlotId(9), distinct: false } }, AggregateColumn { output: SlotId(63), operation: Aggregate::Collect { slot: SlotId(9), distinct: true } }];
+   |
+
+Some errors have detailed explanations: E0422, E0433, E0599.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `zeppelin-embed` (test "graph_relational") due to 11 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_relational` exited with code 101

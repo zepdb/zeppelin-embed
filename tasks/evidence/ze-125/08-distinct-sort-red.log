@@ -1,0 +1,29 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+error[E0422]: cannot find struct, variant or union type `OrderKey` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:73:69
+   |
+73 | ...   let rows = rows.distinct(context).expect("distinct").sort(&[OrderKey { slot: SlotId(42), descending: false }], context).expect("sor...
+   |                                                                   ^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `OrderKey` in this scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:83:32
+   |
+83 |         let tied = tied.sort(&[OrderKey { slot: SlotId(99), descending: true }], context).expect("stable");
+   |                                ^^^^^^^^ not found in this scope
+
+error[E0599]: no method named `distinct` found for struct `zeppelin_embed::property_graph::query::relational::Rows<'v, 'm, 'g>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:73:25
+   |
+73 | ...   let rows = rows.distinct(context).expect("distinct").sort(&[OrderKey { slot: SlotId(42), descending: false }], context).expect("sor...
+   |                       ^^^^^^^^ method not found in `zeppelin_embed::property_graph::query::relational::Rows<'_, '_, '_>`
+
+error[E0599]: no method named `sort` found for struct `zeppelin_embed::property_graph::query::relational::Rows<'v, 'm, 'g>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_relational.rs:83:25
+   |
+83 |         let tied = tied.sort(&[OrderKey { slot: SlotId(99), descending: true }], context).expect("stable");
+   |                         ^^^^ method not found in `zeppelin_embed::property_graph::query::relational::Rows<'_, '_, '_>`
+
+Some errors have detailed explanations: E0422, E0599.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `zeppelin-embed` (test "graph_relational") due to 4 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_relational` exited with code 101

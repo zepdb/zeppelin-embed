@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.75s
+────────────
+ Nextest run ID 8c2042e6-7442-449e-bed6-70e22dbd6762 with nextest profile: default
+    Starting 1 test across 1 binary (10 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_relational distinct_and_stable_sort_use_exact_recursive_query_equivalence
+  stdout ───
+
+    running 1 test
+    test distinct_and_stable_sort_use_exact_recursive_query_equivalence ... FAILED
+
+    failures:
+
+    failures:
+        distinct_and_stable_sort_use_exact_recursive_query_equivalence
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'distinct_and_stable_sort_use_exact_recursive_query_equivalence' (34630373) panicked at crates/zeppelin-embed/tests/graph_relational.rs:188:9:
+    assertion `left == right` failed
+      left: [50, 30, 10, 40, 20]
+     right: [10, 30, 50, 20, 40]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 10 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_relational distinct_and_stable_sort_use_exact_recursive_query_equivalence
+  stdout ───
+
+    running 1 test
+    test distinct_and_stable_sort_use_exact_recursive_query_equivalence ... FAILED
+
+    failures:
+
+    failures:
+        distinct_and_stable_sort_use_exact_recursive_query_equivalence
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'distinct_and_stable_sort_use_exact_recursive_query_equivalence' (34630373) panicked at crates/zeppelin-embed/tests/graph_relational.rs:188:9:
+    assertion `left == right` failed
+      left: [50, 30, 10, 40, 20]
+     right: [10, 30, 50, 20, 40]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

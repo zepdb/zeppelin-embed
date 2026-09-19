@@ -1,0 +1,39 @@
+{
+  "base": "7028a42f2f4898bb7aa729dc935bd51b4033f2ba",
+  "snapshot": "/tmp/ze-125-review-5",
+  "snapshot_manifest_sha256": "0b7375f19921109c6b3822ac930bd84ab46c5c0f27e035357ec3e95047dfe73d",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "host": "Apple M3 Max, 16 CPUs, 128 GiB RAM",
+  "rust": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "nextest": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)",
+  "tests": {
+    "core": 32,
+    "oracle": 2,
+    "runner": 3,
+    "compile_fail": 1
+  },
+  "pg14": {
+    "seeds": [
+      0,
+      1,
+      125,
+      18446744073709551615
+    ],
+    "cases_per_seed": 6,
+    "fires_per_seed": 3,
+    "clean_controls_per_seed": 3,
+    "runner_operations": 59,
+    "runner_violations": 0
+  },
+  "allocation_failure_positions": {
+    "relational": 32,
+    "eligibility": 2
+  },
+  "maximum_eligible": {
+    "ids": 524288,
+    "capacity": 524288,
+    "live_reserved_delta": 8388720,
+    "peak_query_reserved_bytes": 16777904
+  },
+  "review3_delta": "rustfmt-only wraps in runtime_control/coverage; trailing blank line removal in adversarial_tests"
+}

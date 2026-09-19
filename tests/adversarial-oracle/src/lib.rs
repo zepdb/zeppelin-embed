@@ -140,3 +140,6 @@ pub mod graph_directory;
 pub mod graph_fixture;
 
 pub mod graph_adjacency;
+
+/// Independent primitive relational kernel oracle.
+pub mod graph_relational;

@@ -105,3 +105,5 @@ pub mod graph_fixture;
 pub mod graph_binding;
 
 pub mod graph_adjacency;
+
+pub mod graph_relational;

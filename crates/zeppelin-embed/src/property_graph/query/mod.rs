@@ -79,3 +79,8 @@ pub mod resources;
 
 /// Bounded flat execution interfaces and cumulative query work.
 pub mod runtime;
+
+/// Immutable same-view graph eligibility with owned packed full-width IDs.
+pub mod eligibility;
+/// Bounded relational kernels over explicit pre-evaluated typed columns.
+pub mod relational;

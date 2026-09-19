@@ -1,0 +1,22 @@
+{
+  "crates/zeppelin-embed/src/property_graph/query/eligibility.rs": "4e1aae72707ab86fa1c96eb8440f33d9c5765e6e70bfb2f56693170912af3e7b",
+  "crates/zeppelin-embed/src/property_graph/query/mod.rs": "b592adcd14eb4d16891e8e3d53b00fdd5eece90c670df8c76500e27167eb866c",
+  "crates/zeppelin-embed/src/property_graph/query/relational.rs": "c9f69b4ffaf84504368d26125f2064ec2e6879bdda644dafc157884ed8a8fc59",
+  "crates/zeppelin-embed/src/property_graph/query/relational/aggregate.rs": "2560c9d11bd7f08f13b1c7ec9fe852f32659dcf947c23effe561e463a9935697",
+  "crates/zeppelin-embed/src/property_graph/query/relational/blocking.rs": "9aa1e9027e872a505528aec08a917840a5f069fd0df8ecc872c4cca12167095a",
+  "crates/zeppelin-embed/src/property_graph/query/relational/ordering.rs": "978e45e22e4a4cef11854779f95f5a92e55d67ae956ce21862a659156a1bcb1f",
+  "crates/zeppelin-embed/src/property_graph/query/runtime.rs": "c4a34a58e08d8f01cb2331d08b3e132b00cd220cb40b127802cb9fda506d3942",
+  "crates/zeppelin-embed/src/property_graph/query/runtime/batch.rs": "fe2a93a3098d40d4a732b5edf3589406ee9a5e1b00be2f1fd31527008c1b0848",
+  "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs": "bfb3b58f340ecd227503078a976a754f7adb302a29dc7f81cf52be28173230a8",
+  "crates/zeppelin-embed/tests/graph_query_runtime.rs": "558e3da43c2a202013bf767edb58567dea9abe7e611ee786cb9e3c7df2e19230",
+  "crates/zeppelin-embed/tests/graph_query_runtime_control.rs": "8460b131c934b99aa8341e99a0cf24b54e72bf3be24f9a43876d31ad5f6672e4",
+  "crates/zeppelin-embed/tests/graph_relational.rs": "ea543f9c6345457b76fa56428b472236c8479fd33dded6d83ccc163e4a37049c",
+  "tests/adversarial-oracle/src/graph_relational.rs": "fc04145d23c80f5a3ac551202c3c09ae6854c45eed568188f37c7a91a9efe8c4",
+  "tests/adversarial-oracle/src/lib.rs": "47a3ce528ddc2b0c1340620ccd548b1283004b7891ee3deecd12b2dde38c41e1",
+  "tests/adversarial/coverage.rs": "aca213ea1511da100ec9fd3fa8cab23c11ea50369df58d8d247f882fa2c0f8f8",
+  "tests/adversarial/graph_relational.rs": "c18a0b704d64c1c26afce0188b94584daebda3145edf0adfa68d1f481a3b79e4",
+  "tests/adversarial/graph_runtime.rs": "574fca32372f0c025b2617c624f3220a297102fb328956e2bb3bacfdc082755b",
+  "tests/adversarial/mod.rs": "1c6309e1faa36999ec296aea72cbb90e8ca93367bac7213db1fa40c13c53c7b2",
+  "tests/adversarial/runner.rs": "9842e8425acf4bd9fdbde21ae32c3826185ff33a052874482b3924bc4f491412",
+  "tests/adversarial_tests.rs": "31d13018af44c06497b7fd005dbe72c4ca450e6bf7eca66a35c9bb448a2c92af"
+}

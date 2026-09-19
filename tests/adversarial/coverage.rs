@@ -2,6 +2,14 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.relational.order-bags",
+    "property-graph.relational.collect",
+    "property-graph.relational.eligible",
+    "property-graph.relational.clock.sort",
+    "property-graph.relational.clock.aggregate",
+    "property-graph.relational.clock.eligibility",
+    "property-graph.relational.same-seed-control",
+    "property-graph.relational.release",
     "property-graph.adjacency.merge",
     "property-graph.adjacency.full-id",
     "property-graph.adjacency.model-paired",

@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.21s
+────────────
+ Nextest run ID 4f88d2d8-b41e-42cb-91af-3271f26de6f2 with nextest profile: default
+    Starting 1 test across 1 binary (6 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_relational cancelled_empty_sort_and_source_preparation_fail_before_success
+  stdout ───
+
+    running 1 test
+    test cancelled_empty_sort_and_source_preparation_fail_before_success ... FAILED
+
+    failures:
+
+    failures:
+        cancelled_empty_sort_and_source_preparation_fail_before_success
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cancelled_empty_sort_and_source_preparation_fail_before_success' (34579277) panicked at crates/zeppelin-embed/tests/graph_relational.rs:177:5:
+    assertion failed: matches!(rows.sort(&[],&mut
+        context),Err(RuntimeError::Value(QueryError::Cancelled)))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.013s] 1 test run: 0 passed, 1 failed, 6 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_relational cancelled_empty_sort_and_source_preparation_fail_before_success
+  stdout ───
+
+    running 1 test
+    test cancelled_empty_sort_and_source_preparation_fail_before_success ... FAILED
+
+    failures:
+
+    failures:
+        cancelled_empty_sort_and_source_preparation_fail_before_success
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cancelled_empty_sort_and_source_preparation_fail_before_success' (34579277) panicked at crates/zeppelin-embed/tests/graph_relational.rs:177:5:
+    assertion failed: matches!(rows.sort(&[],&mut
+        context),Err(RuntimeError::Value(QueryError::Cancelled)))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

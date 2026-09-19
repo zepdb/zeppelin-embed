@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/tests)
+error[E0433]: failed to resolve: could not find `graph_relational` in `adversarial`
+     --> tests/adversarial_tests.rs:18865:35
+      |
+18865 |         let report = adversarial::graph_relational::probe(seed,&mut coverage).expect("PG14 independent relational oracle");
+      |                                   ^^^^^^^^^^^^^^^^ could not find `graph_relational` in `adversarial`
+
+error[E0433]: failed to resolve: could not find `graph_relational` in `adversarial`
+     --> tests/adversarial_tests.rs:18867:33
+      |
+18867 |         for key in adversarial::graph_relational::REQUIRED_COVERAGE { assert!(coverage.count(key)>0,"{key}"); }
+      |                                 ^^^^^^^^^^^^^^^^ could not find `graph_relational` in `adversarial`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-workspace-tests --test adversarial_tests` exited with code 101

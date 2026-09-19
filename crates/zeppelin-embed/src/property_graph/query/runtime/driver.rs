@@ -20,7 +20,7 @@ pub enum PullState {
 /// Required internal physical-operator adapter, not an application callback.
 /// Implementations charge examined/discarded work and all their owned storage
 /// against this context. They cannot publish results or durable writes here.
-pub trait PullOperator {
+pub trait PullOperator<'v, 'm, 'g> {
     /// Typed operator identity for plan matching and failure diagnostics.
     fn node(&self) -> PlanNodeId;
     /// Executes and retains one eager search report before any row pulling.
@@ -28,15 +28,48 @@ pub trait PullOperator {
     fn prepare_search(
         &mut self,
         node: PlanNodeId,
-        context: &mut RuntimeContext<'_, '_, '_>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), RuntimeError>;
     /// Fills a fixed flat batch using the same view, control and memory owner.
-    fn pull<'v, 'm, 'g>(
+    fn pull(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
     ) -> Result<PullState, RuntimeError>;
 }
+/// Builds a retained operator chain inside the owned execution view. All buffer
+/// capacities belong to the supplied context; construction is fallible and
+/// precedes eager preparation, pulling and completion. The associated operator
+/// cannot escape the driver's local view lifetime.
+///
+/// A factory cannot retain the fresh view in longer-lived state:
+/// ```compile_fail
+/// use zeppelin_embed::property_graph::query::{QueryView, plan::PlanNodeId, runtime::*};
+/// struct Noop;
+/// impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Noop {
+///     fn node(&self) -> PlanNodeId { PlanNodeId(0) }
+///     fn prepare_search(&mut self, _: PlanNodeId, _: &mut RuntimeContext<'v, 'm, 'g>) -> Result<(), RuntimeError> { Err(RuntimeError::Batch) }
+///     fn pull(&mut self, _: &mut RuntimeContext<'v, 'm, 'g>, _: &mut RowBatch<'v, 'm, 'g>) -> Result<PullState, RuntimeError> { Ok(PullState::Done) }
+/// }
+/// struct Escaping { view: Option<&'static QueryView> }
+/// impl<'m, 'g: 'm> OperatorFactory<'m, 'g> for Escaping {
+///     type Operator<'v> = Noop;
+///     fn build<'v>(&mut self, context: &mut RuntimeContext<'v, 'm, 'g>) -> Result<Noop, RuntimeError> {
+///         self.view = Some(context.view()); // fresh execution view cannot escape
+///         Ok(Noop)
+///     }
+/// }
+/// ```
+pub trait OperatorFactory<'m, 'g: 'm> {
+    /// A concrete chain retaining this execution's view and charged backing.
+    type Operator<'v>: PullOperator<'v, 'm, 'g>;
+    /// Construct the whole chain, retaining each real buffer charge with its owner.
+    fn build<'v>(
+        &mut self,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<Self::Operator<'v>, RuntimeError>;
+}
+
 /// Explicit fixed capacities, including unused slots, charged before pulling.
 #[derive(Clone, Copy)]
 pub struct ExecutionCapacity {
@@ -171,7 +204,13 @@ impl std::error::Error for RuntimeFailure {}
     clippy::result_large_err,
     reason = "typed owned execution inputs and allocation-free full failure counters"
 )]
-pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
+pub fn execute<
+    'm,
+    'g,
+    V: RetainedView,
+    O: for<'v> PullOperator<'v, 'm, 'g>,
+    C: Completion<'m, 'g>,
+>(
     view: V,
     control: &QueryControl,
     memory: &'m QueryMemory<'g>,
@@ -188,6 +227,86 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
             error,
             counters: WorkCounters::default(),
         })?;
+    let _view_charge =
+        memory
+            .reserve(std::mem::size_of::<V>())
+            .map_err(|error| RuntimeFailure {
+                operator: root,
+                error: error.into(),
+                counters: context.counters(),
+            })?;
+    drain(&mut context, plan, source, completion, capacity)
+}
+
+/// Executes a buffer-owning physical chain built under this one retained view.
+/// The stateless entry point and this entry point share exactly the same eager
+/// barrier, drain, completion and final close-first check.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::result_large_err,
+    reason = "typed owned execution inputs and allocation-free failure counters"
+)]
+pub fn execute_factory<
+    'm,
+    'g,
+    V: RetainedView,
+    F: OperatorFactory<'m, 'g>,
+    C: Completion<'m, 'g>,
+>(
+    view: V,
+    control: &QueryControl,
+    memory: &'m QueryMemory<'g>,
+    plan: &RuntimePlan<'_, '_, '_, '_, '_, '_>,
+    factory: &mut F,
+    completion: &mut C,
+    capacity: ExecutionCapacity,
+    limits: RuntimeLimits,
+) -> Result<Execution<C::Output>, RuntimeFailure> {
+    let root = plan.plan().description().root;
+    let mut context =
+        RuntimeContext::new(&view, control, memory, limits).map_err(|error| RuntimeFailure {
+            operator: root,
+            error,
+            counters: WorkCounters::default(),
+        })?;
+    let _view_charge =
+        memory
+            .reserve(std::mem::size_of::<V>())
+            .map_err(|error| RuntimeFailure {
+                operator: root,
+                error: error.into(),
+                counters: context.counters(),
+            })?;
+    if !plan.belongs_to(memory) {
+        return Err(RuntimeFailure {
+            operator: root,
+            error: RuntimeError::Batch,
+            counters: context.counters(),
+        });
+    }
+    let mut source = factory
+        .build(&mut context)
+        .map_err(|error| RuntimeFailure {
+            operator: root,
+            error,
+            counters: context.counters(),
+        })?;
+    drain(&mut context, plan, &mut source, completion, capacity)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "allocation-free full failure counters"
+)]
+fn drain<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+    plan: &RuntimePlan<'_, '_, '_, '_, '_, '_>,
+    source: &mut O,
+    completion: &mut C,
+    capacity: ExecutionCapacity,
+) -> Result<Execution<C::Output>, RuntimeFailure> {
+    let root = plan.plan().description().root;
+    let memory = context.memory();
     let mut diagnostic = root;
     let result = (|| {
         context.checkpoint()?;
@@ -200,12 +319,10 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
         }
         let width = plan.plan().facts(root).ok_or(RuntimeError::Batch)?.width();
         let _driver = memory.reserve(
-            std::mem::size_of::<V>()
-                + std::mem::size_of::<ExecutionCapacity>()
-                + std::mem::size_of::<WorkCounters>(),
+            std::mem::size_of::<ExecutionCapacity>() + std::mem::size_of::<WorkCounters>(),
         )?;
         let mut batch = RowBatch::with_arenas(
-            &context,
+            context,
             width,
             capacity.batch_rows,
             capacity.batch_payload_bytes,
@@ -213,7 +330,7 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
         )?;
         let mut prepared = PreparedRows {
             rows: RowBatch::storage(
-                &context,
+                context,
                 width,
                 capacity.result_rows,
                 capacity.result_payload_bytes,
@@ -223,14 +340,14 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
         for node in plan.plan().description().eager_searches {
             diagnostic = *node;
             context.charge(WorkKind::SearchInvocations, 1)?;
-            source.prepare_search(*node, &mut context)?;
+            source.prepare_search(*node, context)?;
             context.checkpoint()?;
         }
         diagnostic = root;
         loop {
             context.checkpoint()?;
             batch.clear();
-            let state = source.pull(&mut context, &mut batch)?;
+            let state = source.pull(context, &mut batch)?;
             context.checkpoint()?;
             if state == PullState::More && batch.rows() == 0 {
                 return Err(RuntimeError::Batch);
@@ -244,7 +361,7 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
                 context.charge(WorkKind::RowsIn, 1)?;
                 // The full private collection is dropped if any row/copy fails.
                 let previous = prepared.rows.payload_bytes();
-                prepared.rows.copy_row(&batch, row, &mut context)?;
+                prepared.rows.copy_row(&batch, row, context)?;
                 context.charge(WorkKind::CompletedRows, 1)?;
                 context.charge(
                     WorkKind::PreparedPayloadBytes,
@@ -256,7 +373,7 @@ pub fn execute<'m, 'g, V: RetainedView, O: PullOperator, C: Completion<'m, 'g>>(
             }
         }
         context.checkpoint()?;
-        let frozen = completion.complete(&prepared, &mut context)?;
+        let frozen = completion.complete(&prepared, context)?;
         if frozen.rows != prepared.rows() {
             return Err(RuntimeError::Batch);
         }

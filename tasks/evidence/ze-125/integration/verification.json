@@ -1,0 +1,42 @@
+{
+  "source_commit": "05a49fa36570926135502842c5aeff92aadd388c",
+  "integrated_source_commit": "5d1de84a60b67e9050ff986ea185a3bf4ac296a9",
+  "platform": "Darwin arm64",
+  "hardware": "Apple M3 Max",
+  "nextest": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)\nrelease: 0.9.145\ncommit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2\ncommit-date: 2026-09-16\nhost: aarch64-apple-darwin",
+  "commands": {
+    "core": "cargo nextest run -p zeppelin-embed --features allocation-audit,test-support --test graph_relational --test graph_query_runtime --test graph_query_runtime_control --success-output immediate-final",
+    "runner": "cargo nextest run -p zeppelin-embed-workspace-tests --test adversarial_tests -p zeppelin-embed-adversarial-oracle -E 'test(graph_relational) | test(property_graph_relational_probe_preserves_order_bags_and_inflight_faults) | test(one_runner_episode_reaches_required_relational_contracts) | test(property_graph_runtime_probe)' --success-output immediate-final",
+    "oracle": "cargo nextest run -p zeppelin-embed-adversarial-oracle -E 'test(graph_relational)' --success-output immediate-final",
+    "doc": "cargo test -p zeppelin-embed --doc OperatorFactory -- --show-output",
+    "clippy": "cargo clippy -p zeppelin-embed --features allocation-audit --lib --test graph_relational --test graph_query_runtime_control -- -D warnings"
+  },
+  "results": {
+    "core": {
+      "passed": 32,
+      "skipped": 0
+    },
+    "runner": {
+      "passed": 3,
+      "skipped": 460
+    },
+    "oracle": {
+      "passed": 2,
+      "skipped": 145
+    },
+    "doc": {
+      "passed": 1,
+      "filtered": 4
+    },
+    "clippy": {
+      "exit_code": 0
+    }
+  },
+  "raw_sha256": {
+    "core": "afaf0f51ab0d4eeb7fe32fd75c87db17665211f879b9b3e7b5db83b62c349fca",
+    "runner": "a5771bfffc77345a6fe4f757791d9c8da45cb24f9c480836dee36e444f388ec1",
+    "oracle": "cd5030d60277f3de228388291ce1cc4ce0f8514f8e11825a3ea05117eba6cbea",
+    "doc": "cf8705e894f9105d9a8fa827d87653b0a380261d992c20a9f3069c8dd8d9c4fe",
+    "clippy": "0cc4addbeb21674002ff888801f64ed41ad8b3247b72f4decfa67cf77d3d1253"
+  }
+}

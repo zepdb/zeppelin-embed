@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+────────────
+ Nextest run ID c9b7da9b-f970-42cb-a020-6b64135d0d79 with nextest profile: default
+    Starting 1 test across 1 binary (10 tests skipped)
+        FAIL [   0.168s] (1/1) zeppelin-embed::graph_relational eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates
+  stdout ───
+
+    running 1 test
+    test eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates ... FAILED
+
+    failures:
+
+    failures:
+        eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates' (34631543) panicked at crates/zeppelin-embed/tests/graph_relational.rs:303:9:
+    assertion `left == right` failed
+      left: 0
+     right: 524289
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.169s] 1 test run: 0 passed, 1 failed, 10 skipped
+        FAIL [   0.168s] (1/1) zeppelin-embed::graph_relational eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates
+  stdout ───
+
+    running 1 test
+    test eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates ... FAILED
+
+    failures:
+
+    failures:
+        eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates' (34631543) panicked at crates/zeppelin-embed/tests/graph_relational.rs:303:9:
+    assertion `left == right` failed
+      left: 0
+     right: 524289
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

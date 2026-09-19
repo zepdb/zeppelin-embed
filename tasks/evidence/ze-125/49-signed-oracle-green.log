@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.27s
+────────────
+ Nextest run ID 4abc5579-271a-46ed-8daa-4d76db9942f6 with nextest profile: default
+    Starting 2 tests across 6 binaries (109 tests skipped)
+        PASS [   0.007s] (1/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_orders_signed_values_before_transport_encoding
+        PASS [   0.008s] (2/2) zeppelin-embed-adversarial-oracle graph_relational::tests::relational_oracle_refuses_lost_bags_wrong_order_truncated_ids_and_false_faults
+────────────
+     Summary [   0.008s] 2 tests run: 2 passed, 109 skipped

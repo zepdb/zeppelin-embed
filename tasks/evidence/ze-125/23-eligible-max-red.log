@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.26s
+────────────
+ Nextest run ID 47a2d037-a5ef-4c3a-be20-4dd3b65d32e0 with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        FAIL [   1.022s] (1/1) zeppelin-embed::graph_relational maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over
+  stdout ───
+
+    running 1 test
+    test maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over ... FAILED
+
+    failures:
+
+    failures:
+        maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.01s
+
+  stderr ───
+
+    thread 'maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over' (34597464) panicked at crates/zeppelin-embed/tests/graph_relational.rs:554:71:
+    full permitted ordered set: Value(WorkLimit)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.023s] 1 test run: 0 passed, 1 failed, 7 skipped
+        FAIL [   1.022s] (1/1) zeppelin-embed::graph_relational maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over
+  stdout ───
+
+    running 1 test
+    test maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over ... FAILED
+
+    failures:
+
+    failures:
+        maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.01s
+
+  stderr ───
+
+    thread 'maximum_materialized_eligibility_fits_one_packed_owner_and_rejects_one_over' (34597464) panicked at crates/zeppelin-embed/tests/graph_relational.rs:554:71:
+    full permitted ordered set: Value(WorkLimit)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

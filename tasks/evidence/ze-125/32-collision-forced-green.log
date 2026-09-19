@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+────────────
+ Nextest run ID 67cb9cb9-2d5d-4d92-8e4c-f23ffc9e0f75 with nextest profile: default
+    Starting 2 tests across 1 binary (9 tests skipped)
+        PASS [   0.014s] (1/2) zeppelin-embed::graph_relational grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect
+        PASS [   0.014s] (2/2) zeppelin-embed::graph_relational distinct_and_stable_sort_use_exact_recursive_query_equivalence
+────────────
+     Summary [   0.015s] 2 tests run: 2 passed, 9 skipped

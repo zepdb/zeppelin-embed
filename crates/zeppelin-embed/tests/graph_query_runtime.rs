@@ -636,18 +636,18 @@ fn pull_driver_drains_private_batches_before_completion() {
         }
     }
     struct Source(u8);
-    impl PullOperator for Source {
+    impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Source {
         fn node(&self) -> PlanNodeId {
             PlanNodeId(0)
         }
         fn prepare_search(
             &mut self,
             _: PlanNodeId,
-            _: &mut RuntimeContext<'_, '_, '_>,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
         ) -> Result<(), RuntimeError> {
             Err(RuntimeError::Batch)
         }
-        fn pull<'v, 'm, 'g>(
+        fn pull(
             &mut self,
             context: &mut RuntimeContext<'v, 'm, 'g>,
             output: &mut RowBatch<'v, 'm, 'g>,

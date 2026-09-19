@@ -1,0 +1,41 @@
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/query/relational/aggregate.rs:11:13
+   |
+11 |     Count { slot: SlotId, distinct: bool },
+   |             ^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/query/relational/aggregate.rs:11:27
+   |
+11 |     Count { slot: SlotId, distinct: bool },
+   |                           ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/query/relational/aggregate.rs:13:15
+   |
+13 |     Collect { slot: SlotId, distinct: bool },
+   |               ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/query/relational/aggregate.rs:13:29
+   |
+13 |     Collect { slot: SlotId, distinct: bool },
+   |                             ^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 4 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::query::eligibility`
+   --> crates/zeppelin-embed/tests/graph_relational.rs:123:48
+    |
+123 |     use zeppelin_embed::property_graph::query::eligibility::{EligibleNodeSet, Eligibility};
+    |                                                ^^^^^^^^^^^ could not find `eligibility` in `query`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_relational") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_relational` exited with code 101

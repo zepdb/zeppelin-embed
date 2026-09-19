@@ -1,0 +1,111 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+warning: variable `equal` is assigned to, but never used
+  --> crates/zeppelin-embed/src/property_graph/query/relational/ordering.rs:69:21
+   |
+69 |                 let mut equal = true;
+   |                     ^^^^^^^^^
+   |
+   = note: consider using `_equal` instead
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `equal` is never read
+  --> crates/zeppelin-embed/src/property_graph/query/relational/ordering.rs:82:25
+   |
+82 |                         equal = false;
+   |                         ^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+────────────
+ Nextest run ID c0a79679-42f9-4b0f-8fac-0fe1382d6f33 with nextest profile: default
+    Starting 2 tests across 1 binary (9 tests skipped)
+        FAIL [   0.014s] (1/2) zeppelin-embed::graph_relational grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect
+  stdout ───
+
+    running 1 test
+    test grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect ... FAILED
+
+    failures:
+
+    failures:
+        grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect' (34629734) panicked at crates/zeppelin-embed/tests/graph_relational.rs:239:9:
+    assertion `left == right` failed
+      left: 1
+     right: 2
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (2/2) zeppelin-embed::graph_relational distinct_and_stable_sort_use_exact_recursive_query_equivalence
+  stdout ───
+
+    running 1 test
+    test distinct_and_stable_sort_use_exact_recursive_query_equivalence ... FAILED
+
+    failures:
+
+    failures:
+        distinct_and_stable_sort_use_exact_recursive_query_equivalence
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'distinct_and_stable_sort_use_exact_recursive_query_equivalence' (34629733) panicked at crates/zeppelin-embed/tests/graph_relational.rs:158:9:
+    assertion `left == right` failed
+      left: 1
+     right: 6
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 2 tests run: 0 passed, 2 failed, 9 skipped
+        FAIL [   0.014s] (1/2) zeppelin-embed::graph_relational grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect
+  stdout ───
+
+    running 1 test
+    test grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect ... FAILED
+
+    failures:
+
+    failures:
+        grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect' (34629734) panicked at crates/zeppelin-embed/tests/graph_relational.rs:239:9:
+    assertion `left == right` failed
+      left: 1
+     right: 2
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (2/2) zeppelin-embed::graph_relational distinct_and_stable_sort_use_exact_recursive_query_equivalence
+  stdout ───
+
+    running 1 test
+    test distinct_and_stable_sort_use_exact_recursive_query_equivalence ... FAILED
+
+    failures:
+
+    failures:
+        distinct_and_stable_sort_use_exact_recursive_query_equivalence
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'distinct_and_stable_sort_use_exact_recursive_query_equivalence' (34629733) panicked at crates/zeppelin-embed/tests/graph_relational.rs:158:9:
+    assertion `left == right` failed
+      left: 1
+     right: 6
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

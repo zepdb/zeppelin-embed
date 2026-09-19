@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::query::relational`
+ --> crates/zeppelin-embed/tests/graph_relational.rs:5:44
+  |
+5 | use zeppelin_embed::property_graph::query::relational::*;
+  |                                            ^^^^^^^^^^ could not find `relational` in `query`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_relational") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_relational` exited with code 101

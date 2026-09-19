@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+   Doc-tests zeppelin_embed
+
+running 1 test
+test crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs - property_graph::query::runtime::driver::OperatorFactory (line 46) - compile fail ... ok
+
+successes:
+
+---- crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs - property_graph::query::runtime::driver::OperatorFactory (line 46) stdout ----
+error: lifetime may not live long enough
+  --> crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:59:9
+   |
+15 |     fn build<'v>(&mut self, context: &mut RuntimeContext<'v, 'm, 'g>) -> Result<Noop, RuntimeError> {
+   |              -- lifetime `'v` defined here
+16 |         self.view = Some(context.view()); // fresh execution view cannot escape
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ assignment requires that `'v` must outlive `'static`
+
+error: aborting due to 1 previous error
+
+
+
+successes:
+    crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs - property_graph::query::runtime::driver::OperatorFactory (line 46)
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.74s
+

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "rustc",
+    "--edition=2024",
+    "/tmp/ze-125-independent/signed.rs",
+    "-o",
+    "/tmp/ze-125-independent/signed"
+  ],
+  "compile_exit": 0,
+  "run_exit": 0,
+  "source_sha256": "fc04145d23c80f5a3ac551202c3c09ae6854c45eed568188f37c7a91a9efe8c4",
+  "probe_sha256": "2ee4eb64aaf4ac98248442400cd369a855c86341ed8f608009f4deb6f0c80787"
+}

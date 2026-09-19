@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+────────────
+ Nextest run ID bff73e16-183c-4b17-8919-052826ff1827 with nextest profile: default
+    Starting 1 test across 1 binary (10 tests skipped)
+        FAIL [   1.325s] (1/1) zeppelin-embed::graph_relational eligible_hashes_mix_high_identity_bits_before_bucket_selection
+  stdout ───
+
+    running 1 test
+    test eligible_hashes_mix_high_identity_bits_before_bucket_selection ... FAILED
+
+    failures:
+
+    failures:
+        eligible_hashes_mix_high_identity_bits_before_bucket_selection
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.32s
+
+  stderr ───
+
+    thread 'eligible_hashes_mix_high_identity_bits_before_bucket_selection' (34618250) panicked at crates/zeppelin-embed/tests/graph_relational.rs:630:136:
+    high bits participate in bucket hash: Limit(HashProbes)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.326s] 1 test run: 0 passed, 1 failed, 10 skipped
+        FAIL [   1.325s] (1/1) zeppelin-embed::graph_relational eligible_hashes_mix_high_identity_bits_before_bucket_selection
+  stdout ───
+
+    running 1 test
+    test eligible_hashes_mix_high_identity_bits_before_bucket_selection ... FAILED
+
+    failures:
+
+    failures:
+        eligible_hashes_mix_high_identity_bits_before_bucket_selection
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.32s
+
+  stderr ───
+
+    thread 'eligible_hashes_mix_high_identity_bits_before_bucket_selection' (34618250) panicked at crates/zeppelin-embed/tests/graph_relational.rs:630:136:
+    high bits participate in bucket hash: Limit(HashProbes)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "name": "32-collision-forced-green",
+      "exit": 0
+    },
+    {
+      "name": "33-collision-equality-red",
+      "exit": 100
+    },
+    {
+      "name": "34-stability-red",
+      "exit": 100
+    },
+    {
+      "name": "35-view-validation-red",
+      "exit": 100
+    },
+    {
+      "name": "36-examined-counter-red",
+      "exit": 100
+    }
+  ],
+  "restored": true
+}

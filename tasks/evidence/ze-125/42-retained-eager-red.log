@@ -1,0 +1,142 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed)
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the lifetime `'v` as defined here...
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:10
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |          ^^
+note: ...does not necessarily outlive the anonymous lifetime as defined here
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:38
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                      ^^
+
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the anonymous lifetime as defined here...
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:38
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                      ^^
+note: ...does not necessarily outlive the lifetime `'v` as defined here
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:10
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |          ^^
+
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the lifetime `'m` as defined here...
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:14
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |              ^^
+note: ...does not necessarily outlive the anonymous lifetime as defined here
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:42
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                          ^^
+
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the anonymous lifetime as defined here...
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:42
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                          ^^
+note: ...does not necessarily outlive the lifetime `'m` as defined here
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:14
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |              ^^
+
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the lifetime `'g` as defined here...
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:18
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |                  ^^
+note: ...does not necessarily outlive the anonymous lifetime as defined here
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:46
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                              ^^
+
+error[E0308]: method not compatible with trait
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:125:9
+    |
+125 | /         fn prepare_search(
+126 | |             &mut self,
+127 | |             _: PlanNodeId,
+128 | |             context: &mut RuntimeContext<'v, 'm, 'g>,
+129 | |         ) -> Result<(), RuntimeError> {
+    | |_____________________________________^ lifetime mismatch
+    |
+    = note: expected signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'_, '_, '_>) -> Result<_, _>`
+               found signature `fn(&mut factory_retains_real_buffers_through_three_stages_and_many_batches::Retained<'_, '_, '_>, zeppelin_embed::property_graph::query::plan::PlanNodeId, &mut zeppelin_embed::property_graph::query::runtime::RuntimeContext<'v, 'm, 'g>) -> Result<_, _>`
+note: the anonymous lifetime as defined here...
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-125/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:31:46
+    |
+ 31 |         context: &mut RuntimeContext<'_, '_, '_>,
+    |                                              ^^
+note: ...does not necessarily outlive the lifetime `'g` as defined here
+   --> crates/zeppelin-embed/tests/graph_query_runtime_control.rs:121:18
+    |
+121 |     impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for Retained<'v, 'm, 'g> {
+    |                  ^^
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `zeppelin-embed` (test "graph_query_runtime_control") due to 6 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_query_runtime_control` exited with code 101
