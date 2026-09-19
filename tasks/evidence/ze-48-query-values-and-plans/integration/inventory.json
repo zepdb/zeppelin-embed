@@ -1,0 +1,38 @@
+{
+  "clippy.log.gz": {
+    "sha256": "662d4035d63bc1b5531205acfb193cee39cd774d2ff4f8896f6d61f8932135b4",
+    "bytes": 221
+  },
+  "commands.json": {
+    "sha256": "07586e6e00769ed6679d2ba469a80c3d3259d8f101b6f7598a1070237f2dceaf",
+    "bytes": 1291
+  },
+  "core.log.gz": {
+    "sha256": "d2dcd987138db973536dd890eb24b4d75bf0a67a07f4c33e5f2cd11ce9ab4dc6",
+    "bytes": 1355
+  },
+  "correction-review-parity.json": {
+    "sha256": "680274b50275247c5353a503e332bfc98590cb2a9097c0189e9625cacada6353",
+    "bytes": 1659
+  },
+  "fmt.log.gz": {
+    "sha256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837",
+    "bytes": 20
+  },
+  "oracle-probes.log.gz": {
+    "sha256": "f3e2c137db1b36b5904487216fd414d954b6270b61e554e72c456f03c1b21985",
+    "bytes": 709
+  },
+  "review-addendum.md": {
+    "sha256": "eba68548355a640c37f78174e6bc3aa8a3bdcabff00c4588ab26f6069dc475e1",
+    "bytes": 690
+  },
+  "source-audit.json": {
+    "sha256": "6f67f7a829023a66942dd3148cc79d5d3b2925c917aa43c8a5033542dbfc4c99",
+    "bytes": 12442
+  },
+  "verify.py": {
+    "sha256": "9f7675f841a2806e71fd7a512f6a016d13ca174b8e8f4a842aa9ea4e6f58eb24",
+    "bytes": 1273
+  }
+}

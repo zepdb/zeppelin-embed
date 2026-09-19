@@ -1,0 +1,62 @@
+[
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/id_text.rs",
+    "sha256": "ad43fb3c558834e377308fb554f898367f8d258a36174dc99f415eabbeed079f",
+    "bytes": 1761,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/grouping.rs",
+    "sha256": "5907246f814535afe1497fbbe95d43dbfb6335728e217af74667b64c4b8223a3",
+    "bytes": 5124,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/scalar.rs",
+    "sha256": "81f4917e3e8411da9a8c8cb03b93d38530c53943f88889301fc012ad0e55208a",
+    "bytes": 4124,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/list.rs",
+    "sha256": "9f8bef885b7d4e2b6206cf82749bdcb897cf2a1ace1fb2458e93e4f462e72bad",
+    "bytes": 6932,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/property.rs",
+    "sha256": "51d25d34da26fcf0715ffe87e95dcc33a82826ec461e897f2598a5dd8fcfb41c",
+    "bytes": 6691,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/mod.rs",
+    "sha256": "92e161c2030f1a83b1b3f432f2d9c994e64b1705b2ba04f3d452c290a595733a",
+    "bytes": 2993,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/value.rs",
+    "sha256": "6c04e052657410bf3a15137593da405588b55681339ccee017f622ed2be40cd7",
+    "bytes": 14792,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/context.rs",
+    "sha256": "106f95b0a12f932eeb9216a41e30acf8748cd802096a23e33ce200fcc3b0c58c",
+    "bytes": 4436,
+    "source_stable": true
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/graph_query_values.rs",
+    "sha256": "288fbfc25d2a39cb61f4cd935867cbe89d3147e0b46527b8f41e91f8b3f5e96e",
+    "bytes": 19557,
+    "source_stable": true
+  },
+  {
+    "file": "docs/graph/plans/execution.md",
+    "sha256": "6bf49d9c0bd3093f06967d1746a19d49e5e2519e51ac184d748627daf1a5ea06",
+    "bytes": 35104,
+    "source_stable": true
+  }
+]

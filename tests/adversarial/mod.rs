@@ -106,3 +106,5 @@ pub mod test_support {
 }
 
 pub mod graph_key_lifecycle;
+
+pub mod graph_query;

@@ -739,3 +739,52 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   liveness filtering; this classifier never enumerates incident edges. Storage,
   sweep/reclamation, no-WAL/no-generation public paths and crash recovery remain
   their later owners' proofs. PG5 checks pure history, not those durable effects.
+
+## ZE-48: typed plans and query values
+
+`property_graph::query` owns allocation-free borrowed value semantics and
+immutable typed plan validation. Query equality is three-valued; grouping
+coalesces nulls/NaNs/numerically equal values and uses matching hashes. Neither
+uses canonical replay bytes. Exact I64/F64 comparison does not round I64 to F64;
+checked arithmetic intentionally permits the specified mixed-number rounding.
+`QueryView` pointer identity distinguishes admissions even at the same store and
+generation. Constructing a token/reference acquires no lease and proves no
+liveness. Public execution/parameter/result owners must not treat it as one.
+
+Private `QueryList` geometry checks depth 16, 524,288 descendants and borrowed span
+bounds; packed node/relationship lists retain full 16-byte IDs plus one view token.
+`ValueContext` uses existing `QueryControl`, checks work before each unit and
+checks byte comparisons/hashes in at most 64 KiB chunks. Caller-owned backing,
+output scratch and eventual result/lease ownership remain separately reserved.
+Property assignment validates complete homogeneous lists before copying; null
+removes, query empty becomes EmptyList, explicit stored typed-empty identity and
+IEEE payload bits remain unchanged. ID text formats all 128 bits as 32 lowercase hex
+characters without a storage fetch.
+
+`GraphPlan` borrows immutable typed arenas and caller facts. It checks every
+expression use in that scope, including shared expressions after WITH; bounds
+4096 operators/expressions, depth 64 and 256 columns per scope (SlotId remains u32).
+Common slots in joins are equality keys, with null nonjoining; disjoint inputs
+form a cross product before the residual predicate. Optional predicates precede
+null extension. Relationship origins follow the immutable DAG through joins and
+slot renaming under work/cancellation limits, preserving each MATCH PatternId.
+Semantic barriers and explicit order facts must survive later optimization.
+Mutation inputs require an immediate Eager operator; later base-view reading
+clauses reject. Search and mutation cannot share a statement. Each syntactic call
+has a checked source-order identity and mandatory eager obligation, including
+when LIMIT 0 or empty row inputs would otherwise skip it. Arguments require a
+proven singleton source; grouped/per-row contexts reject. `SearchBounds` validates
+evaluated k/window without clamping; runtime must call it before retrieval and
+validate actual vector/eligibility contents and provenance. No operators execute
+in this component.
+
+`PlanBacking` proves visible address spans are included in sorted disjoint
+owner-attested retained regions. Aliased/subslice occurrences are charged once;
+adjacent regions may cover a continuous span. Addresses are comparison-only and
+never dereferenced. Charge region capacities, inventory full capacity and the
+separate 64 KiB validator stack envelope against declared retained bytes <= 24 MiB.
+Inventory storage may not overlap retained regions. Hidden allocation capacity
+and allocator ownership remain truthful owner assertions; ZE-49 supplies actual
+runtime reservations and shared-store accounting. This is not whole-query memory
+or admission enforcement. Broad qualification deferred by owner to ZE-118 does
+not turn focused component evidence into coverage/platform/GraphStore acceptance.

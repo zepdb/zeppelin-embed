@@ -1,0 +1,50 @@
+{
+  "crates/zeppelin-embed/src/property_graph/query/context.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/grouping.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/id_text.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/list.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/mod.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/accounting.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/expression.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/lineage.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs": {
+    "same_after_rustfmt": false
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/parameters.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/search.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs": {
+    "same_after_rustfmt": false
+  },
+  "crates/zeppelin-embed/src/property_graph/query/property.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/scalar.rs": {
+    "same_after_rustfmt": true
+  },
+  "crates/zeppelin-embed/src/property_graph/query/value.rs": {
+    "same_after_rustfmt": true
+  }
+}

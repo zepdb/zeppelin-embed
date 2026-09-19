@@ -1,0 +1,71 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "test-support",
+      "--test",
+      "graph_query_values",
+      "--test",
+      "graph_query_plan",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "oracle-probes",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_query_probe) | test(query_oracle_rejects) | test(one_runner_episode_reaches_required_query_contracts)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "zeppelin-embed/test-support",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit_code": 0
+  }
+]

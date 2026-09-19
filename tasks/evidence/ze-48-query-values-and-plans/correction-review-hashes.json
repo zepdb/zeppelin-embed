@@ -1,0 +1,104 @@
+[
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/id_text.rs",
+    "sha256": "ad43fb3c558834e377308fb554f898367f8d258a36174dc99f415eabbeed079f",
+    "bytes": 1761,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/grouping.rs",
+    "sha256": "5907246f814535afe1497fbbe95d43dbfb6335728e217af74667b64c4b8223a3",
+    "bytes": 5124,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/scalar.rs",
+    "sha256": "7c1d402fbe7fdb78ce7019947e191ed7141c3af71fea8bdcdcc12617a2fd052e",
+    "bytes": 4111,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/list.rs",
+    "sha256": "9f8bef885b7d4e2b6206cf82749bdcb897cf2a1ace1fb2458e93e4f462e72bad",
+    "bytes": 6932,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/property.rs",
+    "sha256": "51d25d34da26fcf0715ffe87e95dcc33a82826ec461e897f2598a5dd8fcfb41c",
+    "bytes": 6691,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/mod.rs",
+    "sha256": "adfd7880c54f315fd0f144efbbef24f6e29e5d995c0bd5434b9acb165056dad4",
+    "bytes": 3072,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/value.rs",
+    "sha256": "6c04e052657410bf3a15137593da405588b55681339ccee017f622ed2be40cd7",
+    "bytes": 14792,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/context.rs",
+    "sha256": "106f95b0a12f932eeb9216a41e30acf8748cd802096a23e33ce200fcc3b0c58c",
+    "bytes": 4436,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs",
+    "sha256": "55f214b7d19e58149e32645d53e6e222404105e5d2281dce7f9ce5dead7da520",
+    "bytes": 3631,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/accounting.rs",
+    "sha256": "3c9df570fe1699f4de7fb538805246860d4507d618d45771ea71ba11c423f8eb",
+    "bytes": 4663,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/expression.rs",
+    "sha256": "ef84f4148d54c3ef8fd8dbdaf5263c418a57d090e86fb506be192ca9340e6aab",
+    "bytes": 7434,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+    "sha256": "66e70a51b7ffd185206dd0a8812ce724f18bc7321854300d87e92fbe0ce932f1",
+    "bytes": 23827,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/lineage.rs",
+    "sha256": "4992eb5b972865268a3d2c0348c03e833e683383d5f6001b080946e45d9bab9d",
+    "bytes": 3443,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/search.rs",
+    "sha256": "eac3af5f93ac6f00d6b600138344159dd2e9de844c680829d5e10327ca3c781b",
+    "bytes": 4059,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/parameters.rs",
+    "sha256": "1e697ff17b20d051f119b2dabc0f1891db73d0902ca1dda98bc407222ab0cd7c",
+    "bytes": 1601,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "sha256": "0ae86951e0faa2e5f586ef45e77d43cedc07c2a1f037db613ca20932d407e157",
+    "bytes": 19912,
+    "stable_copy": true
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/graph_query_plan.rs",
+    "sha256": "783227c873bee534128253d12888c0db804fa2562ddadf0a8be1c38b2d226a5f",
+    "bytes": 40856,
+    "stable_copy": true
+  }
+]

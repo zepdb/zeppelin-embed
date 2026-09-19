@@ -98,3 +98,6 @@ pub use key_lifecycle::{
     KeyDecision, KeyLifecycleError, KeyRequest, KeyState, PendingKeyChange, classify_cypher,
     classify_key, summarize_key_batch, validate_distinct_targets,
 };
+
+/// Validated typed query plans and query-specific value semantics.
+pub mod query;

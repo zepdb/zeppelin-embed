@@ -18684,3 +18684,42 @@ fn property_graph_key_lifecycle_probe_preserves_exact_history() {
         assert!(coverage.count(key) > 0, "missing lifecycle {key}");
     }
 }
+
+#[test]
+fn property_graph_query_probe_checks_values_scopes_and_inflight_faults() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    let report =
+        adversarial::graph_query::probe(0, &mut coverage).expect("independent PG6 query oracle");
+    assert_eq!(
+        (
+            report.comparisons,
+            report.scope_cases,
+            report.fault_fires,
+            report.clean_controls
+        ),
+        (390, 2, 3, 3)
+    );
+    eprintln!("PG6 {report:?}");
+    for key in adversarial::graph_query::REQUIRED_COVERAGE {
+        assert!(coverage.count(key) > 0, "missing graph query case {key}");
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_query_contracts() {
+    let root = tempfile::tempdir().expect("query runner episode artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("one actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_query::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG6 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}
