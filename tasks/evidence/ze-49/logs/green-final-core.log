@@ -1,0 +1,431 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+────────────
+ Nextest run ID 6ff8d8e3-8965-44ca-8a10-93786d304935 with nextest profile: default
+    Starting 47 tests across 5 binaries
+        PASS [   0.010s] ( 1/47) zeppelin-embed::graph_query_plan correlated_optional_preserves_an_existing_relationship_binding
+  stdout ───
+
+    running 1 test
+    test correlated_optional_preserves_an_existing_relationship_binding ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 2/47) zeppelin-embed::graph_query_plan eager_search_obligations_survive_limit_zero_and_require_singleton_sources
+  stdout ───
+
+    running 1 test
+    test eager_search_obligations_survive_limit_zero_and_require_singleton_sources ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/47) zeppelin-embed::graph_query_allocation actual_allocator_failure_releases_new_capacity_and_preserves_old_arena
+  stdout ───
+
+    running 1 test
+    test actual_allocator_failure_releases_new_capacity_and_preserves_old_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 4/47) zeppelin-embed::graph_query_plan aliased_large_literal_backing_is_charged_once
+  stdout ───
+
+    running 1 test
+    test aliased_large_literal_backing_is_charged_once ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 5/47) zeppelin-embed::graph_query_plan expression_dags_and_parameter_bindings_reject_cycles_types_and_entities
+  stdout ───
+
+    running 1 test
+    test expression_dags_and_parameter_bindings_reject_cycles_types_and_entities ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 6/47) zeppelin-embed::graph_query_plan inner_join_accepts_and_narrows_compatible_optional_bindings
+  stdout ───
+
+    running 1 test
+    test inner_join_accepts_and_narrows_compatible_optional_bindings ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/47) zeppelin-embed::graph_query_plan mutation_items_bind_new_entities_in_order_and_validate_every_rhs
+  stdout ───
+
+    running 1 test
+    test mutation_items_bind_new_entities_in_order_and_validate_every_rhs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/47) zeppelin-embed::graph_query_plan mutations_require_eager_input_and_reject_following_reads_or_search
+  stdout ───
+
+    running 1 test
+    test mutations_require_eager_input_and_reject_following_reads_or_search ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 9/47) zeppelin-embed::graph_query_plan relational_barriers_preserve_declared_order_until_a_join_or_distinct
+  stdout ───
+
+    running 1 test
+    test relational_barriers_preserve_declared_order_until_a_join_or_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (10/47) zeppelin-embed::graph_query_plan pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension
+  stdout ───
+
+    running 1 test
+    test pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (11/47) zeppelin-embed::graph_query_plan plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity
+  stdout ───
+
+    running 1 test
+    test plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/47) zeppelin-embed::graph_query_plan retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity
+  stdout ───
+
+    running 1 test
+    test retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/47) zeppelin-embed::graph_query_plan search_sources_and_evaluated_bounds_never_clamp_invalid_requests
+  stdout ───
+
+    running 1 test
+    test search_sources_and_evaluated_bounds_never_clamp_invalid_requests ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/47) zeppelin-embed::graph_query_plan renamed_origins_remain_checked_through_multiple_patterns
+  stdout ───
+
+    running 1 test
+    test renamed_origins_remain_checked_through_multiple_patterns ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.020s] (15/47) zeppelin-embed::graph_query_plan plan_hard_caps_accept_exact_nodes_depth_and_scope_width
+  stdout ───
+
+    running 1 test
+    test plan_hard_caps_accept_exact_nodes_depth_and_scope_width ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.01s
+
+
+        PASS [   0.007s] (16/47) zeppelin-embed::graph_query_plan typed_plan_revalidates_shared_expressions_after_with_scope
+  stdout ───
+
+    running 1 test
+    test typed_plan_revalidates_shared_expressions_after_with_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (17/47) zeppelin-embed::graph_query_plan structured_lookup_uses_distinct_full_ids_and_symbolic_keys
+  stdout ───
+
+    running 1 test
+    test structured_lookup_uses_distinct_full_ids_and_symbolic_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (18/47) zeppelin-embed::graph_query_plan shared_relationship_origins_survive_lookup_joins_and_slot_renames
+  stdout ───
+
+    running 1 test
+    test shared_relationship_origins_survive_lookup_joins_and_slot_renames ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (19/47) zeppelin-embed::graph_query_plan typed_scalar_expression_forms_validate_entity_and_operand_kinds
+  stdout ───
+
+    running 1 test
+    test typed_scalar_expression_forms_validate_entity_and_operand_kinds ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (20/47) zeppelin-embed::graph_query_runtime failed_variable_reservation_does_not_count_uncopied_bytes
+  stdout ───
+
+    running 1 test
+    test failed_variable_reservation_does_not_count_uncopied_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (21/47) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+  stdout ───
+
+    running 1 test
+    test execution_plan_requires_retained_owners_for_every_visible_span ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (22/47) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+  stdout ───
+
+    running 1 test
+    test cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/47) zeppelin-embed::graph_query_runtime flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure
+  stdout ───
+
+    running 1 test
+    test flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (24/47) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+  stdout ───
+
+    running 1 test
+    test graph_resources_share_store_reservations_and_record_transient_peak ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (25/47) zeppelin-embed::graph_query_runtime flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids
+  stdout ───
+
+    running 1 test
+    test flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (26/47) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... runtime audit: graph_attributed=48 graph_allocations=2 legacy_unattributed=112 legacy_allocations=2 second_lease_allocations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (27/47) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+  stdout ───
+
+    running 1 test
+    test query_arena_charges_actual_capacity_overlap_and_releases_on_failure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (28/47) zeppelin-embed::graph_query_runtime query_and_writer_share_one_backing_charge_with_nested_local_limits
+  stdout ───
+
+    running 1 test
+    test query_and_writer_share_one_backing_charge_with_nested_local_limits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (29/47) zeppelin-embed::graph_query_runtime retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans
+  stdout ───
+
+    running 1 test
+    test retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (30/47) zeppelin-embed::graph_query_runtime runtime_counters_enforce_limits_before_work_and_keep_one_view_control
+  stdout ───
+
+    running 1 test
+    test runtime_counters_enforce_limits_before_work_and_keep_one_view_control ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (31/47) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+  stdout ───
+
+    running 1 test
+    test eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (32/47) zeppelin-embed::graph_query_runtime_control close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel
+  stdout ───
+
+    running 1 test
+    test close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (33/47) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+  stdout ───
+
+    running 1 test
+    test every_cumulative_work_cap_checks_exact_boundary_and_overflow ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (34/47) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+  stdout ───
+
+    running 1 test
+    test failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (35/47) zeppelin-embed::graph_query_runtime_control failed_last_pull_and_completion_cancellation_never_expose_partial_output
+  stdout ───
+
+    running 1 test
+    test failed_last_pull_and_completion_cancellation_never_expose_partial_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (36/47) zeppelin-embed::graph_query_values arithmetic_rejects_domain_overflow_and_zero_divisors
+  stdout ───
+
+    running 1 test
+    test arithmetic_rejects_domain_overflow_and_zero_divisors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (37/47) zeppelin-embed::graph_query_values bounded_string_and_list_expressions_preserve_unicode_and_null
+  stdout ───
+
+    running 1 test
+    test bounded_string_and_list_expressions_preserve_unicode_and_null ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (38/47) zeppelin-embed::graph_query_values deadline_is_checked_inside_byte_chunks_and_list_elements
+  stdout ───
+
+    running 1 test
+    test deadline_is_checked_inside_byte_chunks_and_list_elements ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (39/47) zeppelin-embed::graph_query_values grouping_hash_and_total_order_follow_equivalence_not_replay_bits
+  stdout ───
+
+    running 1 test
+    test grouping_hash_and_total_order_follow_equivalence_not_replay_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (40/47) zeppelin-embed::graph_query_values mixed_numeric_predicates_never_round_integer_identity
+  stdout ───
+
+    running 1 test
+    test mixed_numeric_predicates_never_round_integer_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (41/47) zeppelin-embed::graph_query_values full_width_entity_references_and_packed_lists_are_view_owned
+  stdout ───
+
+    running 1 test
+    test full_width_entity_references_and_packed_lists_are_view_owned ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (42/47) zeppelin-embed::graph_query_values nested_list_predicates_preserve_unknown_and_false_dominance
+  stdout ───
+
+    running 1 test
+    test nested_list_predicates_preserve_unknown_and_false_dominance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (43/47) zeppelin-embed::graph_query_values property_assignment_validates_whole_list_before_copy_and_preserves_empty_kind
+  stdout ───
+
+    running 1 test
+    test property_assignment_validates_whole_list_before_copy_and_preserves_empty_kind ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (44/47) zeppelin-embed::graph_query_values query_boolean_truth_tables_preserve_unknown
+  stdout ───
+
+    running 1 test
+    test query_boolean_truth_tables_preserve_unknown ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (45/47) zeppelin-embed::graph_query_values typed_id_text_preserves_all_bits_and_null_without_a_storage_fetch
+  stdout ───
+
+    running 1 test
+    test typed_id_text_preserves_all_bits_and_null_without_a_storage_fetch ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (46/47) zeppelin-embed::graph_query_values value_limits_accept_exact_depth_and_stop_before_unreserved_work
+  stdout ───
+
+    running 1 test
+    test value_limits_accept_exact_depth_and_stop_before_unreserved_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+        PASS [   0.094s] (47/47) zeppelin-embed::graph_query_runtime packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload
+  stdout ───
+
+    running 1 test
+    test packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.09s
+
+
+────────────
+     Summary [   0.148s] 47 tests run: 47 passed, 0 skipped

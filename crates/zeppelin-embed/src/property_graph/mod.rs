@@ -104,3 +104,6 @@ pub mod query;
 
 /// Complete native graph WAL envelopes and private replay validation.
 pub mod wal;
+
+/// Shared graph participant reservations backed by lifecycle accounting.
+pub mod resources;

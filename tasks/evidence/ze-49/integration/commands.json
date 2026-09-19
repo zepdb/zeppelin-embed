@@ -1,0 +1,152 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "test-support,allocation-audit",
+      "--test",
+      "graph_query_runtime",
+      "--test",
+      "graph_query_runtime_control",
+      "--test",
+      "graph_query_values",
+      "--test",
+      "graph_query_plan",
+      "--test",
+      "graph_query_allocation",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "legacy",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "test-support",
+      "--lib",
+      "-E",
+      "test(stats_bytes_are_conserved) | test(budget_exceeded_is_typed_and_pre_allocation) | test(accounted_vector_rejects_growth_without_a_reservation) | test(accounted_allocation_after_close_is_typed_closed)",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "pg9",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--lib",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(primitive_runtime_oracle_rejects_lost_duplicates_and_lying_counters) | test(property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures) | test(one_runner_episode_reaches_required_runtime_contracts)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "zeppelin-embed/allocation-audit,zeppelin-embed/test-support",
+      "--no-deps",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101
+  },
+  {
+    "name": "clippy-final",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "zeppelin-embed/allocation-audit,zeppelin-embed/test-support",
+      "--no-deps",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit_code": 1
+  },
+  {
+    "name": "fmt-final",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "helper-move-check",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "test-support,allocation-audit",
+      "--test",
+      "graph_query_allocation",
+      "-E",
+      "test(actual_allocator_failure_releases_new_capacity_and_preserves_old_arena)",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  }
+]

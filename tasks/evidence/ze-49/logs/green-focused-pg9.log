@@ -1,0 +1,47 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.08s
+────────────
+ Nextest run ID c33824e4-e825-4d75-92bc-c24a2191ea6f with nextest profile: default
+    Starting 4 tests across 2 binaries (535 tests skipped)
+        PASS [   0.009s] (1/4) zeppelin-embed-adversarial-oracle graph_runtime::tests::primitive_runtime_oracle_rejects_lost_duplicates_and_lying_counters
+  stdout ───
+
+    running 1 test
+    test graph_runtime::tests::primitive_runtime_oracle_rejects_lost_duplicates_and_lying_counters ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_runtime::completed_row_limit_refuses_collection_before_copying_the_unconsumed_row
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_runtime::completed_row_limit_refuses_collection_before_copying_the_unconsumed_row ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 448 filtered out; finished in 0.01s
+
+
+        PASS [   0.013s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 448 filtered out; finished in 0.01s
+
+
+        PASS [   0.016s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures
+  stdout ───
+
+    running 1 test
+    test property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures ... PG9 cases=4 fires=2 clean_controls=2
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 448 filtered out; finished in 0.01s
+
+
+────────────
+     Summary [   0.016s] 4 tests run: 4 passed, 535 skipped

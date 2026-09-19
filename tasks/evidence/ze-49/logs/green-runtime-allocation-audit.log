@@ -1,0 +1,26 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+────────────
+ Nextest run ID 7ea1c0a1-6775-46a2-b9de-50232ba340e9 with nextest profile: default
+    Starting 2 tests across 2 binaries (11 tests skipped)
+        PASS [   0.013s] (1/2) zeppelin-embed::graph_query_allocation actual_allocator_failure_releases_new_capacity_and_preserves_old_arena
+  stdout ───
+
+    running 1 test
+    test actual_allocator_failure_releases_new_capacity_and_preserves_old_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (2/2) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... runtime audit: graph_attributed=48 graph_allocations=2 legacy_unattributed=112 legacy_allocations=2 second_lease_allocations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.014s] 2 tests run: 2 passed, 11 skipped

@@ -37,6 +37,8 @@ pub enum QueryError {
     ValueTooLarge,
     /// Existing caller cancellation stopped the operation.
     Cancelled,
+    /// The retained lifecycle view was cancelled by close.
+    ReadCancelled,
     /// Existing absolute deadline expired.
     Timeout,
     /// Unexpected failure from the mandatory control interface.
@@ -59,6 +61,7 @@ impl std::fmt::Display for QueryError {
             Self::ListLimit => formatter.write_str("graph query list limit"),
             Self::ValueTooLarge => formatter.write_str("graph query value exceeds byte envelope"),
             Self::Cancelled => formatter.write_str("graph query cancelled"),
+            Self::ReadCancelled => formatter.write_str("store close cancelled graph query"),
             Self::Timeout => formatter.write_str("graph query timed out"),
             Self::Control => formatter.write_str("graph query control failed"),
             Self::ForeignView => formatter.write_str("graph value belongs to another query view"),
@@ -70,3 +73,9 @@ impl std::fmt::Display for QueryError {
 }
 
 impl std::error::Error for QueryError {}
+
+/// Query-local capacities charged to the same store accounting authority.
+pub mod resources;
+
+/// Bounded flat execution interfaces and cumulative query work.
+pub mod runtime;

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.56s
+────────────
+ Nextest run ID ff25519b-189b-4dc0-b37a-8e196cdece86 with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+  stdout ───
+
+    running 1 test
+    test eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows ... FAILED
+
+    failures:
+
+    failures:
+        eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows' (34069297) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:601:13:
+    assertion `left == right` failed
+      left: []
+     right: [PlanNodeId(1), PlanNodeId(2)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 4 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+  stdout ───
+
+    running 1 test
+    test eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows ... FAILED
+
+    failures:
+
+    failures:
+        eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows' (34069297) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:601:13:
+    assertion `left == right` failed
+      left: []
+     right: [PlanNodeId(1), PlanNodeId(2)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

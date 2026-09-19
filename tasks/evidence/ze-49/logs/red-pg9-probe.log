@@ -1,0 +1,29 @@
+   Compiling zerocopy v0.8.52
+   Compiling serde_core v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed-ffi)
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_json v1.0.151
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling proptest v1.10.0
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/tests)
+error[E0433]: failed to resolve: could not find `graph_runtime` in `adversarial`
+     --> tests/adversarial_tests.rs:18730:31
+      |
+18730 |     let report = adversarial::graph_runtime::probe(49, &mut coverage).expect("PG9 runtime oracle");
+      |                               ^^^^^^^^^^^^^ could not find `graph_runtime` in `adversarial`
+
+error[E0433]: failed to resolve: could not find `graph_runtime` in `adversarial`
+     --> tests/adversarial_tests.rs:18733:29
+      |
+18733 |     for key in adversarial::graph_runtime::REQUIRED_COVERAGE {
+      |                             ^^^^^^^^^^^^^ could not find `graph_runtime` in `adversarial`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-workspace-tests --test adversarial_tests` exited with code 101

@@ -1,0 +1,44 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s
+────────────
+ Nextest run ID 79c33185-6ebe-40cd-beb8-8105c051234c with nextest profile: default
+    Starting 4 tests across 2 binaries (9 tests skipped)
+        PASS [   0.012s] (1/4) zeppelin-embed::graph_query_allocation actual_allocator_failure_releases_new_capacity_and_preserves_old_arena
+  stdout ───
+
+    running 1 test
+    test actual_allocator_failure_releases_new_capacity_and_preserves_old_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (2/4) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+  stdout ───
+
+    running 1 test
+    test query_arena_charges_actual_capacity_overlap_and_releases_on_failure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (3/4) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... runtime audit: graph_attributed=48 graph_allocations=2 legacy_unattributed=112 legacy_allocations=2 second_lease_allocations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (4/4) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+  stdout ───
+
+    running 1 test
+    test cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.014s] 4 tests run: 4 passed, 9 skipped

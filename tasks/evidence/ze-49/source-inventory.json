@@ -1,0 +1,137 @@
+[
+  {
+    "path": "crates/zeppelin-embed/CLAUDE.md",
+    "sha256": "380a2a260557ea0161fd59c8e109d881f33c1339dafead32b5ad2fa206bfbd2b",
+    "lines": 847
+  },
+  {
+    "path": "crates/zeppelin-embed/src/adversarial_test_support.rs",
+    "sha256": "67616d98500d5649c6a4729917056491830103a89c2fec38f00a4a8fad363e3b",
+    "lines": 102
+  },
+  {
+    "path": "crates/zeppelin-embed/src/allocation_audit.rs",
+    "sha256": "4191aab6e8a004695e7bfbb63cc8b71cebb57e65813c1213771c524e5b1e75de",
+    "lines": 216
+  },
+  {
+    "path": "crates/zeppelin-embed/src/lifecycle/budget.rs",
+    "sha256": "cad175284dac64548665b488d7e7c81be934f529faafb4ea5724c6114cb12f2b",
+    "lines": 66
+  },
+  {
+    "path": "crates/zeppelin-embed/src/lifecycle/stats.rs",
+    "sha256": "6f3082445b75320d7c02926629fc0c997d9f6b7255ea61efbccd64ef1b53ce60",
+    "lines": 1164
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "sha256": "98c11c6d98530f4b58d0831c2508fa6a26b4e1bfef6a76dc90ed57a0441075f6",
+    "lines": 106
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/context.rs",
+    "sha256": "cb2f4fef2ae3fa2214dedae7890dbf844be70ae3e5fea1ecebe28aeda6f15864",
+    "lines": 144
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/list.rs",
+    "sha256": "4cfb760d843d5b1bcbde040ec4b4d45f6c165c483150545e88ffa8067be2c8ca",
+    "lines": 258
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/mod.rs",
+    "sha256": "f811f111c0990a61f7b6de306641d0ae5abff4a21720924300d3e06f40326239",
+    "lines": 81
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+    "sha256": "e688e528be3f7c3d2c4c5ebd08d85fd41caa2e029aa80465768a9d25163f71ca",
+    "lines": 752
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "sha256": "5296a8cd693a722bd221928c772a0e406dfc74a5ea7e221c86b874f1b09cac94",
+    "lines": 578
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+    "sha256": "057ce50498ea232a048c4bd7ac2424292b58feb4ea535a2d21e8a76461e71e3a",
+    "lines": 296
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs",
+    "sha256": "36e9bf5d6b2f4e71a998f2ad043cc6b976ea70ff0278dd017e5b4a85e5c72608",
+    "lines": 336
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/runtime.rs",
+    "sha256": "44efce27f3c20a148840a7b75edc61434186922e280ec1563ba37918dd390f5d",
+    "lines": 266
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/runtime/batch.rs",
+    "sha256": "814dbc575b1a8a176bedd07acd2ac7cbf600f3ecb5e3b6bf6fb765a7a09e5996",
+    "lines": 491
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs",
+    "sha256": "e0cb26386eb28c6626cb3ce89e38cd3f8d33b54582319de3e41eb52f53ecdb43",
+    "lines": 280
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/resources.rs",
+    "sha256": "08e0e3d6ec8295fbf9eacfbe311779cec8daa5543168762499c7090d17476e14",
+    "lines": 68
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_query_allocation.rs",
+    "sha256": "1386723a8ff4a3e37ac202515653c04ee9fa4d0508a62305bd2d1df41386474e",
+    "lines": 48
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_query_runtime.rs",
+    "sha256": "b879154f25330688a15d0539465f2bb8b3b4f633e3abbaccd05accc7373bca55",
+    "lines": 995
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_query_runtime_control.rs",
+    "sha256": "3ad14cc73e9357e46936142425de6198aea78310ae723d4cfcbeec9479b72412",
+    "lines": 656
+  },
+  {
+    "path": "tests/adversarial-oracle/src/graph_runtime.rs",
+    "sha256": "be2926374b0a661cfae6a9cb0e70206092395509c1e89cd08e195a30f4f8ef9b",
+    "lines": 83
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lib.rs",
+    "sha256": "e8390e4056137688f30cd3a7a3e83e7648d658378b91c03a6fbdae08a7452313",
+    "lines": 130
+  },
+  {
+    "path": "tests/adversarial/coverage.rs",
+    "sha256": "a33df326349f9f76c373a717bf75d7b7959324e9fdd9d3601233af206c3b41e6",
+    "lines": 223
+  },
+  {
+    "path": "tests/adversarial/graph_runtime.rs",
+    "sha256": "8bfede43c00ca040ee7bb5736e812059a73bdeb7c5d436c30c441b50c46fb5cd",
+    "lines": 358
+  },
+  {
+    "path": "tests/adversarial/mod.rs",
+    "sha256": "8b798896f106d8bae0acca4f90bf18335732599a039a785750a56876a31dcdbc",
+    "lines": 112
+  },
+  {
+    "path": "tests/adversarial/runner.rs",
+    "sha256": "e5801849491ac5dafaf0e21cf5f31e8e51aac8479ada9c10c293073c6cb53990",
+    "lines": 19068
+  },
+  {
+    "path": "tests/adversarial_tests.rs",
+    "sha256": "2cb9b10374b82a695944ca713313df79aa73be6111ec5cb7bf2d428cb5383d8e",
+    "lines": 18740
+  }
+]

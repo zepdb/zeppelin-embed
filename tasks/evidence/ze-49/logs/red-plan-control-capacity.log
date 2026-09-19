@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.33s
+────────────
+ Nextest run ID 00558109-5092-4731-a654-dff919dfe71d with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+  stdout ───
+
+    running 1 test
+    test execution_plan_requires_retained_owners_for_every_visible_span ... FAILED
+
+    failures:
+
+    failures:
+        execution_plan_requires_retained_owners_for_every_visible_span
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'execution_plan_requires_retained_owners_for_every_visible_span' (34065016) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:276:5:
+    assertion `left == right` failed: plan and runtime descriptor storage must be charged too
+      left: 0
+     right: 128
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+  stdout ───
+
+    running 1 test
+    test execution_plan_requires_retained_owners_for_every_visible_span ... FAILED
+
+    failures:
+
+    failures:
+        execution_plan_requires_retained_owners_for_every_visible_span
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'execution_plan_requires_retained_owners_for_every_visible_span' (34065016) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:276:5:
+    assertion `left == right` failed: plan and runtime descriptor storage must be charged too
+      left: 0
+     right: 128
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

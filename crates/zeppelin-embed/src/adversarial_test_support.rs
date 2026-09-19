@@ -75,6 +75,9 @@ impl FeatureFaultReceipt {
     }
 }
 
+#[cfg(feature = "allocation-audit")]
+pub use crate::allocation_audit::{AuditReport, audit_engine_path, fail_attributed_allocation};
+
 #[cfg(test)]
 mod tests {
     use super::FeatureFaultReceipt;

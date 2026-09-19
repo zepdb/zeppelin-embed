@@ -1,0 +1,42 @@
+[
+  {
+    "name": "final-check",
+    "test": "failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private",
+    "exit": 100,
+    "before": "4b03bec0de87e67905f504432a84443f4d8945d5f621623107ea03019843f77f",
+    "after": "4b03bec0de87e67905f504432a84443f4d8945d5f621623107ea03019843f77f",
+    "restored": true
+  },
+  {
+    "name": "eager-barrier",
+    "test": "eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows",
+    "exit": 100,
+    "before": "4b03bec0de87e67905f504432a84443f4d8945d5f621623107ea03019843f77f",
+    "after": "4b03bec0de87e67905f504432a84443f4d8945d5f621623107ea03019843f77f",
+    "restored": true
+  },
+  {
+    "name": "facts-capacity",
+    "test": "execution_plan_requires_retained_owners_for_every_visible_span",
+    "exit": 100,
+    "before": "e688e528be3f7c3d2c4c5ebd08d85fd41caa2e029aa80465768a9d25163f71ca",
+    "after": "e688e528be3f7c3d2c4c5ebd08d85fd41caa2e029aa80465768a9d25163f71ca",
+    "restored": true
+  },
+  {
+    "name": "work-cap",
+    "test": "every_cumulative_work_cap_checks_exact_boundary_and_overflow",
+    "exit": 100,
+    "before": "44efce27f3c20a148840a7b75edc61434186922e280ec1563ba37918dd390f5d",
+    "after": "44efce27f3c20a148840a7b75edc61434186922e280ec1563ba37918dd390f5d",
+    "restored": true
+  },
+  {
+    "name": "shared-peak",
+    "test": "graph_resources_share_store_reservations_and_record_transient_peak",
+    "exit": 100,
+    "before": "6f3082445b75320d7c02926629fc0c997d9f6b7255ea61efbccd64ef1b53ce60",
+    "after": "6f3082445b75320d7c02926629fc0c997d9f6b7255ea61efbccd64ef1b53ce60",
+    "restored": true
+  }
+]

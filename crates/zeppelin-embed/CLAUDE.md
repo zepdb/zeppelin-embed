@@ -825,3 +825,60 @@ not turn focused component evidence into coverage/platform/GraphStore acceptance
 - ZE39/40 own writer/publication/recovery coordination; ZE43/46 own record and
   mark/proof semantics. Fixture resolver tests are not whole-store recovery or
   reclamation acceptance. Broad release qualification remains ZE118/E12.
+
+## ZE-49: bounded query runtime and actual resource owners
+
+`property_graph::resources::GraphResources` clones the existing bounded Store
+Accounting Arc without allocating an independent budget. It is an accounting
+adapter only: it admits no view and proves no store/entity liveness. All graph
+participants retain the same <=256 MiB aggregate owner; the Accounting peak is a
+monotone real-reservation peak since that owner was created. QueryMemory adds a
+caller-thread <=24 MiB sublimit, not a separate aggregate allowance.
+
+QueryArena reserves before fallible Vec allocation, reconciles actual capacity,
+and never grows implicitly. It has no bulk-growth API; operators that replace
+storage must keep both reservations and implement bounded controlled movement.
+QueryInputs accepts lifetime-retained actual Vec/String/Box/array owners or
+same-query arenas, unions aliases once, accounts inventory/control capacity, and
+checks every visible plan span. Numeric region declarations cannot mint ownership.
+GraphPlan::validate_with_fact_vec captures actual facts Vec capacity before its
+retained loan; raw-slice validate remains structural-only. The binder uses the Vec
+constructor. RuntimePlan keeps all owners plus plan descriptors charged, including
+the simultaneous 64 KiB validator scratch; no capacity bytes are dereferenced.
+
+QueryMemory::adopt_shared consumes an authentic same-store GraphReservation into
+immutable joint ownership, adding only the query-local charge over its existing
+aggregate charge. Failure returns the original reservation. Keep this owner with
+the real frozen buffer and free backing first; there is no resize/extraction path.
+Writer-local guards remain alongside it. This is not an arbitrary prepaid address
+certificate; ordinary Vec proofs would charge backing again. Prefer QueryArena
+for query/compiler-owned storage whose borrowed proof is reused downstream.
+
+The pull driver owns one required RetainedView adapter through drain, completion
+and final view-first control checks. The later storage owner supplies the actual
+GraphReadView/lifecycle capability; QueryView tokens alone do not admit execution.
+Operators allocate through that same QueryMemory and count actual examined work.
+Flat batches retain bags, full-width IDs and private owned variable arenas; packed
+ID lists use 16 bytes per ID. Every 64 KiB byte chunk and each list/row unit checks
+control. String cells exist only after exact complete copies of valid &str bytes;
+checked private ranges use this invariant without an unpolled UTF-8 rescan.
+
+Every eager source executes once in validated source order before row pulling,
+even LIMIT 0. Empty More is invalid. Row and logical prepared-byte limits are
+checked before collector copying; failure returns only diagnostics/counters, never
+partial rows. Completion is an internal engine adapter, not a host callback. Its
+output type cannot borrow the temporary view/rows. FrozenOutput byte metadata is
+supplied by that owner and counts initialized represented core/ABI bytes including
+in-arena descriptors; each arena has its own 4 MiB limit. Logical collector payload
+is a separate PreparedPayloadBytes counter. Retained capacities and external
+registration/control overhead remain additionally charged during construction.
+ZE-52 owns the actual copied representation and application-accounting transfer.
+All fallible freeze work precedes the final check; any failure drops the output.
+This preparation driver does not define rollback after an irreversible write.
+
+ZE-51 owns EligibleNodeSet construction/dedup/view semantics and the 524,288-entry
+cap; retrieval borrows it. PG9 is runtime bag/work/fault proof, not GraphStore,
+query-language, retrieval, public completed-result or durability acceptance.
+Broad qualification remains ZE-118 under the owner's deferral. Cold legacy lease
+release has separately measured first-use platform allocations; runtime audits
+compare an independent cold Store baseline, never warm that path out of evidence.

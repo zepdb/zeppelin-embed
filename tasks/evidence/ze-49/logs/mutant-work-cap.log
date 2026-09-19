@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+────────────
+ Nextest run ID eea44603-b1df-48df-9b9a-c08ddb437d8c with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+  stdout ───
+
+    running 1 test
+    test every_cumulative_work_cap_checks_exact_boundary_and_overflow ... FAILED
+
+    failures:
+
+    failures:
+        every_cumulative_work_cap_checks_exact_boundary_and_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_cumulative_work_cap_checks_exact_boundary_and_overflow' (34070613) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:370:13:
+    assertion failed: matches!(context.charge(kind, 1), Err(RuntimeError::Limit(failed)) if failed
+        == kind)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 4 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+  stdout ───
+
+    running 1 test
+    test every_cumulative_work_cap_checks_exact_boundary_and_overflow ... FAILED
+
+    failures:
+
+    failures:
+        every_cumulative_work_cap_checks_exact_boundary_and_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_cumulative_work_cap_checks_exact_boundary_and_overflow' (34070613) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:370:13:
+    assertion failed: matches!(context.charge(kind, 1), Err(RuntimeError::Limit(failed)) if failed
+        == kind)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -617,6 +617,7 @@ pub struct GraphPlan<'a, 'facts> {
     description: PlanDescription<'a>,
     facts: &'facts [NodeFacts],
     footprint: PlanFootprint,
+    fact_owner: Option<RetainedRegion>,
 }
 impl<'a, 'facts> GraphPlan<'a, 'facts> {
     /// Validates references, cycles, every expression use scope and reservations.
@@ -632,7 +633,37 @@ impl<'a, 'facts> GraphPlan<'a, 'facts> {
             description,
             facts,
             footprint,
+            fact_owner: None,
         })
+    }
+    /// Validates while retaining a private certificate of the complete facts Vec
+    /// capacity. Runtime admission requires this actual owner, not a raw-slice
+    /// visible-length declaration. The retained loan prevents growth or release.
+    pub fn validate_with_fact_vec(
+        description: PlanDescription<'a>,
+        facts: &'facts mut Vec<NodeFacts>,
+        footprint: PlanFootprint,
+        backing: PlanBacking<'_>,
+        context: &mut ValueContext<'_>,
+    ) -> Result<Self, PlanError> {
+        let owner = RetainedRegion::vector(facts)?;
+        let mut result = Self::validate(description, facts, footprint, backing, context)?;
+        result.fact_owner = Some(owner);
+        Ok(result)
+    }
+    pub(crate) const fn fact_owner(&self) -> Option<RetainedRegion> {
+        self.fact_owner
+    }
+    pub(crate) fn verify_runtime_backing(
+        &self,
+        footprint: PlanFootprint,
+        backing: PlanBacking<'_>,
+        context: &mut ValueContext<'_>,
+    ) -> Result<(), PlanError> {
+        if self.fact_owner.is_none() {
+            return Err(PlanError::Footprint);
+        }
+        validate::preflight(self.description, self.facts, footprint, backing, context)
     }
     /// Checks exact bindings on every execution; entities, including those
     /// nested in lists, are never accepted through the parameter seam.

@@ -37,6 +37,7 @@ impl AllocationComponent {
 #[derive(Default)]
 struct AccountingState {
     resident_owned_bytes: u64,
+    resident_peak_bytes: u64,
     wal_bytes: u64,
     cache_bytes: u64,
     temporary_bytes: u64,
@@ -59,6 +60,7 @@ impl Accounting {
             budgets: Budgets::new(max_resident_bytes, max_temp_bytes),
             state: Mutex::new(AccountingState {
                 resident_owned_bytes: 0,
+                resident_peak_bytes: 0,
                 wal_bytes: 0,
                 cache_bytes: 0,
                 temporary_bytes: 0,
@@ -70,6 +72,20 @@ impl Accounting {
                 graph_segments_served: 0,
             }),
         }
+    }
+
+    pub(crate) const fn resident_limit(&self) -> u64 {
+        self.budgets.resident_limit()
+    }
+
+    pub(crate) fn resident_peak_bytes(&self) -> Result<u64, StoreError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "memory accounting",
+            })?
+            .resident_peak_bytes)
     }
 
     fn reserve(
@@ -97,6 +113,7 @@ impl Accounting {
             component.is_temporary(),
         )?;
         state.resident_owned_bytes = resident;
+        state.resident_peak_bytes = state.resident_peak_bytes.max(resident);
         match component {
             AllocationComponent::Snapshot => {
                 state.snapshot_bytes = state.snapshot_bytes.saturating_add(bytes);
@@ -360,6 +377,10 @@ impl AccountedCounter {
 
     pub(crate) const fn bytes(&self) -> u64 {
         self.reservation.bytes
+    }
+
+    pub(crate) fn belongs_to(&self, accounting: &Arc<Accounting>) -> bool {
+        Arc::ptr_eq(&self.reservation.accounting, accounting)
     }
 }
 

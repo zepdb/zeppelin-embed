@@ -45,6 +45,7 @@ pub struct ValueContext<'a> {
     limit: u64,
     work: u64,
     produced_bytes: u64,
+    retained: Option<&'a dyn super::runtime::RetainedView>,
 }
 impl<'a> ValueContext<'a> {
     /// Uses the existing deadline/cancellation mechanism and a tightened cap.
@@ -62,7 +63,19 @@ impl<'a> ValueContext<'a> {
             limit,
             work: 0,
             produced_bytes: 0,
+            retained: None,
         };
+        result.checkpoint()?;
+        Ok(result)
+    }
+    pub(super) fn retained(
+        view: &'a dyn super::runtime::RetainedView,
+        control: &'a QueryControl,
+        limit: u64,
+    ) -> Result<Self, QueryError> {
+        view.check_active()?;
+        let mut result = Self::new(view.query_view(), control, limit)?;
+        result.retained = Some(view);
         result.checkpoint()?;
         Ok(result)
     }
@@ -91,6 +104,12 @@ impl<'a> ValueContext<'a> {
         Ok(())
     }
     pub(super) fn checkpoint(&self) -> Result<(), QueryError> {
+        if let Some(retained) = self.retained {
+            retained.check_active()?;
+            if !std::ptr::eq(retained.query_view(), self.view) {
+                return Err(QueryError::ForeignView);
+            }
+        }
         self.control.checkpoint().map_err(|error| match error {
             ControlError::Timeout { .. } => QueryError::Timeout,
             ControlError::Cancelled { .. } => QueryError::Cancelled,

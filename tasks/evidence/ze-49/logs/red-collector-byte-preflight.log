@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.24s
+────────────
+ Nextest run ID afdbd450-2743-4844-8a60-3b0be79d5708 with nextest profile: default
+    Starting 1 test across 1 binary (448 tests skipped)
+        FAIL [   0.025s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload ... FAILED
+
+    failures:
+
+    failures:
+        adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 448 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload' (34054976) panicked at tests/adversarial/graph_runtime.rs:134:105:
+    byte cap before collector copy: "PG9 wrong fault phase/copy count: RuntimeFailure { operator: PlanNodeId(1), error: Limit(PreparedPayloadBytes), counters: WorkCounters { values: [3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 32] } }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.026s] 1 test run: 0 passed, 1 failed, 448 skipped
+        FAIL [   0.025s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload ... FAILED
+
+    failures:
+
+    failures:
+        adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 448 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'adversarial::graph_runtime::prepared_byte_limit_refuses_collection_before_copying_the_unconsumed_payload' (34054976) panicked at tests/adversarial/graph_runtime.rs:134:105:
+    byte cap before collector copy: "PG9 wrong fault phase/copy count: RuntimeFailure { operator: PlanNodeId(1), error: Limit(PreparedPayloadBytes), counters: WorkCounters { values: [3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 32] } }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

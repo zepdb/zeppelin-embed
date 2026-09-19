@@ -74,7 +74,7 @@ pub(super) fn validate(
     }
     Ok(())
 }
-fn preflight(
+pub(super) fn preflight(
     description: PlanDescription<'_>,
     facts: &[NodeFacts],
     footprint: PlanFootprint,

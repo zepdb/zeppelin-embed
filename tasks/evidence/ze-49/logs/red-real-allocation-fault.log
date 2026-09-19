@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+error[E0432]: unresolved import `crate::allocation_audit::fail_attributed_allocation`
+ --> crates/zeppelin-embed/src/property_graph/query/resources/allocation_tests.rs:3:50
+  |
+3 | use crate::allocation_audit::{audit_engine_path, fail_attributed_allocation};
+  |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ no `fail_attributed_allocation` in `allocation_audit`
+
+error: the `#[global_allocator]` in this crate conflicts with global allocator in: zeppelin_embed
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (lib test) due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --lib --features test-support,allocation-audit` exited with code 101

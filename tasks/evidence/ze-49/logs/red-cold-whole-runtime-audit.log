@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+────────────
+ Nextest run ID b7a8f710-387f-4316-9513-2513bf40f2e1 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... FAILED
+
+    failures:
+
+    failures:
+        pull_driver_drains_private_batches_before_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'pull_driver_drains_private_batches_before_completion' (34096165) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:775:9:
+    assertion `left == right` failed: runtime must add no unattributed allocation beyond independently measured cold legacy lease release
+      left: 112
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... FAILED
+
+    failures:
+
+    failures:
+        pull_driver_drains_private_batches_before_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'pull_driver_drains_private_batches_before_completion' (34096165) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:775:9:
+    assertion `left == right` failed: runtime must add no unattributed allocation beyond independently measured cold legacy lease release
+      left: 112
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

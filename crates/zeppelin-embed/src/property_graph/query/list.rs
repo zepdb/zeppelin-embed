@@ -27,8 +27,66 @@ enum Backing<'a> {
     Bools(&'a [bool]),
     Integers(&'a [i64]),
     Floats(&'a [f64]),
+    Arena {
+        source: &'a dyn ListArena,
+        start: usize,
+        len: usize,
+    },
+}
+pub(super) trait ListArena: std::fmt::Debug {
+    fn value(&self, index: usize) -> Option<QueryValue<'_>>;
 }
 impl<'a> QueryList<'a> {
+    pub(super) fn arena(
+        source: &'a dyn ListArena,
+        start: usize,
+        len: usize,
+        elements: usize,
+        depth: u8,
+        bytes: usize,
+        view: Option<&'a QueryView>,
+    ) -> Self {
+        Self {
+            values: Backing::Arena { source, start, len },
+            view,
+            elements,
+            depth,
+            bytes,
+        }
+    }
+    pub(super) fn copied_nodes(view: &'a QueryView, ids: &'a [NodeId]) -> Self {
+        Self {
+            values: Backing::Nodes(ids),
+            view: Some(view),
+            elements: ids.len(),
+            depth: 1,
+            bytes: std::mem::size_of_val(ids),
+        }
+    }
+    pub(super) fn copied_relationships(view: &'a QueryView, ids: &'a [RelId]) -> Self {
+        Self {
+            values: Backing::Relationships(ids),
+            view: Some(view),
+            elements: ids.len(),
+            depth: 1,
+            bytes: std::mem::size_of_val(ids),
+        }
+    }
+    pub(super) const fn node_ids(self) -> Option<&'a [NodeId]> {
+        if let Backing::Nodes(v) = self.values {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    pub(super) const fn relationship_ids(self) -> Option<&'a [RelId]> {
+        if let Backing::Relationships(v) = self.values {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
     /// Checks the entire heterogeneous input before returning a list.
     pub fn new(
         values: &'a [QueryValue<'a>],
@@ -159,6 +217,7 @@ impl<'a> QueryList<'a> {
             Backing::Bools(v) => v.len(),
             Backing::Integers(v) => v.len(),
             Backing::Floats(v) => v.len(),
+            Backing::Arena { len, .. } => len,
         }
     }
     /// Whether this list has zero immediate children.
@@ -187,6 +246,13 @@ impl<'a> QueryList<'a> {
             Backing::Floats(values) => values.get(index).copied().map(QueryValue::F64),
             Backing::Nodes(ids) => Some(self.view?.node(*ids.get(index)?)),
             Backing::Relationships(ids) => Some(self.view?.relationship(*ids.get(index)?)),
+            Backing::Arena { source, start, len } => {
+                if index < len {
+                    source.value(start.checked_add(index)?)
+                } else {
+                    None
+                }
+            }
         }
     }
 }

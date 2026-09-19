@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.00s
+────────────
+ Nextest run ID 5033b2aa-5671-4939-bebe-4da1c9300033 with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+  stdout ───
+
+    running 1 test
+    test failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private ... FAILED
+
+    failures:
+
+    failures:
+        failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private' (34068708) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:459:17:
+    no frozen output can escape final refusal
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 4 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+  stdout ───
+
+    running 1 test
+    test failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private ... FAILED
+
+    failures:
+
+    failures:
+        failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private' (34068708) panicked at crates/zeppelin-embed/tests/graph_query_runtime_control.rs:459:17:
+    no frozen output can escape final refusal
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

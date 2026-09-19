@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+────────────
+ Nextest run ID b29cc649-2198-4883-8e17-eabf9b83a0ed with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed::graph_query_allocation diagnostic_cold_lease_release_allocation_inventory
+  stdout ───
+
+    running 1 test
+    test diagnostic_cold_lease_release_allocation_inventory ... cold_drop allocations=2 attributed=0 unattributed=112; second_drop allocations=0 attributed=0 unattributed=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.009s] 1 test run: 1 passed, 1 skipped

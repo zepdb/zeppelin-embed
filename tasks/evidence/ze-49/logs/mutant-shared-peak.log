@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.90s
+────────────
+ Nextest run ID c7aa5b2e-e103-4c71-8616-5479cf9d9101 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+  stdout ───
+
+    running 1 test
+    test graph_resources_share_store_reservations_and_record_transient_peak ... FAILED
+
+    failures:
+
+    failures:
+        graph_resources_share_store_reservations_and_record_transient_peak
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_resources_share_store_reservations_and_record_transient_peak' (34071206) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:26:5:
+    assertion failed: peak >= baseline + 192
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+  stdout ───
+
+    running 1 test
+    test graph_resources_share_store_reservations_and_record_transient_peak ... FAILED
+
+    failures:
+
+    failures:
+        graph_resources_share_store_reservations_and_record_transient_peak
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_resources_share_store_reservations_and_record_transient_peak' (34071206) panicked at crates/zeppelin-embed/tests/graph_query_runtime.rs:26:5:
+    assertion failed: peak >= baseline + 192
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -18753,3 +18753,37 @@ fn one_runner_episode_reaches_required_wal_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    let report = adversarial::graph_runtime::probe(49, &mut coverage).expect("PG9 runtime oracle");
+    assert_eq!(report.fault_fires, 2);
+    assert_eq!(report.clean_controls, 2);
+    for key in adversarial::graph_runtime::REQUIRED_COVERAGE {
+        assert!(coverage.count(key) > 0, "unreached runtime contract {key}");
+    }
+    println!(
+        "PG9 cases={} fires={} clean_controls={}",
+        report.cases, report.fault_fires, report.clean_controls
+    );
+}
+
+#[test]
+fn one_runner_episode_reaches_required_runtime_contracts() {
+    let root = tempfile::tempdir().expect("runtime runner episode artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("one actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_runtime::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG9 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

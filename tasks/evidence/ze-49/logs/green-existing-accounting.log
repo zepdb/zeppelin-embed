@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-49/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.57s
+────────────
+ Nextest run ID deceacd5-c576-4ada-b485-7dfae2e44542 with nextest profile: default
+    Starting 4 tests across 1 binary (572 tests skipped)
+        PASS [   0.011s] (1/4) zeppelin-embed lifecycle::stats::tests::accounted_vector_rejects_growth_without_a_reservation
+        PASS [   0.014s] (2/4) zeppelin-embed lifecycle::stats::tests::accounted_allocation_after_close_is_typed_closed
+        PASS [   0.017s] (3/4) zeppelin-embed lifecycle::stats::tests::budget_exceeded_is_typed_and_pre_allocation
+        PASS [   0.017s] (4/4) zeppelin-embed lifecycle::stats::tests::stats_bytes_are_conserved
+────────────
+     Summary [   0.018s] 4 tests run: 4 passed, 572 skipped

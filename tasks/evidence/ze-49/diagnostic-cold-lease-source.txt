@@ -1,0 +1,12 @@
+
+#[test]
+fn diagnostic_cold_lease_release_allocation_inventory() {
+    let root = tempfile::tempdir().expect("fixture");
+    let store = Store::open(root.path(), OpenOptions::new().with_max_resident_bytes(65536)).expect("store");
+    let first = store.snapshot().expect("first lease");
+    let (_, first_audit) = audit_engine_path(|| drop(first));
+    let second = store.snapshot().expect("second lease");
+    let (_, second_audit) = audit_engine_path(|| drop(second));
+    println!("cold_drop allocations={} attributed={} unattributed={}; second_drop allocations={} attributed={} unattributed={}", first_audit.allocations, first_audit.attributed_bytes, first_audit.unattributed_bytes, second_audit.allocations, second_audit.attributed_bytes, second_audit.unattributed_bytes);
+    store.close().expect("close");
+}
