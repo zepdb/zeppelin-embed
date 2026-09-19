@@ -1,0 +1,50 @@
+[
+  {
+    "name": "nextest",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_adjacency_store",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 6.506
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--all-targets",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 7.899
+  },
+  {
+    "name": "format",
+    "command": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--check",
+      "--config",
+      "skip_children=true",
+      "tests/adversarial-oracle/src/lib.rs",
+      "tests/adversarial-oracle/src/graph_adjacency_store.rs",
+      "tests/adversarial-oracle/tests/graph_adjacency_store.rs"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.036
+  }
+]

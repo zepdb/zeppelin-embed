@@ -1,0 +1,44 @@
+[
+  {
+    "path": "tasks/evidence/ze-129/README.md",
+    "candidate_sha256": "90980486b7aa9bb0e989bfdb3dd3c89c73789383a2249a58b0c9ef869b86cf70",
+    "integrated_sha256": "90980486b7aa9bb0e989bfdb3dd3c89c73789383a2249a58b0c9ef869b86cf70",
+    "exact": true
+  },
+  {
+    "path": "tasks/evidence/ze-129/interface-proposal.md",
+    "candidate_sha256": "375bd0c56f750a72578e8cee808889126e5e0567ad1da016316640ed7654803c",
+    "integrated_sha256": "375bd0c56f750a72578e8cee808889126e5e0567ad1da016316640ed7654803c",
+    "exact": true
+  },
+  {
+    "path": "tasks/evidence/ze-129/owned-paths.txt",
+    "candidate_sha256": "6b5ddeae10751cb8d9957b5c0138daf6e29a30ce64d2c825bd2853d6f6221a56",
+    "integrated_sha256": "6b5ddeae10751cb8d9957b5c0138daf6e29a30ce64d2c825bd2853d6f6221a56",
+    "exact": true
+  },
+  {
+    "path": "tasks/evidence/ze-129/source-hashes.json",
+    "candidate_sha256": "4f2973c8f03f7132efae50cceb0040458876a4ef3d234e7480bbdda23d01fcd6",
+    "integrated_sha256": "4f2973c8f03f7132efae50cceb0040458876a4ef3d234e7480bbdda23d01fcd6",
+    "exact": true
+  },
+  {
+    "path": "tests/adversarial-oracle/src/graph_adjacency_store.rs",
+    "candidate_sha256": "371cba222a652aa1e3c2661134b1dbcfa220cbc696c1ee84d8d1924ed0feb067",
+    "integrated_sha256": "371cba222a652aa1e3c2661134b1dbcfa220cbc696c1ee84d8d1924ed0feb067",
+    "exact": true
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lib.rs",
+    "candidate_sha256": "e1ca89fd1d15988da4070819b59c854701dc078020fa47ee82c0210ca5fd0c20",
+    "integrated_sha256": "bad099044697d270c3dd30b82091d4c08bf750b508a317194fa36c1823a5a664",
+    "exact": false
+  },
+  {
+    "path": "tests/adversarial-oracle/tests/graph_adjacency_store.rs",
+    "candidate_sha256": "a7d93f181bdbb08c5665861951edee34d109a425134257a2972fd8dbd02e4345",
+    "integrated_sha256": "a7d93f181bdbb08c5665861951edee34d109a425134257a2972fd8dbd02e4345",
+    "exact": true
+  }
+]

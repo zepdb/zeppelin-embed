@@ -1,0 +1,10 @@
+{
+  "base": "0e0064ddb3b1630e8c18050cb78c30ac7bcfb638",
+  "sha256": {
+    "tests/adversarial-oracle/src/lib.rs": "e1ca89fd1d15988da4070819b59c854701dc078020fa47ee82c0210ca5fd0c20",
+    "tests/adversarial-oracle/src/graph_adjacency_store.rs": "371cba222a652aa1e3c2661134b1dbcfa220cbc696c1ee84d8d1924ed0feb067",
+    "tests/adversarial-oracle/tests/graph_adjacency_store.rs": "a7d93f181bdbb08c5665861951edee34d109a425134257a2972fd8dbd02e4345",
+    "tests/adversarial-oracle/src/graph_adjacency.rs": "c8e97624db4f0af90d0e2b0f91c62d402ee49095d38f994e641f9cb8ab748868"
+  },
+  "unchanged_reference": "tests/adversarial-oracle/src/graph_adjacency.rs"
+}

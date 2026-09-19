@@ -1,0 +1,38 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "ae9fa5da79cd054eed3be7909d5b0452764a07ca17463a031ae5516d2a5d7d11"
+  },
+  {
+    "path": "candidate-paths.json",
+    "sha256": "b4f1df697dc7b8e76d301e17776b25efe0748a853d2a01c3723e7052784ce217"
+  },
+  {
+    "path": "checks.json",
+    "sha256": "84de392d6f7d5bf75ec2b1e89766d483d871887ddc32d86b57327242924e5f63"
+  },
+  {
+    "path": "correspondence.json",
+    "sha256": "9e4ca3b4b938dc68d0accde692c9c2812613860c6bc8544e122f72695555b838"
+  },
+  {
+    "path": "independent-probe.rs",
+    "sha256": "f9a242044e01e870dbb4494a9af75e047b5349f08ab9afafe2788515dbbf7e78"
+  },
+  {
+    "path": "preflight.json",
+    "sha256": "739d5713dd3c8199a64a9d7cabb5cf27d1d8344937d27069a9f258a2c76ad0ec"
+  },
+  {
+    "path": "preservation.json",
+    "sha256": "ffd8d75956ba79cef43b5734a704bccc199f4d9c862ce7a831b7bd9d7c0e5bf7"
+  },
+  {
+    "path": "raw-integration.tar.gz",
+    "sha256": "2a21782eeb578507c7440ac4eb31e128a2e49b83a0a6a6df97d847eeb92ebc82"
+  },
+  {
+    "path": "sol-review.md",
+    "sha256": "9a84e1070db0ab4ff6896e934db3900ad20d0c79dc6fb282b7d245829af5808c"
+  }
+]
