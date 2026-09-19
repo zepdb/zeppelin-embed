@@ -107,3 +107,5 @@ pub mod graph_binding;
 pub mod graph_adjacency;
 
 pub mod graph_relational;
+
+pub mod graph_completed;

@@ -1,0 +1,52 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.15s
+────────────
+ Nextest run ID 45cbe3b7-b96f-436c-965b-09eeb2b37589 with nextest profile: default
+    Starting 2 tests across 1 binary (463 tests skipped)
+        PASS [   0.016s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests completed_owner_probe_preserves_bits_bags_and_real_fault_controls
+  stdout ───
+
+    running 1 test
+    test completed_owner_probe_preserves_bits_bags_and_real_fault_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.01s
+
+
+        PASS [   0.818s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_completed_owner_controls
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_completed_owner_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.81s
+
+
+────────────
+     Summary [   0.819s] 2 tests run: 2 passed, 463 skipped
+        PASS [   0.016s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests completed_owner_probe_preserves_bits_bags_and_real_fault_controls
+  stdout ───
+
+    running 1 test
+    test completed_owner_probe_preserves_bits_bags_and_real_fault_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.01s
+
+
+        PASS [   0.818s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_completed_owner_controls
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_completed_owner_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.81s
+
+

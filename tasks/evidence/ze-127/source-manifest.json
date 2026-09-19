@@ -1,0 +1,14 @@
+{
+  "crates/zeppelin-embed/src/property_graph/query/mod.rs": "24ced17cd15fa3d82c6a12ad90da4bb5fa0a9659e1aab6a736f6ca99b8575c65",
+  "crates/zeppelin-embed/src/property_graph/query/resources.rs": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+  "crates/zeppelin-embed/src/property_graph/query/completed.rs": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+  "crates/zeppelin-embed/src/property_graph/query/completed/records.rs": "f4218b5beb35b321e324e191a6e391d9a1c533d8864a049217e9bc9d52a27bfa",
+  "crates/zeppelin-embed/src/property_graph/query/completed/validate.rs": "f7b33938b4dba611b53ee06cc979742597049081e2989c07fef4f2424bb6eef3",
+  "crates/zeppelin-embed/tests/graph_completed_results.rs": "c310ba53f0afa0a5ff8670fb42598a8b6df2252b063d4da2b63c16fc94a9e979",
+  "crates/zeppelin-embed/tests/graph_completed_results/allocations.rs": "4f643f78e944c39737ecdaffaa4b1a0738c53ec5157909cde86a9101fc369c57",
+  "tests/adversarial/coverage.rs": "6b9957ca85ea873cffd13d59b0aeea504fe0c337e88e44d80a38a93bb81adef8",
+  "tests/adversarial/mod.rs": "4262f933b2ed238ce9f72268e6605ee079891a373c6d63e1231e24d1a8525cbb",
+  "tests/adversarial/runner.rs": "9f1836476c00a76572ee24b8bcce10ff12b04962641c4137ff28b748e6ceac1d",
+  "tests/adversarial/graph_completed.rs": "7ed8989e74a404befea92c8213b3c9840b3191d514dfae35bc0e72ad6a407c60",
+  "tests/adversarial_tests.rs": "b3e5d94469abc8216e2c0416753d4a14696c642eead24993a00e48e52a23f90c"
+}

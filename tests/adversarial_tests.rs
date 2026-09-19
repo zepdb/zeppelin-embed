@@ -18973,3 +18973,28 @@ fn one_runner_episode_reaches_required_relational_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn completed_owner_probe_preserves_bits_bags_and_real_fault_controls() {
+    for seed in [0, 1, 127, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_completed::probe(seed, &mut coverage).unwrap();
+        assert_eq!(
+            (report.comparisons, report.fires, report.controls),
+            (12, 2, 3)
+        );
+        for key in adversarial::graph_completed::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_completed_owner_controls() {
+    let root = tempfile::tempdir().unwrap();
+    let result = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
+    assert!(result.violations.is_empty(), "{:?}", result.violations);
+    for key in adversarial::graph_completed::REQUIRED_COVERAGE {
+        assert!(result.coverage.count(key) > 0, "{key}");
+    }
+}

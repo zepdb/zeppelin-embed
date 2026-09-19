@@ -1,0 +1,338 @@
+{
+  "base": "0fff7f4d92843c207251a152b4dff26da3198966",
+  "inherited_files_verified": 41,
+  "checks": {
+    "32-terminal-native-green.log": {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "--test-threads",
+        "4",
+        "--retries",
+        "0"
+      ],
+      "exit": 0,
+      "run_id": "bb066e48-4523-416c-9fe1-57567f0ebb92",
+      "summary": "Summary [   0.110s] 15 tests run: 15 passed, 0 skipped"
+    },
+    "34-allocation-feature-green.log": {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "--features",
+        "allocation-audit",
+        "--test-threads",
+        "4",
+        "--retries",
+        "0"
+      ],
+      "exit": 0,
+      "run_id": "338e23bb-74d6-4384-b71e-7c53b33a07f8",
+      "summary": "Summary [   0.039s] 12 tests run: 12 passed, 0 skipped"
+    },
+    "30-terminal-pg15-runner.log": {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "-E",
+        "test(completed_owner_probe) | test(one_runner_episode_reaches_completed_owner)",
+        "--test-threads",
+        "4",
+        "--retries",
+        "0"
+      ],
+      "exit": 0,
+      "run_id": "97c86436-782a-4993-b7bd-d4098c3cd634",
+      "summary": "Summary [   0.783s] 2 tests run: 2 passed, 456 skipped"
+    },
+    "35-terminal-native-clippy.log": {
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "--features",
+        "test-support",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "run_id": null,
+      "summary": "Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.32s"
+    },
+    "33-runner-clippy.log": {
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "run_id": null,
+      "summary": "Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.93s"
+    }
+  },
+  "mutants": [
+    {
+      "name": "foreign-token",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(producer_errors_and_identical_metadata_foreign_tokens_remain_distinct)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "assertion failed",
+      "fired": true
+    },
+    {
+      "name": "represented-cap",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(expanded_descendants_and_complete_representation_caps_cannot_be_bypassed)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "root descriptors count",
+      "fired": true
+    },
+    {
+      "name": "expanded-bag-count",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed/validate.rs",
+      "source_sha256": "f7b33938b4dba611b53ee06cc979742597049081e2989c07fef4f2424bb6eef3",
+      "restored_sha256": "f7b33938b4dba611b53ee06cc979742597049081e2989c07fef4f2424bb6eef3",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(expanded_descendants_and_complete_representation_caps_cannot_be_bypassed)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "repeated DAG children count",
+      "fired": true
+    },
+    {
+      "name": "guard-before-buffer",
+      "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+      "source_sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "restored_sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(every_actual_allocation_failure_releases_real_buffers_before_guards)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "clean.early_release",
+      "fired": true
+    },
+    {
+      "name": "lost-byte-owner",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(consuming_detach_is_allocator_denied_and_preserves_every_live_pointer)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "assertion `left == right` failed",
+      "fired": true
+    },
+    {
+      "name": "allocating-detach",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(consuming_detach_is_allocator_denied_and_preserves_every_live_pointer)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "memory allocation of 3 bytes failed",
+      "fired": true
+    },
+    {
+      "name": "missing-copy-charge",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(copy_limit_records_only_performed_chunks_and_returns_no_partial_owner)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "assertion failed",
+      "fired": true
+    },
+    {
+      "name": "query-cap-overlap",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(real_retained_capacity_overlap)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "restored_sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "fired": true
+    },
+    {
+      "name": "shared-cap-overlap",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(real_retained_capacity_overlap)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "restored_sha256": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+      "fired": true
+    },
+    {
+      "name": "allocating-vector-detach",
+      "path": "crates/zeppelin-embed/src/property_graph/query/completed.rs",
+      "source_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "restored_sha256": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_completed_results",
+        "-E",
+        "test(every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup)",
+        "--test-threads",
+        "1",
+        "--retries",
+        "0"
+      ],
+      "exit": 100,
+      "expected": "memory allocation of 4 bytes failed",
+      "fired": true
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "source": "c1605ff2a94fea011327c900a582e99c3c87a1b8",
+  "integrated_source": "f61b744b626dcb51deec95ce44977fee4e24974a",
+  "platform": "macOS arm64, Apple M3 Max",
+  "nextest": "0.9.145; default profile4processes/retries0/libtest1",
+  "commands": {
+    "native": "cargo nextest run -p zeppelin-embed --test graph_completed_results --success-output immediate-final",
+    "audit-feature": "cargo nextest run -p zeppelin-embed --features allocation-audit --test graph_completed_results --success-output immediate-final",
+    "runner": "cargo nextest run -p zeppelin-embed-workspace-tests --test adversarial_tests -E 'test(completed_owner_probe) | test(one_runner_episode_reaches_completed_owner)' --success-output immediate-final",
+    "clippy": "cargo clippy -p zeppelin-embed --test graph_completed_results --features test-support --no-deps -- -D warnings"
+  },
+  "results": {
+    "native": {
+      "passed": 15,
+      "skipped": 0
+    },
+    "audit-feature": {
+      "passed": 12,
+      "skipped": 0
+    },
+    "runner": {
+      "passed": 2,
+      "skipped": 463
+    },
+    "clippy": {
+      "exit_code": 0
+    }
+  },
+  "raw_sha256": {
+    "native": "0fbcfbde942c0ccf4beecbf7fc25c492902d146f82bd601b71f7f4d62550ba35",
+    "audit-feature": "64db9c0cf19c92ae2e96f22ec6a9520e521bb837e834217a9dc7d600f71c219e",
+    "runner": "359714759dde9c381ea3a22bb18a8a44dedb2bb7e142d0544a4ed4ebf6e833d4",
+    "clippy": "54cd6fbc84fcb13d3cc8b417a964e2b9672172fd10c084120e609d5b78330baa"
+  }
+}

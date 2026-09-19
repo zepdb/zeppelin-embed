@@ -1,0 +1,282 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.66s
+────────────
+ Nextest run ID a3d8641b-600a-4d0b-973d-7d9d7d5fc9ce with nextest profile: default
+    Starting 15 tests across 1 binary
+        PASS [   0.017s] ( 1/15) zeppelin-embed::graph_completed_results allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer
+  stdout ───
+
+    running 1 test
+    test allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.017s] ( 2/15) zeppelin-embed::graph_completed_results complete_reports_reject_contradictory_kind_route_and_modality_states
+  stdout ───
+
+    running 1 test
+    test complete_reports_reject_contradictory_kind_route_and_modality_states ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.018s] ( 3/15) zeppelin-embed::graph_completed_results allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup
+  stdout ───
+
+    running 1 test
+    test allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.019s] ( 4/15) zeppelin-embed::graph_completed_results allocations::every_actual_allocation_failure_releases_real_buffers_before_guards
+  stdout ───
+
+    running 1 test
+    test allocations::every_actual_allocation_failure_releases_real_buffers_before_guards ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 5/15) zeppelin-embed::graph_completed_results completed_graph_lists_entities_and_reports_preserve_full_literal_contents
+  stdout ───
+
+    running 1 test
+    test completed_graph_lists_entities_and_reports_preserve_full_literal_contents ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 6/15) zeppelin-embed::graph_completed_results completed_receipts_preserve_original_items_deletion_and_mixed_generations
+  stdout ───
+
+    running 1 test
+    test completed_receipts_preserve_original_items_deletion_and_mixed_generations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 7/15) zeppelin-embed::graph_completed_results completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone
+  stdout ───
+
+    running 1 test
+    test completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 8/15) zeppelin-embed::graph_completed_results copy_limit_records_only_performed_chunks_and_returns_no_partial_owner
+  stdout ───
+
+    running 1 test
+    test copy_limit_records_only_performed_chunks_and_returns_no_partial_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 9/15) zeppelin-embed::graph_completed_results malformed_lists_and_ranges_never_expose_partial_owned_results
+  stdout ───
+
+    running 1 test
+    test malformed_lists_and_ranges_never_expose_partial_owned_results ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (10/15) zeppelin-embed::graph_completed_results malformed_entity_metadata_and_unreferenced_pool_entries_reject
+  stdout ───
+
+    running 1 test
+    test malformed_entity_metadata_and_unreferenced_pool_entries_reject ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (11/15) zeppelin-embed::graph_completed_results every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner
+  stdout ───
+
+    running 1 test
+    test every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (12/15) zeppelin-embed::graph_completed_results expanded_descendants_and_complete_representation_caps_cannot_be_bypassed
+  stdout ───
+
+    running 1 test
+    test expanded_descendants_and_complete_representation_caps_cannot_be_bypassed ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (13/15) zeppelin-embed::graph_completed_results report_geometry_rejects_wrong_generation_call_and_nonfinite_policy
+  stdout ───
+
+    running 1 test
+    test report_geometry_rejects_wrong_generation_call_and_nonfinite_policy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (14/15) zeppelin-embed::graph_completed_results producer_errors_and_identical_metadata_foreign_tokens_remain_distinct
+  stdout ───
+
+    running 1 test
+    test producer_errors_and_identical_metadata_foreign_tokens_remain_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (15/15) zeppelin-embed::graph_completed_results real_retained_capacity_overlap_enforces_query_and_shared_caps
+  stdout ───
+
+    running 1 test
+    test real_retained_capacity_overlap_enforces_query_and_shared_caps ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.051s] 15 tests run: 15 passed, 0 skipped
+        PASS [   0.017s] ( 1/15) zeppelin-embed::graph_completed_results allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer
+  stdout ───
+
+    running 1 test
+    test allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.017s] ( 2/15) zeppelin-embed::graph_completed_results complete_reports_reject_contradictory_kind_route_and_modality_states
+  stdout ───
+
+    running 1 test
+    test complete_reports_reject_contradictory_kind_route_and_modality_states ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.018s] ( 3/15) zeppelin-embed::graph_completed_results allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup
+  stdout ───
+
+    running 1 test
+    test allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.019s] ( 4/15) zeppelin-embed::graph_completed_results allocations::every_actual_allocation_failure_releases_real_buffers_before_guards
+  stdout ───
+
+    running 1 test
+    test allocations::every_actual_allocation_failure_releases_real_buffers_before_guards ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 5/15) zeppelin-embed::graph_completed_results completed_graph_lists_entities_and_reports_preserve_full_literal_contents
+  stdout ───
+
+    running 1 test
+    test completed_graph_lists_entities_and_reports_preserve_full_literal_contents ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 6/15) zeppelin-embed::graph_completed_results completed_receipts_preserve_original_items_deletion_and_mixed_generations
+  stdout ───
+
+    running 1 test
+    test completed_receipts_preserve_original_items_deletion_and_mixed_generations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 7/15) zeppelin-embed::graph_completed_results completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone
+  stdout ───
+
+    running 1 test
+    test completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 8/15) zeppelin-embed::graph_completed_results copy_limit_records_only_performed_chunks_and_returns_no_partial_owner
+  stdout ───
+
+    running 1 test
+    test copy_limit_records_only_performed_chunks_and_returns_no_partial_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 9/15) zeppelin-embed::graph_completed_results malformed_lists_and_ranges_never_expose_partial_owned_results
+  stdout ───
+
+    running 1 test
+    test malformed_lists_and_ranges_never_expose_partial_owned_results ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (10/15) zeppelin-embed::graph_completed_results malformed_entity_metadata_and_unreferenced_pool_entries_reject
+  stdout ───
+
+    running 1 test
+    test malformed_entity_metadata_and_unreferenced_pool_entries_reject ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (11/15) zeppelin-embed::graph_completed_results every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner
+  stdout ───
+
+    running 1 test
+    test every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (12/15) zeppelin-embed::graph_completed_results expanded_descendants_and_complete_representation_caps_cannot_be_bypassed
+  stdout ───
+
+    running 1 test
+    test expanded_descendants_and_complete_representation_caps_cannot_be_bypassed ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (13/15) zeppelin-embed::graph_completed_results report_geometry_rejects_wrong_generation_call_and_nonfinite_policy
+  stdout ───
+
+    running 1 test
+    test report_geometry_rejects_wrong_generation_call_and_nonfinite_policy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (14/15) zeppelin-embed::graph_completed_results producer_errors_and_identical_metadata_foreign_tokens_remain_distinct
+  stdout ───
+
+    running 1 test
+    test producer_errors_and_identical_metadata_foreign_tokens_remain_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (15/15) zeppelin-embed::graph_completed_results real_retained_capacity_overlap_enforces_query_and_shared_caps
+  stdout ───
+
+    running 1 test
+    test real_retained_capacity_overlap_enforces_query_and_shared_caps ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+

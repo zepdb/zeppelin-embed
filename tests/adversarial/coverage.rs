@@ -2,6 +2,13 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.completed.bits-and-bags",
+    "property-graph.completed.full-id",
+    "property-graph.completed.oracle.can-fire",
+    "property-graph.completed.copy-limit.fire",
+    "property-graph.completed.cancel.fire",
+    "property-graph.completed.same-seed-control",
+    "property-graph.completed.release",
     "property-graph.relational.order-bags",
     "property-graph.relational.collect",
     "property-graph.relational.eligible",

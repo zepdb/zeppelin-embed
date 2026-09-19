@@ -293,6 +293,17 @@ impl<'m, 'g, T> QueryArena<'m, 'g, T> {
     pub(crate) fn truncate(&mut self, length: usize) {
         self.values.truncate(length);
     }
+
+    /// Transfers only the sealed completed representation's owned elements.
+    /// Moving the Vec preserves its allocation; the authentic charge drops once.
+    pub(super) fn detach_owned(self) -> Vec<T>
+    where
+        T: super::completed::OwnedElement,
+    {
+        let Self { values, charge } = self;
+        drop(charge);
+        values
+    }
 }
 
 /// Grow-only anonymous capacity for a scoped external participant such as the

@@ -84,3 +84,6 @@ pub mod runtime;
 pub mod eligibility;
 /// Bounded relational kernels over explicit pre-evaluated typed columns.
 pub mod relational;
+
+/// Owned typed completed-result storage, independent of query and store lifetime.
+pub mod completed;
