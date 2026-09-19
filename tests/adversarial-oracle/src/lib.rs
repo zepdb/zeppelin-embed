@@ -134,3 +134,5 @@ pub mod graph_runtime;
 pub mod graph_staging;
 
 pub mod graph_binding;
+
+pub mod graph_directory;

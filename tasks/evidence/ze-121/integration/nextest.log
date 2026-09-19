@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.92s
+────────────
+ Nextest run ID 345c0f2d-f2e3-4dad-b73c-95cadc4ebd0f with nextest profile: default
+    Starting 15 tests across 1 binary
+        PASS [   0.011s] ( 1/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_comparator_detects_narrowed_ids_and_missing_dead_fences
+        PASS [   0.011s] ( 2/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_comparator_accepts_literal_complete_observation
+        PASS [   0.011s] ( 3/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_comparator_detects_omitted_extra_and_reordered_membership
+        PASS [   0.011s] ( 4/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_comparator_detects_canonical_bits_and_every_provenance_field
+        PASS [   0.008s] ( 5/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_numeric_ranges_reach_maximum_id_without_byte_ordering
+        PASS [   0.009s] ( 6/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_cypher_noop_preserves_max_revision_without_increment
+        PASS [   0.009s] ( 7/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_key_ranges_are_byte_exact_and_capacity_bounded
+        PASS [   0.009s] ( 8/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_comparator_rejects_wrong_old_root_and_inventory_as_liveness
+        PASS [   0.008s] ( 9/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_preserves_full_ids_and_independent_kind_domains
+        PASS [   0.008s] (10/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_rejects_invalid_requests_topology_and_bitwise_replay_changes
+        PASS [   0.008s] (11/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_preserves_raw_incident_rows_but_validates_live_endpoints
+        PASS [   0.008s] (12/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_rejects_limits_without_partial_logical_changes
+        PASS [   0.008s] (13/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_retains_complete_fences_replays_and_old_snapshots
+        PASS [   0.008s] (14/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_unkeyed_tombstone_comparator_checks_complete_deletion_provenance
+        PASS [   0.008s] (15/15) zeppelin-embed-adversarial-oracle::graph_directory graph_directory_snapshot_reads_filter_both_endpoints_before_capacity
+────────────
+     Summary [   0.036s] 15 tests run: 15 passed, 0 skipped

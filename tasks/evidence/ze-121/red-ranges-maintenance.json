@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed-adversarial-oracle",
+    "--test",
+    "graph_directory",
+    "-E",
+    "test(graph_directory_key_ranges_are_byte_exact_and_capacity_bounded) | test(graph_directory_snapshot_reads_filter_both_endpoints_before_capacity)"
+  ],
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-121",
+  "started_utc": "2026-09-19T18:48:00.037921+00:00",
+  "exit": 101,
+  "elapsed_seconds": 0.23769179199999999
+}

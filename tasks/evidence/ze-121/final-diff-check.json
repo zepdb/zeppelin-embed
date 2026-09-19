@@ -1,0 +1,11 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--check"
+  ],
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-121",
+  "started_utc": "2026-09-19T18:59:25.421248+00:00",
+  "exit": 0,
+  "elapsed_seconds": 0.012430458000000002
+}

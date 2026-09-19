@@ -1,0 +1,15 @@
+{
+  "command": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--check",
+    "tests/adversarial-oracle/src/graph_directory.rs",
+    "tests/adversarial-oracle/src/graph_directory/compare.rs",
+    "tests/adversarial-oracle/tests/graph_directory.rs"
+  ],
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-121",
+  "started_utc": "2026-09-19T18:59:25.352954+00:00",
+  "exit": 0,
+  "elapsed_seconds": 0.038120083
+}

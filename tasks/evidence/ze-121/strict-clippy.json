@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "-p",
+    "zeppelin-embed-adversarial-oracle",
+    "--all-targets",
+    "--no-deps",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-121",
+  "started_utc": "2026-09-19T18:53:25.489162+00:00",
+  "exit": 101,
+  "elapsed_seconds": 1.733750042
+}

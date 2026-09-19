@@ -1,0 +1,6 @@
+{
+  "tests/adversarial-oracle/src/graph_directory.rs": "439166a70c7d01f184b31ea26a6fdb117766366989ff8d92c10bfa52de92372a",
+  "tests/adversarial-oracle/src/graph_directory/compare.rs": "dbce7569d94c20ff6fbbd4db78439b8bfef09b1ad57bd17c728eb2db0853a716",
+  "tests/adversarial-oracle/src/lib.rs": "aeafce49c4d00f434c3d8bc09e245c1f00c57abaced577e7dac1beb146591dc2",
+  "tests/adversarial-oracle/tests/graph_directory.rs": "a496b2e0d3e0846e6a67161e190d0a37e84b7529b74c0a7547e69ad058e37721"
+}

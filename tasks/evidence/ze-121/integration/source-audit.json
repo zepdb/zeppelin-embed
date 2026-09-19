@@ -1,0 +1,9 @@
+{
+  "source": "6fa8d5f8c89f1e0a8badacaf6eee36fe1a13ea48",
+  "base": "7028a42f2f4898bb7aa729dc935bd51b4033f2ba",
+  "integrated": "4d06ddfbe64ed9ea19d6107e2d85f5b1b08d016f",
+  "candidate_paths": 71,
+  "exact_or_additive_union": true,
+  "mismatches": [],
+  "inherited_preserved": 45
+}

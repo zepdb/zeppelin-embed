@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed-adversarial-oracle",
+    "--test",
+    "graph_directory",
+    "-E",
+    "test(graph_directory_cypher_noop_preserves_max_revision_without_increment)"
+  ],
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-121",
+  "started_utc": "2026-09-19T18:56:51.346533+00:00",
+  "exit": 100,
+  "elapsed_seconds": 0.522739916
+}

@@ -1,0 +1,43 @@
+[
+  {
+    "command": [
+      "uname",
+      "-m"
+    ],
+    "exit": 0,
+    "output": "arm64\n"
+  },
+  {
+    "command": [
+      "sysctl",
+      "-n",
+      "machdep.cpu.brand_string"
+    ],
+    "exit": 0,
+    "output": "Apple M3 Max\n"
+  },
+  {
+    "command": [
+      "sw_vers"
+    ],
+    "exit": 0,
+    "output": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5388g\n"
+  },
+  {
+    "command": [
+      "rustc",
+      "--version"
+    ],
+    "exit": 0,
+    "output": "rustc 1.93.0 (254b59607 2026-01-19)\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "nextest",
+      "--version"
+    ],
+    "exit": 0,
+    "output": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)\nrelease: 0.9.145\ncommit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2\ncommit-date: 2026-09-16\nhost: aarch64-apple-darwin\n"
+  }
+]
