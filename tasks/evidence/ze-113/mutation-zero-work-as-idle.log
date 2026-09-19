@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.55s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::attested_compute_calibration_cannot_override_busy_preflight_or_zero_work ... FAILED
+
+failures:
+
+---- benchmark_contracts::attested_compute_calibration_cannot_override_busy_preflight_or_zero_work stdout ----
+
+thread 'benchmark_contracts::attested_compute_calibration_cannot_override_busy_preflight_or_zero_work' (32382635) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:356:6:
+zero work is invalid before preflight: Idle { reasons: [] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::attested_compute_calibration_cannot_override_busy_preflight_or_zero_work
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

@@ -1,0 +1,210 @@
+[
+  {
+    "mutation": "report-payoff",
+    "source": "crates/zeppelin-embed-bench/src/user_bench.rs",
+    "test": "populated_user_report_keeps_backend_tier_and_missing_measurements_distinct",
+    "exit": 101,
+    "restored_sha256": "75b3545a6c10d0b63d241f7df35737b8a2a85bada7aa0e1002d128e60aec9968",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "populated_user_report_keeps_backend_tier_and_missing_measurements_distinct"
+    ]
+  },
+  {
+    "mutation": "recall-denominator",
+    "source": "crates/zeppelin-embed-bench/src/user_bench.rs",
+    "test": "user_statistics_handle_empty_sets_duplicates_and_nearest_rank_boundaries",
+    "exit": 101,
+    "restored_sha256": "75b3545a6c10d0b63d241f7df35737b8a2a85bada7aa0e1002d128e60aec9968",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "user_statistics_handle_empty_sets_duplicates_and_nearest_rank_boundaries"
+    ]
+  },
+  {
+    "mutation": "ignored-seed",
+    "source": "crates/zeppelin-embed-bench/src/user_bench.rs",
+    "test": "seeded_query_order_is_repeatable_and_contains_every_row_once",
+    "exit": 101,
+    "restored_sha256": "75b3545a6c10d0b63d241f7df35737b8a2a85bada7aa0e1002d128e60aec9968",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "seeded_query_order_is_repeatable_and_contains_every_row_once"
+    ]
+  },
+  {
+    "mutation": "zero-latency",
+    "source": "crates/zeppelin-embed-bench/src/kernel_gate.rs",
+    "test": "kernel_gate_reports_all_invalid_measurements_before_computing_ratios",
+    "exit": 101,
+    "restored_sha256": "eec5e947db363d971e0378e180abda674451054365001c31a76d52713ae70a72",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "kernel_gate_reports_all_invalid_measurements_before_computing_ratios"
+    ]
+  },
+  {
+    "mutation": "zero-process-observation",
+    "source": "crates/zeppelin-embed-bench/src/process_median.rs",
+    "test": "process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics",
+    "exit": 101,
+    "restored_sha256": "177c8c200071a983487dedbfa09d295019beb754af97ae2a97d1d7ee97097f10",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics"
+    ]
+  },
+  {
+    "mutation": "idle-as-measured",
+    "source": "crates/zeppelin-embed-bench/src/frontier/roofline.rs",
+    "test": "compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling",
+    "exit": 101,
+    "restored_sha256": "d3034d0ac2d9e9b306cfb3431ae6189ecfab1a5d97e9733c34e9fddf0442e357",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling"
+    ]
+  },
+  {
+    "mutation": "lost-load-cause",
+    "source": "crates/zeppelin-embed-bench/src/frontier/roofline.rs",
+    "test": "compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate",
+    "exit": 101,
+    "restored_sha256": "d3034d0ac2d9e9b306cfb3431ae6189ecfab1a5d97e9733c34e9fddf0442e357",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate"
+    ]
+  },
+  {
+    "mutation": "zero-work-as-idle",
+    "source": "crates/zeppelin-embed-bench/src/frontier/roofline.rs",
+    "test": "attested_compute_calibration_cannot_override_busy_preflight_or_zero_work",
+    "exit": 101,
+    "restored_sha256": "d3034d0ac2d9e9b306cfb3431ae6189ecfab1a5d97e9733c34e9fddf0442e357",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "attested_compute_calibration_cannot_override_busy_preflight_or_zero_work"
+    ]
+  },
+  {
+    "mutation": "lost-ledger-path",
+    "source": "crates/zeppelin-embed-bench/src/frontier/ledger.rs",
+    "test": "ledger_io_failures_name_the_affected_path_and_preserve_observed_history",
+    "exit": 101,
+    "restored_sha256": "5ab6c00df1701a43826a4ec5b2a94a5cae389eda423f385b98d6b79d64b6816b",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "ledger_io_failures_name_the_affected_path_and_preserve_observed_history"
+    ]
+  },
+  {
+    "mutation": "blank-attestation",
+    "source": "crates/zeppelin-embed-bench/src/frontier/ledger.rs",
+    "test": "ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption",
+    "exit": 101,
+    "restored_sha256": "5ab6c00df1701a43826a4ec5b2a94a5cae389eda423f385b98d6b79d64b6816b",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption"
+    ]
+  },
+  {
+    "mutation": "lost-json-cause",
+    "source": "crates/zeppelin-embed-bench/src/frontier/calibration.rs",
+    "test": "calibration_loading_retains_io_and_json_causes_through_the_roofline_api",
+    "exit": 101,
+    "restored_sha256": "3281b05d15deae77d28650faafa92a8645093b3bb74ef0b1928980d0c9a4488e",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "calibration_loading_retains_io_and_json_causes_through_the_roofline_api"
+    ]
+  },
+  {
+    "mutation": "odd-median-offset",
+    "source": "crates/zeppelin-embed-bench/src/frontier/measure.rs",
+    "test": "measurement_odd_runs_use_the_middle_observation",
+    "exit": 101,
+    "restored_sha256": "dbebae1f9645a135a415711fe2a195299ca240c19def8753062883220375c8dc",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "measurement_odd_runs_use_the_middle_observation"
+    ]
+  },
+  {
+    "mutation": "nonfinite-variance",
+    "source": "crates/zeppelin-embed-bench/src/frontier/measure.rs",
+    "test": "measurement_rejects_nonfinite_variance_from_finite_samples",
+    "exit": 101,
+    "restored_sha256": "dbebae1f9645a135a415711fe2a195299ca240c19def8753062883220375c8dc",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-bench",
+      "--test",
+      "frontier",
+      "measurement_rejects_nonfinite_variance_from_finite_samples"
+    ]
+  }
+]

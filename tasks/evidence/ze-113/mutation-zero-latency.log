@@ -1,0 +1,24 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::kernel_gate_reports_all_invalid_measurements_before_computing_ratios ... FAILED
+
+failures:
+
+---- benchmark_contracts::kernel_gate_reports_all_invalid_measurements_before_computing_ratios stdout ----
+
+thread 'benchmark_contracts::kernel_gate_reports_all_invalid_measurements_before_computing_ratios' (32372628) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:147:5:
+assertion `left == right` failed
+  left: 2
+ right: 4
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::kernel_gate_reports_all_invalid_measurements_before_computing_ratios
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

@@ -50,6 +50,8 @@ use zeppelin_embed_bench::platform::memory_graph::verify_bench_profile_contract;
 
 #[path = "beir_eval.rs"]
 mod beir_eval_contract;
+#[path = "frontier_contracts/benchmark_contracts.rs"]
+mod benchmark_contracts;
 #[path = "kernel_roofline_gate.rs"]
 mod kernel_roofline_contract;
 #[path = "process_median.rs"]

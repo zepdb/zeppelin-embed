@@ -1,0 +1,33 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+warning: unused variable: `reasons`
+   --> crates/zeppelin-embed-bench/src/frontier/roofline.rs:515:34
+    |
+515 |         PreflightOutcome::Idle { reasons } => {
+    |                                  ^^^^^^^ help: try ignoring the field: `reasons: _`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-bench` (lib) generated 1 warning (run `cargo fix --lib -p zeppelin-embed-bench` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling ... FAILED
+
+failures:
+
+---- benchmark_contracts::compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling stdout ----
+
+thread 'benchmark_contracts::compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling' (32377548) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:262:5:
+assertion `left == right` failed
+  left: Measured { calibrations: [], not_measured: [] }
+ right: Idle { reasons: ["concurrent load not excluded: controlled competing build"] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::compute_calibration_stays_idle_on_load_and_rejects_overflow_before_sampling
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

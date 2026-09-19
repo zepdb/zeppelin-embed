@@ -1,0 +1,24 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.50s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate ... FAILED
+
+failures:
+
+---- benchmark_contracts::compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate stdout ----
+
+thread 'benchmark_contracts::compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate' (32380026) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:310:5:
+assertion failed: matches!(&error,
+    ComputeCalibrationError::Measurement(MeasurementError::ConcurrentLoad(reason))
+    if reason == "controlled competing build")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::compute_calibration_honors_a_load_veto_after_warmup_without_publishing_a_rate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

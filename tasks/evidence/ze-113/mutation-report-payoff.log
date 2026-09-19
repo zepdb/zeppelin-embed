@@ -1,0 +1,79 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.72s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::populated_user_report_keeps_backend_tier_and_missing_measurements_distinct ... FAILED
+
+failures:
+
+---- benchmark_contracts::populated_user_report_keeps_backend_tier_and_missing_measurements_distinct stdout ----
+
+thread 'benchmark_contracts::populated_user_report_keeps_backend_tier_and_missing_measurements_distinct' (32365031) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:97:9:
+missing report contract "| Dense | MLX GPU | 12.000 | 3.000 | 9.000 | 4.000 | 15.000 | 5.000 | 6.000 |"
+Corpus: BEIR FiQA-2018, 57,638 documents, 72000 chunk rows, one sealed
+segment, 648 test queries, k = 10, stored text returned on every hit.
+Verified tiers: scan store = `SealedScan` (72000 rows); graph store =
+`SealedGraph` (72000 rows), promoted in 2.500000 s of maintenance.
+
+### Table A. Cold start (fresh process, hybrid leg, graph store; ms)
+
+| backend | launch | TextStore::open | first query_text | total | budget ~1000 |
+| --- | --- | ---: | ---: | ---: | --- |
+| MLX GPU | first-ever | 900.000 | 100.000 | 1000.000 | met |
+| MLX GPU | relaunch (median of 10) | | | | |
+| CoreML CPU_AND_NE requested | first-ever (fresh model digest) | 900.000 | 101.000 | 1001.000 | missed |
+| CoreML CPU_AND_NE requested | relaunch (median of 10) | | | | |
+
+Open breakdown (`components`, ms): bundle open 1.000 / document tower (MLX)
+2.000 / query runtime (MLX 3.000, CoreML 4.000) / core store open 5.000.
+
+### Table B. Steady state, user-felt `query_text` latency (ms; sample counts in source artifacts)
+
+| leg | backend | scan p50 | graph p50 | graph payoff (scan - graph, ms) | speedup (scan / graph) | scan p95 | graph p95 | graph p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Dense | MLX GPU | 12.000 | 3.000 | 15.000 | 4.000 | 15.000 | 5.000 | 6.000 |
+| Dense | CoreML CPU_AND_NE requested | | | | | | | |
+| Lexical | (none) | | | | | | | |
+| Hybrid | MLX GPU | | | | | | | |
+| Hybrid | CoreML CPU_AND_NE requested | | | | | | | |
+
+Rep spread (Dense / graph / MLX, three runs): p50 3.000 / 3.125 / 3.250 ms. A
+delta counts only if it exceeds 2x this spread.
+
+### Table C. Quality on the same store
+
+| leg | tier | nDCG@10 | recall@10 vs Exact (MLX) | recall@10 vs Exact (CoreML) |
+| --- | --- | ---: | ---: | ---: |
+| Dense | scan | | | |
+| Dense | graph | 0.750000 | 0.900000 |  |
+| Lexical | n/a | 0.625000 | exact by construction | exact by construction |
+| Hybrid | scan | | | |
+| Hybrid | graph | | | |
+
+### Table D. Power during a 20 s hybrid query loop (graph store)
+
+| backend | CPU mW | GPU mW | ANE mW | `pmset -g therm` before / after |
+| --- | ---: | ---: | ---: | --- |
+| MLX GPU | not measured | not measured | not measured | not measured |
+| CoreML CPU_AND_NE requested | not measured | not measured | not measured | not measured |
+
+### Table E. Query-tower component (informs D1; ms)
+
+| bucket set | first-ever load | relaunch load | p50 @32 | p50 @64 | p50 @128 | MLX GPU p50 @ same length | chosen |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| {32} | | | | n/a | n/a | | |
+| {32, 64} | | | | | n/a | | |
+| {32, 64, 128} | | | | | | | |
+
+Queries truncated by `max_tokens` on FiQA: 7 of 648.
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::populated_user_report_keeps_backend_tier_and_missing_measurements_distinct
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

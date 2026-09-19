@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption ... FAILED
+
+failures:
+
+---- benchmark_contracts::ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption stdout ----
+
+thread 'benchmark_contracts::ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption' (32387547) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:429:10:
+attestation timestamp cannot be blank: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::ledger_rejects_blank_attestation_and_corrupt_counter_evidence_before_adoption
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

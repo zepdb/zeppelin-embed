@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics ... FAILED
+
+failures:
+
+---- benchmark_contracts::process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics stdout ----
+
+thread 'benchmark_contracts::process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics' (32375092) panicked at crates/zeppelin-embed-bench/tests/frontier_contracts/benchmark_contracts.rs:210:14:
+invalid observations cannot enter the summary: ProcessMedian { values: [0.0, 1.0, 3.0], median: 1.0, minimum: 0.0, maximum: 3.0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::process_summary_rejects_invalid_counts_and_values_with_actionable_diagnostics
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

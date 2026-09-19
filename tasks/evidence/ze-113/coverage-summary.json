@@ -1,0 +1,182 @@
+{
+  "baseline": {
+    "exit": 1,
+    "total": {
+      "count": 5258,
+      "covered": 4534,
+      "percent": 86.23050589577787
+    },
+    "files": {
+      "crates/zeppelin-embed-bench/src/beir/eval.rs": {
+        "count": 89,
+        "covered": 88,
+        "percent": 98.87640449438202
+      },
+      "crates/zeppelin-embed-bench/src/beir/loader.rs": {
+        "count": 106,
+        "covered": 95,
+        "percent": 89.62264150943396
+      },
+      "crates/zeppelin-embed-bench/src/frontier/attestation.rs": {
+        "count": 415,
+        "covered": 383,
+        "percent": 92.28915662650601
+      },
+      "crates/zeppelin-embed-bench/src/frontier/calibration.rs": {
+        "count": 427,
+        "covered": 400,
+        "percent": 93.6768149882904
+      },
+      "crates/zeppelin-embed-bench/src/frontier/cli.rs": {
+        "count": 108,
+        "covered": 106,
+        "percent": 98.14814814814817
+      },
+      "crates/zeppelin-embed-bench/src/frontier/ledger.rs": {
+        "count": 330,
+        "covered": 279,
+        "percent": 84.54545454545455
+      },
+      "crates/zeppelin-embed-bench/src/frontier/measure.rs": {
+        "count": 479,
+        "covered": 400,
+        "percent": 83.50730688935282
+      },
+      "crates/zeppelin-embed-bench/src/frontier/pmu.rs": {
+        "count": 169,
+        "covered": 144,
+        "percent": 85.20710059171599
+      },
+      "crates/zeppelin-embed-bench/src/frontier/roofline.rs": {
+        "count": 393,
+        "covered": 176,
+        "percent": 44.783715012722645
+      },
+      "crates/zeppelin-embed-bench/src/frontier/tune.rs": {
+        "count": 534,
+        "covered": 490,
+        "percent": 91.76029962546816
+      },
+      "crates/zeppelin-embed-bench/src/frontier/variants.rs": {
+        "count": 127,
+        "covered": 116,
+        "percent": 91.33858267716536
+      },
+      "crates/zeppelin-embed-bench/src/graph_recall.rs": {
+        "count": 1187,
+        "covered": 1075,
+        "percent": 90.56444818871103
+      },
+      "crates/zeppelin-embed-bench/src/kernel_gate.rs": {
+        "count": 92,
+        "covered": 73,
+        "percent": 79.34782608695652
+      },
+      "crates/zeppelin-embed-bench/src/process_median.rs": {
+        "count": 42,
+        "covered": 33,
+        "percent": 78.57142857142857
+      },
+      "crates/zeppelin-embed-bench/src/scheme_level.rs": {
+        "count": 530,
+        "covered": 496,
+        "percent": 93.58490566037736
+      },
+      "crates/zeppelin-embed-bench/src/user_bench.rs": {
+        "count": 230,
+        "covered": 180,
+        "percent": 78.26086956521739
+      }
+    }
+  },
+  "green": {
+    "exit": 0,
+    "total": {
+      "count": 5258,
+      "covered": 4744,
+      "percent": 90.2244199315329
+    },
+    "files": {
+      "crates/zeppelin-embed-bench/src/beir/eval.rs": {
+        "count": 89,
+        "covered": 88,
+        "percent": 98.87640449438202
+      },
+      "crates/zeppelin-embed-bench/src/beir/loader.rs": {
+        "count": 106,
+        "covered": 95,
+        "percent": 89.62264150943396
+      },
+      "crates/zeppelin-embed-bench/src/frontier/attestation.rs": {
+        "count": 415,
+        "covered": 383,
+        "percent": 92.28915662650601
+      },
+      "crates/zeppelin-embed-bench/src/frontier/calibration.rs": {
+        "count": 427,
+        "covered": 411,
+        "percent": 96.25292740046838
+      },
+      "crates/zeppelin-embed-bench/src/frontier/cli.rs": {
+        "count": 108,
+        "covered": 106,
+        "percent": 98.14814814814817
+      },
+      "crates/zeppelin-embed-bench/src/frontier/ledger.rs": {
+        "count": 330,
+        "covered": 307,
+        "percent": 93.03030303030302
+      },
+      "crates/zeppelin-embed-bench/src/frontier/measure.rs": {
+        "count": 479,
+        "covered": 403,
+        "percent": 84.13361169102296
+      },
+      "crates/zeppelin-embed-bench/src/frontier/pmu.rs": {
+        "count": 169,
+        "covered": 144,
+        "percent": 85.20710059171599
+      },
+      "crates/zeppelin-embed-bench/src/frontier/roofline.rs": {
+        "count": 393,
+        "covered": 269,
+        "percent": 68.44783715012723
+      },
+      "crates/zeppelin-embed-bench/src/frontier/tune.rs": {
+        "count": 534,
+        "covered": 490,
+        "percent": 91.76029962546816
+      },
+      "crates/zeppelin-embed-bench/src/frontier/variants.rs": {
+        "count": 127,
+        "covered": 116,
+        "percent": 91.33858267716536
+      },
+      "crates/zeppelin-embed-bench/src/graph_recall.rs": {
+        "count": 1187,
+        "covered": 1075,
+        "percent": 90.56444818871103
+      },
+      "crates/zeppelin-embed-bench/src/kernel_gate.rs": {
+        "count": 92,
+        "covered": 92,
+        "percent": 100.0
+      },
+      "crates/zeppelin-embed-bench/src/process_median.rs": {
+        "count": 42,
+        "covered": 39,
+        "percent": 92.85714285714286
+      },
+      "crates/zeppelin-embed-bench/src/scheme_level.rs": {
+        "count": 530,
+        "covered": 496,
+        "percent": 93.58490566037736
+      },
+      "crates/zeppelin-embed-bench/src/user_bench.rs": {
+        "count": 230,
+        "covered": 230,
+        "percent": 100.0
+      }
+    }
+  }
+}

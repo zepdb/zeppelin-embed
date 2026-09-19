@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-113/crates/zeppelin-embed-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.40s
+     Running tests/frontier.rs (target/debug/deps/frontier-9f684412329b84e1)
+
+running 1 test
+test benchmark_contracts::measurement_rejects_nonfinite_variance_from_finite_samples ... FAILED
+
+failures:
+
+---- benchmark_contracts::measurement_rejects_nonfinite_variance_from_finite_samples stdout ----
+
+thread 'benchmark_contracts::measurement_rejects_nonfinite_variance_from_finite_samples' (32349066) panicked at crates/zeppelin-embed-bench/tests/benchmark_contracts.rs:545:10:
+an overflowing sum cannot become an accepted zero-variance run: MeasurementResult { accepted_run_medians_ns: [1.7976931348623157e308], accepted_run_rsd_percent: [NaN], discarded_runs: 0, min_of_medians_ns: 1.7976931348623157e308, machine_state: DirectProbe }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    benchmark_contracts::measurement_rejects_nonfinite_variance_from_finite_samples
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-bench --test frontier`

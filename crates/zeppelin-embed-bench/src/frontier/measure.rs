@@ -154,7 +154,7 @@ pub fn measure_source_with_provenance<S: SampleSource>(
             .concurrent_load_check()
             .map_err(MeasurementError::ConcurrentLoad)?;
         let rsd_percent = relative_standard_deviation_percent(&samples);
-        if rsd_percent > config.maximum_rsd_percent {
+        if !rsd_percent.is_finite() || rsd_percent > config.maximum_rsd_percent {
             discarded_runs += 1;
             continue;
         }
