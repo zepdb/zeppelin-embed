@@ -1,0 +1,8 @@
+{
+  "main_head": "0a6312a94262b5c35607a93849dee2b3ea6606ce",
+  "user_files_unchanged": 45,
+  "engine_dependency_files_unchanged": true,
+  "pending_ze35_module_sha256": "373d7ebfef28660c31fbf9647fa8fa6df0c7d23a39b8feb19fa24705d49efd56",
+  "rust_version": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "host_logical_cpus": 16
+}

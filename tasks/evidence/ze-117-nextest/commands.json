@@ -1,0 +1,43 @@
+{
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed",
+  "config_sha256": "2a06cdd38da0a15c714e7df3a4bc331122ed001781c0987fee109321b418ecab",
+  "commands": [
+    {
+      "command": "cargo nextest --version",
+      "exit_code": 0,
+      "result": "0.9.145 (00af4550e 2026-09-16), native aarch64-apple-darwin"
+    },
+    {
+      "command": "cargo nextest run --config-file /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-117/.config/nextest.toml --profile solo -p zeppelin-embed --test graph_catalog --locked --no-tests=fail",
+      "exit_code": 0,
+      "passed": 14,
+      "skipped": 0,
+      "log": "catalog-solo.log"
+    },
+    {
+      "command": "cargo nextest run --config-file /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-117/.config/nextest.toml -p zeppelin-embed-ffi --test ffi_ownership --locked --no-tests=fail",
+      "exit_code": 0,
+      "passed": 2,
+      "skipped": 0,
+      "log": "ffi-ownership.log"
+    },
+    {
+      "command": "cargo nextest run --config-file /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-117/.config/nextest.toml -p zeppelin-embed --test single_writer --locked --no-tests=fail",
+      "exit_code": 0,
+      "passed": 6,
+      "skipped": 1,
+      "log": "single-writer.log"
+    },
+    {
+      "command": "cargo nextest show-config test-groups --config-file /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-117/.config/nextest.toml -p zeppelin-embed-text --test coreml_contracts --locked",
+      "exit_code": 0,
+      "result": "Lists four CoreML tests in native-model max-threads=1; no model test executed",
+      "log": "test-groups.log"
+    },
+    {
+      "command": "cargo llvm-cov nextest --help",
+      "exit_code": 0,
+      "result": "Installed cargo-llvm-cov 0.9.0 exposes nextest integration; no coverage campaign run"
+    }
+  ]
+}

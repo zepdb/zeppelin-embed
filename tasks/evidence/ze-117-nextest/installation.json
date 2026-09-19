@@ -1,0 +1,9 @@
+{
+  "source": "https://get.nexte.st/latest/mac",
+  "archive": "cargo-nextest-0.9.145-universal-apple-darwin.tar.gz",
+  "archive_sha256": "52ecaedb4f5af9267ef7ed02bc937d2a15a94ff96cb663080e81311f798c9905",
+  "binary_sha256": "84882f70f095269a4d89ac2255c4fe7490545d0adf42d8556905401ed4236b33",
+  "installed_path": "/Users/aghatage/.cargo/bin/cargo-nextest",
+  "version": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)\nrelease: 0.9.145\ncommit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2\ncommit-date: 2026-09-16\nhost: aarch64-apple-darwin",
+  "rust_toolchain_unchanged": true
+}

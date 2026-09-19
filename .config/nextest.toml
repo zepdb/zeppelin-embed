@@ -1,4 +1,28 @@
+# ZE-117: process isolation replaces cross-test process-global contention.
+# Four independent worktrees can each use four test processes on the M3 Max.
 [profile.default]
-fail-fast = false
+test-threads = 4
 retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+# One libtest test per process, on its initial thread where supported.
+# This does not serialize nextest's separate test processes.
+run-extra-args = ["--test-threads=1"]
 
+# Use only when this is the sole runner and no benchmark is measuring the host.
+[profile.solo]
+test-threads = "num-cpus"
+
+# Wall-clock / footprint measurement: also keep other worktrees and builds idle.
+[profile.measurement]
+test-threads = 1
+
+# Native model evaluation shares accelerator capacity across processes.
+# This is a per-nextest-invocation limit, not a cross-worktree lock.
+[test-groups.native-model]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'package(zeppelin-embed-text)'
+test-group = "native-model"

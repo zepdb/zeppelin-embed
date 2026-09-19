@@ -1,0 +1,37 @@
+[
+  {
+    "file": "installation.json",
+    "raw_sha256": "22d9202079fed8c5ebbfc225b8b1aaa401221f671f3fa6d12c91af41dde51845",
+    "raw_bytes": 580
+  },
+  {
+    "file": "preservation.json",
+    "raw_sha256": "17b1464d8c9fd312207d45a2139fdbf5168e1903c07714d142028b3e1f12128a",
+    "raw_bytes": 321
+  },
+  {
+    "file": "commands.json",
+    "raw_sha256": "635c1343b0287f3a28fb556f378a78f03fbae9f6b190f5717528c0e53d8f3ded",
+    "raw_bytes": 1800
+  },
+  {
+    "file": "catalog-solo.log.gz",
+    "raw_sha256": "241962bf73ac3f2d383d0152ec2f793ef9facb46f477598192b0bd8dac7387fb",
+    "raw_bytes": 2213
+  },
+  {
+    "file": "ffi-ownership.log.gz",
+    "raw_sha256": "fc32a4fef0065bc2f0a568581ab5b22a03184f5e20e6c96dd3ae63a768f53311",
+    "raw_bytes": 827
+  },
+  {
+    "file": "single-writer.log.gz",
+    "raw_sha256": "143ba23dec56a1accf4768ebba6333e8ff6d06d0270725cc24821c422ab5da56",
+    "raw_bytes": 1241
+  },
+  {
+    "file": "test-groups.log.gz",
+    "raw_sha256": "3e2aa50f93846011ed5edbc80b65a0b0451be08f3b64f0a295101203db7e040a",
+    "raw_bytes": 718
+  }
+]
