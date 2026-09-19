@@ -1,0 +1,242 @@
+[
+  {
+    "name": "zeppelin-embed",
+    "features": {
+      "allocation-audit": [],
+      "query-timing": [],
+      "test-support": []
+    },
+    "dependencies": [
+      {
+        "name": "libc",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "roaring",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "xxhash-rust",
+        "optional": false,
+        "features": [
+          "xxh3"
+        ],
+        "kind": null
+      },
+      {
+        "name": "criterion",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "proptest",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "rand",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "rand_chacha",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "tempfile",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "zeppelin-embed",
+        "optional": false,
+        "features": [
+          "test-support"
+        ],
+        "kind": "dev"
+      }
+    ]
+  },
+  {
+    "name": "zeppelin-embed-cypher",
+    "features": {},
+    "dependencies": [
+      {
+        "name": "zeppelin-embed",
+        "optional": false,
+        "features": [],
+        "kind": null
+      }
+    ]
+  },
+  {
+    "name": "zeppelin-embed-ffi",
+    "features": {
+      "abi-panic-probe": [],
+      "default": [],
+      "graph-cypher": [],
+      "graph-result-test-support": [
+        "graph-cypher"
+      ],
+      "text": [
+        "dep:zeppelin-embed-text"
+      ]
+    },
+    "dependencies": [
+      {
+        "name": "zeppelin-embed",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-text",
+        "optional": true,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "tempfile",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      },
+      {
+        "name": "loom",
+        "optional": false,
+        "features": [],
+        "kind": null
+      }
+    ]
+  },
+  {
+    "name": "zeppelin-embed-bench",
+    "features": {
+      "default": [],
+      "query-timing": [
+        "zeppelin-embed/query-timing"
+      ],
+      "text": [
+        "dep:zeppelin-embed-text"
+      ]
+    },
+    "dependencies": [
+      {
+        "name": "libc",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "serde_json",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "tempfile",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed",
+        "optional": false,
+        "features": [
+          "test-support"
+        ],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-text",
+        "optional": true,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "criterion",
+        "optional": false,
+        "features": [],
+        "kind": "dev"
+      }
+    ]
+  },
+  {
+    "name": "zeppelin-embed-workspace-tests",
+    "features": {
+      "graph-cypher": [
+        "zeppelin-embed-ffi/graph-result-test-support"
+      ]
+    },
+    "dependencies": [
+      {
+        "name": "proptest",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "rand",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "rand_chacha",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "tempfile",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed",
+        "optional": false,
+        "features": [
+          "test-support"
+        ],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-adversarial-oracle",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-bench",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-cypher",
+        "optional": false,
+        "features": [],
+        "kind": null
+      },
+      {
+        "name": "zeppelin-embed-ffi",
+        "optional": false,
+        "features": [
+          "abi-panic-probe"
+        ],
+        "kind": null
+      }
+    ]
+  }
+]

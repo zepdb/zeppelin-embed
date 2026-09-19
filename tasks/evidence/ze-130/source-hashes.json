@@ -1,0 +1,78 @@
+[
+  {
+    "path": "Cargo.toml",
+    "sha256": "57f25f2ebe587aff75a8912169eeda3673287036520397341d81309f1cbf98c5"
+  },
+  {
+    "path": "crates/zeppelin-embed/Cargo.toml",
+    "sha256": "ba0094e966bb26fcb6e26b55d509c3bfd5b6683da00a5ed683addd2f05b8878c"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/lib.rs",
+    "sha256": "24306cac6c23593b01526902ace783b35c5b357493ab0e8bca9cfeb3b21fd600"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/Cargo.toml",
+    "sha256": "350727bce3d7883a45cc34276b9709ea608f6a2b522412dd038db7a6f3ec3cef"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "sha256": "9a00a4c5fdfe4daac324072fc53a2d3cff690541717049b9d90d18b60328730d"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/Cargo.toml",
+    "sha256": "27e51dbedd94a6047923267305e7ec80bffd3358e22ed78f310ae989860d004e"
+  },
+  {
+    "path": "tests/Cargo.toml",
+    "sha256": "1fc09db8e46699a92461bc151336019563420fc8357a3624de9932ff2cd752fd"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/cbindgen.toml",
+    "sha256": "84191ff92661e070f59fa6b8155ea50860e7314aa4e1d5b29a9c25f4024158a3"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/cbindgen.graph.toml",
+    "sha256": "65cd07f6936b6cef79fea69a5d185e0fa04d7b59a708eeffc79004745b2f7976"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/tests/ffi_graph_header.rs",
+    "sha256": "df5bf8d6d23617e16f1b9e4595f23cc81d59fcc124145e6130afe323a97b3682"
+  },
+  {
+    "path": "scripts/release/core_header.py",
+    "sha256": "3fa7235ee80c480d8bb204356a22c067af20c9cc3a206d61dfc52626355607fd"
+  },
+  {
+    "path": "scripts/macos-sdk/build.sh",
+    "sha256": "8d8a41049b6c459425568b9d1677fcbeb8504e93ec5c7f318c803a0a72602907"
+  },
+  {
+    "path": "scripts/xcframework/build.sh",
+    "sha256": "113315fcaff0f061e1b6da105de3564618092b0cf0b66d5f7a6a1655b83e0f3d"
+  },
+  {
+    "path": "scripts/size-budget.sh",
+    "sha256": "a398f42db94ed0952f40b856f58233410c9b14ad2595139fb4d41d395b4d5bea"
+  },
+  {
+    "path": "Package.swift",
+    "sha256": "1f7f7ee1332ed27ce5d6db5ff623745b8c56505694e206e179f455556031e517"
+  },
+  {
+    "path": ".github/workflows/swift-release.yml",
+    "sha256": "3bb19f3d7deda3988cc3ff3f58e0c2af21fd77e90009cbf096e43aa6ad2f267e"
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "sha256": "96b05a6e229581e7a793df2eff0bf7a00c3942fcac370974f2f9c1b758a83096"
+  },
+  {
+    "path": "scripts/ci-gates.sh",
+    "sha256": "a02a9efb925652906b33b6d9b79f921ab1129f6d6bf2fb36553cc8308ab8dc8e"
+  },
+  {
+    "path": "scripts/coverage.sh",
+    "sha256": "3a85431401e4175550ba7b5d140ec0715be2d9a67298f37546b30e8bd164c154"
+  }
+]
