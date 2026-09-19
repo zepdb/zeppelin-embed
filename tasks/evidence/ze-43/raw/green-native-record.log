@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+   --> crates/zeppelin-embed/src/property_graph/storage/records/native.rs:157:20
+    |
+157 |       let labels = c.take(match shape {
+    |  ____________________^^^^-
+158 | |         RecordShape::Node { labels, .. } => u64::from(labels) * 8,
+159 | |         _ => 0,
+160 | |     })?;
+    | |______- argument #2 of type `&mut directory::TreeResources<'_>` is missing
+    |
+note: method defined here
+   --> crates/zeppelin-embed/src/property_graph/storage/stream.rs:293:12
+    |
+293 |     pub fn take(
+    |            ^^^^
+...
+296 |         resources: &mut TreeResources<'_>,
+    |         ---------------------------------
+help: provide the argument
+    |
+157 |     let labels = c.take(match shape {
+158 |         RecordShape::Node { labels, .. } => u64::from(labels) * 8,
+159 |         _ => 0,
+160 ~     }, /* &mut directory::TreeResources<'_> */)?;
+    |
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+   --> crates/zeppelin-embed/src/property_graph/storage/records/native.rs:166:24
+    |
+166 |     let properties = c.take(u64::from(property_count) * 24)?;
+    |                        ^^^^-------------------------------- argument #2 of type `&mut directory::TreeResources<'_>` is missing
+    |
+note: method defined here
+   --> crates/zeppelin-embed/src/property_graph/storage/stream.rs:293:12
+    |
+293 |     pub fn take(
+    |            ^^^^
+...
+296 |         resources: &mut TreeResources<'_>,
+    |         ---------------------------------
+help: provide the argument
+    |
+166 |     let properties = c.take(u64::from(property_count) * 24, /* &mut directory::TreeResources<'_> */)?;
+    |                                                           +++++++++++++++++++++++++++++++++++++++++
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `zeppelin-embed` (lib) due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

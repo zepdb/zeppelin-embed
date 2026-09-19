@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed-fuzz v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.74s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.01s
+     Running `fuzz/target/aarch64-apple-darwin/release/native_graph_records -artifact_prefix=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/artifacts/native_graph_records/ -runs=1 fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 3524415253
+INFO: Loaded 1 modules   (295734 inline 8-bit counters): 295734 [0x1012cdff0, 0x101316326), 
+INFO: Loaded 1 PC tables (295734 PCs): 295734 [0x101316328,0x101799688), 
+fuzz/target/aarch64-apple-darwin/release/native_graph_records: Running 1 inputs 1 time(s) each.
+Running: fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e
+Executed fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e in 2 ms
+***
+*** NOTE: fuzzing was not performed, you have only
+***       executed the target code on a fixed set of inputs.
+***

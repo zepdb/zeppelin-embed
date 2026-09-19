@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::payload::prepare_stream`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:445:71
+    |
+445 |     use zeppelin_embed::property_graph::storage::payload::{PayloadRef,prepare_stream};
+    |                                                                       ^^^^^^^^^^^^^^ no `prepare_stream` in `property_graph::storage::payload`
+
+error[E0282]: type annotations needed
+   --> crates/zeppelin-embed/tests/graph_directories.rs:454:22
+    |
+454 |         &mut |offset,bytes,_| {
+    |                      ^^^^^
+455 |             calls+=1;
+456 |             assert!(bytes.len()<=65536);
+    |                     ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+454 |         &mut |offset,bytes: /* Type */,_| {
+    |                           ++++++++++++
+
+error[E0689]: can't call method `div_ceil` on ambiguous numeric type `{integer}`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:460:29
+    |
+460 |     assert_eq!(calls,length.div_ceil(65536));
+    |                             ^^^^^^^^
+    |
+help: you must specify a type for this binding, like `i32`
+    |
+451 |     let length: i32=9*1024*1024+7;
+    |               +++++
+
+error[E0599]: no function or associated item named `decode` found for struct `PayloadRef` in the current scope
+   --> crates/zeppelin-embed/tests/graph_directories.rs:468:28
+    |
+468 |     assert_eq!(PayloadRef::decode(&encoded).unwrap(),payload);
+    |                            ^^^^^^ function or associated item not found in `PayloadRef`
+    |
+note: if you're trying to build a new `PayloadRef`, consider using `PayloadRef::new` which returns `Result<PayloadRef, TreeError>`
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/payload.rs:26:5
+    |
+ 26 |     pub fn new(role: BlockKind, length: u64, reference: PhysicalRef) -> Result<Self, TreeError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0282, E0432, E0599, E0689.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 4 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/private/tmp/ze43-pg8-independent/repro/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.43s
+────────────
+ Nextest run ID 28c59547-af8d-4088-83ca-9dfa2fa98bd5 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   1.040s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_directory_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_native_directory_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_native_directory_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 1.02s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_native_directory_contracts' (34788093) panicked at tests/adversarial_tests.rs:18847:9:
+    actual runner omitted property-graph.directories.native-history
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.043s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   1.040s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_directory_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_native_directory_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_native_directory_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 1.02s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_native_directory_contracts' (34788093) panicked at tests/adversarial_tests.rs:18847:9:
+    actual runner omitted property-graph.directories.native-history
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

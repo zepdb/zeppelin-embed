@@ -1,0 +1,13 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.71s
+────────────
+ Nextest run ID 9b7c47e4-c035-4803-8ba0-a9f95c9d0119 with nextest profile: default
+    Starting 2 tests across 1 binary (467 tests skipped)
+        PASS [   3.675s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_directory_contracts
+        PASS [   5.752s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+────────────
+     Summary [   5.753s] 2 tests run: 2 passed, 467 skipped

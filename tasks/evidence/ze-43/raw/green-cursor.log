@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.42s
+────────────
+ Nextest run ID c803e998-39c3-4f94-8fa5-0adb305e4faf with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        PASS [   2.730s] (1/1) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+────────────
+     Summary [   2.731s] 1 test run: 1 passed, 3 skipped

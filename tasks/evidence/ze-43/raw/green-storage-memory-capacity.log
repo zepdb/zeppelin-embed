@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
+────────────
+ Nextest run ID 1a8271bd-de84-4c92-a541-5b35043a1736 with nextest profile: default
+    Starting 1 test across 1 binary (19 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 19 skipped

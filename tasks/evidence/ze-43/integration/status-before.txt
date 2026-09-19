@@ -1,0 +1,7 @@
+ M .gitignore
+ M AGENTS.md
+ M README.md
+?? .agents/
+?? CONTEXT.md
+?? plan.md
+?? skills-lock.json

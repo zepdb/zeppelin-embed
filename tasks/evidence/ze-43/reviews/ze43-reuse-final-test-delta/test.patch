@@ -1,0 +1,33 @@
+--- prior/crates/zeppelin-embed/tests/graph_storage_failures.rs
++++ final/crates/zeppelin-embed/tests/graph_storage_failures.rs
+@@ -183,6 +183,30 @@
+             pack.seal(&mut r).is_err(),
+             "failed mutation cannot be finalized on retry"
+         );
++    }
++    for limit in [payload.len() as u64 + 1, append_work - 1] {
++        let mut pack = PrivateArtifact::new(identity, 256 * 1024, 2, &memory, &mut r).unwrap();
++        let first = pack
++            .append(BlockKind::StoredText, b"previously admitted", &mut r)
++            .unwrap();
++        assert_eq!(
++            pack.framed_block(first, &mut r).unwrap().payload(),
++            b"previously admitted"
++        );
++        let mut limited = TreeResources::for_prepare(&memory, limit).unwrap();
++        assert!(matches!(
++            pack.append(BlockKind::StoredText, &payload, &mut limited),
++            Err(TreeError::Work)
++        ));
++        let mut fresh = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++        assert!(
++            matches!(
++                pack.framed_block(first, &mut fresh),
++                Err(TreeError::Invalid(_))
++            ),
++            "later failed append revokes prior admitted entries with fresh control"
++        );
++        assert!(pack.sealed_bytes().is_none());
+     }
+     for limit in [0, 24, 120, seal_work / 2, seal_work - 1] {
+         let mut pack = PrivateArtifact::new(identity, 256 * 1024, 2, &memory, &mut r).unwrap();

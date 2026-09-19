@@ -1,0 +1,20 @@
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:272:9
+    |
+272 |         self.reservation.bytes() as usize
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `self.reservation.bytes()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+    = note: `-D clippy::unnecessary-cast` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`
+
+error: casting to the same type is unnecessary (`usize` -> `usize`)
+    --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:1200:9
+     |
+1200 |         self.reservation.bytes() as usize
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `self.reservation.bytes()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+
+error: could not compile `zeppelin-embed` (lib) due to 2 previous errors

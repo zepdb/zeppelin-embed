@@ -1,0 +1,133 @@
+diff --git a/tmp/ze43-directory-participant-review/crates/zeppelin-embed/tests/graph_directories.rs b/tmp/ze43-directory-independent/repro/crates/zeppelin-embed/tests/graph_directories.rs
+index e36d95e..c0944dc 100644
+--- a/tmp/ze43-directory-participant-review/crates/zeppelin-embed/tests/graph_directories.rs
++++ b/tmp/ze43-directory-independent/repro/crates/zeppelin-embed/tests/graph_directories.rs
+@@ -2509,6 +2509,51 @@ fn keyed_fence_retains_complete_history_and_checks_containing_leaf_generation()
+         verify_fence_entry(&objects, newer_root, entry, &Catalog, None, &mut r).is_err(),
+         "new root does not relax old leaf generation"
+     );
++    // Independent review: COW of a neighboring key cannot legitimize an
++    // already-invalid future link retained from the old containing leaf.
++    let other_probe = FenceKey::new(
++        EntityKind::Node,
++        NamespaceId::new((1u64 << 61) + 3).unwrap(),
++        "unrelated",
++    ).unwrap();
++    let other_key = ApplicationKey::new(EntityKind::Node, "app\0", "unrelated").unwrap();
++    let other_fields = OperationFields {
++        key: Some(other_key),
++        incarnation: EntityId::Node(NodeId::new(id.get() + 1).unwrap()),
++        original_generation: GraphGeneration::new(4),
++        ..fields
++    };
++    let mut other_bytes = Vec::new();
++    OperationProvenance::from_fields(Some(1), other_fields).unwrap()
++        .write_to(&mut other_bytes, &mut || Ok(())).unwrap();
++    let other_provenance = prepare_payload(
++        &mut objects, store, GraphGeneration::new(4),
++        BlockKind::OperationProvenance, &other_bytes, &mut r,
++    ).unwrap();
++    let other_value = prepare_fence(
++        &objects,
++        FenceInput { store, generation: GraphGeneration::new(4),
++            key: other_probe, provenance: other_provenance, canonical: Some(canonical) },
++        &Catalog, None, &mut r,
++    ).unwrap();
++    let rewritten = insert_fence(
++        &mut objects,
++        old_leaf,
++        other_probe,
++        &other_value,
++        GraphGeneration::new(4),
++        &mut scratch,
++        &mut r,
++    ).unwrap();
++    let added = lookup_fence_entry(&objects, rewritten, other_probe, &mut r)
++        .unwrap().unwrap();
++    assert!(verify_fence_entry(&objects, rewritten, added, &Catalog, None, &mut r).is_ok());
++    let retained = lookup_fence_entry(&objects, rewritten, probe, &mut r)
++        .unwrap().unwrap();
++    assert!(
++        verify_fence_entry(&objects, rewritten, retained, &Catalog, None, &mut r).is_err(),
++        "COW must not legitimize a future reference retained from an old leaf"
++    );
+     let deleted = OperationFields {
+         operation: GraphOperation::StructuredDelete,
+         requested_revision: GraphRevision::new(5).unwrap(),
+@@ -2716,6 +2761,29 @@ fn inventory_directory_preserves_exact_descriptors_without_granting_liveness() {
+         objects.writes, writes,
+         "state updates cannot rewrite immutable descriptors"
+     );
++    // Independent review: a future descriptor on an old leaf stays invalid
++    // when a different immutable descriptor causes COW of that leaf.
++    let mut future_value = original.clone();
++    future_value[32..40].copy_from_slice(&10u64.to_le_bytes());
++    let invalid_root = insert(
++        &mut objects, first, &key, &future_value, generation, &mut scratch, &mut r,
++    ).unwrap();
++    let invalid_entry = lookup_entry(&objects, invalid_root, &key, &mut r).unwrap().unwrap();
++    assert!(verify_inventory_entry(invalid_root, invalid_entry, &mut r).is_err());
++    let neighbor = InventoryChange {
++        object: ArtifactDescriptor {
++            artifact: ArtifactId::new(descriptor.artifact.get() + 1).unwrap(),
++            ..descriptor
++        },
++        ..changed
++    };
++    let rewritten = apply_inventory(
++        &mut objects, invalid_root, &[neighbor], GraphGeneration::new(11),
++        &mut scratch, &mut r,
++    ).unwrap();
++    let retained = lookup_entry(&objects, rewritten, &key, &mut r).unwrap().unwrap();
++    assert!(verify_inventory_entry(rewritten, retained, &mut r).is_err(),
++        "inventory COW must not legitimize a future descriptor retained from an old leaf");
+     for offset in [0, 16, 32, 51, 52, 54, 64, 65, 71] {
+         let mut corrupt = original.clone();
+         corrupt[offset] ^= 0x80;
+@@ -2837,3 +2905,46 @@ fn sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_er
+     );
+     assert_eq!(memory.reserved_bytes(), before);
+ }
++
++#[test]
++fn cow_does_not_legitimize_future_unselected_branch_child() {
++    use zeppelin_embed::property_graph::storage::tree::{
++        Cell, Key, PAGE_BYTES, PageHeader, encode_page,
++    };
++    let mut objects = Objects::new();
++    let (_dir, _store, shared) = memory_fixture();
++    let control = QueryControl::Cancel(CancelToken::new());
++    let mut r = TreeResources::new(&control, &shared, 10_000_000).unwrap();
++    let mut scratch = TreeScratch::new(&shared, 1024 * 1024).unwrap();
++    let mut bytes = vec![0; PAGE_BYTES];
++    let mut leaves = Vec::new();
++    for (id, gen_no) in [(1u128, 1u64), (9, 3)] {
++        let generation = GraphGeneration::new(gen_no);
++        encode_page(
++            PageHeader { kind: TreeKind::Nodes, level: 0, generation },
++            &[Cell::Leaf { key: Key::Inline(&id.to_le_bytes()), value: b"valid" }],
++            &mut bytes,
++        ).unwrap();
++        leaves.push(objects.append(BlockKind::TreePage, generation, &bytes, &mut r).unwrap());
++    }
++    let generation = GraphGeneration::new(2);
++    encode_page(
++        PageHeader { kind: TreeKind::Nodes, level: 1, generation },
++        &[
++            Cell::Branch { upper: Some(Key::Inline(&8u128.to_le_bytes())), child: leaves[0] },
++            Cell::Branch { upper: None, child: leaves[1] },
++        ], &mut bytes,
++    ).unwrap();
++    let reference = objects.append(BlockKind::TreePage, generation, &bytes, &mut r).unwrap();
++    let root = DirectoryRoot::from_reference(
++        objects.store, TreeKind::Nodes, GraphGeneration::new(4), Some(reference),
++    ).unwrap();
++    let mut output = [0; 16];
++    assert!(lookup(&objects, root, &9u128.to_le_bytes(), &mut output, &mut r).is_err());
++    let rewritten = insert(
++        &mut objects, root, &1u128.to_le_bytes(), b"updated", GraphGeneration::new(4),
++        &mut scratch, &mut r,
++    ).unwrap();
++    assert!(lookup(&objects, rewritten, &9u128.to_le_bytes(), &mut output, &mut r).is_err(),
++        "COW must not legitimize a future unselected branch child");
++}

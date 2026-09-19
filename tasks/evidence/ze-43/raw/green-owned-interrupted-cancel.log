@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.89s
+────────────
+ Nextest run ID 851b2a32-3a23-4a1f-a420-0e7f0c76c562 with nextest profile: default
+    Starting 1 test across 1 binary
+        PASS [   0.022s] (1/1) zeppelin-embed::graph_storage_failures physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+────────────
+     Summary [   0.023s] 1 test run: 1 passed, 0 skipped

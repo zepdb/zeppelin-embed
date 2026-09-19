@@ -1,0 +1,1 @@
+{"command": ["cargo", "nextest", "run", "-p", "zeppelin-embed", "--test", "graph_directories", "-E", "test(=derived_record_stream_spans_objects_without_relaxing_canonical_input_cap)", "--no-tests=fail"], "exit": 101}

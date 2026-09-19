@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.03s
+────────────
+ Nextest run ID 9ca6002a-7856-407d-99d4-9f3d3dc45ee8 with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+        PASS [   0.021s] (1/1) zeppelin-embed::graph_storage_prepare native_participant_accounts_all_allocations_and_releases_each_failed_attempt
+────────────
+     Summary [   0.021s] 1 test run: 1 passed, 2 skipped

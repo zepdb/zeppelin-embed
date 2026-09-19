@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+────────────
+ Nextest run ID 2a1c02e1-c50b-4e13-b651-f536383fe2c5 with nextest profile: default
+    Starting 1 test across 1 binary (5 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+  stdout ───
+
+    running 1 test
+    test overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes ... FAILED
+
+    failures:
+
+    failures:
+        overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes' (33962115) panicked at crates/zeppelin-embed/tests/graph_directories.rs:254:39:
+    the full admitted key cap must fit through overflow: Invalid("no bounded page split")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 5 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+  stdout ───
+
+    running 1 test
+    test overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes ... FAILED
+
+    failures:
+
+    failures:
+        overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes' (33962115) panicked at crates/zeppelin-embed/tests/graph_directories.rs:254:39:
+    the full admitted key cap must fit through overflow: Invalid("no bounded page split")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

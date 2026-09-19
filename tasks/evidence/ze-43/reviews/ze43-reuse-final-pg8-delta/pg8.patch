@@ -1,0 +1,20 @@
+--- prior/tests/adversarial/graph_directories.rs
++++ final/tests/adversarial/graph_directories.rs
+@@ -258,10 +258,16 @@
+                     }
+                     roots = candidate.roots();
+                     let reference = roots
+-                        .directory(TreeKind::Nodes)
++                        .directory(TreeKind::KeyFences)
+                         .unwrap()
+                         .reference()
+                         .unwrap();
++                    assert!(
++                        objects
++                            .abort_inventory()
++                            .any(|identity| identity.artifact == reference.artifact),
++                        "PG8 private reuse receipt requires current private backing"
++                    );
+                     let read_start = r.work();
+                     let capacity = memory.reserved_bytes();
+                     for _ in 0..8 {

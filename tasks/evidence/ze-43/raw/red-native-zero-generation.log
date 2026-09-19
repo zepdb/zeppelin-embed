@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+────────────
+ Nextest run ID 806447b9-a9f5-4433-b9a5-8bcdc8b40482 with nextest profile: default
+    Starting 1 test across 1 binary (21 tests skipped)
+        FAIL [   0.012s] (1/1) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34443544) panicked at crates/zeppelin-embed/tests/graph_directories.rs:1531:5:
+    installed content cannot originate at empty generation zero
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.013s] 1 test run: 0 passed, 1 failed, 21 skipped
+        FAIL [   0.012s] (1/1) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34443544) panicked at crates/zeppelin-embed/tests/graph_directories.rs:1531:5:
+    installed content cannot originate at empty generation zero
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

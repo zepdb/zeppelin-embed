@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.15s
+────────────
+ Nextest run ID 960f8889-bf28-4c4a-903b-b0006da923c7 with nextest profile: default
+    Starting 10 tests across 1 binary
+        PASS [   0.021s] ( 1/10) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+        PASS [   0.027s] ( 2/10) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+        PASS [   0.032s] ( 3/10) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+        PASS [   2.878s] ( 4/10) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+        PASS [   0.009s] ( 5/10) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+        PASS [   0.017s] ( 6/10) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+        PASS [   0.007s] ( 7/10) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+        PASS [   2.926s] ( 8/10) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+        PASS [   3.901s] ( 9/10) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+        PASS [   6.149s] (10/10) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+────────────
+     Summary [   6.176s] 10 tests run: 10 passed, 0 skipped

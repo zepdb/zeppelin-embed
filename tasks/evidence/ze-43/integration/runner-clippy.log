@@ -1,0 +1,7 @@
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Checking zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.06s

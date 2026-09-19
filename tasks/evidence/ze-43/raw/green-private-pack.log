@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.21s
+────────────
+ Nextest run ID 2d55edcc-e205-44ab-a24b-69e70cc6ff06 with nextest profile: default
+    Starting 3 tests across 1 binary (16 tests skipped)
+        PASS [   0.016s] (1/3) zeppelin-embed::graph_artifact private_packed_artifact_keeps_stable_refs_and_requires_final_sealing
+        PASS [   0.036s] (2/3) zeppelin-embed::graph_artifact controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+        PASS [   0.038s] (3/3) zeppelin-embed::graph_artifact controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+────────────
+     Summary [   0.038s] 3 tests run: 3 passed, 16 skipped

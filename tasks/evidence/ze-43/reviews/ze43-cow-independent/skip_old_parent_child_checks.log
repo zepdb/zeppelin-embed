@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-cow-independent/repro/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.99s
+────────────
+ Nextest run ID 400b1319-191e-4c54-90a4-5c50d07d71d6 with nextest profile: default
+    Starting 1 test across 1 binary (27 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+  stdout ───
+
+    running 1 test
+    test cow_does_not_legitimize_future_unselected_branch_child ... FAILED
+
+    failures:
+
+    failures:
+        cow_does_not_legitimize_future_unselected_branch_child
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'cow_does_not_legitimize_future_unselected_branch_child' (34756663) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3082:5:
+    COW must reject a future unselected child before copying its parent
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.013s] 1 test run: 0 passed, 1 failed, 27 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+  stdout ───
+
+    running 1 test
+    test cow_does_not_legitimize_future_unselected_branch_child ... FAILED
+
+    failures:
+
+    failures:
+        cow_does_not_legitimize_future_unselected_branch_child
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'cow_does_not_legitimize_future_unselected_branch_child' (34756663) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3082:5:
+    COW must reject a future unselected child before copying its parent
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.45s
+────────────
+ Nextest run ID 351610ff-eac3-4ddd-9f88-821b28faab22 with nextest profile: default
+    Starting 1 test across 1 binary (8 tests skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+────────────
+     Summary [   0.009s] 1 test run: 1 passed, 8 skipped

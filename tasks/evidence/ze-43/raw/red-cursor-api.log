@@ -1,0 +1,13 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::tree::directory::DirectoryCursor`
+  --> crates/zeppelin-embed/tests/graph_directories.rs:11:29
+   |
+11 |     BlockSource, BlockSink, DirectoryCursor, DirectoryRoot, TreeError, TreeResources, TreeScratch, insert, lookup, remove,
+   |                             ^^^^^^^^^^^^^^^
+   |                             |
+   |                             no `DirectoryCursor` in `property_graph::storage::tree::directory`
+   |                             help: a similar name exists in the module: `DirectoryRoot`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

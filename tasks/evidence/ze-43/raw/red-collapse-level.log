@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+────────────
+ Nextest run ID dc8b034f-88c0-41aa-b214-abde6ae911fb with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+  stdout ───
+
+    running 1 test
+    test root_collapse_rejects_wrong_level_in_the_surviving_sibling ... FAILED
+
+    failures:
+
+    failures:
+        root_collapse_rejects_wrong_level_in_the_surviving_sibling
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'root_collapse_rejects_wrong_level_in_the_surviving_sibling' (34012698) panicked at crates/zeppelin-embed/tests/graph_directories.rs:440:5:
+    collapse silently repaired malformed topology: Ok(DirectoryRoot { store: StoreInstanceId(1267650600228229401496703205376), kind: Nodes, generation: GraphGeneration(2), reference: Some(PhysicalRef { artifact: ArtifactId(2), offset: 96, length: 16408, kind: TreePage, version: 1 }) })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+  stdout ───
+
+    running 1 test
+    test root_collapse_rejects_wrong_level_in_the_surviving_sibling ... FAILED
+
+    failures:
+
+    failures:
+        root_collapse_rejects_wrong_level_in_the_surviving_sibling
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'root_collapse_rejects_wrong_level_in_the_surviving_sibling' (34012698) panicked at crates/zeppelin-embed/tests/graph_directories.rs:440:5:
+    collapse silently repaired malformed topology: Ok(DirectoryRoot { store: StoreInstanceId(1267650600228229401496703205376), kind: Nodes, generation: GraphGeneration(2), reference: Some(PhysicalRef { artifact: ArtifactId(2), offset: 96, length: 16408, kind: TreePage, version: 1 }) })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

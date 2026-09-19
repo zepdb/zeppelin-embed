@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.95s
+────────────
+ Nextest run ID 9d63783d-dee1-48fb-8fc7-9d8c7226bf12 with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        PASS [   0.037s] (1/1) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+────────────
+     Summary [   0.037s] 1 test run: 1 passed, 4 skipped

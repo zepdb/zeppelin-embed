@@ -1,0 +1,54 @@
+    Checking once_cell v1.21.4
+    Checking zerocopy v0.8.52
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Checking serde_core v1.0.229
+    Checking zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/tests/adversarial-oracle)
+    Checking tempfile v3.25.0
+    Checking rusty-fork v0.3.1
+    Checking serde_json v1.0.151
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking proptest v1.10.0
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/tests)
+error[E0599]: no method named `canonical_bytes` found for struct `zeppelin_embed::property_graph::storage::records::RecordView<'a, S>` in the current scope
+  --> tests/adversarial/graph_directories/observe.rs:40:68
+   |
+40 |     Ok(model::Record { image: model::Image { canonical: bytes(view.canonical_bytes(), r)?, shape }, provenance: provenance(view.provenanc...
+   |                                                                    ^^^^^^^^^^^^^^^ private field, not a method
+   |
+help: there is a method `canonical` with a similar name
+   |
+40 -     Ok(model::Record { image: model::Image { canonical: bytes(view.canonical_bytes(), r)?, shape }, provenance: provenance(view.provenance(), r)? })
+40 +     Ok(model::Record { image: model::Image { canonical: bytes(view.canonical(), r)?, shape }, provenance: provenance(view.provenance(), r)? })
+   |
+
+error[E0502]: cannot borrow `properties` as immutable because it is also borrowed as mutable
+  --> tests/adversarial/graph_directories.rs:84:260
+   |
+79 | ...").unwrap(), &mut properties).unwrap()
+   |                 --------------- mutable borrow occurs here
+...
+84 | ...::new(fixture::NODE_HIGH + 2).unwrap()), relationship_type: GraphName::new("R").unwrap(), properties: &properties })
+   |                                                                                                          ^^^^^^^^^^^
+   |                                                                                                          |
+   |                                                                                                          immutable borrow occurs here
+   |                                                                                                          mutable borrow later used here
+
+error[E0502]: cannot borrow `base` as mutable because it is also borrowed as immutable
+   --> tests/adversarial/graph_directories.rs:127:13
+    |
+ 87 |             let batch = stage_structured(&base, &[write], &writer, &mut |_| Ok(())).map_err(|error| error.to_string())?;
+    |                                          ----- immutable borrow occurs here
+...
+127 |             base.accept(&batch, request, fingerprint);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+139 |         }
+    |         - immutable borrow might be used here, when `batch` is dropped and runs the destructor for type `zeppelin_embed::property_graph::staging::StagedBatch<'_>`
+
+Some errors have detailed explanations: E0502, E0599.
+For more information about an error, try `rustc --explain E0502`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 3 previous errors

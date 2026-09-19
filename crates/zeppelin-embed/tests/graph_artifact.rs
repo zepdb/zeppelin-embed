@@ -1067,3 +1067,291 @@ fn allocation_preflight_rejects_before_entropy_or_filesystem_access() {
     assert_eq!(output, [0xa5; 158]);
     assert_eq!(fs.write_calls(), 0);
 }
+
+#[test]
+fn controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry() {
+    use artifact::ArtifactControlError;
+    let payload = vec![0x5a; 196_625];
+    let blocks = [
+        Block {
+            kind: BlockKind::CanonicalImage,
+            payload: &payload,
+        },
+        Block {
+            kind: BlockKind::NodeRecord,
+            payload: b"record",
+        },
+    ];
+    let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+    artifact::encode_into(ContainerKind::Object, identity(), &blocks, &mut bytes).unwrap();
+    let expected = Some((identity().store, identity().artifact));
+    let mut spans = Vec::new();
+    let admitted =
+        artifact::decode_with_control(ContainerKind::Object, expected, &bytes, &mut |n| {
+            spans.push(n);
+            Ok::<(), usize>(())
+        })
+        .unwrap();
+    assert_eq!(admitted.identity(), identity());
+    assert_eq!(
+        admitted
+            .resolve_framed_block(admitted.reference(0).unwrap())
+            .unwrap(),
+        payload
+    );
+    assert!(spans.iter().all(|n| *n <= 65_536));
+    assert_eq!(
+        spans.iter().sum::<usize>(),
+        bytes.len() - 8 + payload.len() + 6 + 96 + 104
+    );
+    assert!(spans.iter().filter(|n| **n == 24).count() >= 4);
+    assert_eq!(spans.last(), Some(&0));
+    for cutoff in 0..spans.len() {
+        let mut calls = 0;
+        let result =
+            artifact::decode_with_control(ContainerKind::Object, expected, &bytes, &mut |_| {
+                let current = calls;
+                calls += 1;
+                if current == cutoff {
+                    Err(cutoff)
+                } else {
+                    Ok(())
+                }
+            });
+        assert!(matches!(result, Err(ArtifactControlError::Control(value)) if value == cutoff));
+        assert_eq!(calls, cutoff + 1);
+    }
+    let empty_blocks = vec![
+        Block {
+            kind: BlockKind::StoredText,
+            payload: b""
+        };
+        1024
+    ];
+    let mut empty_bytes =
+        vec![0; artifact::encoded_len(ContainerKind::Object, &empty_blocks).unwrap()];
+    artifact::encode_into(
+        ContainerKind::Object,
+        identity(),
+        &empty_blocks,
+        &mut empty_bytes,
+    )
+    .unwrap();
+    let mut entries = 0;
+    artifact::decode_with_control(ContainerKind::Object, expected, &empty_bytes, &mut |n| {
+        entries += usize::from(n == 24);
+        Ok::<(), usize>(())
+    })
+    .unwrap();
+    assert_eq!(entries, 2048);
+}
+
+#[test]
+fn controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight() {
+    use artifact::ArtifactControlError;
+    let payload = vec![0x53; 196_625];
+    let blocks = [Block {
+        kind: BlockKind::CanonicalImage,
+        payload: &payload,
+    }];
+    let length = artifact::encoded_len(ContainerKind::Object, &blocks).unwrap();
+    let mut golden = vec![0; length];
+    artifact::encode_into(ContainerKind::Object, identity(), &blocks, &mut golden).unwrap();
+    let mut output = vec![0xa5; length + 1];
+    let mut spans = Vec::new();
+    assert_eq!(
+        artifact::encode_into_with_control(
+            ContainerKind::Object,
+            identity(),
+            &blocks,
+            &mut output,
+            &mut |n| {
+                spans.push(n);
+                Ok::<(), usize>(())
+            }
+        )
+        .unwrap(),
+        length
+    );
+    assert_eq!(&output[..length], golden);
+    assert_eq!(output[length], 0xa5);
+    assert_eq!(spans.last(), Some(&0));
+    assert!(spans.iter().all(|n| *n <= 65_536));
+    assert!(spans.iter().filter(|n| **n == 65_536).count() >= 9);
+    for cutoff in 0..spans.len() {
+        output.fill(0xa5);
+        let mut calls = 0;
+        let result = artifact::encode_into_with_control(
+            ContainerKind::Object,
+            identity(),
+            &blocks,
+            &mut output,
+            &mut |_| {
+                let current = calls;
+                calls += 1;
+                if current == cutoff {
+                    Err(cutoff)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(result, Err(ArtifactControlError::Control(value)) if value == cutoff));
+        assert_eq!(calls, cutoff + 1);
+        assert_eq!(output[length], 0xa5);
+    }
+    let mut short = vec![0xa5; length - 1];
+    assert!(matches!(
+        artifact::encode_into_with_control(
+            ContainerKind::Object,
+            identity(),
+            &blocks,
+            &mut short,
+            &mut |_| Ok::<(), usize>(())
+        ),
+        Err(ArtifactControlError::Format(_))
+    ));
+    assert!(short.iter().all(|byte| *byte == 0xa5));
+}
+
+#[test]
+#[cfg(feature = "allocation-audit")]
+fn controlled_artifact_codec_retains_no_unaccounted_heap() {
+    use zeppelin_embed::adversarial_test_support::audit_engine_path;
+    let payload = vec![0x29; 196_625];
+    let blocks = [Block {
+        kind: BlockKind::CanonicalImage,
+        payload: &payload,
+    }];
+    let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+    let expected = Some((identity().store, identity().artifact));
+    let (encoded, encode_audit) = audit_engine_path(|| {
+        artifact::encode_into_with_control(
+            ContainerKind::Object,
+            identity(),
+            &blocks,
+            &mut bytes,
+            &mut |_| Ok::<(), ()>(()),
+        )
+    });
+    assert_eq!(encoded.unwrap(), bytes.len());
+    assert_eq!(encode_audit.allocations, 0);
+    assert_eq!(encode_audit.unattributed_bytes, 0);
+    let (decoded, decode_audit) = audit_engine_path(|| {
+        artifact::decode_with_control(ContainerKind::Object, expected, &bytes, &mut |_| {
+            Ok::<(), ()>(())
+        })
+    });
+    let frame = decoded.unwrap();
+    assert_eq!(frame.identity(), identity());
+    assert_eq!(decode_audit.allocations, 0);
+    assert_eq!(decode_audit.unattributed_bytes, 0);
+}
+
+#[test]
+fn exact_directory_resolution_rejects_same_offset_substitutions() {
+    let blocks = vec![
+        Block {
+            kind: BlockKind::StoredText,
+            payload: b"0123456789"
+        };
+        1024
+    ];
+    let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+    artifact::encode_into(ContainerKind::Object, identity(), &blocks, &mut bytes).unwrap();
+    let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
+    for index in [0, 1, 511, 512, 1023] {
+        let reference = frame.reference(index).unwrap();
+        assert_eq!(
+            frame.resolve_framed_block(reference).unwrap(),
+            b"0123456789"
+        );
+        let mut substituted = reference;
+        substituted.kind = BlockKind::CanonicalImage;
+        assert!(
+            frame.resolve_framed_block(substituted).is_err(),
+            "same offset cannot replace kind"
+        );
+        substituted = reference;
+        substituted.length -= 1;
+        assert!(
+            frame.resolve_framed_block(substituted).is_err(),
+            "same offset cannot shorten extent"
+        );
+        substituted = reference;
+        substituted.offset += 1;
+        assert!(
+            frame.resolve_framed_block(substituted).is_err(),
+            "interior offset is not a block"
+        );
+    }
+}
+
+#[test]
+fn private_packed_artifact_keeps_stable_refs_and_requires_final_sealing() {
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use zeppelin_embed::property_graph::resources::GraphResources;
+    use zeppelin_embed::property_graph::staging::{WriteLimits, WriteMemory};
+    use zeppelin_embed::property_graph::storage::artifact::PrivateArtifact;
+    use zeppelin_embed::property_graph::storage::memory::StorageMemory;
+    use zeppelin_embed::property_graph::storage::tree::directory::TreeResources;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        dir.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let mut r = TreeResources::for_prepare(&memory, 10_000_000).unwrap();
+    let before = memory.reserved_bytes();
+    let mut private = PrivateArtifact::new(identity(), 131_072, 16, &memory, &mut r).unwrap();
+    assert!(private.sealed_bytes().is_none());
+    let a = vec![0x29; 32_768];
+    let b = vec![0x53; 16_384];
+    let first = private
+        .append(BlockKind::CanonicalImage, &a, &mut r)
+        .unwrap();
+    let second = private.append(BlockKind::NodeRecord, &b, &mut r).unwrap();
+    assert_eq!(first.artifact, second.artifact);
+    assert_eq!(second.offset, first.offset + u64::from(first.length));
+    assert_eq!(private.framed_block(first, &mut r).unwrap().payload(), a);
+    assert_eq!(private.framed_block(second, &mut r).unwrap().payload(), b);
+    assert!(
+        private.sealed_bytes().is_none(),
+        "private body is never a publishable file"
+    );
+    private.seal(&mut r).unwrap();
+    let sealed = private.sealed_bytes().unwrap();
+    let blocks = [
+        Block {
+            kind: BlockKind::CanonicalImage,
+            payload: &a,
+        },
+        Block {
+            kind: BlockKind::NodeRecord,
+            payload: &b,
+        },
+    ];
+    let mut legacy = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+    artifact::encode_into(ContainerKind::Object, identity(), &blocks, &mut legacy).unwrap();
+    assert_eq!(sealed, legacy);
+    let frame = artifact::decode(
+        ContainerKind::Object,
+        Some((identity().store, identity().artifact)),
+        sealed,
+    )
+    .unwrap();
+    assert_eq!(frame.reference(0).unwrap(), first);
+    assert_eq!(frame.reference(1).unwrap(), second);
+    assert!(
+        private
+            .append(BlockKind::StoredText, b"late", &mut r)
+            .is_err()
+    );
+    assert_eq!(private.sealed_bytes().unwrap(), legacy);
+    drop(private);
+    assert_eq!(memory.reserved_bytes(), before);
+}

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.77s
+────────────
+ Nextest run ID 31ab79d6-37e3-4ea1-9071-59613c4a6c47 with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+        PASS [   5.586s] (1/1) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+────────────
+     Summary [   5.586s] 1 test run: 1 passed, 2 skipped

@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::prepared`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1991:50
+     |
+1991 |     use zeppelin_embed::property_graph::storage::prepared::{
+     |                                                  ^^^^^^^^ could not find `prepared` in `storage`
+
+error[E0282]: type annotations needed
+    --> crates/zeppelin-embed/tests/graph_directories.rs:2083:20
+     |
+2083 |                 if object.identity().artifact == reference.artifact {
+     |                    ^^^^^^ cannot infer type
+
+Some errors have detailed explanations: E0282, E0432.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

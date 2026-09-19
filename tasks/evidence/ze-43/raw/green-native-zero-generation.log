@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+────────────
+ Nextest run ID 51182c59-3532-420b-b2f2-f89f317e21f1 with nextest profile: default
+    Starting 1 test across 1 binary (21 tests skipped)
+        PASS [   0.014s] (1/1) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+────────────
+     Summary [   0.014s] 1 test run: 1 passed, 21 skipped

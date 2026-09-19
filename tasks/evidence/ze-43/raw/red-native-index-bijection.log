@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.85s
+────────────
+ Nextest run ID 63a5afb7-7de5-4d3e-b2d5-241c21ebbf11 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34225879) panicked at crates/zeppelin-embed/tests/graph_directories.rs:1551:9:
+    repaired outer checksum cannot conceal record mismatch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 18 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34225879) panicked at crates/zeppelin-embed/tests/graph_directories.rs:1551:9:
+    repaired outer checksum cannot conceal record mismatch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

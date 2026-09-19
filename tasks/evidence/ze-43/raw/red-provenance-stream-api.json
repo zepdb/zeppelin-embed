@@ -1,0 +1,18 @@
+{
+  "name": "red-provenance-stream-api",
+  "argv": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(provenance_storage_walk)"
+  ],
+  "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43",
+  "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+  "exit_code": 101,
+  "seconds": 7.788272142410278
+}

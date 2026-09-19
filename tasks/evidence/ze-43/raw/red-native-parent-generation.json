@@ -1,0 +1,20 @@
+{
+  "name": "red-native-parent-generation",
+  "argv": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(relationship_record_correlates)",
+    "--success-output",
+    "final"
+  ],
+  "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43",
+  "target": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/target",
+  "exit_code": 100,
+  "seconds": 2.2543349266052246
+}

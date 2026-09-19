@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/private/tmp/ze43-pg8-independent/repro/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+────────────
+ Nextest run ID 0cdcc017-1c74-4d7b-94d1-f834f2616de9 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   0.019s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34785397) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "PG8 actual generation1: Difference { path: \"nodes[0].provenance.key.namespace[0]\", expected: \"112\", observed: \"113\" }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.020s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   0.019s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34785397) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "PG8 actual generation1: Difference { path: \"nodes[0].provenance.key.namespace[0]\", expected: \"112\", observed: \"113\" }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

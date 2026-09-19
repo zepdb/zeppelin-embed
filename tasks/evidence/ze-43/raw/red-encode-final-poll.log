@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
+────────────
+ Nextest run ID 96d5a7a9-f7ed-40c2-a8ab-276d24da4103 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        FAIL [   0.027s] (1/1) zeppelin-embed::graph_artifact controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+  stdout ───
+
+    running 1 test
+    test controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight ... FAILED
+
+    failures:
+
+    failures:
+        controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight' (34325872) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1178:5:
+    assertion `left == right` failed
+      left: Some(8)
+     right: Some(0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.028s] 1 test run: 0 passed, 1 failed, 18 skipped
+        FAIL [   0.027s] (1/1) zeppelin-embed::graph_artifact controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+  stdout ───
+
+    running 1 test
+    test controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight ... FAILED
+
+    failures:
+
+    failures:
+        controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight' (34325872) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1178:5:
+    assertion `left == right` failed
+      left: Some(8)
+     right: Some(0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

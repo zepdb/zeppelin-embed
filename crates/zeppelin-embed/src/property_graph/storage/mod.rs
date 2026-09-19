@@ -7,3 +7,24 @@ pub mod tree;
 
 /// Bounded immutable adjacency codecs and range merging.
 pub mod adjacency;
+
+/// Bounded, role-checked logical streams over immutable physical chunks.
+pub mod payload;
+
+/// Retained logical windows and bounded field decoding over payload extents.
+pub mod stream;
+
+/// Lossless logical records and their required semantic validation hooks.
+pub mod records;
+
+/// Combined private storage capacity inside the authentic writer/store owner.
+pub mod memory;
+
+/// Packed private artifacts and explicit owned abort inventories.
+pub mod prepared;
+
+/// Persisted immutable allocation descriptors and reclamation state.
+pub mod inventory;
+
+/// Native directory changes from one authentic normalized writer batch.
+pub mod participant;

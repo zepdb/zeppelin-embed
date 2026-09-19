@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0599]: no function or associated item named `from_reference` found for struct `DirectoryRoot` in the current scope
+   --> crates/zeppelin-embed/tests/graph_directories.rs:284:31
+    |
+284 |     let root = DirectoryRoot::from_reference(objects.store, TreeKind::KeyFences,
+    |                               ^^^^^^^^^^^^^^ function or associated item not found in `DirectoryRoot`
+    |
+note: if you're trying to build a new `DirectoryRoot`, consider using `DirectoryRoot::empty` which returns `DirectoryRoot`
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:93:5
+    |
+ 93 |     pub const fn empty(store: StoreInstanceId, kind: TreeKind, generation: GraphGeneration) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a method `reference` with a similar name, but with different arguments
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:97:5
+    |
+ 97 |     pub const fn reference(self) -> Option<PhysicalRef> { self.reference }
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

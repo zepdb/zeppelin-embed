@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+────────────
+ Nextest run ID 372f7171-8c9a-4af6-9b20-d280bf129e42 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_artifact controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+  stdout ───
+
+    running 1 test
+    test controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry ... FAILED
+
+    failures:
+
+    failures:
+        controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry' (34325227) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1108:5:
+    assertion `left == right` failed
+      left: Some(6)
+     right: Some(0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 18 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_artifact controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+  stdout ───
+
+    running 1 test
+    test controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry ... FAILED
+
+    failures:
+
+    failures:
+        controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry' (34325227) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1108:5:
+    assertion `left == right` failed
+      left: Some(6)
+     right: Some(0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

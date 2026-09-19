@@ -1,0 +1,160 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-cow-independent/repro/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.19s
+────────────
+ Nextest run ID ef3bd05d-8e27-4996-9885-c5457fe0863b with nextest profile: default
+    Starting 4 tests across 1 binary (24 tests skipped)
+        FAIL [   0.013s] (1/4) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+  stdout ───
+
+    running 1 test
+    test relationship_record_correlates_full_topology_and_rejects_future_payloads ... FAILED
+
+    failures:
+
+    failures:
+        relationship_record_correlates_full_topology_and_rejects_future_payloads
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'relationship_record_correlates_full_topology_and_rejects_future_payloads' (34755946) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3151:5:
+    native COW must validate the complete original value before replacement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.013s] (2/4) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34755952) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3151:5:
+    native COW must validate the complete original value before replacement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.018s] (3/4) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... FAILED
+
+    failures:
+
+    failures:
+        inventory_directory_preserves_exact_descriptors_without_granting_liveness
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'inventory_directory_preserves_exact_descriptors_without_granting_liveness' (34755948) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2865:5:
+    inventory COW must reject an old leaf's future descriptor
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.032s] (4/4) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'keyed_fence_retains_complete_history_and_checks_containing_leaf_generation' (34755947) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2593:5:
+    COW must reject an old leaf's future reference before copying it
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.033s] 4 tests run: 0 passed, 4 failed, 24 skipped
+        FAIL [   0.013s] (1/4) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+  stdout ───
+
+    running 1 test
+    test relationship_record_correlates_full_topology_and_rejects_future_payloads ... FAILED
+
+    failures:
+
+    failures:
+        relationship_record_correlates_full_topology_and_rejects_future_payloads
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'relationship_record_correlates_full_topology_and_rejects_future_payloads' (34755946) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3151:5:
+    native COW must validate the complete original value before replacement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.013s] (2/4) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... FAILED
+
+    failures:
+
+    failures:
+        native_record_requires_complete_canonical_index_labels_and_provenance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_record_requires_complete_canonical_index_labels_and_provenance' (34755952) panicked at crates/zeppelin-embed/tests/graph_directories.rs:3151:5:
+    native COW must validate the complete original value before replacement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.018s] (3/4) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... FAILED
+
+    failures:
+
+    failures:
+        inventory_directory_preserves_exact_descriptors_without_granting_liveness
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'inventory_directory_preserves_exact_descriptors_without_granting_liveness' (34755948) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2865:5:
+    inventory COW must reject an old leaf's future descriptor
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.032s] (4/4) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'keyed_fence_retains_complete_history_and_checks_containing_leaf_generation' (34755947) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2593:5:
+    COW must reject an old leaf's future reference before copying it
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

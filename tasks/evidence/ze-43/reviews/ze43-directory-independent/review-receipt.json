@@ -1,0 +1,140 @@
+{
+  "base": "81e6e955baa987e0c3dae171b7863174d8686a3e",
+  "snapshot": "/tmp/ze43-directory-participant-review",
+  "snapshot_files": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/stream.rs",
+      "sha256": "977371cff1025818bda0fe9238e61c607ba894b0316520d2f96021380018596e"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/prepared.rs",
+      "sha256": "5037de13120da1a2074628e2d850c927f9f9b0f19ad5168c13f3f659af26406b"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records.rs",
+      "sha256": "07fff60f1b4e8827eedb3d2ade81e194962aa9deecd59cc44dbb6a6c51ac8bc6"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+      "sha256": "9a531c5b032e244bd67e5f759bccad42c77a84a3d4fccb4db3bf48ecd83d8040"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/memory.rs",
+      "sha256": "3fc72c2822d4b66053c6745e3bcdda6439de764e75356259c9816132de134fb1"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree.rs",
+      "sha256": "ab2eeaf9225b3c30c59752902c139364fd25a2974640d8fa1d553135d90ac7f2"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+      "sha256": "2aaaf9118703f08fc04411e6e275a2ab203ea541eb4d1b4dc682baed445628f4"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/inventory.rs",
+      "sha256": "42a3148e7bfc26bb753a1dfe6194003a810def98810c4c254509f03ef58f7360"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+      "sha256": "d04d1e956223fd1af5f173618171fba991e2281cb6b74f085639d48478dad35c"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/payload.rs",
+      "sha256": "924923e14263a55e0fbbd505b73c31750834ba582bb3cb5e1dafc48884a7a31d"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/participant.rs",
+      "sha256": "36a7a8312d1bba2dbe847473da1ce200b919c1c172a0818994741700fc5b91d0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+      "sha256": "20cb3db67c1efb1b97c89c18a08ff71d9e296e4af9ec30f02e44d8fc67e64bd3"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/keys.rs",
+      "sha256": "b8e08f0ef8c09c428bd2a4cc1968b958ef6517683dc65270b1048858bd8a2dd2"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/roots.rs",
+      "sha256": "a01f36efeaa800c00dded0673285ef09f101a14a9f235c87b221143087590fa6"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/fence_input.rs",
+      "sha256": "45d4b897b9b460aedcedb8c79352d5a60d3a528b82fbc7504c706feb28143a20"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/native.rs",
+      "sha256": "4d643fa6aed4b4226de712daa9d4f03cbf532bf5c4d683cd423ee3e2d9e7575e"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/fence.rs",
+      "sha256": "791b071dd4a8b6ba938e877bdbf40e58c71fa401bf3e14fcbf73699a8b7ff844"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/tombstone.rs",
+      "sha256": "94948ad5f31677b1da5f7115b6f158bd034ee2321e813f24c919d73e63aa7edc"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs",
+      "sha256": "36dc126a59b9d8f7e03111867d59e2c4510b10e20011ac74e5730ca829a984cd"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/provenance.rs",
+      "sha256": "d30b08865626c498f41c72468ab5e51a22d9dce429e0e57053ac79d4f316f5f0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/payload/writer.rs",
+      "sha256": "b181d1a2c82c3d890f3f6895416247e5b890366c408a346844b0270bd15c358c"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact/private.rs",
+      "sha256": "e256478c51f8aa5ec6e5873cd3aab0acf7e2aa05c2e0b499d99226d6f156b0df"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging.rs",
+      "sha256": "dab6d5047d52d868d6e546506e970b26975b0afcacc8a53d4aaecd59b23d6c3f"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+      "sha256": "2a16417a4d006cc441c85f776971fb3fd18584572b44381a986bc3ae1216800f"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_storage_prepare.rs",
+      "sha256": "d26fb3fcdcee650aec6f0a999cc206907fbf3037bbe8547510939349434b5245"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_directories.rs",
+      "sha256": "f08ea065ca85e944b89ca1349fade98744c7cffd8f51def52db65f4317c11ae9"
+    }
+  ],
+  "scratch_test_sha256": "049c7bc0cc47fb5afc792b75c22af4400111fa2179448ccd2c56f3abfff7d0f7",
+  "host_arch": "arm64",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5388g",
+  "results": [
+    {
+      "test": "keyed_fence_retains_complete_history_and_checks_containing_leaf_generation",
+      "exit_code": 100,
+      "log": "/tmp/ze43-directory-independent/cow-future-reference-valid-neighbor.log",
+      "sha256": "ddf7f93dc2578083b821e7d845ffa43fc123dc05b72a253c91b40560ff8a620b",
+      "command": "CARGO_TARGET_DIR=/tmp/ze43-directory-independent/target cargo nextest run -p zeppelin-embed --test graph_directories -E 'test(=keyed_fence_retains_complete_history_and_checks_containing_leaf_generation)' --test-threads 1",
+      "working_directory": "/tmp/ze43-directory-independent/repro"
+    },
+    {
+      "test": "inventory_directory_preserves_exact_descriptors_without_granting_liveness",
+      "exit_code": 100,
+      "log": "/tmp/ze43-directory-independent/cow-inventory-future-reference.log",
+      "sha256": "77b6d68356719c7c5b44b443a36f5aadfb1ac95ea1c5b307392464124ad17fa5",
+      "command": "CARGO_TARGET_DIR=/tmp/ze43-directory-independent/target cargo nextest run -p zeppelin-embed --test graph_directories -E 'test(=inventory_directory_preserves_exact_descriptors_without_granting_liveness)' --test-threads 1",
+      "working_directory": "/tmp/ze43-directory-independent/repro"
+    },
+    {
+      "test": "cow_does_not_legitimize_future_unselected_branch_child",
+      "exit_code": 100,
+      "log": "/tmp/ze43-directory-independent/cow-branch-future-reference.log",
+      "sha256": "911289ec0da9778e6439af158f69e497053d7d64be3be2baf2d35f0d627a3570",
+      "command": "CARGO_TARGET_DIR=/tmp/ze43-directory-independent/target cargo nextest run -p zeppelin-embed --test graph_directories -E 'test(=cow_does_not_legitimize_future_unselected_branch_child)' --test-threads 1",
+      "working_directory": "/tmp/ze43-directory-independent/repro"
+    }
+  ],
+  "scope": "Only /tmp scratch sources were modified; production and immutable snapshot untouched. Test geometry constructs deliberately checksum-valid invalid links. No full suite or public GraphStore/lease/WAL qualification."
+}

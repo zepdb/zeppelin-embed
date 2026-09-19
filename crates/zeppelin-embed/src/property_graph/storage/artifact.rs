@@ -5,7 +5,49 @@ use crate::format::{
     frame::{self, FormatCheck, FormatError},
 };
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
-use xxhash_rust::xxh3::xxh3_64;
+use std::convert::Infallible;
+mod private;
+pub use private::{OwnedArtifact, PrivateArtifact};
+use xxhash_rust::xxh3::Xxh3;
+
+/// Framing failure or the caller's typed cancellation/work rejection.
+#[derive(Debug)]
+pub enum ArtifactControlError<E> {
+    /// Malformed container bytes or encoding input.
+    Format(FormatError),
+    /// The mandatory caller callback rejected further bounded work.
+    Control(E),
+}
+impl<E> From<FormatError> for ArtifactControlError<E> {
+    fn from(error: FormatError) -> Self {
+        Self::Format(error)
+    }
+}
+
+fn uncontrolled<T>(result: Result<T, ArtifactControlError<Infallible>>) -> Result<T, FormatError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(ArtifactControlError::Format(error)) => Err(error),
+        Err(ArtifactControlError::Control(never)) => match never {},
+    }
+}
+fn poll<E>(
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+    bytes: usize,
+) -> Result<(), ArtifactControlError<E>> {
+    control(bytes).map_err(ArtifactControlError::Control)
+}
+fn controlled_checksum<E>(
+    bytes: &[u8],
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<u64, ArtifactControlError<E>> {
+    let mut hash = Xxh3::new();
+    for chunk in bytes.chunks(65_536) {
+        poll(control, chunk.len())?;
+        hash.update(chunk);
+    }
+    Ok(hash.digest())
+}
 
 /// Fixed file header plus graph identity/geometry prefix.
 pub const HEADER_BYTES: usize = 96;
@@ -68,6 +110,10 @@ pub enum BlockKind {
     CheckpointPayload = 9,
     /// Required role/version-tagged graph commit participant.
     CommitParticipant = 10,
+    /// One raw fragment of a typed, nonrecursive logical extent stream.
+    PayloadChunk = 11,
+    /// Complete versioned logical installing-operation evidence.
+    OperationProvenance = 12,
     /// Bounded immutable adjacency base (ZE-124).
     AdjacencyBase = 13,
     /// Bounded immutable adjacency delta (ZE-124).
@@ -119,6 +165,8 @@ pub struct ArtifactFrame<'a> {
     bytes: &'a [u8],
     identity: ArtifactIdentity,
     kind: ContainerKind,
+    directory: usize,
+    count: usize,
 }
 impl ArtifactFrame<'_> {
     /// Returns the validated store/object identity.
@@ -131,18 +179,13 @@ impl ArtifactFrame<'_> {
     }
     /// Returns one directory reference.
     pub fn reference(&self, index: usize) -> Result<PhysicalRef, FormatError> {
-        let count = frame::read_u32("native graph artifact", self.bytes, 80)? as usize;
-        if index >= count {
+        if index >= self.count {
             return Err(invalid(
                 FormatCheck::BlockLength,
                 "directory index out of range",
             ));
         }
-        let body = usize_from(frame::read_u64("native graph artifact", self.bytes, 72)?)?;
-        let entry = add(
-            add(HEADER_BYTES, body)?,
-            index.checked_mul(24).ok_or_else(overflow)?,
-        )?;
+        let entry = add(self.directory, index.checked_mul(24).ok_or_else(overflow)?)?;
         Ok(PhysicalRef {
             artifact: self.identity.artifact,
             offset: frame::read_u64("native graph artifact", self.bytes, entry)?,
@@ -164,16 +207,24 @@ impl ArtifactFrame<'_> {
                 "reference names another artifact",
             ));
         }
-        let count = frame::read_u32("native graph artifact", self.bytes, 80)? as usize;
-        for index in 0..count {
-            if self.reference(index)? == reference {
-                let start = usize_from(reference.offset)?;
-                return self
-                    .bytes
-                    .get(add(start, 24)?..add(start, reference.length as usize)?)
-                    .ok_or_else(|| {
-                        invalid(FormatCheck::BlockLength, "reference outside artifact")
-                    });
+        let mut low = 0;
+        let mut high = self.count;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let candidate = self.reference(middle)?;
+            match candidate.offset.cmp(&reference.offset) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal if candidate == reference => {
+                    let start = usize_from(reference.offset)?;
+                    return self
+                        .bytes
+                        .get(add(start, 24)?..add(start, reference.length as usize)?)
+                        .ok_or_else(|| {
+                            invalid(FormatCheck::BlockLength, "reference outside artifact")
+                        });
+                }
+                std::cmp::Ordering::Equal => break,
             }
         }
         Err(invalid(
@@ -194,44 +245,60 @@ impl ContainerKind {
 
 /// Computes the complete caller-buffer reservation, including directory/trailer.
 pub fn encoded_len(kind: ContainerKind, blocks: &[Block<'_>]) -> Result<usize, FormatError> {
-    if kind == ContainerKind::RootEnvelope
-        && (blocks.len() != 1
-            || blocks
-                .first()
-                .is_none_or(|b| b.kind != BlockKind::CheckpointPayload || b.payload.is_empty()))
-    {
-        return Err(invalid(
+    uncontrolled(encoded_len_with_control(kind, blocks, &mut |_| Ok(())))
+}
+
+/// Preflights geometry while polling before each input block descriptor.
+pub fn encoded_len_with_control<E>(
+    kind: ContainerKind,
+    blocks: &[Block<'_>],
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<usize, ArtifactControlError<E>> {
+    poll(control, 0)?;
+    if kind == ContainerKind::RootEnvelope && blocks.len() != 1 {
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::BlockLength,
             "root envelope requires one nonempty checkpoint payload",
-        ));
+        )));
     }
     if blocks.len() > MAX_BODY_BYTES / 48 {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::BlockLength,
             "too many framed graph blocks",
-        ));
+        )));
     }
     let body_limit = MAX_BODY_BYTES - blocks.len() * 24;
     let mut body = 0_usize;
     for block in blocks {
+        poll(control, std::mem::size_of::<Block<'_>>())?;
+        if kind == ContainerKind::RootEnvelope
+            && (block.kind != BlockKind::CheckpointPayload || block.payload.is_empty())
+        {
+            return Err(ArtifactControlError::Format(invalid(
+                FormatCheck::BlockLength,
+                "root envelope requires one nonempty checkpoint payload",
+            )));
+        }
         if kind == ContainerKind::Object && block.kind == BlockKind::CheckpointPayload {
-            return Err(invalid(
+            return Err(ArtifactControlError::Format(invalid(
                 FormatCheck::Family,
                 "checkpoint payload requires root envelope",
-            ));
+            )));
         }
         body = add(body, add(24, block.payload.len())?)?;
         if body > body_limit {
-            return Err(invalid(
+            return Err(ArtifactControlError::Format(invalid(
                 FormatCheck::BlockLength,
                 "complete graph artifact exceeds 4 MiB",
-            ));
+            )));
         }
     }
-    add(
+    let length = add(
         add(HEADER_BYTES, body)?,
         add(blocks.len().checked_mul(24).ok_or_else(overflow)?, 8)?,
-    )
+    )?;
+    poll(control, 0)?;
+    Ok(length)
 }
 
 /// Writes an entire container into pre-reserved caller storage. Returns bytes used.
@@ -242,29 +309,47 @@ pub fn encode_into(
     blocks: &[Block<'_>],
     output: &mut [u8],
 ) -> Result<usize, FormatError> {
-    let length = encoded_len(kind, blocks)?;
+    uncontrolled(encode_into_with_control(
+        kind,
+        identity,
+        blocks,
+        output,
+        &mut |_| Ok(()),
+    ))
+}
+
+/// Encodes using bounded control callbacks before hashing, filling and copying.
+/// Invalid input/capacity preflight leaves output unchanged. A later callback
+/// failure can leave partially encoded private output; it does not roll it back.
+/// The caller must discard that output instead of publishing it.
+pub fn encode_into_with_control<E>(
+    kind: ContainerKind,
+    identity: ArtifactIdentity,
+    blocks: &[Block<'_>],
+    output: &mut [u8],
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<usize, ArtifactControlError<E>> {
+    let length = encoded_len_with_control(kind, blocks, control)?;
     if output.len() < length {
-        return Err(invalid(FormatCheck::Length, "output reservation too small"));
+        return Err(ArtifactControlError::Format(invalid(
+            FormatCheck::Length,
+            "output reservation too small",
+        )));
     }
     let directory_bytes = blocks.len().checked_mul(24).ok_or_else(overflow)?;
     let body = length - HEADER_BYTES - directory_bytes - 8;
     let target = output.get_mut(..length).ok_or_else(overflow)?;
-    target.fill(0);
-    put(target, 0, &frame::FILE_MAGIC)?;
-    put(target, 8, &kind.family().id().to_le_bytes())?;
-    put(target, 10, &1_u16.to_le_bytes())?;
-    put(target, 16, &(HEADER_BYTES as u64).to_le_bytes())?;
-    put(target, 24, &(length as u64).to_le_bytes())?;
-    put(target, 32, &identity.store.get().to_le_bytes())?;
-    put(target, 48, &identity.artifact.get().to_le_bytes())?;
-    put(target, 64, &identity.generation.get().to_le_bytes())?;
-    put(target, 72, &(body as u64).to_le_bytes())?;
-    put(target, 80, &(blocks.len() as u32).to_le_bytes())?;
-    put(target, 88, &identity.creation_serial.to_le_bytes())?;
+    for chunk in target.chunks_mut(65_536) {
+        poll(control, chunk.len())?;
+        chunk.fill(0);
+    }
+    poll(control, HEADER_BYTES)?;
+    encode_header(kind, identity, length, body, blocks.len(), target)?;
     let mut offset = HEADER_BYTES;
     for (index, block) in blocks.iter().enumerate() {
         let block_length = add(24, block.payload.len())?;
-        let checksum = xxh3_64(block.payload);
+        let checksum = controlled_checksum(block.payload, control)?;
+        poll(control, 24)?;
         put(target, offset, &(block.kind as u16).to_le_bytes())?;
         put(target, add(offset, 2)?, &1_u16.to_le_bytes())?;
         put(
@@ -273,11 +358,23 @@ pub fn encode_into(
             &(block.payload.len() as u64).to_le_bytes(),
         )?;
         put(target, add(offset, 16)?, &checksum.to_le_bytes())?;
-        put(target, add(offset, 24)?, block.payload)?;
+        let payload_start = add(offset, 24)?;
+        for (chunk_index, chunk) in block.payload.chunks(65_536).enumerate() {
+            poll(control, chunk.len())?;
+            put(
+                target,
+                add(
+                    payload_start,
+                    chunk_index.checked_mul(65_536).ok_or_else(overflow)?,
+                )?,
+                chunk,
+            )?;
+        }
         let directory = add(
             add(HEADER_BYTES, body)?,
             index.checked_mul(24).ok_or_else(overflow)?,
         )?;
+        poll(control, 24)?;
         put(target, directory, &(offset as u64).to_le_bytes())?;
         put(
             target,
@@ -293,9 +390,33 @@ pub fn encode_into(
         put(target, add(directory, 16)?, &checksum.to_le_bytes())?;
         offset = add(offset, block_length)?;
     }
-    let checksum = xxh3_64(target.get(..length - 8).ok_or_else(overflow)?);
+    let checksum = controlled_checksum(target.get(..length - 8).ok_or_else(overflow)?, control)?;
+    poll(control, 8)?;
     put(target, length - 8, &checksum.to_le_bytes())?;
+    poll(control, 0)?;
     Ok(length)
+}
+
+fn encode_header(
+    kind: ContainerKind,
+    identity: ArtifactIdentity,
+    length: usize,
+    body: usize,
+    count: usize,
+    target: &mut [u8],
+) -> Result<(), FormatError> {
+    put(target, 0, &frame::FILE_MAGIC)?;
+    put(target, 8, &kind.family().id().to_le_bytes())?;
+    put(target, 10, &1_u16.to_le_bytes())?;
+    put(target, 16, &(HEADER_BYTES as u64).to_le_bytes())?;
+    put(target, 24, &(length as u64).to_le_bytes())?;
+    put(target, 32, &identity.store.get().to_le_bytes())?;
+    put(target, 48, &identity.artifact.get().to_le_bytes())?;
+    put(target, 64, &identity.generation.get().to_le_bytes())?;
+    put(target, 72, &(body as u64).to_le_bytes())?;
+    put(target, 80, &(count as u32).to_le_bytes())?;
+    put(target, 88, &identity.creation_serial.to_le_bytes())?;
+    Ok(())
 }
 
 /// Validates required family, framing, identity, geometry and checksums before
@@ -307,37 +428,54 @@ pub fn decode<'a>(
     expected: Option<(StoreInstanceId, ArtifactId)>,
     bytes: &'a [u8],
 ) -> Result<ArtifactFrame<'a>, FormatError> {
+    uncontrolled(decode_with_control(kind, expected, bytes, &mut |_| Ok(())))
+}
+
+/// Admits immutable artifact framing with bounded cancellation/work callbacks.
+/// Each callback precedes at most 64 KiB of hashing or fixed metadata visits.
+/// Header/trailer and each block plus directory entry are charged separately
+/// from checksum passes. A final zero-byte poll occurs before admission returns.
+/// No bytes are copied or allocated on successful admission.
+pub fn decode_with_control<'a, E>(
+    kind: ContainerKind,
+    expected: Option<(StoreInstanceId, ArtifactId)>,
+    bytes: &'a [u8],
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<ArtifactFrame<'a>, ArtifactControlError<E>> {
+    poll(control, bytes.len().min(32))?;
     let header = frame::decode_header("native graph artifact", kind.family(), bytes)?;
     if header.flags != 0 || header.header_length != HEADER_BYTES as u64 {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::HeaderLength,
             "invalid graph header flags or extent",
-        ));
+        )));
     }
     if bytes.len() > MAX_ARTIFACT_BYTES
         || bytes.len() < HEADER_BYTES + 8
         || header.file_length != bytes.len() as u64
     {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::FileLength,
             "invalid graph file extent",
-        ));
+        )));
     }
     let trailer = bytes.len() - 8;
+    poll(control, 8)?;
     let expected_checksum = frame::read_u64("native graph artifact", bytes, trailer)?;
     checksum(
         FormatCheck::FileChecksum,
         expected_checksum,
-        xxh3_64(bytes.get(..trailer).ok_or_else(overflow)?),
+        controlled_checksum(bytes.get(..trailer).ok_or_else(overflow)?, control)?,
     )?;
+    poll(control, HEADER_BYTES - 32)?;
     let store = StoreInstanceId::new(read_u128(bytes, 32)?)
         .map_err(|_| invalid(FormatCheck::ObjectIdentity, "zero store identity"))?;
     let artifact = ArtifactId::new(read_u128(bytes, 48)?)?;
     if expected.is_some_and(|value| value != (store, artifact)) {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::ObjectIdentity,
             "wrong store or artifact identity",
-        ));
+        )));
     }
     let body = usize_from(frame::read_u64("native graph artifact", bytes, 72)?)?;
     let count = frame::read_u32("native graph artifact", bytes, 80)? as usize;
@@ -345,17 +483,17 @@ pub fn decode<'a>(
         || count > body / 24
         || frame::read_u32("native graph artifact", bytes, 84)? != 0
     {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::BlockLength,
             "invalid graph body extent or flags",
-        ));
+        )));
     }
     let directory = add(HEADER_BYTES, body)?;
     if add(directory, count.checked_mul(24).ok_or_else(overflow)?)? != trailer {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::BlockLength,
             "directory does not consume complete artifact",
-        ));
+        )));
     }
     let frame = ArtifactFrame {
         bytes,
@@ -366,70 +504,95 @@ pub fn decode<'a>(
             creation_serial: frame::read_u64("native graph artifact", bytes, 88)?,
         },
         kind,
+        directory,
+        count,
     };
     let mut next = HEADER_BYTES;
     for index in 0..count {
+        poll(control, 24)?;
         let reference = frame.reference(index)?;
         validate_reference(reference)?;
         let offset = usize_from(reference.offset)?;
         let end = add(offset, reference.length as usize)?;
         if offset != next || end > directory {
-            return Err(invalid(
+            return Err(ArtifactControlError::Format(invalid(
                 FormatCheck::BlockLength,
                 "noncontiguous or overlapping graph blocks",
-            ));
+            )));
         }
-        if frame::read_u16("native graph artifact", bytes, offset)? != reference.kind as u16
-            || frame::read_u16("native graph artifact", bytes, add(offset, 2)?)?
-                != reference.version
-        {
-            return Err(invalid(
-                FormatCheck::Family,
-                "directory kind/version differs from block",
-            ));
-        }
-        if frame::read_u32("native graph artifact", bytes, add(offset, 4)?)? != 0
-            || add(
-                24,
-                usize_from(frame::read_u64(
-                    "native graph artifact",
-                    bytes,
-                    add(offset, 8)?,
-                )?)?,
-            )? != reference.length as usize
-        {
-            return Err(invalid(
-                FormatCheck::BlockLength,
-                "invalid block flags or length",
-            ));
-        }
-        let payload = bytes.get(add(offset, 24)?..end).ok_or_else(overflow)?;
-        let block_checksum = frame::read_u64("native graph artifact", bytes, add(offset, 16)?)?;
         let entry_checksum = frame::read_u64(
             "native graph artifact",
             bytes,
             add(add(directory, index * 24)?, 16)?,
         )?;
-        checksum(FormatCheck::BlockChecksum, entry_checksum, block_checksum)?;
-        checksum(FormatCheck::BlockChecksum, block_checksum, xxh3_64(payload))?;
+        let payload = validate_block(bytes, reference, entry_checksum, control)?;
         if (kind == ContainerKind::RootEnvelope
             && (count != 1 || reference.kind != BlockKind::CheckpointPayload || payload.is_empty()))
             || (kind == ContainerKind::Object && reference.kind == BlockKind::CheckpointPayload)
         {
-            return Err(invalid(
+            return Err(ArtifactControlError::Format(invalid(
                 FormatCheck::Family,
                 "block is not allowed in this graph container",
-            ));
+            )));
         }
         next = end;
     }
     if next != directory || (kind == ContainerKind::RootEnvelope && count == 0) {
-        return Err(invalid(
+        return Err(ArtifactControlError::Format(invalid(
             FormatCheck::BlockLength,
             "unreferenced body or absent root payload",
-        ));
+        )));
     }
+    poll(control, 0)?;
     Ok(frame)
+}
+
+fn validate_block<'a, E>(
+    bytes: &'a [u8],
+    reference: PhysicalRef,
+    expected_checksum: u64,
+    control: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<&'a [u8], ArtifactControlError<E>> {
+    poll(control, 24)?;
+    validate_reference(reference)?;
+    let offset = usize_from(reference.offset)?;
+    let end = add(offset, reference.length as usize)?;
+    if frame::read_u16("native graph artifact", bytes, offset)? != reference.kind as u16
+        || frame::read_u16("native graph artifact", bytes, add(offset, 2)?)? != reference.version
+    {
+        return Err(ArtifactControlError::Format(invalid(
+            FormatCheck::Family,
+            "directory kind/version differs from block",
+        )));
+    }
+    if frame::read_u32("native graph artifact", bytes, add(offset, 4)?)? != 0
+        || add(
+            24,
+            usize_from(frame::read_u64(
+                "native graph artifact",
+                bytes,
+                add(offset, 8)?,
+            )?)?,
+        )? != reference.length as usize
+    {
+        return Err(ArtifactControlError::Format(invalid(
+            FormatCheck::BlockLength,
+            "invalid block flags or length",
+        )));
+    }
+    let payload = bytes.get(add(offset, 24)?..end).ok_or_else(overflow)?;
+    let block_checksum = frame::read_u64("native graph artifact", bytes, add(offset, 16)?)?;
+    checksum(
+        FormatCheck::BlockChecksum,
+        expected_checksum,
+        block_checksum,
+    )?;
+    checksum(
+        FormatCheck::BlockChecksum,
+        block_checksum,
+        controlled_checksum(payload, control)?,
+    )?;
+    Ok(payload)
 }
 
 /// Serializes a checked, fixed-width physical block reference.
@@ -501,6 +664,8 @@ fn block_kind(value: u16) -> Result<BlockKind, FormatError> {
         8 => Ok(BlockKind::ExtentList),
         9 => Ok(BlockKind::CheckpointPayload),
         10 => Ok(BlockKind::CommitParticipant),
+        11 => Ok(BlockKind::PayloadChunk),
+        12 => Ok(BlockKind::OperationProvenance),
         13 => Ok(BlockKind::AdjacencyBase),
         14 => Ok(BlockKind::AdjacencyDelta),
         _ => Err(invalid(
@@ -556,5 +721,46 @@ impl ArtifactFrame<'_> {
     /// still the owning participant's responsibility.
     pub fn bytes(&self) -> &[u8] {
         self.bytes
+    }
+}
+
+/// Exact validated block borrowed from an immutable, fully framed artifact.
+/// Construction verifies directory membership; consumers still check that this
+/// is the requested reference and apply their own inner semantic codec.
+#[derive(Clone, Copy, Debug)]
+pub struct FramedBlock<'a> {
+    identity: ArtifactIdentity,
+    reference: PhysicalRef,
+    payload: &'a [u8],
+}
+impl<'a> FramedBlock<'a> {
+    /// Complete identity of the containing immutable artifact.
+    pub const fn identity(self) -> ArtifactIdentity {
+        self.identity
+    }
+    /// Exact checked directory-member reference.
+    pub const fn reference(self) -> PhysicalRef {
+        self.reference
+    }
+    /// Inner payload, excluding the block header.
+    pub const fn payload(self) -> &'a [u8] {
+        self.payload
+    }
+}
+impl<'a> ArtifactFrame<'a> {
+    /// Retains the underlying bytes' lifetime, independently of this temporary
+    /// decoded frame. No unvalidated arbitrary byte slice can construct a block.
+    pub fn framed_block(&self, reference: PhysicalRef) -> Result<FramedBlock<'a>, FormatError> {
+        self.resolve_framed_block(reference)?;
+        let start = usize_from(reference.offset)?;
+        let payload = self
+            .bytes
+            .get(add(start, 24)?..add(start, reference.length as usize)?)
+            .ok_or_else(|| invalid(FormatCheck::BlockLength, "framed block extent"))?;
+        Ok(FramedBlock {
+            identity: self.identity,
+            reference,
+            payload,
+        })
     }
 }

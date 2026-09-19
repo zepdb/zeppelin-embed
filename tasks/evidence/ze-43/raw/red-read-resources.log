@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+────────────
+ Nextest run ID 64e21e35-9c00-4536-83ed-490d7ac3e721 with nextest profile: default
+    Starting 1 test across 1 binary (9 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+  stdout ───
+
+    running 1 test
+    test read_resources_charge_their_shared_fixed_working_set ... FAILED
+
+    failures:
+
+    failures:
+        read_resources_charge_their_shared_fixed_working_set
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_resources_charge_their_shared_fixed_working_set' (33990579) panicked at crates/zeppelin-embed/tests/graph_directories.rs:372:5:
+    lookup/payload operations must reserve their own bounded workspace even without TreeScratch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 9 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+  stdout ───
+
+    running 1 test
+    test read_resources_charge_their_shared_fixed_working_set ... FAILED
+
+    failures:
+
+    failures:
+        read_resources_charge_their_shared_fixed_working_set
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_resources_charge_their_shared_fixed_working_set' (33990579) panicked at crates/zeppelin-embed/tests/graph_directories.rs:372:5:
+    lookup/payload operations must reserve their own bounded workspace even without TreeScratch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

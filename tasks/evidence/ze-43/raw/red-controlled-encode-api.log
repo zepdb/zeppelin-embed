@@ -1,0 +1,52 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0425]: cannot find function `encode_into_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1124:26
+     |
+1124 |       assert_eq!(artifact::encode_into_with_control(ContainerKind::Object, identity(), &blocks, &mut output, &mut |n| {
+     |                            ^^^^^^^^^^^^^^^^^^^^^^^^ help: a function with a similar name exists: `decode_with_control`
+     |
+    ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/artifact.rs:359:1
+     |
+ 359 | / pub fn decode_with_control<'a, E>(
+ 360 | |     kind: ContainerKind,
+ 361 | |     expected: Option<(StoreInstanceId, ArtifactId)>,
+ 362 | |     bytes: &'a [u8],
+ 363 | |     control: &mut impl FnMut(usize) -> Result<(), E>,
+ 364 | | ) -> Result<ArtifactFrame<'a>, ArtifactControlError<E>> {
+     | |_______________________________________________________- similarly named function `decode_with_control` defined here
+
+error[E0425]: cannot find function `encode_into_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1135:32
+     |
+1135 |           let result = artifact::encode_into_with_control(ContainerKind::Object, identity(), &blocks, &mut output, &mut |_| {
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^ help: a function with a similar name exists: `decode_with_control`
+     |
+    ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/artifact.rs:359:1
+     |
+ 359 | / pub fn decode_with_control<'a, E>(
+ 360 | |     kind: ContainerKind,
+ 361 | |     expected: Option<(StoreInstanceId, ArtifactId)>,
+ 362 | |     bytes: &'a [u8],
+ 363 | |     control: &mut impl FnMut(usize) -> Result<(), E>,
+ 364 | | ) -> Result<ArtifactFrame<'a>, ArtifactControlError<E>> {
+     | |_______________________________________________________- similarly named function `decode_with_control` defined here
+
+error[E0425]: cannot find function `encode_into_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1144:32
+     |
+1144 |       assert!(matches!(artifact::encode_into_with_control(ContainerKind::Object, identity(), &blocks, &mut short, &mut |_| Ok::<(), usize>(...
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^ help: a function with a similar name exists: `decode_with_control`
+     |
+    ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/artifact.rs:359:1
+     |
+ 359 | / pub fn decode_with_control<'a, E>(
+ 360 | |     kind: ContainerKind,
+ 361 | |     expected: Option<(StoreInstanceId, ArtifactId)>,
+ 362 | |     bytes: &'a [u8],
+ 363 | |     control: &mut impl FnMut(usize) -> Result<(), E>,
+ 364 | | ) -> Result<ArtifactFrame<'a>, ArtifactControlError<E>> {
+     | |_______________________________________________________- similarly named function `decode_with_control` defined here
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (test "graph_artifact") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_artifact` exited with code 101

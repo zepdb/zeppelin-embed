@@ -1,0 +1,40 @@
+{
+  "source": "190e702e996f1638993566e88ccfd10e885089f3",
+  "base": "af4a1f110e2cfe487b1976e58d5e247cf6d2e3e3",
+  "checks": [
+    {
+      "command": "cargo nextest run -p zeppelin-embed --features allocation-audit,test-support --test graph_artifact --test graph_directories --test graph_storage_prepare --test graph_storage_failures",
+      "exit_code": 0,
+      "passed": 58,
+      "log": "storage.log"
+    },
+    {
+      "command": "cargo nextest run -p zeppelin-embed --features allocation-audit,test-support --test graph_adjacency",
+      "exit_code": 0,
+      "passed": 12,
+      "log": "adjacency.log"
+    },
+    {
+      "command": "cargo nextest run -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -E 'test(property_graph_directories_probe_checks_native_roots_and_independent_history) | test(one_runner_episode_reaches_required_native_directory_contracts)'",
+      "exit_code": 0,
+      "passed": 2,
+      "log": "pg8.log"
+    },
+    {
+      "command": "cargo clippy -p zeppelin-embed --features allocation-audit,test-support --lib --test graph_artifact --test graph_directories --test graph_storage_prepare --test graph_storage_failures --test graph_adjacency --no-deps -- -D warnings",
+      "exit_code": 0,
+      "passed": null,
+      "log": "core-clippy.log"
+    },
+    {
+      "command": "cargo clippy -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests --no-deps -- -D warnings",
+      "exit_code": 0,
+      "passed": null,
+      "log": "runner-clippy.log"
+    }
+  ],
+  "nextest_passed": 72,
+  "source_format_exit": 0,
+  "source_diff_check_exit": 0,
+  "inherited_preserved": 45
+}

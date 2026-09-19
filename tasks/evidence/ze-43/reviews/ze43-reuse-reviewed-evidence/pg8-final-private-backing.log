@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.65s
+────────────
+ Nextest run ID 34a60bac-57ed-4d85-9560-2028062bfa0f with nextest profile: default
+    Starting 2 tests across 1 binary (454 tests skipped)
+        PASS [   3.625s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_directory_contracts
+        PASS [   5.685s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+────────────
+     Summary [   5.686s] 2 tests run: 2 passed, 454 skipped

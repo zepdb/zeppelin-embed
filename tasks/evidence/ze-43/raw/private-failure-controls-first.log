@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+────────────
+ Nextest run ID 25f0b38b-1e5b-469a-8950-55cd363849d0 with nextest profile: default
+    Starting 3 tests across 1 binary
+        PASS [   0.017s] (1/3) zeppelin-embed::graph_storage_failures malformed_truncated_trailing_and_wrong_store_files_release_owned_admission_buffers
+        PASS [   0.025s] (2/3) zeppelin-embed::graph_storage_failures physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+        PASS [   0.034s] (3/3) zeppelin-embed::graph_storage_failures failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts
+────────────
+     Summary [   0.035s] 3 tests run: 3 passed, 0 skipped

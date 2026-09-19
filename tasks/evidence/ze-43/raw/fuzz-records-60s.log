@@ -1,0 +1,101 @@
+warning: user-defined alias `fuzz` is shadowing an external subcommand found at `/Users/aghatage/.cargo/bin/cargo-fuzz`
+  |
+  = note: this was previously accepted but will become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/10049>
+   Compiling libc v0.2.189
+   Compiling zerocopy v0.8.55
+   Compiling getrandom v0.3.4
+   Compiling cfg-if v1.0.4
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling byteorder v1.5.0
+   Compiling bytemuck v1.25.2
+   Compiling xxhash-rust v0.8.18
+   Compiling arbitrary v1.4.2
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-cypher)
+   Compiling roaring v0.10.12
+   Compiling jobserver v0.1.35
+   Compiling rand_core v0.9.5
+   Compiling cc v1.4.0
+   Compiling libfuzzer-sys v0.4.13
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-fuzz v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 46s
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-fuzz v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 35s
+     Running `fuzz/target/aarch64-apple-darwin/release/native_graph_records -artifact_prefix=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/artifacts/native_graph_records/ -max_total_time=60 -max_len=65536 -seed=43 /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/corpus/native_graph_records /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/seeds/native_graph_records`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 43
+INFO: Loaded 1 modules   (295732 inline 8-bit counters): 295732 [0x101b51ff0, 0x101b9a324), 
+INFO: Loaded 1 PC tables (295732 PCs): 295732 [0x101b9a328,0x10201d668), 
+INFO:        0 files found in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/corpus/native_graph_records
+INFO:       16 files found in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/seeds/native_graph_records
+INFO: seed corpus: files: 16 min: 1b max: 2b total: 24b rss: 42Mb
+#18	INITED cov: 2281 ft: 4143 corp: 15/22b exec/s: 0 rss: 47Mb
+
+thread '<unnamed>' (34799887) panicked at fuzz_targets/native_graph_records.rs:380:9:
+valid seeded lane6 must reach complete semantic acceptance
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+==13180== ERROR: libFuzzer: deadly signal
+    #0 0x000102c2759c in __sanitizer_print_stack_trace+0x28 (librustc-nightly_rt.asan.dylib:arm64+0x8759c)
+    #1 0x0001018b92dc in fuzzer::PrintStackTrace()+0x30 (native_graph_records:arm64+0x100f5d2dc)
+    #2 0x0001018acd40 in fuzzer::Fuzzer::CrashCallback()+0x54 (native_graph_records:arm64+0x100f50d40)
+    #3 0x00018c7f4140 in _sigtramp+0x34 (libsystem_platform.dylib:arm64e+0x4140)
+    #4 0x00018c7e997c in pthread_kill+0x124 (libsystem_pthread.dylib:arm64e+0x697c)
+    #5 0x00018c6ec394 in abort+0x90 (libsystem_c.dylib:arm64e+0x7b394)
+    #6 0x0001019432e4 in _RNvNtNtNtCsl4TrDHi70lc_3std3sys3pal4unix14abort_internal+0x8 (native_graph_records:arm64+0x100fe72e4)
+    #7 0x000101943148 in _RNvNtCsl4TrDHi70lc_3std7process5abort+0x8 (native_graph_records:arm64+0x100fe7148)
+    #8 0x00010193e2d0 in _RNCNvCs88QQ8pz0XNw_13libfuzzer_sys10initialize0B3_+0xb8 (native_graph_records:arm64+0x100fe22d0)
+    #9 0x0001018fd3a8 in _RNvNtCsl4TrDHi70lc_3std9panicking15panic_with_hook+0x264 (native_graph_records:arm64+0x100fa13a8)
+    #10 0x0001018ef1a4 in _RNCNvNtCsl4TrDHi70lc_3std9panicking13panic_handler0B5_+0x40 (native_graph_records:arm64+0x100f931a4)
+    #11 0x0001018e6bb8 in _RINvNtNtCsl4TrDHi70lc_3std3sys9backtrace26___rust_end_short_backtraceNCNvNtB6_9panicking13panic_handler0zEB6_+0x8 (native_graph_records:arm64+0x100f8abb8)
+    #12 0x0001018ef7ec in _RNvCs4iuDAxO633X_7___rustc17rust_begin_unwind+0x1c (native_graph_records:arm64+0x100f937ec)
+    #13 0x000101944770 in _RNvNtCs2xL4dNuoFWk_4core9panicking9panic_fmt+0x24 (native_graph_records:arm64+0x100fe8770)
+    #14 0x0001009d1a28 in _RNvCs2ARxonHfpkE_20native_graph_records8exercise native_graph_records.rs:380
+    #15 0x0001009f6094 in rust_fuzzer_test_input lib.rs:276
+    #16 0x0001018ab364 in _RINvNvNtCsl4TrDHi70lc_3std9panicking12catch_unwind7do_callNCNvCs88QQ8pz0XNw_13libfuzzer_sys15test_input_wrap0lEBY_+0xc4 (native_graph_records:arm64+0x100f4f364)
+    #17 0x0001018abf9c in __rust_try+0x18 (native_graph_records:arm64+0x100f4ff9c)
+    #18 0x0001018aac34 in LLVMFuzzerTestOneInput+0x16c (native_graph_records:arm64+0x100f4ec34)
+    #19 0x0001018ae5bc in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long)+0x158 (native_graph_records:arm64+0x100f525bc)
+    #20 0x0001018adc60 in fuzzer::Fuzzer::RunOne(unsigned char const*, unsigned long, bool, fuzzer::InputInfo*, bool, bool*)+0x48 (native_graph_records:arm64+0x100f51c60)
+    #21 0x0001018afb58 in fuzzer::Fuzzer::MutateAndTestOne()+0x22c (native_graph_records:arm64+0x100f53b58)
+    #22 0x0001018b08b8 in fuzzer::Fuzzer::Loop(std::__1::vector<fuzzer::SizedFile, std::__1::allocator<fuzzer::SizedFile>>&)+0x354 (native_graph_records:arm64+0x100f548b8)
+    #23 0x0001018cf8d8 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long))+0x1a3c (native_graph_records:arm64+0x100f738d8)
+    #24 0x0001018dd400 in main+0x24 (native_graph_records:arm64+0x100f81400)
+    #25 0x00018c413be8 in start+0x1a1c (dyld:arm64e+0x31be8)
+
+NOTE: libFuzzer has rudimentary signal handlers.
+      Combine libFuzzer with AddressSanitizer or similar for better crash reports.
+SUMMARY: libFuzzer: deadly signal
+MS: 1 EraseBytes-; base unit: aab9fe2056fab2404a2107d30f9b2e21c3a5264e
+0x86,
+\206
+artifact_prefix='/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/artifacts/native_graph_records/'; Test unit written to /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e
+Base64: hg==
+
+────────────────────────────────────────────────────────────────────────────────
+
+Failing input:
+
+	fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e
+
+Output of `std::fmt::Debug`:
+
+	[134]
+
+Reproduce with:
+
+	cargo fuzz run native_graph_records fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e
+
+Minimize test case with:
+
+	cargo fuzz tmin native_graph_records fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e
+
+────────────────────────────────────────────────────────────────────────────────
+
+Error: Fuzz target exited with exit status: 77

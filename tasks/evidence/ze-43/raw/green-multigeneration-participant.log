@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+────────────
+ Nextest run ID 07b408ac-5507-49ad-8d8f-5b325391057a with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        PASS [   0.059s] (1/1) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+────────────
+     Summary [   0.059s] 1 test run: 1 passed, 1 skipped

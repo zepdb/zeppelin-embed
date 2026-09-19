@@ -363,6 +363,11 @@ pub struct StagedBatch<'a> {
     symbols: memory::Arena<'a, catalog::SymbolEntry<'a>>,
 }
 impl StagedBatch<'_> {
+    pub(crate) fn uses_memory(&self, memory: &WriteMemory<'_>) -> bool {
+        self.deltas.uses_memory(memory)
+            && self.receipts.uses_memory(memory)
+            && self.symbols.uses_memory(memory)
+    }
     /// Retained base token for prepare/recheck.
     pub const fn base(&self) -> BaseIdentity {
         self.base

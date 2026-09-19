@@ -1,0 +1,22 @@
+{
+  "name": "native-strict-clippy",
+  "argv": [
+    "cargo",
+    "clippy",
+    "-p",
+    "zeppelin-embed",
+    "--lib",
+    "--test",
+    "graph_directories",
+    "--features",
+    "test-support",
+    "--no-deps",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43",
+  "target": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/target",
+  "exit_code": 0,
+  "seconds": 5.421043872833252
+}

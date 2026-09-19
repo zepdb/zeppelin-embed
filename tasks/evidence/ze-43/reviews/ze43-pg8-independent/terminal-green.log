@@ -1,0 +1,58 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/private/tmp/ze43-pg8-independent/repro/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.23s
+────────────
+ Nextest run ID ab8f4e95-f8e3-4d9a-9c57-1597bfa0125b with nextest profile: default
+    Starting 2 tests across 1 binary (454 tests skipped)
+        PASS [   3.999s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_directory_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_native_directory_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 3.98s
+
+
+        PASS [   6.502s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... seed=0 property-graph.directories.native-history=1
+    seed=0 property-graph.directories.old-root=1
+    seed=0 property-graph.directories.reopen=1
+    seed=0 property-graph.directories.range=1
+    seed=0 property-graph.directories.detach=1
+    seed=0 property-graph.directories.recreate=1
+    seed=0 property-graph.directories.oracle.can-fire=1
+    seed=0 property-graph.directories.append.fire=3
+    seed=0 property-graph.directories.append.clean=3
+    seed=0 property-graph.directories.read.fire=3
+    seed=0 property-graph.directories.read.clean=3
+    seed=0 property-graph.directories.cancel.fire=3
+    seed=0 property-graph.directories.cancel.clean=3
+    seed=0 property-graph.directories.budget.fire=1
+    seed=0 property-graph.directories.budget.clean=1
+    seed=41 property-graph.directories.native-history=1
+    seed=41 property-graph.directories.old-root=1
+    seed=41 property-graph.directories.reopen=1
+    seed=41 property-graph.directories.range=1
+    seed=41 property-graph.directories.detach=1
+    seed=41 property-graph.directories.recreate=1
+    seed=41 property-graph.directories.oracle.can-fire=1
+    seed=41 property-graph.directories.append.fire=3
+    seed=41 property-graph.directories.append.clean=3
+    seed=41 property-graph.directories.read.fire=3
+    seed=41 property-graph.directories.read.clean=3
+    seed=41 property-graph.directories.cancel.fire=3
+    seed=41 property-graph.directories.cancel.clean=3
+    seed=41 property-graph.directories.budget.fire=1
+    seed=41 property-graph.directories.budget.clean=1
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 6.48s
+
+
+────────────
+     Summary [   6.503s] 2 tests run: 2 passed, 454 skipped

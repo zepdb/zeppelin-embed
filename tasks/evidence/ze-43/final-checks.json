@@ -1,0 +1,79 @@
+{
+  "candidate_parent": "81e6e955baa987e0c3dae171b7863174d8686a3e",
+  "hardware": {
+    "cpu": "Apple M3 Max",
+    "architecture": "arm64",
+    "physical_memory_bytes": 137438953472,
+    "macos": "27.0 (26A5388g)",
+    "rustc": "1.93.0",
+    "nextest": "0.9.145"
+  },
+  "storage": {
+    "command": "cargo nextest run -p zeppelin-embed --features allocation-audit,test-support --test graph_artifact --test graph_directories --test graph_storage_prepare --test graph_storage_failures",
+    "exit_code": 0,
+    "passed": 58,
+    "failed": 0,
+    "log": "raw/storage-final-after-reuse.log"
+  },
+  "pg8": {
+    "command": "cargo nextest run -p zeppelin-embed-workspace-tests --test adversarial_tests -E 'test(property_graph_directories_probe_checks_native_roots_and_independent_history) | test(one_runner_episode_reaches_required_native_directory_contracts)'",
+    "exit_code": 0,
+    "passed": 2,
+    "failed": 0,
+    "seeds": [
+      0,
+      41
+    ],
+    "log": "raw/pg8-final-private-backing.log"
+  },
+  "core_clippy": {
+    "command": "cargo clippy -p zeppelin-embed --features allocation-audit,test-support --lib --test graph_artifact --test graph_directories --test graph_storage_prepare --test graph_storage_failures --no-deps -- -D warnings",
+    "exit_code": 0,
+    "log": "raw/storage-lint-after-reuse.log"
+  },
+  "pg8_clippy": {
+    "command": "cargo clippy -p zeppelin-embed-workspace-tests --test adversarial_tests --no-deps -- -D warnings",
+    "exit_code": 0,
+    "log": "raw/pg8-final-private-lint.log"
+  },
+  "parser_classification_replay": {
+    "command": "env RUSTUP_TOOLCHAIN=nightly cargo-fuzz run native_graph_records fuzz/artifacts/native_graph_records/crash-a9de501bd96364662356b29faee5662ed5d8a33e --sanitizer address -- -runs=1",
+    "exit_code": 0,
+    "input_hex": "86",
+    "log": "raw/fuzz-raw-empty-replay.log"
+  },
+  "final_parser_fuzz": {
+    "command": "cargo fuzz run native_graph_records --sanitizer address -- -max_total_time=60 -max_len=65536 -seed=43",
+    "exit_code": 0,
+    "runs": 312167,
+    "seconds": 61,
+    "seed": 43,
+    "log": "raw/fuzz-records-final-60s.log"
+  },
+  "independent_delta_review": {
+    "disposition": "accepted; no remaining blocker",
+    "report": "reviews/ze43-reuse-independent-review.md",
+    "report_sha256": "5c4d7fdd6fe8f742ab7fe17ed1c92012a543a118924f871c73f42735f39c7144",
+    "source_snapshot": "reviews/ze43-reuse-review/hashes.json",
+    "test_override": "reviews/ze43-reuse-final-test-delta/hashes.json",
+    "pg8_override": "reviews/ze43-reuse-final-pg8-delta/hashes.json"
+  },
+  "qualification_boundary": "Component preparation, immutable directory/payload/record/fence/inventory, physical artifact reopen and focused PG8 only. Broad qualification deferred ZE118; no GraphStore publication/recovery/lease claim.",
+  "final_same_pack_test": {
+    "command": "cargo nextest run -p zeppelin-embed --features allocation-audit,test-support --test graph_storage_failures -E 'test(failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts)'",
+    "passed": 1,
+    "failed": 0,
+    "exit_code": 0,
+    "log": "raw/green-prior-entry-after-failed-append.log"
+  },
+  "final_same_pack_lint": {
+    "command": "cargo clippy -p zeppelin-embed --features allocation-audit,test-support --test graph_storage_failures --no-deps -- -D warnings",
+    "exit_code": 0,
+    "log": "raw/prior-entry-lint.log"
+  },
+  "source_diff_check": {
+    "command": "git diff --cached --check -- <exact61 source/seed paths>",
+    "exit_code": 0,
+    "raw_evidence_note": "Unrestricted diff --check reports preserved trailing whitespace/blank terminal lines in original tool logs and patch context. Raw evidence remains byte-exact; no product/source whitespace findings."
+  }
+}

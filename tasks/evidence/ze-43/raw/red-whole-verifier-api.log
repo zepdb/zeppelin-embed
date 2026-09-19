@@ -1,0 +1,42 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::tree::directory::verify_directory`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:382:9
+    |
+382 |     use zeppelin_embed::property_graph::storage::tree::directory::verify_directory;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `verify_directory` in `property_graph::storage::tree::directory`
+
+error[E0282]: type annotations needed
+   --> crates/zeppelin-embed/tests/graph_directories.rs:404:65
+    |
+404 |     assert!(verify_directory(&objects,root,&mut resources,&mut |entry, _| {
+    |                                                                 ^^^^^
+405 |         assert_eq!(entry.value(),b"left"); verified+=1; Ok(())
+    |                    ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+404 |     assert!(verify_directory(&objects,root,&mut resources,&mut |entry: /* Type */, _| {
+    |                                                                      ++++++++++++
+
+error[E0599]: no method named `next_entry` found for struct `DirectoryCursor<'a, S>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_directories.rs:409:20
+    |
+409 |     assert!(cursor.next_entry(&mut resources).unwrap().is_some());
+    |                    ^^^^^^^^^^ method not found in `DirectoryCursor<'_, Objects>`
+
+error[E0599]: no method named `next_entry` found for struct `DirectoryCursor<'a, S>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_directories.rs:410:20
+    |
+410 |     assert!(cursor.next_entry(&mut resources).is_err());
+    |                    ^^^^^^^^^^ method not found in `DirectoryCursor<'_, Objects>`
+
+error[E0599]: no method named `next_entry` found for struct `DirectoryCursor<'a, S>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_directories.rs:411:29
+    |
+411 |     assert!(matches!(cursor.next_entry(&mut resources),Err(TreeError::Invalid("cursor previously failed"))));
+    |                             ^^^^^^^^^^ method not found in `DirectoryCursor<'_, Objects>`
+
+Some errors have detailed explanations: E0282, E0432, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 5 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

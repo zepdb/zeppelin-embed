@@ -1,0 +1,29 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `artifact::ArtifactControlError`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1073:9
+     |
+1073 |     use artifact::ArtifactControlError;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `ArtifactControlError` in `property_graph::storage::artifact`
+
+error[E0425]: cannot find function `decode_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1083:30
+     |
+1083 |     let admitted = artifact::decode_with_control(ContainerKind::Object, expected, &bytes, &mut |n| {
+     |                              ^^^^^^^^^^^^^^^^^^^ not found in `artifact`
+
+error[E0425]: cannot find function `decode_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1095:32
+     |
+1095 |         let result = artifact::decode_with_control(ContainerKind::Object, expected, &bytes, &mut |_| {
+     |                                ^^^^^^^^^^^^^^^^^^^ not found in `artifact`
+
+error[E0425]: cannot find function `decode_with_control` in module `artifact`
+    --> crates/zeppelin-embed/tests/graph_artifact.rs:1107:15
+     |
+1107 |     artifact::decode_with_control(ContainerKind::Object, expected, &empty_bytes, &mut |n| {
+     |               ^^^^^^^^^^^^^^^^^^^ not found in `artifact`
+
+Some errors have detailed explanations: E0425, E0432.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (test "graph_artifact") due to 4 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_artifact` exited with code 101

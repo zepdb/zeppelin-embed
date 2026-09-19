@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.03s
+────────────
+ Nextest run ID e84dc19d-66a5-44f6-8537-832ccb54a438 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   0.024s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34827703) panicked at tests/adversarial/graph_directories.rs:271:21:
+    PG8 repeated private reads must reuse complete immutable admission
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.025s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   0.024s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34827703) panicked at tests/adversarial/graph_directories.rs:271:21:
+    PG8 repeated private reads must reuse complete immutable admission
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

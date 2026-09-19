@@ -1,0 +1,84 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+────────────
+ Nextest run ID 75647b65-6e45-473e-8de8-baff4d90154d with nextest profile: default
+    Starting 2 tests across 1 binary (3 tests skipped)
+        FAIL [   0.017s] (1/2) zeppelin-embed::graph_storage_failures payload_window_reads_charge_only_the_requested_field
+  stdout ───
+
+    running 1 test
+    test payload_window_reads_charge_only_the_requested_field ... FAILED
+
+    failures:
+
+    failures:
+        payload_window_reads_charge_only_the_requested_field
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'payload_window_reads_charge_only_the_requested_field' (34823530) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:468:9:
+    an eight-byte window must not charge unrelated trailing bytes: 65546
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.019s] (2/2) zeppelin-embed::graph_storage_failures admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+  stdout ───
+
+    running 1 test
+    test admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work ... FAILED
+
+    failures:
+
+    failures:
+        admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work' (34823529) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:372:5:
+    exact repeated reference lookup must reuse complete admission, not rehash unchanged payload bytes
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 2 tests run: 0 passed, 2 failed, 3 skipped
+        FAIL [   0.017s] (1/2) zeppelin-embed::graph_storage_failures payload_window_reads_charge_only_the_requested_field
+  stdout ───
+
+    running 1 test
+    test payload_window_reads_charge_only_the_requested_field ... FAILED
+
+    failures:
+
+    failures:
+        payload_window_reads_charge_only_the_requested_field
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'payload_window_reads_charge_only_the_requested_field' (34823530) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:468:9:
+    an eight-byte window must not charge unrelated trailing bytes: 65546
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.019s] (2/2) zeppelin-embed::graph_storage_failures admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+  stdout ───
+
+    running 1 test
+    test admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work ... FAILED
+
+    failures:
+
+    failures:
+        admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work' (34823529) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:372:5:
+    exact repeated reference lookup must reuse complete admission, not rehash unchanged payload bytes
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

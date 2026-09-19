@@ -1,0 +1,22 @@
+--- candidate/crates/zeppelin-embed/src/property_graph/storage/artifact.rs
++++ integrated/crates/zeppelin-embed/src/property_graph/storage/artifact.rs
+@@ -114,6 +114,10 @@
+     PayloadChunk = 11,
+     /// Complete versioned logical installing-operation evidence.
+     OperationProvenance = 12,
++    /// Bounded immutable adjacency base (ZE-124).
++    AdjacencyBase = 13,
++    /// Bounded immutable adjacency delta (ZE-124).
++    AdjacencyDelta = 14,
+ }
+ 
+ /// Identity and monotone creation metadata covered by the file checksum.
+@@ -662,6 +666,8 @@
+         10 => Ok(BlockKind::CommitParticipant),
+         11 => Ok(BlockKind::PayloadChunk),
+         12 => Ok(BlockKind::OperationProvenance),
++        13 => Ok(BlockKind::AdjacencyBase),
++        14 => Ok(BlockKind::AdjacencyDelta),
+         _ => Err(invalid(
+             FormatCheck::Family,
+             "unknown required graph block kind",

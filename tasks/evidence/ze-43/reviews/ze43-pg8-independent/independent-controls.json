@@ -1,0 +1,97 @@
+{
+  "results": [
+    {
+      "name": "alter_actual_decoder_observation",
+      "file": "tests/adversarial/graph_directories/observe.rs",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "-E",
+        "test(=property_graph_directories_probe_checks_native_roots_and_independent_history)",
+        "--test-threads",
+        "1"
+      ],
+      "cwd": "/tmp/ze43-pg8-independent/repro",
+      "exit_code": 100,
+      "log": "/tmp/ze43-pg8-independent/alter_actual_decoder_observation.log",
+      "log_sha256": "2f9d55c45c8c2da2bba372015ad8d40ffb7760cb2dedba92a703c2ce06c3d694",
+      "restored_sha256": "e57d0e93d6dc2eadf518b5d13552b597f6590a9831754a8a4d845f0232e07f61"
+    },
+    {
+      "name": "lose_actual_reopened_source",
+      "file": "tests/adversarial/graph_directories.rs",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "-E",
+        "test(=property_graph_directories_probe_checks_native_roots_and_independent_history)",
+        "--test-threads",
+        "1"
+      ],
+      "cwd": "/tmp/ze43-pg8-independent/repro",
+      "exit_code": 100,
+      "log": "/tmp/ze43-pg8-independent/lose_actual_reopened_source.log",
+      "log_sha256": "b1772ac9a1e2aa685a44eff3e48c150005fdfb1f846df1b3423fce38abcd1120",
+      "restored_sha256": "c58c1713f6ff32ec43afc96c216aef11cb87c884dd823f4077495b04e51cf0a0"
+    },
+    {
+      "name": "malformed_physical_reopen",
+      "file": "tests/adversarial/graph_directories.rs",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "-E",
+        "test(=property_graph_directories_probe_checks_native_roots_and_independent_history)",
+        "--test-threads",
+        "1"
+      ],
+      "cwd": "/tmp/ze43-pg8-independent/repro",
+      "exit_code": 100,
+      "log": "/tmp/ze43-pg8-independent/malformed_physical_reopen.log",
+      "log_sha256": "5ae32654cad905914f7ea39d5f5c6d1b270ccdbb2d9d9d7b7bf9735a6eb910cd",
+      "restored_sha256": "c58c1713f6ff32ec43afc96c216aef11cb87c884dd823f4077495b04e51cf0a0"
+    },
+    {
+      "name": "omit_actual_runner_route",
+      "file": "tests/adversarial/runner.rs",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-workspace-tests",
+        "--test",
+        "adversarial_tests",
+        "-E",
+        "test(=one_runner_episode_reaches_required_native_directory_contracts)",
+        "--test-threads",
+        "1"
+      ],
+      "cwd": "/tmp/ze43-pg8-independent/repro",
+      "exit_code": 100,
+      "log": "/tmp/ze43-pg8-independent/omit_actual_runner_route.log",
+      "log_sha256": "4781b0aefe1a2d9f3a7c7c197f4f7b6a9f831970148a3a54b4c5220d71f73feb",
+      "restored_sha256": "152213f05e467cdd3f6d9ba2d10e4fe5650dab96ef57e59c3b13035f24a50536"
+    }
+  ],
+  "restored": {
+    "tests/adversarial/graph_directories/observe.rs": "e57d0e93d6dc2eadf518b5d13552b597f6590a9831754a8a4d845f0232e07f61",
+    "tests/adversarial/graph_directories.rs": "c58c1713f6ff32ec43afc96c216aef11cb87c884dd823f4077495b04e51cf0a0",
+    "tests/adversarial/runner.rs": "152213f05e467cdd3f6d9ba2d10e4fe5650dab96ef57e59c3b13035f24a50536"
+  }
+}

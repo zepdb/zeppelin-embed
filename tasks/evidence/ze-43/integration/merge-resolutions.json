@@ -1,0 +1,44 @@
+[
+  {
+    "path": "fuzz/Cargo.toml",
+    "candidate_sha256": "96c423c0b0f126eca92e1bae6318f54aab23cd8e721d96d916759cf049037482",
+    "integrated_sha256": "da83cf9e9dfd2944c821936675cedefef8e6bb3bdb4dd74acbf86979f230c35d",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "tests/adversarial_tests.rs",
+    "candidate_sha256": "2840b517894321c1941e2675afa8647e78ded07fce68c6109d88336ad608ea8a",
+    "integrated_sha256": "cda91ddad3e57ab39f9b7b7d5143437a014e784aef511ebd4bfe0a3230ec9b19",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+    "candidate_sha256": "2aaaf9118703f08fc04411e6e275a2ab203ea541eb4d1b4dc682baed445628f4",
+    "integrated_sha256": "390b3e026db5f3c34996e8befd591c51c46da074b0671db474be1dcd1f56ade5",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "tests/adversarial/runner.rs",
+    "candidate_sha256": "152213f05e467cdd3f6d9ba2d10e4fe5650dab96ef57e59c3b13035f24a50536",
+    "integrated_sha256": "e2c185a0337a878bf415db92bce84ce2ef29fe4bb65f4932acba78c0eea6efc8",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "tests/adversarial/mod.rs",
+    "candidate_sha256": "d3c156d8646e783c1e3ef8e79086df62c75a5b2f60d769f585555148ce03b168",
+    "integrated_sha256": "070d284d7119fea0d96c3d81f24fc0d2e5e60e403a19c65cd2ef1185a2e69710",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "tests/adversarial/coverage.rs",
+    "candidate_sha256": "4adbcc547b7b9fe43606d241b18c80c92d93605f49ced4113b6a89e5bef4f1a3",
+    "integrated_sha256": "a4587c78b079669b92b5375567f836798bcd501a7d6993b533ca16f1664ba0e9",
+    "resolution": "complete committed source plus exact independent additions"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "candidate_sha256": "9a531c5b032e244bd67e5f759bccad42c77a84a3d4fccb4db3bf48ecd83d8040",
+    "integrated_sha256": "75d85e90ef93b54dedeae2bb8445f874362dcc8e346ca6d6adc07a5fe15a784b",
+    "resolution": "complete committed source plus exact independent additions"
+  }
+]

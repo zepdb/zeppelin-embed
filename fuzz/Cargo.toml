@@ -144,3 +144,10 @@ path = "fuzz_targets/native_graph_adjacency.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_graph_records"
+path = "fuzz_targets/native_graph_records.rs"
+test = false
+doc = false
+bench = false

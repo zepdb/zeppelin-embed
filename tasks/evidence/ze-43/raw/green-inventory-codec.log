@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.98s
+────────────
+ Nextest run ID 38e3a46d-b295-440b-93c1-0126fc8377a0 with nextest profile: default
+    Starting 1 test across 1 binary (25 tests skipped)
+        PASS [   0.026s] (1/1) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+────────────
+     Summary [   0.027s] 1 test run: 1 passed, 25 skipped

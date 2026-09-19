@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.98s
+────────────
+ Nextest run ID fd1dac35-8b61-4660-bcc4-44597ed91cdc with nextest profile: default
+    Starting 2 tests across 1 binary (13 tests skipped)
+        PASS [   0.021s] (1/2) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+        PASS [   2.897s] (2/2) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+────────────
+     Summary [   2.897s] 2 tests run: 2 passed, 13 skipped

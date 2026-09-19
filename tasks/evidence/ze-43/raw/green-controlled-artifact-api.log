@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.05s
+────────────
+ Nextest run ID 0d05c4ad-f426-4c77-bb8a-582b32538f56 with nextest profile: default
+    Starting 1 test across 1 binary (15 tests skipped)
+        PASS [   0.035s] (1/1) zeppelin-embed::graph_artifact controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+────────────
+     Summary [   0.035s] 1 test run: 1 passed, 15 skipped

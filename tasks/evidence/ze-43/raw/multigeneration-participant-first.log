@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0599]: no method named `text` found for reference `&CanonicalView<'_, PreparedObjects<'_, '_, ..., ...>>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_storage_prepare.rs:770:18
+    |
+768 | /             record
+769 | |                 .canonical()
+770 | |                 .text()
+    | |                 -^^^^ private field, not a method
+    | |_________________|
+    |
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/target/debug/deps/graph_storage_prepare-ce3ea4d6b3e19cf9.long-type-12862826584156219255.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_storage_prepare") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

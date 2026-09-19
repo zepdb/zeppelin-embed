@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.58s
+────────────
+ Nextest run ID 67392611-ba6f-4b56-a295-ec6561502960 with nextest profile: default
+    Starting 2 tests across 1 binary (19 tests skipped)
+        PASS [   0.024s] (1/2) zeppelin-embed::graph_directories preparation_reservations_release_on_allocator_and_lower_owner_failures
+        PASS [   0.025s] (2/2) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+────────────
+     Summary [   0.025s] 2 tests run: 2 passed, 19 skipped

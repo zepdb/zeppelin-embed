@@ -1,0 +1,25 @@
+{
+  "frozen_manifest_sha256": "4c797fda991952f9260fd5a846215db553a428b30fdfb0a893319e1eb968c36e",
+  "all_snapshot_hashes_verified": 28,
+  "reviewed_primary_and_supporting_files": {
+    "crates/zeppelin-embed/src/property_graph/storage/memory.rs": "3fc72c2822d4b66053c6745e3bcdda6439de764e75356259c9816132de134fb1",
+    "crates/zeppelin-embed/src/property_graph/storage/prepared.rs": "5037de13120da1a2074628e2d850c927f9f9b0f19ad5168c13f3f659af26406b",
+    "crates/zeppelin-embed/src/property_graph/storage/artifact/private.rs": "30e39cec87a8ee8b676207a753dc25206b8279b1c864491d599790fd5b94aaf3",
+    "crates/zeppelin-embed/src/property_graph/storage/artifact.rs": "9a531c5b032e244bd67e5f759bccad42c77a84a3d4fccb4db3bf48ecd83d8040",
+    "crates/zeppelin-embed/src/property_graph/staging/memory.rs": "2a16417a4d006cc441c85f776971fb3fd18584572b44381a986bc3ae1216800f",
+    "crates/zeppelin-embed/src/property_graph/staging.rs": "dab6d5047d52d868d6e546506e970b26975b0afcacc8a53d4aaecd59b23d6c3f",
+    "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs": "5a2296061f69e07c1ddc713c914928b80878ba156832843939a0f18f9e3cbbee",
+    "crates/zeppelin-embed/src/property_graph/storage/participant.rs": "c8453bbbe14129bcc8dd3e946e7b79cd5480162dfab663537ef0c499e06f9ae4",
+    "crates/zeppelin-embed/tests/graph_storage_failures.rs": "3591086414a7827653f955d730b2fe9b617c2eca6c676d46f67467cf0f0e43f4",
+    "crates/zeppelin-embed/tests/graph_storage_prepare.rs": "e9999ef75b36c8cac642f5e326a5a5f3a2afef78f71f9a4c6aa43005ac9011d5",
+    "crates/zeppelin-embed/tests/graph_directories.rs": "7f02d63fea3ef7db42d8cf859864c670bde66a382984d217965c68e363c142e4"
+  },
+  "comment_only_prepared_delta_sha256": "44ff1889e8e467043eb786228e0627ebeb07cf671c32e102be963d0de967c628",
+  "evidence_sha256": {
+    "green-cow-laundering-terminal.log": "66c1cbe726fc6b5c14d3dd70e03f1249bc33da447c2f62b7870d709b26cc092e",
+    "cow-terminal-clippy.log": "99fbf887d0b1eaf8d54b0a6b1123e7ce94ea23b80e4a847b0548660471447324",
+    "allocation-final-numbers.log": "054cda9c388b7c1cf54a1a840936ea5cb1a7fb9afd026bedf72277c8a9138dd3",
+    "green-storage-memory-allocator.log": "513f9de12db3213d8e1bf2fa7d2cd82f2ab53b7aec1fd57c2cb56decb6fa5daf"
+  },
+  "independent_test_rerun": false
+}

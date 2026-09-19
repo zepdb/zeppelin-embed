@@ -1,0 +1,52 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.12s
+────────────
+ Nextest run ID 372592a9-16eb-48c9-bb99-6aed84563305 with nextest profile: default
+    Starting 7 tests across 1 binary
+        PASS [   0.013s] (1/7) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+        PASS [   0.025s] (2/7) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+        FAIL [   1.003s] (3/7) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+  stdout ───
+
+    running 1 test
+    test multilevel_directory_deletion_restores_last_bounds_and_collapses_root ... FAILED
+
+    failures:
+
+    failures:
+        multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 1.00s
+
+  stderr ───
+
+    thread 'multilevel_directory_deletion_restores_last_bounds_and_collapses_root' (33971883) panicked at crates/zeppelin-embed/tests/graph_directories.rs:134:83:
+    called `Result::unwrap()` on an `Err` value: Work
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.018s] (4/7) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+        PASS [   2.891s] (5/7) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+        PASS [   3.004s] (6/7) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+        PASS [   3.960s] (7/7) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+────────────
+     Summary [   3.960s] 7 tests run: 6 passed, 1 failed, 0 skipped
+        FAIL [   1.003s] (3/7) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+  stdout ───
+
+    running 1 test
+    test multilevel_directory_deletion_restores_last_bounds_and_collapses_root ... FAILED
+
+    failures:
+
+    failures:
+        multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 1.00s
+
+  stderr ───
+
+    thread 'multilevel_directory_deletion_restores_last_bounds_and_collapses_root' (33971883) panicked at crates/zeppelin-embed/tests/graph_directories.rs:134:83:
+    called `Result::unwrap()` on an `Err` value: Work
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

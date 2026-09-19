@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-directory-independent/repro/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+────────────
+ Nextest run ID c82356da-53a7-4fb8-beb0-0c218fb25bef with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.030s] (1/1) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'keyed_fence_retains_complete_history_and_checks_containing_leaf_generation' (34665609) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2553:5:
+    COW must not legitimize a future reference retained from an old leaf
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.030s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.030s] (1/1) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'keyed_fence_retains_complete_history_and_checks_containing_leaf_generation' (34665609) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2553:5:
+    COW must not legitimize a future reference retained from an old leaf
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

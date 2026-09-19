@@ -1,0 +1,1 @@
+{"command": ["cargo", "nextest", "run", "-p", "zeppelin-embed", "--test", "graph_directories", "-E", "test(=graph_root_bundle_retains_typed_full_width_label_and_type_directories)", "--no-tests=fail"], "exit": 101}

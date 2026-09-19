@@ -1,0 +1,20 @@
+[
+  {
+    "name": "red-native-index-bijection",
+    "path": "crates/zeppelin-embed/src/property_graph/storage/records/native.rs",
+    "original": "c9fd91f50afd6695c997340c6227cd1bc8e9bbcc669ce6997af9422cf7f46e5b",
+    "mutant": "247e5e070ebd8c3518dba3626067e0a93c5e76fbfb7000334ef107eb83cb9ae7",
+    "restored": "c9fd91f50afd6695c997340c6227cd1bc8e9bbcc669ce6997af9422cf7f46e5b",
+    "exit_code": 100,
+    "assertion": "repaired outer checksum cannot conceal record mismatch"
+  },
+  {
+    "name": "red-native-parent-generation",
+    "path": "crates/zeppelin-embed/src/property_graph/storage/stream.rs",
+    "original": "977371cff1025818bda0fe9238e61c607ba894b0316520d2f96021380018596e",
+    "mutant": "6cace1ef75da13b98ad349054229164193ced35a572ca4cc9c281bbb2b5ef69d",
+    "restored": "977371cff1025818bda0fe9238e61c607ba894b0316520d2f96021380018596e",
+    "exit_code": 100,
+    "assertion": "a later read view cannot legitimize a payload newer than its parent record"
+  }
+]

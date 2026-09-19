@@ -1,0 +1,22 @@
+# ZE-43 frozen preparation checkpoint: independent review
+
+Reviewed `/tmp/ze43-preparation-review` only. All 20 source hashes in `hashes.json` matched their frozen files before review. The moving ZE-43 worktree and ZE-73 worktree were not edited. This is a source and focused-test audit, not a test rerun or final ZE-43 acceptance.
+
+## Result
+
+No correctness blocker found in the frozen new controlled artifact codec, private packing, nested allocation owner, or native-record preparation paths. The following two focused evidence gaps remain visible in this snapshot; neither establishes an implementation defect.
+
+1. `crates/zeppelin-embed/tests/graph_directories.rs:2022` reopens three physical files into independently owned buffers and queries both the latest and saved old root. It does not invoke a reachability/inventory tracer, and the saved root is an earlier root within the same generation/preparation. Therefore this test proves fresh-file directory access and old-root byte retention, not latest-plus-old-root tracing across a retained prior generation. Keep those claims distinct; add the intended tracer assertion when its integration is ready. This does not require GraphStore/publication/recovery work or a broad suite.
+2. The frozen tests directly cover controlled codec cancellation and memory-admission failures, but the new `OwnedArtifact::read_from` and `PreparedObjects` tests are happy-path checks. A focused reader that records every requested buffer length and cancels during a read, plus an interrupted private append/seal/finish that checks abort inventory and denied `artifact()`, would lock down their new wiring. Source inspection currently shows the intended guards, but the snapshot does not contain these path-specific negative controls.
+
+## Checked invariants
+
+- `StorageMemory` reserves its control object through the existing `WriteMemory`; every `StorageBuffer`, prepare scratch, cursor capacity and operation workspace uses that same nested owner. Local, writer and aggregate limits are checked before allocation; actual vector capacities are reconciled, replacement backing must overlap its old reservation, and vector backing fields drop before reservation fields. An allocation/reconciliation error drops local backing before the guard. The existing focused tests inspect all three counters and allocator/writer/aggregate refusal paths.
+- Pack byte buffers, block-entry buffers and the pack inventory itself are fixed-capacity charged vectors. Pack rollover seals the previous pack before another allocation, while both remain charged. Distinct nonces, increasing creation serials and exact store/generation checks are enforced for appended candidate packs. An allocated pack is inventoried before its first append can fail.
+- Private references require exact recorded membership and kind/version/length, then validate their block checksum. Failed private mutation keeps `Failed` state. The body has no public byte accessor; `sealed_bytes` becomes available only after complete directory/trailer construction and complete controlled decode. `PreparedObjects::artifact` requires successful finalization of every pack, including a final control checkpoint. An earlier sealed pack cannot escape through this coordinator when a later pack fails.
+- Codec hashing, filling, copying and physical read-ahead have at most 65,536-byte chunks. `OwnedArtifact::read_from` polls before and after each physical read, rejects a trailing byte, and validates the full immutable file before constructing its owner. Its later exact-reference lookup is bounded binary search over admitted metadata, not an unpolled payload checksum scan. The coordinator and private resolver retain final control checks.
+- Native record preparation first verifies canonical/provenance streams, charges label/property arrays, sorts them with a nonallocating heap sort that polls bounded steps, rejects duplicate/zero catalog symbols, and preserves original canonical/provenance payload references. Emission copies bounded header/index/reference fragments, then `verify_record` checks the result before return. Temporary index arrays remain charged through final verification and drop on return.
+
+## Boundaries
+
+This preparation checkpoint is explicitly not the final participant, key-fence or tombstone implementation. It does not prove exclusive physical creation, synchronization, publication, GraphStore root admission, recovery or physical GC. Those are later owning seams. No unrelated suite is requested by this review.

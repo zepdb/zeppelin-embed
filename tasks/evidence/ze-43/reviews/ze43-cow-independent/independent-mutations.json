@@ -1,0 +1,48 @@
+{
+  "source_sha256": "5a2296061f69e07c1ddc713c914928b80878ba156832843939a0f18f9e3cbbee",
+  "restored_sha256": "5a2296061f69e07c1ddc713c914928b80878ba156832843939a0f18f9e3cbbee",
+  "results": [
+    {
+      "name": "skip_old_leaf_validator",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_directories",
+        "-E",
+        "test(=keyed_fence_retains_complete_history_and_checks_containing_leaf_generation) | test(=inventory_directory_preserves_exact_descriptors_without_granting_liveness) | test(=native_record_requires_complete_canonical_index_labels_and_provenance) | test(=relationship_record_correlates_full_topology_and_rejects_future_payloads)",
+        "--test-threads",
+        "4"
+      ],
+      "cwd": "/tmp/ze43-cow-independent/repro",
+      "target_dir": "/tmp/ze43-directory-independent/target",
+      "exit_code": 100,
+      "log": "/tmp/ze43-cow-independent/skip_old_leaf_validator.log",
+      "log_sha256": "c2dbb4f6baa1847b0f353b32f0da41ed23d8e392fc916ee574c4cc95d9fe511d"
+    },
+    {
+      "name": "skip_old_parent_child_checks",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_directories",
+        "-E",
+        "test(=cow_does_not_legitimize_future_unselected_branch_child)",
+        "--test-threads",
+        "4"
+      ],
+      "cwd": "/tmp/ze43-cow-independent/repro",
+      "target_dir": "/tmp/ze43-directory-independent/target",
+      "exit_code": 100,
+      "log": "/tmp/ze43-cow-independent/skip_old_parent_child_checks.log",
+      "log_sha256": "5b9bcf56b55b38bf4216fe8ab6b824fec357d21c60515beb5b1c08d4f33b28df"
+    }
+  ]
+}

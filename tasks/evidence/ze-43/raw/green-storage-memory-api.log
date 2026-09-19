@@ -1,0 +1,28 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0621]: explicit lifetime required in the type of `resources`
+    --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:1421:22
+     |
+1421 |     let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ lifetime `'a` required
+     |
+help: add explicit lifetime `'a` to the type of `resources`
+     |
+1418 -     resources: &mut TreeResources<'_>,
+1418 +     resources: &mut directory::TreeResources<'a>,
+     |
+
+error[E0621]: explicit lifetime required in the type of `resources`
+    --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:1424:9
+     |
+1424 |         validator(entry, resources)?;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ lifetime `'a` required
+     |
+help: add explicit lifetime `'a` to the type of `resources`
+     |
+1418 -     resources: &mut TreeResources<'_>,
+1418 +     resources: &mut directory::TreeResources<'a>,
+     |
+
+For more information about this error, try `rustc --explain E0621`.
+error: could not compile `zeppelin-embed` (lib) due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

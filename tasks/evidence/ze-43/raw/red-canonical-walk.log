@@ -1,0 +1,54 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error: expected identifier, found reserved keyword `gen`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1194:66
+     |
+1194 |     let mut objects=Objects::new(); let store=objects.store; let gen=GraphGeneration::new(1);
+     |                                                                  ^^^ expected identifier, found reserved keyword
+     |
+help: escape `gen` to use it as an identifier
+     |
+1194 |     let mut objects=Objects::new(); let store=objects.store; let r#gen=GraphGeneration::new(1);
+     |                                                                  ++
+
+error: expected expression, found reserved keyword `gen`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1197:46
+     |
+1197 |     let p=prepare_payload(&mut objects,store,gen,BlockKind::CanonicalImage,&bytes,&mut r).unwrap();
+     |                                              ^^^ expected expression
+
+error: expected expression, found reserved keyword `gen`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1199:64
+     |
+1199 |     let view=verify_canonical(PayloadSlice::new(&objects,store,gen,p),None,&mut observe,&mut r).unwrap();
+     |                                                                ^^^ expected expression
+
+error: expected expression, found reserved keyword `gen`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1209:50
+     |
+1209 |         let p=prepare_payload(&mut objects,store,gen,BlockKind::CanonicalImage,&broken,&mut r).unwrap();
+     |                                                  ^^^ expected expression
+
+error: expected expression, found reserved keyword `gen`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1211:67
+     |
+1211 |         assert!(verify_canonical(PayloadSlice::new(&objects,store,gen,p),None,&mut observe,&mut r).is_err());
+     |                                                                   ^^^ expected expression
+
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::records`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1177:50
+     |
+1177 |     use zeppelin_embed::property_graph::storage::records::{CanonicalVisitor, StoredProperty, verify_canonical};
+     |                                                  ^^^^^^^ could not find `records` in `storage`
+
+warning: unused import: `zeppelin_embed::property_graph::storage::payload::prepare_payload`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1175:9
+     |
+1175 |     use zeppelin_embed::property_graph::storage::payload::prepare_payload;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `zeppelin-embed` (test "graph_directories") generated 1 warning
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 6 previous errors; 1 warning emitted
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

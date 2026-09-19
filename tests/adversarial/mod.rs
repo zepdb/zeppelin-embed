@@ -98,6 +98,7 @@ pub mod graph_wal;
 
 pub mod graph_runtime;
 
+pub mod graph_directories;
 pub mod graph_staging;
 
 pub mod graph_fixture;

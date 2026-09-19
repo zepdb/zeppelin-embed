@@ -1,0 +1,59 @@
+[
+  {
+    "name": "decode-final-poll",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit",
+      "--test",
+      "graph_artifact",
+      "-E",
+      "test(controlled_artifact_admission)"
+    ],
+    "exit": 100,
+    "original_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871",
+    "restored_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871"
+  },
+  {
+    "name": "encode-final-poll",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit",
+      "--test",
+      "graph_artifact",
+      "-E",
+      "test(controlled_artifact_encoding)"
+    ],
+    "exit": 100,
+    "original_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871",
+    "restored_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871"
+  },
+  {
+    "name": "exact-reference",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit",
+      "--test",
+      "graph_artifact",
+      "-E",
+      "test(exact_directory_resolution)"
+    ],
+    "exit": 100,
+    "original_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871",
+    "restored_sha256": "fd3423762ead749f415d0879ad7c0b85fe27b28ab4a56efb4865f19258ecf871"
+  }
+]

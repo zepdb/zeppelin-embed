@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+────────────
+ Nextest run ID b53718f3-e915-4c04-9aa8-63c8b9804960 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        PASS [   0.177s] (1/1) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+────────────
+     Summary [   0.177s] 1 test run: 1 passed, 3 skipped
+        PASS [   0.177s] (1/1) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+  stdout ───
+
+    running 1 test
+    test native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant ... [DEBUG-ze43] prepare count=128 canonical=4505 native=4240 work=31921243 resolves=4497 hash_payload_bytes=19802757 resolve_work=20346798 writes=3 written_bytes=8796
+    [DEBUG-ze43] verify count=128 work=19078449 resolves=2709 hash_payload_bytes=11752536 resolve_work=12080277
+    ZE43 chunk-spanning indexes labels=128 properties=128 canonical_bytes=4505 native_bytes=4240 participant_peak=818256 work=57538962
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.17s
+
+

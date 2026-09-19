@@ -472,3 +472,6 @@ fn parse_cell(header: PageHeader, bytes: &[u8]) -> Result<Cell<'_>, FormatError>
 fn invalid(detail: &str) -> FormatError {
     FormatError::new("native graph tree page", FormatCheck::BlockLength, detail)
 }
+
+/// Bounded immutable directory routing and private path replacement.
+pub mod directory;

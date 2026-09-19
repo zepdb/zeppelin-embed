@@ -1,0 +1,1 @@
+{"command": ["cargo", "nextest", "run", "-p", "zeppelin-embed", "--test", "graph_directories", "-E", "test(=whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path)", "--no-tests=fail"], "exit": 101}

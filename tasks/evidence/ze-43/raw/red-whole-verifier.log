@@ -1,0 +1,40 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error: expected identifier, found reserved keyword `gen`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:387:9
+    |
+387 |     let gen=GraphGeneration::new(1);
+    |         ^^^ expected identifier, found reserved keyword
+    |
+help: escape `gen` to use it as an identifier
+    |
+387 |     let r#gen=GraphGeneration::new(1);
+    |         ++
+
+error: expected expression, found reserved keyword `gen`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:389:69
+    |
+389 |     encode_page(PageHeader {kind:TreeKind::Nodes,level:0,generation:gen},
+    |                 ---------- while parsing this struct                ^^^ expected expression
+
+error: expected expression, found reserved keyword `gen`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:391:49
+    |
+391 |     let left=objects.append(BlockKind::TreePage,gen,&bytes,&mut resources).unwrap();
+    |                                                 ^^^ expected expression
+
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::tree::directory::verify_directory`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:382:9
+    |
+382 |     use zeppelin_embed::property_graph::storage::tree::directory::verify_directory;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `verify_directory` in `property_graph::storage::tree::directory`
+
+error[E0063]: missing field `generation` in initializer of `PageHeader`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:389:17
+    |
+389 |     encode_page(PageHeader {kind:TreeKind::Nodes,level:0,generation:gen},
+    |                 ^^^^^^^^^^ missing `generation`
+
+Some errors have detailed explanations: E0063, E0432.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 5 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

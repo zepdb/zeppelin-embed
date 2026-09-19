@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.87s
+────────────
+ Nextest run ID a15cbab4-a504-4e2d-af64-fe12288cd996 with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        FAIL [   0.035s] (1/1) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+  stdout ───
+
+    running 1 test
+    test staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences ... FAILED
+
+    failures:
+
+    failures:
+        staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences' (34613817) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:668:9:
+    assertion `left == right` failed
+      left: 4
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.035s] 1 test run: 0 passed, 1 failed, 1 skipped
+        FAIL [   0.035s] (1/1) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+  stdout ───
+
+    running 1 test
+    test staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences ... FAILED
+
+    failures:
+
+    failures:
+        staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences' (34613817) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:668:9:
+    assertion `left == right` failed
+      left: 4
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.69s
+────────────
+ Nextest run ID 77965988-bf7a-489d-860f-2b6bbccdb151 with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        PASS [   0.037s] (1/1) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+────────────
+     Summary [   0.037s] 1 test run: 1 passed, 26 skipped

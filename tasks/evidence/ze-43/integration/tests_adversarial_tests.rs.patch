@@ -1,0 +1,239 @@
+--- candidate/tests/adversarial_tests.rs
++++ integrated/tests/adversarial_tests.rs
+@@ -18697,7 +18697,7 @@
+             report.fault_fires,
+             report.clean_controls
+         ),
+-        (390, 2, 3, 3)
++        (390, 11, 4, 4)
+     );
+     eprintln!("PG6 {report:?}");
+     for key in adversarial::graph_query::REQUIRED_COVERAGE {
+@@ -18825,6 +18825,227 @@
+ }
+ 
+ #[test]
++fn property_graph_binding_probe_preserves_profile_types_and_faults() {
++    for seed in [0, 1, 55, u64::MAX] {
++        let mut coverage = adversarial::coverage::CoverageRegistry::default();
++        let report = adversarial::graph_binding::probe(seed, &mut coverage)
++            .expect("PG11 independent binder model");
++        assert_eq!(
++            (report.cases, report.fault_fires, report.clean_controls),
++            (52, 2, 2)
++        );
++        for key in adversarial::graph_binding::REQUIRED_COVERAGE {
++            assert!(coverage.count(key) > 0, "{key}");
++        }
++    }
++}
++#[test]
++fn one_runner_episode_reaches_required_binding_contracts() {
++    let root = tempfile::tempdir().expect("binder runner artifacts");
++    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
++        .expect("actual runner episode");
++    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
++    for key in adversarial::graph_binding::REQUIRED_COVERAGE {
++        assert!(
++            outcome.coverage.count(key) > 0,
++            "actual runner omitted {key}"
++        );
++    }
++    eprintln!(
++        "PG11 actual runner seed=0 operations={} violations={}",
++        outcome.operations,
++        outcome.violations.len()
++    );
++}
++
++#[test]
++fn graph_fixture_seed_stream_preserves_existing_adversarial_derivation() {
++    use rand::Rng;
++    for (seed, expected) in [
++        (0, [3417211280, 2575237961, 3040212859, 525309083]),
++        (41, [542041569, 635730472, 1264154463, 3187647042]),
++        (
++            0x4752_4150_4830_3031,
++            [3264171531, 3896240848, 3681769002, 671744701],
++        ),
++    ] {
++        let mut rng = adversarial::test_support::seeded_rng("graph-fixture-v1/topics", seed);
++        let words: [u32; 4] = std::array::from_fn(|_| rng.random());
++        assert_eq!(words, expected);
++        println!("seed={seed} words={words:?}");
++    }
++}
++
++#[test]
++fn property_graph_fixture_comparators_fire_with_same_seed_controls() {
++    for seed in [0, 1, 42, u64::MAX] {
++        let mut coverage = CoverageRegistry::default();
++        adversarial::graph_fixture::probe(seed, &mut coverage).unwrap();
++        for key in adversarial::graph_fixture::REQUIRED_COVERAGE {
++            assert_eq!(coverage.count(key), 1, "PG13 coverage {key}");
++        }
++    }
++}
++#[test]
++fn one_runner_episode_reaches_required_fixture_comparators() {
++    let root = tempfile::tempdir().unwrap();
++    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
++    assert!(outcome.violations.is_empty());
++    for key in adversarial::graph_fixture::REQUIRED_COVERAGE {
++        assert!(
++            outcome.coverage.count(key) > 0,
++            "actual runner omitted {key}"
++        );
++    }
++    println!(
++        "PG13 runner seed=0 operations={} violations={}",
++        outcome.operations,
++        outcome.violations.len()
++    );
++}
++
++#[test]
++fn property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls() {
++    for seed in [0, 1, 124, u64::MAX] {
++        let mut coverage = adversarial::coverage::CoverageRegistry::default();
++        let report = adversarial::graph_adjacency::probe(seed, &mut coverage).unwrap();
++        assert_eq!(
++            (
++                report.comparisons,
++                report.fault_fires,
++                report.clean_controls
++            ),
++            (4, 5, 5)
++        );
++        for key in adversarial::graph_adjacency::REQUIRED_COVERAGE {
++            assert!(coverage.count(key) > 0, "{key}");
++        }
++        eprintln!("PG12 seed={seed} {report:?}");
++    }
++}
++#[test]
++fn one_runner_episode_reaches_required_adjacency_contracts() {
++    let root = tempfile::tempdir().unwrap();
++    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
++    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
++    for key in adversarial::graph_adjacency::REQUIRED_COVERAGE {
++        assert!(outcome.coverage.count(key) > 0, "{key}");
++    }
++    eprintln!(
++        "PG12 actual runner seed=0 operations={} violations={}",
++        outcome.operations,
++        outcome.violations.len()
++    );
++}
++
++#[test]
++fn property_graph_relational_probe_preserves_order_bags_and_inflight_faults() {
++    for seed in [0, 1, 125, u64::MAX] {
++        let mut coverage = adversarial::coverage::CoverageRegistry::default();
++        let report = adversarial::graph_relational::probe(seed, &mut coverage)
++            .expect("PG14 independent relational oracle");
++        eprintln!("PG14 seed={seed} {report:?}");
++        assert_eq!(
++            (report.cases, report.fault_fires, report.clean_controls),
++            (6, 3, 3)
++        );
++        for key in adversarial::graph_relational::REQUIRED_COVERAGE {
++            assert!(coverage.count(key) > 0, "{key}");
++        }
++    }
++}
++
++#[test]
++fn one_runner_episode_reaches_required_relational_contracts() {
++    let root = tempfile::tempdir().expect("relational runner artifacts");
++    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
++        .expect("actual runner episode");
++    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
++    for key in adversarial::graph_relational::REQUIRED_COVERAGE {
++        assert!(
++            outcome.coverage.count(key) > 0,
++            "actual runner omitted {key}"
++        );
++    }
++    eprintln!(
++        "PG14 actual runner seed=0 operations={} violations={}",
++        outcome.operations,
++        outcome.violations.len()
++    );
++}
++
++#[test]
++fn completed_owner_probe_preserves_bits_bags_and_real_fault_controls() {
++    for seed in [0, 1, 127, u64::MAX] {
++        let mut coverage = adversarial::coverage::CoverageRegistry::default();
++        let report = adversarial::graph_completed::probe(seed, &mut coverage).unwrap();
++        assert_eq!(
++            (report.comparisons, report.fires, report.controls),
++            (12, 2, 3)
++        );
++        for key in adversarial::graph_completed::REQUIRED_COVERAGE {
++            assert!(coverage.count(key) > 0, "{key}");
++        }
++    }
++}
++
++#[test]
++fn one_runner_episode_reaches_completed_owner_controls() {
++    let root = tempfile::tempdir().unwrap();
++    let result = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
++    assert!(result.violations.is_empty(), "{:?}", result.violations);
++    for key in adversarial::graph_completed::REQUIRED_COVERAGE {
++        assert!(result.coverage.count(key) > 0, "{key}");
++    }
++}
++
++#[cfg(feature = "graph-cypher")]
++#[test]
++fn property_graph_response_probe_checks_real_owners_and_paired_faults() {
++    for seed in [0, 1, 128, u64::MAX] {
++        let mut coverage = adversarial::coverage::CoverageRegistry::default();
++        let report = adversarial::graph_response::probe(seed, &mut coverage)
++            .expect("PG16 actual graph response owners and independent oracle");
++        assert_eq!(report.fault_fires, report.clean_controls);
++        assert!(report.fault_fires >= 5);
++        for key in adversarial::graph_response::REQUIRED_COVERAGE {
++            assert!(coverage.count(key) > 0, "missing PG16 path {key}");
++        }
++        eprintln!("PG16 seed={seed} {report:?}");
++    }
++}
++
++#[cfg(feature = "graph-cypher")]
++#[test]
++fn one_runner_episode_reaches_required_graph_response_contracts() {
++    let root = tempfile::tempdir().expect("graph response runner artifacts");
++    let outcome = adversarial::runner::run_program(128, FaultProfile::None, root.path())
++        .expect("actual runner episode");
++    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
++    for key in adversarial::graph_response::REQUIRED_COVERAGE {
++        assert!(
++            outcome.coverage.count(key) > 0,
++            "actual runner omitted {key}"
++        );
++    }
++    eprintln!(
++        "PG16 actual runner seed=128 operations={} violations={}",
++        outcome.operations,
++        outcome.violations.len()
++    );
++}
++
++#[cfg(not(feature = "graph-cypher"))]
++#[test]
++fn graph_response_runner_keys_are_absent_without_graph_feature() {
++    assert!(
++        !adversarial::coverage::REQUIRED_SMOKE_COVERAGE
++            .iter()
++            .any(|key| key.starts_with("property-graph.response."))
++    );
++}
++
++#[test]
+ fn property_graph_directories_probe_checks_native_roots_and_independent_history() {
+     for seed in [0, 41] {
+         let mut coverage = adversarial::coverage::CoverageRegistry::default();

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.20s
+────────────
+ Nextest run ID 19ba9324-433f-4879-9e66-99aefaede0a7 with nextest profile: default
+    Starting 1 test across 1 binary (8 tests skipped)
+        FAIL [   0.017s] (1/1) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+  stdout ───
+
+    running 1 test
+    test tree_scratch_charges_real_shared_capacity_and_releases_before_other_work ... FAILED
+
+    failures:
+
+    failures:
+        tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'tree_scratch_charges_real_shared_capacity_and_releases_before_other_work' (33983822) panicked at crates/zeppelin-embed/tests/graph_directories.rs:350:5:
+    assertion `left == right` failed: tree scratch must own a real reservation, not trust a caller-provided number
+      left: 72
+     right: 147528
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.018s] 1 test run: 0 passed, 1 failed, 8 skipped
+        FAIL [   0.017s] (1/1) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+  stdout ───
+
+    running 1 test
+    test tree_scratch_charges_real_shared_capacity_and_releases_before_other_work ... FAILED
+
+    failures:
+
+    failures:
+        tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'tree_scratch_charges_real_shared_capacity_and_releases_before_other_work' (33983822) panicked at crates/zeppelin-embed/tests/graph_directories.rs:350:5:
+    assertion `left == right` failed: tree scratch must own a real reservation, not trust a caller-provided number
+      left: 72
+     right: 147528
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

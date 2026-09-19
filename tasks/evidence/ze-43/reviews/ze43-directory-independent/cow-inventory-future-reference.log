@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-directory-independent/repro/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+────────────
+ Nextest run ID 68832aa9-8106-408d-a437-378cddc92147 with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.025s] (1/1) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... FAILED
+
+    failures:
+
+    failures:
+        inventory_directory_preserves_exact_descriptors_without_granting_liveness
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'inventory_directory_preserves_exact_descriptors_without_granting_liveness' (34667460) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2785:5:
+    inventory COW must not legitimize a future descriptor retained from an old leaf
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.026s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.025s] (1/1) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... FAILED
+
+    failures:
+
+    failures:
+        inventory_directory_preserves_exact_descriptors_without_granting_liveness
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'inventory_directory_preserves_exact_descriptors_without_granting_liveness' (34667460) panicked at crates/zeppelin-embed/tests/graph_directories.rs:2785:5:
+    inventory COW must not legitimize a future descriptor retained from an old leaf
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,39 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::memory`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1733:50
+     |
+1733 |     use zeppelin_embed::property_graph::storage::memory::{StorageBuffer, StorageMemory};
+     |                                                  ^^^^^^ could not find `memory` in `storage`
+
+error[E0599]: no function or associated item named `for_prepare` found for struct `TreeScratch` in the current scope
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1748:32
+     |
+1748 |     let scratch = TreeScratch::for_prepare(&memory).unwrap();
+     |                                ^^^^^^^^^^^ function or associated item not found in `TreeScratch`
+     |
+note: if you're trying to build a new `TreeScratch`, consider using `TreeScratch::new` which returns `Result<TreeScratch, TreeError>`
+    --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:189:5
+     |
+ 189 |     pub fn new(shared: &GraphResources, reserved_bytes: usize) -> Result<Self, TreeError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `for_prepare` found for struct `TreeResources<'a>` in the current scope
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1749:36
+     |
+1749 |     let resources = TreeResources::for_prepare(&memory, 100).unwrap();
+     |                                    ^^^^^^^^^^^ function or associated item not found in `TreeResources<'_>`
+     |
+note: if you're trying to build a new `TreeResources<'_>`, consider using `TreeResources::<'a>::new` which returns `Result<TreeResources<'_>, TreeError>`
+    --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:81:5
+     |
+  81 | /     pub fn new(
+  82 | |         control: &'a QueryControl,
+  83 | |         shared: &GraphResources,
+  84 | |         work_limit: u64,
+  85 | |     ) -> Result<Self, TreeError> {
+     | |________________________________^
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

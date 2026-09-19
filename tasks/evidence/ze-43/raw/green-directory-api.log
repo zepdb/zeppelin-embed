@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.91s
+────────────
+ Nextest run ID 0b1cca7e-8653-4413-98c7-b25997413726 with nextest profile: default
+    Starting 1 test across 1 binary
+        PASS [   0.010s] (1/1) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 0 skipped

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.35s
+────────────
+ Nextest run ID 9e5efffc-8fdf-4933-967e-426b6919c773 with nextest profile: default
+    Starting 1 test across 1 binary (10 tests skipped)
+        PASS [   0.016s] (1/1) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+────────────
+     Summary [   0.016s] 1 test run: 1 passed, 10 skipped

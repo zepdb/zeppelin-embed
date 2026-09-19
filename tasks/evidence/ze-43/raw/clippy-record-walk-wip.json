@@ -1,0 +1,1 @@
+{"command": ["cargo", "clippy", "-p", "zeppelin-embed", "--lib", "--test", "graph_directories", "--no-deps", "--", "-D", "warnings"], "exit": 101}

@@ -1,0 +1,53 @@
+[
+  {
+    "name": "dropped-label-removal",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_storage_prepare",
+      "-E",
+      "test(staged_updates)"
+    ],
+    "exit": 100,
+    "original_sha256": "36a7a8312d1bba2dbe847473da1ce200b919c1c172a0818994741700fc5b91d0",
+    "restored_sha256": "36a7a8312d1bba2dbe847473da1ce200b919c1c172a0818994741700fc5b91d0"
+  },
+  {
+    "name": "dropped-deleted-fence",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_storage_prepare",
+      "-E",
+      "test(staged_updates)"
+    ],
+    "exit": 100,
+    "original_sha256": "36a7a8312d1bba2dbe847473da1ce200b919c1c172a0818994741700fc5b91d0",
+    "restored_sha256": "36a7a8312d1bba2dbe847473da1ce200b919c1c172a0818994741700fc5b91d0"
+  },
+  {
+    "name": "fence-root-generation-bound",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_directories",
+      "-E",
+      "test(keyed_fence_retains)"
+    ],
+    "exit": 100,
+    "original_sha256": "791b071dd4a8b6ba938e877bdbf40e58c71fa401bf3e14fcbf73699a8b7ff844",
+    "restored_sha256": "791b071dd4a8b6ba938e877bdbf40e58c71fa401bf3e14fcbf73699a8b7ff844"
+  }
+]

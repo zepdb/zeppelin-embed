@@ -1,0 +1,38 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.42s
+────────────
+ Nextest run ID f4b34a85-320c-45ed-8cb8-2716d016da51 with nextest profile: default
+    Starting 31 tests across 2 binaries
+        PASS [   0.010s] ( 1/31) zeppelin-embed::graph_artifact allocation_preflight_rejects_before_entropy_or_filesystem_access
+        PASS [   0.010s] ( 2/31) zeppelin-embed::graph_artifact entropy_and_collisions_fail_without_replacing_published_or_orphan_objects
+        PASS [   0.008s] ( 3/31) zeppelin-embed::graph_artifact exclusive_creation_survives_vfs_decorators_and_fault_images
+        PASS [   0.009s] ( 4/31) zeppelin-embed::graph_artifact exclusive_object_creation_preserves_published_and_orphan_bytes
+        PASS [   0.020s] ( 5/31) zeppelin-embed::graph_artifact complete_artifact_cap_includes_framing_and_rejects_before_output_mutation
+        PASS [   0.007s] ( 6/31) zeppelin-embed::graph_artifact graph_object_corruption_and_wrong_references_are_rejected_before_payload_access
+        PASS [   0.008s] ( 7/31) zeppelin-embed::graph_artifact failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership
+        PASS [   0.008s] ( 8/31) zeppelin-embed::graph_artifact incompatible_root_validation_never_mutates_root_or_neighbor_artifacts
+        PASS [   0.006s] ( 9/31) zeppelin-embed::graph_artifact native_graph_formats_are_required_and_append_only
+        PASS [   0.008s] (10/31) zeppelin-embed::graph_artifact native_graph_artifact_reference_and_page_bytes_match_independent_goldens
+        PASS [   0.007s] (11/31) zeppelin-embed::graph_artifact native_graph_only_object_reopens_full_width_identity_and_exact_payload
+        PASS [   0.007s] (12/31) zeppelin-embed::graph_artifact page_comparators_use_declared_numeric_fields_and_exact_key_bytes
+        PASS [   0.007s] (13/31) zeppelin-embed::graph_artifact tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct
+        PASS [   0.010s] (14/31) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+        PASS [   0.008s] (15/31) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+        PASS [   0.017s] (16/31) zeppelin-embed::graph_artifact tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums
+        PASS [   0.077s] (17/31) zeppelin-embed::graph_artifact artifact_and_page_preflight_reject_invalid_shapes_without_touching_output
+        PASS [   0.015s] (18/31) zeppelin-embed::graph_directories graph_root_bundle_retains_typed_full_width_label_and_type_directories
+        PASS [   0.012s] (19/31) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+        PASS [   0.024s] (20/31) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+        PASS [   0.366s] (21/31) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+        PASS [   2.894s] (22/31) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+        PASS [   0.010s] (23/31) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+        PASS [   0.019s] (24/31) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+        PASS [   0.015s] (25/31) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+        PASS [   0.012s] (26/31) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+        PASS [   0.009s] (27/31) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+        PASS [   0.015s] (28/31) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+        PASS [   2.965s] (29/31) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+        PASS [   4.029s] (30/31) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+        PASS [   6.346s] (31/31) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+────────────
+     Summary [   6.475s] 31 tests run: 31 passed, 0 skipped

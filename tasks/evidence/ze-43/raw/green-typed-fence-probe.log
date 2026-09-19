@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.24s
+────────────
+ Nextest run ID 29713ee4-b318-431e-a67e-ef1595a6df9d with nextest profile: default
+    Starting 1 test across 1 binary (23 tests skipped)
+        PASS [   0.057s] (1/1) zeppelin-embed::graph_directories typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup
+────────────
+     Summary [   0.058s] 1 test run: 1 passed, 23 skipped

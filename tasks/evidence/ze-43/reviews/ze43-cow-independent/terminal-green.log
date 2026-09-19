@@ -1,0 +1,18 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-cow-independent/repro/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.92s
+────────────
+ Nextest run ID e12f4320-9f18-4c42-9def-77f552ddc9b3 with nextest profile: default
+    Starting 11 tests across 3 binaries (22 tests skipped)
+        PASS [   0.019s] ( 1/11) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+        PASS [   0.019s] ( 2/11) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+        PASS [   0.012s] ( 3/11) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+        PASS [   0.012s] ( 4/11) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+        PASS [   0.011s] ( 5/11) zeppelin-embed::graph_storage_failures malformed_truncated_trailing_and_wrong_store_files_release_owned_admission_buffers
+        PASS [   0.043s] ( 6/11) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+        PASS [   0.047s] ( 7/11) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+        PASS [   0.023s] ( 8/11) zeppelin-embed::graph_storage_failures failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts
+        PASS [   0.014s] ( 9/11) zeppelin-embed::graph_storage_failures physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+        PASS [   0.019s] (10/11) zeppelin-embed::graph_storage_prepare authentic_staged_batch_prepares_native_directories_inside_one_memory_owner
+        PASS [   0.051s] (11/11) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+────────────
+     Summary [   0.099s] 11 tests run: 11 passed, 22 skipped

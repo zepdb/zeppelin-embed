@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.06s
+────────────
+ Nextest run ID e32a4e97-b8cc-487a-a5e8-05437e0a7657 with nextest profile: default
+    Starting 12 tests across 1 binary
+        PASS [   0.019s] ( 1/12) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+        PASS [   0.020s] ( 2/12) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+        PASS [   0.020s] ( 3/12) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+        PASS [   0.024s] ( 4/12) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+        PASS [   0.012s] ( 5/12) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+        PASS [   0.012s] ( 6/12) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+        PASS [   0.012s] ( 7/12) zeppelin-embed::graph_adjacency adjacency_merge_comparisons_keep_high_bits_between_runs
+        PASS [   0.017s] ( 8/12) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+        PASS [   0.010s] ( 9/12) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+        PASS [   0.011s] (10/12) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+        PASS [   0.010s] (11/12) zeppelin-embed::graph_adjacency adjacency_wal_reference_tags_are_append_only_through_public_decode
+        PASS [   0.037s] (12/12) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+────────────
+     Summary [   0.074s] 12 tests run: 12 passed, 0 skipped

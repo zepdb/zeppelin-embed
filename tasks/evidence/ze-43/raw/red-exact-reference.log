@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.72s
+────────────
+ Nextest run ID c99a1194-aaf4-4f20-ab69-514994324c50 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        FAIL [   0.019s] (1/1) zeppelin-embed::graph_artifact exact_directory_resolution_rejects_same_offset_substitutions
+  stdout ───
+
+    running 1 test
+    test exact_directory_resolution_rejects_same_offset_substitutions ... FAILED
+
+    failures:
+
+    failures:
+        exact_directory_resolution_rejects_same_offset_substitutions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'exact_directory_resolution_rejects_same_offset_substitutions' (34326449) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1271:9:
+    same offset cannot replace kind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.020s] 1 test run: 0 passed, 1 failed, 18 skipped
+        FAIL [   0.019s] (1/1) zeppelin-embed::graph_artifact exact_directory_resolution_rejects_same_offset_substitutions
+  stdout ───
+
+    running 1 test
+    test exact_directory_resolution_rejects_same_offset_substitutions ... FAILED
+
+    failures:
+
+    failures:
+        exact_directory_resolution_rejects_same_offset_substitutions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'exact_directory_resolution_rejects_same_offset_substitutions' (34326449) panicked at crates/zeppelin-embed/tests/graph_artifact.rs:1271:9:
+    same offset cannot replace kind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

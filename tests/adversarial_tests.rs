@@ -19044,3 +19044,30 @@ fn graph_response_runner_keys_are_absent_without_graph_feature() {
             .any(|key| key.starts_with("property-graph.response."))
     );
 }
+
+#[test]
+fn property_graph_directories_probe_checks_native_roots_and_independent_history() {
+    for seed in [0, 41] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_directories::probe(seed, &mut coverage)
+            .expect("PG8 native directory oracle");
+        for key in adversarial::graph_directories::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing PG8 case {key}");
+            println!("seed={seed} {key}={}", coverage.count(key));
+        }
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_native_directory_contracts() {
+    let root = tempfile::tempdir().expect("directory runner episode artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("one actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_directories::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+}

@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.25s
+────────────
+ Nextest run ID 80150ba6-8ba9-4744-b112-5b7d8a325926 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   0.056s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34852466) panicked at tests/adversarial/graph_directories.rs:265:21:
+    PG8 private reuse receipt requires current private backing
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.057s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   0.056s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34852466) panicked at tests/adversarial/graph_directories.rs:265:21:
+    PG8 private reuse receipt requires current private backing
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

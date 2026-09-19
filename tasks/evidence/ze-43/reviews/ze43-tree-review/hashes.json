@@ -1,0 +1,6 @@
+{
+  "tasks/evidence/ze-43/tree-review-proposal.md": "e1b5611f6b4b3024e6da7162f6fe5576ed034e6258665d64030f9a43ca424abf",
+  "docs/graph/plans/storage.md": "aedd04c5ad6c1e2f85cc08afd3531ed8a2d08ee12089c5bfa1013aa31529ed63",
+  "crates/zeppelin-embed/src/property_graph/storage/tree.rs": "2c52dec8a520d62e5e5a4040c3cb60730005697627a4e25bc2c11fc43b07c2c0",
+  "crates/zeppelin-embed/src/property_graph/storage/artifact.rs": "8d7e4cff03a4349c96908d7e233fd067f794904bf9dedc70a0b2f5a4034cacf9"
+}

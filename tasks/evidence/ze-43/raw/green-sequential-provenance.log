@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.94s
+────────────
+ Nextest run ID 286f314f-8a1a-40c0-83b0-cc295e9d4421 with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        PASS [   0.024s] (1/1) zeppelin-embed::graph_directories sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors
+────────────
+     Summary [   0.025s] 1 test run: 1 passed, 26 skipped

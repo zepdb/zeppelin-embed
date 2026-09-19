@@ -1,0 +1,18 @@
+--- candidate/tests/adversarial/runner.rs
++++ integrated/tests/adversarial/runner.rs
+@@ -2909,8 +2909,15 @@
+     super::graph_query::probe(seed, &mut coverage)?;
+     super::graph_wal::probe(seed, &mut coverage)?;
+     super::graph_runtime::probe(seed, &mut coverage)?;
++    super::graph_binding::probe(seed, &mut coverage)?;
++    #[cfg(feature = "graph-cypher")]
++    super::graph_response::probe(seed, &mut coverage)?;
++    super::graph_completed::probe(seed, &mut coverage)?;
++    super::graph_relational::probe(seed, &mut coverage)?;
++    super::graph_adjacency::probe(seed, &mut coverage)?;
+     super::graph_staging::probe(seed, &mut coverage)?;
+     super::graph_directories::probe(seed, &mut coverage)?;
++    super::graph_fixture::probe(seed, &mut coverage)?;
+     let mut oracle_records = Vec::<OracleRecord>::new();
+     let mut control_records = Vec::<String>::new();
+     let mut receipt_records = Vec::<String>::new();

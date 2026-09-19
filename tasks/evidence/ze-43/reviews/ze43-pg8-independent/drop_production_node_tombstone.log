@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/private/tmp/ze43-pg8-independent/repro/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/private/tmp/ze43-pg8-independent/repro/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.76s
+────────────
+ Nextest run ID e5a22df7-a941-4f01-88cd-c16ad91d33a3 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   0.152s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34802058) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "PG8 actual generation5: Difference { path: \"node_tombstones.length\", expected: \"1\", observed: \"0\" }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.153s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   0.152s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34802058) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "PG8 actual generation5: Difference { path: \"node_tombstones.length\", expected: \"1\", observed: \"0\" }"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

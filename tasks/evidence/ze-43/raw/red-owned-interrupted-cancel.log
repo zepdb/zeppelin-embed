@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.10s
+────────────
+ Nextest run ID ec46ff8b-68ef-4058-842b-c6e269b55e85 with nextest profile: default
+    Starting 1 test across 1 binary
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_storage_failures physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+  stdout ───
+
+    running 1 test
+    test physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts ... FAILED
+
+    failures:
+
+    failures:
+        physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts' (34633542) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:43:5:
+    cancellation must be polled between interrupted read attempts
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 0 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_storage_failures physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+  stdout ───
+
+    running 1 test
+    test physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts ... FAILED
+
+    failures:
+
+    failures:
+        physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'physical_artifact_reopen_bounds_reads_and_polls_between_interrupted_attempts' (34633542) panicked at crates/zeppelin-embed/tests/graph_storage_failures.rs:43:5:
+    cancellation must be polled between interrupted read attempts
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

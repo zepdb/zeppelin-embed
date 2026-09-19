@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0505]: cannot move out of `memory` because it is borrowed
+    --> crates/zeppelin-embed/tests/graph_directories.rs:1759:10
+     |
+1738 |     let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+     |         ------ binding `memory` declared here
+...
+1743 |     let failed = StorageBuffer::<u8>::new(&memory, 16 * 1024 * 1024);
+     |                                           ------- borrow of `memory` occurs here
+...
+1759 |     drop(memory);
+     |          ^^^^^^ move out of `memory` occurs here
+...
+1762 | }
+     | - borrow might be used here, when `failed` is dropped and runs the destructor for type `Result<StorageBuffer<'_, u8>, TreeError>`
+
+For more information about this error, try `rustc --explain E0505`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

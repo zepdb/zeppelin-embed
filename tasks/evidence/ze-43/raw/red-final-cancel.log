@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+────────────
+ Nextest run ID 72a00c5b-be24-4761-8fc8-6b44da92154d with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        FAIL [   0.008s] (1/1) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+  stdout ───
+
+    running 1 test
+    test cancellation_after_final_sink_resolution_returns_no_prepared_root ... FAILED
+
+    failures:
+
+    failures:
+        cancellation_after_final_sink_resolution_returns_no_prepared_root
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cancellation_after_final_sink_resolution_returns_no_prepared_root' (33975230) panicked at crates/zeppelin-embed/tests/graph_directories.rs:324:5:
+    cancelled preparation escaped: Ok(DirectoryRoot { store: StoreInstanceId(1267650600228229401496703205376), kind: Nodes, generation: GraphGeneration(1), reference: Some(PhysicalRef { artifact: ArtifactId(1), offset: 96, length: 16408, kind: TreePage, version: 1 }) })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 7 skipped
+        FAIL [   0.008s] (1/1) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+  stdout ───
+
+    running 1 test
+    test cancellation_after_final_sink_resolution_returns_no_prepared_root ... FAILED
+
+    failures:
+
+    failures:
+        cancellation_after_final_sink_resolution_returns_no_prepared_root
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cancellation_after_final_sink_resolution_returns_no_prepared_root' (33975230) panicked at crates/zeppelin-embed/tests/graph_directories.rs:324:5:
+    cancelled preparation escaped: Ok(DirectoryRoot { store: StoreInstanceId(1267650600228229401496703205376), kind: Nodes, generation: GraphGeneration(1), reference: Some(PhysicalRef { artifact: ArtifactId(1), offset: 96, length: 16408, kind: TreePage, version: 1 }) })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

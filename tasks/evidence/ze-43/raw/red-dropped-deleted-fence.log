@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s
+────────────
+ Nextest run ID ce32f1ab-5cb2-47a6-b83d-ba7759507652 with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        FAIL [   0.048s] (1/1) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+  stdout ───
+
+    running 1 test
+    test staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences ... FAILED
+
+    failures:
+
+    failures:
+        staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences' (34614438) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:835:13:
+    assertion failed: fence.is_deleted()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.048s] 1 test run: 0 passed, 1 failed, 1 skipped
+        FAIL [   0.048s] (1/1) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+  stdout ───
+
+    running 1 test
+    test staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences ... FAILED
+
+    failures:
+
+    failures:
+        staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences' (34614438) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:835:13:
+    assertion failed: fence.is_deleted()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

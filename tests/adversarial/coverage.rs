@@ -2,6 +2,22 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.directories.native-history",
+    "property-graph.directories.old-root",
+    "property-graph.directories.reopen",
+    "property-graph.directories.range",
+    "property-graph.directories.detach",
+    "property-graph.directories.recreate",
+    "property-graph.directories.oracle.can-fire",
+    "property-graph.directories.append.fire",
+    "property-graph.directories.append.clean",
+    "property-graph.directories.read.fire",
+    "property-graph.directories.read.clean",
+    "property-graph.directories.cancel.fire",
+    "property-graph.directories.cancel.clean",
+    "property-graph.directories.budget.fire",
+    "property-graph.directories.budget.clean",
+    "property-graph.directories.private-reuse",
     #[cfg(feature = "graph-cypher")]
     "property-graph.response.aligned-owner",
     #[cfg(feature = "graph-cypher")]

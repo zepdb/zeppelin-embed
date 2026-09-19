@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/private/tmp/ze43-pg8-independent/repro/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.97s
+────────────
+ Nextest run ID b10d377a-f64d-46dd-bfa4-5bfb8e34aae7 with nextest profile: default
+    Starting 1 test across 1 binary (455 tests skipped)
+        FAIL [   0.018s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34785890) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "missing graph directory artifact"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 1 test run: 0 passed, 1 failed, 455 skipped
+        FAIL [   0.018s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_directories_probe_checks_native_roots_and_independent_history
+  stdout ───
+
+    running 1 test
+    test property_graph_directories_probe_checks_native_roots_and_independent_history ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_directories_probe_checks_native_roots_and_independent_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_directories_probe_checks_native_roots_and_independent_history' (34785890) panicked at tests/adversarial_tests.rs:18832:14:
+    PG8 native directory oracle: "missing graph directory artifact"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

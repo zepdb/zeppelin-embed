@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.15s
+────────────
+ Nextest run ID e5f0ab34-caa5-40f9-94e6-7b38ed40b0cf with nextest profile: default
+    Starting 4 tests across 2 binaries (5 tests skipped)
+        PASS [   0.015s] (1/4) zeppelin-embed::graph_storage_failures admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+        PASS [   0.016s] (2/4) zeppelin-embed::graph_storage_failures payload_window_reads_charge_only_the_requested_field
+        PASS [   0.029s] (3/4) zeppelin-embed::graph_storage_failures failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts
+        PASS [   0.476s] (4/4) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+────────────
+     Summary [   0.476s] 4 tests run: 4 passed, 5 skipped
+        PASS [   0.015s] (1/4) zeppelin-embed::graph_storage_failures admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work
+  stdout ───
+
+    running 1 test
+    test admitted_private_block_reuse_keeps_exact_reference_checks_with_bounded_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+
+        PASS [   0.016s] (2/4) zeppelin-embed::graph_storage_failures payload_window_reads_charge_only_the_requested_field
+  stdout ───
+
+    running 1 test
+    test payload_window_reads_charge_only_the_requested_field ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+
+        PASS [   0.029s] (3/4) zeppelin-embed::graph_storage_failures failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts
+  stdout ───
+
+    running 1 test
+    test failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.02s
+
+
+        PASS [   0.476s] (4/4) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+  stdout ───
+
+    running 1 test
+    test native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant ... ZE43 chunk-spanning indexes labels=2048 properties=2048 canonical_bytes=71705 native_bytes=65680 participant_peak=879696 work=54075056
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.47s
+
+

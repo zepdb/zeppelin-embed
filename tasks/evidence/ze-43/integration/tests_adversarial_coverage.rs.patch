@@ -1,0 +1,82 @@
+--- candidate/tests/adversarial/coverage.rs
++++ integrated/tests/adversarial/coverage.rs
+@@ -18,6 +18,69 @@
+     "property-graph.directories.budget.fire",
+     "property-graph.directories.budget.clean",
+     "property-graph.directories.private-reuse",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.aligned-owner",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.private-forged-stale",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.abort-cleanup",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.concurrent-single-owner",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.known-outcome",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.allocation.fire",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.cancel.fire",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.memory.fire",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.work.fire",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.registry.fire",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.same-seed-control",
++    #[cfg(feature = "graph-cypher")]
++    "property-graph.response.oracle.can-fire",
++    "property-graph.completed.bits-and-bags",
++    "property-graph.completed.full-id",
++    "property-graph.completed.oracle.can-fire",
++    "property-graph.completed.copy-limit.fire",
++    "property-graph.completed.cancel.fire",
++    "property-graph.completed.same-seed-control",
++    "property-graph.completed.release",
++    "property-graph.relational.order-bags",
++    "property-graph.relational.collect",
++    "property-graph.relational.eligible",
++    "property-graph.relational.clock.sort",
++    "property-graph.relational.clock.aggregate",
++    "property-graph.relational.clock.eligibility",
++    "property-graph.relational.same-seed-control",
++    "property-graph.relational.release",
++    "property-graph.adjacency.merge",
++    "property-graph.adjacency.full-id",
++    "property-graph.adjacency.model-paired",
++    "property-graph.adjacency.oracle.can-fire",
++    "property-graph.adjacency.corruption.fire",
++    "property-graph.adjacency.cancel.fire",
++    "property-graph.adjacency.budget.fire",
++    "property-graph.adjacency.same-seed-control",
++    // PG13 fixture comparator controls, not product I/O faults.
++    "property-graph.fixture.missing-edge.fire",
++    "property-graph.fixture.missing-edge.clean",
++    "property-graph.fixture.narrowed-id.fire",
++    "property-graph.fixture.narrowed-id.clean",
++    "property-graph.fixture.resurrection.fire",
++    "property-graph.fixture.resurrection.clean",
++    "property-graph.fixture.multiplicity.fire",
++    "property-graph.fixture.multiplicity.clean",
++    "property-graph.binding.scope",
++    "property-graph.binding.profile",
++    "property-graph.binding.bits",
++    "property-graph.binding.modes",
++    "property-graph.binding.cancel.fire",
++    "property-graph.binding.budget.fire",
++    "property-graph.binding.same-seed-control",
+     "property-graph.staging.changed",
+     "property-graph.staging.replay",
+     "property-graph.staging.mixed",
+@@ -90,6 +153,9 @@
+     "property-graph.query.clock.list",
+     "property-graph.query.clock.plan",
+     "property-graph.query.same-seed-control",
++    "property-graph.query.pattern.scope",
++    "property-graph.query.pattern.metadata",
++    "property-graph.query.clock.pattern",
+     "property-graph.runtime.bags",
+     "property-graph.runtime.counters",
+     "property-graph.runtime.clock.pull",

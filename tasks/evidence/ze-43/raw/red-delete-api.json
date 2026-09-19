@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(=multilevel_directory_deletion_restores_last_bounds_and_collapses_root)",
+    "--no-tests=fail"
+  ],
+  "exit_code": 101
+}

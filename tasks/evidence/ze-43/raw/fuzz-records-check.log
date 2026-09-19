@@ -1,0 +1,41 @@
+   Compiling libc v0.2.189
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.55
+   Compiling shlex v2.0.1
+    Checking cfg-if v1.0.4
+   Compiling find-msvc-tools v0.1.9
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking arbitrary v1.4.2
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-cypher)
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+   Compiling jobserver v0.1.35
+    Checking rand_core v0.9.5
+   Compiling cc v1.4.0
+   Compiling libfuzzer-sys v0.4.13
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-fuzz v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/fuzz)
+error[E0277]: the trait bound `(): CanonicalVisitor<Blocks>` is not satisfied
+   --> fuzz_targets/native_graph_records.rs:91:59
+    |
+ 91 |             if lane == 0 { verify_canonical(source, None, &mut (), &mut r).is_ok() } else { verify_provenance(source, &mut r).is_ok() }
+    |                            ----------------               ^^^^^^^ the trait `CanonicalVisitor<Blocks>` is not implemented for `()`
+    |                            |
+    |                            required by a bound introduced by this call
+    |
+note: required by a bound in `zeppelin_embed::property_graph::storage::records::verify_canonical`
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed/src/property_graph/storage/records.rs:164:24
+    |
+161 | pub fn verify_canonical<'a, S: BlockSource>(
+    |        ---------------- required by a bound in this function
+...
+164 |     visitor: &mut impl CanonicalVisitor<S>,
+    |                        ^^^^^^^^^^^^^^^^^^^ required by this bound in `verify_canonical`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `zeppelin-embed-fuzz` (bin "native_graph_records") due to 1 previous error

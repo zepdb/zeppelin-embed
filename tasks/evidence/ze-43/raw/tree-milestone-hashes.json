@@ -1,0 +1,7 @@
+{
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs": "e75f36d65a94ed208a6937f30f686fbf4db8f7754476d36de16eee7df998c83b",
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory/keys.rs": "cbe3a8fb835927b8b3c4b268552befd8a4a4e7c8ef3607e2b1e6ea5bfdb7cc97",
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory/roots.rs": "a01f36efeaa800c00dded0673285ef09f101a14a9f235c87b221143087590fa6",
+  "crates/zeppelin-embed/src/property_graph/storage/payload.rs": "d8a2f9cf168b11692a4adc4488b33749df756fe1d850cab74be2f3c7e233457c",
+  "crates/zeppelin-embed/tests/graph_directories.rs": "8f449109a8443e6bcd4a442851a1d22c316bd5cd47ff8b64c01075b569cd62f2"
+}

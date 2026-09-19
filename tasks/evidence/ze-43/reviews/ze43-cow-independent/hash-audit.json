@@ -1,0 +1,129 @@
+{
+  "files": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging.rs",
+      "sha256": "dab6d5047d52d868d6e546506e970b26975b0afcacc8a53d4aaecd59b23d6c3f"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+      "sha256": "2a16417a4d006cc441c85f776971fb3fd18584572b44381a986bc3ae1216800f"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+      "sha256": "d04d1e956223fd1af5f173618171fba991e2281cb6b74f085639d48478dad35c"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+      "sha256": "9a531c5b032e244bd67e5f759bccad42c77a84a3d4fccb4db3bf48ecd83d8040"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact/private.rs",
+      "sha256": "30e39cec87a8ee8b676207a753dc25206b8279b1c864491d599790fd5b94aaf3"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/inventory.rs",
+      "sha256": "8fab4c07ec1d5f76a71df9da9152c50b34b74b289b0c04eaf16098de72fcec61"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/memory.rs",
+      "sha256": "3fc72c2822d4b66053c6745e3bcdda6439de764e75356259c9816132de134fb1"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+      "sha256": "2aaaf9118703f08fc04411e6e275a2ab203ea541eb4d1b4dc682baed445628f4"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/participant.rs",
+      "sha256": "c8453bbbe14129bcc8dd3e946e7b79cd5480162dfab663537ef0c499e06f9ae4"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/payload.rs",
+      "sha256": "924923e14263a55e0fbbd505b73c31750834ba582bb3cb5e1dafc48884a7a31d"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/payload/writer.rs",
+      "sha256": "b181d1a2c82c3d890f3f6895416247e5b890366c408a346844b0270bd15c358c"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/prepared.rs",
+      "sha256": "5037de13120da1a2074628e2d850c927f9f9b0f19ad5168c13f3f659af26406b"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records.rs",
+      "sha256": "4cee7d3aedd54ed25746d7cc20b2c0e93eb94443d75c5f700e77da9d0def0874"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/directory.rs",
+      "sha256": "8eaa4aa4f39c97d710e862a1b4004f7977f1cc6652a1b5f1a5d3017f7affdbf7"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/fence.rs",
+      "sha256": "3b1660841a1ab29c78ed76dfd02c5dd72161d07c5bb2b72184fb4d2cfd942327"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/native.rs",
+      "sha256": "4d643fa6aed4b4226de712daa9d4f03cbf532bf5c4d683cd423ee3e2d9e7575e"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs",
+      "sha256": "36dc126a59b9d8f7e03111867d59e2c4510b10e20011ac74e5730ca829a984cd"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/provenance.rs",
+      "sha256": "d30b08865626c498f41c72468ab5e51a22d9dce429e0e57053ac79d4f316f5f0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records/tombstone.rs",
+      "sha256": "94948ad5f31677b1da5f7115b6f158bd034ee2321e813f24c919d73e63aa7edc"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/stream.rs",
+      "sha256": "977371cff1025818bda0fe9238e61c607ba894b0316520d2f96021380018596e"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree.rs",
+      "sha256": "ab2eeaf9225b3c30c59752902c139364fd25a2974640d8fa1d553135d90ac7f2"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+      "sha256": "5a2296061f69e07c1ddc713c914928b80878ba156832843939a0f18f9e3cbbee"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/fence_input.rs",
+      "sha256": "2dd7ca6e361a6e89d004446cfabf1f24b252631375c5ee8a538534628f913be9"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/keys.rs",
+      "sha256": "b8e08f0ef8c09c428bd2a4cc1968b958ef6517683dc65270b1048858bd8a2dd2"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/roots.rs",
+      "sha256": "a01f36efeaa800c00dded0673285ef09f101a14a9f235c87b221143087590fa6"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_directories.rs",
+      "sha256": "7f02d63fea3ef7db42d8cf859864c670bde66a382984d217965c68e363c142e4"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_storage_failures.rs",
+      "sha256": "3591086414a7827653f955d730b2fe9b617c2eca6c676d46f67467cf0f0e43f4"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_storage_prepare.rs",
+      "sha256": "e9999ef75b36c8cac642f5e326a5a5f3a2afef78f71f9a4c6aa43005ac9011d5"
+    }
+  ],
+  "changed_from_first_review": [
+    "crates/zeppelin-embed/src/property_graph/storage/artifact/private.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/inventory.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/participant.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/records.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/records/directory.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/records/fence.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/tree/directory/fence_input.rs",
+    "crates/zeppelin-embed/tests/graph_directories.rs",
+    "crates/zeppelin-embed/tests/graph_storage_failures.rs",
+    "crates/zeppelin-embed/tests/graph_storage_prepare.rs"
+  ]
+}

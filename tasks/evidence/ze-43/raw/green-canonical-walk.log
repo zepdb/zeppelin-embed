@@ -1,0 +1,39 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/storage/records.rs:63:12
+   |
+63 |     Node { labels: u64 },
+   |            ^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/storage/records.rs:66:9
+   |
+66 |         source: NodeId,
+   |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/storage/records.rs:67:9
+   |
+67 |         target: NodeId,
+   |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/storage/records.rs:68:9
+   |
+68 |         relationship_type: PayloadSlice<'a, S>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 4 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.40s
+────────────
+ Nextest run ID fe20f786-b05a-41f2-a7c9-012f095c5a7d with nextest profile: default
+    Starting 1 test across 1 binary (15 tests skipped)
+        PASS [   0.012s] (1/1) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+────────────
+     Summary [   0.012s] 1 test run: 1 passed, 15 skipped

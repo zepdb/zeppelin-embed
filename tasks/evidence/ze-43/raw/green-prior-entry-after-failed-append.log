@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+────────────
+ Nextest run ID 3c7d1cf2-3132-492e-902c-ee5b68c8a9fa with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        PASS [   0.035s] (1/1) zeppelin-embed::graph_storage_failures failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifacts
+────────────
+     Summary [   0.035s] 1 test run: 1 passed, 4 skipped

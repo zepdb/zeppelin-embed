@@ -1,0 +1,4 @@
+{
+  "tests/adversarial/graph_directories.rs": "d371e5a15818fcb000a31b394d0666c73a0cb0c372a31a6c356451e657ff1bd4",
+  "crates/zeppelin-embed/src/property_graph/storage/prepared.rs": "44ff1889e8e467043eb786228e0627ebeb07cf671c32e102be963d0de967c628"
+}

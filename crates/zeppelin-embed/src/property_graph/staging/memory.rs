@@ -29,6 +29,9 @@ pub(super) struct Arena<'a, T> {
     charge: WriteReservation<'a>,
 }
 impl<'a, T> Arena<'a, T> {
+    pub(super) fn uses_memory(&self, memory: &WriteMemory<'_>) -> bool {
+        std::ptr::eq(self.charge.writer.memory, memory)
+    }
     pub(super) fn new(
         memory: &'a WriteMemory<'a>,
         capacity: usize,
@@ -178,7 +181,7 @@ impl<'a> WriteReservation<'a> {
     pub fn bytes(&self) -> u64 {
         self.charge.bytes()
     }
-    fn resize(&mut self, bytes: usize) -> Result<(), StageError> {
+    pub(crate) fn resize(&mut self, bytes: usize) -> Result<(), StageError> {
         let total = self
             .writer
             .memory

@@ -1,0 +1,28 @@
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error: redundant field names in struct initialization
+   --> crates/zeppelin-embed/tests/graph_directories.rs:774:13
+    |
+774 |             generation: generation,
+    |             ^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `generation`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_field_names
+    = note: `-D clippy::redundant-field-names` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_field_names)]`
+
+error: redundant field names in struct initialization
+   --> crates/zeppelin-embed/tests/graph_directories.rs:790:13
+    |
+790 |             generation: generation,
+    |             ^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `generation`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_field_names
+
+error: redundant field names in struct initialization
+   --> crates/zeppelin-embed/tests/graph_directories.rs:806:13
+    |
+806 |             generation: generation,
+    |             ^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `generation`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_field_names
+
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 3 previous errors

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.02s
+────────────
+ Nextest run ID 2f657295-6ad7-407d-9dad-a3e506fc514f with nextest profile: default
+    Starting 1 test across 1 binary (22 tests skipped)
+        PASS [   0.015s] (1/1) zeppelin-embed::graph_directories node_tombstone_preserves_full_deletion_provenance_without_dead_payloads
+────────────
+     Summary [   0.015s] 1 test run: 1 passed, 22 skipped

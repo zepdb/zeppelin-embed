@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+────────────
+ Nextest run ID 8a0cd4bc-4d17-4714-ac79-b11037a84553 with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        FAIL [   0.244s] (1/1) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+  stdout ───
+
+    running 1 test
+    test directory_leaf_splits_preserve_old_roots_and_share_untouched_pages ... FAILED
+
+    failures:
+
+    failures:
+        directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.23s
+
+  stderr ───
+
+    thread 'directory_leaf_splits_preserve_old_roots_and_share_untouched_pages' (33919000) panicked at crates/zeppelin-embed/tests/graph_directories.rs:96:83:
+    called `Result::unwrap()` on an `Err` value: Format(FormatError { artifact: "native graph tree page", check: BlockLength, values: None, detail: "cells do not fit the page" })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.245s] 1 test run: 0 passed, 1 failed, 1 skipped
+        FAIL [   0.244s] (1/1) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+  stdout ───
+
+    running 1 test
+    test directory_leaf_splits_preserve_old_roots_and_share_untouched_pages ... FAILED
+
+    failures:
+
+    failures:
+        directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.23s
+
+  stderr ───
+
+    thread 'directory_leaf_splits_preserve_old_roots_and_share_untouched_pages' (33919000) panicked at crates/zeppelin-embed/tests/graph_directories.rs:96:83:
+    called `Result::unwrap()` on an `Err` value: Format(FormatError { artifact: "native graph tree page", check: BlockLength, values: None, detail: "cells do not fit the page" })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

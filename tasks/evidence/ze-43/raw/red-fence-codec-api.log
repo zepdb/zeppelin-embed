@@ -1,0 +1,34 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::storage::records::FenceInput`, `zeppelin_embed::property_graph::storage::records::prepare_fence`, `zeppelin_embed::property_graph::storage::records::verify_fence_entry`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:2337:60
+     |
+2337 |     use zeppelin_embed::property_graph::storage::records::{FenceInput, RecordCatalog, prepare_fence, verify_fence_entry};
+     |                                                            ^^^^^^^^^^                 ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `verify_fence_entry` in `property_graph::storage::records`
+     |                                                            |                          |
+     |                                                            |                          no `prepare_fence` in `property_graph::storage::records`
+     |                                                            no `FenceInput` in `property_graph::storage::records`
+
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::tree::directory::lookup_fence_entry`
+    --> crates/zeppelin-embed/tests/graph_directories.rs:2339:92
+     |
+2339 |     use zeppelin_embed::property_graph::storage::tree::directory::{FenceKey, insert_fence, lookup_fence_entry};
+     |                                                                                            ^^^^^^^^^^^^^^^^^^
+     |                                                                                            |
+     |                                                                                            no `lookup_fence_entry` in `property_graph::storage::tree::directory`
+     |                                                                                            help: a similar name exists in the module: `lookup_fence`
+
+error[E0599]: no method named `encode` found for struct `PayloadRef` in the current scope
+    --> crates/zeppelin-embed/tests/graph_directories.rs:2395:12
+     |
+2395 |     future.encode(&mut invalid[40..88]).unwrap();
+     |            ^^^^^^
+     |
+help: there is a method `encode_into` with a similar name
+     |
+2395 |     future.encode_into(&mut invalid[40..88]).unwrap();
+     |                  +++++
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

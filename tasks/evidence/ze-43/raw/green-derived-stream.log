@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.23s
+────────────
+ Nextest run ID a4891df8-85bc-443c-9abe-b96796370fad with nextest profile: default
+    Starting 1 test across 1 binary (12 tests skipped)
+        PASS [   0.369s] (1/1) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+────────────
+     Summary [   0.369s] 1 test run: 1 passed, 12 skipped

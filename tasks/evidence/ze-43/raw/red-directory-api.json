@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(=immutable_directory_preserves_full_ids_and_old_root_values)",
+    "--no-tests=fail"
+  ],
+  "exit_code": 101
+}

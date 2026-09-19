@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-43/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.52s
+────────────
+ Nextest run ID 8fa623e0-1cd6-4bfc-ac71-74c0c769a821 with nextest profile: default
+    Starting 4 tests across 1 binary (15 tests skipped)
+        PASS [   0.023s] (1/4) zeppelin-embed::graph_artifact exact_directory_resolution_rejects_same_offset_substitutions
+        PASS [   0.027s] (2/4) zeppelin-embed::graph_artifact controlled_artifact_codec_retains_no_unaccounted_heap
+        PASS [   0.047s] (3/4) zeppelin-embed::graph_artifact controlled_artifact_admission_polls_bounded_bytes_and_every_directory_entry
+        PASS [   0.048s] (4/4) zeppelin-embed::graph_artifact controlled_artifact_encoding_keeps_wire_bytes_and_capacity_preflight
+────────────
+     Summary [   0.048s] 4 tests run: 4 passed, 15 skipped

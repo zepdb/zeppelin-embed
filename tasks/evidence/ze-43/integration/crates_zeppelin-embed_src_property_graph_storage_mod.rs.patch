@@ -1,0 +1,12 @@
+--- candidate/crates/zeppelin-embed/src/property_graph/storage/mod.rs
++++ integrated/crates/zeppelin-embed/src/property_graph/storage/mod.rs
+@@ -4,6 +4,9 @@
+ pub mod allocation;
+ pub mod artifact;
+ pub mod tree;
++
++/// Bounded immutable adjacency codecs and range merging.
++pub mod adjacency;
+ 
+ /// Bounded, role-checked logical streams over immutable physical chunks.
+ pub mod payload;

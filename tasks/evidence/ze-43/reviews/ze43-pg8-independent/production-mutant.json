@@ -1,0 +1,22 @@
+{
+  "name": "drop_production_node_tombstone",
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed-workspace-tests",
+    "--test",
+    "adversarial_tests",
+    "-E",
+    "test(=property_graph_directories_probe_checks_native_roots_and_independent_history)",
+    "--test-threads",
+    "1"
+  ],
+  "cwd": "/tmp/ze43-pg8-independent/repro",
+  "exit_code": 100,
+  "log": "/tmp/ze43-pg8-independent/drop_production_node_tombstone.log",
+  "log_sha256": "dee72c6dc0546a96c9fad66cdd2c54e670e00a67b70db774831655063546cc5e",
+  "original_sha256": "c8453bbbe14129bcc8dd3e946e7b79cd5480162dfab663537ef0c499e06f9ae4",
+  "restored_sha256": "c8453bbbe14129bcc8dd3e946e7b79cd5480162dfab663537ef0c499e06f9ae4"
+}

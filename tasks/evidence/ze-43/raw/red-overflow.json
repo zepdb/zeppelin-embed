@@ -1,0 +1,1 @@
+{"command": ["cargo", "nextest", "run", "-p", "zeppelin-embed", "--test", "graph_directories", "-E", "test(=overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes)", "--no-tests=fail"], "exit": 100}
