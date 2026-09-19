@@ -1,0 +1,13 @@
+   Compiling getrandom v0.3.4
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed)
+   Compiling tempfile v3.25.0
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.17s
+     Running tests/ffi_header.rs (target/ze54/debug/deps/ffi_header-a7470f107dffe88e)
+
+running 3 tests
+test header_gate_passes_twice_in_a_row_after_an_instrumented_build ... ignored, manual full-build qualification; rebuilds two release target directories
+test the_committed_header_matches_the_exported_symbol_table_and_the_allowlist ... ignored, manual full-build qualification; validates the release static library
+test the_committed_header_is_the_exact_cbindgen_output ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.11s

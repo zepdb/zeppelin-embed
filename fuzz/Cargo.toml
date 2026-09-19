@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher" }
 libfuzzer-sys = "0.4.13"
 rand = "0.9.5"
 rand_chacha = "0.9.0"
@@ -105,6 +106,13 @@ bench = false
 [[bin]]
 name = "ffi_requests"
 path = "fuzz_targets/ffi_requests.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cypher_parser"
+path = "fuzz_targets/cypher_parser.rs"
 test = false
 doc = false
 bench = false

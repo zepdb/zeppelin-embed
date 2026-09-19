@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running tests/parser.rs (target/ze54/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 12 tests
+test malformed_bytes_diagnostics_and_iterative_visitor_fail_explicitly ... ok
+test parses_literals_and_expression_precedence ... ok
+test escapes_full_width_numbers_and_utf8_byte_spans_are_exact ... ok
+test reserved_words_require_escaping_as_variables_but_allow_schema_names ... ok
+test precedence_and_chain_operands_are_preserved_in_the_arena ... ok
+test aggregate_placement_and_with_alias_are_profile_checked ... ok
+test limits_fire_on_actual_tokens_arena_depth_names_and_projection ... ok
+test every_syntax_inventory_expression_has_a_preserved_node ... ok
+test parses_complete_clause_pattern_projection_and_write_inventory ... ok
+test complete_input_rejects_unsupported_suffixes_and_profile_syntax ... ok
+test selected_original_tck_statements_parse_without_claiming_execution_conformance ... ok
+test cancellation_and_allocation_faults_can_fire_at_every_reachable_site ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

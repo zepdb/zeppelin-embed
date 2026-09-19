@@ -1,0 +1,24 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running tests/parser.rs (target/ze54-mutations/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 1 test
+test precedence_and_chain_operands_are_preserved_in_the_arena ... FAILED
+
+failures:
+
+---- precedence_and_chain_operands_are_preserved_in_the_arena stdout ----
+
+thread 'precedence_and_chain_operands_are_preserved_in_the_arena' (32467109) panicked at crates/zeppelin-embed-cypher/tests/parser.rs:44:5:
+assertion `left == right` failed
+  left: Binary(Multiply)
+ right: Binary(Add)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    precedence_and_chain_operands_are_preserved_in_the_arena
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-cypher --test parser`

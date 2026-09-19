@@ -1,0 +1,31 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+warning: unused variable: `resources`
+   --> crates/zeppelin-embed-cypher/src/resources.rs:110:20
+    |
+110 | pub(crate) fn poll(resources: &mut dyn Resources, span: Span) -> Result<(), ParseError> {
+    |                    ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_resources`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-cypher` (lib) generated 1 warning (run `cargo fix --lib -p zeppelin-embed-cypher` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests/parser.rs (target/ze54-mutations/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 1 test
+test cancellation_and_allocation_faults_can_fire_at_every_reachable_site ... FAILED
+
+failures:
+
+---- cancellation_and_allocation_faults_can_fire_at_every_reachable_site stdout ----
+
+thread 'cancellation_and_allocation_faults_can_fire_at_every_reachable_site' (32465740) panicked at crates/zeppelin-embed-cypher/tests/parser.rs:459:9:
+assertion failed: baseline.polls > text.chars().count()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cancellation_and_allocation_faults_can_fire_at_every_reachable_site
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-cypher --test parser`

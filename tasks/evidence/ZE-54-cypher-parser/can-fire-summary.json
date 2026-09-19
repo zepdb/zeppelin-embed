@@ -1,0 +1,30 @@
+[
+  {
+    "mutation": "cancel",
+    "test": "cancellation_and_allocation_faults_can_fire_at_every_reachable_site",
+    "red_exit": 101,
+    "restored_green_exit": 0,
+    "restored_sha256": "8670cb185a55a1fd508bbf900540065e7838ba737628e51054c42e2bc99874af"
+  },
+  {
+    "mutation": "token-limit",
+    "test": "limits_fire_on_actual_tokens_arena_depth_names_and_projection",
+    "red_exit": 101,
+    "restored_green_exit": 0,
+    "restored_sha256": "54c85a3f981709700a56d55a1813473a47d53e60582f2c0fe61495ea5f373e95"
+  },
+  {
+    "mutation": "trailing-input",
+    "test": "complete_input_rejects_unsupported_suffixes_and_profile_syntax",
+    "red_exit": 101,
+    "restored_green_exit": 0,
+    "restored_sha256": "fd9ada1adb02566359617eabd93dc9083d58637bd48b5bd5102e6501fe9cdade"
+  },
+  {
+    "mutation": "precedence",
+    "test": "precedence_and_chain_operands_are_preserved_in_the_arena",
+    "red_exit": 101,
+    "restored_green_exit": 0,
+    "restored_sha256": "fd9ada1adb02566359617eabd93dc9083d58637bd48b5bd5102e6501fe9cdade"
+  }
+]

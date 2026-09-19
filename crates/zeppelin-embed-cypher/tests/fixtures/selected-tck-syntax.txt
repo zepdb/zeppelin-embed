@@ -1,0 +1,721 @@
+#
+# Copyright (c) 2015-2023 "Neo Technology,"
+# Network Engine for Objects in Lund AB [http://neotechnology.com]
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Attribution Notice under the terms of the Apache License 2.0
+#
+# This work was created by the collective efforts of the openCypher community.
+# Without limiting the terms of Section 6, any Derivative Work that is not
+# approved by the public consensus process of the openCypher Implementers Group
+# should not be described as “Cypher” (and Cypher® is a registered trademark of
+# Neo4j Inc.) or as "openCypher". Extensions by implementers or prototypes or
+# proposals for change that have been documented or implemented should only be
+# described as "implementation extensions to Cypher" or as "proposed changes to
+# Cypher that are not yet approved by the openCypher community".
+#
+
+# Syntax-only excerpts of 99 selected original openCypher TCK scenarios.
+# Source: https://github.com/opencypher/openCypher at 007895aff5f33097d67b2e48a0a2babd6bd18590.
+# This fixture executes ONLY the lexer/parser; it proves no original TCK result,
+# semantic error mapping, state mutation, or conformance expectation.
+# Two InvalidParameterUse cases reject here; RelationshipUniquenessViolation and
+# DeleteConnectedNode cases still require binder/executor validation in ZE-55/59.
+# Copyright (c) 2015-2023 "Neo Technology," Network Engine for Objects in Lund AB.
+# Licensed under the Apache License, Version 2.0. See OPENCYPHER-LICENSE-APACHE.
+# This work was created by the collective efforts of the openCypher community.
+# Cypher is a registered trademark of Neo4j Inc. These implementation extensions
+# are not approved by the public consensus process of the openCypher Implementers Group.
+
+---
+parse clauses/match/Match1.feature [1] query
+      MATCH (n)
+      RETURN n
+---
+parse clauses/match/Match1.feature [2] setup
+      CREATE (:A), (:B {name: 'b'}), ({name: 'c'})
+---
+parse clauses/match/Match1.feature [2] query
+      MATCH (n)
+      RETURN n
+---
+parse clauses/match/Match1.feature [3] setup
+      CREATE (:A:B:C), (:A:B), (:A:C), (:B:C),
+             (:A), (:B), (:C),
+             ({name: ':A:B:C'}), ({abc: 'abc'}), ()
+---
+parse clauses/match/Match1.feature [3] query
+      MATCH (a:A:B)
+      RETURN a
+---
+parse clauses/match/Match1.feature [4] setup
+      CREATE ({name: 'bar'}), ({name: 'monkey'}), ({firstname: 'bar'})
+---
+parse clauses/match/Match1.feature [4] query
+      MATCH (n {name: 'bar'})
+      RETURN n
+---
+parse clauses/match/Match1.feature [5] setup
+      CREATE ({num: 1}),
+        ({num: 2}),
+        ({num: 3})
+---
+parse clauses/match/Match1.feature [5] query
+      MATCH (n), (m)
+      RETURN n.num AS n, m.num AS m
+---
+reject clauses/match/Match1.feature [6] query
+      MATCH (n $param)
+      RETURN n
+---
+parse clauses/match/Match2.feature [1] query
+      MATCH ()-[r]->()
+      RETURN r
+---
+parse clauses/match/Match2.feature [2] setup
+      CREATE (:A)-[:T1]->(:B),
+             (:B)-[:T2]->(:A),
+             (:B)-[:T3]->(:B),
+             (:A)-[:T4]->(:A)
+---
+parse clauses/match/Match2.feature [2] query
+      MATCH (:A)-[r]->(:B)
+      RETURN r
+---
+parse clauses/match/Match2.feature [3] setup
+      CREATE (a)
+      CREATE (a)-[:T]->(a)
+---
+parse clauses/match/Match2.feature [3] query
+      MATCH ()-[r]-()
+      RETURN type(r) AS r
+---
+parse clauses/match/Match2.feature [4] setup
+      CREATE (a)
+      CREATE (a)-[:T]->(a)
+---
+parse clauses/match/Match2.feature [4] query
+      MATCH ()-[r]->()
+      RETURN type(r) AS r
+---
+parse clauses/match/Match2.feature [5] setup
+      CREATE (:A)<-[:KNOWS {name: 'monkey'}]-()-[:KNOWS {name: 'woot'}]->(:B)
+---
+parse clauses/match/Match2.feature [5] query
+      MATCH (node)-[r:KNOWS {name: 'monkey'}]->(a)
+      RETURN a
+---
+parse clauses/match/Match2.feature [6] setup
+      CREATE (a {name: 'A'}),
+        (b {name: 'B'}),
+        (c {name: 'C'}),
+        (a)-[:KNOWS]->(b),
+        (a)-[:HATES]->(c),
+        (a)-[:WONDERS]->(c)
+---
+parse clauses/match/Match2.feature [6] query
+      MATCH (n)-[r:KNOWS|HATES]->(x)
+      RETURN r
+---
+parse clauses/match/Match2.feature [7] setup
+      CREATE ()-[:T]->()
+---
+parse clauses/match/Match2.feature [7] query
+      MATCH (a1)-[r:T]->()
+      WITH r, a1
+      MATCH (a1)-[r:Y]->(b2)
+      RETURN a1, r, b2
+---
+reject clauses/match/Match2.feature [8] query
+      MATCH ()-[r:FOO $param]->()
+      RETURN r
+---
+parse clauses/match/Match3.feature [17] setup
+      CREATE (a {name: 'a'}), (b {name: 'b'}), (c {name: 'c'})
+      CREATE (a)-[:A]->(b),
+             (b)-[:B]->(a),
+             (b)-[:B]->(c)
+---
+parse clauses/match/Match3.feature [17] query
+      MATCH (a)-[:A]->()-[:B]->(a)
+      RETURN a.name
+---
+parse clauses/match/Match3.feature [18] setup
+      CREATE (a {name: 'a'}), (b {name: 'b'}), (c {name: 'c'})
+      CREATE (a)-[:A]->(b),
+             (b)-[:B]->(a),
+             (b)-[:B]->(c)
+---
+parse clauses/match/Match3.feature [18] query
+      MATCH (a)-[:A]->(b), (b)-[:B]->(a)
+      RETURN a.name
+---
+parse clauses/match/Match3.feature [23] setup
+      CREATE (a:A), (b:B), (c:C)
+      CREATE (a)-[:T]->(b),
+             (a)-[:T]->(c)
+---
+parse clauses/match/Match3.feature [23] query
+      MATCH (a)-->(b)
+      MATCH (c)-->(d)
+      RETURN a, b, c, d
+---
+parse clauses/match/Match3.feature [29] query
+      MATCH (a)-[r]->()-[r]->(a)
+      RETURN r
+---
+parse clauses/match/Match4.feature [1] setup
+      CREATE ()-[:T]->()
+---
+parse clauses/match/Match4.feature [1] query
+      MATCH (a)-[r*1..1]->(b)
+      RETURN r
+---
+parse clauses/match/Match4.feature [3] setup
+      CREATE (a {name: 'A'}), (b {name: 'B'}),
+             (c {name: 'C'}), ({name: 'D'}),
+             ({name: 'E'})
+      CREATE (a)-[:CONTAINS]->(b),
+             (b)-[:FRIEND]->(c)
+---
+parse clauses/match/Match4.feature [3] query
+      MATCH (a {name: 'A'})-[:CONTAINS*0..1]->(b)-[:FRIEND*0..1]->(c)
+      RETURN a, b, c
+---
+parse clauses/match/Match4.feature [6] setup
+      CREATE (a:A), (b), (c)
+      CREATE (a)-[:X]->(b),
+             (b)-[:Y]->(c)
+---
+parse clauses/match/Match4.feature [6] query
+      MATCH (a:A)
+      MATCH (a)-[r*2]->()
+      RETURN r
+---
+parse clauses/match/Match7.feature [1] query
+      OPTIONAL MATCH (n)
+      RETURN n
+---
+parse clauses/match/Match7.feature [8] setup
+      CREATE (s:Single), (a:A {num: 42}),
+             (b:B {num: 46}), (c:C)
+      CREATE (s)-[:REL]->(a),
+             (s)-[:REL]->(b),
+             (a)-[:REL]->(c),
+             (b)-[:LOOP]->(b)
+---
+parse clauses/match/Match7.feature [8] query
+      MATCH (a:A), (c:C)
+      OPTIONAL MATCH (a)-->(b)-->(c)
+      RETURN b
+---
+parse clauses/match/Match7.feature [10] query
+      OPTIONAL MATCH (a)
+      WITH a
+      OPTIONAL MATCH (a)-->(b)
+      RETURN b
+---
+parse clauses/match/Match7.feature [24] setup
+      CREATE (s:Single), (a:A {num: 42}),
+             (b:B {num: 46}), (c:C)
+      CREATE (s)-[:REL]->(a),
+             (s)-[:REL]->(b),
+             (a)-[:REL]->(c),
+             (b)-[:LOOP]->(b)
+---
+parse clauses/match/Match7.feature [24] query
+      MATCH (a:B)
+      OPTIONAL MATCH (a)-[r]-(a)
+      RETURN r
+---
+parse clauses/match-where/MatchWhere6.feature [2] setup
+      CREATE (s:Single), (a:A {num: 42}),
+             (b:B {num: 46}), (c:C)
+      CREATE (s)-[:REL]->(a),
+             (s)-[:REL]->(b),
+             (a)-[:REL]->(c),
+             (b)-[:LOOP]->(b)
+---
+parse clauses/match-where/MatchWhere6.feature [2] query
+      MATCH (n:Single)
+      OPTIONAL MATCH (n)-[r]-(m)
+      WHERE m:NonExistent
+      RETURN r
+---
+parse clauses/match-where/MatchWhere6.feature [4] setup
+      CREATE (a), (b {name: 'Mark'})
+      CREATE (a)-[:T]->(b)
+---
+parse clauses/match-where/MatchWhere6.feature [4] query
+      MATCH (n)-->(x0)
+      OPTIONAL MATCH (x0)-->(x1)
+      WHERE x1.name = 'bar'
+      RETURN x0.name
+---
+parse clauses/with/With6.feature [1] setup
+      CREATE ({name: 'A'}),
+             ({name: 'A'}),
+             ({name: 'B'})
+---
+parse clauses/with/With6.feature [1] query
+      MATCH (a)
+      WITH a.name AS name, count(*) AS relCount
+      RETURN name, relCount
+---
+parse clauses/with/With6.feature [2] setup
+      CREATE ()-[:T1]->(:X),
+             ()-[:T2]->(:X),
+             ()-[:T3]->()
+---
+parse clauses/with/With6.feature [2] query
+      MATCH ()-[r1]->(:X)
+      WITH r1 AS r2, count(*) AS c
+      MATCH ()-[r2]->()
+      RETURN r2 AS rel
+---
+parse clauses/with/With6.feature [3] setup
+      CREATE ()-[:T1]->(:X),
+             ()-[:T2]->(:X),
+             ()-[:T3]->()
+---
+parse clauses/with/With6.feature [3] query
+      MATCH (a)-[r1]->(b:X)
+      WITH a, r1 AS r2, b, count(*) AS c
+      MATCH (a)-[r2]->(b)
+      RETURN r2 AS rel
+---
+parse expressions/aggregation/Aggregation1.feature [1] setup
+      CREATE ({name: 'a', num: 33})
+      CREATE ({name: 'a'})
+      CREATE ({name: 'b', num: 42})
+---
+parse expressions/aggregation/Aggregation1.feature [1] query
+      MATCH (n)
+      RETURN n.name, count(n.num)
+---
+parse expressions/aggregation/Aggregation1.feature [2] setup
+      CREATE (a), (a)-[:R]->(a)
+---
+parse expressions/aggregation/Aggregation1.feature [2] query
+      MATCH ()-[r]-()
+      RETURN count(r)
+---
+parse expressions/aggregation/Aggregation5.feature [1] setup
+      CREATE ()
+---
+parse expressions/aggregation/Aggregation5.feature [1] query
+      MATCH (n)
+      OPTIONAL MATCH (n)-[:NOT_EXIST]->(x)
+      RETURN n, collect(x)
+---
+parse expressions/aggregation/Aggregation5.feature [2] setup
+      CREATE (:DoesExist {num: 42})
+      CREATE (:DoesExist {num: 43})
+      CREATE (:DoesExist {num: 44})
+---
+parse expressions/aggregation/Aggregation5.feature [2] query
+      OPTIONAL MATCH (f:DoesExist)
+      OPTIONAL MATCH (n:DoesNotExist)
+      RETURN collect(DISTINCT n.num) AS a, collect(DISTINCT f.num) AS b
+---
+parse expressions/aggregation/Aggregation8.feature [1] query
+      OPTIONAL MATCH (a)
+      RETURN count(DISTINCT a)
+---
+parse expressions/aggregation/Aggregation8.feature [2] setup
+      CREATE ()
+---
+parse expressions/aggregation/Aggregation8.feature [2] query
+      MATCH (a)
+      RETURN count(DISTINCT a.name)
+---
+parse clauses/return/Return5.feature [2] setup
+      CREATE ({name: 'Florescu'}), (), ()
+---
+parse clauses/return/Return5.feature [2] query
+      MATCH (n)
+      RETURN DISTINCT n.name
+---
+parse expressions/boolean/Boolean1.feature [1] query
+      RETURN true AND true AS tt,
+             true AND false AS tf,
+             true AND null AS tn,
+             false AND true AS ft,
+             false AND false AS ff,
+             false AND null AS fn,
+             null AND true AS nt,
+             null AND false AS nf,
+             null AND null AS nn
+---
+parse expressions/boolean/Boolean2.feature [1] query
+      RETURN true OR true AS tt,
+             true OR false AS tf,
+             true OR null AS tn,
+             false OR true AS ft,
+             false OR false AS ff,
+             false OR null AS fn,
+             null OR true AS nt,
+             null OR false AS nf,
+             null OR null AS nn
+---
+parse expressions/boolean/Boolean3.feature [1] query
+      RETURN true XOR true AS tt,
+             true XOR false AS tf,
+             true XOR null AS tn,
+             false XOR true AS ft,
+             false XOR false AS ff,
+             false XOR null AS fn,
+             null XOR true AS nt,
+             null XOR false AS nf,
+             null XOR null AS nn
+---
+parse expressions/boolean/Boolean4.feature [1] query
+      RETURN NOT true AS nt, NOT false AS nf, NOT null AS nn
+---
+parse expressions/null/Null1.feature [1] setup
+      CREATE ({exists: 42})
+---
+parse expressions/null/Null1.feature [1] query
+      MATCH (n)
+      RETURN n.missing IS NULL,
+             n.exists IS NULL
+---
+parse expressions/null/Null1.feature [2] setup
+      CREATE ({exists: 42})
+---
+parse expressions/null/Null1.feature [2] query
+      OPTIONAL MATCH (n)
+      RETURN n.missing IS NULL,
+             n.exists IS NULL
+---
+parse expressions/null/Null1.feature [3] query
+      OPTIONAL MATCH (n)
+      RETURN n.missing IS NULL
+---
+parse expressions/null/Null1.feature [4] query
+      RETURN null IS NULL AS value
+---
+parse expressions/null/Null1.feature [6] setup
+      CREATE (a:X {prop: 42}), (:X)
+---
+parse expressions/null/Null1.feature [6] query
+      MATCH (n:X)
+      RETURN n, n.prop iS NuLl AS b
+---
+parse expressions/list/List1.feature [1] query
+      RETURN [1, 2, 3][0] AS value
+---
+parse expressions/list/List1.feature [2] query
+      RETURN [[1]][0][0]
+---
+parse expressions/list/List1.feature [3] query
+      WITH $expr AS expr, $idx AS idx
+      RETURN expr[idx] AS value
+---
+parse expressions/list/List1.feature [4] query
+      WITH ['Apa'] AS expr
+      RETURN expr[$idx] AS value
+---
+parse expressions/list/List3.feature [1] query
+      RETURN [1, 2] = 'foo' AS res
+---
+parse expressions/list/List3.feature [2] query
+      RETURN [1] = [1, null] AS res
+---
+parse expressions/list/List3.feature [3] query
+      RETURN [1, 2] = [null, 'foo'] AS res
+---
+parse expressions/list/List3.feature [4] query
+      RETURN [1, 2] = [null, 2] AS res
+---
+parse expressions/list/List3.feature [5] query
+      RETURN [[1]] = [[1], [null]] AS res
+---
+parse expressions/list/List3.feature [6] query
+      RETURN [[1, 2], [1, 3]] = [[1, 2], [null, 'foo']] AS res
+---
+parse expressions/list/List3.feature [7] query
+      RETURN [[1, 2], ['foo', 'bar']] = [[1, 2], [null, 'bar']] AS res
+---
+parse clauses/create/Create1.feature [1] query
+      CREATE ()
+---
+parse clauses/create/Create1.feature [2] query
+      CREATE (), ()
+---
+parse clauses/create/Create1.feature [3] query
+      CREATE (:Label)
+---
+parse clauses/create/Create1.feature [4] query
+      CREATE (:Label), (:Label)
+---
+parse clauses/create/Create1.feature [5] query
+      CREATE (:A:B:C:D)
+---
+parse clauses/create/Create1.feature [6] query
+      CREATE (:B:A:D), (:B:C), (:D:E:B)
+---
+parse clauses/create/Create1.feature [7] query
+      CREATE ({created: true})
+---
+parse clauses/create/Create1.feature [8] query
+      CREATE (n {name: 'foo'})
+      RETURN n.name AS p
+---
+parse clauses/create/Create1.feature [9] query
+      CREATE (n {id: 12, name: 'foo'})
+---
+parse clauses/create/Create1.feature [10] query
+      CREATE (n {id: 12, name: 'foo'})
+      RETURN n.id AS id, n.name AS p
+---
+parse clauses/create/Create1.feature [11] query
+      CREATE (n {id: 12, name: null})
+      RETURN n.id AS id, n.name AS p
+---
+parse clauses/create/Create1.feature [12] query
+      CREATE (p:TheLabel {id: 4611686018427387905})
+      RETURN p.id
+---
+parse clauses/set/Set2.feature [1] setup
+      CREATE (:A {property1: 23, property2: 46})
+---
+parse clauses/set/Set2.feature [1] query
+      MATCH (n:A)
+      SET n.property1 = null
+      RETURN n
+---
+parse clauses/set/Set2.feature [2] setup
+      CREATE (:A {name: 'Michael', age: 35})
+---
+parse clauses/set/Set2.feature [2] query
+      MATCH (n)
+      WHERE n.name = 'Michael'
+      SET n.name = null
+      RETURN n
+---
+parse clauses/set/Set2.feature [3] setup
+      CREATE ()-[:REL {property1: 12, property2: 24}]->()
+---
+parse clauses/set/Set2.feature [3] query
+      MATCH ()-[r]->()
+      SET r.property1 = null
+      RETURN r
+---
+parse clauses/set/Set3.feature [1] setup
+      CREATE ()
+---
+parse clauses/set/Set3.feature [1] query
+      MATCH (n)
+      SET n:Foo
+      RETURN n
+---
+parse clauses/set/Set3.feature [2] setup
+      CREATE ()
+---
+parse clauses/set/Set3.feature [2] query
+      MATCH (n)
+      SET n:Foo:Bar
+      RETURN n
+---
+parse clauses/set/Set3.feature [3] setup
+      CREATE (:A)
+---
+parse clauses/set/Set3.feature [3] query
+      MATCH (n:A)
+      SET n:Foo
+      RETURN n
+---
+parse clauses/set/Set3.feature [4] setup
+      CREATE (:A)
+---
+parse clauses/set/Set3.feature [4] query
+      MATCH (n)
+      SET n:Foo:Bar
+      RETURN n
+---
+parse clauses/set/Set3.feature [5] setup
+      CREATE ()
+---
+parse clauses/set/Set3.feature [5] query
+      MATCH (n)
+      SET n :Foo
+      RETURN labels(n)
+---
+parse clauses/set/Set3.feature [6] setup
+      CREATE ()
+---
+parse clauses/set/Set3.feature [6] query
+      MATCH (n)
+      SET n :Foo :Bar
+      RETURN labels(n)
+---
+parse clauses/set/Set3.feature [7] setup
+      CREATE ()
+---
+parse clauses/set/Set3.feature [7] query
+      MATCH (n)
+      SET n :Foo:Bar
+      RETURN labels(n)
+---
+parse clauses/set/Set3.feature [8] query
+      OPTIONAL MATCH (a:DoesNotExist)
+      SET a:L
+      RETURN a
+---
+parse clauses/set/Set6.feature [5] setup
+      CREATE (:N {num: 1})
+      CREATE (:N {num: 2})
+      CREATE (:N {num: 3})
+      CREATE (:N {num: 4})
+      CREATE (:N {num: 5})
+---
+parse clauses/set/Set6.feature [5] query
+      MATCH (n:N)
+      SET n.num = n.num + 1
+      WITH n
+      WHERE n.num % 2 = 0
+      RETURN n.num AS num
+---
+parse clauses/delete/Delete1.feature [1] setup
+      CREATE ()
+---
+parse clauses/delete/Delete1.feature [1] query
+      MATCH (n)
+      DELETE n
+---
+parse clauses/delete/Delete1.feature [2] setup
+      CREATE ()
+---
+parse clauses/delete/Delete1.feature [2] query
+      MATCH (n)
+      DETACH DELETE n
+---
+parse clauses/delete/Delete1.feature [3] setup
+      CREATE (x:X)
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+---
+parse clauses/delete/Delete1.feature [3] query
+      MATCH (n:X)
+      DETACH DELETE n
+---
+parse clauses/delete/Delete1.feature [4] query
+      OPTIONAL MATCH (n)
+      DELETE n
+---
+parse clauses/delete/Delete1.feature [5] query
+      OPTIONAL MATCH (a:DoesNotExist)
+      DELETE a
+      RETURN a
+---
+parse clauses/delete/Delete1.feature [6] query
+      OPTIONAL MATCH (n)
+      DETACH DELETE n
+---
+parse clauses/delete/Delete1.feature [7] setup
+      CREATE (x:X)
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+---
+parse clauses/delete/Delete1.feature [7] query
+      MATCH (n:X)
+      DELETE n
+---
+parse clauses/remove/Remove1.feature [1] setup
+      CREATE (:L {num: 42})
+---
+parse clauses/remove/Remove1.feature [1] query
+      MATCH (n)
+      REMOVE n.num
+      RETURN n.num IS NOT NULL AS still_there
+---
+parse clauses/remove/Remove1.feature [3] setup
+      CREATE (a), (b), (a)-[:X {num: 42}]->(b)
+---
+parse clauses/remove/Remove1.feature [3] query
+      MATCH ()-[r]->()
+      REMOVE r.num
+      RETURN r.num IS NOT NULL AS still_there
+---
+parse clauses/remove/Remove1.feature [5] query
+      OPTIONAL MATCH (a:DoesNotExist)
+      REMOVE a.num
+      RETURN a
+---
+parse clauses/remove/Remove1.feature [6] setup
+      CREATE ({num: 42})
+---
+parse clauses/remove/Remove1.feature [6] query
+      MATCH (n)
+      OPTIONAL MATCH (n)-[r]->()
+      REMOVE r.num
+      RETURN n
+---
+parse clauses/remove/Remove2.feature [1] setup
+      CREATE (:L {num: 42})
+---
+parse clauses/remove/Remove2.feature [1] query
+      MATCH (n)
+      REMOVE n:L
+      RETURN n.num
+---
+parse clauses/remove/Remove2.feature [2] setup
+      CREATE (:Foo:Bar)
+---
+parse clauses/remove/Remove2.feature [2] query
+      MATCH (n)
+      REMOVE n:Foo
+      RETURN labels(n)
+---
+parse clauses/remove/Remove2.feature [3] setup
+      CREATE (:L1:L2:L3 {num: 42})
+---
+parse clauses/remove/Remove2.feature [3] query
+      MATCH (n)
+      REMOVE n:L1:L3
+      RETURN labels(n)
+---
+parse clauses/remove/Remove2.feature [4] setup
+      CREATE (:Foo)
+---
+parse clauses/remove/Remove2.feature [4] query
+      MATCH (n)
+      REMOVE n:Bar
+      RETURN labels(n)
+---
+parse clauses/remove/Remove2.feature [5] query
+      OPTIONAL MATCH (a:DoesNotExist)
+      REMOVE a:L
+      RETURN a
+---
+parse clauses/remove/Remove3.feature [1] setup
+      CREATE (:N {num: 42})
+---
+parse clauses/remove/Remove3.feature [1] query
+      MATCH (n:N)
+      REMOVE n.num
+      RETURN n
+      LIMIT 0
+---
+parse clauses/remove/Remove3.feature [15] setup
+      CREATE ()-[r:R {num: 42}]->()
+---
+parse clauses/remove/Remove3.feature [15] query
+      MATCH ()-[r:R]->()
+      REMOVE r.num
+      RETURN r
+      LIMIT 0

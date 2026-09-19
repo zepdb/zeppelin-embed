@@ -1,0 +1,23 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+warning: unused imports: `CompileLimits`, `Function`, `LimitKind`, `ParseError`, `ResourceError`, `Resources`, `parse_bytes`, and `parse_with`
+  --> crates/zeppelin-embed-cypher/tests/parser.rs:25:59
+   |
+25 | ...t, CompileLimits, ErrorKind, Function, LimitKind, NodeKind, ParseError, ResourceError, Resources, Span, UnaryOp, parse_bytes, parse_with};
+   |       ^^^^^^^^^^^^^             ^^^^^^^^  ^^^^^^^^^            ^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^                 ^^^^^^^^^^^  ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-cypher` (test "parser") generated 1 warning (run `cargo fix --test "parser" -p zeppelin-embed-cypher` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running tests/parser.rs (target/ze54/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 7 tests
+test precedence_and_chain_operands_are_preserved_in_the_arena ... ok
+test parses_literals_and_expression_precedence ... ok
+test escapes_full_width_numbers_and_utf8_byte_spans_are_exact ... ok
+test aggregate_placement_and_with_alias_are_profile_checked ... ok
+test every_syntax_inventory_expression_has_a_preserved_node ... ok
+test parses_complete_clause_pattern_projection_and_write_inventory ... ok
+test complete_input_rejects_unsupported_suffixes_and_profile_syntax ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

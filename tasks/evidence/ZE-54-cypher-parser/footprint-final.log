@@ -1,0 +1,38 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `release` profile [optimized] target(s) in 0.71s
+abi_version=1
+ok: ze_abi_version is non-zero
+ok: ze_error_code_name(0) is ZE_OK
+ok: ze_error_code_name(1) is named
+ok: ze_open
+ok: ze_open produced a non-zero handle
+ok: ze_state
+ok: state is open
+ok: a forged handle is refused
+ok: a null out-pointer is refused
+ok: a wrong abi_size is refused
+ok: ze_close
+ok: a closed handle is refused
+ALL CHECKS PASSED
+parser_ast_nodes=17
+abi_version=1
+ok: ze_abi_version is non-zero
+ok: ze_error_code_name(0) is ZE_OK
+ok: ze_error_code_name(1) is named
+ok: ze_open
+ok: ze_open produced a non-zero handle
+ok: ze_state
+ok: state is open
+ok: a forged handle is refused
+ok: a null out-pointer is refused
+ok: a wrong abi_size is refused
+ok: ze_close
+ok: a closed handle is refused
+ALL CHECKS PASSED
+ZE54_SIZE artifact=baseline linkable_bytes=2544086 physical_KiB=2564
+ZE54_SIZE artifact=frontend linkable_bytes=2630094 physical_KiB=2644
+ZE54_SIZE artifact=parser-stripped.a linkable_bytes=426450 physical_KiB=2100
+ZE54_SIZE artifact=baseline-stripped.a linkable_bytes=2694105 physical_KiB=4892
+ZE54_SIZE artifact=frontend-stripped.a linkable_bytes=2781515 physical_KiB=4996

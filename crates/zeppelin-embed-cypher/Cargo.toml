@@ -1,0 +1,10 @@
+[package]
+name = "zeppelin-embed-cypher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Bounded internal Cypher syntax frontend for Zeppelin Embed"
+
+[dependencies]

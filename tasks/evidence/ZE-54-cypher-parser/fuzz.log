@@ -1,0 +1,16 @@
+warning: user-defined alias `fuzz` is shadowing an external subcommand found at `/Users/aghatage/.cargo/bin/cargo-fuzz`
+  |
+  = note: this was previously accepted but will become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/10049>
+     Locking 1 package to latest Rust 1.98.0-nightly compatible version
+      Adding zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+   Compiling libc v0.2.189
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.55
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling cfg-if v1.0.4
+   Compiling byteorder v1.5.0
+INFO: Seed: 6481614
+#2	INITED cov: 86 ft: 86 corp: 1/1b exec/s: 0 rss: 36Mb
+#5715828	DONE   cov: 1104 ft: 4279 corp: 1148/202Kb lim: 32602 exec/s: 93702 rss: 810Mb
+Done 5715828 runs in 61 second(s)

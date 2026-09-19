@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/parser.rs (target/ze54/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 1 test
+test reserved_words_require_escaping_as_variables_but_allow_schema_names ... FAILED
+
+failures:
+
+---- reserved_words_require_escaping_as_variables_but_allow_schema_names stdout ----
+
+thread 'reserved_words_require_escaping_as_variables_but_allow_schema_names' (32333492) panicked at crates/zeppelin-embed-cypher/tests/parser.rs:621:9:
+accepted MATCH (RETURN) RETURN 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    reserved_words_require_escaping_as_variables_but_allow_schema_names
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-cypher --test parser`

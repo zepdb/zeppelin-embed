@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/parser.rs (target/ze54/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 1 test
+test parses_complete_clause_pattern_projection_and_write_inventory ... FAILED
+
+failures:
+
+---- parses_complete_clause_pattern_projection_and_write_inventory stdout ----
+
+thread 'parses_complete_clause_pattern_projection_and_write_inventory' (32251326) panicked at crates/zeppelin-embed-cypher/tests/parser.rs:22:45:
+MATCH (a:A:B {key: $key, x: 1+2})<-[r:R|S {p: true}]-(b), ()--() OPTIONAL MATCH (b)-[rels:T*0..3]->(c) WHERE c.x IS NOT NULL WITH DISTINCT a, collect(DISTINCT r) AS rs ORDER BY a.x DESC SKIP $skip LIMIT 2 WHERE a.x > 0 RETURN a, rs: ParseError { kind: Syntax, span: Span { start: 0, end: 5 }, message: "expected keyword" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    parses_complete_clause_pattern_projection_and_write_inventory
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-cypher --test parser`

@@ -1,0 +1,16 @@
+warning: user-defined alias `fuzz` is shadowing an external subcommand found at `/Users/aghatage/.cargo/bin/cargo-fuzz`
+  |
+  = note: this was previously accepted but will become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/10049>
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-fuzz v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.41s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+     Running `target/ze54-fuzz/aarch64-apple-darwin/release/cypher_parser -artifact_prefix=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/fuzz/artifacts/cypher_parser/ -max_total_time=60 -max_len=65537 /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/fuzz/corpus/cypher_parser`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 611206730
+INFO: Loaded 1 modules   (7558 inline 8-bit counters): 7558 [0x1024eabe0, 0x1024ec966),
+INFO: Loaded 1 PC tables (7558 PCs): 7558 [0x1024ec968,0x10250a1c8),
+INFO: Seed: 611206730
+#4833	INITED cov: 2091 ft: 9006 corp: 1784/438Kb exec/s: 0 rss: 265Mb
+#3619415	DONE   cov: 2144 ft: 9231 corp: 1873/476Kb lim: 65537 exec/s: 59334 rss: 540Mb
+Done 3619415 runs in 61 second(s)

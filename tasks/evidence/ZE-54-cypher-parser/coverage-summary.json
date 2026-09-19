@@ -1,0 +1,32 @@
+{
+  "ast.rs": {
+    "count": 31,
+    "covered": 31,
+    "percent": 100.0
+  },
+  "lexer.rs": {
+    "count": 321,
+    "covered": 311,
+    "percent": 96.88473520249221
+  },
+  "lib.rs": {
+    "count": 94,
+    "covered": 93,
+    "percent": 98.93617021276596
+  },
+  "parser.rs": {
+    "count": 985,
+    "covered": 974,
+    "percent": 98.88324873096447
+  },
+  "resources.rs": {
+    "count": 123,
+    "covered": 105,
+    "percent": 85.36585365853658
+  },
+  "total": {
+    "count": 1554,
+    "covered": 1514,
+    "percent": 97.42599742599742
+  }
+}

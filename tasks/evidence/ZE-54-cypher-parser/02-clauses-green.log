@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-54/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.03s
+     Running tests/parser.rs (target/ze54/debug/deps/parser-d9c8f0ed5d369f67)
+
+running 2 tests
+test parses_literals_and_expression_precedence ... ok
+test parses_complete_clause_pattern_projection_and_write_inventory ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
