@@ -1,0 +1,42 @@
+[
+  {
+    "test": "BacklogContracts.test_missing_or_extra_live_prerequisite_is_rejected",
+    "mutation": [
+      "graph[key] == expected | EXTRA_PREREQUISITES.get(key, set())",
+      "expected | EXTRA_PREREQUISITES.get(key, set()) <= graph[key]"
+    ],
+    "exit": 1,
+    "log": "BacklogContracts.test_missing_or_extra_live_prerequisite_is_rejected.mutant-red.log.gz",
+    "restored_sha256": "1b6ba90caabe36c489cfeb3f982173296da6c5f2d3ee132ef2229aa61c4062c9"
+  },
+  {
+    "test": "BacklogContracts.test_started_or_done_work_requires_review_and_every_prerequisite",
+    "mutation": [
+      "if ticket[\"status\"] != \"todo\":",
+      "if False:"
+    ],
+    "exit": 1,
+    "log": "BacklogContracts.test_started_or_done_work_requires_review_and_every_prerequisite.mutant-red.log.gz",
+    "restored_sha256": "1b6ba90caabe36c489cfeb3f982173296da6c5f2d3ee132ef2229aa61c4062c9"
+  },
+  {
+    "test": "BacklogContracts.test_approved_eligibility_scope_does_not_allow_arbitrary_replacement",
+    "mutation": [
+      "ticket[\"description\"].startswith(description)",
+      "True"
+    ],
+    "exit": 1,
+    "log": "BacklogContracts.test_approved_eligibility_scope_does_not_allow_arbitrary_replacement.mutant-red.log.gz",
+    "restored_sha256": "1b6ba90caabe36c489cfeb3f982173296da6c5f2d3ee132ef2229aa61c4062c9"
+  },
+  {
+    "test": "BacklogContracts.test_scope_type_epic_label_and_candidate_hash_are_preserved",
+    "mutation": [
+      "record[\"candidate_sha256\"] == hashlib.sha256(\n                json.dumps(candidate, sort_keys=True).encode()).hexdigest()",
+      "True"
+    ],
+    "exit": 1,
+    "log": "BacklogContracts.test_scope_type_epic_label_and_candidate_hash_are_preserved.mutant-red.log.gz",
+    "restored_sha256": "1b6ba90caabe36c489cfeb3f982173296da6c5f2d3ee132ef2229aa61c4062c9"
+  }
+]

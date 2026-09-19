@@ -1,0 +1,8 @@
+{
+  "tracker/planning/validate-backlog.py": "c4dbfa6101904d66cbcfd1528babc76af7c993a86ce73e8f8c345e799fb175cf",
+  "tracker/planning/validation.json": "53690cf1206b93eb365ab3ffb406c8ddd019dcf4e31c6543ddb5a2735da83753",
+  "tracker/backup.json": "bbcb26fcebb90bbbcf5c24abf487472aa36f13a46ad04fda9213fc26a30fe987",
+  "tasks/evidence/graph-detailed-planning.md": "db5e9d94fadb7360879fd0e2e10a7819da496e69f58e4bf6a0fc4317ef293ffd",
+  "docs/graph/plans/README.md": "426d75eac077dca41b8bfa8727d000fcd7abd18f99d8aba95e08ba24b02ac785",
+  "docs/graph/plans/cypher.md": "f801cdefef70cf5cf2057f8b8f626505508945550905ff6ae049ac394d1a33ac"
+}

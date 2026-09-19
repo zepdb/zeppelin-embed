@@ -1,0 +1,51 @@
+{
+  "scope": "Current documentary planning/backlog checks only; no product execution or runtime acceptance",
+  "total_epics": 11,
+  "total_tickets": 116,
+  "workstream_epics": 8,
+  "detailed_plans": 8,
+  "implementation_tickets": 47,
+  "candidate_prerequisite_edges": 122,
+  "original_implementation_edges_with_review": 169,
+  "current_implementation_edges_with_review": 177,
+  "release_closure": 47,
+  "cycles": 0,
+  "unresolved_dependencies": 0,
+  "all_implementation_require_review": true,
+  "review_status": "done",
+  "implementation_status_counts": {
+    "todo": 43,
+    "in_progress": 2,
+    "done": 2
+  },
+  "implementation_frontier": [],
+  "required_release_followups": [
+    "ZE-106",
+    "ZE-107"
+  ],
+  "deferred_after_first_release": [
+    "ZE-108"
+  ],
+  "export_prefix": "ZE",
+  "sqlite_integrity": "ok",
+  "foreign_key_violations": 0,
+  "http_status": 200,
+  "checked_markdown_files": 13,
+  "broken_local_links_or_anchors": 0,
+  "diff_check": "passed",
+  "sha256": {
+    "docs/graph/plans/README.md": "1b9d598e896ef759942dca962d1173fa96dd224c09e8a38d2f78fb6253b6ad3a",
+    "docs/graph/plans/bindings.md": "d59774c76b75edd7a0f157a1613d271044ba2b51f5f2bf4d4aa848da0aa13c02",
+    "docs/graph/plans/cypher.md": "9aa1af2a190012a32ac6b671ece51624191e9ecf4eac4904e85ff6b98c8f978c",
+    "docs/graph/plans/execution.md": "6bf49d9c0bd3093f06967d1746a19d49e5e2519e51ac184d748627daf1a5ea06",
+    "docs/graph/plans/identity.md": "565f08a3e3764e3f802a5bb722cc4fbc7b4476ac8d6313494d6fcd8fbe8c860f",
+    "docs/graph/plans/qualification.md": "11f2faa9b05ad42f1a54595d98429a0667a7b272229b1fb912a4bc0584faf7dd",
+    "docs/graph/plans/retrieval.md": "adf94b0f437ae4f3db546bfee22d9a849ab31f4bda4d6ab248ffa7ac9109db11",
+    "docs/graph/plans/review.md": "105464d14675930a41802eab03aa13d111ab5b65c5bd66a08faef2a56941fcfa",
+    "docs/graph/plans/storage.md": "aedd04c5ad6c1e2f85cc08afd3531ed8a2d08ee12089c5bfa1013aa31529ed63",
+    "docs/graph/plans/writes.md": "5c1dbddb0ce9c860ac30ab671645a92fb890a79f0fe386c578ac2f8909f63cc4",
+    "docs/graph/native-graph-plan.md": "acfa71e4446aefcc81890641aa0b7825a3f3236f299b709002e57c5ca242bc1d",
+    "docs/graph/planning-briefs.md": "231954eb9fc09bcd69c5758e0b76af439c61a0a05f94eed590bb2d414699ffd9",
+    "docs/agents/issue-tracker.md": "25515b2cd01a6db5502c2ed60bc1ba7da88cebb02212b75e1d417e5268cd20b0"
+  }
+}
