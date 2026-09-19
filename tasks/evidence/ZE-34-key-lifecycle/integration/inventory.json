@@ -1,0 +1,34 @@
+{
+  "clippy.log.gz": {
+    "sha256": "da36a197070249e25de094deba55672607243b95213e024f9b407f71d670f530",
+    "bytes": 221
+  },
+  "commands.json": {
+    "sha256": "6ecdf79d07ae3a79276fa5519a09dba6e903a65871ab2b5df1900b352017380b",
+    "bytes": 1508
+  },
+  "core.log.gz": {
+    "sha256": "73b087eb2a686ecbe10445cc2909a8d8bb0f25fcf285bea255277ea1e39f7800",
+    "bytes": 1360
+  },
+  "fmt.log.gz": {
+    "sha256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837",
+    "bytes": 20
+  },
+  "merge-guidance.md": {
+    "sha256": "21bb99f9d791b09f3502fb9ad2e5a248c2289a3fee09104bb01181c23d95c037",
+    "bytes": 9178
+  },
+  "oracle-probes.log.gz": {
+    "sha256": "a19ef0a2c406e446aded7d73291e473eeae7147c94e1772b0eeb5ba2e390e587",
+    "bytes": 633
+  },
+  "source-audit.json": {
+    "sha256": "0d0626a20ec71fbdd55e2d96774fb1ac4136f1d55dd53dfea02fc69a5057fe1b",
+    "bytes": 17722
+  },
+  "verify-focused.py": {
+    "sha256": "8180c503f98168f2822dea89445f15443d8619f86934e996cd8a613a6ce99593",
+    "bytes": 1460
+  }
+}

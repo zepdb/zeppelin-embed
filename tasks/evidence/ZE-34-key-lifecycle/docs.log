@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling libc v0.2.189
+    Checking byteorder v1.5.0
+    Checking bytemuck v1.25.2
+    Checking xxhash-rust v0.8.18
+ Documenting zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests/adversarial-oracle)
+    Checking roaring v0.10.12
+ Documenting zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.07s
+   Generated /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/target/ze34-doc/doc/zeppelin_embed/index.html and 1 other file

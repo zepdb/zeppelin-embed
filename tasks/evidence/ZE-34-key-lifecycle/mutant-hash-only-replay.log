@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.29s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 1 test
+
+thread 'exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift' (33449287) panicked at crates/zeppelin-embed/tests/graph_key_lifecycle.rs:700:13:
+assertion failed: matches!(decision, Err(KeyLifecycleError::RevisionConflict))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... FAILED
+
+failures:
+
+failures:
+    exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_key_lifecycle`

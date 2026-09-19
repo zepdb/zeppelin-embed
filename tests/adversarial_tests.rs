@@ -18674,3 +18674,13 @@ fn campaign_invariant_checked(
     };
     coverage.count(evidence) > 0
 }
+
+#[test]
+fn property_graph_key_lifecycle_probe_preserves_exact_history() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_key_lifecycle::probe(0, &mut coverage)
+        .expect("PG5 primitive lifecycle model");
+    for key in adversarial::graph_key_lifecycle::REQUIRED_COVERAGE {
+        assert!(coverage.count(key) > 0, "missing lifecycle {key}");
+    }
+}

@@ -1,0 +1,92 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.52
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling rustix v1.1.3
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling autocfg v1.5.1
+   Compiling serde_json v1.0.151
+   Compiling bitflags v2.13.1
+   Compiling regex-syntax v0.8.11
+   Compiling once_cell v1.21.4
+   Compiling itoa v1.0.18
+   Compiling anstyle v1.0.14
+   Compiling fastrand v2.4.1
+   Compiling either v1.17.0
+   Compiling ciborium-io v0.2.2
+   Compiling clap_lex v1.1.0
+   Compiling memchr v2.8.3
+   Compiling bytemuck v1.25.2
+   Compiling num-traits v0.2.19
+   Compiling cast v0.3.0
+   Compiling fnv v1.0.7
+   Compiling clap_builder v4.6.0
+   Compiling itertools v0.10.5
+   Compiling byteorder v1.5.0
+   Compiling bit-vec v0.8.0
+   Compiling same-file v1.0.6
+   Compiling quick-error v1.2.3
+   Compiling xxhash-rust v0.8.18
+   Compiling walkdir v2.5.0
+   Compiling oorandom v11.1.5
+   Compiling bit-set v0.8.0
+   Compiling roaring v0.10.12
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling errno v0.3.14
+   Compiling wait-timeout v0.2.1
+   Compiling is-terminal v0.4.17
+   Compiling rand_core v0.9.5
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling rand_xorshift v0.4.0
+   Compiling criterion-plot v0.5.0
+   Compiling regex-automata v0.4.18
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+   Compiling clap v4.6.1
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_derive v1.0.229
+   Compiling regex v1.13.1
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.61s
+     Running tests/graph_key_lifecycle.rs (target/ze34-coverage/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 17 tests
+deterministic test seed: name=test cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input ... ok
+"graph_key_target_permutations" ZE_TEST_SEED="0" derived=test long_relationship_type_comparison_is_cancellable_and_exact ... [88, b9, ok
+89, 37, 11, 91, 8a, 0e, a8, 3a, f5, 1e, a5, b5, 59, 26, 1d, 87, 7a, bf, 68, 36, fe, 92, 19, ac, 9f, bb, ac, 00, 1e, 23]
+test batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes ... ok
+test logical_finalization_checks_cancellation_while_streaming_long_key_provenance ... ok
+test never_used_key_create_stages_identity_and_explicit_provenance ... ok
+test cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch ... ok
+test key_comparison_errors_and_cancellation_never_become_replay ... ok
+test cypher_final_state_changes_advance_once_and_never_create_retry_receipts ... ok
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... ok
+test put_delete_recreate_preserve_fences_and_reject_old_incarnations ... ok
+test structured_batches_reject_every_repeated_key_or_entity_target ... ok
+test unkeyed_cypher_entities_keep_identity_and_checked_revision_without_receipts ... ok
+test relationship_puts_preserve_full_directed_endpoints_and_exact_type ... ok
+test every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes ... ok
+test controlled_provenance_matches_existing_admission_and_exact_framing ... ok
+test invalid_provenance_kinds_and_private_finalization_fail_loudly ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test every_target_order_is_checked_and_cancellation_can_interrupt_each_stage ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+

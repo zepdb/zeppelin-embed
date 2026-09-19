@@ -1,0 +1,250 @@
+{
+  "adversarial-after.log": {
+    "sha256": "680b0c568000d0ac2880927b1389a9e2811c2b95b18211a357a50c1145794be9",
+    "bytes": 61593
+  },
+  "adversarial-before.log": {
+    "sha256": "d3f66d5f8ac215ebee7df36a144e5ecac6de044ded1bcc6046a4f3194a11c26b",
+    "bytes": 63243
+  },
+  "adversarial-summary.json": {
+    "sha256": "1cbd941d721d8e68c222baeff08b4d1b004fdf464528a13e4d57fd60b5496f75",
+    "bytes": 294
+  },
+  "allocation-audit.log": {
+    "sha256": "a5b9be3f6b2bf42c42e9eed57eeb3da6dd7ffacae1f0b896979089406f135fbc",
+    "bytes": 2538
+  },
+  "clippy.log": {
+    "sha256": "0d15ba5689f3a39e455536f8ab2b9508758766b264df68fa6fc7abed42bdc4bc",
+    "bytes": 456
+  },
+  "coverage-all-report.log": {
+    "sha256": "86418deb4c1836b763be808965a9d98f1999ce63ef990589404279a4b3cee562",
+    "bytes": 76
+  },
+  "coverage-core.log": {
+    "sha256": "7c0c71dc24408f28e5394ef6f71d59adbea3f5ac65dc081056e1cd9a0d9d8a15",
+    "bytes": 4117
+  },
+  "coverage-oracle-report.log": {
+    "sha256": "d169895f2a3e20e58c0f6762cd593010d312917b2db649d3041e8bbceea884bd",
+    "bytes": 79
+  },
+  "coverage-oracle.log": {
+    "sha256": "381a3efeab962653ebffeaad9f5417b9254919f2f0a7947d010b0ba9c63be500",
+    "bytes": 1329
+  },
+  "coverage-report.log": {
+    "sha256": "11e19b89584890eeb4036a623c1edb6c3553d93bd8155076d43789fc6e768603",
+    "bytes": 72
+  },
+  "coverage-runner.log": {
+    "sha256": "c11fc051f617ceabcdbbc3e7fe61b668bd05a7a0adf20023352b7940bcd5802d",
+    "bytes": 1758
+  },
+  "deny.log": {
+    "sha256": "a0215166999ebbc1a21667897f65ef1432be868e55e2525fcb96c96d655c470a",
+    "bytes": 7819
+  },
+  "docs.log": {
+    "sha256": "ce2df65f56e786799afa744d34e086521df63738b22e29417380457b288d9690",
+    "bytes": 707
+  },
+  "environment.log": {
+    "sha256": "3d16bf89f9aacf9fa5ef010b6f32e8b0f2bb0354f9a997fb25e41a5270698b63",
+    "bytes": 456
+  },
+  "existing-source-prefix-audit.json": {
+    "sha256": "9ed787a69f9751cc52fa1c543f91b1eadc5ceed92dfe8e09167c973a1d60e1bd",
+    "bytes": 617
+  },
+  "fmt.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "focused-all-coverage.json.gz": {
+    "sha256": "dc57a5a50aa568eb274a23e600617f9ff3c20067452d477f1b46c0d2941035b2",
+    "bytes": 2960523
+  },
+  "focused-coverage.json.gz": {
+    "sha256": "e7c2f946f65f4bcd24d78fe68bcda9269f1a6fe07f2e39e8071a3b14c2e9a504",
+    "bytes": 2163681
+  },
+  "green-batch-disposition.log": {
+    "sha256": "2249cc3e3b7b407bc3e4fc41999464df4e728965974420715e72a79b66d26afb",
+    "bytes": 4435
+  },
+  "green-bounded-contracts.log": {
+    "sha256": "1b0b8e2100d00081832df7bfe6c33591900872e9db2ef047adeb1ff13478111c",
+    "bytes": 2006
+  },
+  "green-cancellation.log": {
+    "sha256": "fc8e2d77602bc1f9fd472138b933be71ee357cc2e83793e81af61dddeb103dd9",
+    "bytes": 1379
+  },
+  "green-create-replay.log": {
+    "sha256": "86259ed383e470d665e7898610a39c11deeb4ccbea93cad2b3435e00a414d620",
+    "bytes": 1491
+  },
+  "green-create.log": {
+    "sha256": "b61f50e30884a1a52bb9a3785f14cf32987f7dcacdb561c22334bd6f01e4db07",
+    "bytes": 1714
+  },
+  "green-cypher-advancement.log": {
+    "sha256": "8310b493d8f79df91dcfaa1470f2f13afed19e008efbcaa27656b7de3703d821",
+    "bytes": 4268
+  },
+  "green-lifecycle-contracts.log": {
+    "sha256": "b3590feac1b6e4d7e1ba0fa319b3bc9e0d4afbade561244837b9c56ac2151397",
+    "bytes": 1203
+  },
+  "green-primitive-oracle.log": {
+    "sha256": "13344e3c8ced65d417c44f0837f271218cb881f38d679d51e5e6e2a316db6def",
+    "bytes": 1191
+  },
+  "green-put-delete-recreate.log": {
+    "sha256": "99707991f54f2664d86aecb4b004fcdb8b52dbcf1d8d015cbcf58ef91e878df4",
+    "bytes": 4184
+  },
+  "green-runner-oracle.log": {
+    "sha256": "6a8a1e19d5fba55be73e92a308351fc366069cda4eb1232bd67ce0ac288d7507",
+    "bytes": 1204
+  },
+  "green-transition-matrix.log": {
+    "sha256": "ff56d71a42e67db1c70dec75c1e756cb6edebb10f17c30110a087c2fa2c2b60e",
+    "bytes": 4521
+  },
+  "mutant-cypher-unchanged-shortcut.log": {
+    "sha256": "d1c33314af7fcc7e30c130f2c9cb723e98b9fbacd9dffeffaff0b5e3a6c87dc4",
+    "bytes": 924
+  },
+  "mutant-delete-mode-replay.log": {
+    "sha256": "5f5e06f556879ec12d887de7616c61ae929282a63955292308baeff075ccd5fa",
+    "bytes": 1042
+  },
+  "mutant-deletion-precondition.log": {
+    "sha256": "831c55b299999eb227cadb0a41ebb1660557f4db67534ea285e6ef647b477cf2",
+    "bytes": 1053
+  },
+  "mutant-discard-durable-work.log": {
+    "sha256": "9e19fcfa0a2df606ee3a4ea1f58e388d780909e73fc749ff3ae9039fb8da5986",
+    "bytes": 1006
+  },
+  "mutant-duplicate-entity.log": {
+    "sha256": "c188ba6c41c95c9cf5d6e8b30ee7993958157f8f46d664e63b0d8edf8cf43618",
+    "bytes": 1028
+  },
+  "mutant-generation-wrap.log": {
+    "sha256": "ab67ad24389c1ef81a69faea83dbd4a6c19d8ecb030225d8b16baec80297b7bf",
+    "bytes": 1107
+  },
+  "mutant-hash-only-replay.log": {
+    "sha256": "4b8eaf482089232b33285bb2d9f4811a9debbcf6c2daee9ff9aeeedda23f9b08",
+    "bytes": 1005
+  },
+  "mutant-old-incarnation.log": {
+    "sha256": "1d8077011ffa7e0a47d570a08ef560760d39cddef7404240099c983886b74f47",
+    "bytes": 917
+  },
+  "mutant-oracle-always-accept.log": {
+    "sha256": "c0268151c642b8af9fdf4c896e1587e9e9ba0d8784fcd2ed138a38019c0b7fdd",
+    "bytes": 1508
+  },
+  "mutant-resurrection.log": {
+    "sha256": "9c47dfa3afef9613a677c9a89b8a11fb067c1f974a5ea7f845c4a1423d7223aa",
+    "bytes": 1041
+  },
+  "mutant-revision-overflow.log": {
+    "sha256": "c7f184ea0ec66a379a4f1f72638556f3a085630d7dfb97d6b25f0ecc0dcba61f",
+    "bytes": 1007
+  },
+  "mutant-uncancellable-finalization.log": {
+    "sha256": "a15c8549e4a08b12382f40eeca16cffb67e66d8d645e3ba483fbf14a72ad2839",
+    "bytes": 1185
+  },
+  "mutant-uncancellable-sort.log": {
+    "sha256": "fe7e8033a3c27feaea1b79636efc84591dd050b316195525b01633058d71f799",
+    "bytes": 1543
+  },
+  "mutant-unchunked-name.log": {
+    "sha256": "d7567373eeae669943607e821a917daf3ff4317b957afd18d44bc41343de1a91",
+    "bytes": 1013
+  },
+  "mutation-driver.log": {
+    "sha256": "2b1a5184c0f49e5e5e3010ae21fa1954c4bac1ea858192378ca37c158b0b5306",
+    "bytes": 969
+  },
+  "mutations.json": {
+    "sha256": "f79206e96e654a62431cab1364eba9813ccb26fb5b96e3b5f61e11db36affb70",
+    "bytes": 10037
+  },
+  "mutations.py": {
+    "sha256": "254279adef9e3b4c166eca1c389bc326ecebf59f616866f49ce4e6dd0e959e8d",
+    "bytes": 6243
+  },
+  "red-create-api.log": {
+    "sha256": "a7ffcd6cd2f82d95075fbde0161365be5684941333772d8e79f30051aa2fee1d",
+    "bytes": 3696
+  },
+  "red-create-replay.log": {
+    "sha256": "e1820b138ff5c2cf599e6df719bfceb7625cf249e1cda2896a94fe70bbf1a61a",
+    "bytes": 3392
+  },
+  "red-cypher-advancement.log": {
+    "sha256": "b64031e1471f05f4e1871f8d8b6963fa383379daa77a338dd35cf9ef8c1d0228",
+    "bytes": 14528
+  },
+  "red-duplicate-batch.log": {
+    "sha256": "bb6afcb83678d42674a30456661153ac780b83605dea757e6af43f34f2650885",
+    "bytes": 14846
+  },
+  "red-finalization-cancellation.log": {
+    "sha256": "c84c1d52b5401e5e86df6ece10ae3c38ebb03ac850982fdab4cf7968e63ab061",
+    "bytes": 2491
+  },
+  "red-long-key-cancellation.log": {
+    "sha256": "e81a2bbbee5744a3fde27a51d0fa4863a772e9caca5337ee65f0ff00f14323de",
+    "bytes": 1169
+  },
+  "red-primitive-oracle.log": {
+    "sha256": "ac46b4c85630787b90d3fee7f879469d3ad5d3d674a8d251578848ff95c78cf3",
+    "bytes": 1258
+  },
+  "red-put-delete-recreate.log": {
+    "sha256": "3703ecf50ee38c7282472fe7ff4ecc979373f0e5d65308368bdf78bc8db74715",
+    "bytes": 5251
+  },
+  "red-sort-cancellation.log": {
+    "sha256": "70ad3d21f67cf54746fb7fa521ec93665416b0097dd91f9011e6634815cf15cf",
+    "bytes": 1642
+  },
+  "reference-audit.json": {
+    "sha256": "b78991d493503c5009938eba9384fbadde95b0da81785a1b1eba42da7c857fc1",
+    "bytes": 800
+  },
+  "source-allowlist.txt": {
+    "sha256": "a8410a89f6845b2b9c6a7a04dca59267a1db09b54907886d53be0adf8534be0e",
+    "bytes": 678
+  },
+  "source-inventory.json": {
+    "sha256": "c747aa1a4055bc07c506d1206b363c69c721a9f755cf9e66e9a69599677ec214",
+    "bytes": 3865
+  },
+  "source-review.json": {
+    "sha256": "50542ccfeb896e6a6ab10e5e2e05ff5856e02daba3e5b256a5d92bb7cf983f4a",
+    "bytes": 1092
+  },
+  "terminal-green-oracle.log": {
+    "sha256": "0041019a15bac1a9d1e274779690a62e9e50a06e7e1e6a07695198c8a4fe6abc",
+    "bytes": 1191
+  },
+  "terminal-green-public.log": {
+    "sha256": "6999820f310c274ec33e06ce4c0b917a2aceeac3e9ed00dc687f77e5a8e7e341",
+    "bytes": 2006
+  },
+  "terminal-green-runner.log": {
+    "sha256": "5b621c1c0b43e81457682e1503f0685a2dc080b6291cf2882c49439ec5050700",
+    "bytes": 955
+  }
+}

@@ -1,0 +1,93 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:14
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:39
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:11
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:36
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                    ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:56
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:14
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:39
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                       ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:59
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:16
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:41
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:74
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:62:13
+   |
+62 |     Stale { current: GraphRevision },
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 12 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.96s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 6 tests
+test batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes ... ok
+test put_delete_recreate_preserve_fences_and_reject_old_incarnations ... ok
+test cypher_final_state_changes_advance_once_and_never_create_retry_receipts ... ok
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... ok
+test never_used_key_create_stages_identity_and_explicit_provenance ... ok
+test structured_batches_reject_every_repeated_key_or_entity_target ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

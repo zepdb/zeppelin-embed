@@ -1,0 +1,296 @@
+[
+  {
+    "name": "old-incarnation",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "put_delete_recreate_preserve_fences_and_reject_old_incarnations",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "put_delete_recreate_preserve_fences_and_reject_old_incarnations",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "hash-only-replay",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "resurrection",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "deletion-precondition",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "delete-mode-replay",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "cypher-unchanged-shortcut",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "cypher_final_state_changes_advance_once_and_never_create_retry_receipts",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "cypher_final_state_changes_advance_once_and_never_create_retry_receipts",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "revision-overflow",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "unkeyed_cypher_entities_keep_identity_and_checked_revision_without_receipts",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "unkeyed_cypher_entities_keep_identity_and_checked_revision_without_receipts",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "duplicate-entity",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "structured_batches_reject_every_repeated_key_or_entity_target",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "structured_batches_reject_every_repeated_key_or_entity_target",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "uncancellable-sort",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "unchunked-name",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle/bounded.rs",
+    "test": "cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "6e52d8633f0b0523bce41881857102a0fdd31317adf46c9ee88f12ae4d798a4e",
+    "sha256_restored": "6e52d8633f0b0523bce41881857102a0fdd31317adf46c9ee88f12ae4d798a4e"
+  },
+  {
+    "name": "discard-durable-work",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "generation-wrap",
+    "file": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+    "test": "batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "sha256_restored": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336"
+  },
+  {
+    "name": "uncancellable-finalization",
+    "file": "crates/zeppelin-embed/src/property_graph/provenance.rs",
+    "test": "logical_finalization_checks_cancellation_while_streaming_long_key_provenance",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_key_lifecycle",
+      "logical_finalization_checks_cancellation_while_streaming_long_key_provenance",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "d422d1a78d862e65c0c8566b811a6313febb32dc4c09e25a07e9339df6968e77",
+    "sha256_restored": "d422d1a78d862e65c0c8566b811a6313febb32dc4c09e25a07e9339df6968e77"
+  },
+  {
+    "name": "oracle-always-accept",
+    "file": "tests/adversarial-oracle/src/graph_key_lifecycle.rs",
+    "test": "adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "intended_assertion_failure": true,
+    "sha256_before": "a75d162025977031215e2792978d28ee8c18752824bdd04e529971117f03174d",
+    "sha256_restored": "a75d162025977031215e2792978d28ee8c18752824bdd04e529971117f03174d"
+  }
+]

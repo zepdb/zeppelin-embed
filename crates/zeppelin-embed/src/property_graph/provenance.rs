@@ -211,3 +211,30 @@ pub fn compare_replay_evidence(
         checkpoint,
     )
 }
+
+impl<'a> OperationProvenance<'a> {
+    /// Admits the same explicit fields as `from_fields`, polling the caller
+    /// throughout complete provenance framing before logical finalization.
+    pub fn from_fields_with_control(
+        version: Option<u16>,
+        fields: OperationFields<'a>,
+        checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+    ) -> Result<Self, CanonicalError> {
+        checkpoint()?;
+        if version != Some(1) {
+            return Err(CanonicalError::UnsupportedProvenanceVersion);
+        }
+        let kind = fields.incarnation.kind();
+        if fields.key.is_some_and(|key| key.kind() != kind)
+            || matches!(fields.expected, ExpectedGraphState::Entity(id) if id.kind() != kind)
+        {
+            return Err(CanonicalError::ProvenanceKindMismatch);
+        }
+        let mut value = Self {
+            fields,
+            encoded_len: 0,
+        };
+        value.encoded_len = value.write_to(&mut io::sink(), checkpoint)?.bytes;
+        Ok(value)
+    }
+}

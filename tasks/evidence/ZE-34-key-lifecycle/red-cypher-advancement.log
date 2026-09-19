@@ -1,0 +1,211 @@
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:14
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:39
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:11
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:36
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                    ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:56
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:14
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:39
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                       ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:59
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:16
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:41
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:74
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:62:13
+   |
+62 |     Stale { current: GraphRevision },
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 12 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+error[E0433]: failed to resolve: use of undeclared type `CypherEdit`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:109:68
+    |
+109 |     let KeyDecision::Change(edit) = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("on...
+    |                                                                    ^^^^^^^^^^ use of undeclared type `CypherEdit`
+    |
+help: there is an enum variant `crate::GraphOperation::CypherEdit` and 1 other; try using the variant's enum
+    |
+109 -     let KeyDecision::Change(edit) = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("one final edit") else { panic!("changed") };
+109 +     let KeyDecision::Change(edit) = classify_cypher(Some(current), crate::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("one final edit") else { panic!("changed") };
+    |
+109 -     let KeyDecision::Change(edit) = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("one final edit") else { panic!("changed") };
+109 +     let KeyDecision::Change(edit) = classify_cypher(Some(current), zeppelin_embed::property_graph::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("one final edit") else { panic!("changed") };
+    |
+
+error[E0425]: cannot find function `classify_cypher` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:109:37
+    |
+109 |     let KeyDecision::Change(edit) = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("on...
+    |                                     ^^^^^^^^^^^^^^^ help: a function with a similar name exists: `classify_key`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:178:1
+    |
+178 | pub fn classify_key<'a>(key: ApplicationKey<'a>, state: KeyState<'a>, request: KeyRequest<'a>, scratch: &mut [u8], checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>) -> Result<KeyDecision<'a>, KeyLifecycleError> {
+    | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- similarly named function `classify_key` defined here
+
+error[E0433]: failed to resolve: use of undeclared type `CypherEdit`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:118:47
+    |
+118 |     assert_eq!(classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), ...
+    |                                               ^^^^^^^^^^ use of undeclared type `CypherEdit`
+    |
+help: there is an enum variant `crate::GraphOperation::CypherEdit` and 1 other; try using the variant's enum
+    |
+118 -     assert_eq!(classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), KeyDecision::NoOp);
+118 +     assert_eq!(classify_cypher(Some(current), crate::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), KeyDecision::NoOp);
+    |
+118 -     assert_eq!(classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), KeyDecision::NoOp);
+118 +     assert_eq!(classify_cypher(Some(current), zeppelin_embed::property_graph::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), KeyDecision::NoOp);
+    |
+
+error[E0425]: cannot find function `classify_cypher` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:118:16
+    |
+118 |     assert_eq!(classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(())).expect("same final contents"), ...
+    |                ^^^^^^^^^^^^^^^ help: a function with a similar name exists: `classify_key`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:178:1
+    |
+178 | pub fn classify_key<'a>(key: ApplicationKey<'a>, state: KeyState<'a>, request: KeyRequest<'a>, scratch: &mut [u8], checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>) -> Result<KeyDecision<'a>, KeyLifecycleError> {
+    | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- similarly named function `classify_key` defined here
+
+error[E0599]: no variant or associated item named `NoOp` found for enum `zeppelin_embed::property_graph::KeyDecision<'a>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:118:151
+    |
+118 | ...nts"), KeyDecision::NoOp);
+    |                        ^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyDecision<'_>`
+
+error[E0433]: failed to resolve: use of undeclared type `CypherEdit`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:130:53
+    |
+130 |         let result = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(()));
+    |                                                     ^^^^^^^^^^ use of undeclared type `CypherEdit`
+    |
+help: there is an enum variant `crate::GraphOperation::CypherEdit` and 1 other; try using the variant's enum
+    |
+130 -         let result = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(()));
+130 +         let result = classify_cypher(Some(current), crate::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(()));
+    |
+130 -         let result = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(()));
+130 +         let result = classify_cypher(Some(current), zeppelin_embed::property_graph::GraphOperation::Put(final_image), &mut [0; 64], &mut || Ok(()));
+    |
+
+error[E0425]: cannot find function `classify_cypher` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:130:22
+    |
+130 |         let result = classify_cypher(Some(current), CypherEdit::Put(final_image), &mut [0; 64], &mut || Ok(()));
+    |                      ^^^^^^^^^^^^^^^ help: a function with a similar name exists: `classify_key`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:178:1
+    |
+178 | pub fn classify_key<'a>(key: ApplicationKey<'a>, state: KeyState<'a>, request: KeyRequest<'a>, scratch: &mut [u8], checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>) -> Result<KeyDecision<'a>, KeyLifecycleError> {
+    | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- similarly named function `classify_key` defined here
+
+error[E0599]: no variant or associated item named `NoOp` found for enum `zeppelin_embed::property_graph::KeyDecision<'a>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:131:81
+    |
+131 |         if same { assert_eq!(result.expect("no increment needed"), KeyDecision::NoOp); }
+    |                                                                                 ^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyDecision<'_>`
+
+error[E0599]: no variant or associated item named `RevisionOverflow` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:132:64
+    |
+132 |         else { assert!(matches!(result, Err(KeyLifecycleError::RevisionOverflow))); }
+    |                                                                ^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0433]: failed to resolve: use of undeclared type `CypherEdit`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:134:38
+    |
+134 |     assert_eq!(classify_cypher(None, CypherEdit::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"),...
+    |                                      ^^^^^^^^^^ use of undeclared type `CypherEdit`
+    |
+help: there is an enum variant `crate::GraphOperation::CypherEdit` and 1 other; try using the variant's enum
+    |
+134 -     assert_eq!(classify_cypher(None, CypherEdit::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"), KeyDecision::NoOp);
+134 +     assert_eq!(classify_cypher(None, crate::GraphOperation::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"), KeyDecision::NoOp);
+    |
+134 -     assert_eq!(classify_cypher(None, CypherEdit::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"), KeyDecision::NoOp);
+134 +     assert_eq!(classify_cypher(None, zeppelin_embed::property_graph::GraphOperation::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"), KeyDecision::NoOp);
+    |
+
+error[E0425]: cannot find function `classify_cypher` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:134:16
+    |
+134 |     assert_eq!(classify_cypher(None, CypherEdit::Delete(GraphDeleteMode::Detach), &mut [], &mut || Ok(())).expect("missing/null target"),...
+    |                ^^^^^^^^^^^^^^^ help: a function with a similar name exists: `classify_key`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:178:1
+    |
+178 | pub fn classify_key<'a>(key: ApplicationKey<'a>, state: KeyState<'a>, request: KeyRequest<'a>, scratch: &mut [u8], checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>) -> Result<KeyDecision<'a>, KeyLifecycleError> {
+    | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- similarly named function `classify_key` defined here
+
+error[E0599]: no variant or associated item named `NoOp` found for enum `zeppelin_embed::property_graph::KeyDecision<'a>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:134:152
+    |
+134 | ...get"), KeyDecision::NoOp);
+    |                        ^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyDecision<'_>`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (test "graph_key_lifecycle") due to 12 previous errors

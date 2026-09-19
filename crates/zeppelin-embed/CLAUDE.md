@@ -708,3 +708,34 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   ZE-38/40 still own durable carriage, coherent high-waters, recovery and refusing
   incompatible interpretation before replay/cleanup; codec success alone does
   not admit a GraphStore or establish whole-store reopen/compaction correctness.
+
+## ZE-34: pure graph key lifecycle classification
+
+- `classify_key` consumes one coherent admitted key state and explicit request.
+  Preserve full incarnation IDs, operation/precondition/delete-mode provenance,
+  revision and original generation. Exact retry requires actual canonical bytes;
+  a larger revision never lets an old incarnation mutate its replacement.
+- Deleted keys retain fences after entity bytes are swept. Only explicit recreate
+  naming the current deletion revision installs a fresh ID at a newer revision.
+  Ordinary create/put cannot resurrect a key. Same-incarnation relationships keep
+  directed endpoints and exact type; properties may change.
+- Classify Cypher once from its complete final normalized entity image after all
+  expressions have been evaluated. Unchanged final contents are NoOp; changed
+  contents/delete use checked revision+1, including unkeyed entities. Cypher
+  provenance is not a structured retry receipt or generic idempotency token.
+- Reject every repeated full key or resolved entity in a structured batch, even
+  identical requests. Preserve each replay's original generation in mixed work;
+  allocate a checked changed generation only for actual durable participants.
+  Net-empty create/delete still changes allocator/fence state supplied by staging.
+- Descriptor sorts are allocation-free, fallible and poll at each heap operation;
+  exact name comparisons poll every 64 KiB. Batch summaries and private logical
+  finalization also forward cancellation. Scratch may be reordered on refusal;
+  no admitted state is mutated. Controlled provenance admission uses the same
+  complete framing/version/kind rules as the original constructor.
+- `PendingKeyChange::install` is private-work logical finalization, not a public
+  caller-chosen-ID store operation. The coordinator owns allocator high-water and
+  global nonreuse, endpoint existence, Restrict adjacency checks, publication and
+  durable provenance carriage. ZE-109 DETACH is one node tombstone with endpoint
+  liveness filtering; this classifier never enumerates incident edges. Storage,
+  sweep/reclamation, no-WAL/no-generation public paths and crash recovery remain
+  their later owners' proofs. PG5 checks pure history, not those durable effects.

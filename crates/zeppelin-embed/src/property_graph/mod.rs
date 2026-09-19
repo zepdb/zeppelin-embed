@@ -89,3 +89,12 @@ mod tests;
 
 /// Logical symbol dictionary and graph interpretation validation.
 pub mod catalog;
+
+mod key_lifecycle;
+
+pub use canonical::EntityShape;
+pub use key_lifecycle::{
+    BatchClassification, BatchDisposition, BatchTarget, CanonicalRecord, CurrentEntity, CypherEdit,
+    KeyDecision, KeyLifecycleError, KeyRequest, KeyState, PendingKeyChange, classify_cypher,
+    classify_key, summarize_key_batch, validate_distinct_targets,
+};

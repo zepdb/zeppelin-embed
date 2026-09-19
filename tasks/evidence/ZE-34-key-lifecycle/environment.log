@@ -1,0 +1,22 @@
+$ rustc -Vv
+rustc 1.93.0 (254b59607 2026-01-19)
+binary: rustc
+commit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c
+commit-date: 2026-01-19
+host: aarch64-apple-darwin
+release: 1.93.0
+LLVM version: 21.1.8
+$ cargo -V
+cargo 1.93.0 (083ac5135 2025-12-15)
+$ cargo llvm-cov --version
+cargo-llvm-cov 0.9.0
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A5388g
+$ sysctl -n hw.model hw.memsize hw.ncpu
+Mac15,9
+137438953472
+16
+$ uname -m
+arm64

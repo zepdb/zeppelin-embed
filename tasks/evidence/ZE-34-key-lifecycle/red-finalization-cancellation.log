@@ -1,0 +1,37 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied
+    --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:1714:29
+     |
+1714 | ...ge.install(node(1), GraphGeneration::new(1), &mut || { calls += 1; if calls == 4 { Err(CanonicalError::Cancelled) } else { Ok(()) } }), ...
+     |       ^^^^^^^                                   ---------------------------------------------------------------------------------------- unexpected argument #3 of type `&mut {closure@crates/zeppelin-embed/tests/graph_key_lifecycle.rs:1714:76: 1714:78}`
+     |
+note: method defined here
+    --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:213:12
+     |
+ 213 |     pub fn install(
+     |            ^^^^^^^
+help: remove the extra argument
+     |
+1714 -     assert!(matches!(change.install(node(1), GraphGeneration::new(1), &mut || { calls += 1; if calls == 4 { Err(CanonicalError::Cancelled) } else { Ok(()) } }), Err(KeyLifecycleError::Canonical(CanonicalError::Cancelled))));
+1714 +     assert!(matches!(change.install(node(1), GraphGeneration::new(1)), Err(KeyLifecycleError::Canonical(CanonicalError::Cancelled))));
+     |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied
+    --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:1716:23
+     |
+1716 |     assert_eq!(change.install(node(1), GraphGeneration::new(1), &mut || Ok(())).expect("clean control").fields().key, Some(key));
+     |                       ^^^^^^^                                   -------------- unexpected argument #3 of type `&mut {closure@crates/zeppelin-embed/tests/graph_key_lifecycle.rs:1716:70: 1716:72}`
+     |
+note: method defined here
+    --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:213:12
+     |
+ 213 |     pub fn install(
+     |            ^^^^^^^
+help: remove the extra argument
+     |
+1716 -     assert_eq!(change.install(node(1), GraphGeneration::new(1), &mut || Ok(())).expect("clean control").fields().key, Some(key));
+1716 +     assert_eq!(change.install(node(1), GraphGeneration::new(1)).expect("clean control").fields().key, Some(key));
+     |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `zeppelin-embed` (test "graph_key_lifecycle") due to 2 previous errors

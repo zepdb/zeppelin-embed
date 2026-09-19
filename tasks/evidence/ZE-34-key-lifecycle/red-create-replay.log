@@ -1,0 +1,58 @@
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:30:14
+   |
+30 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:30:39
+   |
+30 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 2 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+error[E0422]: cannot find struct, variant or union type `CurrentEntity` in this scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:50:36
+   |
+50 | ...   let state = KeyState::Live(CurrentEntity { provenance: installed, contents: CanonicalRecord::from_validated(EntityShape::Node, fing...
+   |                                  ^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `Live` found for enum `zeppelin_embed::property_graph::KeyState` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:50:31
+   |
+50 | ...   let state = KeyState::Live(CurrentEntity { provenance: installed, contents: CanonicalRecord::from_validated(EntityShape::Node, fing...
+   |                             ^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyState`
+
+error[E0599]: no variant or associated item named `Replay` found for enum `zeppelin_embed::property_graph::KeyDecision<'a>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:55:30
+   |
+55 |             let KeyDecision::Replay(provenance) = decision.expect("exact retry") else { panic!("expected replay") };
+   |                              ^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyDecision<'_>`
+
+error[E0599]: no variant or associated item named `RevisionConflict` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:58:63
+   |
+58 |             assert!(matches!(decision, Err(KeyLifecycleError::RevisionConflict)));
+   |                                                               ^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+warning: irrefutable `let...else` pattern
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:27:5
+   |
+27 |     let KeyDecision::Change(change) = decision else { panic!("new create must change") };
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this pattern will always match, so the `else` clause is useless
+   = help: consider removing the `else` clause
+   = note: `#[warn(irrefutable_let_patterns)]` on by default
+
+Some errors have detailed explanations: E0422, E0599.
+For more information about an error, try `rustc --explain E0422`.
+warning: `zeppelin-embed` (test "graph_key_lifecycle") generated 1 warning
+error: could not compile `zeppelin-embed` (test "graph_key_lifecycle") due to 4 previous errors; 1 warning emitted

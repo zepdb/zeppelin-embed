@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.66s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 12 tests
+test put_delete_recreate_preserve_fences_and_reject_old_incarnations ... ok
+test cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch ... ok
+test never_used_key_create_stages_identity_and_explicit_provenance ... ok
+test cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input ... ok
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... ok
+test batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes ... ok
+test key_comparison_errors_and_cancellation_never_become_replay ... ok
+test relationship_puts_preserve_full_directed_endpoints_and_exact_type ... ok
+test cypher_final_state_changes_advance_once_and_never_create_retry_receipts ... ok
+test structured_batches_reject_every_repeated_key_or_entity_target ... ok
+test every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes ... ok
+test invalid_provenance_kinds_and_private_finalization_fail_loudly ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

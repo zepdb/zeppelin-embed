@@ -1,0 +1,11 @@
+{
+  "reviewer": "root",
+  "reviewed_sources": {
+    "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+    "crates/zeppelin-embed/src/property_graph/key_lifecycle/bounded.rs": "6e52d8633f0b0523bce41881857102a0fdd31317adf46c9ee88f12ae4d798a4e",
+    "crates/zeppelin-embed/src/property_graph/canonical.rs": "cf377cb5d7ad52dd6e803bb632b29b0db701789b17c56b61134784a7975cb628",
+    "crates/zeppelin-embed/src/property_graph/provenance.rs": "d422d1a78d862e65c0c8566b811a6313febb32dc4c09e25a07e9339df6968e77"
+  },
+  "result": "No further concrete product finding on this snapshot after cancellation fixes. Exact key/provenance/shape checks now controlled; private install forwards callback into complete provenance framing; sort arithmetic/index bounds reviewed; existing canonical/provenance source bytes preserved as complete prefixes. Remaining tests/oracle/mutants/coverage are separate acceptance gates.",
+  "limits": "Pure component/source review, not GraphStore/WAL/DE\u03a4ACH durability or publication proof."
+}

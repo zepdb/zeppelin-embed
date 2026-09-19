@@ -1,0 +1,15 @@
+crates/zeppelin-embed/CLAUDE.md
+crates/zeppelin-embed/src/property_graph/canonical.rs
+crates/zeppelin-embed/src/property_graph/provenance.rs
+crates/zeppelin-embed/src/property_graph/mod.rs
+crates/zeppelin-embed/src/property_graph/key_lifecycle.rs
+crates/zeppelin-embed/src/property_graph/key_lifecycle/bounded.rs
+crates/zeppelin-embed/src/property_graph/key_lifecycle/allocation_tests.rs
+crates/zeppelin-embed/tests/graph_key_lifecycle.rs
+tests/adversarial-oracle/src/lib.rs
+tests/adversarial-oracle/src/graph_key_lifecycle.rs
+tests/adversarial/graph_key_lifecycle.rs
+tests/adversarial/mod.rs
+tests/adversarial/runner.rs
+tests/adversarial/coverage.rs
+tests/adversarial_tests.rs

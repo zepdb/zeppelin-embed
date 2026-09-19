@@ -104,3 +104,5 @@ pub mod test_support {
         ChaCha8Rng::seed_from_u64(derived)
     }
 }
+
+pub mod graph_key_lifecycle;

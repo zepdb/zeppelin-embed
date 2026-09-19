@@ -1,0 +1,11 @@
+{
+  "head": "89f0263cc7a1fd9c396d2c4953747a013556a7f9",
+  "working_tree_status": "",
+  "files": {
+    "src/storage/table/node_table.cpp": "305ebfce4951147d844105ed428e5ccf3bc3bfdec79a840089812369cdc857f0",
+    "src/storage/table/rel_table.cpp": "288a91668211d89b1b8ff813baf133c9e203860f779f772ef06e1b47e528788a",
+    "test/test_files/dml_rel/create/create_read_tinysnb.test": "dd4673cef3f36bd9d1df61d52e2285600859c8ea288373529378fb19a3e781c7",
+    "test/test_files/dml_node/delete/delete_empty.test": "2890d31fd7aa8351ee0e69ec743491b00730a8a27dcce8603f4a724d3f445ab0"
+  },
+  "scope": "Pinned source and test inspection only; no source copied, no Kuzu runtime tests run. Stable identity is distinct from Kuzu physical offsets; physical reclamation does not permit Zeppelin fence or identity reuse."
+}

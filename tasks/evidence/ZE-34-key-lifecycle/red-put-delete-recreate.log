@@ -1,0 +1,82 @@
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:40:14
+   |
+40 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:40:39
+   |
+40 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:55:13
+   |
+55 |     Stale { current: GraphRevision },
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 3 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+error[E0599]: no variant named `Put` found for enum `zeppelin_embed::property_graph::KeyRequest<'_>`
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:71:31
+   |
+71 |     let request = KeyRequest::Put { revision: revision(8), expected: node(9), contents: CanonicalRecord::from_validated(EntityShape::Node...
+   |                               ^^^ variant not found in `zeppelin_embed::property_graph::KeyRequest<'_>`
+
+error[E0599]: no variant named `Delete` found for enum `zeppelin_embed::property_graph::KeyRequest<'_>`
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:79:31
+   |
+79 |     let request = KeyRequest::Delete { revision: revision(9), expected: node(9), mode: GraphDeleteMode::Detach };
+   |                               ^^^^^^ variant not found in `zeppelin_embed::property_graph::KeyRequest<'_>`
+
+error[E0599]: no variant named `Delete` found for enum `zeppelin_embed::property_graph::KeyRequest<'_>`
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:83:29
+   |
+83 |     let retry = KeyRequest::Delete { revision: revision(9), expected: node(9), mode: GraphDeleteMode::Detach };
+   |                             ^^^^^^ variant not found in `zeppelin_embed::property_graph::KeyRequest<'_>`
+
+error[E0599]: no variant or associated item named `Deleted` found for enum `zeppelin_embed::property_graph::KeyState<'a>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:84:71
+   |
+84 | ...ey(key(), KeyState::Deleted(fence), retry, &mut [0; 64], &mut || Ok(())).expect("delete retry") else { panic!("replay") };
+   |                        ^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyState<'_>`
+
+error[E0599]: no variant named `Recreate` found for enum `zeppelin_embed::property_graph::KeyRequest<'_>`
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:87:31
+   |
+87 |     let request = KeyRequest::Recreate { revision: revision(10), deleted_revision: revision(9), contents: CanonicalRecord::from_validated...
+   |                               ^^^^^^^^ variant not found in `zeppelin_embed::property_graph::KeyRequest<'_>`
+
+error[E0599]: no variant or associated item named `Deleted` found for enum `zeppelin_embed::property_graph::KeyState<'a>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:88:71
+   |
+88 | ...ey(key(), KeyState::Deleted(fence), request, &mut [0; 64], &mut || Ok(())).expect("explicit recreate") else { panic!("change") };
+   |                        ^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyState<'_>`
+
+error[E0599]: no variant or associated item named `InvalidInstalledIdentity` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:90:98
+   |
+90 |     assert!(matches!(recreate.install(node(9), GraphGeneration::new(13)), Err(KeyLifecycleError::InvalidInstalledIdentity)));
+   |                                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0599]: no variant named `Delete` found for enum `zeppelin_embed::property_graph::KeyRequest<'_>`
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:95:32
+   |
+95 |         let late = KeyRequest::Delete { revision: revision(request_rev), expected: node(9), mode: GraphDeleteMode::Detach };
+   |                                ^^^^^^ variant not found in `zeppelin_embed::property_graph::KeyRequest<'_>`
+
+error[E0599]: no variant or associated item named `IncarnationConflict` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+  --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:96:131
+   |
+96 | ...ycleError::IncarnationConflict)), "old delete at revision {request_rev}");
+   |               ^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_key_lifecycle") due to 9 previous errors

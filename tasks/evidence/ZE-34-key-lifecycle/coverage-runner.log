@@ -1,0 +1,28 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling zerocopy v0.8.52
+   Compiling serde_core v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed-ffi)
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_json v1.0.151
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling proptest v1.10.0
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.49s
+     Running adversarial_tests.rs (target/ze34-coverage/debug/deps/adversarial_tests-dc11412a44b91ab3)
+
+running 6 tests
+test adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption ... ok
+test feature_programs_distribute_operations_across_lifecycle_phases ... ok
+test property_graph_key_lifecycle_probe_preserves_exact_history ... ok
+test lifecycle_campaign_comparison_counts_include_same_operation_fault_multiplicity ... ok
+test adversarial::lifecycle_accounting::tests::lifecycle_public_operations_pass_exact_checkers ... ok
+test adversarial::lifecycle_accounting::tests::every_lifecycle_fault_fires_at_its_declared_operation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.43s
+

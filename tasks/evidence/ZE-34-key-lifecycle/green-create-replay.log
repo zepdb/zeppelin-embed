@@ -1,0 +1,35 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:40:14
+   |
+40 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:40:39
+   |
+40 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:55:13
+   |
+55 |     Stale { current: GraphRevision },
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.37s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 2 tests
+test never_used_key_create_stages_identity_and_explicit_provenance ... ok
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

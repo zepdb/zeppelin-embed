@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.45s
+     Running unittests src/lib.rs (target/ze34/debug/deps/zeppelin_embed_adversarial_oracle-fe7f38c4116386d8)
+
+running 1 test
+
+thread 'graph_key_lifecycle::tests::primitive_lifecycle_oracle_preserves_creation_replay_and_incarnation_fences' (33298121) panicked at tests/adversarial-oracle/src/graph_key_lifecycle.rs:45:9:
+assertion `left == right` failed
+  left: NoOp
+ right: Changed(Record { id: 1267650600228229401496703205385, revision: 7, origin: Create, expected: Absent, detach: None, generation: 13, bits: Some(9223372036854775808) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test graph_key_lifecycle::tests::primitive_lifecycle_oracle_preserves_creation_replay_and_incarnation_fences ... FAILED
+
+failures:
+
+failures:
+    graph_key_lifecycle::tests::primitive_lifecycle_oracle_preserves_creation_replay_and_incarnation_fences
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 88 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-adversarial-oracle --lib`

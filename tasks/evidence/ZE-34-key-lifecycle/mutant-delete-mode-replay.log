@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 1 test
+
+thread 'every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes' (33456103) panicked at crates/zeppelin-embed/tests/graph_key_lifecycle.rs:589:9:
+assertion `left == right` failed: Deleted Delete revision=7 expected_id=9 deleted=7
+  left: "replay"
+ right: "conflict"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes ... FAILED
+
+failures:
+
+failures:
+    every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_key_lifecycle`

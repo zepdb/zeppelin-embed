@@ -1,0 +1,26 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.92s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 16 tests
+deterministic test seed: name="graph_key_target_permutations" ZE_TEST_SEED="0" derived=test long_relationship_type_comparison_is_cancellable_and_exact ... ok[88, b9, 89, 37, 11, 91, 8a, 0e, a8, 3a, f5, 1e, a5, b5, 
+59, 26, 1d, 87, 7a, bf, 68test cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch ... , 36, fe, 92ok
+, 19, ac, 9f, bb, ac, 00, 1e, 23]
+test never_used_key_create_stages_identity_and_explicit_provenance ... ok
+test unkeyed_cypher_entities_keep_identity_and_checked_revision_without_receipts ... ok
+test relationship_puts_preserve_full_directed_endpoints_and_exact_type ... ok
+test cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input ... ok
+test cypher_final_state_changes_advance_once_and_never_create_retry_receipts ... ok
+test exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift ... ok
+test put_delete_recreate_preserve_fences_and_reject_old_incarnations ... ok
+test batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes ... ok
+test logical_finalization_checks_cancellation_while_streaming_long_key_provenance ... ok
+test key_comparison_errors_and_cancellation_never_become_replay ... ok
+test structured_batches_reject_every_repeated_key_or_entity_target ... ok
+test every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes ... ok
+test invalid_provenance_kinds_and_private_finalization_fail_loudly ... ok
+proptest: FileFailurePersistence::SourceParallel set, but no source file known
+test every_target_order_is_checked_and_cancellation_can_interrupt_each_stage ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+

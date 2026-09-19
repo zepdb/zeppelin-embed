@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.34s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 1 test
+
+thread 'cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input' (33214828) panicked at crates/zeppelin-embed/tests/graph_key_lifecycle.rs:1389:5:
+assertion `left == right` failed: uncancellable sort moved the entire input before observing cancellation
+  left: [BatchTarget { key: Some(ApplicationKey { kind: Node, namespace: GraphName("ns"), key: GraphName("a") }), entity: None }, BatchTarget { key: Some(ApplicationKey { kind: Node, namespace: GraphName("ns"), key: GraphName("z") }), entity: None }]
+ right: [BatchTarget { key: Some(ApplicationKey { kind: Node, namespace: GraphName("ns"), key: GraphName("z") }), entity: None }, BatchTarget { key: Some(ApplicationKey { kind: Node, namespace: GraphName("ns"), key: GraphName("a") }), entity: None }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input ... FAILED
+
+failures:
+
+failures:
+    cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_key_lifecycle`

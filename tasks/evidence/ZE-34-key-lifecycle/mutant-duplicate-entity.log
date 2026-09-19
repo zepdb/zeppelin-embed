@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.20s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 1 test
+
+thread 'structured_batches_reject_every_repeated_key_or_entity_target' (33464114) panicked at crates/zeppelin-embed/tests/graph_key_lifecycle.rs:981:5:
+assertion failed: matches!(validate_distinct_targets(&mut [first, same_entity], &mut || Ok(())),
+    Err(KeyLifecycleError::DuplicateTarget))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test structured_batches_reject_every_repeated_key_or_entity_target ... FAILED
+
+failures:
+
+failures:
+    structured_batches_reject_every_repeated_key_or_entity_target
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_key_lifecycle`

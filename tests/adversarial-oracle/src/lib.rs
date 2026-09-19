@@ -122,3 +122,5 @@ fn escape(value: &str) -> String {
 }
 
 pub mod graph_catalog;
+
+pub mod graph_key_lifecycle;

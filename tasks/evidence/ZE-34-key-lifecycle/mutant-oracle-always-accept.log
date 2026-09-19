@@ -1,0 +1,23 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests/adversarial-oracle)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.59s
+     Running adversarial_tests.rs (target/ze34/debug/deps/adversarial_tests-dc11412a44b91ab3)
+
+running 1 test
+
+thread 'adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption' (33485849) panicked at tests/adversarial/graph_key_lifecycle.rs:466:18:
+CAN FIRE: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption ... FAILED
+
+failures:
+
+failures:
+    adversarial::graph_key_lifecycle::lifecycle_oracle_can_fire_on_result_and_retained_field_corruption
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 438 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed-workspace-tests --test adversarial_tests`

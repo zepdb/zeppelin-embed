@@ -1,0 +1,257 @@
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:14
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> crates/zeppelin-embed/src/lib.rs:28:9
+   |
+28 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:41:39
+   |
+41 |     Create { revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:11
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:36
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                    ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:43:56
+   |
+43 |     Put { revision: GraphRevision, expected: EntityId, contents: CanonicalRecord<'a> },
+   |                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:14
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:39
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                       ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:45:59
+   |
+45 |     Delete { revision: GraphRevision, expected: EntityId, mode: GraphDeleteMode },
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:16
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:41
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:47:74
+   |
+47 |     Recreate { revision: GraphRevision, deleted_revision: GraphRevision, contents: CanonicalRecord<'a> },
+   |                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/zeppelin-embed/src/property_graph/key_lifecycle.rs:62:13
+   |
+62 |     Stale { current: GraphRevision },
+   |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 12 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:139:17
+    |
+139 |     let first = BatchTarget::new(Some(key()), Some(node(1))).expect("target");
+    |                 ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:140:22
+    |
+140 |     assert!(matches!(validate_distinct_targets(&mut [first, first], &mut || Ok(())), Err(KeyLifecycleError::DuplicateTarget)), "identical...
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `DuplicateTarget` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:140:109
+    |
+140 | ...ecycleError::DuplicateTarget)), "identical duplicate is invalid too");
+    |                 ^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:141:20
+    |
+141 |     let same_key = BatchTarget::new(Some(key()), Some(node(2))).expect("same key");
+    |                    ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:142:22
+    |
+142 |     assert!(matches!(validate_distinct_targets(&mut [first, same_key], &mut || Ok(())), Err(KeyLifecycleError::DuplicateTarget)));
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `DuplicateTarget` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:142:112
+    |
+142 |     assert!(matches!(validate_distinct_targets(&mut [first, same_key], &mut || Ok(())), Err(KeyLifecycleError::DuplicateTarget)));
+    |                                                                                                                ^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:144:23
+    |
+144 |     let same_entity = BatchTarget::new(Some(other_key), Some(node(1))).expect("same entity");
+    |                       ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:145:22
+    |
+145 |     assert!(matches!(validate_distinct_targets(&mut [first, same_entity], &mut || Ok(())), Err(KeyLifecycleError::DuplicateTarget)));
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `DuplicateTarget` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:145:115
+    |
+145 |     assert!(matches!(validate_distinct_targets(&mut [first, same_entity], &mut || Ok(())), Err(KeyLifecycleError::DuplicateTarget)));
+    |                                                                                                                   ^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:147:24
+    |
+147 |     let relationship = BatchTarget::new(Some(relationship_key), Some(EntityId::Relationship(RelId::new(1).expect("rel")))).expect("other ...
+    |                        ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:148:5
+    |
+148 |     validate_distinct_targets(&mut [first, relationship], &mut || Ok(())).expect("full domain separation");
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:149:22
+    |
+149 |     assert!(matches!(BatchTarget::new(None, None), Err(KeyLifecycleError::MissingTarget)));
+    |                      ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0599]: no variant or associated item named `MissingTarget` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:149:75
+    |
+149 |     assert!(matches!(BatchTarget::new(None, None), Err(KeyLifecycleError::MissingTarget)));
+    |                                                                           ^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0433]: failed to resolve: use of undeclared type `BatchTarget`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:150:22
+    |
+150 |     assert!(matches!(BatchTarget::new(Some(relationship_key), Some(node(1))), Err(KeyLifecycleError::KindMismatch)));
+    |                      ^^^^^^^^^^^ use of undeclared type `BatchTarget`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:151:22
+    |
+151 |     assert!(matches!(validate_distinct_targets(&mut vec![first; MAX_GRAPH_CHANGES + 1], &mut || Ok(())), Err(KeyLifecycleError::TooManyTa...
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `TooManyTargets` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:151:129
+    |
+151 | ...fecycleError::TooManyTargets)));
+    |                  ^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+
+error[E0425]: cannot find function `validate_distinct_targets` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:152:22
+    |
+152 |     assert!(matches!(validate_distinct_targets(&mut [first], &mut || Err(CanonicalError::Cancelled)), Err(KeyLifecycleError::Canonical(Ca...
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:160:19
+    |
+160 |     let summary = summarize_key_batch(GraphGeneration::new(20), &replays, false).expect("all replays");
+    |                   ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `BatchDisposition`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:161:37
+    |
+161 |     assert_eq!(summary.disposition, BatchDisposition::Replayed);
+    |                                     ^^^^^^^^^^^^^^^^ use of undeclared type `BatchDisposition`
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:165:16
+    |
+165 |     assert_eq!(summarize_key_batch(GraphGeneration::new(u64::MAX), &replays, false).expect("replay never increments").changed_generation,...
+    |                ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:166:16
+    |
+166 |     let noop = summarize_key_batch(GraphGeneration::new(20), &[KeyDecision::NoOp], false).expect("effect-free");
+    |                ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `BatchDisposition`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:167:34
+    |
+167 |     assert_eq!(noop.disposition, BatchDisposition::NoOp);
+    |                                  ^^^^^^^^^^^^^^^^ use of undeclared type `BatchDisposition`
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:169:24
+    |
+169 |     let consumed_ids = summarize_key_batch(GraphGeneration::new(20), &[KeyDecision::NoOp], true).expect("create then delete retained allo...
+    |                        ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `BatchDisposition`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:170:42
+    |
+170 |     assert_eq!(consumed_ids.disposition, BatchDisposition::Changed);
+    |                                          ^^^^^^^^^^^^^^^^ use of undeclared type `BatchDisposition`
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:176:17
+    |
+176 |     let mixed = summarize_key_batch(GraphGeneration::new(20), &[replays[0], changed, replays[1]], false).expect("mixed distinct targets");
+    |                 ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `BatchDisposition`
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:177:35
+    |
+177 |     assert_eq!(mixed.disposition, BatchDisposition::Changed);
+    |                                   ^^^^^^^^^^^^^^^^ use of undeclared type `BatchDisposition`
+
+error[E0425]: cannot find function `summarize_key_batch` in this scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:181:22
+    |
+181 |     assert!(matches!(summarize_key_batch(GraphGeneration::new(u64::MAX), &[changed], false), Err(KeyLifecycleError::GenerationOverflow)));
+    |                      ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no variant or associated item named `GenerationOverflow` found for enum `zeppelin_embed::property_graph::KeyLifecycleError` in the current scope
+   --> crates/zeppelin-embed/tests/graph_key_lifecycle.rs:181:117
+    |
+181 |     assert!(matches!(summarize_key_batch(GraphGeneration::new(u64::MAX), &[changed], false), Err(KeyLifecycleError::GenerationOverflow)));
+    |                                                                                                                     ^^^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::KeyLifecycleError`
+    |
+help: there is a variant with a similar name
+    |
+181 -     assert!(matches!(summarize_key_batch(GraphGeneration::new(u64::MAX), &[changed], false), Err(KeyLifecycleError::GenerationOverflow)));
+181 +     assert!(matches!(summarize_key_batch(GraphGeneration::new(u64::MAX), &[changed], false), Err(KeyLifecycleError::RevisionOverflow)));
+    |
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (test "graph_key_lifecycle") due to 28 previous errors

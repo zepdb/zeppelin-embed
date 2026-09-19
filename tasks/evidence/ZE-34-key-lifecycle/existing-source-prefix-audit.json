@@ -1,0 +1,14 @@
+{
+  "crates/zeppelin-embed/src/property_graph/canonical.rs": {
+    "base_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "current_sha256": "cf377cb5d7ad52dd6e803bb632b29b0db701789b17c56b61134784a7975cb628",
+    "unchanged_prefix_bytes": 22253,
+    "appended_bytes": 1414
+  },
+  "crates/zeppelin-embed/src/property_graph/provenance.rs": {
+    "base_sha256": "73a58d443a626acd01e1462df03102c729ef314534917f253546c41b2e625d4e",
+    "current_sha256": "d422d1a78d862e65c0c8566b811a6313febb32dc4c09e25a07e9339df6968e77",
+    "unchanged_prefix_bytes": 8226,
+    "appended_bytes": 1016
+  }
+}

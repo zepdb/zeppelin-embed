@@ -1,0 +1,16 @@
+{
+  "adversarial-before.log": {
+    "episodes": 224,
+    "seed_min": 0,
+    "seed_max": 223,
+    "violations": 0,
+    "test_seconds": "107.51"
+  },
+  "adversarial-after.log": {
+    "episodes": 224,
+    "seed_min": 0,
+    "seed_max": 223,
+    "violations": 0,
+    "test_seconds": "117.47"
+  }
+}

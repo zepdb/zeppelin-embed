@@ -632,3 +632,49 @@ mod allocation_tests {
         assert_eq!(positive.unattributed_bytes, 17);
     }
 }
+
+/// Immutable logical topology, independent of properties and physical placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityShape<'a> {
+    /// Node labels and contents may change while its identity is retained.
+    Node,
+    /// A relationship keeps both directed endpoints and its exact type forever.
+    Relationship {
+        /// Full-width source node identity.
+        source: NodeId,
+        /// Full-width target node identity.
+        target: NodeId,
+        /// Exact relationship type.
+        relationship_type: GraphName<'a>,
+    },
+}
+
+impl EntityShape<'_> {
+    /// Identity domain implied by the logical topology.
+    #[must_use]
+    pub const fn kind(self) -> super::EntityKind {
+        match self {
+            Self::Node => super::EntityKind::Node,
+            Self::Relationship { .. } => super::EntityKind::Relationship,
+        }
+    }
+}
+
+impl<'a> CanonicalContents<'a> {
+    /// Returns immutable topology for same-incarnation replacement validation.
+    #[must_use]
+    pub const fn shape(&self) -> EntityShape<'a> {
+        match self.shape {
+            Shape::Node(_) => EntityShape::Node,
+            Shape::Relationship {
+                source,
+                target,
+                relationship_type,
+            } => EntityShape::Relationship {
+                source,
+                target,
+                relationship_type,
+            },
+        }
+    }
+}

@@ -1,0 +1,77 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit",
+      "--lib",
+      "--test",
+      "graph_key_lifecycle",
+      "--test",
+      "graph_canonical",
+      "-E",
+      "binary(graph_key_lifecycle) | binary(graph_canonical) | test(=property_graph::key_lifecycle::allocation_tests::full_target_sort_and_exact_retry_have_zero_allocator_calls)",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "oracle-probes",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--lib",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(graph_key_lifecycle)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "zeppelin-embed/test-support,zeppelin-embed/allocation-audit",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit_code": 0
+  }
+]

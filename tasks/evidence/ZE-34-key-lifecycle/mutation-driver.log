@@ -1,0 +1,15 @@
+old-incarnation: intended assertion RED; exact bytes restored
+hash-only-replay: intended assertion RED; exact bytes restored
+resurrection: intended assertion RED; exact bytes restored
+deletion-precondition: intended assertion RED; exact bytes restored
+delete-mode-replay: intended assertion RED; exact bytes restored
+cypher-unchanged-shortcut: intended assertion RED; exact bytes restored
+revision-overflow: intended assertion RED; exact bytes restored
+duplicate-entity: intended assertion RED; exact bytes restored
+uncancellable-sort: intended assertion RED; exact bytes restored
+unchunked-name: intended assertion RED; exact bytes restored
+discard-durable-work: intended assertion RED; exact bytes restored
+generation-wrap: intended assertion RED; exact bytes restored
+uncancellable-finalization: intended assertion RED; exact bytes restored
+oracle-always-accept: intended assertion RED; exact bytes restored
+terminal GREEN: restored public, oracle and runner suites

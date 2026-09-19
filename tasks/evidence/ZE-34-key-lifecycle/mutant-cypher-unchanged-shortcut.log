@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-34/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.44s
+     Running tests/graph_key_lifecycle.rs (target/ze34/debug/deps/graph_key_lifecycle-5a7aa439f0a0b949)
+
+running 1 test
+
+thread 'cypher_final_state_changes_advance_once_and_never_create_retry_receipts' (33458497) panicked at crates/zeppelin-embed/tests/graph_key_lifecycle.rs:868:9:
+changed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cypher_final_state_changes_advance_once_and_never_create_retry_receipts ... FAILED
+
+failures:
+
+failures:
+    cypher_final_state_changes_advance_once_and_never_create_retry_receipts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_key_lifecycle`
