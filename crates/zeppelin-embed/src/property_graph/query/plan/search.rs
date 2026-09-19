@@ -89,13 +89,17 @@ fn argument(
     }
     Ok(())
 }
-/// Explicit vector candidate coverage mode; runtime provenance remains required.
+/// Lossless caller request intent; runtime provenance remains required.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchMode {
+    /// No tier preference was supplied.
+    Default,
+    /// The caller explicitly requested automatic tier selection.
+    Auto,
     /// Exhaustive streaming ranking.
     Exact,
-    /// Approximate candidate coverage, never relabeled exact.
-    Approximate,
+    /// The caller explicitly requested scan ranking.
+    Scan,
 }
 /// Shared checked limits for evaluated requests, before retrieval invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -234,6 +234,20 @@ pub enum SearchRequest {
         eligible: Option<ExprId>,
     },
 }
+/// Optional typed slots produced by one search source.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchOutputs {
+    /// Ranked same-view node.
+    pub node: Option<SlotId>,
+    /// Native vector distance.
+    pub distance: Option<SlotId>,
+    /// Lexical or fused score.
+    pub score: Option<SlotId>,
+    /// Optional hybrid vector component; absence at runtime is null.
+    pub vector_distance: Option<SlotId>,
+    /// Optional hybrid lexical component; absence at runtime is null.
+    pub lexical_score: Option<SlotId>,
+}
 /// Exact parameter name and borrowed runtime value.
 #[derive(Clone, Copy, Debug)]
 pub struct ParameterBinding<'a> {
@@ -297,10 +311,8 @@ pub enum OperatorKind<'a> {
         call: SearchCallId,
         /// Structured search request.
         request: SearchRequest,
-        /// Node result slot.
-        node: SlotId,
-        /// Distance for vector, score for text/hybrid. Component projection is retrieval-owned.
-        score: SlotId,
+        /// Exact requested output slots.
+        outputs: SearchOutputs,
     },
     /// Projection-stage bounds; never suppresses eager calls or mutations.
     OffsetLimit {

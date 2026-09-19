@@ -16,6 +16,26 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         root: ExprId,
         origin: Span,
     ) -> Result<ExprId, ParseError> {
+        self.lower_expression_mode(bound, root, origin, false)
+    }
+    /// Copy a complete row-independent expression DAG, recursively replacing
+    /// projected aliases with their canonical invariant backing.
+    pub(super) fn lower_invariant_expression(
+        &mut self,
+        bound: &BoundQuery<'_>,
+        root: ExprId,
+        origin: Span,
+    ) -> Result<ExprId, ParseError> {
+        self.lower_expression_mode(bound, root, origin, true)
+    }
+    fn lower_expression_mode(
+        &mut self,
+        bound: &BoundQuery<'_>,
+        root: ExprId,
+        origin: Span,
+        invariant_mode: bool,
+    ) -> Result<ExprId, ParseError> {
+        let root = self.resolve_expression(bound, root, origin, invariant_mode)?;
         let mut pending = Buffer::new(self.memory)?;
         let mut length = 0;
         let memory = self.memory;
@@ -55,14 +75,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             if frame.depth > MAX_PLAN_DEPTH {
                 return Err(limit(frame.span));
             }
-            if self
-                .remap
-                .slice()
-                .get(frame.id.0 as usize)
-                .copied()
-                .flatten()
-                .is_some()
-            {
+            if self.expression_mapped(frame.id, invariant_mode).is_some() {
                 continue;
             }
             let expression = *bound
@@ -85,6 +98,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     },
                 )?;
                 let mut child = |id| {
+                    let id = self.resolve_expression(bound, id, span, invariant_mode)?;
                     push(
                         &mut pending,
                         &mut length,
@@ -128,11 +142,13 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 Expression::Parameter(id) => DraftExpr::Parameter(id),
                 Expression::Aggregate { operation, operand } => DraftExpr::Aggregate {
                     operation,
-                    operand: operand.map(|id| self.mapped(id, span)).transpose()?,
+                    operand: operand
+                        .map(|id| self.mapped_mode(bound, id, span, invariant_mode))
+                        .transpose()?,
                 },
                 Expression::Unary { operation, operand } => DraftExpr::Unary {
                     operation,
-                    operand: self.mapped(operand, span)?,
+                    operand: self.mapped_mode(bound, operand, span, invariant_mode)?,
                 },
                 Expression::Binary {
                     operation,
@@ -140,15 +156,15 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     right,
                 } => DraftExpr::Binary {
                     operation,
-                    left: self.mapped(left, span)?,
-                    right: self.mapped(right, span)?,
+                    left: self.mapped_mode(bound, left, span, invariant_mode)?,
+                    right: self.mapped_mode(bound, right, span, invariant_mode)?,
                 },
                 Expression::Property { entity, name } => DraftExpr::Property {
-                    entity: self.mapped(entity, span)?,
+                    entity: self.mapped_mode(bound, entity, span, invariant_mode)?,
                     name: self.copy_text(name.as_str())?,
                 },
                 Expression::HasLabel { entity, label } => DraftExpr::HasLabel {
-                    entity: self.mapped(entity, span)?,
+                    entity: self.mapped_mode(bound, entity, span, invariant_mode)?,
                     label: self.copy_text(label.as_str())?,
                 },
                 Expression::List(items) => {
@@ -157,21 +173,16 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         len: items.len(),
                     };
                     for item in items {
-                        self.children
-                            .push(self.mapped(*item, span)?, self.memory, self.control)?;
+                        let item = self.mapped_mode(bound, *item, span, invariant_mode)?;
+                        self.children.push(item, self.memory, self.control)?;
                     }
                     DraftExpr::List(range)
                 }
             };
             let id = self.expression(draft, span)?;
-            *self
-                .remap
-                .arena
-                .as_mut_slice()
-                .get_mut(frame.id.0 as usize)
-                .ok_or_else(|| invariant(span, "expression remap"))? = Some(id);
+            self.set_expression_mapped(frame.id, id, span, invariant_mode)?;
         }
-        self.mapped(root, origin)
+        self.mapped_mode(bound, root, origin, invariant_mode)
     }
     /// Dependency walk over the copied postorder DAG, not syntax spelling: a
     /// list read nested below size/index/arithmetic still needs the complete path.
@@ -230,12 +241,55 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         }
         Ok(false)
     }
-    fn mapped(&self, id: ExprId, span: Span) -> Result<ExprId, ParseError> {
-        self.remap
-            .slice()
-            .get(id.0 as usize)
-            .copied()
-            .flatten()
+    fn resolve_expression(
+        &self,
+        bound: &BoundQuery<'_>,
+        id: ExprId,
+        span: Span,
+        invariant_mode: bool,
+    ) -> Result<ExprId, ParseError> {
+        if invariant_mode {
+            bound
+                .invariant_expression(id)
+                .ok_or_else(|| invariant(span, "row-dependent search expression"))
+        } else {
+            Ok(id)
+        }
+    }
+    fn expression_mapped(&self, id: ExprId, invariant_mode: bool) -> Option<ExprId> {
+        let remap = if invariant_mode {
+            self.invariant_remap.slice()
+        } else {
+            self.remap.slice()
+        };
+        remap.get(id.0 as usize).copied().flatten()
+    }
+    fn set_expression_mapped(
+        &mut self,
+        source: ExprId,
+        lowered: ExprId,
+        span: Span,
+        invariant_mode: bool,
+    ) -> Result<(), ParseError> {
+        let remap = if invariant_mode {
+            self.invariant_remap.arena.as_mut_slice()
+        } else {
+            self.remap.arena.as_mut_slice()
+        };
+        *remap
+            .get_mut(source.0 as usize)
+            .ok_or_else(|| invariant(span, "expression remap"))? = Some(lowered);
+        Ok(())
+    }
+    fn mapped_mode(
+        &self,
+        bound: &BoundQuery<'_>,
+        id: ExprId,
+        span: Span,
+        invariant_mode: bool,
+    ) -> Result<ExprId, ParseError> {
+        let id = self.resolve_expression(bound, id, span, invariant_mode)?;
+        self.expression_mapped(id, invariant_mode)
             .ok_or_else(|| invariant(span, "unmapped scalar dependency"))
     }
 }

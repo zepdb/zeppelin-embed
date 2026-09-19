@@ -134,3 +134,6 @@ pub mod graph_response;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_lowering;
+
+#[cfg(feature = "graph-cypher")]
+pub mod graph_search_lowering;

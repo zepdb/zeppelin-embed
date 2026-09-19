@@ -439,8 +439,11 @@ fn eager_search_obligations_survive_limit_zero_and_require_singleton_sources() {
                     k: ExprId(1),
                     eligible: None,
                 },
-                node: SlotId(3),
-                score: SlotId(4),
+                outputs: SearchOutputs {
+                    node: Some(SlotId(3)),
+                    score: Some(SlotId(4)),
+                    ..SearchOutputs::default()
+                },
             },
         },
         Operator {
@@ -813,6 +816,146 @@ fn mutation_items_bind_new_entities_in_order_and_validate_every_rhs() {
 }
 
 #[test]
+fn search_plans_preserve_request_intent_and_nullable_hybrid_outputs() {
+    let expressions = [
+        Expression::Literal(Literal::F64(1.0)),
+        Expression::List(&[ExprId(0)]),
+        Expression::Literal(Literal::String("query")),
+        Expression::Literal(Literal::I64(4)),
+    ];
+    for mode in [
+        SearchMode::Default,
+        SearchMode::Auto,
+        SearchMode::Exact,
+        SearchMode::Scan,
+    ] {
+        let operators = [
+            Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            },
+            Operator {
+                inputs: &[PlanNodeId(0)],
+                kind: OperatorKind::Search {
+                    call: SearchCallId(0),
+                    request: SearchRequest::Hybrid {
+                        vector: ExprId(1),
+                        text: ExprId(2),
+                        k: ExprId(3),
+                        mode,
+                        eligible: None,
+                    },
+                    outputs: SearchOutputs {
+                        node: Some(SlotId(1)),
+                        distance: None,
+                        score: Some(SlotId(2)),
+                        vector_distance: Some(SlotId(3)),
+                        lexical_score: Some(SlotId(4)),
+                    },
+                },
+            },
+        ];
+        assert_eq!(
+            validate(PlanDescription {
+                operators: &operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(1),
+                eager_searches: &[PlanNodeId(1)],
+            }),
+            Ok(())
+        );
+    }
+}
+
+#[test]
+fn search_plan_outputs_reject_empty_wrong_duplicate_and_input_colliding_slots() {
+    let expressions = [
+        Expression::Literal(Literal::String("query")),
+        Expression::Literal(Literal::I64(1)),
+        Expression::Literal(Literal::I64(7)),
+    ];
+    let prior = [Projection {
+        slot: SlotId(9),
+        expression: ExprId(2),
+    }];
+    let mut operators = [
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &[PlanNodeId(0)],
+            kind: OperatorKind::Project(&prior),
+        },
+        Operator {
+            inputs: &[PlanNodeId(1)],
+            kind: OperatorKind::Search {
+                call: SearchCallId(0),
+                request: SearchRequest::Text {
+                    query: ExprId(0),
+                    k: ExprId(1),
+                    eligible: None,
+                },
+                outputs: SearchOutputs::default(),
+            },
+        },
+    ];
+    macro_rules! describe {
+        () => {
+            PlanDescription {
+                operators: &operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(2),
+                eager_searches: &[PlanNodeId(2)],
+            }
+        };
+    }
+    assert_eq!(validate(describe!()), Err(PlanError::Search));
+    operators[2].kind = OperatorKind::Search {
+        call: SearchCallId(0),
+        request: SearchRequest::Text {
+            query: ExprId(0),
+            k: ExprId(1),
+            eligible: None,
+        },
+        outputs: SearchOutputs {
+            distance: Some(SlotId(10)),
+            ..SearchOutputs::default()
+        },
+    };
+    assert_eq!(validate(describe!()), Err(PlanError::Search));
+    operators[2].kind = OperatorKind::Search {
+        call: SearchCallId(0),
+        request: SearchRequest::Text {
+            query: ExprId(0),
+            k: ExprId(1),
+            eligible: None,
+        },
+        outputs: SearchOutputs {
+            node: Some(SlotId(10)),
+            score: Some(SlotId(10)),
+            ..SearchOutputs::default()
+        },
+    };
+    assert_eq!(validate(describe!()), Err(PlanError::Scope));
+    operators[2].kind = OperatorKind::Search {
+        call: SearchCallId(0),
+        request: SearchRequest::Text {
+            query: ExprId(0),
+            k: ExprId(1),
+            eligible: None,
+        },
+        outputs: SearchOutputs {
+            node: Some(SlotId(9)),
+            ..SearchOutputs::default()
+        },
+    };
+    assert_eq!(validate(describe!()), Err(PlanError::Scope));
+}
+
+#[test]
 fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
     assert_eq!(
         (
@@ -853,8 +996,11 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
                     mode: SearchMode::Exact,
                     eligible: None,
                 },
-                node: SlotId(1),
-                score: SlotId(2),
+                outputs: SearchOutputs {
+                    node: Some(SlotId(1)),
+                    score: Some(SlotId(2)),
+                    ..SearchOutputs::default()
+                },
             },
         },
     ];
@@ -875,11 +1021,14 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
         request: SearchRequest::Vector {
             vector: ExprId(1),
             k: ExprId(3),
-            mode: SearchMode::Approximate,
+            mode: SearchMode::Auto,
             eligible: None,
         },
-        node: SlotId(1),
-        score: SlotId(2),
+        outputs: SearchOutputs {
+            node: Some(SlotId(1)),
+            distance: Some(SlotId(2)),
+            ..SearchOutputs::default()
+        },
     };
     assert_eq!(validate(describe!()), Err(PlanError::Unreachable)); // Unused text expression is not silently retained.
     let short = [expressions[0], expressions[1], expressions[3]];
@@ -888,11 +1037,14 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
         request: SearchRequest::Vector {
             vector: ExprId(1),
             k: ExprId(2),
-            mode: SearchMode::Approximate,
+            mode: SearchMode::Auto,
             eligible: None,
         },
-        node: SlotId(1),
-        score: SlotId(2),
+        outputs: SearchOutputs {
+            node: Some(SlotId(1)),
+            distance: Some(SlotId(2)),
+            ..SearchOutputs::default()
+        },
     };
     assert_eq!(
         validate(PlanDescription {

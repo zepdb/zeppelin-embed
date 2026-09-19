@@ -11,17 +11,44 @@ pub enum BoundSearchMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoundEligibility {
     AllIndexed,
-    Empty,
-    GlobalDistinctNodes(ExprId),
+    Materialized {
+        expression: ExprId,
+        provenance: BoundEligibilityProvenance,
+    },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundEligibilityProvenance {
+    LiteralEmpty,
+    GlobalDistinctNodes,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum BoundSearchRequest {
+    Vector {
+        vector: ExprId,
+        k: ExprId,
+        mode: BoundSearchMode,
+        eligible: BoundEligibility,
+    },
+    Text {
+        query: ExprId,
+        k: ExprId,
+        eligible: BoundEligibility,
+    },
+    Hybrid {
+        vector: ExprId,
+        text: ExprId,
+        k: ExprId,
+        mode: BoundSearchMode,
+        eligible: BoundEligibility,
+    },
 }
 /// Source-ordered typed call facts. Runtime source/report scheduling is later-owned.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundCall {
     pub syntax: AstId,
     pub id: SearchCallId,
-    pub procedure: Procedure,
-    pub mode: Option<BoundSearchMode>,
-    pub eligibility: BoundEligibility,
+    pub request: BoundSearchRequest,
+    pub outputs: SearchOutputs,
 }
 fn rejected(span: Span, message: &'static str) -> ParseError {
     ParseError::new(ErrorKind::SearchContext, span, message)
@@ -58,7 +85,11 @@ impl<'a> Binder<'a, '_> {
                 _ if Some(index) == mode_index => ValueKinds::STRING,
                 _ => ValueKinds::I64,
             };
-            if info.row || !info.kinds.contains(expected) || info.kinds.contains(ValueKinds::NULL) {
+            if info.row
+                || info.invariant.is_none()
+                || !info.kinds.contains(expected)
+                || info.kinds.contains(ValueKinds::NULL)
+            {
                 return Err(rejected(
                     node(self.ast, root)?.span,
                     "search argument must be query-invariant and correctly typed",
@@ -93,9 +124,15 @@ impl<'a> Binder<'a, '_> {
             let info = self.expression(root)?;
             let source = node(self.ast, self.ungroup(root)?)?;
             if source.kind == NodeKind::List && source.children().is_empty() {
-                BoundEligibility::Empty
+                BoundEligibility::Materialized {
+                    expression: self.invariant_argument(root)?,
+                    provenance: BoundEligibilityProvenance::LiteralEmpty,
+                }
             } else if self.singleton && info.eligible {
-                BoundEligibility::GlobalDistinctNodes(expr_id(root)?)
+                BoundEligibility::Materialized {
+                    expression: expr_id(root)?,
+                    provenance: BoundEligibilityProvenance::GlobalDistinctNodes,
+                }
             } else {
                 return Err(rejected(
                     source.span,
@@ -104,6 +141,7 @@ impl<'a> Binder<'a, '_> {
             }
         };
         let mut yielded = Vec::new();
+        let mut outputs = SearchOutputs::default();
         for id in clause.children().iter().skip(arguments) {
             let item = node(self.ast, *id)?;
             let NodeKind::Yield { name, alias } = item.kind else {
@@ -155,12 +193,21 @@ impl<'a> Binder<'a, '_> {
                 ));
             }
             let slot = self.new_slot(item.span)?;
+            match name {
+                "node" => outputs.node = Some(slot),
+                "distance" => outputs.distance = Some(slot),
+                "score" => outputs.score = Some(slot),
+                "vector_distance" => outputs.vector_distance = Some(slot),
+                "lexical_score" => outputs.lexical_score = Some(slot),
+                _ => return Err(rejected(item.span, "unknown search yield")),
+            }
             let info = Info {
                 kinds,
                 row: true,
                 origin: if name == "node" { Some(slot) } else { None },
                 eligible: false,
                 constant: None,
+                invariant: None,
             };
             push(
                 &mut self.scope,
@@ -181,19 +228,49 @@ impl<'a> Binder<'a, '_> {
                 .get_mut(id.0)
                 .ok_or_else(|| error(item.span, "missing yield slot"))? = Expression::Slot(slot);
         }
+        let request = match procedure {
+            Procedure::VectorSearch => BoundSearchRequest::Vector {
+                vector: self.invariant_argument(child(clause, 0)?)?,
+                k: self.invariant_argument(child(clause, 1)?)?,
+                mode: mode.ok_or_else(|| error(clause.span, "missing vector mode"))?,
+                eligible: eligibility,
+            },
+            Procedure::TextSearch => BoundSearchRequest::Text {
+                query: self.invariant_argument(child(clause, 0)?)?,
+                k: self.invariant_argument(child(clause, 1)?)?,
+                eligible: eligibility,
+            },
+            Procedure::HybridSearch => BoundSearchRequest::Hybrid {
+                vector: self.invariant_argument(child(clause, 0)?)?,
+                text: self.invariant_argument(child(clause, 1)?)?,
+                k: self.invariant_argument(child(clause, 2)?)?,
+                mode: mode.ok_or_else(|| error(clause.span, "missing hybrid mode"))?,
+                eligible: eligibility,
+            },
+        };
         let call = BoundCall {
             syntax: id,
             id: SearchCallId(
                 u32::try_from(self.calls.len())
                     .map_err(|_| error(clause.span, "call identity overflow"))?,
             ),
-            procedure,
-            mode,
-            eligibility,
+            request,
+            outputs,
         };
         push(&mut self.calls, call, self.resources, clause.span)?;
         self.singleton = false;
         Ok(())
+    }
+    fn invariant_argument(&self, root: AstId) -> Result<ExprId, ParseError> {
+        self.info(root)?
+            .invariant
+            .ok_or_else(|| {
+                rejected(
+                    node(self.ast, root).map_or(Span::default(), |n| n.span),
+                    "search argument lacks invariant backing",
+                )
+            })
+            .and_then(expr_id)
     }
     fn vector_elements(&mut self, root: AstId) -> Result<(), ParseError> {
         let source = self.info(root)?.constant.unwrap_or(root);

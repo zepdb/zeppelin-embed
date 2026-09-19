@@ -238,6 +238,89 @@ fn compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel() 
     });
 }
 
+#[test]
+fn compiled_search_lowering_late_checkpoint_preserves_close_before_cancel() {
+    let query = "MATCH (prior) WITH prior,1+1 AS k CALL ze.vector_search([k,2],k,'exact',[]) YIELD node,distance CALL ze.text_search('x',k) YIELD node AS other,score RETURN prior,node,distance,other,score LIMIT 0";
+    let clean_polls = Cell::new(0);
+    let consumer_poll = Cell::new(0);
+    fixture(|store, memory| {
+        let mut view_charge = memory.reserve_external_capacity().unwrap();
+        view_charge
+            .reserve_additional(size_of::<View<'_>>())
+            .unwrap();
+        let retained = view(store);
+        let control = QueryControl::Cancel(retained.cancel.clone());
+        let mut context =
+            RuntimeContext::new(&retained, &control, memory, RuntimeLimits::default()).unwrap();
+        compile_read_in(
+            query,
+            &[],
+            CompileLimits::default(),
+            memory,
+            &mut context,
+            |_, _| {
+                consumer_poll.set(retained.polls.get());
+                Ok(())
+            },
+        )
+        .unwrap();
+        clean_polls.set(retained.polls.get());
+    });
+    assert!(clean_polls.get() > 32);
+    assert!(consumer_poll.get() > 32);
+    eprintln!(
+        "search_lowering_polls={} consumer_poll={}",
+        clean_polls.get(),
+        consumer_poll.get()
+    );
+    fixture(|store, memory| {
+        std::thread::scope(|scope| {
+            let (start, wait) = std::sync::mpsc::sync_channel(0);
+            let closing = scope.spawn(move || {
+                wait.recv().unwrap();
+                store.close().unwrap();
+            });
+            {
+                let mut view_charge = memory.reserve_external_capacity().unwrap();
+                view_charge
+                    .reserve_additional(size_of::<View<'_>>())
+                    .unwrap();
+                let mut retained = view(store);
+                retained.start = Some(&start);
+                let fire = clean_polls.get() * 3 / 4;
+                assert!(fire > 32);
+                retained.fire.set(fire);
+                let control = QueryControl::Cancel(retained.cancel.clone());
+                let mut context =
+                    RuntimeContext::new(&retained, &control, memory, RuntimeLimits::default())
+                        .unwrap();
+                let baseline = memory.reserved_bytes();
+                let mut entered = false;
+                let error = compile_read_in(
+                    query,
+                    &[],
+                    CompileLimits::default(),
+                    memory,
+                    &mut context,
+                    |_, _| {
+                        entered = true;
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::Resource(ResourceError::ReadCancelled)
+                );
+                assert!(!entered);
+                assert_eq!(retained.polls.get(), fire);
+                assert_eq!(memory.reserved_bytes(), baseline);
+            }
+            closing.join().unwrap();
+        })
+    });
+}
+
 struct ChargedOutput<'m, 'g, 'd> {
     bytes: QueryArena<'m, 'g, u8>,
     dropped: &'d Cell<usize>,

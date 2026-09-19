@@ -52,6 +52,7 @@ impl<'a> Binder<'a, '_> {
             let mut row = false;
             let mut origin = None;
             let mut eligible = false;
+            let mut invariant = None;
             let mut constant = if matches!(
                 node.kind,
                 NodeKind::Integer(_)
@@ -95,6 +96,7 @@ impl<'a> Binder<'a, '_> {
                     origin = symbol.info.origin;
                     eligible = symbol.info.eligible;
                     constant = symbol.info.constant;
+                    invariant = symbol.info.invariant;
                     (Expression::Slot(symbol.slot), symbol.info.kinds)
                 }
                 NodeKind::Parameter(name) => {
@@ -126,6 +128,7 @@ impl<'a> Binder<'a, '_> {
                     origin = self.info(child)?.origin;
                     eligible = self.info(child)?.eligible;
                     constant = self.info(child)?.constant;
+                    invariant = self.info(child)?.invariant;
                     (
                         *self
                             .expressions
@@ -442,6 +445,40 @@ impl<'a> Binder<'a, '_> {
                 ),
                 _ => return Err(error(node.span, "binding expression not implemented")),
             };
+            if invariant.is_none() && !row {
+                invariant = match expression {
+                    Expression::Literal(_) | Expression::Parameter(_) => Some(id),
+                    Expression::Unary { operand, .. } => self
+                        .info(AstId(usize::try_from(operand.0).map_err(|_| {
+                            error(node.span, "invariant operand identity overflow")
+                        })?))?
+                        .invariant
+                        .map(|_| id),
+                    Expression::Binary { left, right, .. } => {
+                        let left = self.info(AstId(usize::try_from(left.0).map_err(|_| {
+                            error(node.span, "invariant left identity overflow")
+                        })?))?;
+                        let right =
+                            self.info(AstId(usize::try_from(right.0).map_err(|_| {
+                                error(node.span, "invariant right identity overflow")
+                            })?))?;
+                        (left.invariant.is_some() && right.invariant.is_some()).then_some(id)
+                    }
+                    Expression::List(items) => items
+                        .iter()
+                        .try_fold(true, |all, child| {
+                            let child = AstId(usize::try_from(child.0).map_err(|_| {
+                                error(node.span, "invariant list identity overflow")
+                            })?);
+                            Ok::<_, ParseError>(all && self.info(child)?.invariant.is_some())
+                        })?
+                        .then_some(id),
+                    Expression::Aggregate { .. }
+                    | Expression::Slot(_)
+                    | Expression::Property { .. }
+                    | Expression::HasLabel { .. } => None,
+                };
+            }
             *self
                 .expressions
                 .get_mut(id.0)
@@ -455,6 +492,7 @@ impl<'a> Binder<'a, '_> {
                 origin,
                 eligible,
                 constant,
+                invariant,
             });
         }
         self.info(root)

@@ -327,24 +327,48 @@ fn derive(
         OperatorKind::Search {
             call,
             request,
-            node,
-            score,
+            outputs,
         } => {
             super::search::validate(description, call, request, &input, seen, context)?;
-            add_slot(
-                &mut output,
-                Slot {
-                    id: node.0,
-                    kinds: ValueKinds::NODE,
-                },
-            )?;
-            add_slot(
-                &mut output,
-                Slot {
-                    id: score.0,
-                    kinds: ValueKinds::F64,
-                },
-            )?;
+            let valid = match request {
+                SearchRequest::Vector { .. } => {
+                    outputs.score.is_none()
+                        && outputs.vector_distance.is_none()
+                        && outputs.lexical_score.is_none()
+                }
+                SearchRequest::Text { .. } => {
+                    outputs.distance.is_none()
+                        && outputs.vector_distance.is_none()
+                        && outputs.lexical_score.is_none()
+                }
+                SearchRequest::Hybrid { .. } => outputs.distance.is_none(),
+            };
+            if !valid
+                || (outputs.node.is_none()
+                    && outputs.distance.is_none()
+                    && outputs.score.is_none()
+                    && outputs.vector_distance.is_none()
+                    && outputs.lexical_score.is_none())
+            {
+                return Err(PlanError::Search);
+            }
+            for (slot, kinds) in [
+                (outputs.node, ValueKinds::NODE),
+                (outputs.distance, ValueKinds::F64),
+                (outputs.score, ValueKinds::F64),
+                (
+                    outputs.vector_distance,
+                    ValueKinds::F64.union(ValueKinds::NULL),
+                ),
+                (
+                    outputs.lexical_score,
+                    ValueKinds::F64.union(ValueKinds::NULL),
+                ),
+            ] {
+                if let Some(slot) = slot {
+                    add_slot(&mut output, Slot { id: slot.0, kinds })?;
+                }
+            }
             output.classification.0 |= 5;
             output.barriers.0 |= 128;
             output.search_calls |= 1u8.checked_shl(call.0).ok_or(PlanError::Search)?;

@@ -536,7 +536,7 @@ fn read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope() {
     });
 }
 #[test]
-fn read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal() {
+fn read_lowering_preserves_typed_profile_errors() {
     use zeppelin_embed::property_graph::query::QueryValue;
     use zeppelin_embed_cypher::ErrorKind;
     with_memory(|memory, context| {
@@ -550,10 +550,6 @@ fn read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal() {
             ("MATCH (n) RETURN count(*)+1 AS c", ErrorKind::Unsupported),
             ("RETURN 1 SKIP 1+1", ErrorKind::Unsupported),
             ("CREATE (n) RETURN n", ErrorKind::Unsupported),
-            (
-                "CALL ze.vector_search([1,2], 1, 'exact') YIELD node RETURN node",
-                ErrorKind::SearchContext,
-            ),
         ] {
             let mut entered = false;
             let baseline = memory.reserved_bytes();

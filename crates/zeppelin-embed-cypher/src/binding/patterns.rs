@@ -91,6 +91,7 @@ impl<'a> Binder<'a, '_> {
                             origin: Some(slot),
                             eligible: false,
                             constant: None,
+                            invariant: None,
                         },
                     };
                     if name.is_some() {

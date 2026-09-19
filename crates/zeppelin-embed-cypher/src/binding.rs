@@ -8,7 +8,9 @@ mod parameters;
 mod patterns;
 mod projection;
 mod search;
-pub use search::{BoundCall, BoundEligibility, BoundSearchMode};
+pub use search::{
+    BoundCall, BoundEligibility, BoundEligibilityProvenance, BoundSearchMode, BoundSearchRequest,
+};
 
 /// A column borrowed only during the private compiler callback.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +93,17 @@ impl<'a> BoundQuery<'a> {
     pub fn expressions(&self) -> &[Expression<'a>] {
         self.expressions
     }
+    /// Canonical row-independent backing for an expression, when one exists.
+    pub fn invariant_expression(&self, id: ExprId) -> Option<ExprId> {
+        let index = usize::try_from(id.0).ok()?;
+        self.facts
+            .get(index)
+            .copied()
+            .flatten()?
+            .invariant
+            .and_then(|id| u32::try_from(id.0).ok())
+            .map(ExprId)
+    }
 }
 #[derive(Clone, Copy)]
 struct Info {
@@ -101,6 +114,9 @@ struct Info {
     // Alias provenance for literals, parameters and list/collect sources.
     // A source may be row-dependent; this is not a constant-folding assertion.
     constant: Option<AstId>,
+    // Canonical expression reconstructable without a row slot. Unlike constant,
+    // this covers all accepted scalar operations and recursively substituted aliases.
+    invariant: Option<AstId>,
 }
 #[derive(Clone, Copy)]
 struct Symbol<'a> {

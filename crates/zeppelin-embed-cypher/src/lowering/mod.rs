@@ -12,6 +12,7 @@ mod owned;
 mod parameters;
 mod pattern;
 mod projection;
+mod search;
 pub use context::{PreparationControl, ReadContext};
 use owned::*;
 use parameters::ParameterValue;
@@ -63,7 +64,6 @@ impl<'p, 'f> LoweredRead<'p, 'f> {
 
 /// One-shot read lowerer, never a public reusable prepared query. The provided
 /// ValueContext supplies the very same caller control used by compile_in.
-/// CALL belongs to search composition (ZE-58), and rejects explicitly here.
 pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
     source: &str,
     parameters: &[ParameterBinding<'_>],
@@ -98,6 +98,7 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
             let source = builder.copy_text(bound.syntax().source())?;
             for _ in bound.expressions() {
                 builder.remap.push(None, memory, control)?;
+                builder.invariant_remap.push(None, memory, control)?;
             }
             let root = bound
                 .syntax()
@@ -108,16 +109,9 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
                     .syntax()
                     .node(*id)
                     .ok_or_else(|| invariant(root.span, "clause"))?;
-                if matches!(node.kind, NodeKind::Call(_)) {
-                    return Err(ParseError::new(
-                        ErrorKind::SearchContext,
-                        node.span,
-                        "CALL requires search lowering (ZE-58)",
-                    ));
-                }
                 if !matches!(
                     node.kind,
-                    NodeKind::Projection { .. } | NodeKind::Match { .. }
+                    NodeKind::Projection { .. } | NodeKind::Match { .. } | NodeKind::Call(_)
                 ) {
                     return Err(ParseError::new(
                         ErrorKind::Unsupported,
@@ -146,6 +140,7 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
                 }
             }
             let mut current = builder.operator(DraftOp::Unit, &[], root.span)?;
+            let mut has_prior = false;
             for id in root.children() {
                 let clause = syntax(&bound, *id)?;
                 current = match clause.kind {
@@ -153,8 +148,10 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
                         builder.pattern(&bound, clause, current, optional)?
                     }
                     NodeKind::Projection { .. } => builder.projection(&bound, *id, current)?,
+                    NodeKind::Call(_) => builder.search(&bound, *id, current, has_prior)?,
                     _ => return Err(invariant(clause.span, "unexpected read clause")),
                 };
+                has_prior = true;
             }
             builder.finish(&bound, current, source, memory, context, consume)
         },
@@ -228,6 +225,12 @@ enum DraftOp {
         completed_edge_predicate: Option<CompletedEdgePredicate>,
     },
     Optional(Option<ExprId>),
+    Join,
+    Search {
+        call: SearchCallId,
+        request: SearchRequest,
+        outputs: SearchOutputs,
+    },
 }
 #[derive(Clone, Copy)]
 struct DraftOperator {
@@ -244,6 +247,7 @@ struct Builder<'m, 'g, 'c> {
     scope: Buffer<'m, 'g, SlotId>,
     names: Buffer<'m, 'g, Range>,
     remap: Buffer<'m, 'g, Option<ExprId>>,
+    invariant_remap: Buffer<'m, 'g, Option<ExprId>>,
     children: Buffer<'m, 'g, ExprId>,
     bytes: Buffer<'m, 'g, u8>,
     expressions: Buffer<'m, 'g, DraftExpr>,
@@ -253,6 +257,7 @@ struct Builder<'m, 'g, 'c> {
     sort_keys: Buffer<'m, 'g, SortKey>,
     inputs: Buffer<'m, 'g, PlanNodeId>,
     projections: Buffer<'m, 'g, Projection>,
+    eager_searches: Buffer<'m, 'g, PlanNodeId>,
 }
 impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
     fn new(
@@ -269,6 +274,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             scope: Buffer::new(memory)?,
             names: Buffer::new(memory)?,
             remap: Buffer::new(memory)?,
+            invariant_remap: Buffer::new(memory)?,
             children: Buffer::new(memory)?,
             bytes: Buffer::new(memory)?,
             expressions: Buffer::new(memory)?,
@@ -278,6 +284,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             sort_keys: Buffer::new(memory)?,
             inputs: Buffer::new(memory)?,
             projections: Buffer::new(memory)?,
+            eager_searches: Buffer::new(memory)?,
         })
     }
     fn copy_text(&mut self, value: &str) -> Result<Range, ParseError> {
@@ -343,7 +350,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         let mut control_charge = memory.reserve_external_capacity().map_err(memory_error)?;
         control_charge
             .reserve_additional(
-                size_of::<[RetainedAllocation<'_>; 32]>() + size_of::<LoweredRead<'_, '_>>(),
+                size_of::<[RetainedAllocation<'_>; 33]>() + size_of::<LoweredRead<'_, '_>>(),
             )
             .map_err(memory_error)?;
         let mut names = QueryArena::new(memory, bound.columns().len()).map_err(memory_error)?;
@@ -522,6 +529,16 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                             completed_edge_predicate,
                         },
                         DraftOp::Optional(predicate) => OperatorKind::OptionalApply { predicate },
+                        DraftOp::Join => OperatorKind::Join { predicate: None },
+                        DraftOp::Search {
+                            call,
+                            request,
+                            outputs,
+                        } => OperatorKind::Search {
+                            call,
+                            request,
+                            outputs,
+                        },
                     },
                 })
                 .map_err(memory_error)?;
@@ -532,7 +549,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             facts.push(NodeFacts::default()).map_err(memory_error)?;
         }
 
-        let mut regions = QueryArena::new(memory, 31).map_err(memory_error)?;
+        let mut regions = QueryArena::new(memory, 32).map_err(memory_error)?;
         for region in [
             region(&level0)?,
             region(&level1)?,
@@ -561,6 +578,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             region(&self.projections.arena)?,
             region(&self.expression_spans.arena)?,
             region(&self.operator_spans.arena)?,
+            region(&self.eager_searches.arena)?,
             region(&columns)?,
             region(&expressions)?,
             region(&operators)?,
@@ -576,7 +594,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             expressions: expressions.as_slice(),
             parameters: parameter_declarations.as_slice(),
             root,
-            eager_searches: &[],
+            eager_searches: self.eager_searches.slice(),
         };
         let (plan, facts_owner) = facts
             .validate_plan(
@@ -615,6 +633,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             RetainedAllocation::arena(&self.projections.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&self.expression_spans.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&self.operator_spans.arena).map_err(memory_error)?,
+            RetainedAllocation::arena(&self.eager_searches.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&columns).map_err(memory_error)?,
             RetainedAllocation::arena(&expressions).map_err(memory_error)?,
             RetainedAllocation::arena(&operators).map_err(memory_error)?,

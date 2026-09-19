@@ -19223,6 +19223,29 @@ fn native_adjacency_store_probe_reopens_actual_emitted_participant() {
 
 #[cfg(feature = "graph-cypher")]
 #[test]
+fn property_graph_search_lowering_probe_checks_typed_plans_and_inflight_faults() {
+    for seed in [0, 1, 138, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_search_lowering::probe(seed, &mut coverage)
+            .expect("PG20 independent typed search-plan oracle");
+        eprintln!("PG20 seed={seed} {report:?}");
+        assert_eq!(
+            (
+                report.observations,
+                report.fault_fires,
+                report.clean_controls,
+                report.comparator_fires
+            ),
+            (5, 2, 2, 6)
+        );
+        for key in adversarial::graph_search_lowering::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
 fn one_runner_episode_reaches_native_adjacency_store_contracts() {
     let root = tempfile::tempdir().expect("PG18 runner artifacts");
     let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
@@ -19234,4 +19257,20 @@ fn one_runner_episode_reaches_native_adjacency_store_contracts() {
             "actual runner omitted {key}"
         );
     }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn one_runner_episode_reaches_required_search_lowering_contracts() {
+    let root = tempfile::tempdir().unwrap();
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_search_lowering::REQUIRED_COVERAGE {
+        assert!(outcome.coverage.count(key) > 0, "{key}");
+    }
+    eprintln!(
+        "PG20 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
 }

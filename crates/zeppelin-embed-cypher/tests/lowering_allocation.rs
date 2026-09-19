@@ -171,3 +171,87 @@ fn read_lowering_real_allocator_fail_at_each_site_releases_all_backing() {
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn search_lowering_real_allocator_fail_at_each_site_releases_all_backing() {
+    let path = std::env::temp_dir().join(format!("ze138-allocator-{}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let store = Store::open(
+        &path,
+        OpenOptions::new().with_max_resident_bytes(64 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    {
+        let memory = QueryMemory::new(&shared, 24 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+        let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+        let query = "MATCH (prior) WITH prior,1+1 AS k CALL ze.vector_search([k,2],k,'exact',[]) YIELD node,distance CALL ze.hybrid_search([k,2],'x',k,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0";
+        let baseline = memory.reserved_bytes();
+        start(&memory, 0);
+        let result = compile_read_in(
+            query,
+            &[],
+            CompileLimits::default(),
+            &memory,
+            &mut context,
+            |_, _| Ok(()),
+        );
+        let (calls, fires, peak) = finish();
+        result.unwrap();
+        assert_eq!(fires, 0);
+        assert!(calls > 100);
+        assert_eq!(memory.reserved_bytes(), baseline);
+        for site in 1..=calls {
+            let mut entered = false;
+            start(&memory, site);
+            let result = compile_read_in(
+                query,
+                &[],
+                CompileLimits::default(),
+                &memory,
+                &mut context,
+                |_, _| {
+                    entered = true;
+                    Ok(())
+                },
+            );
+            let (_, fires, _) = finish();
+            assert_eq!(fires, 1, "allocation site {site}");
+            assert!(!entered, "allocation site {site}");
+            assert!(
+                matches!(
+                    result,
+                    Err(zeppelin_embed_cypher::ParseError {
+                        kind: ErrorKind::Resource(ResourceError::Allocation),
+                        ..
+                    })
+                ),
+                "site {site}: {result:?}"
+            );
+            assert_eq!(memory.reserved_bytes(), baseline, "allocation site {site}");
+        }
+        start(&memory, 0);
+        let result = compile_read_in(
+            query,
+            &[],
+            CompileLimits::default(),
+            &memory,
+            &mut context,
+            |_, _| Ok(()),
+        );
+        let (restored, _, _) = finish();
+        result.unwrap();
+        assert_eq!(restored, calls);
+        eprintln!(
+            "search_allocator_sites={calls} real_heap_peak={peak} query_reservation_peak={} final={}",
+            memory.peak_reserved_bytes(),
+            memory.reserved_bytes()
+        );
+    }
+    drop(shared);
+    store.close().unwrap();
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}

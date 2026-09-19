@@ -9,7 +9,8 @@ use zeppelin_embed_adversarial_oracle::graph_binding::{
     self as oracle, Case, Column, Kind, Observation, Outcome,
 };
 use zeppelin_embed_cypher::{
-    BoundSearchMode, CompileLimits, ErrorKind, ResourceError, Resources, compile_with, parse_with,
+    BoundSearchMode, BoundSearchRequest, CompileLimits, ErrorKind, ResourceError, Resources,
+    compile_with, parse_with,
 };
 pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.binding.scope",
@@ -131,7 +132,12 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
                         }
                     }
                     for call in bound.calls() {
-                        observed.modes.push(match call.mode {
+                        let mode = match call.request {
+                            BoundSearchRequest::Vector { mode, .. }
+                            | BoundSearchRequest::Hybrid { mode, .. } => Some(mode),
+                            BoundSearchRequest::Text { .. } => None,
+                        };
+                        observed.modes.push(match mode {
                             Some(BoundSearchMode::Default) => 0,
                             Some(BoundSearchMode::Auto) => 1,
                             Some(BoundSearchMode::Exact) => 2,

@@ -777,8 +777,11 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
                 k: ExprId(1),
                 eligible: None,
             },
-            node: SlotId(call * 2),
-            score: SlotId(call * 2 + 1),
+            outputs: SearchOutputs {
+                node: Some(SlotId(call * 2)),
+                score: Some(SlotId(call * 2 + 1)),
+                ..SearchOutputs::default()
+            },
         },
     };
     let operators = [
