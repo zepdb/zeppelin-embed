@@ -1,0 +1,13 @@
+{
+  "worktree_base": "234dd4fe4ab45c55e16bf7866556e8b78f42ee8b",
+  "candidate_base": "f9d81e0806ca68c876a26ed1983a3fffaf72b902",
+  "initial_manifest_sha256": "f466d9058db10ed1d5ebf564fda2bc17e50e7f9401a578ce3a267062d3d641df",
+  "final_manifest_sha256": "270f2a79a436fa20753f88985a097840d659621105bb5b6f9ba992b4eadfc14f",
+  "host": "Apple M3 Max",
+  "architecture": "arm64",
+  "macos": "27.0",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "nextest": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)",
+  "candidate_commit": "5c9e757c05f977aa864a82fb3ab40630aff976b8",
+  "committed_candidate_files_verified": 34
+}

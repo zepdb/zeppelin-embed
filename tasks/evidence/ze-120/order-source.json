@@ -1,0 +1,11 @@
+{
+  "pin": "007895aff5f33097d67b2e48a0a2babd6bd18590",
+  "path": "tck/features/clauses/with-orderBy/WithOrderBy4.feature",
+  "sha256": "1895519126574395bbe5374023786d08e87287c4b7eafb3097f3442060a7ed72",
+  "inspected_scenarios": [
+    7,
+    8,
+    9,
+    10
+  ]
+}

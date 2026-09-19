@@ -1,0 +1,8 @@
+{
+  "red_snapshot": "review-2",
+  "red_manifest_sha256": "f466d9058db10ed1d5ebf564fda2bc17e50e7f9401a578ce3a267062d3d641df",
+  "red_exit": 100,
+  "restored_snapshot": "review-6",
+  "restored_manifest_sha256": "39f402e92e9c6d6bea32e36e1094e9522e457f9f1f5b0db26849f5dcae2a90c5",
+  "verified_restored_files": 34
+}
