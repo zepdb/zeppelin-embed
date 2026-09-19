@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.62s
+────────────
+ Nextest run ID e486ffa9-6942-4973-9f38-181276330fb4 with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.011s] (1/1) zeppelin-embed::graph_write_staging final_view_drift_discards_materialized_abi_and_registration_without_receipts
+  stdout ───
+
+    running 1 test
+    test final_view_drift_discards_materialized_abi_and_registration_without_receipts ... FAILED
+
+    failures:
+
+    failures:
+        final_view_drift_discards_materialized_abi_and_registration_without_receipts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'final_view_drift_discards_materialized_abi_and_registration_without_receipts' (34147830) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1547:5:
+    assertion failed: matches!(result, Err(StageError::ViewMismatch))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.012s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.011s] (1/1) zeppelin-embed::graph_write_staging final_view_drift_discards_materialized_abi_and_registration_without_receipts
+  stdout ───
+
+    running 1 test
+    test final_view_drift_discards_materialized_abi_and_registration_without_receipts ... FAILED
+
+    failures:
+
+    failures:
+        final_view_drift_discards_materialized_abi_and_registration_without_receipts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'final_view_drift_discards_materialized_abi_and_registration_without_receipts' (34147830) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1547:5:
+    assertion failed: matches!(result, Err(StageError::ViewMismatch))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

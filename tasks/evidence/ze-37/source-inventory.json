@@ -1,0 +1,154 @@
+{
+  "base": "cab33b758c405ba73e0785841147ecdd480d7cd6",
+  "files": [
+    {
+      "path": "crates/zeppelin-embed/CLAUDE.md",
+      "sha256": "f50fc9c7a9d537be6b39372808cd3aa46753b7ac44f2cf04e581943542fd777d",
+      "bytes": 50170,
+      "base_sha256": "7fa6233d88a19dca0abccde2709aa344d60c8157e5f923e103909e05e916e38c",
+      "base_complete_prefix": true
+    },
+    {
+      "path": "crates/zeppelin-embed/src/lifecycle/budget.rs",
+      "sha256": "cad175284dac64548665b488d7e7c81be934f529faafb4ea5724c6114cb12f2b",
+      "bytes": 1798,
+      "base_sha256": "7cff6e3a635406900dbc9b79c8e729422bcbecf68290139568b070122b167c1a",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "crates/zeppelin-embed/src/lifecycle/stats.rs",
+      "sha256": "6f3082445b75320d7c02926629fc0c997d9f6b7255ea61efbccd64ef1b53ce60",
+      "bytes": 43378,
+      "base_sha256": "14a69fcf2086c4f5bbd13cb3784a9373708fc3ffbac1aaf2a48bfbfb262a8478",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/canonical.rs",
+      "sha256": "08e7a0c91b14b054c1d251bdfcad1cd7ccfe2e72196189382444d667c0f86a37",
+      "bytes": 24643,
+      "base_sha256": "cf377cb5d7ad52dd6e803bb632b29b0db701789b17c56b61134784a7975cb628",
+      "base_complete_prefix": true
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/key_lifecycle.rs",
+      "sha256": "b8588827c798103ce3e0aee868f52ab162c0dc9503e1920b361da1841d1679c4",
+      "bytes": 30561,
+      "base_sha256": "611e9ace4fa82addbbfe41a88d7ae6b564b15068037d74983e021a883d297336",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/mod.rs",
+      "sha256": "aa78994a855b6bd1a6d54939fcfb0c7c5fe347375f8e9d80f295fa78d2e00f6b",
+      "bytes": 4087,
+      "base_sha256": "ce8d848b7a49499a3e27417c60f890efe96efcf67c8faea77cbb5bdfc2caf471",
+      "base_complete_prefix": true
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/provenance.rs",
+      "sha256": "406f9cdf0eb2584c8563ec9816e3f13d0f314dccf09183aad6da011297433ff0",
+      "bytes": 10214,
+      "base_sha256": "d422d1a78d862e65c0c8566b811a6313febb32dc4c09e25a07e9339df6968e77",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/resources.rs",
+      "sha256": "08e0e3d6ec8295fbf9eacfbe311779cec8daa5543168762499c7090d17476e14",
+      "bytes": 3039
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging.rs",
+      "sha256": "68603d847134a1f811b34eca28d005f63c7052c34d3144c66b552c5828252094",
+      "bytes": 14819
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/bounded.rs",
+      "sha256": "c749a1ac4bef950a6fb592d52c05186569f5ba17cfc30e1867ed03e8c53b85ac",
+      "bytes": 1803
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/encode.rs",
+      "sha256": "39a00fd281b84b1ec1ecbf91767d054655914ada65c6dc7176da2cf0e07554b1",
+      "bytes": 9012
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+      "sha256": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78",
+      "bytes": 7674
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/overlay.rs",
+      "sha256": "b0ffeb3a28a678006e74c179fdeeb35f79d1afaa75c0b2b769afa0bc8a405f3e",
+      "bytes": 29539
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/result.rs",
+      "sha256": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8",
+      "bytes": 9408
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/structured.rs",
+      "sha256": "a711b6c604a427743bd33ee71cdbf98996e54905bcf9ee3af8ea326f211e7a92",
+      "bytes": 22248
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/symbols.rs",
+      "sha256": "716f0dda8a364feb0d47497b0c0a683e911b5770fb11075d58a5a93b7bb47b35",
+      "bytes": 4887
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/staging/tests.rs",
+      "sha256": "ff86634c9d51c4d24489f215f3fca65edfd4fdc37138d983765cc2cb6b56858b",
+      "bytes": 10574
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_write_staging.rs",
+      "sha256": "e0a3f71bee850c4455903514c8833a625da9f6508552dd3cd15f7da5a9d0dff1",
+      "bytes": 70094
+    },
+    {
+      "path": "tests/adversarial-oracle/src/graph_staging.rs",
+      "sha256": "1ff722b966fe0fdd35e72aa5d0fa4533513f0d51d91ecf77e988619146a8081e",
+      "bytes": 6501
+    },
+    {
+      "path": "tests/adversarial-oracle/src/lib.rs",
+      "sha256": "045012a3ca85aa4e75af5b1a02a35511813481e5f60a81062d2332de532da580",
+      "bytes": 4759,
+      "base_sha256": "6bb9c1c77fdacc12476d282c6cb731164d1d28491e2e9528bc5ad26e6c5fb04c",
+      "base_complete_prefix": true
+    },
+    {
+      "path": "tests/adversarial/coverage.rs",
+      "sha256": "6c794dc56b48d5166ed32839a28cfcc4ce4a722070d2252252c5da999b191aa4",
+      "bytes": 6584,
+      "base_sha256": "003eecb01529fd5e9d160f77d6b335824b1f1dc796504dca2ecfbcdb3202e6bb",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "tests/adversarial/graph_staging.rs",
+      "sha256": "7c711af2173cb0188caa3391a87a74f95aaaa8ae592e621835447a9e516e15e0",
+      "bytes": 20699
+    },
+    {
+      "path": "tests/adversarial/mod.rs",
+      "sha256": "bfc0820106c8aa8ff8a6616a8fbdfc394022d6cdce2f6ea72224788c3be8b38d",
+      "bytes": 2622,
+      "base_sha256": "5f907ba69630b8dbe06b7883d52807cd0b867b5a40323d50615fb44fcddae70b",
+      "base_complete_prefix": true
+    },
+    {
+      "path": "tests/adversarial/runner.rs",
+      "sha256": "cff04c515c2d3b315448f13bdfbcec69a42909bb7454189f3dc7dde3d50d674c",
+      "bytes": 761056,
+      "base_sha256": "d0557ef6e5d21c9636bce4e2744b5f87fed5f06be825be13729fc59aadc2c1c6",
+      "base_complete_prefix": false
+    },
+    {
+      "path": "tests/adversarial_tests.rs",
+      "sha256": "fbf1745120141e1ba8b4c4adfda53231706f27983a2c9f87f5a40370f5a51e7a",
+      "bytes": 718125,
+      "base_sha256": "47841f9eaf6c193acfd580911ab5cdcaa4189f1ca4412662579f7699638b9526",
+      "base_complete_prefix": true
+    }
+  ]
+}

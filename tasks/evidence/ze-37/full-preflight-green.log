@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.13s
+────────────
+ Nextest run ID d8478416-978e-42ca-8380-261e8cd27477 with nextest profile: default
+    Starting 39 tests across 2 binaries
+        PASS [   0.010s] ( 1/39) zeppelin-embed::graph_key_lifecycle cancellation_interrupts_target_sort_before_its_first_comparison_mutates_input
+        PASS [   0.010s] ( 2/39) zeppelin-embed::graph_key_lifecycle cancellation_interrupts_long_key_comparison_before_reporting_key_mismatch
+        PASS [   0.010s] ( 3/39) zeppelin-embed::graph_key_lifecycle batch_disposition_preserves_per_item_replay_generations_and_real_durable_changes
+        PASS [   0.011s] ( 4/39) zeppelin-embed::graph_key_lifecycle controlled_provenance_matches_existing_admission_and_exact_framing
+        PASS [   0.009s] ( 5/39) zeppelin-embed::graph_key_lifecycle exact_create_retry_preserves_original_outcome_and_rejects_equal_hash_drift
+        PASS [   0.010s] ( 6/39) zeppelin-embed::graph_key_lifecycle cypher_final_state_changes_advance_once_and_never_create_retry_receipts
+        PASS [   0.010s] ( 7/39) zeppelin-embed::graph_key_lifecycle every_key_transition_row_has_explicit_replay_conflict_and_change_outcomes
+        PASS [   0.009s] ( 8/39) zeppelin-embed::graph_key_lifecycle key_comparison_errors_and_cancellation_never_become_replay
+        PASS [   0.008s] ( 9/39) zeppelin-embed::graph_key_lifecycle logical_finalization_checks_cancellation_while_streaming_long_key_provenance
+        PASS [   0.010s] (10/39) zeppelin-embed::graph_key_lifecycle invalid_provenance_kinds_and_private_finalization_fail_loudly
+        PASS [   0.008s] (11/39) zeppelin-embed::graph_key_lifecycle never_used_key_create_stages_identity_and_explicit_provenance
+        PASS [   0.007s] (12/39) zeppelin-embed::graph_key_lifecycle put_delete_recreate_preserve_fences_and_reject_old_incarnations
+        PASS [   0.008s] (13/39) zeppelin-embed::graph_key_lifecycle long_relationship_type_comparison_is_cancellable_and_exact
+        PASS [   0.007s] (14/39) zeppelin-embed::graph_key_lifecycle unkeyed_cypher_entities_keep_identity_and_checked_revision_without_receipts
+        PASS [   0.007s] (15/39) zeppelin-embed::graph_key_lifecycle relationship_puts_preserve_full_directed_endpoints_and_exact_type
+        PASS [   0.007s] (16/39) zeppelin-embed::graph_key_lifecycle structured_batches_reject_every_repeated_key_or_entity_target
+        PASS [   0.009s] (17/39) zeppelin-embed::graph_write_staging admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+        PASS [   0.009s] (18/39) zeppelin-embed::graph_write_staging cypher_classifies_all_revisions_before_selecting_changed_generation
+        PASS [   0.009s] (19/39) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+        PASS [   0.018s] (20/39) zeppelin-embed::graph_write_staging cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids
+        PASS [   0.018s] (21/39) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+        PASS [   0.018s] (22/39) zeppelin-embed::graph_write_staging cypher_outputs_require_complete_precommit_materialization_even_for_noop
+        PASS [   0.008s] (23/39) zeppelin-embed::graph_write_staging every_revision_precondition_is_classified_before_any_private_identity_assignment
+        PASS [   0.008s] (24/39) zeppelin-embed::graph_write_staging exact_replay_reads_original_bytes_and_rejects_truncated_base_source
+        PASS [   0.008s] (25/39) zeppelin-embed::graph_write_staging final_view_drift_discards_materialized_abi_and_registration_without_receipts
+        PASS [   0.008s] (26/39) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+        PASS [   0.008s] (27/39) zeppelin-embed::graph_write_staging full_width_high_waters_and_revision_generation_overflow_never_wrap
+        PASS [   0.008s] (28/39) zeppelin-embed::graph_write_staging fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids
+        PASS [   0.085s] (29/39) zeppelin-embed::graph_key_lifecycle every_target_order_is_checked_and_cancellation_can_interrupt_each_stage
+        PASS [   0.007s] (30/39) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+        PASS [   0.008s] (31/39) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+        PASS [   0.008s] (32/39) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+        PASS [   0.007s] (33/39) zeppelin-embed::graph_write_staging receipt_limits_reject_before_returning_ids_including_replay_results
+        PASS [   0.007s] (34/39) zeppelin-embed::graph_write_staging restrict_integrity_precedes_generation_overflow_for_structured_writes
+        PASS [   0.008s] (35/39) zeppelin-embed::graph_write_staging restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+        PASS [   0.041s] (36/39) zeppelin-embed::graph_write_staging every_private_checkpoint_can_cancel_without_ids_or_retained_allocations
+        PASS [   0.008s] (37/39) zeppelin-embed::graph_write_staging result_materialization_counts_overlapping_arenas_and_retains_real_registration
+        PASS [   0.008s] (38/39) zeppelin-embed::graph_write_staging result_scope_adoption_moves_sole_charge_and_rolls_back_each_partial_handoff
+        PASS [   0.008s] (39/39) zeppelin-embed::graph_write_staging writer_adoption_checks_real_shared_owner_and_returns_failed_charge_intact
+────────────
+     Summary [   0.119s] 39 tests run: 39 passed, 0 skipped

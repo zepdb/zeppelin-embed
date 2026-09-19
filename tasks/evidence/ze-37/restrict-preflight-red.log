@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+────────────
+ Nextest run ID a9f83350-3031-4ed5-9f7c-75228af09f91 with nextest profile: default
+    Starting 1 test across 1 binary (14 tests skipped)
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+  stdout ───
+
+    running 1 test
+    test restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents ... FAILED
+
+    failures:
+
+    failures:
+        restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents' (34028528) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:905:9:
+    assertion `left == right` failed: Restrict validation must precede fresh identity assignment
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.018s] 1 test run: 0 passed, 1 failed, 14 skipped
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+  stdout ───
+
+    running 1 test
+    test restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents ... FAILED
+
+    failures:
+
+    failures:
+        restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents' (34028528) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:905:9:
+    assertion `left == right` failed: Restrict validation must precede fresh identity assignment
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.30s
+────────────
+ Nextest run ID 1a44f3f2-1aa5-4eb3-aed3-a34896694095 with nextest profile: default
+    Starting 8 tests across 1 binary
+        PASS [   0.016s] (1/8) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+        PASS [   0.016s] (2/8) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+        PASS [   0.016s] (3/8) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+        PASS [   0.017s] (4/8) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+        PASS [   0.012s] (5/8) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+        PASS [   0.012s] (6/8) zeppelin-embed::graph_write_staging receipt_limits_reject_before_returning_ids_including_replay_results
+        PASS [   0.012s] (7/8) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+        PASS [   0.012s] (8/8) zeppelin-embed::graph_write_staging result_materialization_counts_overlapping_arenas_and_retains_real_registration
+────────────
+     Summary [   0.029s] 8 tests run: 8 passed, 0 skipped

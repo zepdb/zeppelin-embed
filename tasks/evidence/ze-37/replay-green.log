@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.31s
+────────────
+ Nextest run ID bbac46e1-5cb7-4282-9a3a-00ad3e324d40 with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.011s] (1/2) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+        PASS [   0.011s] (2/2) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+────────────
+     Summary [   0.011s] 2 tests run: 2 passed, 0 skipped

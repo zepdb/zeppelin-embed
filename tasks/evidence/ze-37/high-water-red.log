@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+────────────
+ Nextest run ID 101f5810-036b-4d9b-906e-8e12e94222e4 with nextest profile: default
+    Starting 1 test across 1 binary (16 tests skipped)
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+  stdout ───
+
+    running 1 test
+    test admitted_high_waters_must_cover_every_live_incarnation_before_allocating ... FAILED
+
+    failures:
+
+    failures:
+        admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'admitted_high_waters_must_cover_every_live_incarnation_before_allocating' (34047077) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:960:5:
+    incoherent allocation fence must not alias a retained incarnation
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 1 test run: 0 passed, 1 failed, 16 skipped
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+  stdout ───
+
+    running 1 test
+    test admitted_high_waters_must_cover_every_live_incarnation_before_allocating ... FAILED
+
+    failures:
+
+    failures:
+        admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'admitted_high_waters_must_cover_every_live_incarnation_before_allocating' (34047077) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:960:5:
+    incoherent allocation fence must not alias a retained incarnation
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

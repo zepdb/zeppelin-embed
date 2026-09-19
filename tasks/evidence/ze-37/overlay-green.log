@@ -1,0 +1,23 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+warning: field `memory` is never read
+  --> crates/zeppelin-embed/src/property_graph/staging/overlay.rs:30:90
+   |
+30 | pub struct GraphBatchReadView<'a,'batch>{base:&'a dyn AdmittedBase,identity:BaseIdentity,memory:&'a WriteMemory<'a>,entries:Arena<'a,Entr...
+   |            ------------------ field in this struct                                       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.22s
+────────────
+ Nextest run ID a4882e64-65b5-4fe7-b015-612c8ad9f9b4 with nextest profile: default
+    Starting 7 tests across 1 binary
+        PASS [   0.018s] (1/7) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+        PASS [   0.018s] (2/7) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+        PASS [   0.018s] (3/7) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+        PASS [   0.018s] (4/7) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+        PASS [   0.011s] (5/7) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+        PASS [   0.011s] (6/7) zeppelin-embed::graph_write_staging receipt_limits_reject_before_returning_ids_including_replay_results
+        PASS [   0.011s] (7/7) zeppelin-embed::graph_write_staging result_materialization_counts_overlapping_arenas_and_retains_real_registration
+────────────
+     Summary [   0.029s] 7 tests run: 7 passed, 0 skipped

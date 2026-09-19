@@ -1,0 +1,17 @@
+[
+  {
+    "path": "crates/zeppelin-embed/src/lifecycle/budget.rs",
+    "sha256": "cad175284dac64548665b488d7e7c81be934f529faafb4ea5724c6114cb12f2b",
+    "matches_ZE49": true
+  },
+  {
+    "path": "crates/zeppelin-embed/src/lifecycle/stats.rs",
+    "sha256": "6f3082445b75320d7c02926629fc0c997d9f6b7255ea61efbccd64ef1b53ce60",
+    "matches_ZE49": true
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/resources.rs",
+    "sha256": "08e0e3d6ec8295fbf9eacfbe311779cec8daa5543168762499c7090d17476e14",
+    "matches_ZE49": true
+  }
+]

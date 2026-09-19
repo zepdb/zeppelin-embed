@@ -882,3 +882,39 @@ query-language, retrieval, public completed-result or durability acceptance.
 Broad qualification remains ZE-118 under the owner's deferral. Cold legacy lease
 release has separately measured first-use platform allocations; runtime audits
 compare an independent cold Store baseline, never warm that path out of evidence.
+
+## ZE-37 private write-staging invariants
+
+- `property_graph::staging` consumes a retained, coherent store/generation/root
+  base. Its adapters supply live records and cancellable bounded reads; the
+  staging seam neither acquires leases nor publishes graph/search state.
+- Classify every structured item against that base, including retries, before
+  checked generation/identity selection. Exact retries retain each original
+  generation and produce no participant delta. Reject all repeated key/entity
+  targets. New local relationship framing may follow private node assignment;
+  every rejection drops that preparation without exposing IDs or high-waters.
+  Normalize and validate every payload field and aggregate framed input first;
+  only resolved endpoint bytes may wait for private IDs. Provenance sizing and
+  installed evidence share one encoder. Unresolved fixed-width zeroes occur
+  only in length-counting sinks, never canonical output or fingerprints.
+- Cypher's private property/text overlay preserves absence, empty text and
+  deleted-access errors. Final canonical equality is NoOp; changed revisions
+  advance once. Unkeyed create/delete still carries consumed allocator fences.
+  The overlay provides no traversal or new binding lookup semantics.
+- DETACH emits one node tombstone plus that node's search-membership removal,
+  without incident enumeration. Restrict checks alive incidents against the
+  admitted base, excluding validated explicit relationship deletions. Physical
+  adjacency cleanup and end-to-end search publication remain later owners.
+- Every arena charges actual capacity to the existing Store accounting owner
+  and the writer's 64 MiB limit. Input canonical/provenance framing is bounded
+  by 8 MiB. All loops poll; byte comparisons/copies poll within 64 KiB.
+- Core and ABI result arenas each have a separate 4 MiB cap; registry/control
+  backing is additional writer/shared capacity. Materialization, registration,
+  consuming query-budget adoption and final view checks finish before handoff.
+  Complete output layout/row/known writer-overlap limits are admitted from the
+  actual pending receipt count before any generation or fresh identity exists;
+  materialization consumes those retained capacities without recalculating them.
+  Backing drops before its capacity owners on abort. Publication/WAL, real ABI
+  integration, graph-store admission and crash/reopen proofs are later tickets.
+- ZE-118 retains deferred broad workspace/adversarial and per-crate coverage
+  qualification. ZE-37 focused nextest and PG10 results do not replace it.

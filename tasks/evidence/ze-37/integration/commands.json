@@ -1,0 +1,180 @@
+[
+  {
+    "name": "query-charge-red",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "-E",
+      "test(staged_results_adopt_actual_query_memory)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 100,
+    "seconds": 1.960407018661499,
+    "raw_log_sha256": "8174634254de8d395b327eb3ac6f91302a7cfc32286fc7fa6b4aa6486f170df3"
+  },
+  {
+    "name": "runner-route-red",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(one_runner_episode_reaches_required_staging_contracts)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 100,
+    "seconds": 14.462517023086548,
+    "raw_log_sha256": "11653c25c0a650701544c87a094c6e71dbb95b3692406e1b14578d79a81db9aa"
+  },
+  {
+    "name": "terminal-core",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "--test",
+      "graph_key_lifecycle",
+      "--test",
+      "graph_canonical",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 8.657737016677856,
+    "raw_log_sha256": "a8aa05ca4233551729423053844ac911e1a770c27666a3d5d70b51cdba3eb7aa"
+  },
+  {
+    "name": "terminal-lib",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "--features",
+      "allocation-audit",
+      "-E",
+      "test(property_graph::staging::tests::)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 19.741414785385132,
+    "raw_log_sha256": "d2c6453ed7e191446b98218e207cd26b735f815f8b4c07d26241c714c95ebac2"
+  },
+  {
+    "name": "terminal-runner",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_staging_probe) | test(property_graph_key_lifecycle_probe) | test(one_runner_episode_reaches_required_staging_contracts)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 4.442336082458496,
+    "raw_log_sha256": "267a02634dad6125e05a18b387af9ad2609cf2da32361f953f92a986ff754659"
+  },
+  {
+    "name": "terminal-oracle",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-E",
+      "test(primitive_staging_oracle)"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 2.9667930603027344,
+    "raw_log_sha256": "ea4e060151a0cd6bd9f2c51ccbf65c0799ff7b853ccccf76059138f7ca9ec015"
+  },
+  {
+    "name": "terminal-core-clippy",
+    "argv": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "allocation-audit,test-support",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 13.71088695526123,
+    "raw_log_sha256": "9dc77e89381fe01b693e91047ab6f9e2af4d31df73a3e9a4b408873102a57101"
+  },
+  {
+    "name": "terminal-fmt",
+    "argv": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 2.0078279972076416,
+    "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "terminal-diff",
+    "argv": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed",
+    "target": "/Users/aghatage/Documents/code/zeppelin-embed/target/ze37-integration",
+    "exit_code": 0,
+    "seconds": 0.02288985252380371,
+    "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.16s
+────────────
+ Nextest run ID ec5199db-6d2c-4702-94d9-480579cb76b3 with nextest profile: default
+    Starting 1 test across 1 binary (16 tests skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed::graph_write_staging admitted_high_waters_must_cover_every_live_incarnation_before_allocating
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 16 skipped

@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+warning: field `memory` is never read
+  --> crates/zeppelin-embed/src/property_graph/staging/overlay.rs:30:90
+   |
+30 | pub struct GraphBatchReadView<'a,'batch>{base:&'a dyn AdmittedBase,identity:BaseIdentity,memory:&'a WriteMemory<'a>,entries:Arena<'a,Entr...
+   |            ------------------ field in this struct                                       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.24s
+────────────
+ Nextest run ID c6eadccf-739b-4eda-b618-83f28cb42b9f with nextest profile: default
+    Starting 1 test across 1 binary (6 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+  stdout ───
+
+    running 1 test
+    test pending_access_observes_same_clause_changes_absence_empty_text_and_deletion ... FAILED
+
+    failures:
+
+    failures:
+        pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'pending_access_observes_same_clause_changes_absence_empty_text_and_deletion' (33948188) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:167:5:
+    same-clause reads must use the pending image
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 6 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+  stdout ───
+
+    running 1 test
+    test pending_access_observes_same_clause_changes_absence_empty_text_and_deletion ... FAILED
+
+    failures:
+
+    failures:
+        pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'pending_access_observes_same_clause_changes_absence_empty_text_and_deletion' (33948188) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:167:5:
+    same-clause reads must use the pending image
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

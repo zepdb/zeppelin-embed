@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+error[E0599]: no method named `finish_with_results` found for struct `zeppelin_embed::property_graph::staging::GraphBatchReadView<'a, 'batch>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_write_staging.rs:845:28
+    |
+845 |         let output=overlay.finish_with_results(&mut adapter,&mut |_|Ok(()));
+    |                            ^^^^^^^^^^^^^^^^^^^ method not found in `zeppelin_embed::property_graph::staging::GraphBatchReadView<'_, '_>`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_write_staging") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_write_staging` exited with code 101

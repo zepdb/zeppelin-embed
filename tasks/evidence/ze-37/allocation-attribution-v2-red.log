@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.23s
+────────────
+ Nextest run ID 56e259f5-cb5f-4840-9d96-b7980e0deb7a with nextest profile: default
+    Starting 1 test across 1 binary (589 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations
+  stdout ───
+
+    running 1 test
+    test property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations ... FAILED
+
+    failures:
+
+    failures:
+        property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations' (34150818) panicked at crates/zeppelin-embed/src/property_graph/staging/tests.rs:99:5:
+    assertion `left == right` failed: staging allocation must have a charged owner
+      left: 2248
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 589 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations
+  stdout ───
+
+    running 1 test
+    test property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations ... FAILED
+
+    failures:
+
+    failures:
+        property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'property_graph::staging::tests::staging_owns_actual_capacities_and_audit_detects_unattributed_allocations' (34150818) panicked at crates/zeppelin-embed/src/property_graph/staging/tests.rs:99:5:
+    assertion `left == right` failed: staging allocation must have a charged owner
+      left: 2248
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

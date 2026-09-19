@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.77s
+────────────
+ Nextest run ID 4b4020cb-9e52-478f-a308-a2fe492c1895 with nextest profile: default
+    Starting 1 test across 1 binary (13 tests skipped)
+        PASS [   0.015s] (1/1) zeppelin-embed::graph_write_staging cypher_outputs_require_complete_precommit_materialization_even_for_noop
+────────────
+     Summary [   0.015s] 1 test run: 1 passed, 13 skipped

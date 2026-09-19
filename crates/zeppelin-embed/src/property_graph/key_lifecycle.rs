@@ -277,9 +277,25 @@ pub fn classify_cypher<'a>(
     let Some(current) = current else {
         return Ok(KeyDecision::NoOp);
     };
-    let fields = current.provenance.fields();
-    validate_provenance(fields.key, current.provenance, false, checkpoint)?;
-    if current.contents.shape.kind() != fields.incarnation.kind() {
+    classify_cypher_record(
+        current.provenance,
+        current.contents,
+        edit,
+        scratch,
+        checkpoint,
+    )
+}
+
+pub(super) fn classify_cypher_record<'key>(
+    provenance: OperationProvenance<'key>,
+    contents: CanonicalRecord<'_>,
+    edit: CypherEdit<'_>,
+    scratch: &mut [u8],
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<KeyDecision<'key>, KeyLifecycleError> {
+    let fields = provenance.fields();
+    validate_provenance(fields.key, provenance, false, checkpoint)?;
+    if contents.shape.kind() != fields.incarnation.kind() {
         return Err(KeyLifecycleError::InvalidState);
     }
     let delete_mode = match edit {
@@ -287,10 +303,10 @@ pub fn classify_cypher<'a>(
             if final_contents.shape.kind() != fields.incarnation.kind() {
                 return Err(KeyLifecycleError::KindMismatch);
             }
-            if !bounded::shapes(final_contents.shape, current.contents.shape, checkpoint)? {
+            if !bounded::shapes(final_contents.shape, contents.shape, checkpoint)? {
                 return Err(KeyLifecycleError::RelationshipIdentityChange);
             }
-            if contents_equal(current.contents, final_contents, scratch, checkpoint)? {
+            if contents_equal(contents, final_contents, scratch, checkpoint)? {
                 return Ok(KeyDecision::NoOp);
             }
             None
@@ -385,30 +401,81 @@ pub fn classify_key<'a>(
         .contents
         .as_ref()
         .is_some_and(|c| c.shape.kind() != key.kind())
-        || matches!(request.expected, ExpectedGraphState::Entity(id) if id.kind() != key.kind())
     {
         return Err(KeyLifecycleError::KindMismatch);
     }
-    let (provenance, current_contents, deleted) = match state {
-        KeyState::NeverUsed => {
+    let (state, current) = match state {
+        KeyState::NeverUsed => (KeyMetadataState::NeverUsed, None),
+        KeyState::Deleted(p) => (KeyMetadataState::Deleted(p), None),
+        KeyState::Live(current) => (
+            KeyMetadataState::Live(current.provenance, current.contents.shape),
+            Some(current.contents),
+        ),
+    };
+    let prepared = prepare_key(
+        key,
+        state,
+        KeyRequestMetadata {
+            operation: request.operation,
+            revision: request.revision,
+            expected: request.expected,
+            delete_mode: request.delete_mode,
+        },
+        checkpoint,
+    )?;
+    complete_key(prepared, current, request.contents, scratch, checkpoint)
+}
+
+/// Retained key-only metadata; canonical readers have an independent lifetime.
+/// This is private admission machinery, not a caller-selected store state API.
+#[derive(Clone, Copy)]
+pub(super) enum KeyMetadataState<'a> {
+    NeverUsed,
+    Live(OperationProvenance<'a>, EntityShape<'a>),
+    Deleted(OperationProvenance<'a>),
+}
+#[derive(Clone, Copy)]
+pub(super) struct KeyRequestMetadata {
+    pub(super) operation: GraphOperation,
+    pub(super) revision: GraphRevision,
+    pub(super) expected: ExpectedGraphState,
+    pub(super) delete_mode: Option<GraphDeleteMode>,
+}
+#[derive(Clone, Copy)]
+pub(super) enum KeyPreparation<'a> {
+    Change(PendingKeyChange<'a>),
+    CompareReplay(OperationProvenance<'a>),
+}
+/// Validates all revision/incarnation/operation preconditions once. A possible
+/// replay still requires complete_key's exact canonical comparison. A fresh
+/// change may defer endpoint-dependent encoding until private local IDs exist.
+pub(super) fn prepare_key<'a>(
+    key: ApplicationKey<'a>,
+    state: KeyMetadataState<'a>,
+    request: KeyRequestMetadata,
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<KeyPreparation<'a>, KeyLifecycleError> {
+    checkpoint()?;
+    if matches!(request.expected,ExpectedGraphState::Entity(id) if id.kind()!=key.kind()) {
+        return Err(KeyLifecycleError::KindMismatch);
+    }
+    let (provenance, current_shape, deleted) = match state {
+        KeyMetadataState::NeverUsed => {
             return if request.operation == GraphOperation::StructuredCreate {
-                Ok(KeyDecision::Change(pending(key, &request, None, false)))
+                Ok(KeyPreparation::Change(pending(key, &request, None, false)))
             } else {
                 Err(KeyLifecycleError::MissingKey)
             };
         }
-        KeyState::Live(current) => (current.provenance, Some(current.contents), false),
-        KeyState::Deleted(provenance) => (provenance, None, true),
+        KeyMetadataState::Live(provenance, shape) => (provenance, Some(shape), false),
+        KeyMetadataState::Deleted(provenance) => (provenance, None, true),
     };
     validate_provenance(Some(key), provenance, deleted, checkpoint)?;
     let fields = provenance.fields();
-    if current_contents
-        .as_ref()
-        .is_some_and(|c| c.shape.kind() != key.kind())
-    {
+    if current_shape.is_some_and(|shape| shape.kind() != key.kind()) {
         return Err(KeyLifecycleError::InvalidState);
     }
-    if matches!(request.expected, ExpectedGraphState::Entity(id) if id != fields.incarnation) {
+    if matches!(request.expected,ExpectedGraphState::Entity(id) if id!=fields.incarnation) {
         return Err(KeyLifecycleError::IncarnationConflict);
     }
     match request.revision.cmp(&fields.installed_revision) {
@@ -425,35 +492,12 @@ pub fn classify_key<'a>(
             {
                 return Err(KeyLifecycleError::RevisionConflict);
             }
-            let equal = match (current_contents, request.contents) {
-                (Some(current), Some(attempted)) => {
-                    contents_equal(current, attempted, scratch, checkpoint)?
-                }
-                (None, None) => true,
-                _ => false,
-            };
-            return if equal {
-                Ok(KeyDecision::Replay(provenance))
-            } else {
-                Err(KeyLifecycleError::RevisionConflict)
-            };
+            return Ok(KeyPreparation::CompareReplay(provenance));
         }
         std::cmp::Ordering::Greater => {}
     }
     match (deleted, request.operation) {
-        (false, GraphOperation::StructuredPut) => {
-            let current = current_contents
-                .as_ref()
-                .ok_or(KeyLifecycleError::InvalidState)?;
-            let requested = request
-                .contents
-                .as_ref()
-                .ok_or(KeyLifecycleError::InvalidState)?;
-            if !bounded::shapes(current.shape, requested.shape, checkpoint)? {
-                return Err(KeyLifecycleError::RelationshipIdentityChange);
-            }
-        }
-        (false, GraphOperation::StructuredDelete) => {}
+        (false, GraphOperation::StructuredPut | GraphOperation::StructuredDelete) => {}
         (false, GraphOperation::StructuredCreate) => return Err(KeyLifecycleError::AlreadyExists),
         (false, _) => return Err(KeyLifecycleError::NotDeleted),
         (true, GraphOperation::StructuredRecreate) => {
@@ -463,17 +507,61 @@ pub fn classify_key<'a>(
         }
         (true, _) => return Err(KeyLifecycleError::DeletedKey),
     }
-    Ok(KeyDecision::Change(pending(
+    Ok(KeyPreparation::Change(pending(
         key,
         &request,
         Some(provenance),
         deleted,
     )))
 }
+/// Completes exact replay/topology validation without retaining reader borrows.
+pub(super) fn complete_key<'a>(
+    prepared: KeyPreparation<'a>,
+    current: Option<CanonicalRecord<'_>>,
+    requested: Option<CanonicalRecord<'_>>,
+    scratch: &mut [u8],
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<KeyDecision<'a>, KeyLifecycleError> {
+    match prepared {
+        KeyPreparation::CompareReplay(provenance) => {
+            let equal = match (current, requested) {
+                (Some(current), Some(requested)) => {
+                    contents_equal(current, requested, scratch, checkpoint)?
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if equal {
+                Ok(KeyDecision::Replay(provenance))
+            } else {
+                Err(KeyLifecycleError::RevisionConflict)
+            }
+        }
+        KeyPreparation::Change(change) => {
+            if change.is_deletion() != requested.is_none() {
+                return Err(KeyLifecycleError::InvalidState);
+            }
+            if requested
+                .as_ref()
+                .is_some_and(|contents| contents.shape.kind() != change.kind)
+            {
+                return Err(KeyLifecycleError::KindMismatch);
+            }
+            if change.operation == GraphOperation::StructuredPut {
+                let current = current.ok_or(KeyLifecycleError::InvalidState)?;
+                let requested = requested.ok_or(KeyLifecycleError::InvalidState)?;
+                if !bounded::shapes(current.shape, requested.shape, checkpoint)? {
+                    return Err(KeyLifecycleError::RelationshipIdentityChange);
+                }
+            }
+            Ok(KeyDecision::Change(change))
+        }
+    }
+}
 
 fn pending<'a>(
     key: ApplicationKey<'a>,
-    request: &Request<'a>,
+    request: &KeyRequestMetadata,
     previous: Option<OperationProvenance<'a>>,
     deleted: bool,
 ) -> PendingKeyChange<'a> {

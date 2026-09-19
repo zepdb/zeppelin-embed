@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+────────────
+ Nextest run ID 6f39d068-01c8-4a83-b3fb-d4c3219c1d95 with nextest profile: default
+    Starting 1 test across 1 binary (5 tests skipped)
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+  stdout ───
+
+    running 1 test
+    test changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators ... FAILED
+
+    failures:
+
+    failures:
+        changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators' (33938088) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:152:5:
+    assertion `left == right` failed: only namespace, one distinct label and property name are allocated
+      left: 0
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 1 test run: 0 passed, 1 failed, 5 skipped
+        FAIL [   0.018s] (1/1) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+  stdout ───
+
+    running 1 test
+    test changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators ... FAILED
+
+    failures:
+
+    failures:
+        changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators' (33938088) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:152:5:
+    assertion `left == right` failed: only namespace, one distinct label and property name are allocated
+      left: 0
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

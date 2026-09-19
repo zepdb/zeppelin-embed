@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+────────────
+ Nextest run ID ebce4c54-bd56-47cc-9cd2-f363ccce49e8 with nextest profile: default
+    Starting 2 tests across 1 binary (442 tests skipped)
+        PASS [   0.019s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_key_lifecycle_probe_preserves_exact_history
+        PASS [   0.026s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+────────────
+     Summary [   0.027s] 2 tests run: 2 passed, 442 skipped
+        PASS [   0.019s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_key_lifecycle_probe_preserves_exact_history
+  stdout ───
+
+    running 1 test
+    test property_graph_key_lifecycle_probe_preserves_exact_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 443 filtered out; finished in 0.01s
+
+
+        PASS [   0.026s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults ... seed=0 property-graph.staging.changed=7
+    seed=0 property-graph.staging.replay=1
+    seed=0 property-graph.staging.mixed=6
+    seed=0 property-graph.staging.noop=1
+    seed=0 property-graph.staging.duplicate=1
+    seed=0 property-graph.staging.rejected=43
+    seed=0 property-graph.staging.cancel.fire=3
+    seed=0 property-graph.staging.cancel.clean=3
+    seed=0 property-graph.staging.budget.fire=1
+    seed=0 property-graph.staging.budget.clean=1
+    seed=0 property-graph.staging.oracle.can-fire=1
+    seed=41 property-graph.staging.changed=4
+    seed=41 property-graph.staging.replay=1
+    seed=41 property-graph.staging.mixed=10
+    seed=41 property-graph.staging.noop=1
+    seed=41 property-graph.staging.duplicate=1
+    seed=41 property-graph.staging.rejected=42
+    seed=41 property-graph.staging.cancel.fire=3
+    seed=41 property-graph.staging.cancel.clean=3
+    seed=41 property-graph.staging.budget.fire=1
+    seed=41 property-graph.staging.budget.clean=1
+    seed=41 property-graph.staging.oracle.can-fire=1
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 443 filtered out; finished in 0.01s

@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+────────────
+ Nextest run ID e5db207b-64aa-46e5-a56c-0818d807874a with nextest profile: default
+    Starting 1 test across 1 binary
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+  stdout ───
+
+    running 1 test
+    test invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations ... FAILED
+
+    failures:
+
+    failures:
+        invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations' (33910596) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:24:9:
+    missing endpoint must reject the entire private batch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 0 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+  stdout ───
+
+    running 1 test
+    test invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations ... FAILED
+
+    failures:
+
+    failures:
+        invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations' (33910596) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:24:9:
+    missing endpoint must reject the entire private batch
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "query-charge-red",
+    "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+    "original": "057ce50498ea232a048c4bd7ac2424292b58feb4ea535a2d21e8a76461e71e3a",
+    "mutated": "2b96d31988cb9a4ddfce5203b6ace43dffaf553e7b02dc2745fb79f70ad2893b",
+    "restored": "057ce50498ea232a048c4bd7ac2424292b58feb4ea535a2d21e8a76461e71e3a",
+    "intended_failure": "query limit must reject at the selected ownership transfer",
+    "exit_code": 100
+  },
+  {
+    "name": "runner-route-red",
+    "path": "tests/adversarial/runner.rs",
+    "original": "08f2d348ab96d0591f608b3f9b764a7cd5a5a65761a42844813b3dac26984513",
+    "mutated": "facfbdcaf59ee59d897b89781fcf4b67f55ea21fcb231f63644d74686fbabb31",
+    "restored": "08f2d348ab96d0591f608b3f9b764a7cd5a5a65761a42844813b3dac26984513",
+    "intended_failure": "actual runner omitted property-graph.staging.",
+    "exit_code": 100
+  }
+]

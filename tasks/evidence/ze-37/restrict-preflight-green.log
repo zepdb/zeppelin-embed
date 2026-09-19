@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+────────────
+ Nextest run ID 7e6426a7-0d3e-4f51-b3bc-407092913966 with nextest profile: default
+    Starting 1 test across 1 binary (14 tests skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed::graph_write_staging restrict_preconditions_precede_cypher_private_ids_and_detach_never_enumerates_incidents
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 14 skipped

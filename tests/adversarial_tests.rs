@@ -18787,3 +18787,39 @@ fn one_runner_episode_reaches_required_runtime_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults() {
+    for seed in [0, 41] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_staging::probe(seed, &mut coverage)
+            .expect("PG10 primitive staging oracle");
+        for key in adversarial::graph_staging::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing PG10 case {key}");
+            println!("seed={seed} {key}={}", coverage.count(key));
+        }
+        assert_eq!(coverage.count("property-graph.staging.cancel.fire"), 3);
+        assert_eq!(coverage.count("property-graph.staging.cancel.clean"), 3);
+        assert_eq!(coverage.count("property-graph.staging.budget.fire"), 1);
+        assert_eq!(coverage.count("property-graph.staging.budget.clean"), 1);
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_staging_contracts() {
+    let root = tempfile::tempdir().expect("staging runner episode artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("one actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_staging::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG10 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

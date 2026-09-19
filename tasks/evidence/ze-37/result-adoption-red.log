@@ -1,0 +1,30 @@
+warning: method `belongs_to` is never used
+   --> crates/zeppelin-embed/src/lifecycle/stats.rs:382:19
+    |
+352 | impl AccountedCounter {
+    | --------------------- method in this implementation
+...
+382 |     pub(crate) fn belongs_to(&self, accounting: &Arc<Accounting>) -> bool {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `belongs_to` is never used
+  --> crates/zeppelin-embed/src/property_graph/resources.rs:56:19
+   |
+55 | impl GraphReservation {
+   | --------------------- method in this implementation
+56 |     pub(crate) fn belongs_to(&self, resources: &GraphResources) -> bool {
+   |                   ^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 2 warnings
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+error[E0599]: no method named `adopt_result_memory` found for struct `MaterializedBatch<'a, R>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_write_staging.rs:808:28
+    |
+808 |         let adopted=staged.adopt_result_memory(&Empty,&mut |charge:GraphReservation| {
+    |                     -------^^^^^^^^^^^^^^^^^^^ method not found in `MaterializedBatch<'_, Registration>`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_write_staging") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_write_staging` exited with code 101

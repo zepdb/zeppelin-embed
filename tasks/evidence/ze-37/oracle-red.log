@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.58s
+────────────
+ Nextest run ID 545f6ff3-dada-44c7-9064-6bcb1a165a17 with nextest profile: default
+    Starting 1 test across 5 binaries (103 tests skipped)
+        FAIL [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation
+  stdout ───
+
+    running 1 test
+    test graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation ... FAILED
+
+    failures:
+
+    failures:
+        graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation' (34059292) panicked at tests/adversarial-oracle/src/graph_staging.rs:36:9:
+    PG10 CAN FIRE erased participant
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 103 skipped
+        FAIL [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation
+  stdout ───
+
+    running 1 test
+    test graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation ... FAILED
+
+    failures:
+
+    failures:
+        graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation' (34059292) panicked at tests/adversarial-oracle/src/graph_staging.rs:36:9:
+    PG10 CAN FIRE erased participant
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,131 @@
+[
+  {
+    "name": "terminal-core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "--test",
+      "graph_key_lifecycle",
+      "--test",
+      "graph_canonical",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-lib",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "--features",
+      "allocation-audit",
+      "-E",
+      "test(property_graph::staging::tests::)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-runner",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_staging_probe) | test(property_graph_key_lifecycle_probe) | test(one_runner_episode_reaches_required_staging_contracts)",
+      "--success-output",
+      "final"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-oracle",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-E",
+      "test(primitive_staging_oracle)"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-core-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "allocation-audit,test-support",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  },
+  {
+    "name": "terminal-diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "workdir": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37",
+    "CARGO_TARGET_DIR": "target/ze37",
+    "RUSTDOCFLAGS": null,
+    "exit_code": 0
+  }
+]

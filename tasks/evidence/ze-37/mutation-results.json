@@ -1,0 +1,108 @@
+[
+  {
+    "name": "abi-arena-cap",
+    "path": "crates/zeppelin-embed/src/property_graph/staging/result.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "-E",
+      "test(result_materialization_counts)"
+    ],
+    "original_sha256": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8",
+    "mutant_sha256": "f5a65f0c1b3caac3d53ad4100f45ca5026d1b2b0a810ec35a8052ffbd5b259ce",
+    "exit": 100,
+    "intended_assertion": "the complete ABI arena must fit its result limit",
+    "fired": true,
+    "restored_sha256": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8"
+  },
+  {
+    "name": "copied-result-view",
+    "path": "crates/zeppelin-embed/src/property_graph/staging/result.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "-E",
+      "test(final_view_drift)"
+    ],
+    "original_sha256": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8",
+    "mutant_sha256": "a7da41b1791dc98bf249b10c9df5b21f0c120bf3d8d63c21e63413807ded0d0c",
+    "exit": 100,
+    "intended_assertion": "assertion failed: matches!(result, Err(StageError::ViewMismatch))",
+    "fired": true,
+    "restored_sha256": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8"
+  },
+  {
+    "name": "shared-owner",
+    "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_write_staging",
+      "-E",
+      "test(writer_adoption_checks)"
+    ],
+    "original_sha256": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78",
+    "mutant_sha256": "f4b965b83c394eb84d422ecbbcc1e1803aea8aba1b22a6b2d214f8c1b8d855ff",
+    "exit": 100,
+    "intended_assertion": "foreign accounting owner accepted",
+    "fired": true,
+    "restored_sha256": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78"
+  },
+  {
+    "name": "replay-generation-pg10",
+    "path": "crates/zeppelin-embed/src/property_graph/staging/structured.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_staging_probe)"
+    ],
+    "original_sha256": "a711b6c604a427743bd33ee71cdbf98996e54905bcf9ee3af8ea326f211e7a92",
+    "mutant_sha256": "1cf96606faba465383d8acde2cfdb748ab692a96c0f21ccf66824a069db97c8e",
+    "exit": 100,
+    "intended_assertion": "PG10 private staging expected=",
+    "fired": true,
+    "restored_sha256": "a711b6c604a427743bd33ee71cdbf98996e54905bcf9ee3af8ea326f211e7a92"
+  },
+  {
+    "name": "allocation-attribution-v2",
+    "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "--features",
+      "allocation-audit",
+      "-E",
+      "test(staging_owns_actual)"
+    ],
+    "original_sha256": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78",
+    "mutant_sha256": "8cb3c61d47aad8604b21f012935620feec1f4d402fa4093c4095c16dcb5e26e8",
+    "exit": 100,
+    "intended_assertion": "staging allocation must have a charged owner",
+    "fired": true,
+    "restored_sha256": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78"
+  }
+]

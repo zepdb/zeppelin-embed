@@ -1,0 +1,130 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+────────────
+ Nextest run ID 9497e985-a6ff-4073-9d4a-13bfb6a4667e with nextest profile: default
+    Starting 3 tests across 1 binary (19 tests skipped)
+        FAIL [   0.014s] (1/3) zeppelin-embed::graph_write_staging cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids
+  stdout ───
+
+    running 1 test
+    test cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids' (34095788) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1683:148:
+    assertion `left == right` failed: fresh node interpretation precedes all private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (2/3) zeppelin-embed::graph_write_staging restrict_integrity_precedes_generation_overflow_for_structured_writes
+  stdout ───
+
+    running 1 test
+    test restrict_integrity_precedes_generation_overflow_for_structured_writes ... FAILED
+
+    failures:
+
+    failures:
+        restrict_integrity_precedes_generation_overflow_for_structured_writes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'restrict_integrity_precedes_generation_overflow_for_structured_writes' (34095789) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1700:5:
+    Restrict precondition precedes target generation
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (3/3) zeppelin-embed::graph_write_staging fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids' (34095790) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:796:9:
+    assertion `left == right` failed: ordinary relationship property validation precedes private IDs
+      left: 2
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 3 tests run: 0 passed, 3 failed, 19 skipped
+        FAIL [   0.014s] (1/3) zeppelin-embed::graph_write_staging cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids
+  stdout ───
+
+    running 1 test
+    test cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_fresh_payload_interpretation_and_duplicate_fields_precede_all_private_ids' (34095788) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1683:148:
+    assertion `left == right` failed: fresh node interpretation precedes all private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (2/3) zeppelin-embed::graph_write_staging restrict_integrity_precedes_generation_overflow_for_structured_writes
+  stdout ───
+
+    running 1 test
+    test restrict_integrity_precedes_generation_overflow_for_structured_writes ... FAILED
+
+    failures:
+
+    failures:
+        restrict_integrity_precedes_generation_overflow_for_structured_writes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'restrict_integrity_precedes_generation_overflow_for_structured_writes' (34095789) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1700:5:
+    Restrict precondition precedes target generation
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.014s] (3/3) zeppelin-embed::graph_write_staging fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'fresh_relationship_fields_and_exact_input_framing_are_validated_before_private_ids' (34095790) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:796:9:
+    assertion `left == right` failed: ordinary relationship property validation precedes private IDs
+      left: 2
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

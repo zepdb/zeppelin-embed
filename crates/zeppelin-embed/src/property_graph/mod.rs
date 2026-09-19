@@ -107,3 +107,6 @@ pub mod wal;
 
 /// Shared graph participant reservations backed by lifecycle accounting.
 pub mod resources;
+
+/// Bounded private mixed-write admission and pending property/text access.
+pub mod staging;

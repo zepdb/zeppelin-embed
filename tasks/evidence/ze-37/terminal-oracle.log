@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 3162c717-f37c-407d-ba99-c8f8075180d1 with nextest profile: default
+    Starting 1 test across 5 binaries (103 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_staging::tests::primitive_staging_oracle_refuses_erased_changes_and_rewritten_replay_generation
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 103 skipped

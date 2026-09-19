@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.56s
+────────────
+ Nextest run ID f2edb004-facc-4a10-b54e-bc243a7d4daa with nextest profile: default
+    Starting 1 test across 1 binary (443 tests skipped)
+        FAIL [   0.020s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 443 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults' (34149673) panicked at tests/adversarial_tests.rs:18693:14:
+    PG10 primitive staging oracle: "PG10 private staging expected=Accepted(Accepted { disposition: Replay, high_water: 2596148429267413814265248164610057, receipts: [(1, Record { id: 2596148429267413814265248164610057, revision: 4, origin: Create, expected: Absent, detach: None, generation: 5, bits: Some(1846277801538356049) }, true)], changes: [] }) observed=Accepted(Accepted { disposition: Replay, high_water: 2596148429267413814265248164610057, receipts: [(1, Record { id: 2596148429267413814265248164610057, revision: 4, origin: Create, expected: Absent, detach: None, generation: 6, bits: Some(1846277801538356049) }, true)], changes: [] }) requests=[Request { key: 1, action: Create { revision: 4, bits: 1846277801538356049 } }]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.021s] 1 test run: 0 passed, 1 failed, 443 skipped
+        FAIL [   0.020s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 443 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults' (34149673) panicked at tests/adversarial_tests.rs:18693:14:
+    PG10 primitive staging oracle: "PG10 private staging expected=Accepted(Accepted { disposition: Replay, high_water: 2596148429267413814265248164610057, receipts: [(1, Record { id: 2596148429267413814265248164610057, revision: 4, origin: Create, expected: Absent, detach: None, generation: 5, bits: Some(1846277801538356049) }, true)], changes: [] }) observed=Accepted(Accepted { disposition: Replay, high_water: 2596148429267413814265248164610057, receipts: [(1, Record { id: 2596148429267413814265248164610057, revision: 4, origin: Create, expected: Absent, detach: None, generation: 6, bits: Some(1846277801538356049) }, true)], changes: [] }) requests=[Request { key: 1, action: Create { revision: 4, bits: 1846277801538356049 } }]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

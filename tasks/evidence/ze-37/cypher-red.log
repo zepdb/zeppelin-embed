@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+warning: field `memory` is never read
+  --> crates/zeppelin-embed/src/property_graph/staging/overlay.rs:30:90
+   |
+30 | pub struct GraphBatchReadView<'a,'batch>{base:&'a dyn AdmittedBase,identity:BaseIdentity,memory:&'a WriteMemory<'a>,entries:Arena<'a,Entr...
+   |            ------------------ field in this struct                                       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+────────────
+ Nextest run ID a4538486-cb6f-4807-bff2-ba4b072821e0 with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+  stdout ───
+
+    running 1 test
+    test cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes ... FAILED
+
+    failures:
+
+    failures:
+        cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes' (33952914) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:180:50:
+    final equality is NoOp: InvalidInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 7 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+  stdout ───
+
+    running 1 test
+    test cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes ... FAILED
+
+    failures:
+
+    failures:
+        cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes' (33952914) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:180:50:
+    final equality is NoOp: InvalidInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

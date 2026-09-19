@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.47s
+────────────
+ Nextest run ID 254ab9cc-e4a7-4287-ac65-a3f2185c9eef with nextest profile: default
+    Starting 1 test across 1 binary (8 tests skipped)
+        FAIL [   0.017s] (1/1) zeppelin-embed::graph_write_staging every_revision_precondition_is_classified_before_any_private_identity_assignment
+  stdout ───
+
+    running 1 test
+    test every_revision_precondition_is_classified_before_any_private_identity_assignment ... FAILED
+
+    failures:
+
+    failures:
+        every_revision_precondition_is_classified_before_any_private_identity_assignment
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_revision_precondition_is_classified_before_any_private_identity_assignment' (33964125) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:719:215:
+    assertion `left == right` failed: a later stale item must reject before any new-ID assignment
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.018s] 1 test run: 0 passed, 1 failed, 8 skipped
+        FAIL [   0.017s] (1/1) zeppelin-embed::graph_write_staging every_revision_precondition_is_classified_before_any_private_identity_assignment
+  stdout ───
+
+    running 1 test
+    test every_revision_precondition_is_classified_before_any_private_identity_assignment ... FAILED
+
+    failures:
+
+    failures:
+        every_revision_precondition_is_classified_before_any_private_identity_assignment
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_revision_precondition_is_classified_before_any_private_identity_assignment' (33964125) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:719:215:
+    assertion `left == right` failed: a later stale item must reject before any new-ID assignment
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+────────────
+ Nextest run ID 6c5d7df2-0617-48fc-9f13-e01b3cd371e2 with nextest profile: default
+    Starting 1 test across 1 binary (15 tests skipped)
+        FAIL [   0.016s] (1/1) zeppelin-embed::graph_write_staging cypher_classifies_all_revisions_before_selecting_changed_generation
+  stdout ───
+
+    running 1 test
+    test cypher_classifies_all_revisions_before_selecting_changed_generation ... FAILED
+
+    failures:
+
+    failures:
+        cypher_classifies_all_revisions_before_selecting_changed_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_classifies_all_revisions_before_selecting_changed_generation' (34035987) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:944:5:
+    all revision preconditions precede changed-generation selection
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.017s] 1 test run: 0 passed, 1 failed, 15 skipped
+        FAIL [   0.016s] (1/1) zeppelin-embed::graph_write_staging cypher_classifies_all_revisions_before_selecting_changed_generation
+  stdout ───
+
+    running 1 test
+    test cypher_classifies_all_revisions_before_selecting_changed_generation ... FAILED
+
+    failures:
+
+    failures:
+        cypher_classifies_all_revisions_before_selecting_changed_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_classifies_all_revisions_before_selecting_changed_generation' (34035987) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:944:5:
+    all revision preconditions precede changed-generation selection
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

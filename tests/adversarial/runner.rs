@@ -2909,6 +2909,7 @@ fn run_program_for_with_clock(
     super::graph_query::probe(seed, &mut coverage)?;
     super::graph_wal::probe(seed, &mut coverage)?;
     super::graph_runtime::probe(seed, &mut coverage)?;
+    super::graph_staging::probe(seed, &mut coverage)?;
     let mut oracle_records = Vec::<OracleRecord>::new();
     let mut control_records = Vec::<String>::new();
     let mut receipt_records = Vec::<String>::new();

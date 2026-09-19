@@ -1,0 +1,156 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.28s
+────────────
+ Nextest run ID 093f171c-d6aa-4ee6-ac35-8ccc501adb48 with nextest profile: default
+    Starting 12 tests across 1 binary
+        PASS [   0.014s] ( 1/12) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+        PASS [   0.014s] ( 2/12) zeppelin-embed::graph_write_staging deferred_relationship_failure_discards_both_private_ids_and_exact_input_framing_is_bounded
+        PASS [   0.014s] ( 3/12) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+        FAIL [   0.015s] ( 4/12) zeppelin-embed::graph_write_staging every_private_checkpoint_can_cancel_without_ids_or_retained_allocations
+  stdout ───
+
+    running 1 test
+    test every_private_checkpoint_can_cancel_without_ids_or_retained_allocations ... FAILED
+
+    failures:
+
+    failures:
+        every_private_checkpoint_can_cancel_without_ids_or_retained_allocations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_private_checkpoint_can_cancel_without_ids_or_retained_allocations' (33998711) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:768:102:
+    assertion failed: phases.contains(&WritePhase::CoreResult)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 5/12) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+        PASS [   0.012s] ( 6/12) zeppelin-embed::graph_write_staging every_revision_precondition_is_classified_before_any_private_identity_assignment
+        PASS [   0.012s] ( 7/12) zeppelin-embed::graph_write_staging full_width_high_waters_and_revision_generation_overflow_never_wrap
+        PASS [   0.012s] ( 8/12) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+        PASS [   0.010s] ( 9/12) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+        PASS [   0.010s] (10/12) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+        PASS [   0.010s] (11/12) zeppelin-embed::graph_write_staging receipt_limits_reject_before_returning_ids_including_replay_results
+        PASS [   0.010s] (12/12) zeppelin-embed::graph_write_staging result_materialization_counts_overlapping_arenas_and_retains_real_registration
+────────────
+     Summary [   0.036s] 12 tests run: 11 passed, 1 failed, 0 skipped
+        PASS [   0.014s] ( 1/12) zeppelin-embed::graph_write_staging cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes
+  stdout ───
+
+    running 1 test
+    test cypher_finalization_advances_once_and_consumed_local_ids_survive_net_empty_changes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] ( 2/12) zeppelin-embed::graph_write_staging deferred_relationship_failure_discards_both_private_ids_and_exact_input_framing_is_bounded
+  stdout ───
+
+    running 1 test
+    test deferred_relationship_failure_discards_both_private_ids_and_exact_input_framing_is_bounded ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] ( 3/12) zeppelin-embed::graph_write_staging changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators
+  stdout ───
+
+    running 1 test
+    test changed_names_intern_lazily_while_exact_replay_ignores_exhausted_allocators ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 5/12) zeppelin-embed::graph_write_staging invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations
+  stdout ───
+
+    running 1 test
+    test invalid_endpoint_after_valid_node_exposes_no_ids_or_reservations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 6/12) zeppelin-embed::graph_write_staging every_revision_precondition_is_classified_before_any_private_identity_assignment
+  stdout ───
+
+    running 1 test
+    test every_revision_precondition_is_classified_before_any_private_identity_assignment ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 7/12) zeppelin-embed::graph_write_staging full_width_high_waters_and_revision_generation_overflow_never_wrap
+  stdout ───
+
+    running 1 test
+    test full_width_high_waters_and_revision_generation_overflow_never_wrap ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 8/12) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+  stdout ───
+
+    running 1 test
+    test forward_local_endpoints_resolve_before_relationship_canonicalization ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 9/12) zeppelin-embed::graph_write_staging pending_access_observes_same_clause_changes_absence_empty_text_and_deletion
+  stdout ───
+
+    running 1 test
+    test pending_access_observes_same_clause_changes_absence_empty_text_and_deletion ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (10/12) zeppelin-embed::graph_write_staging mixed_replay_preserves_original_generation_and_uniform_duplicates_reject
+  stdout ───
+
+    running 1 test
+    test mixed_replay_preserves_original_generation_and_uniform_duplicates_reject ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (11/12) zeppelin-embed::graph_write_staging receipt_limits_reject_before_returning_ids_including_replay_results
+  stdout ───
+
+    running 1 test
+    test receipt_limits_reject_before_returning_ids_including_replay_results ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (12/12) zeppelin-embed::graph_write_staging result_materialization_counts_overlapping_arenas_and_retains_real_registration
+  stdout ───
+
+    running 1 test
+    test result_materialization_counts_overlapping_arenas_and_retains_real_registration ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        FAIL [   0.015s] ( 4/12) zeppelin-embed::graph_write_staging every_private_checkpoint_can_cancel_without_ids_or_retained_allocations
+  stdout ───
+
+    running 1 test
+    test every_private_checkpoint_can_cancel_without_ids_or_retained_allocations ... FAILED
+
+    failures:
+
+    failures:
+        every_private_checkpoint_can_cancel_without_ids_or_retained_allocations
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'every_private_checkpoint_can_cancel_without_ids_or_retained_allocations' (33998711) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:768:102:
+    assertion failed: phases.contains(&WritePhase::CoreResult)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

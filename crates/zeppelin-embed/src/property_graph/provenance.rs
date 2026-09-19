@@ -119,45 +119,86 @@ impl<'a> OperationProvenance<'a> {
         output: &mut dyn Write,
         checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
     ) -> Result<CanonicalStats, CanonicalError> {
-        let mut e = Encoder::new(output, checkpoint);
-        e.emit(b"ZGOP")?;
-        e.emit(&self.version().to_le_bytes())?;
-        e.byte(match self.fields.operation {
-            GraphOperation::StructuredCreate => 1,
-            GraphOperation::StructuredPut => 2,
-            GraphOperation::StructuredDelete => 3,
-            GraphOperation::StructuredRecreate => 4,
-            GraphOperation::CypherEdit => 5,
-        })?;
-        e.byte(u8::from(self.fields.key.is_some()))?;
-        if let Some(key) = self.fields.key {
-            e.byte(kind_tag(key.kind()))?;
-            e.blob(key.namespace().as_str().as_bytes())?;
-            e.blob(key.key().as_str().as_bytes())?;
-        }
-        e.emit(&self.fields.requested_revision.get().to_le_bytes())?;
-        e.emit(&self.fields.installed_revision.get().to_le_bytes())?;
-        match self.fields.expected {
-            ExpectedGraphState::Absent => e.byte(1)?,
-            ExpectedGraphState::Entity(id) => {
-                e.byte(2)?;
-                encode_id(&mut e, id)?;
-            }
-            ExpectedGraphState::Deletion(revision) => {
-                e.byte(3)?;
-                e.emit(&revision.get().to_le_bytes())?;
-            }
-        }
-        encode_id(&mut e, self.fields.incarnation)?;
-        e.byte(match self.fields.delete_mode {
-            None => 0,
-            Some(GraphDeleteMode::Restrict) => 1,
-            Some(GraphDeleteMode::Detach) => 2,
-        })?;
-        e.emit(&self.fields.original_generation.get().to_le_bytes())?;
-        Ok(e.stats())
+        encode_operation(
+            output,
+            self.fields.key,
+            self.fields.expected,
+            Some(self.fields),
+            checkpoint,
+        )
     }
 }
+/// Same v1 layout encoder as installed evidence, with fixed-width zero values
+/// confined to a length-only sink. No provisional provenance or ID is created.
+pub(super) fn measure_operation_framing(
+    key: Option<ApplicationKey<'_>>,
+    expected: ExpectedGraphState,
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<u64, CanonicalError> {
+    Ok(encode_operation(&mut io::sink(), key, expected, None, checkpoint)?.bytes)
+}
+fn encode_operation(
+    output: &mut dyn Write,
+    key: Option<ApplicationKey<'_>>,
+    expected: ExpectedGraphState,
+    fields: Option<OperationFields<'_>>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<CanonicalStats, CanonicalError> {
+    let mut e = Encoder::new(output, checkpoint);
+    e.emit(b"ZGOP")?;
+    e.emit(&1u16.to_le_bytes())?;
+    e.byte(fields.map_or(0, |f| match f.operation {
+        GraphOperation::StructuredCreate => 1,
+        GraphOperation::StructuredPut => 2,
+        GraphOperation::StructuredDelete => 3,
+        GraphOperation::StructuredRecreate => 4,
+        GraphOperation::CypherEdit => 5,
+    }))?;
+    e.byte(u8::from(key.is_some()))?;
+    if let Some(key) = key {
+        e.byte(kind_tag(key.kind()))?;
+        e.blob(key.namespace().as_str().as_bytes())?;
+        e.blob(key.key().as_str().as_bytes())?;
+    }
+    e.emit(
+        &fields
+            .map_or(0, |f| f.requested_revision.get())
+            .to_le_bytes(),
+    )?;
+    e.emit(
+        &fields
+            .map_or(0, |f| f.installed_revision.get())
+            .to_le_bytes(),
+    )?;
+    match expected {
+        ExpectedGraphState::Absent => e.byte(1)?,
+        ExpectedGraphState::Entity(id) => {
+            e.byte(2)?;
+            encode_id(&mut e, id)?;
+        }
+        ExpectedGraphState::Deletion(revision) => {
+            e.byte(3)?;
+            e.emit(&revision.get().to_le_bytes())?;
+        }
+    }
+    if let Some(fields) = fields {
+        encode_id(&mut e, fields.incarnation)?;
+    } else {
+        e.emit(&[0u8; 17])?;
+    }
+    e.byte(match fields.and_then(|f| f.delete_mode) {
+        None => 0,
+        Some(GraphDeleteMode::Restrict) => 1,
+        Some(GraphDeleteMode::Detach) => 2,
+    })?;
+    e.emit(
+        &fields
+            .map_or(0, |f| f.original_generation.get())
+            .to_le_bytes(),
+    )?;
+    Ok(e.stats())
+}
+
 fn kind_tag(kind: EntityKind) -> u8 {
     match kind {
         EntityKind::Node => 1,

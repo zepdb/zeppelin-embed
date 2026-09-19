@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+────────────
+ Nextest run ID 61bff815-0d94-45cf-a640-549b0e9f2b3d with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+  stdout ───
+
+    running 1 test
+    test forward_local_endpoints_resolve_before_relationship_canonicalization ... FAILED
+
+    failures:
+
+    failures:
+        forward_local_endpoints_resolve_before_relationship_canonicalization
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'forward_local_endpoints_resolve_before_relationship_canonicalization' (33918637) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:87:79:
+    forward local references are valid: InvalidInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 2 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_write_staging forward_local_endpoints_resolve_before_relationship_canonicalization
+  stdout ───
+
+    running 1 test
+    test forward_local_endpoints_resolve_before_relationship_canonicalization ... FAILED
+
+    failures:
+
+    failures:
+        forward_local_endpoints_resolve_before_relationship_canonicalization
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'forward_local_endpoints_resolve_before_relationship_canonicalization' (33918637) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:87:79:
+    forward local references are valid: InvalidInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,168 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-37/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+────────────
+ Nextest run ID 6f4b65ed-8e50-445a-bb5b-066608a8c191 with nextest profile: default
+    Starting 4 tests across 1 binary (22 tests skipped)
+        FAIL [   0.011s] (1/4) zeppelin-embed::graph_write_staging cypher_result_layout_limit_precedes_generation_overflow
+  stdout ───
+
+    running 1 test
+    test cypher_result_layout_limit_precedes_generation_overflow ... FAILED
+
+    failures:
+
+    failures:
+        cypher_result_layout_limit_precedes_generation_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_result_layout_limit_precedes_generation_overflow' (34131627) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1835:30:
+    result layout must reject before generation selection: Lifecycle(GenerationOverflow)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (2/4) zeppelin-embed::graph_write_staging structured_result_layout_limit_precedes_generation_overflow
+  stdout ───
+
+    running 1 test
+    test structured_result_layout_limit_precedes_generation_overflow ... FAILED
+
+    failures:
+
+    failures:
+        structured_result_layout_limit_precedes_generation_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'structured_result_layout_limit_precedes_generation_overflow' (34131624) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1835:30:
+    result layout must reject before generation selection: Lifecycle(GenerationOverflow)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (3/4) zeppelin-embed::graph_write_staging cypher_result_layout_is_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test cypher_result_layout_is_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        cypher_result_layout_is_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_result_layout_is_validated_before_private_ids' (34131625) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1836:5:
+    assertion `left == right` failed: result layout validation must precede private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (4/4) zeppelin-embed::graph_write_staging structured_result_layout_is_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test structured_result_layout_is_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        structured_result_layout_is_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'structured_result_layout_is_validated_before_private_ids' (34131626) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1836:5:
+    assertion `left == right` failed: result layout validation must precede private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.012s] 4 tests run: 0 passed, 4 failed, 22 skipped
+        FAIL [   0.011s] (1/4) zeppelin-embed::graph_write_staging cypher_result_layout_limit_precedes_generation_overflow
+  stdout ───
+
+    running 1 test
+    test cypher_result_layout_limit_precedes_generation_overflow ... FAILED
+
+    failures:
+
+    failures:
+        cypher_result_layout_limit_precedes_generation_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_result_layout_limit_precedes_generation_overflow' (34131627) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1835:30:
+    result layout must reject before generation selection: Lifecycle(GenerationOverflow)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (2/4) zeppelin-embed::graph_write_staging structured_result_layout_limit_precedes_generation_overflow
+  stdout ───
+
+    running 1 test
+    test structured_result_layout_limit_precedes_generation_overflow ... FAILED
+
+    failures:
+
+    failures:
+        structured_result_layout_limit_precedes_generation_overflow
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'structured_result_layout_limit_precedes_generation_overflow' (34131624) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1835:30:
+    result layout must reject before generation selection: Lifecycle(GenerationOverflow)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (3/4) zeppelin-embed::graph_write_staging cypher_result_layout_is_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test cypher_result_layout_is_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        cypher_result_layout_is_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cypher_result_layout_is_validated_before_private_ids' (34131625) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1836:5:
+    assertion `left == right` failed: result layout validation must precede private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (4/4) zeppelin-embed::graph_write_staging structured_result_layout_is_validated_before_private_ids
+  stdout ───
+
+    running 1 test
+    test structured_result_layout_is_validated_before_private_ids ... FAILED
+
+    failures:
+
+    failures:
+        structured_result_layout_is_validated_before_private_ids
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'structured_result_layout_is_validated_before_private_ids' (34131626) panicked at crates/zeppelin-embed/tests/graph_write_staging.rs:1836:5:
+    assertion `left == right` failed: result layout validation must precede private IDs
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

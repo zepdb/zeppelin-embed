@@ -678,3 +678,33 @@ impl<'a> CanonicalContents<'a> {
         }
     }
 }
+
+// Staging borrows the validated payload while owning its encoded copy. Keeping
+// this accessor private avoids a second externally constructible image format.
+type StagingNodeParts<'view, 'a> = (
+    &'view [GraphName<'a>],
+    &'view [GraphProperty<'a>],
+    Option<&'a str>,
+    Option<CanonicalEmbedding<'a>>,
+);
+impl<'a> CanonicalContents<'a> {
+    pub(super) fn staging_node_parts(&self) -> Option<StagingNodeParts<'_, 'a>> {
+        match &self.shape {
+            Shape::Node(labels) => Some((labels, self.properties, self.text, self.embedding)),
+            Shape::Relationship { .. } => None,
+        }
+    }
+}
+pub(super) fn encode_staging_value(
+    encoder: &mut Encoder<'_>,
+    value: PropertyData<'_>,
+) -> Result<(), CanonicalError> {
+    encode_value(encoder, value)
+}
+impl Encoder<'_> {
+    pub(super) fn staging_checkpoint(&mut self) -> Result<(), CanonicalError> {
+        (self.checkpoint)()?;
+        self.stats.checkpoints += 1;
+        Ok(())
+    }
+}
