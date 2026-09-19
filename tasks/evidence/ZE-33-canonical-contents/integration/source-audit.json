@@ -1,0 +1,10 @@
+{
+  "base_commit": "3b2e69ec6a0b8fe5116835f2274b6eb65c8a9ec4",
+  "candidate_commit": "2a5fff28fc600d37e54a05312d636d6fabd7a55b",
+  "modified_existing_production_files": [
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "tests/adversarial-oracle/src/lib.rs"
+  ],
+  "source_inventory": "/tmp/ze-33-evidence/source-hashes.sha256",
+  "all_source_hashes_match": true
+}

@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+
+thread 'canonical_property_order_and_labels_are_byte_exact' (32759959) panicked at crates/zeppelin-embed/tests/graph_canonical.rs:618:5:
+assertion `left == right` failed
+  left: [90, 71, 67, 73, 1, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 65, 2, 0, 0, 0, 0, 0, 0, 0, 195, 169, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 122, 3, 7, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 97, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 195, 169, 0, 0]
+ right: [90, 71, 67, 73, 1, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 65, 2, 0, 0, 0, 0, 0, 0, 0, 195, 169, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 97, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 195, 169, 1, 0, 0, 0, 0, 0, 0, 0, 122, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test canonical_property_order_and_labels_are_byte_exact ... FAILED
+
+failures:
+
+failures:
+    canonical_property_order_and_labels_are_byte_exact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_canonical`

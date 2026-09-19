@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.48s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+
+thread 'original_vector_bits_and_every_document_field_determine_contents' (32761467) panicked at crates/zeppelin-embed/tests/graph_canonical.rs:250:5:
+assertion `left != right` failed
+  left: [90, 71, 67, 73, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 100, 111, 99, 1, 0, 0, 0, 0, 0, 0, 0, 49, 1, 0, 0, 0, 0, 0, 0, 0, 66, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 0, 128]
+ right: [90, 71, 67, 73, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 100, 111, 99, 1, 0, 0, 0, 0, 0, 0, 0, 49, 1, 0, 0, 0, 0, 0, 0, 0, 66, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 0, 128]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test original_vector_bits_and_every_document_field_determine_contents ... FAILED
+
+failures:
+
+failures:
+    original_vector_bits_and_every_document_field_determine_contents
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_canonical`

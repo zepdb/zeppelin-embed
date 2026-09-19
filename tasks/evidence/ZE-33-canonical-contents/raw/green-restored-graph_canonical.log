@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.40s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 11 tests
+test canonical_property_order_and_labels_are_byte_exact ... ok
+test full_width_directed_relationships_text_and_unicode_are_distinct ... ok
+test replay_provenance_fields_are_versioned_and_never_defaulted ... ok
+test scalar_list_tags_and_float_payloads_have_literal_goldens ... ok
+test original_vector_bits_and_every_document_field_determine_contents ... ok
+test short_io_and_interrupted_reads_preserve_exact_streaming ... ok
+test stream_failures_cancellation_and_boundaries_fail_loudly ... ok
+test forced_hash_collision_requires_every_byte_and_relocated_sources_compare_equal ... ok
+test same_revision_replay_requires_contents_and_all_operation_fields ... ok
+test framing_is_charged_to_the_eight_mib_limit ... ok
+test seeded_property_permutation_is_an_equivalence_relation ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

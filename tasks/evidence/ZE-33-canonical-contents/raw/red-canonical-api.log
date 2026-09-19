@@ -1,0 +1,51 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling zerocopy v0.8.52
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling clap_lex v1.1.0
+   Compiling ciborium-io v0.2.2
+   Compiling anstyle v1.0.14
+   Compiling either v1.17.0
+   Compiling regex-automata v0.4.18
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling walkdir v2.5.0
+   Compiling tempfile v3.25.0
+   Compiling clap_builder v4.6.0
+   Compiling itertools v0.10.5
+   Compiling rusty-fork v0.3.1
+   Compiling criterion-plot v0.5.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling regex v1.13.1
+   Compiling clap v4.6.1
+   Compiling serde_json v1.0.151
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::CanonicalContents`, `zeppelin_embed::property_graph::CanonicalError`, `zeppelin_embed::property_graph::GraphProperty`
+ --> crates/zeppelin-embed/tests/graph_canonical.rs:4:5
+  |
+4 |     CanonicalContents, CanonicalError, GraphName, GraphProperty, PropertyData, PropertyValue,
+  |     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^             ^^^^^^^^^^^^^ no `GraphProperty` in `property_graph`
+  |     |                  |
+  |     |                  no `CanonicalError` in `property_graph`
+  |     no `CanonicalContents` in `property_graph`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_canonical") due to 1 previous error

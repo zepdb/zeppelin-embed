@@ -1,0 +1,11 @@
+{
+  "existing_report_files": 151,
+  "existing_denominators_changed": [],
+  "added_report_files": [
+    "/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed/src/property_graph/canonical.rs",
+    "/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed/src/property_graph/provenance.rs"
+  ],
+  "baseline_raw_profiles_preserved": 291,
+  "user_files_preserved": 45,
+  "source_or_profile_warnings": []
+}

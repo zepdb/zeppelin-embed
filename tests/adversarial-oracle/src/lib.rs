@@ -9,6 +9,7 @@
 pub mod diagnostics_health;
 pub mod ffi_bindings;
 pub mod fts;
+pub mod graph_contents;
 pub mod hybrid_fusion;
 pub mod ingest_retention;
 pub mod lifecycle_accounting;

@@ -1,0 +1,18 @@
+[
+  {
+    "filename": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed/src/property_graph/canonical.rs",
+    "lines": {
+      "count": 358,
+      "covered": 338,
+      "percent": 94.41340782122904
+    }
+  },
+  {
+    "filename": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed/src/property_graph/provenance.rs",
+    "lines": {
+      "count": 103,
+      "covered": 103,
+      "percent": 100.0
+    }
+  }
+]

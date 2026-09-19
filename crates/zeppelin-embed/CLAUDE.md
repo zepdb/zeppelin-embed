@@ -609,3 +609,28 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   path rules or normalization. Metadata lives outside the user property map.
 - Batch-local references carry an invariant callback scope; write APIs must
   retain that scope rather than accepting unbranded slot integers from Rust.
+
+## ZE-33: canonical graph contents and replay evidence
+
+- Canonical images describe logical contents, never physical references or
+  quantized search codes. Hash/length metadata only rejects mismatches; matching
+  metadata always requires exact lossless stream comparison. Storage owns
+  validated descriptors, bounded readers and leases across physical relocation.
+- Normalize borrowed descriptors in place: byte-sort names, deduplicate labels
+  and reject every duplicate property, even equal values. Preserve explicit
+  scalar/list tags, typed empties, all F64 payload bits, original finite F32
+  vector bits, full u128 endpoints, and absent-versus-present empty text.
+- Embedding contents borrow the complete existing document `EmbeddingTower`;
+  query-only tower/alignment changes do not change stored document interpretation.
+  Catalog compatibility is a later admission responsibility.
+- Admit at most 8 MiB including complete logical framing; bound supplied name
+  descriptors before sorting. Streaming emits chunks of at most 64 KiB. Exact
+  equality uses 2–65536 caller scratch bytes and allocates nothing, including its
+  own malformed-input errors. Caller-owned descriptors/backing values remain
+  charged to staging. Streaming/comparison poll cancellation between chunks.
+- Versioned `OperationProvenance` retains every installing-operation field,
+  including explicit preconditions and original changed generation. Missing or
+  unsupported versions fail; nothing is inferred. ZE-34 classifies lifecycle
+  legality; ZE-38/43 carry these logical records in durable envelopes/checkpoints.
+  The ZE-33 `ZGCI`/`ZGOP` logical image framing is not a persisted family decoder
+  and does not implement inventory, reclamation, publication or recovery.

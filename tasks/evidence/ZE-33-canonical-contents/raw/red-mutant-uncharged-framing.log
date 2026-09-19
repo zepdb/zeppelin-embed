@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+
+thread 'framing_is_charged_to_the_eight_mib_limit' (32762489) panicked at crates/zeppelin-embed/tests/graph_canonical.rs:570:5:
+assertion failed: matches!(CanonicalContents::node(&mut [], &mut [], Some(&too_large), None),
+    Err(CanonicalError::InputTooLarge))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test framing_is_charged_to_the_eight_mib_limit ... FAILED
+
+failures:
+
+failures:
+    framing_is_charged_to_the_eight_mib_limit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_canonical`

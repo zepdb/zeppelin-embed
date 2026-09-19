@@ -17,6 +17,16 @@ fn property_graph_domain_probe_preserves_primitive_contracts() {
     }
 }
 
+#[test]
+fn property_graph_contents_probe_preserves_exact_logical_equality() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_contents::probe(0, &mut coverage)
+        .expect("independent logical contents oracle");
+    for key in adversarial::graph_contents::REQUIRED_COVERAGE {
+        assert!(coverage.count(key) > 0, "missing graph contents case {key}");
+    }
+}
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{

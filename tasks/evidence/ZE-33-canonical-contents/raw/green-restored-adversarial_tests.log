@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.69s
+     Running adversarial_tests.rs (target/ze33/debug/deps/adversarial_tests-dc11412a44b91ab3)
+
+running 1 test
+test adversarial::graph_contents::canonical_oracle_rejects_changed_observations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 436 filtered out; finished in 0.01s
+

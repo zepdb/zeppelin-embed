@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.34s
+     Running unittests src/lib.rs (target/ze33-audit/debug/deps/zeppelin_embed-30128617a360998f)
+
+running 1 test
+
+thread 'property_graph::canonical::allocation_tests::malformed_stream_rejection_allocates_zero_bytes' (32755740) panicked at crates/zeppelin-embed/src/property_graph/canonical.rs:573:9:
+assertion `left == right` failed: malformed input must not allocate an uncharged error
+  left: 3
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test property_graph::canonical::allocation_tests::malformed_stream_rejection_allocates_zero_bytes ... FAILED
+
+failures:
+
+failures:
+    property_graph::canonical::allocation_tests::malformed_stream_rejection_allocates_zero_bytes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 584 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --lib`

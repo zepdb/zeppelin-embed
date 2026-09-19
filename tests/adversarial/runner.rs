@@ -2902,6 +2902,7 @@ fn run_program_for_with_clock(
     let mut violations = Vec::new();
     let mut coverage = CoverageRegistry::default();
     super::property_graph::probe(seed, &mut coverage)?;
+    super::graph_contents::probe(seed, &mut coverage)?;
     let mut oracle_records = Vec::<OracleRecord>::new();
     let mut control_records = Vec::<String>::new();
     let mut receipt_records = Vec::<String>::new();

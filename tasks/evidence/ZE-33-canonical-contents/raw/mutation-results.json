@@ -1,0 +1,192 @@
+[
+  {
+    "mutation": "property-order",
+    "test": "canonical_property_order_and_labels_are_byte_exact",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "canonical_property_order_and_labels_are_byte_exact",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-property-order.log"
+  },
+  {
+    "mutation": "duplicate-property",
+    "test": "canonical_property_order_and_labels_are_byte_exact",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "canonical_property_order_and_labels_are_byte_exact",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-duplicate-property.log"
+  },
+  {
+    "mutation": "signed-zero",
+    "test": "scalar_list_tags_and_float_payloads_have_literal_goldens",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "scalar_list_tags_and_float_payloads_have_literal_goldens",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-signed-zero.log"
+  },
+  {
+    "mutation": "vector-original-bits",
+    "test": "original_vector_bits_and_every_document_field_determine_contents",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "original_vector_bits_and_every_document_field_determine_contents",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-vector-original-bits.log"
+  },
+  {
+    "mutation": "hash-equality-shortcut",
+    "test": "forced_hash_collision_requires_every_byte_and_relocated_sources_compare_equal",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "forced_hash_collision_requires_every_byte_and_relocated_sources_compare_equal",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-hash-equality-shortcut.log"
+  },
+  {
+    "mutation": "uncharged-framing",
+    "test": "framing_is_charged_to_the_eight_mib_limit",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "framing_is_charged_to_the_eight_mib_limit",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-uncharged-framing.log"
+  },
+  {
+    "mutation": "ignored-cancellation",
+    "test": "stream_failures_cancellation_and_boundaries_fail_loudly",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "stream_failures_cancellation_and_boundaries_fail_loudly",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5",
+    "log": "/tmp/ze-33-evidence/red-mutant-ignored-cancellation.log"
+  },
+  {
+    "mutation": "provenance-generation",
+    "test": "replay_provenance_fields_are_versioned_and_never_defaulted",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "replay_provenance_fields_are_versioned_and_never_defaulted",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "73a58d443a626acd01e1462df03102c729ef314534917f253546c41b2e625d4e",
+    "log": "/tmp/ze-33-evidence/red-mutant-provenance-generation.log"
+  },
+  {
+    "mutation": "provenance-shortcut",
+    "test": "same_revision_replay_requires_contents_and_all_operation_fields",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_canonical",
+      "same_revision_replay_requires_contents_and_all_operation_fields",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "73a58d443a626acd01e1462df03102c729ef314534917f253546c41b2e625d4e",
+    "log": "/tmp/ze-33-evidence/red-mutant-provenance-shortcut.log"
+  },
+  {
+    "mutation": "oracle-cannot-fire",
+    "test": "adversarial::graph_contents::canonical_oracle_rejects_changed_observations",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "adversarial::graph_contents::canonical_oracle_rejects_changed_observations",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "restored_sha256": "2896e7a6398f838ec0be019879651284be7deec7835ee2c30473d645e8ee2ebc",
+    "log": "/tmp/ze-33-evidence/red-mutant-oracle-cannot-fire.log"
+  }
+]

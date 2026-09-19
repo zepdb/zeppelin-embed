@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.03s
+     Running unittests src/lib.rs (target/ze33-audit/debug/deps/zeppelin_embed-30128617a360998f)
+
+running 2 tests
+test property_graph::canonical::allocation_tests::malformed_stream_rejection_allocates_zero_bytes ... ok
+canonical_bytes=8388608 scratch_bytes=65536 allocator_calls=0 allocated_bytes=0
+test property_graph::canonical::allocation_tests::eight_mib_canonical_work_allocates_zero_bytes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 583 filtered out; finished in 0.03s
+

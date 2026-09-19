@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.74s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+
+thread 'replay_provenance_fields_are_versioned_and_never_defaulted' (32763495) panicked at crates/zeppelin-embed/tests/graph_canonical.rs:669:5:
+assertion `left == right` failed
+  left: [90, 71, 79, 80, 1, 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 110, 1, 0, 0, 0, 0, 0, 0, 0, 107, 7, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+ right: [90, 71, 79, 80, 1, 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 110, 1, 0, 0, 0, 0, 0, 0, 0, 107, 7, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test replay_provenance_fields_are_versioned_and_never_defaulted ... FAILED
+
+failures:
+
+failures:
+    replay_provenance_fields_are_versioned_and_never_defaulted
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_canonical`

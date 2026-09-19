@@ -1,0 +1,12 @@
+{
+  "commands.json": "806de1e94c50aeab4fc91ecff8f2d94e6886636a5b9bd9c849d9c59f6ca117d2",
+  "core-tests.log.gz": "cfe0e5079f93806a8783f5197124b31916cbd947b40fe07c0cd85cb1855e8766",
+  "integration-audit.json": "94ec65384775691ba858a67e1d9e7b8f79990d5c2cb4a247d1ed6e371531f694",
+  "oracle-coverage.json.gz": "23c81a1fd82373e4cc3809b0e955fddbb4bf1052ec969bb679ee07723864dd01",
+  "oracle-coverage.log.gz": "096330c059971cd5d4f3cc425cabeb48b7886f053b45ed32db2762c633e971b8",
+  "oracle-probe-tests.log.gz": "7dac28a9e30fb9ac25d670237a0bc4141f85845232390c746e78f9aa238aff4b",
+  "per-crate.json": "251718c829ec3ca92c826fe98a6c7d7fda1f470f6c151fd4a750ff1a22e14f4b",
+  "source-audit.json": "6afb1e7379162742b0214939f22d26dd39ee16eaedc8411541f59fc3304e35e6",
+  "workspace-coverage.json.gz": "92bc222ae50c4c8a06e9115135c46cf74465747a2bcd3eb6ef818dab92df08a0",
+  "workspace-coverage.log.gz": "b0439977732263f03d64c25ace88ee33aa461d4a22aa4436a835f9e9586d566d"
+}

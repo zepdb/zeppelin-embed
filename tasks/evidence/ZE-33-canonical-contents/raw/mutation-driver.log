@@ -1,0 +1,11 @@
+property-order: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+duplicate-property: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+signed-zero: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+vector-original-bits: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+hash-equality-shortcut: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+uncharged-framing: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+ignored-cancellation: intended RED exit101; restored 7d92f70e5616de43d0396192fdb680a045a907b7e247cecea65436e22143a6a5
+provenance-generation: intended RED exit101; restored 73a58d443a626acd01e1462df03102c729ef314534917f253546c41b2e625d4e
+provenance-shortcut: intended RED exit101; restored 73a58d443a626acd01e1462df03102c729ef314534917f253546c41b2e625d4e
+oracle-cannot-fire: intended RED exit101; restored 2896e7a6398f838ec0be019879651284be7deec7835ee2c30473d645e8ee2ebc
+all mutants restored; complete canonical suite and oracle can-fire GREEN

@@ -1,0 +1,20 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+
+thread 'stream_failures_cancellation_and_boundaries_fail_loudly' (32762995) panicked at crates/zeppelin-embed/tests/graph_canonical.rs:486:9:
+assertion failed: matches!(image.write_to(&mut io::sink(), &mut checkpoint),
+    Err(CanonicalError::Cancelled))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test stream_failures_cancellation_and_boundaries_fail_loudly ... FAILED
+
+failures:
+
+failures:
+    stream_failures_cancellation_and_boundaries_fail_loudly
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --test graph_canonical`

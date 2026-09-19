@@ -1,15 +1,27 @@
 //! Logical property-graph data. No physical row or vector membership is an identity.
 
+mod canonical;
 mod identity;
 mod local;
 mod names;
+mod provenance;
 mod values;
+
+pub use canonical::{
+    CanonicalComparison, CanonicalContents, CanonicalEmbedding, CanonicalError,
+    CanonicalFingerprint, CanonicalStats, GraphProperty, MAX_CANONICAL_SCRATCH,
+    compare_canonical_streams,
+};
 
 pub use identity::{
     EntityId, EntityKind, GraphGeneration, GraphRevision, NodeId, RelId, StoreInstanceId,
 };
 pub use local::{LocalNodeRef, LocalRefs, LocalRelRef, NodeRef, RelRef, with_local_refs};
 pub use names::{ApplicationKey, EntityMetadata, GraphName};
+pub use provenance::{
+    ExpectedGraphState, GraphDeleteMode, GraphOperation, OperationFields, OperationProvenance,
+    ReplayEvidence, compare_replay_evidence,
+};
 pub use values::{GraphVector, PropertyData, PropertyValue};
 
 /// Maximum canonical input bytes per graph statement/batch (ZE-102).

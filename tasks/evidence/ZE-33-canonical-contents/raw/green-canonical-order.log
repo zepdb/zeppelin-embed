@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-33/crates/zeppelin-embed)
+warning: method `stats` is never used
+   --> crates/zeppelin-embed/src/property_graph/canonical.rs:270:25
+    |
+252 | impl<'a> Encoder<'a> {
+    | -------------------- method in this implementation
+...
+270 |     pub(super) const fn stats(&self) -> CanonicalStats { self.stats }
+    |                         ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.08s
+     Running tests/graph_canonical.rs (target/ze33/debug/deps/graph_canonical-a01c8efdea41ce04)
+
+running 1 test
+test canonical_property_order_and_labels_are_byte_exact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
