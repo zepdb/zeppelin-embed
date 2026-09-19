@@ -121,6 +121,9 @@ pub mod graph_binding;
 pub mod graph_adjacency;
 
 #[cfg(feature = "graph-cypher")]
+pub mod graph_adjacency_store;
+
+#[cfg(feature = "graph-cypher")]
 pub mod graph_relational;
 
 #[cfg(feature = "graph-cypher")]

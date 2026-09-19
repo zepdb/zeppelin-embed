@@ -19174,3 +19174,11 @@ fn one_runner_episode_reaches_required_lowering_contracts() {
         outcome.violations.len()
     );
 }
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_adjacency_store_probe_reopens_actual_emitted_participant() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_adjacency_store::probe(133, &mut coverage)
+        .expect("PG18 actual native adjacency producer and oracle");
+}
