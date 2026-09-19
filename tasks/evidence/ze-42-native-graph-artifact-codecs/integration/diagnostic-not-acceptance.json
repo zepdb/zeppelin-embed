@@ -1,0 +1,8 @@
+{
+  "superseded_reports": [
+    "workspace-coverage.json",
+    "oracle-coverage.json",
+    "per-crate.json"
+  ],
+  "reason": "Older retained binaries mapped unchanged VFS functions at old source positions after inserted create_new methods, inflating source inventory (e.g. vfs/mod.rs394->511 lines for24 source lines added). No warning was emitted. Numerically passing totals are diagnostic only. Requalify all current workspace source in separate newly created target/ze42-clean-coverage with no imported old profiles."
+}

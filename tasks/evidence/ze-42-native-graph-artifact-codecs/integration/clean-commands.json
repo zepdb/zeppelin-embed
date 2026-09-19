@@ -1,0 +1,49 @@
+[
+  {
+    "name": "clean-ffi-tests",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "test",
+      "--no-report",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe,zeppelin-embed/test-support",
+      "--test",
+      "ffi_boundary_validation"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clean-workspace-coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "report",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)",
+      "--json",
+      "--output-path",
+      "/tmp/ze-42-integration/clean-workspace-coverage.json"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clean-oracle-coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "report",
+      "--no-default-ignore-filename-regex",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/|rustc/)|/\\.rustup/",
+      "--json",
+      "--output-path",
+      "/tmp/ze-42-integration/clean-oracle-coverage.json"
+    ],
+    "exit_code": 0
+  }
+]

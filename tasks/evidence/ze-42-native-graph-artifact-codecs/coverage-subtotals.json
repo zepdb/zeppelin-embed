@@ -1,0 +1,42 @@
+[
+  {
+    "file": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+    "lines": {
+      "count": 93,
+      "covered": 80,
+      "percent": 86.02150537634408
+    }
+  },
+  {
+    "file": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "lines": {
+      "count": 394,
+      "covered": 365,
+      "percent": 92.63959390862944
+    }
+  },
+  {
+    "file": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/crates/zeppelin-embed/src/property_graph/storage/tree.rs",
+    "lines": {
+      "count": 357,
+      "covered": 332,
+      "percent": 92.99719887955182
+    }
+  },
+  {
+    "file": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/tests/adversarial-oracle/src/property_graph_storage.rs",
+    "lines": {
+      "count": 35,
+      "covered": 35,
+      "percent": 100
+    }
+  },
+  {
+    "file": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/tests/adversarial/property_graph_storage.rs",
+    "lines": {
+      "count": 176,
+      "covered": 172,
+      "percent": 97.72727272727273
+    }
+  }
+]

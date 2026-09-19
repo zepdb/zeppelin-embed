@@ -634,3 +634,38 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   legality; ZE-38/43 carry these logical records in durable envelopes/checkpoints.
   The ZE-33 `ZGCI`/`ZGOP` logical image framing is not a persisted family decoder
   and does not implement inventory, reclamation, publication or recovery.
+
+## ZE-42: native graph artifact framing
+
+- Required format families 17 (`NativeGraphObject`) and 18
+  (`NativeGraphRoot`) use version 1. Existing families 1–16 are unchanged.
+  A root envelope contains exactly one nonempty `CheckpointPayload`; successful
+  framing validation does not admit a complete checkpoint or GraphStore.
+  Writes owns required logical roots, provenance/high-watermarks, and validation
+  before replay or cleanup. The read-only codec never repairs incompatible data.
+- Objects have a 96-byte header, contiguous 24-byte-header blocks, one ordered
+  24-byte directory entry per block, and an 8-byte whole-file checksum trailer.
+  The complete object, including all overhead, is at most 4 MiB. Block checksums
+  cover payload bytes; directory checksums copy them; the trailer covers every
+  preceding byte. References name entire framed blocks, never arbitrary record
+  extents. Store/artifact identities preserve all u128 bits.
+- Pages are 16 KiB with a 64-byte header, packed 8-byte slots, packed cells and
+  zero tail. A `FramedPage` validates geometry and descriptors only. ZE-43 must
+  resolve overflow keys and verify strict kind-specific ordering before routing.
+  Inline/overflow key descriptors and explicit final-child infinity are distinct.
+  Numeric comparators use full u128/u64 fields, never LE lexicographic order.
+- Key descriptor logical length includes the kind/namespace prefix and is at
+  most 8 MiB. Individual name/key constructor limits do not promise a whole
+  request fits: staging must charge key/provenance/framing and content together.
+  Overflow extent-list interpretation and streaming comparison remain ZE-43's.
+- Fresh store/object nonces use a fallible injected provider, with OS getentropy
+  on macOS/Linux and explicit Unsupported elsewhere. Graph platform qualification
+  is separate from legacy platform support. There is no timestamp/counter fallback.
+  `Vfs::create_new` must preserve existing bytes and return AlreadyExists; its
+  default is Unsupported, never a check followed by truncating write. Allocation
+  errors distinguish an unowned collision from a possibly partial failed create.
+  A reported attempted ID alone never grants cleanup ownership. Writes owns
+  sync/publication and recovery classification.
+- Exact layouts and reviewed tag assignments are recorded in
+  `tasks/evidence/ze-42-native-graph-artifact-codecs.md`; independent golden files
+  freeze bytes. No new dependency or foreign persisted format was introduced.

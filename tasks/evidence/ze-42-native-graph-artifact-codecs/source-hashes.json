@@ -1,0 +1,19 @@
+{
+  "crates/zeppelin-embed/src/property_graph/storage/artifact.rs": "8d7e4cff03a4349c96908d7e233fd067f794904bf9dedc70a0b2f5a4034cacf9",
+  "crates/zeppelin-embed/src/property_graph/storage/tree.rs": "2c52dec8a520d62e5e5a4040c3cb60730005697627a4e25bc2c11fc43b07c2c0",
+  "crates/zeppelin-embed/src/property_graph/storage/mod.rs": "cdd2e48f5142eefef96be53c4099defc04f49b31db08b67dc2f5802cb26fa923",
+  "crates/zeppelin-embed/src/property_graph/storage/allocation.rs": "d04d1e956223fd1af5f173618171fba991e2281cb6b74f085639d48478dad35c",
+  "crates/zeppelin-embed/src/format/mod.rs": "3e5dce05f281165d20e8b8dc587111030d094f434e86dbdfd6dae71b4ab15017",
+  "crates/zeppelin-embed/src/property_graph/mod.rs": "beb471a1cfeb05f780d41d04fa21bbd4e819aacfc51df270b538e3d503a4d4c5",
+  "crates/zeppelin-embed/src/vfs/mod.rs": "e09500b5eb05d39c8f5d662fa2903f74c815b74a107affda03510f6a83780c99",
+  "crates/zeppelin-embed/src/vfs/crash.rs": "c4c8574081f345e158b7f197a97ad1b05c05c9c43f3d2953b906005125c4980c",
+  "crates/zeppelin-embed/src/vfs/fault.rs": "73ca33224f2348c4add8374b6ce68755fcf6fa451ecef787d9cc5855bbfedf68",
+  "tests/adversarial-oracle/src/property_graph_storage.rs": "532c6d056c4a65b8dc90315d65e4425b04757b9e87942747b05d719797c11a04",
+  "tests/adversarial/property_graph_storage.rs": "f02f3d745ba9856279222307e83d33e63332bcae751e44a82925e280e4454835",
+  "tests/adversarial/fault_vfs.rs": "9a1ad32d016ac31b8974f09c4c53437df3719e60b0910b550ae1f5fd3618a9bc",
+  "tests/adversarial/coverage.rs": "3d7332f74501c331396e615186a89b07f60814f5665644d524d0514351ea6893",
+  "tests/adversarial/runner.rs": "0ab9bc2200e6386a7b874e90c135d66d2b925a60f2b4938a868cf0ae174ca17b",
+  "tests/adversarial_tests.rs": "5c0132bea12fdb5acbcc4f88c56eaa00ca2d02cc68b4030c4b2e061858e76ac8",
+  "crates/zeppelin-embed/tests/graph_artifact.rs": "619e5c1e58d336bdb722f3c49ff01802f82d381f57a780cdc5e0b841d726bdca",
+  "fuzz/fuzz_targets/native_graph_artifact.rs": "6ea1d653dd09172279667371c25208dd7231ff76f411d1a27efee820e8d45d21"
+}

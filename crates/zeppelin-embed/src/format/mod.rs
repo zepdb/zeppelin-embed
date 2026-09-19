@@ -39,6 +39,10 @@ pub enum FormatFamily {
     PurgeIntent = 15,
     /// Dense optional UTF-8 source text aligned to sealed rows.
     StoredText = 16,
+    /// Required immutable native property-graph object containers.
+    NativeGraphObject = 17,
+    /// Required graph root envelopes; logical checkpoint admission is separate.
+    NativeGraphRoot = 18,
 }
 
 impl FormatFamily {
@@ -65,7 +69,9 @@ impl FormatFamily {
             | Self::DocumentVersions
             | Self::StoredMetadata
             | Self::PurgeIntent
-            | Self::StoredText => 1,
+            | Self::StoredText
+            | Self::NativeGraphObject
+            | Self::NativeGraphRoot => 1,
         }
     }
 }
@@ -136,7 +142,7 @@ impl std::error::Error for RegistryError {}
 /// Static registry for every persisted family and quantization identifier.
 pub struct FormatRegistry;
 
-const FAMILIES: [FamilySpec; 16] = [
+const FAMILIES: [FamilySpec; 18] = [
     FamilySpec {
         family: FormatFamily::Frame,
         current_version: 1,
@@ -229,6 +235,18 @@ const FAMILIES: [FamilySpec; 16] = [
     },
     FamilySpec {
         family: FormatFamily::StoredText,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::NativeGraphObject,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::NativeGraphRoot,
         current_version: 1,
         minimum_accepted_version: 1,
         maximum_accepted_version: 1,

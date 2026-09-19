@@ -69,6 +69,16 @@ pub trait Vfs: Send + Sync {
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>>;
     /// Creates or truncates a file and writes all bytes.
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Exclusively creates a file and writes every byte without replacing any
+    /// existing path. A failed write may leave a new partial file; callers must
+    /// retain it as an uncommitted artifact until safe cleanup is established.
+    /// Filesystems without atomic exclusive creation fail explicitly.
+    fn create_new(&self, _path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "VFS does not support exclusive file creation",
+        ))
+    }
     /// Opens or creates one file for handle-oriented append-only writes.
     fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>>;
     /// Atomically renames one path over another according to platform semantics.
@@ -113,6 +123,11 @@ impl VfsFile for StdVfsFile {
 }
 
 impl Vfs for StdVfs {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+        file.write_all(bytes)
+    }
+
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         if create {
             std::fs::create_dir_all(path)?;
@@ -414,6 +429,15 @@ impl<V> CountingVfs<V> {
 }
 
 impl<V: Vfs> Vfs for CountingVfs<V> {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.create_new(path, bytes)?;
+        self.counters.write_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .bytes_written
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
         Some(Arc::clone(&self.counters.segment_bytes_read))
     }

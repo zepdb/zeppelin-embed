@@ -1,0 +1,68 @@
+[
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+    "old": null,
+    "new": {
+      "count": 93,
+      "covered": 80,
+      "percent": 86.02150537634408
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "old": null,
+    "new": {
+      "count": 394,
+      "covered": 365,
+      "percent": 92.63959390862944
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/tree.rs",
+    "old": null,
+    "new": {
+      "count": 357,
+      "covered": 332,
+      "percent": 92.99719887955182
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed/src/vfs/crash.rs",
+    "old": {
+      "count": 1450,
+      "covered": 1325,
+      "percent": 91.37931034482759
+    },
+    "new": {
+      "count": 1532,
+      "covered": 1354,
+      "percent": 88.38120104438643
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed/src/vfs/fault.rs",
+    "old": {
+      "count": 404,
+      "covered": 364,
+      "percent": 90.0990099009901
+    },
+    "new": {
+      "count": 445,
+      "covered": 384,
+      "percent": 86.29213483146067
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed/src/vfs/mod.rs",
+    "old": {
+      "count": 394,
+      "covered": 371,
+      "percent": 94.16243654822335
+    },
+    "new": {
+      "count": 511,
+      "covered": 408,
+      "percent": 79.84344422700586
+    }
+  }
+]

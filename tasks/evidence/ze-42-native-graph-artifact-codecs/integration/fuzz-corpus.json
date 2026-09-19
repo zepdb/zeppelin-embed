@@ -1,0 +1,32 @@
+[
+  {
+    "seed": "fuzz/corpus/native_graph_artifact/native_graph_inline_page_v1",
+    "source": "crates/zeppelin-embed/tests/fixtures/format/native_graph_inline_page_v1.hex",
+    "bytes": 16384,
+    "sha256": "10e4e81daedb92d95d5508c163654e1abf11b390952114f3bc89cd575c07e3a7"
+  },
+  {
+    "seed": "fuzz/corpus/native_graph_artifact/native_graph_object_v1",
+    "source": "crates/zeppelin-embed/tests/fixtures/format/native_graph_object_v1.hex",
+    "bytes": 221,
+    "sha256": "80060b95067e990812f9631dfbeba42fd8ff6d0e6a55f0be7646f45ce429a1ff"
+  },
+  {
+    "seed": "fuzz/corpus/native_graph_artifact/native_graph_overflow_branch_v1",
+    "source": "crates/zeppelin-embed/tests/fixtures/format/native_graph_overflow_branch_v1.hex",
+    "bytes": 16384,
+    "sha256": "380cfac0142490c641f908825a313f82ab3227d66fd451813fa701426a6ee0c3"
+  },
+  {
+    "seed": "fuzz/corpus/native_graph_artifact/native_graph_reference_v1",
+    "source": "crates/zeppelin-embed/tests/fixtures/format/native_graph_reference_v1.hex",
+    "bytes": 32,
+    "sha256": "93edb1a408c2f15967e8f4673c23a6d96bbf812921cefccff335c4a1f605a4d2"
+  },
+  {
+    "seed": "fuzz/corpus/native_graph_artifact/native_graph_root_envelope_v1",
+    "source": "crates/zeppelin-embed/tests/fixtures/format/native_graph_root_envelope_v1.hex",
+    "bytes": 175,
+    "sha256": "65c475b28147b6c1246cfb158ca3fef53339ada74ba5991228fc738385c1fb09"
+  }
+]

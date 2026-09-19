@@ -87,6 +87,18 @@ impl VfsFile for FaultVfsFile {
 }
 
 impl Vfs for FaultVfs {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut state = self.lock_state()?;
+        if state.visible.contains_key(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "object exists",
+            ));
+        }
+        state.visible.insert(path.to_path_buf(), bytes.to_vec());
+        Ok(())
+    }
+
     fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
         Ok(true)
     }
@@ -366,6 +378,10 @@ impl VfsFile for BlockingVfsFile {
 }
 
 impl<V: Vfs> Vfs for BlockingVfs<V> {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.create_new(path, bytes)
+    }
+
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         self.inner.ensure_directory(path, create)
     }

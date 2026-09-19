@@ -1,0 +1,16 @@
+[
+  "/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-cov",
+  "export",
+  "-format=text",
+  "-instr-profile=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-42/target/llvm-cov-target/zeppelin-embed-wt-ze-42.profdata",
+  "-object",
+  "target/llvm-cov-target/debug/deps/adversarial_tests-06681511d8c1b23e",
+  "-object",
+  "target/llvm-cov-target/debug/deps/adversarial_tests-dc11412a44b91ab3",
+  "-object",
+  "target/llvm-cov-target/debug/deps/format_golden-91c9df32ffe70f72",
+  "-object",
+  "target/llvm-cov-target/debug/deps/graph_artifact-ce42e6f0e48f2f3f",
+  "-ignore-filename-regex",
+  "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)|/rustc/|/\\.rustup/"
+]

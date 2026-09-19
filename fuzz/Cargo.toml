@@ -116,3 +116,10 @@ path = "fuzz_targets/cypher_parser.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_graph_artifact"
+path = "fuzz_targets/native_graph_artifact.rs"
+test = false
+doc = false
+bench = false

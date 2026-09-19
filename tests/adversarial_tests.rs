@@ -27,6 +27,18 @@ fn property_graph_contents_probe_preserves_exact_logical_equality() {
     }
 }
 
+#[test]
+fn property_graph_artifact_probe_preserves_preparation_and_reopen_contracts() {
+    for seed in [0, 1, 42, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::property_graph_storage::probe(seed, &mut coverage)
+            .expect("independent graph artifact oracle");
+        for key in adversarial::property_graph_storage::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "missing graph artifact case {key}");
+        }
+    }
+}
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -8123,6 +8135,13 @@ fn one_episode_records_successful_public_path_coverage() {
         outcome.coverage.count("store.hybrid_search") > 0,
         "Store hybrid path was not registered"
     );
+    for key in adversarial::property_graph_storage::REQUIRED_COVERAGE {
+        assert_eq!(
+            outcome.coverage.count(key),
+            1,
+            "missing artifact runner coverage {key}"
+        );
+    }
     assert!(
         !outcome.coverage_bytes.is_empty(),
         "coverage artifact is empty"

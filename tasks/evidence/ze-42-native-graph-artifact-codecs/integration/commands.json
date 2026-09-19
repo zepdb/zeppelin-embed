@@ -1,0 +1,104 @@
+[
+  {
+    "name": "core-tests",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "test",
+      "--no-report",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "test-support",
+      "--test",
+      "graph_artifact",
+      "--test",
+      "format_golden"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "oracle-probe-tests",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "test",
+      "--no-report",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "property_graph",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "runner-coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "test",
+      "--no-report",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "one_episode_records_successful_public_path_coverage",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "combined-smoke",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "test",
+      "--no-report",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "report",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)",
+      "--json",
+      "--output-path",
+      "/tmp/ze-42-integration/workspace-coverage.json"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "oracle-coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "report",
+      "--no-default-ignore-filename-regex",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/|rustc/)|/\\.rustup/",
+      "--json",
+      "--output-path",
+      "/tmp/ze-42-integration/oracle-coverage.json"
+    ],
+    "exit_code": 0
+  }
+]

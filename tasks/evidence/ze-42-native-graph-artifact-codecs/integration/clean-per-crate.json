@@ -1,0 +1,37 @@
+{
+  "zeppelin-embed": {
+    "covered": 63617,
+    "count": 70533,
+    "files": 134,
+    "percent": 90.1946606552961,
+    "passes_90": true
+  },
+  "zeppelin-embed-cypher": {
+    "covered": 1514,
+    "count": 1554,
+    "files": 5,
+    "percent": 97.42599742599742,
+    "passes_90": true
+  },
+  "zeppelin-embed-ffi": {
+    "covered": 3484,
+    "count": 3867,
+    "files": 5,
+    "percent": 90.09568140677528,
+    "passes_90": true
+  },
+  "zeppelin-embed-text": {
+    "covered": 3245,
+    "count": 3550,
+    "files": 12,
+    "percent": 91.40845070422536,
+    "passes_90": true
+  },
+  "zeppelin-embed-adversarial-oracle": {
+    "covered": 14770,
+    "count": 16322,
+    "files": 15,
+    "percent": 90.4913613527754,
+    "passes_90": true
+  }
+}

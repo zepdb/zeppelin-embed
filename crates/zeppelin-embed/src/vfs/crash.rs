@@ -268,6 +268,18 @@ impl<V> RecordingVfs<V> {
 }
 
 impl<V: Vfs> Vfs for RecordingVfs<V> {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.create_new(path, bytes)?;
+        // Only successful exclusive creations enter the byte-operation history.
+        // Collision failures cannot become a replayable overwrite.
+        operations.push(CrashOperation::Write {
+            path: path.to_path_buf(),
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
+
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         self.inner.ensure_directory(path, create)
     }
@@ -423,6 +435,18 @@ impl VfsFile for MemoryVfsFile {
 }
 
 impl Vfs for MemoryVfs {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut files = self.lock_files()?;
+        if files.contains_key(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "object exists",
+            ));
+        }
+        files.insert(path.to_path_buf(), bytes.to_vec());
+        Ok(())
+    }
+
     fn ensure_directory(&self, _: &Path, _: bool) -> std::io::Result<bool> {
         Ok(true)
     }
@@ -847,6 +871,18 @@ impl CrashVfs {
 }
 
 impl Vfs for CrashVfs {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut operations = self.lock_operations()?;
+        self.inner.create_new(path, bytes)?;
+        // Only successful exclusive creations enter the byte-operation history.
+        // Collision failures cannot become a replayable overwrite.
+        operations.push(CrashOperation::Write {
+            path: path.to_path_buf(),
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
+
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         self.inner.ensure_directory(path, create)
     }

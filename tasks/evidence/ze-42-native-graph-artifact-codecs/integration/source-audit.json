@@ -1,0 +1,24 @@
+{
+  "base_commit": "a3e093348ba03e42218613bda598daf2c2c061b2",
+  "candidate_commit": "a0b240c88668028d88fd56a5d8f5ce8d214d847b",
+  "modified_existing_production_files": [
+    "crates/zeppelin-embed/src/format/mod.rs",
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "crates/zeppelin-embed/src/vfs/crash.rs",
+    "crates/zeppelin-embed/src/vfs/fault.rs",
+    "crates/zeppelin-embed/src/vfs/mod.rs",
+    "tests/adversarial-oracle/src/lib.rs"
+  ],
+  "source_inventory": "tasks/evidence/ze-42-native-graph-artifact-codecs/source-hashes.json",
+  "source_inventory_differences": [
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "tests/adversarial/coverage.rs",
+    "tests/adversarial/runner.rs",
+    "tests/adversarial_tests.rs",
+    "fuzz/fuzz_targets/native_graph_artifact.rs"
+  ],
+  "root_tooling_changes": {
+    "fuzz/fuzz_targets/native_graph_artifact.rs": "979ccd7355811be452b19b361c1395b8953f1a7f0d0784c2370e9b91baf4e05f"
+  },
+  "other_source_hashes_match": true
+}

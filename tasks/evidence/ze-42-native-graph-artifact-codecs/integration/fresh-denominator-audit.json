@@ -1,0 +1,112 @@
+{
+  "baseline": "ZE33 actual accepted main report",
+  "fresh_empty_target": "target/ze42-clean-coverage",
+  "old_production_files": 153,
+  "fresh_production_files": 156,
+  "missing_files": [],
+  "new_files": [
+    "crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "crates/zeppelin-embed/src/property_graph/storage/tree.rs"
+  ],
+  "denominator_changes": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/allocation.rs",
+      "ze33": null,
+      "fresh_ze42": {
+        "count": 93,
+        "covered": 80,
+        "percent": 86.02150537634408
+      },
+      "rejected_stale": {
+        "count": 93,
+        "covered": 80,
+        "percent": 86.02150537634408
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+      "ze33": null,
+      "fresh_ze42": {
+        "count": 394,
+        "covered": 365,
+        "percent": 92.63959390862944
+      },
+      "rejected_stale": {
+        "count": 394,
+        "covered": 365,
+        "percent": 92.63959390862944
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree.rs",
+      "ze33": null,
+      "fresh_ze42": {
+        "count": 357,
+        "covered": 332,
+        "percent": 92.99719887955182
+      },
+      "rejected_stale": {
+        "count": 357,
+        "covered": 332,
+        "percent": 92.99719887955182
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/vfs/crash.rs",
+      "ze33": {
+        "count": 1450,
+        "covered": 1325,
+        "percent": 91.37931034482759
+      },
+      "fresh_ze42": {
+        "count": 1479,
+        "covered": 1354,
+        "percent": 91.54834347532116
+      },
+      "rejected_stale": {
+        "count": 1532,
+        "covered": 1354,
+        "percent": 88.38120104438643
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/vfs/fault.rs",
+      "ze33": {
+        "count": 404,
+        "covered": 364,
+        "percent": 90.0990099009901
+      },
+      "fresh_ze42": {
+        "count": 418,
+        "covered": 378,
+        "percent": 90.43062200956938
+      },
+      "rejected_stale": {
+        "count": 445,
+        "covered": 384,
+        "percent": 86.29213483146067
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/vfs/mod.rs",
+      "ze33": {
+        "count": 394,
+        "covered": 371,
+        "percent": 94.16243654822335
+      },
+      "fresh_ze42": {
+        "count": 412,
+        "covered": 383,
+        "percent": 92.96116504854369
+      },
+      "rejected_stale": {
+        "count": 511,
+        "covered": 408,
+        "percent": 79.84344422700586
+      }
+    }
+  ],
+  "coverage_export_warnings": false,
+  "method": "Full current-source workspace execution plus FFI boundary feature tests. No old profile imports, no denominator adjustments or production source exclusions."
+}

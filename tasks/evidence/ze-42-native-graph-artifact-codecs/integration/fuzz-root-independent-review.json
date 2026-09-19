@@ -1,0 +1,44 @@
+{
+  "reviewer": "ze54_parser",
+  "scope": "Read-only review of root fuzz harness extension versus worker commit 96165a6; checksum codec layouts inspected only to validate the tooling diff. No tests/builds, source edits, tracker changes or new worktree.",
+  "reviewed_files": {
+    "fuzz/fuzz_targets/native_graph_artifact.rs": {
+      "sha256": "979ccd7355811be452b19b361c1395b8953f1a7f0d0784c2370e9b91baf4e05f",
+      "worker_sha256": "6ea1d653dd09172279667371c25208dd7231ff76f411d1a27efee820e8d45d21",
+      "unchanged_from_worker": false
+    },
+    "crates/zeppelin-embed/src/property_graph/storage/artifact.rs": {
+      "sha256": "8d7e4cff03a4349c96908d7e233fd067f794904bf9dedc70a0b2f5a4034cacf9",
+      "worker_sha256": "8d7e4cff03a4349c96908d7e233fd067f794904bf9dedc70a0b2f5a4034cacf9",
+      "unchanged_from_worker": true
+    },
+    "crates/zeppelin-embed/src/property_graph/storage/tree.rs": {
+      "sha256": "2c52dec8a520d62e5e5a4040c3cb60730005697627a4e25bc2c11fc43b07c2c0",
+      "worker_sha256": "2c52dec8a520d62e5e5a4040c3cb60730005697627a4e25bc2c11fc43b07c2c0",
+      "unchanged_from_worker": true
+    },
+    "fuzz/Cargo.toml": {
+      "sha256": "d49bb7caff8f32180fcd6e1d46ed2ccbc674b402935d01907bc36ab63eb86e59",
+      "worker_sha256": "d49bb7caff8f32180fcd6e1d46ed2ccbc674b402935d01907bc36ab63eb86e59",
+      "unchanged_from_worker": true
+    },
+    "fuzz/Cargo.lock": {
+      "sha256": "a9089057c4bd7e4fc676562d94c7e2109a23f39724da66ec26608ac2a671eb6d",
+      "worker_sha256": "a9089057c4bd7e4fc676562d94c7e2109a23f39724da66ec26608ac2a671eb6d",
+      "unchanged_from_worker": true
+    }
+  },
+  "findings": [],
+  "conclusion": "No concrete finding in the reviewed tooling diff.",
+  "checks": [
+    "The original inspect body is retained and called on the original immutable input before either repair; both container families, raw reference decoder and all eight tree kinds remain exercised.",
+    "Artifact lane admits len>=8 via checked_sub, hashes exactly bytes[..len-8] with unseeded xxh3_64, writes little-endian final eight bytes, and calls unchanged validators. This matches artifact encode/decode; it does not repair payload/block/directory checksums.",
+    "Page lane runs only for PAGE_BYTES=16384, starts from original data, zeroes bytes56..64, hashes the whole page with unseeded xxh3_64, then stores the little-endian checksum at56..64. This matches tree encode/decode, including zeroed-field hashing.",
+    "The 4MiB input admission precedes all work/allocation. One repaired Vec is live at a time, with <=4MiB allocation; the page copy is exactly16KiB. No recursive repair or unbounded extension is introduced. Existing bounded reference/cell iteration is unchanged; at most three inspect passes occur.",
+    "Both production validator files and fuzz Cargo manifest/lock are byte-identical to worker commit; xxhash-rust was already present in the excluded fuzz workspace.",
+    "All five named golden corpus seeds still match recorded lengths and SHA256. Existing run log confirms seed8769747 and1408076 executions in61seconds."
+  ],
+  "limits": "Source review and inspection of existing run evidence only; no independent rerun. The recorded max_len32768 campaign does not cover every admitted4MiB input or cross-platform behavior. Existing resolve_framed_block search complexity and production validator implementation are outside this tooling-diff review.",
+  "reviewed_run_log_sha256": "97b7b5046cc66bfdb40ec0189e368e402c9cc9ce726a1319735cdd23015c7a36",
+  "reviewed_seed_manifest_sha256": "78f6ca7c1a1f3bfc809b0fe7ead55f1caa16cbd7559a4c0fcd659675fb950337"
+}

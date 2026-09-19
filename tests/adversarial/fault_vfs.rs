@@ -457,6 +457,12 @@ impl<V: Vfs> VfsFile for SimulatedCrashFile<V> {
 }
 
 impl<V: Vfs + 'static> Vfs for SimulatedCrashVfs<V> {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.check_live()?;
+        self.track_file(path)?;
+        self.inner.create_new(path, bytes)
+    }
+
     fn segment_data_read_counter(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
         self.inner.segment_data_read_counter()
     }
@@ -709,6 +715,10 @@ impl VfsFile for ProcessCrashFile {
 }
 
 impl Vfs for ProcessCrashVfs {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.create_new(path, bytes)
+    }
+
     fn segment_data_read_counter(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
         self.inner.segment_data_read_counter()
     }
@@ -1446,6 +1456,26 @@ impl VfsFile for ScheduledFile {
 }
 
 impl<V: Vfs> Vfs for ScheduledVfs<V> {
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        match self.action(FaultSite::Write, path)? {
+            Some(FaultMode::Crash) => {
+                self.inner.create_new(path, bytes)?;
+                self.crash_now()?;
+                Err(simulated_crash_error())
+            }
+            Some(FaultMode::SilentDrop) => Ok(()),
+            Some(FaultMode::MisdirectedWrite) => self
+                .inner
+                .create_new(&path.with_extension("misdirected"), bytes),
+            Some(FaultMode::PostCommitError) => {
+                self.inner.create_new(path, bytes)?;
+                Err(std::io::Error::other("scheduled post-create error"))
+            }
+            Some(mode) => self.inner.create_new(path, &self.transform(mode, bytes)),
+            None => self.inner.create_new(path, bytes),
+        }
+    }
+
     fn segment_data_read_counter(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
         self.inner.segment_data_read_counter()
     }

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "llvm-cov",
+    "test",
+    "--workspace",
+    "--no-report"
+  ],
+  "environment": {
+    "CARGO_LLVM_COV_TARGET_DIR": "target/ze42-clean-coverage"
+  },
+  "exit_code": 0,
+  "log": "clean-workspace.log",
+  "adversarial": {
+    "passed": 428,
+    "failed": 0,
+    "ignored": 11,
+    "seconds": 2438.68
+  },
+  "source_inventory": "clean-source-inventory.json",
+  "fresh_empty_target": true
+}

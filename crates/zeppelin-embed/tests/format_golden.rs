@@ -395,12 +395,14 @@ fn format_every_registered_family_and_edge_shape_matches_checked_in_golden() {
         fixture(include_str!("fixtures/format/postings_reserved_v1.hex")),
         Vec::<u8>::new()
     );
-    assert_eq!(FormatRegistry::families().len(), 16);
+    assert_eq!(FormatRegistry::families().len(), 18);
     assert_eq!(FormatFamily::Wal.id(), 11);
     assert_eq!(FormatFamily::DocumentVersions.id(), 13);
     assert_eq!(FormatFamily::StoredMetadata.id(), 14);
     assert_eq!(FormatFamily::PurgeIntent.id(), 15);
     assert_eq!(FormatFamily::StoredText.id(), 16);
+    assert_eq!(FormatFamily::NativeGraphObject.id(), 17);
+    assert_eq!(FormatFamily::NativeGraphRoot.id(), 18);
     assert_eq!(RegionKind::StoredText.id(), 14);
     assert_eq!(
         FormatRegistry::require(FormatFamily::Wal.id(), 1)

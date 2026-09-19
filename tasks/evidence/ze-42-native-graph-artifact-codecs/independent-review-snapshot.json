@@ -1,0 +1,10 @@
+{
+  "reviewer": "/root/ze32_review",
+  "result": "No concrete source/test finding in bounded artifact/tree/allocation/VFS review. No builds or edits. Later oracle/runner/test changes qualified separately.",
+  "sha256": {
+    "artifact.rs": "8d7e4cff03a4349c96908d7e233fd067f794904bf9dedc70a0b2f5a4034cacf9",
+    "tree.rs": "2c52dec8a520d62e5e5a4040c3cb60730005697627a4e25bc2c11fc43b07c2c0",
+    "allocation.rs": "d04d1e956223fd1af5f173618171fba991e2281cb6b74f085639d48478dad35c",
+    "graph_artifact.rs": "981de3d9efcae15d39498e54d42299c5e65792f9673a64c0d03944b223bc5ca1"
+  }
+}

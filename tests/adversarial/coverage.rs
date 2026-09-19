@@ -2,6 +2,13 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.artifact.clean",
+    "property-graph.artifact.collision",
+    "property-graph.artifact.entropy",
+    "property-graph.artifact.before-create",
+    "property-graph.artifact.after-create",
+    "property-graph.artifact.torn",
+    "property-graph.artifact.bit-flip",
     "property-graph.domain.zero",
     "property-graph.domain.full-width",
     "property-graph.domain.maximum",

@@ -13,6 +13,9 @@ pub use canonical::{
     compare_canonical_streams,
 };
 
+/// Immutable native graph artifact and page framing.
+pub mod storage;
+
 pub use identity::{
     EntityId, EntityKind, GraphGeneration, GraphRevision, NodeId, RelId, StoreInstanceId,
 };

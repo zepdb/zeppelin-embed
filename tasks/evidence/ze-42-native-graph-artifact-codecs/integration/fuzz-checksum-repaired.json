@@ -1,0 +1,27 @@
+{
+  "command": [
+    "cargo",
+    "fuzz",
+    "run",
+    "native_graph_artifact",
+    "--",
+    "-max_total_time=60",
+    "-max_len=32768"
+  ],
+  "exit_code": 0,
+  "seed": 8769747,
+  "executions": 1408076,
+  "seconds": 61,
+  "initial_seed_manifest": "fuzz-corpus.json",
+  "initial_seed_count": 5,
+  "raw_input_lane_retained": true,
+  "additional_lanes": [
+    "enclosing artifact trailer xxh3 repaired; block checksums remain independent",
+    "16KiB page checksum field zeroed and whole page checksum repaired"
+  ],
+  "source_hashes": {
+    "fuzz/fuzz_targets/native_graph_artifact.rs": "979ccd7355811be452b19b361c1395b8953f1a7f0d0784c2370e9b91baf4e05f"
+  },
+  "production_source_changed": false,
+  "limitation": "Bounded native current-host parser smoke, not exhaustive4MiB inputs or cross-platform qualification. Coverage counters include a changed harness and are not a direct percentage comparison with the worker run."
+}

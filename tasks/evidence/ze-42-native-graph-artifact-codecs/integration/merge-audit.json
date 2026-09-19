@@ -1,0 +1,50 @@
+{
+  "source_commit": "96165a6da3c446ff982eda8f2e1f3cc1a44c6d31",
+  "main_candidate": "a0b240c88668028d88fd56a5d8f5ce8d214d847b",
+  "legacy_goldens_unchanged": 46,
+  "reviewed_shared_files": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/mod.rs",
+      "base_sha256": "8056a2a8b6956ed39a1344b40f88c178d25cd5230370e133f7bcad293082661c",
+      "worker_sha256": "beb471a1cfeb05f780d41d04fa21bbd4e819aacfc51df270b538e3d503a4d4c5",
+      "main_sha256": "09ccc36b8bb745491e07c4df40f3e1e8c526b03f65a1dfb580665241a9ec908a"
+    },
+    {
+      "path": "tests/adversarial-oracle/src/lib.rs",
+      "base_sha256": "d1f4b8b5584b6312aedf9c1e8fd4832bc4fea0686b33c5a14b601065469f4bb9",
+      "worker_sha256": "afe12f0eb550d36a933b84a9c89bdb3e0ae999703cc3c30fcd6679d7ad4fb845",
+      "main_sha256": "cd5742bb0123b6092e143c138e07ce3518f44278cd9e75502b5a8fecc51ec569"
+    },
+    {
+      "path": "tests/adversarial/runner.rs",
+      "base_sha256": "3837d26ad521c35dda6d94d6e85567d24da5c25552c2ca19aeecf95a97f7b931",
+      "worker_sha256": "0ab9bc2200e6386a7b874e90c135d66d2b925a60f2b4938a868cf0ae174ca17b",
+      "main_sha256": "639c984ef1066cdd9ac087e1a92807166dabb8067bc3bc62ac524c4adb19f305"
+    },
+    {
+      "path": "tests/adversarial/mod.rs",
+      "base_sha256": "5af9f19d66c32fe10446d49656b1de42cb4dc034e68e269dc9aa4acaece880db",
+      "worker_sha256": "61f77b158f54b60df4b4767e7f5ee9e214cbf1c97f52c10ad0a2d601c6a526c3",
+      "main_sha256": "f2dd93616d3df9c17ac7bca230bd86050af21caa5f1bf6f4c1d9261ea1f2f01a"
+    },
+    {
+      "path": "tests/adversarial/coverage.rs",
+      "base_sha256": "0370670a2f2b7533799e4f6cc7c8fb4aa1ad62fe314f08976385bdc808f496de",
+      "worker_sha256": "3d7332f74501c331396e615186a89b07f60814f5665644d524d0514351ea6893",
+      "main_sha256": "5d07ec60e137d222cc56f12d99fa44a513fc30037ec39b2e43b9aabf02f63d7a"
+    },
+    {
+      "path": "tests/adversarial_tests.rs",
+      "base_sha256": "3b5bfa54d98d940dae1ff91a59c78c380eecad7a15d74777f313fa950b8a3427",
+      "worker_sha256": "5c0132bea12fdb5acbcc4f88c56eaa00ca2d02cc68b4030c4b2e061858e76ac8",
+      "main_sha256": "77cfa6e4ed595d272180f59989a8b8f610b4e1094657df77bf9b8919eff7aa33"
+    },
+    {
+      "path": "crates/zeppelin-embed/CLAUDE.md",
+      "base_sha256": "4e19bbab3f2ce80b75274084db3360115030dff6c0bacf53c0feb386b9d2da69",
+      "worker_sha256": "d0e9fc12e3feef5816fff3396f75c1981c272b552d547b927ece108b17b6893c",
+      "main_sha256": "49deb7d5f1ed38ce750725b832cbf241303388a8045f292bf7ed91fa94cee9ce"
+    }
+  ],
+  "merge_policy": "Both ZE33 canonical and ZE42 storage module/runner/oracle/test/documentation additions retained. Combined actual runner and224episode smoke passed."
+}

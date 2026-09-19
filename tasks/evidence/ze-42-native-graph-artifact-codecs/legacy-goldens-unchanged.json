@@ -1,0 +1,186 @@
+[
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/alive_one_v1.hex",
+    "sha256": "a50c14e708bec10726e345ee0eab44c89a9dff4afb01c2003d11e7afd201c715"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/alive_zero_v1.hex",
+    "sha256": "b1e74676141c99cb63d241a9217e64329de2f73a09e02875f00c97069f0ac916"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/checksum_table_zero_v1.hex",
+    "sha256": "bb3c6e861adc1358fbb391bdcb552ac60916dec75f4a36d182f9d5c07e69e12d"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/columns_one_v1.hex",
+    "sha256": "1f0cac8d13037fff77485da8fc5fb9fb3d2a52a4bf8b2b4b863cd4ca54cab5a3"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/columns_zero_v1.hex",
+    "sha256": "cc512f0c8e193c4a0a150d769a8b4fad7d86cc29d86152b9f26ce775d4069198"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/document_versions_one_v1.hex",
+    "sha256": "2793f20b46d3a5cc0451771351a566a46d7a97799cd843d8736591726a7bdb24"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/embedding_epoch_digest_input_v1.hex",
+    "sha256": "e0434a91822266b8dddbf676cbb5679d317adfbc09868640e046171dd225de12"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/embedding_epoch_digest_input_v2.hex",
+    "sha256": "214d03daac4eccb83a73fdb8a3cfe011442348d639b825428bb7c0ddddf860a7"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/frame_v1.hex",
+    "sha256": "1caff46b60085e13a46f97910c9a2f5de707c6b7401f503322c5545b451a9eed"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/fts_dictionary_v1.hex",
+    "sha256": "81b03cf232d66e8b2ba35ceb57382296bd271158cc83e95c9a4e78fecae2000b"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/fts_norms_v1.hex",
+    "sha256": "78f8f55e64c089c89d189bce2826faebdc4e6b5df950301c5254145499daabf1"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/fts_postings_default_geometry_v1.hex",
+    "sha256": "5803bc4e096824cb85153bef3bb6b5552a8b18cf9f057e5a2ad433846e30ee64"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/fts_postings_v1.hex",
+    "sha256": "7d51dcf1196ed4c15dd2c524b5cb1e3650443826019016f57e2f6bb074a700a0"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/fts_postings_v2.hex",
+    "sha256": "baeea591fde887a90bfff4ec2b0207f3b67c0d9974e673554bb6eaa692d0d182"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/graph_node_blocks_d100_padded128_r64_FROZEN_v1.hex",
+    "sha256": "8c334791405096dc3c804791d5bb906bcf42b45e0fd402d5e791abb16bd94131"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/graph_node_blocks_d128_r44_FROZEN_v1.hex",
+    "sha256": "c4a7e4ad06b5c15e806490b25fdd6a6da8619958772032a64d5be23b96bf1b09"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/manifest_clustering_ranges_v1.hex",
+    "sha256": "9b92678271edc8fb33d3659cea323f214ffadb16929cca6558488ff6510caabe"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/manifest_clustering_ranges_v2.hex",
+    "sha256": "c991c3d27fa11cc5a47750bfd822c2bdf23515c4c49ea504d28a5413dd7fbc60"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/manifest_v1.hex",
+    "sha256": "81ceddf7fa5af2e41b10c2f4abf82b1f05bd3b8fc38e61a33a8faa3260bebe54"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/manifest_v2.hex",
+    "sha256": "db0e44972605694243b99812663abef249d9bf1c3ae2ca39bbcc6417210d1da3"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/postings_reserved_v1.hex",
+    "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/postings_segment_region_v1.hex",
+    "sha256": "d8866d5939f69e4d67e768cd6416bdc9fa70688947bdc3c28236d193b30ce0d7"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/purge_intent_v1.hex",
+    "sha256": "ae0951f41c4a19b4eaacca879579b93e8bf72f881346c9df19bf6bf9a213717d"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/segment_one_header_v1.hex",
+    "sha256": "6cc8fe93ee37425d90ee0b422dfeb5ddc7cbba425191a065231381c644fc23eb"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/segment_prechange_full_v1.hex",
+    "sha256": "a85683d40224e851853ef5c33a911e03d2c0214a82ad6891e2e14af7e611edab"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/segment_zero_header_v1.hex",
+    "sha256": "80911c69604f537fd15091eb769c6763a9fac44aa6c92d4c07246956a5d419f7"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/store_wal_prechange_v1.hex",
+    "sha256": "9afd75682e3eeb8f63a8ac74ffe0f0dd655f9e52cced2aa7c8fbc8589534417e"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/stored_metadata_one_v1.hex",
+    "sha256": "d4c432a9125d7d3af67fbf7cf8c6eb94f30853c0661de34ab246fac0f3b871d3"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/stored_text_mixed_v1.hex",
+    "sha256": "ac42379c7bddc9229b06fa21047b18c4c8b15d19c22550eb4e322826d781a09b"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/unknown_kind_header_v1.hex",
+    "sha256": "ac51170c592095e8f2f427ebaba243e2197e4262cf2889b7d7964a9220421c41"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/vector_codes_odd_v1.hex",
+    "sha256": "9fd8bb2863f7dff7fe616d9e937faa7ea95351b66dcdf15c1c3c0930d43b3927"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/vector_codes_tail65_v1.hex",
+    "sha256": "978b61a62f419dac1440d9f76c3e4837ca46673ebc2c580ad96882b1f515cd6d"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/vector_factors_bit4_v1.hex",
+    "sha256": "91f3d13687fc5c18db3314a7715eeace4e96f86977b6194a6d54057e03931b60"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/vector_factors_int8_v1.hex",
+    "sha256": "c2cc7d8adfaa51ff7daa89453b0bf1de15c1fb60726860ff1a33349d4e5a46d8"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/vector_rescore_one_v1.hex",
+    "sha256": "dc64a625e68d9fb520cb96cdd41ec8aa9adcce11877dc98c07615710dff80ea5"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_delete_record_v1.hex",
+    "sha256": "de2047a8172e9c5e95b46c9b1306136c575d03cc9b0598ed51197f64f14e89a3"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_empty_v1.hex",
+    "sha256": "11ab69afe3d06fe8d1c37c624cb47a94c28065ccc4c0d00254a2a94dd07005e2"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_metadata_edit_record_v1.hex",
+    "sha256": "d09db256b864131afd9dedf8662942f4f635507349af4649fceb663b776d5fc4"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_multi_v1.hex",
+    "sha256": "764851dc6c418142e608115b40c7304b43a4844361d2127ce3d611ca505a3ad5"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_single_v1.hex",
+    "sha256": "3aa65214f811f80a724542f113f6943973589a6a4db0ba5d67ee2953241a7fc0"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_torn_tail_v1.hex",
+    "sha256": "9728da132b25e0830f5959ef7dbf2a78df96b0a90cad21daa13cce5ec71ee686"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_upsert_bitmap_record_v2.hex",
+    "sha256": "7692378aad0af721276e87afc8bd644daa01363835007a682f6bd7e5eb809b57"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_upsert_metadata_record_v1.hex",
+    "sha256": "ef6e9f9fc5209a2ea13c3bc8928691b959d7e8b5291db54ff78025d711e11eb9"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_upsert_record_v1.hex",
+    "sha256": "fb0e37642b1c2c52e69550a019bca88ac20898148b1eaccbfc093c160db883ba"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_upsert_timestamp_metadata_record_v1.hex",
+    "sha256": "714c61a73d58e61bc7ab1c2c14624881b742405dd76080f1c8fc342ba1255690"
+  },
+  {
+    "file": "crates/zeppelin-embed/tests/fixtures/format/wal_upsert_timestamp_record_v1.hex",
+    "sha256": "d47d3cb8f5e0273a98abe0a3e9acdcea59c7617c3b8abc4271f47e5967760afd"
+  }
+]
