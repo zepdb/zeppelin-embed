@@ -1,0 +1,389 @@
+[
+  {
+    "path": "Cargo.lock",
+    "exact": true,
+    "expected_sha256": "447b0bb539da8c526d817e9c212e2dab122849d3fd0b1f19fc5978f32dd5b896",
+    "actual_sha256": "447b0bb539da8c526d817e9c212e2dab122849d3fd0b1f19fc5978f32dd5b896",
+    "expected_bytes": 34023,
+    "actual_bytes": 34023,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/Cargo.toml",
+    "exact": true,
+    "expected_sha256": "27e51dbedd94a6047923267305e7ec80bffd3358e22ed78f310ae989860d004e",
+    "actual_sha256": "27e51dbedd94a6047923267305e7ec80bffd3358e22ed78f310ae989860d004e",
+    "expected_bytes": 321,
+    "actual_bytes": 321,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/README.md",
+    "exact": true,
+    "expected_sha256": "b24b79e784ebed4d0251e4bbadc5e97e9f59e509d62f4c14f6671c859ae1ebd7",
+    "actual_sha256": "b24b79e784ebed4d0251e4bbadc5e97e9f59e509d62f4c14f6671c859ae1ebd7",
+    "expected_bytes": 8105,
+    "actual_bytes": 8105,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding.rs",
+    "exact": true,
+    "expected_sha256": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+    "actual_sha256": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+    "expected_bytes": 9719,
+    "actual_bytes": 9719,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/expressions.rs",
+    "exact": true,
+    "expected_sha256": "9a477879e61faac90e5bfb135c8461cc2df9c2b66da842dbabdeff224861de5d",
+    "actual_sha256": "9a477879e61faac90e5bfb135c8461cc2df9c2b66da842dbabdeff224861de5d",
+    "expected_bytes": 22841,
+    "actual_bytes": 22841,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/mutation.rs",
+    "exact": true,
+    "expected_sha256": "c8216d5647b9aaa1dd686c8af03a5de310da8bbc6f532e6f935a142e523aa60b",
+    "actual_sha256": "c8216d5647b9aaa1dd686c8af03a5de310da8bbc6f532e6f935a142e523aa60b",
+    "expected_bytes": 8485,
+    "actual_bytes": 8485,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/parameters.rs",
+    "exact": true,
+    "expected_sha256": "33ef3743ec238c50845658468c583911ec6120004a84d5a11640d8cd14b099c7",
+    "actual_sha256": "33ef3743ec238c50845658468c583911ec6120004a84d5a11640d8cd14b099c7",
+    "expected_bytes": 5349,
+    "actual_bytes": 5349,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/patterns.rs",
+    "exact": true,
+    "expected_sha256": "9dea4c9d6d560200482e2b60743348b9019b7e542778d1088117a8543663f08e",
+    "actual_sha256": "9dea4c9d6d560200482e2b60743348b9019b7e542778d1088117a8543663f08e",
+    "expected_bytes": 6367,
+    "actual_bytes": 6367,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/projection.rs",
+    "exact": true,
+    "expected_sha256": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5",
+    "actual_sha256": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5",
+    "expected_bytes": 11684,
+    "actual_bytes": 11684,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/binding/search.rs",
+    "exact": true,
+    "expected_sha256": "642add35510d3e71f2f9c86847f2dcde5830f86dcc2e6fed3291af6805f05c4b",
+    "actual_sha256": "642add35510d3e71f2f9c86847f2dcde5830f86dcc2e6fed3291af6805f05c4b",
+    "expected_bytes": 9994,
+    "actual_bytes": 9994,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lexer.rs",
+    "exact": true,
+    "expected_sha256": "789bf916ba4b462ea0d5bcbb1d72180a3b2a8634d672bda70c7e781ff191f282",
+    "actual_sha256": "789bf916ba4b462ea0d5bcbb1d72180a3b2a8634d672bda70c7e781ff191f282",
+    "expected_bytes": 12330,
+    "actual_bytes": 12330,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lib.rs",
+    "exact": true,
+    "expected_sha256": "1e3cf9b050103c8b3a234fff98f24e1920a82b84a12f048e59366bd52577a20a",
+    "actual_sha256": "1e3cf9b050103c8b3a234fff98f24e1920a82b84a12f048e59366bd52577a20a",
+    "expected_bytes": 5039,
+    "actual_bytes": 5039,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/resources.rs",
+    "exact": true,
+    "expected_sha256": "15891cb2a504b472af958be2ed6b27817c51793c380028ece6ecaf517a9af254",
+    "actual_sha256": "15891cb2a504b472af958be2ed6b27817c51793c380028ece6ecaf517a9af254",
+    "expected_bytes": 6669,
+    "actual_bytes": 6669,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/shared_resources.rs",
+    "exact": true,
+    "expected_sha256": "20adf570b13355291a1afde073a0044b6dfdb5466a34971081457ce9ea7e3063",
+    "actual_sha256": "20adf570b13355291a1afde073a0044b6dfdb5466a34971081457ce9ea7e3063",
+    "expected_bytes": 3169,
+    "actual_bytes": 3169,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/binding.rs",
+    "exact": true,
+    "expected_sha256": "be16e6c98529d2e65fbc682f13de219a3c9a7104e54e9746a9311fbb38db0e6b",
+    "actual_sha256": "be16e6c98529d2e65fbc682f13de219a3c9a7104e54e9746a9311fbb38db0e6b",
+    "expected_bytes": 26718,
+    "actual_bytes": 26718,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/binding_resources.rs",
+    "exact": true,
+    "expected_sha256": "bc425b186ae4e4d63cfe2b99b9d255c76420df5b5c1d62a82d430c3f8931a803",
+    "actual_sha256": "bc425b186ae4e4d63cfe2b99b9d255c76420df5b5c1d62a82d430c3f8931a803",
+    "expected_bytes": 7768,
+    "actual_bytes": 7768,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/compiler_allocation.rs",
+    "exact": true,
+    "expected_sha256": "89f4bf3857a8b022d7f1ff43fa0322815b075e67a9051b849ab7111849544379",
+    "actual_sha256": "89f4bf3857a8b022d7f1ff43fa0322815b075e67a9051b849ab7111849544379",
+    "expected_bytes": 3283,
+    "actual_bytes": 3283,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/core_lowering.rs",
+    "exact": true,
+    "expected_sha256": "8282706c22463e7937798fd3cf286ee22c93c12a5cacae22bb47fab2fce0c12a",
+    "actual_sha256": "8282706c22463e7937798fd3cf286ee22c93c12a5cacae22bb47fab2fce0c12a",
+    "expected_bytes": 18915,
+    "actual_bytes": 18915,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/fixtures/binding-manifest.json",
+    "exact": true,
+    "expected_sha256": "160537cbca04274859f3b0230ac16cac121cb3039f99fb88050459d7110b6a69",
+    "actual_sha256": "160537cbca04274859f3b0230ac16cac121cb3039f99fb88050459d7110b6a69",
+    "expected_bytes": 166491,
+    "actual_bytes": 166491,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed/CLAUDE.md",
+    "exact": false,
+    "expected_sha256": "06e04e914d96c4f501bcc1f7c3ef630cdc133be6b88af163c5114abde5a7eff9",
+    "actual_sha256": "d09141828874ffa433f6628a42fef2a9fcfc7ce01f057c871251898c95599311",
+    "expected_bytes": 60967,
+    "actual_bytes": 60966,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+    "exact": true,
+    "expected_sha256": "3c34d79e82e868ecfd38f40b9528ac052ff8fc5f916cc9e94b2e7892cabf3b64",
+    "actual_sha256": "3c34d79e82e868ecfd38f40b9528ac052ff8fc5f916cc9e94b2e7892cabf3b64",
+    "expected_bytes": 12011,
+    "actual_bytes": 12011,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_query_external_capacity.rs",
+    "exact": true,
+    "expected_sha256": "67ff8989cd7da91ec97c6368c35cb5592bc7d9f287d91b49957fea159cc7dd2f",
+    "actual_sha256": "67ff8989cd7da91ec97c6368c35cb5592bc7d9f287d91b49957fea159cc7dd2f",
+    "expected_bytes": 1765,
+    "actual_bytes": 1765,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "fuzz/Cargo.lock",
+    "exact": true,
+    "expected_sha256": "505a1b42a9af60fccbc045e9345030b83361a23a77c68552c782acc35d31d4c6",
+    "actual_sha256": "505a1b42a9af60fccbc045e9345030b83361a23a77c68552c782acc35d31d4c6",
+    "expected_bytes": 12510,
+    "actual_bytes": 12510,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "fuzz/fuzz_targets/cypher_parser.rs",
+    "exact": true,
+    "expected_sha256": "b79a9bc9511eb330ed3c10cd9463422bc771523059346dc6270dfc17c332fda9",
+    "actual_sha256": "b79a9bc9511eb330ed3c10cd9463422bc771523059346dc6270dfc17c332fda9",
+    "expected_bytes": 1447,
+    "actual_bytes": 1447,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "scripts/cypher-binding-manifest.py",
+    "exact": true,
+    "expected_sha256": "00a4f7ceff94a611b2ada7205f5f733607a17f4cc125d6b4bf623c1b2548ad15",
+    "actual_sha256": "00a4f7ceff94a611b2ada7205f5f733607a17f4cc125d6b4bf623c1b2548ad15",
+    "expected_bytes": 6980,
+    "actual_bytes": 6980,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "scripts/tests/cypher_binding_manifest.py",
+    "exact": true,
+    "expected_sha256": "7fee3a35c61ee0e72e57c93055c96737b2edd8e26aa2df2082e3901847920eae",
+    "actual_sha256": "7fee3a35c61ee0e72e57c93055c96737b2edd8e26aa2df2082e3901847920eae",
+    "expected_bytes": 3176,
+    "actual_bytes": 3176,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tests/Cargo.toml",
+    "exact": true,
+    "expected_sha256": "328156a96f5e3ccbad2590475594ed55c885868b1cae2b2ff29ebf212549fdd8",
+    "actual_sha256": "328156a96f5e3ccbad2590475594ed55c885868b1cae2b2ff29ebf212549fdd8",
+    "expected_bytes": 985,
+    "actual_bytes": 985,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/graph_binding.rs",
+    "exact": true,
+    "expected_sha256": "0888c4b339514a9e56ea8d18980808fb84ed126a9171eec6a04b68cc9c4bb6fd",
+    "actual_sha256": "0888c4b339514a9e56ea8d18980808fb84ed126a9171eec6a04b68cc9c4bb6fd",
+    "expected_bytes": 6322,
+    "actual_bytes": 6322,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lib.rs",
+    "exact": false,
+    "expected_sha256": "aa7ae6c0676423f1359a179273b19d79030f884c2b3a58aad0499380899fc8fa",
+    "actual_sha256": "696f66b362c13b57e435580e50f45d667bee36bb1ba590320b7610554fcb2db3",
+    "expected_bytes": 4849,
+    "actual_bytes": 4848,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "tests/adversarial/coverage.rs",
+    "exact": false,
+    "expected_sha256": "006d0a59f67524060aa1ae9ec3d80bb4e852ba2ff2d7cf8a964bbf121f0c551c",
+    "actual_sha256": "814d4d134c54e8ea80296bd137fc5af9123cccb92bdeab897ca2c31165daf752",
+    "expected_bytes": 7796,
+    "actual_bytes": 883,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "tests/adversarial/graph_binding.rs",
+    "exact": true,
+    "expected_sha256": "f2398d3792b965ef1fb01072161f2b502d577923215e2720fd75686458acd852",
+    "actual_sha256": "f2398d3792b965ef1fb01072161f2b502d577923215e2720fd75686458acd852",
+    "expected_bytes": 8539,
+    "actual_bytes": 8539,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tests/adversarial/mod.rs",
+    "exact": false,
+    "expected_sha256": "1539c859611156d742172be4483fd8b845a9730b831de91dad0d74d4b1707b96",
+    "actual_sha256": "b56d76ea8608b062bcb36e7c26718bf841a596b8e6acecbb89cfe3196b16908a",
+    "expected_bytes": 2712,
+    "actual_bytes": 2711,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "tests/adversarial/runner.rs",
+    "exact": false,
+    "expected_sha256": "de59d47c429bdb6757d6c82c66c4c531b9b6c49e4ac044b261d0829cb6bd5cf8",
+    "actual_sha256": "cb6c2d31a15307e2d92019196abc83a3db27fe8c174058ce6db897a2c23918e0",
+    "expected_bytes": 761270,
+    "actual_bytes": 105607,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "tests/adversarial_tests.rs",
+    "exact": true,
+    "expected_sha256": "e6f73452242bb91a381a26204183ea148975ff536cf655d7a96894445976da27",
+    "actual_sha256": "e6f73452242bb91a381a26204183ea148975ff536cf655d7a96894445976da27",
+    "expected_bytes": 723850,
+    "actual_bytes": 723850,
+    "rule": "parent plus complete exact candidate delta"
+  },
+  {
+    "path": "tasks/evidence/ze-55-cypher-binding.md",
+    "exact": true,
+    "expected_sha256": "9def527df9dce9bd9da727bf739a5093184bffe4787dbbac3278ece7b1b63a62",
+    "actual_sha256": "9def527df9dce9bd9da727bf739a5093184bffe4787dbbac3278ece7b1b63a62",
+    "expected_bytes": 9305,
+    "actual_bytes": 9305,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/interface-review.md",
+    "exact": true,
+    "expected_sha256": "af78112712c082822432c93506b76e7e41055bfed1b7e5aa822c8c21eab8a339",
+    "actual_sha256": "af78112712c082822432c93506b76e7e41055bfed1b7e5aa822c8c21eab8a339",
+    "expected_bytes": 6104,
+    "actual_bytes": 6104,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/mutations.json",
+    "exact": true,
+    "expected_sha256": "56e5b51c19cb325d4a5d6575fac6d57e13ef86a78be2b2e5be1716fe0e4cabd7",
+    "actual_sha256": "56e5b51c19cb325d4a5d6575fac6d57e13ef86a78be2b2e5be1716fe0e4cabd7",
+    "expected_bytes": 2289,
+    "actual_bytes": 2289,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/raw-log-sha256.json",
+    "exact": true,
+    "expected_sha256": "471b60458a6704a4787e5165a1cba556ea2c314eebd63bf37034cdd49afdf272",
+    "actual_sha256": "471b60458a6704a4787e5165a1cba556ea2c314eebd63bf37034cdd49afdf272",
+    "expected_bytes": 13029,
+    "actual_bytes": 13029,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/raw-logs.tar.gz",
+    "exact": true,
+    "expected_sha256": "ea5a9b70cecbee66543683d68fbbed45920b7380aa1d1c8f73b795e1c20fdb86",
+    "actual_sha256": "ea5a9b70cecbee66543683d68fbbed45920b7380aa1d1c8f73b795e1c20fdb86",
+    "expected_bytes": 105614,
+    "actual_bytes": 105614,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/resource-review.md",
+    "exact": true,
+    "expected_sha256": "3a23b06896557aeb74e80f4cd2b7c5407f9625c4ee40e2ac9e1453b979ff0b00",
+    "actual_sha256": "3a23b06896557aeb74e80f4cd2b7c5407f9625c4ee40e2ac9e1453b979ff0b00",
+    "expected_bytes": 1919,
+    "actual_bytes": 1919,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/run-mutants.py",
+    "exact": true,
+    "expected_sha256": "bd578d84ac591ffaeecf21e96fad308b14f0ddc83a8ddd840472a3e8958bb871",
+    "actual_sha256": "bd578d84ac591ffaeecf21e96fad308b14f0ddc83a8ddd840472a3e8958bb871",
+    "expected_bytes": 3092,
+    "actual_bytes": 3092,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/source-audit.json",
+    "exact": true,
+    "expected_sha256": "36cbbfb4b94419f30dfe3c6dba10408d92c47457649b171a2c0e026ddf7a1861",
+    "actual_sha256": "36cbbfb4b94419f30dfe3c6dba10408d92c47457649b171a2c0e026ddf7a1861",
+    "expected_bytes": 2176,
+    "actual_bytes": 2176,
+    "rule": "exact candidate"
+  },
+  {
+    "path": "tasks/evidence/ze-55/source-sha256.json",
+    "exact": true,
+    "expected_sha256": "270f2a79a436fa20753f88985a097840d659621105bb5b6f9ba992b4eadfc14f",
+    "actual_sha256": "270f2a79a436fa20753f88985a097840d659621105bb5b6f9ba992b4eadfc14f",
+    "expected_bytes": 3925,
+    "actual_bytes": 3925,
+    "rule": "exact candidate"
+  }
+]

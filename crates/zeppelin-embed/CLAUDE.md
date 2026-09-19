@@ -919,6 +919,7 @@ compare an independent cold Store baseline, never warm that path out of evidence
 - ZE-118 retains deferred broad workspace/adversarial and per-crate coverage
   qualification. ZE-37 focused nextest and PG10 results do not replace it.
 
+
 ## ZE-55 scoped frontend capacity
 
 `QueryMemory::reserve_external_capacity` reserves an opaque grow-only guard for

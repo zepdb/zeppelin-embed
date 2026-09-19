@@ -1,0 +1,199 @@
+{
+  "main": "5c5b71d3299b543a4657dbd2fa6ab42f6503f421",
+  "candidate": "5c9e757c05f977aa864a82fb3ab40630aff976b8",
+  "nonconflicting": [
+    {
+      "path": "Cargo.lock",
+      "exact": true,
+      "sha256": "447b0bb539da8c526d817e9c212e2dab122849d3fd0b1f19fc5978f32dd5b896"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/Cargo.toml",
+      "exact": true,
+      "sha256": "27e51dbedd94a6047923267305e7ec80bffd3358e22ed78f310ae989860d004e"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/README.md",
+      "exact": true,
+      "sha256": "b24b79e784ebed4d0251e4bbadc5e97e9f59e509d62f4c14f6671c859ae1ebd7"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding.rs",
+      "exact": true,
+      "sha256": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/expressions.rs",
+      "exact": true,
+      "sha256": "9a477879e61faac90e5bfb135c8461cc2df9c2b66da842dbabdeff224861de5d"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/mutation.rs",
+      "exact": true,
+      "sha256": "c8216d5647b9aaa1dd686c8af03a5de310da8bbc6f532e6f935a142e523aa60b"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/parameters.rs",
+      "exact": true,
+      "sha256": "33ef3743ec238c50845658468c583911ec6120004a84d5a11640d8cd14b099c7"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/patterns.rs",
+      "exact": true,
+      "sha256": "9dea4c9d6d560200482e2b60743348b9019b7e542778d1088117a8543663f08e"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/projection.rs",
+      "exact": true,
+      "sha256": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/search.rs",
+      "exact": true,
+      "sha256": "642add35510d3e71f2f9c86847f2dcde5830f86dcc2e6fed3291af6805f05c4b"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lexer.rs",
+      "exact": true,
+      "sha256": "789bf916ba4b462ea0d5bcbb1d72180a3b2a8634d672bda70c7e781ff191f282"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lib.rs",
+      "exact": true,
+      "sha256": "1e3cf9b050103c8b3a234fff98f24e1920a82b84a12f048e59366bd52577a20a"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/resources.rs",
+      "exact": true,
+      "sha256": "15891cb2a504b472af958be2ed6b27817c51793c380028ece6ecaf517a9af254"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/shared_resources.rs",
+      "exact": true,
+      "sha256": "20adf570b13355291a1afde073a0044b6dfdb5466a34971081457ce9ea7e3063"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/binding.rs",
+      "exact": true,
+      "sha256": "be16e6c98529d2e65fbc682f13de219a3c9a7104e54e9746a9311fbb38db0e6b"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/binding_resources.rs",
+      "exact": true,
+      "sha256": "bc425b186ae4e4d63cfe2b99b9d255c76420df5b5c1d62a82d430c3f8931a803"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/compiler_allocation.rs",
+      "exact": true,
+      "sha256": "89f4bf3857a8b022d7f1ff43fa0322815b075e67a9051b849ab7111849544379"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/core_lowering.rs",
+      "exact": true,
+      "sha256": "8282706c22463e7937798fd3cf286ee22c93c12a5cacae22bb47fab2fce0c12a"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/fixtures/binding-manifest.json",
+      "exact": true,
+      "sha256": "160537cbca04274859f3b0230ac16cac121cb3039f99fb88050459d7110b6a69"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+      "exact": true,
+      "sha256": "3c34d79e82e868ecfd38f40b9528ac052ff8fc5f916cc9e94b2e7892cabf3b64"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_query_external_capacity.rs",
+      "exact": true,
+      "sha256": "67ff8989cd7da91ec97c6368c35cb5592bc7d9f287d91b49957fea159cc7dd2f"
+    },
+    {
+      "path": "fuzz/Cargo.lock",
+      "exact": true,
+      "sha256": "505a1b42a9af60fccbc045e9345030b83361a23a77c68552c782acc35d31d4c6"
+    },
+    {
+      "path": "fuzz/fuzz_targets/cypher_parser.rs",
+      "exact": true,
+      "sha256": "b79a9bc9511eb330ed3c10cd9463422bc771523059346dc6270dfc17c332fda9"
+    },
+    {
+      "path": "scripts/cypher-binding-manifest.py",
+      "exact": true,
+      "sha256": "00a4f7ceff94a611b2ada7205f5f733607a17f4cc125d6b4bf623c1b2548ad15"
+    },
+    {
+      "path": "scripts/tests/cypher_binding_manifest.py",
+      "exact": true,
+      "sha256": "7fee3a35c61ee0e72e57c93055c96737b2edd8e26aa2df2082e3901847920eae"
+    },
+    {
+      "path": "tasks/evidence/ze-55-cypher-binding.md",
+      "exact": true,
+      "sha256": "9def527df9dce9bd9da727bf739a5093184bffe4787dbbac3278ece7b1b63a62"
+    },
+    {
+      "path": "tasks/evidence/ze-55/interface-review.md",
+      "exact": true,
+      "sha256": "af78112712c082822432c93506b76e7e41055bfed1b7e5aa822c8c21eab8a339"
+    },
+    {
+      "path": "tasks/evidence/ze-55/mutations.json",
+      "exact": true,
+      "sha256": "56e5b51c19cb325d4a5d6575fac6d57e13ef86a78be2b2e5be1716fe0e4cabd7"
+    },
+    {
+      "path": "tasks/evidence/ze-55/raw-log-sha256.json",
+      "exact": true,
+      "sha256": "471b60458a6704a4787e5165a1cba556ea2c314eebd63bf37034cdd49afdf272"
+    },
+    {
+      "path": "tasks/evidence/ze-55/raw-logs.tar.gz",
+      "exact": true,
+      "sha256": "ea5a9b70cecbee66543683d68fbbed45920b7380aa1d1c8f73b795e1c20fdb86"
+    },
+    {
+      "path": "tasks/evidence/ze-55/resource-review.md",
+      "exact": true,
+      "sha256": "3a23b06896557aeb74e80f4cd2b7c5407f9625c4ee40e2ac9e1453b979ff0b00"
+    },
+    {
+      "path": "tasks/evidence/ze-55/run-mutants.py",
+      "exact": true,
+      "sha256": "bd578d84ac591ffaeecf21e96fad308b14f0ddc83a8ddd840472a3e8958bb871"
+    },
+    {
+      "path": "tasks/evidence/ze-55/source-audit.json",
+      "exact": true,
+      "sha256": "36cbbfb4b94419f30dfe3c6dba10408d92c47457649b171a2c0e026ddf7a1861"
+    },
+    {
+      "path": "tasks/evidence/ze-55/source-sha256.json",
+      "exact": true,
+      "sha256": "270f2a79a436fa20753f88985a097840d659621105bb5b6f9ba992b4eadfc14f"
+    },
+    {
+      "path": "tests/Cargo.toml",
+      "exact": true,
+      "sha256": "328156a96f5e3ccbad2590475594ed55c885868b1cae2b2ff29ebf212549fdd8"
+    },
+    {
+      "path": "tests/adversarial-oracle/src/graph_binding.rs",
+      "exact": true,
+      "sha256": "0888c4b339514a9e56ea8d18980808fb84ed126a9171eec6a04b68cc9c4bb6fd"
+    },
+    {
+      "path": "tests/adversarial/graph_binding.rs",
+      "exact": true,
+      "sha256": "f2398d3792b965ef1fb01072161f2b502d577923215e2720fd75686458acd852"
+    }
+  ],
+  "conflicts": [
+    "crates/zeppelin-embed/CLAUDE.md",
+    "tests/adversarial-oracle/src/lib.rs",
+    "tests/adversarial/coverage.rs",
+    "tests/adversarial/mod.rs",
+    "tests/adversarial/runner.rs",
+    "tests/adversarial_tests.rs"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "named_preservation_check": "integration_preserves_complete_parent_and_candidate_deltas",
+  "bad_revision": "b0e48ff",
+  "red_exit": 1,
+  "red_exact_files": 38,
+  "red_total_files": 43,
+  "repaired_green_exit": 0,
+  "repaired_exact_files": 43,
+  "nextest_passed": 84,
+  "doctest_passed": 1,
+  "manifest_controls_passed": 4,
+  "runner_pg10": {
+    "seed": 0,
+    "operations": 59,
+    "violations": 0
+  },
+  "runner_pg11": {
+    "seed": 0,
+    "operations": 59,
+    "violations": 0
+  },
+  "inherited_files_unchanged": 45
+}

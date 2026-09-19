@@ -1,0 +1,234 @@
+[
+  {
+    "name": "frontend",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 8.555088758468628,
+    "log": "frontend.log",
+    "sha256": "2b352393a0d13a6bafb5547b6995135b45f0af254258e2002d9f909eaaacdde8"
+  },
+  {
+    "name": "core-capacity-and-staging",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_query_external_capacity",
+      "--test",
+      "graph_write_staging"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 9.835685729980469,
+    "log": "core-capacity-and-staging.log",
+    "sha256": "f9bc8200a632ee17a6b69ea1c1c35b57452f1b2e2ec29fe9ef46ae761f78e797"
+  },
+  {
+    "name": "staging-internal",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--lib",
+      "--features",
+      "allocation-audit",
+      "-E",
+      "test(property_graph::staging::tests::)"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 20.11106824874878,
+    "log": "staging-internal.log",
+    "sha256": "74f3a24b6f81f34df4dc0cf8a7c9a104d5618a2e3d758955bf874c231bba0dd6"
+  },
+  {
+    "name": "pg10-pg11-runner",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_staging_probe) | test(property_graph_binding_probe) | test(one_runner_episode_reaches_required_staging_contracts) | test(one_runner_episode_reaches_required_binding_contracts)",
+      "--success-output",
+      "final"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 15.319904088973999,
+    "log": "pg10-pg11-runner.log",
+    "sha256": "f98c7c794e26ee2be575fce7633a443a165eaab0b571db768389662702d5aa69"
+  },
+  {
+    "name": "oracle",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-E",
+      "test(primitive_staging_oracle) | test(graph_binding::tests::binding_oracle_rejects_wrong_order_types_bits_modes_and_admission)"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 3.1352100372314453,
+    "log": "oracle.log",
+    "sha256": "25537d4f9df246764e6a32ab334a67c475f176acc817f6dac6d9f24525c03815"
+  },
+  {
+    "name": "lifetime",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--doc"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 0.1269521713256836,
+    "log": "lifetime.log",
+    "sha256": "3d804c41a9b9fa805053b773155dafa9171b0399c991c0788718645cf9d1098f"
+  },
+  {
+    "name": "manifest",
+    "command": [
+      "python3",
+      "scripts/cypher-binding-manifest.py",
+      "/private/tmp/opencypher-graph-research-20260916"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 0.3394770622253418,
+    "log": "manifest.log",
+    "sha256": "f9a536ec0d7f3ce03cedac264f04ef67ba145ba028f9d6eae8014c28f04fe2d4"
+  },
+  {
+    "name": "manifest-controls",
+    "command": [
+      "python3",
+      "scripts/tests/cypher_binding_manifest.py",
+      "/private/tmp/opencypher-graph-research-20260916"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 0.7977218627929688,
+    "log": "manifest-controls.log",
+    "sha256": "d0f13c1fb2e5f6e33a9920a8b3daa09e4d80b27c05dd070ad08f800f00ddedea"
+  },
+  {
+    "name": "strict-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-cypher",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "allocation-audit,test-support",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 101,
+    "seconds": 13.939963102340698,
+    "log": "strict-clippy.log",
+    "sha256": "7409d4013455335692ab036b80e59c548926126215fb8fc9ff4df92c22dde44e"
+  },
+  {
+    "name": "strict-core-runner",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "allocation-audit,test-support",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 6.320969104766846,
+    "log": "strict-core-runner.log",
+    "sha256": "444a53c6210efce2ee14c08ff7e3082b8a7dff86b22786ebda02391ff9b25c87"
+  },
+  {
+    "name": "strict-frontend",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--all-targets",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 3.926455020904541,
+    "log": "strict-frontend.log",
+    "sha256": "179045ac37157c5a0e3ec8ae1d21e56ad1612abc4a0ff73ee963114015eda32a"
+  },
+  {
+    "name": "format",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 2.0696959495544434,
+    "log": "format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "target": "/tmp/ze-55-integration-target",
+    "exit": 0,
+    "seconds": 0.022810935974121094,
+    "log": "diff.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]
