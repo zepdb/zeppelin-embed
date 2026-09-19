@@ -1,0 +1,7 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+error: the `#[global_allocator]` in this crate conflicts with global allocator in: zeppelin_embed
+
+error: could not compile `zeppelin-embed-cypher` (test "lowering_allocation") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-cypher --lib --test read_lowering --test runtime_lowering --test lowering_allocation --test lowering_semantics --test pattern_contract --features zeppelin-embed/allocation-audit,zeppelin-embed/test-support` exited with code 101

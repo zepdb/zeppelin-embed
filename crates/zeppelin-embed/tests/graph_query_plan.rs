@@ -197,6 +197,7 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
                 min: 0,
                 max: 16,
                 direction: Direction::Incoming,
+                completed_edge_predicate: None,
                 edge_predicate: None,
                 relationship_types: &[],
                 pattern: PatternId(7),
@@ -245,6 +246,7 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
         min: 0,
         max: 17,
         direction: Direction::Outgoing,
+        completed_edge_predicate: None,
         edge_predicate: None,
         relationship_types: &[],
         pattern: PatternId(7),
@@ -1701,6 +1703,7 @@ fn typed_pattern_contract_preserves_or_types_and_private_edge_scope() {
                 direction: Direction::Outgoing,
                 relationship_types: &alternatives,
                 pattern: PatternId(4),
+                completed_edge_predicate: None,
                 edge_predicate: Some(EdgePredicate {
                     current_edge: SlotId(u32::MAX),
                     expression: ExprId(4),
@@ -1787,6 +1790,7 @@ fn edge_scope_operators<'a>(
                 relationship_types: alternatives,
                 direction: Direction::Either,
                 pattern: PatternId(0),
+                completed_edge_predicate: None,
                 edge_predicate: Some(EdgePredicate {
                     current_edge,
                     expression: predicate,
@@ -2113,4 +2117,86 @@ fn typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations
         ),
         Err(PlanError::Control(QueryError::Cancelled))
     ));
+}
+
+#[test]
+fn completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape() {
+    use zeppelin_embed::property_graph::GraphName;
+    let expressions = [
+        Expression::Slot(SlotId(9)),
+        Expression::Unary {
+            operation: UnaryExpression::Size,
+            operand: ExprId(0),
+        },
+        Expression::Slot(SlotId(42)),
+        Expression::Property {
+            entity: ExprId(2),
+            name: GraphName::new("x").unwrap(),
+        },
+        Expression::Binary {
+            operation: BinaryExpression::Comparison(
+                zeppelin_embed::property_graph::query::Comparison::Equal,
+            ),
+            left: ExprId(3),
+            right: ExprId(1),
+        },
+    ];
+    for maximum in [0, 2] {
+        let mut operators = edge_scope_operators(&[], SlotId(42), ExprId(4), maximum);
+        let OperatorKind::BoundedExpand {
+            edge_predicate,
+            completed_edge_predicate,
+            ..
+        } = &mut operators[2].kind
+        else {
+            unreachable!()
+        };
+        *edge_predicate = None;
+        *completed_edge_predicate = Some(CompletedEdgePredicate {
+            current_edge: SlotId(42),
+            expression: ExprId(4),
+        });
+        let describe = |expressions| PlanDescription {
+            operators: &operators,
+            expressions,
+            parameters: &[],
+            root: PlanNodeId(2),
+            eager_searches: &[],
+        };
+        assert_eq!(validate(describe(&expressions)), Ok(()));
+        let mut invalid = expressions;
+        // The fresh destination remains unavailable during the predicate.
+        invalid[0] = Expression::Slot(SlotId(8));
+        assert_eq!(validate(describe(&invalid)), Err(PlanError::Scope));
+        // The existing source is visible, while expression typing still applies.
+        let mut invalid = expressions;
+        invalid[0] = Expression::Slot(SlotId(7));
+        assert_eq!(validate(describe(&invalid)), Err(PlanError::Type));
+    }
+    for private in [7, 8, 9] {
+        let mut operators = edge_scope_operators(&[], SlotId(42), ExprId(4), 2);
+        let OperatorKind::BoundedExpand {
+            edge_predicate,
+            completed_edge_predicate,
+            ..
+        } = &mut operators[2].kind
+        else {
+            unreachable!()
+        };
+        *edge_predicate = None;
+        *completed_edge_predicate = Some(CompletedEdgePredicate {
+            current_edge: SlotId(private),
+            expression: ExprId(4),
+        });
+        assert_eq!(
+            validate(PlanDescription {
+                operators: &operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(2),
+                eager_searches: &[]
+            }),
+            Err(PlanError::Scope)
+        );
+    }
 }

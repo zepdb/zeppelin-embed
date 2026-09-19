@@ -1,0 +1,146 @@
+[
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lib.rs",
+    "sha256": "a213237dd3aa3c604f74e6ad73c2b8a632c2025a1ae803fc06119cff0766478c"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/context.rs",
+    "sha256": "e114fb7aa64f3cc632856cce014450a4e3e704f5883296dbce2bfd93155a11d1"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/expression.rs",
+    "sha256": "190b3001a327400a6ec28d574b677c7172b0eb27ef531f13134f74ee2cd9ef84"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/mod.rs",
+    "sha256": "a3841284c16f37db6fce2f02ba2c1be8a8282bef77697862e621ed6d0515cfcb"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/owned.rs",
+    "sha256": "1ac3dc5093dda21e1cd01ee7b01ac54058178f95d7c3a1ff1022e8241d251b52"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/parameters.rs",
+    "sha256": "9ae50d3bd23f574f5120f86d5b5a935e9194b012e5ed20c7b0895c2f64c11ae0"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/pattern.rs",
+    "sha256": "a4b9c9755df3fe898fb1ae7f4d7eedeaeca2b8d3528c8bc91ea4e6aec6b6ce7c"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/projection.rs",
+    "sha256": "b232d3d4a839007c3540e9b8e1b0efd888dc09dfce823075c53b66060bc7d05d"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/resources.rs",
+    "sha256": "7de68182d82b700e0849e2cfb4070a4cbb6e624f7c5426d225dc250ad8a1d216"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/shared_resources.rs",
+    "sha256": "d10725f4c45f8cdbcc9da85b4d134890cbee8e1cc320b3be3b8a340c08c8d517"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/lowering_allocation.rs",
+    "sha256": "96909d9d4657ad82dcfd8f75c02f3ec9d7ed37f92edbd41443c0626d9eff74be"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/lowering_semantics.rs",
+    "sha256": "1d22ef4e27584fae02bd7a7150688069630a171c5a870f588975195df0470afd"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/pattern_contract.rs",
+    "sha256": "7587dc74a6ed078ee29d32ae4b1cfa0871080194649334a2c54d8f78ec6fdb2d"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
+    "sha256": "b530efcb5738ca0773344af7c3a9fc0e605c986d4f321b6559efb0f257643228"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+    "sha256": "b2e71bc85cfd20f186063258f05b9b754f9abff9e1ff0c3d76c089963d4cf5bd"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+    "sha256": "5c01ecd7b6f2b6b85ececd2d951b3f103b9768a66bb3a4fb9617b86ca154d997"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "sha256": "4f26d7f08ff2fcf653eaa89592bcd3c5804e8c11716d8b334503a46bc588ea0f"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/context.rs",
+    "sha256": "4d0311fc5a1550573746a8d98ec5c7623ae95819d945511c88ff35c1f2b90a17"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+    "sha256": "464a640a418cd64fc93004e9dd9d96f84e8ba3845927614941a09db6541098a4"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "sha256": "9d54e5a398d7f065f024a47b477984ee29e3bd7a57b6ff6022e15fc5e929b18e"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs",
+    "sha256": "3c4f62895b55b2189a7e9b9a400c8973e5759601684414f78e11fd57a35226f9"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/runtime.rs",
+    "sha256": "fa447d95059cca0c86e15b61adf65eda88fe2a3f13182f9f04b8bbd1bcd0057a"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs",
+    "sha256": "86247f3a247088a65c0f2b25450d3c511be617c92812c0c6a72ad92d20320bb1"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/utf8.rs",
+    "sha256": "970f0f19f1f64a7c53d32707461c596acd9f9621fa2c182e84b1093ccf0f9fb0"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_checked_utf8.rs",
+    "sha256": "e6795cdd1c50347224bfeab3ff61f396cf6266850f3ae8fe0c4f804f4faa1f54"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_compiled_context.rs",
+    "sha256": "4da216210861d1f7fcf45dc6ca1b6fa34caf7ed30e40e30b049be48062933b3b"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_completed_predicate.rs",
+    "sha256": "b6bfee8293cff647648d136a616f29529302604f3d1d7f998dfa7be2ca129b7c"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_query_plan.rs",
+    "sha256": "77e9a4fd3d7fd50075bdad56157fcbe556f0b43f0cd0b54813d0974fd03b62e2"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/graph_lowering.rs",
+    "sha256": "0b954af4be07020ee35eeaf6ce7f377b56e1518fd7dea92df1b129de6f80040e"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lib.rs",
+    "sha256": "690c1b9008bb4e35e8c2486982531c6c5642db609de00b6af2c5ef7d3fb37a35"
+  },
+  {
+    "path": "tests/adversarial/coverage.rs",
+    "sha256": "b2a42bcadd509a71ce0369b6bdcc02cf9bf34aa55b1b83300cc6369c7c22d0c6"
+  },
+  {
+    "path": "tests/adversarial/graph_lowering.rs",
+    "sha256": "e3778009b1c10a4e45bf74cbe31f43251613f772ddd3b234c6d1a4a3119f4034"
+  },
+  {
+    "path": "tests/adversarial/graph_query.rs",
+    "sha256": "450c518f3c4d58e900cf2833668d24a9ee24538c25d02a614d659cb0210d6675"
+  },
+  {
+    "path": "tests/adversarial/mod.rs",
+    "sha256": "8d570bf6bff1c57b8d1c8f65905942996f4642b946e2fb9b5d7c5c8a00f770ed"
+  },
+  {
+    "path": "tests/adversarial/runner.rs",
+    "sha256": "98cb59aa6e370aa790329a736da0e50a4bec1bca10aa475ca3d825849c8ab1c1"
+  },
+  {
+    "path": "tests/adversarial_tests.rs",
+    "sha256": "3e944d22ecf605d7b8936d217990d5c1dff8d1fd8377d3e37bbe8e820dc31ff3"
+  }
+]

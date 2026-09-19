@@ -1,0 +1,42 @@
+[
+  {
+    "name": "positive",
+    "command": [
+      "rustc",
+      "--edition=2024",
+      "--crate-type=lib",
+      "--emit=metadata",
+      "--extern",
+      "zeppelin_embed_cypher=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/libzeppelin_embed_cypher-1aa4328a9c64f7fb.rlib",
+      "--extern",
+      "zeppelin_embed=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/libzeppelin_embed-9292be036b68f09a.rlib",
+      "-L",
+      "dependency=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps",
+      "/tmp/ze-126/positive.rs",
+      "-o",
+      "/tmp/ze-126/positive.rmeta"
+    ],
+    "exit_code": 0,
+    "output": "warning: function `check` is never used\n --> /tmp/ze-126/positive.rs:3:4\n  |\n3 | fn check(memory: &QueryMemory<'_>, context: &mut ValueContext<'_>) {\n  |    ^^^^^\n  |\n  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: 1 warning emitted\n\n"
+  },
+  {
+    "name": "escape",
+    "command": [
+      "rustc",
+      "--edition=2024",
+      "--crate-type=lib",
+      "--emit=metadata",
+      "--extern",
+      "zeppelin_embed_cypher=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/libzeppelin_embed_cypher-1aa4328a9c64f7fb.rlib",
+      "--extern",
+      "zeppelin_embed=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/libzeppelin_embed-9292be036b68f09a.rlib",
+      "-L",
+      "dependency=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps",
+      "/tmp/ze-126/escape.rs",
+      "-o",
+      "/tmp/ze-126/escape.rmeta"
+    ],
+    "exit_code": 1,
+    "output": "error: lifetime may not live long enough\n --> /tmp/ze-126/escape.rs:4:96\n  |\n4 |  let _ = compile_read_in(\"RETURN 1\", &[], CompileLimits::default(), memory, context, |read, _| Ok(read));\n  |                                                                                       ----   - ^^^^^^^^ returning this value requires that `'1` must outlive `'2`\n  |                                                                                       |      |\n  |                                                                                       |      return type of closure is Result<LoweredRead<'2, '_>, ParseError>\n  |                                                                                       has type `LoweredRead<'1, '_>`\n\nerror: lifetime may not live long enough\n --> /tmp/ze-126/escape.rs:4:96\n  |\n4 |  let _ = compile_read_in(\"RETURN 1\", &[], CompileLimits::default(), memory, context, |read, _| Ok(read));\n  |                                                                                       ----   - ^^^^^^^^ returning this value requires that `'3` must outlive `'4`\n  |                                                                                       |      |\n  |                                                                                       |      return type of closure is Result<LoweredRead<'_, '4>, ParseError>\n  |                                                                                       has type `LoweredRead<'_, '3>`\n\nerror: aborting due to 2 previous errors\n\n"
+  }
+]

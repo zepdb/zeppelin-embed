@@ -362,6 +362,10 @@ pub enum OperatorKind<'a> {
         /// not match; zero-hop paths evaluate no edges. The private slot never
         /// appears in this operator's output schema.
         edge_predicate: Option<EdgePredicate>,
+        /// Checks every member of a complete candidate relationship list after
+        /// traversal. It may reference that complete list; zero-hop candidates
+        /// perform no evaluations. No row is emitted before the whole check.
+        completed_edge_predicate: Option<CompletedEdgePredicate>,
         /// Inclusive lower bound.
         min: u8,
         /// Inclusive upper bound, at most 16.
@@ -402,6 +406,21 @@ pub struct EdgePredicate {
     /// every input slot and both new traversal output slots.
     pub current_edge: SlotId,
     /// Boolean/null expression in the private candidate-edge scope.
+    pub expression: ExprId,
+}
+/// Per-member predicate evaluated only after a complete candidate path exists.
+/// The complete list remains retained and charged throughout evaluation. Each
+/// member receives checked work and close/cancel checkpoints; false/null rejects
+/// the candidate, while an error aborts without partial rows. Zero-hop is
+/// vacuously true without evaluating the RHS. This does not change pre-edge
+/// pruning or introduce a new runtime evaluator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletedEdgePredicate {
+    /// Fresh private nonnullable REL alongside input bindings and the public
+    /// completed relationship LIST. The fresh destination node is unavailable.
+    /// Must differ from every input and both output slots, and never escapes.
+    pub current_edge: SlotId,
+    /// Boolean/null expression evaluated once for each member of the full list.
     pub expression: ExprId,
 }
 /// One ORDER BY key; ties remain ties unless a later key distinguishes them.

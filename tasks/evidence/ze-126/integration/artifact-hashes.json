@@ -1,0 +1,50 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "8f8434ea4d0c563d5c6641a0957a545f2f523fc2c8165ab2e1a13e3908bbfe20"
+  },
+  {
+    "path": "candidate-paths.json",
+    "sha256": "2c210894dee6ddc8d8d339f1aa66577812079284c9c1855c8a05832f8fa649f7"
+  },
+  {
+    "path": "correspondence-before-lint.json",
+    "sha256": "0934f9ccf76f1a6e0cd9b5c3d7ae40ad2dd4a37817756b61183d241fd9270777"
+  },
+  {
+    "path": "correspondence.json",
+    "sha256": "e49bb44926e825b2ece02b1152395c8d47460c3fcfb2493b5846e58492b541a6"
+  },
+  {
+    "path": "focused-checks.json",
+    "sha256": "ad021059a650d553b2c37dc21bb193c7cb879a92a1b3654156b81fc1bc9d40cc"
+  },
+  {
+    "path": "format-check.json",
+    "sha256": "416ff4c13f0ef596b69a581c6fbbafc898a3fdd06f8b90360b34d2bc375ddadc"
+  },
+  {
+    "path": "lint-check.json",
+    "sha256": "0fd1b7bb95e982964bca8df7d3f675f1fae098c01ca2a057c3484b93b0c68c53"
+  },
+  {
+    "path": "lint-correction-checks.json",
+    "sha256": "7afebf771557b0f0ba472f9396a38f5224ce226f2eba5befd88af01162c62b83"
+  },
+  {
+    "path": "preflight.json",
+    "sha256": "b4cee044a3b257e6ccf00b8148853ee1396064655fbaf89f253a5c03dda0b437"
+  },
+  {
+    "path": "preservation.json",
+    "sha256": "ffd8d75956ba79cef43b5734a704bccc199f4d9c862ce7a831b7bd9d7c0e5bf7"
+  },
+  {
+    "path": "raw-integration.tar.gz",
+    "sha256": "daa987a71206b90eca561a73662511b81766d9dfe02bce25545a487b4830805b"
+  },
+  {
+    "path": "sol-review.md",
+    "sha256": "717a8c415c44d20b42d16e2effc637bb7eb5221648ccdb13de4b4190be0b3fdf"
+  }
+]

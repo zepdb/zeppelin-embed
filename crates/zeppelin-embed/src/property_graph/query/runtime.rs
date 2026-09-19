@@ -7,7 +7,7 @@ mod driver;
 pub use batch::{ArenaCapacity, RowBatch};
 pub use driver::{
     Completion, Execution, ExecutionCapacity, FrozenOutput, OperatorFactory, PreparedRows,
-    PullOperator, PullState, RuntimeFailure, execute, execute_factory,
+    PullOperator, PullState, RuntimeFailure, execute, execute_factory, execute_in,
 };
 
 /// Required admission-owner adapter. This is not a constructor for GraphReadView.

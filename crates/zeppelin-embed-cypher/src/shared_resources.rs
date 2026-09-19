@@ -9,7 +9,7 @@ use zeppelin_embed::property_graph::query::{
 pub const COMPILER_SCRATCH_BYTES: usize = 65536;
 struct SharedResources<'m, 'g, 'c> {
     reservation: QueryExternalReservation<'m, 'g>,
-    control: &'c QueryControl,
+    control: &'c dyn Fn() -> Result<(), ResourceError>,
 }
 impl Resources for SharedResources<'_, '_, '_> {
     fn charge(&mut self, bytes: usize) -> Result<(), ResourceError> {
@@ -19,13 +19,7 @@ impl Resources for SharedResources<'_, '_, '_> {
             .map_err(|_| ResourceError::Memory)
     }
     fn checkpoint(&mut self) -> Result<(), ResourceError> {
-        self.control.checkpoint().map_err(|error| match error {
-            ControlError::Cancelled { .. } | ControlError::ReadCancelled { .. } => {
-                ResourceError::Cancelled
-            }
-            ControlError::Timeout { .. } => ResourceError::Timeout,
-            _ => ResourceError::Control,
-        })
+        (self.control)()
     }
 }
 /// Complete private compiler invocation under one existing query/store budget.
@@ -41,6 +35,33 @@ pub fn compile_in<T>(
     limits: CompileLimits,
     memory: &QueryMemory<'_>,
     control: &QueryControl,
+    consume: impl for<'query> FnOnce(BoundQuery<'query>) -> Result<T, ParseError>,
+) -> Result<T, ParseError> {
+    compile_checked_in(
+        text,
+        parameters,
+        limits,
+        memory,
+        &|| {
+            control.checkpoint().map_err(|error| match error {
+                ControlError::Cancelled { .. } => ResourceError::Cancelled,
+                ControlError::ReadCancelled { .. } => ResourceError::ReadCancelled,
+                ControlError::Timeout { .. } => ResourceError::Timeout,
+                _ => ResourceError::Control,
+            })
+        },
+        consume,
+    )
+}
+
+/// Same compiler reservation, with the originating context's close-first check.
+/// Internal only: external callers retain the established compile_in interface.
+pub(crate) fn compile_checked_in<T>(
+    text: &str,
+    parameters: &[ParameterBinding<'_>],
+    limits: CompileLimits,
+    memory: &QueryMemory<'_>,
+    control: &dyn Fn() -> Result<(), ResourceError>,
     consume: impl for<'query> FnOnce(BoundQuery<'query>) -> Result<T, ParseError>,
 ) -> Result<T, ParseError> {
     limits.validate()?;

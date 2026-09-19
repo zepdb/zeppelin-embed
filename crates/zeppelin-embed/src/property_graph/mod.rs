@@ -110,3 +110,6 @@ pub mod resources;
 
 /// Bounded private mixed-write admission and pending property/text access.
 pub mod staging;
+
+mod utf8;
+pub use utf8::{Utf8CheckError, checked_utf8};

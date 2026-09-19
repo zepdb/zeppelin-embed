@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
     Cancelled,
+    ReadCancelled,
+    WorkLimit,
     Timeout,
     Control,
     Memory,

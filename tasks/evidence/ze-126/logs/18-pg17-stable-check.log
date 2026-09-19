@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests/adversarial-oracle)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.14s
+────────────
+ Nextest run ID f7149f92-e9f7-4001-a50b-e97de160094e with nextest profile: default
+    Starting 1 test across 1 binary (463 tests skipped)
+        PASS [   0.062s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+────────────
+     Summary [   0.063s] 1 test run: 1 passed, 463 skipped

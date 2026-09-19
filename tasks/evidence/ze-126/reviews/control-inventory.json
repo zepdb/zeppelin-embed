@@ -1,0 +1,18 @@
+[
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/query/context.rs",
+    "sha256": "4d0311fc5a1550573746a8d98ec5c7623ae95819d945511c88ff35c1f2b90a17"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/shared_resources.rs",
+    "sha256": "263b5a77c925fda674ccbcd482b1a974608c458c20b79cf3f277d727e5a8a850"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/src/lowering/context.rs",
+    "sha256": "e114fb7aa64f3cc632856cce014450a4e3e704f5883296dbce2bfd93155a11d1"
+  },
+  {
+    "path": "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+    "sha256": "c6442e1a935b8efc0b40582537a1706c0d4287e671315ef737f2aad128865bc9"
+  }
+]

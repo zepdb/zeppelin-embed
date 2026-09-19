@@ -1,0 +1,63 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests/adversarial-oracle)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.42s
+────────────
+ Nextest run ID 8ed3abbd-02ca-47e4-9a68-b0c702f7483b with nextest profile: default
+    Starting 4 tests across 1 binary (461 tests skipped)
+        PASS [   0.045s] (1/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_binding_probe_preserves_profile_types_and_faults
+        PASS [   0.063s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_relational_probe_preserves_order_bags_and_inflight_faults
+        PASS [   0.120s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+        PASS [   0.927s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_lowering_contracts
+────────────
+     Summary [   0.929s] 4 tests run: 4 passed, 461 skipped
+        PASS [   0.045s] (1/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_binding_probe_preserves_profile_types_and_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_binding_probe_preserves_profile_types_and_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.02s
+
+
+        PASS [   0.063s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_relational_probe_preserves_order_bags_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_relational_probe_preserves_order_bags_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.04s
+
+  stderr ───
+    PG14 seed=0 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=1 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=125 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+    PG14 seed=18446744073709551615 ProbeReport { cases: 6, fault_fires: 3, clean_controls: 3 }
+
+        PASS [   0.120s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_lowering_probe_checks_complete_plans_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.10s
+
+  stderr ───
+    PG17 seed=0 ProbeReport { comparisons: 5, fault_fires: 4, clean_controls: 4, comparator_fires: 16 }
+    PG17 seed=1 ProbeReport { comparisons: 5, fault_fires: 4, clean_controls: 4, comparator_fires: 16 }
+    PG17 seed=126 ProbeReport { comparisons: 5, fault_fires: 4, clean_controls: 4, comparator_fires: 16 }
+    PG17 seed=18446744073709551615 ProbeReport { comparisons: 5, fault_fires: 4, clean_controls: 4, comparator_fires: 16 }
+
+        PASS [   0.927s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_lowering_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_lowering_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.90s
+
+  stderr ───
+    PG17 actual runner seed=0 operations=59 violations=0

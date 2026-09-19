@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+────────────
+ Nextest run ID 0d0f5bac-0002-4b74-ae24-f872b06ad8a5 with nextest profile: default
+    Starting 1 test across 1 binary (6 tests skipped)
+        PASS [   0.013s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+────────────
+     Summary [   0.014s] 1 test run: 1 passed, 6 skipped

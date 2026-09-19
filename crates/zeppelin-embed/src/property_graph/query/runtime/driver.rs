@@ -294,6 +294,25 @@ pub fn execute_factory<
     drain(&mut context, plan, &mut source, completion, capacity)
 }
 
+/// Drains within an existing execution context, preserving all prior value and
+/// operator work. The caller retains and charges the actual view and plan owners
+/// around this scoped call; this entry neither admits nor releases that view.
+/// It uses the same eager barrier, completion and final close-first checks as
+/// the owned-view entry points and creates no replacement context or budget.
+#[allow(
+    clippy::result_large_err,
+    reason = "allocation-free full failure counters"
+)]
+pub fn execute_in<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+    plan: &RuntimePlan<'_, '_, '_, '_, '_, '_>,
+    source: &mut O,
+    completion: &mut C,
+    capacity: ExecutionCapacity,
+) -> Result<Execution<C::Output>, RuntimeFailure> {
+    drain(context, plan, source, completion, capacity)
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "allocation-free full failure counters"

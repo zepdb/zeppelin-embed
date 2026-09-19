@@ -1,0 +1,33 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+error: lifetime may not live long enough
+   --> crates/zeppelin-embed-cypher/src/lowering/projection.rs:109:25
+    |
+ 96 |     fn order_inputs(&self,root:ExprId,columns:&[Projection],hidden:&mut Buffer<'_, '_, SlotId>,span:Span)->Result<(),ParseError> {
+    |                     -----                                   ------ has type `&mut owned::Buffer<'2, '_, zeppelin_embed::property_graph::query::plan::SlotId>`
+    |                     |
+    |                     has type `&lowering::Builder<'1, '_, '_>`
+...
+109 |                         hidden.push(slot,self.memory,self.control)?;
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'2`
+    |
+    = note: requirement occurs because of a mutable reference to `owned::Buffer<'_, '_, zeppelin_embed::property_graph::query::plan::SlotId>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error: lifetime may not live long enough
+   --> crates/zeppelin-embed-cypher/src/lowering/projection.rs:109:25
+    |
+ 96 |     fn order_inputs(&self,root:ExprId,columns:&[Projection],hidden:&mut Buffer<'_, '_, SlotId>,span:Span)->Result<(),ParseError> {
+    |                     -----                                   ------ has type `&mut owned::Buffer<'2, '_, zeppelin_embed::property_graph::query::plan::SlotId>`
+    |                     |
+    |                     has type `&lowering::Builder<'_, '3, '_>`
+...
+109 |                         hidden.push(slot,self.memory,self.control)?;
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'3` must outlive `'2`
+    |
+    = note: requirement occurs because of a mutable reference to `owned::Buffer<'_, '_, zeppelin_embed::property_graph::query::plan::SlotId>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error: could not compile `zeppelin-embed-cypher` (lib) due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-cypher --test read_lowering` exited with code 101

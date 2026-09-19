@@ -1,0 +1,74 @@
+{
+  "head": "beb1a1e44730b56494ec2cb4aafc5d9ea5419763",
+  "overlays": [
+    "/tmp/ze-126-semantic-review-1",
+    "/tmp/ze-126-control-review-1",
+    "/tmp/ze-126-core-adapters/frozen"
+  ],
+  "entries": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/mod.rs",
+      "sha256": "4f26d7f08ff2fcf653eaa89592bcd3c5804e8c11716d8b334503a46bc588ea0f"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/utf8.rs",
+      "sha256": "970f0f19f1f64a7c53d32707461c596acd9f9621fa2c182e84b1093ccf0f9fb0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+      "sha256": "5c01ecd7b6f2b6b85ececd2d951b3f103b9768a66bb3a4fb9617b86ca154d997"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+      "sha256": "464a640a418cd64fc93004e9dd9d96f84e8ba3845927614941a09db6541098a4"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+      "sha256": "248393a36fb221413aff72a5e815cac539937e11f78146108fe709bac6fdfbb8"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/pattern.rs",
+      "sha256": "a4b9c9755df3fe898fb1ae7f4d7eedeaeca2b8d3528c8bc91ea4e6aec6b6ce7c"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/owned.rs",
+      "sha256": "1ac3dc5093dda21e1cd01ee7b01ac54058178f95d7c3a1ff1022e8241d251b52"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/expression.rs",
+      "sha256": "190b3001a327400a6ec28d574b677c7172b0eb27ef531f13134f74ee2cd9ef84"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/mod.rs",
+      "sha256": "a3841284c16f37db6fce2f02ba2c1be8a8282bef77697862e621ed6d0515cfcb"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/projection.rs",
+      "sha256": "b232d3d4a839007c3540e9b8e1b0efd888dc09dfce823075c53b66060bc7d05d"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/parameters.rs",
+      "sha256": "9ae50d3bd23f574f5120f86d5b5a935e9194b012e5ed20c7b0895c2f64c11ae0"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/context.rs",
+      "sha256": "e114fb7aa64f3cc632856cce014450a4e3e704f5883296dbce2bfd93155a11d1"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_checked_utf8.rs",
+      "sha256": "e6795cdd1c50347224bfeab3ff61f396cf6266850f3ae8fe0c4f804f4faa1f54"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_query_plan.rs",
+      "sha256": "77e9a4fd3d7fd50075bdad56157fcbe556f0b43f0cd0b54813d0974fd03b62e2"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
+      "sha256": "1b9aa05cf19b451a2a20c45f9cc31b792e7ed69b548efe6ea1cef2c26740901e"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/pattern_contract.rs",
+      "sha256": "7587dc74a6ed078ee29d32ae4b1cfa0871080194649334a2c54d8f78ec6fdb2d"
+    }
+  ]
+}

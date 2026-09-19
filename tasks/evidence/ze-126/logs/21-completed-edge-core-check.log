@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+error[E0506]: cannot assign to `invalid[_]` because it is borrowed
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:2144:9
+     |
+2142 |         assert_eq!(validate(describe(&invalid)), Err(PlanError::Scope));
+     |                                      -------- `invalid[_]` is borrowed here
+2143 |         // The existing source is visible, while expression typing still applies.
+2144 |         invalid[0] = Expression::Slot(SlotId(7));
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `invalid[_]` is assigned to here but it was already borrowed
+2145 |         assert_eq!(validate(describe(&invalid)), Err(PlanError::Type));
+     |                             -------- borrow later used here
+
+For more information about this error, try `rustc --explain E0506`.
+error: could not compile `zeppelin-embed` (test "graph_query_plan") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_query_plan` exited with code 101

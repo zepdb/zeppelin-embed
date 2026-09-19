@@ -415,6 +415,7 @@ fn derive(
             node,
             relationships,
             edge_predicate,
+            completed_edge_predicate,
             min,
             max,
             ..
@@ -428,6 +429,27 @@ fn derive(
                     return Err(PlanError::Scope);
                 }
                 let mut scope = input.clone();
+                add_slot(
+                    &mut scope,
+                    Slot {
+                        id: predicate.current_edge.0,
+                        kinds: ValueKinds::REL,
+                    },
+                )?;
+                boolean(description, predicate.expression, &scope, seen, context)?;
+            }
+            if let Some(predicate) = completed_edge_predicate {
+                if predicate.current_edge == node || predicate.current_edge == relationships {
+                    return Err(PlanError::Scope);
+                }
+                let mut scope = input.clone();
+                add_slot(
+                    &mut scope,
+                    Slot {
+                        id: relationships.0,
+                        kinds: ValueKinds::LIST,
+                    },
+                )?;
                 add_slot(
                     &mut scope,
                     Slot {

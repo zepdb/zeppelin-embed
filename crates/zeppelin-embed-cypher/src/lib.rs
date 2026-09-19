@@ -16,12 +16,14 @@
 mod ast;
 mod binding;
 mod lexer;
+mod lowering;
 mod parser;
 mod resources;
 mod shared_resources;
 
 pub use ast::*;
 pub use binding::*;
+pub use lowering::{LoweredRead, PreparationControl, ReadColumn, ReadContext, compile_read_in};
 pub use resources::*;
 pub use shared_resources::{COMPILER_SCRATCH_BYTES, compile_in};
 
@@ -49,6 +51,7 @@ pub enum ErrorKind {
     DeletedEntity,
     SearchContext,
     BindingInvariant,
+    Plan(zeppelin_embed::property_graph::query::plan::PlanError),
     Limit(LimitKind),
     Resource(ResourceError),
 }

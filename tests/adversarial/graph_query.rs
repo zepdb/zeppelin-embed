@@ -176,6 +176,7 @@ fn pattern_case(
                 max: 2,
                 direction: Direction::Outgoing,
                 relationship_types: &alternatives,
+                completed_edge_predicate: None,
                 edge_predicate: Some(EdgePredicate {
                     current_edge: SlotId(edge),
                     expression: ExprId(3),

@@ -1,0 +1,47 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.11s
+────────────
+ Nextest run ID b1e64411-36cf-4433-a845-46af54db1411 with nextest profile: default
+    Starting 1 test across 1 binary (5 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits' (34799315) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:208:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 0, end: 58 }, message: "parameter owner pending" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 5 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits' (34799315) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:208:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 0, end: 58 }, message: "parameter owner pending" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

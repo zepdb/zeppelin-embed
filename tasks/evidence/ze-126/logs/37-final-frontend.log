@@ -1,0 +1,302 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.70s
+────────────
+ Nextest run ID 3afe1d5f-9003-431b-83bf-1b70c0e1524e with nextest profile: default
+    Starting 29 tests across 6 binaries
+        PASS [   0.012s] ( 1/29) zeppelin-embed-cypher lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window
+        PASS [   0.016s] ( 2/29) zeppelin-embed-cypher::lowering_semantics independent_bound_path_self_reference_is_preserved
+        PASS [   0.016s] ( 3/29) zeppelin-embed-cypher::lowering_semantics independent_completed_routing_walks_lists_index_and_whole_bag
+        PASS [   0.011s] ( 4/29) zeppelin-embed-cypher::lowering_semantics independent_order_alias_priority_and_pattern_identity
+        PASS [   0.012s] ( 5/29) zeppelin-embed-cypher::lowering_semantics independent_parameter_order_and_source_mapped_errors
+        PASS [   0.013s] ( 6/29) zeppelin-embed-cypher::lowering_semantics independent_patterns_are_lowered
+        PASS [   0.013s] ( 7/29) zeppelin-embed-cypher::lowering_semantics independent_projections_are_lowered
+        PASS [   0.009s] ( 8/29) zeppelin-embed-cypher::lowering_semantics independent_reuse_reprojects_original_slots_and_optional_right_only_nulls
+        PASS [   0.016s] ( 9/29) zeppelin-embed-cypher::lowering_semantics independent_reuse_and_projection_matrix
+        PASS [   0.011s] (10/29) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+        PASS [   0.010s] (11/29) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel
+        PASS [   0.010s] (12/29) zeppelin-embed-cypher::read_lowering read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope
+        PASS [   0.008s] (13/29) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.008s] (14/29) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+        PASS [   0.008s] (15/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthesis
+        PASS [   0.008s] (16/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        PASS [   0.008s] (17/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+        PASS [   0.071s] (18/29) zeppelin-embed-cypher::lowering_allocation read_lowering_real_allocator_fail_at_each_site_releases_all_backing
+        PASS [   0.008s] (19/29) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.008s] (20/29) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+        PASS [   0.008s] (21/29) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.007s] (22/29) zeppelin-embed-cypher::read_lowering read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities
+        PASS [   0.008s] (23/29) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+        PASS [   0.021s] (24/29) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+        PASS [   0.008s] (25/29) zeppelin-embed-cypher::read_lowering read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list
+        PASS [   0.008s] (26/29) zeppelin-embed-cypher::runtime_lowering compiled_read_final_check_discards_actual_completed_output_and_all_owners
+        PASS [   0.007s] (27/29) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+        PASS [   0.566s] (28/29) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+        PASS [   0.570s] (29/29) zeppelin-embed-cypher::runtime_lowering compiled_read_validation_reports_original_cumulative_work_exhaustion
+────────────
+     Summary [   0.658s] 29 tests run: 29 passed, 0 skipped
+        PASS [   0.012s] ( 1/29) zeppelin-embed-cypher lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window
+  stdout ───
+
+    running 1 test
+    test lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.016s] ( 2/29) zeppelin-embed-cypher::lowering_semantics independent_bound_path_self_reference_is_preserved
+  stdout ───
+
+    running 1 test
+    test independent_bound_path_self_reference_is_preserved ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.016s] ( 3/29) zeppelin-embed-cypher::lowering_semantics independent_completed_routing_walks_lists_index_and_whole_bag
+  stdout ───
+
+    running 1 test
+    test independent_completed_routing_walks_lists_index_and_whole_bag ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 4/29) zeppelin-embed-cypher::lowering_semantics independent_order_alias_priority_and_pattern_identity
+  stdout ───
+
+    running 1 test
+    test independent_order_alias_priority_and_pattern_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 5/29) zeppelin-embed-cypher::lowering_semantics independent_parameter_order_and_source_mapped_errors
+  stdout ───
+
+    running 1 test
+    test independent_parameter_order_and_source_mapped_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] ( 6/29) zeppelin-embed-cypher::lowering_semantics independent_patterns_are_lowered
+  stdout ───
+
+    running 1 test
+    test independent_patterns_are_lowered ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] ( 7/29) zeppelin-embed-cypher::lowering_semantics independent_projections_are_lowered
+  stdout ───
+
+    running 1 test
+    test independent_projections_are_lowered ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/29) zeppelin-embed-cypher::lowering_semantics independent_reuse_reprojects_original_slots_and_optional_right_only_nulls
+  stdout ───
+
+    running 1 test
+    test independent_reuse_reprojects_original_slots_and_optional_right_only_nulls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+        PASS [   0.016s] ( 9/29) zeppelin-embed-cypher::lowering_semantics independent_reuse_and_projection_matrix
+  stdout ───
+
+    running 1 test
+    test independent_reuse_and_projection_matrix ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+
+
+        PASS [   0.011s] (10/29) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+    pattern consumer frontend=98253 plan=121751 heap=14303 overlap=220004 peak=220004 query_limit=1048576
+
+        PASS [   0.010s] (11/29) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (12/29) zeppelin-embed-cypher::read_lowering read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope
+  stdout ───
+
+    running 1 test
+    test read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/29) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+  stdout ───
+
+    running 1 test
+    test read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/29) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+  stdout ───
+
+    running 1 test
+    test read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (15/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthesis
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthesis ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (16/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_scalar_projection_and_exact_source_spans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (17/29) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.071s] (18/29) zeppelin-embed-cypher::lowering_allocation read_lowering_real_allocator_fail_at_each_site_releases_all_backing
+  stdout ───
+
+    running 1 test
+    test read_lowering_real_allocator_fail_at_each_site_releases_all_backing ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+  stderr ───
+    allocator_sites=253 real_heap_peak=48085 query_reservation_peak=275857 final=56
+
+        PASS [   0.008s] (19/29) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+  stdout ───
+
+    running 1 test
+    test read_lowering_real_owner_inventory_admits_without_a_second_context ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (20/29) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+  stdout ───
+
+    running 1 test
+    test read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (21/29) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+  stdout ───
+
+    running 1 test
+    test read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (22/29) zeppelin-embed-cypher::read_lowering read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities
+  stdout ───
+
+    running 1 test
+    test read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/29) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+  stdout ───
+
+    running 1 test
+    test read_lowering_stages_grouping_distinct_hidden_order_and_bounds ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.021s] (24/29) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+  stdout ───
+
+    running 1 test
+    test read_lowering_large_copied_parameter_preserves_split_four_byte_utf8 ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (25/29) zeppelin-embed-cypher::read_lowering read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list
+  stdout ───
+
+    running 1 test
+    test read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (26/29) zeppelin-embed-cypher::runtime_lowering compiled_read_final_check_discards_actual_completed_output_and_all_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_final_check_discards_actual_completed_output_and_all_owners ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (27/29) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+  stdout ───
+
+    running 1 test
+    test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.566s] (28/29) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s
+
+  stderr ───
+    prior=11 prepared=294 completed=300 fact_bytes=4144 admission_delta=272
+
+        PASS [   0.570s] (29/29) zeppelin-embed-cypher::runtime_lowering compiled_read_validation_reports_original_cumulative_work_exhaustion
+  stdout ───
+
+    running 1 test
+    test compiled_read_validation_reports_original_cumulative_work_exhaustion ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s

@@ -1,0 +1,49 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.02s
+────────────
+ Nextest run ID f07438bc-66df-4de0-8e6a-e05b24982e52 with nextest profile: default
+    Starting 41 tests across 3 binaries
+        PASS [   0.007s] ( 1/41) zeppelin-embed::graph_catalog catalog_budget_and_cancellation_refusals_preserve_private_state
+        PASS [   0.007s] ( 2/41) zeppelin-embed::graph_catalog catalog_document_corruption_rejects_unknown_enums_optional_tags_and_lengths
+        PASS [   0.007s] ( 3/41) zeppelin-embed::graph_catalog catalog_corruption_refuses_truncation_tags_overflow_duplicates_and_trailing_bytes
+        PASS [   0.007s] ( 4/41) zeppelin-embed::graph_catalog catalog_admission_refuses_every_changed_document_field_or_analyzer
+        PASS [   0.007s] ( 5/41) zeppelin-embed::graph_catalog catalog_long_name_lookup_observes_cancellation_during_comparison
+        PASS [   0.007s] ( 6/41) zeppelin-embed::graph_catalog catalog_long_interpretation_observes_cancellation_during_exact_comparison
+        PASS [   0.008s] ( 7/41) zeppelin-embed::graph_catalog catalog_independent_goldens_pin_full_identity_and_exact_document_declaration
+        PASS [   0.008s] ( 8/41) zeppelin-embed::graph_catalog catalog_optional_vectors_are_not_required_and_query_towers_do_not_change_documents
+        PASS [   0.008s] ( 9/41) zeppelin-embed::graph_catalog catalog_reconstruction_preserves_exact_names_domains_and_high_waters
+        PASS [   0.008s] (10/41) zeppelin-embed::graph_catalog catalog_reconstruction_cancels_during_long_shared_prefix_sorting
+        PASS [   0.007s] (11/41) zeppelin-embed::graph_catalog catalog_symbols_preserve_full_width_and_refuse_zero_or_overflow
+        PASS [   0.008s] (12/41) zeppelin-embed::graph_catalog catalog_rejects_duplicate_assignments_and_regressed_high_waters
+        PASS [   0.008s] (13/41) zeppelin-embed::graph_catalog logical_catalog_roundtrip_preserves_store_symbols_counters_and_optional_space
+        PASS [   0.007s] (14/41) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+        PASS [   0.007s] (15/41) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+        PASS [   0.011s] (16/41) zeppelin-embed::graph_catalog catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
+        PASS [   0.007s] (17/41) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+        PASS [   0.007s] (18/41) zeppelin-embed::graph_query_plan completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape
+        PASS [   0.008s] (19/41) zeppelin-embed::graph_query_plan aliased_large_literal_backing_is_charged_once
+        PASS [   0.007s] (20/41) zeppelin-embed::graph_query_plan correlated_optional_preserves_an_existing_relationship_binding
+        PASS [   0.007s] (21/41) zeppelin-embed::graph_query_plan inner_join_accepts_and_narrows_compatible_optional_bindings
+        PASS [   0.007s] (22/41) zeppelin-embed::graph_query_plan expression_dags_and_parameter_bindings_reject_cycles_types_and_entities
+        PASS [   0.007s] (23/41) zeppelin-embed::graph_query_plan eager_search_obligations_survive_limit_zero_and_require_singleton_sources
+        PASS [   0.006s] (24/41) zeppelin-embed::graph_query_plan mutation_items_bind_new_entities_in_order_and_validate_every_rhs
+        PASS [   0.007s] (25/41) zeppelin-embed::graph_query_plan pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension
+        PASS [   0.007s] (26/41) zeppelin-embed::graph_query_plan plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity
+        PASS [   0.007s] (27/41) zeppelin-embed::graph_query_plan mutations_require_eager_input_and_reject_following_reads_or_search
+        PASS [   0.007s] (28/41) zeppelin-embed::graph_query_plan retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity
+        PASS [   0.007s] (29/41) zeppelin-embed::graph_query_plan relational_barriers_preserve_declared_order_until_a_join_or_distinct
+        PASS [   0.007s] (30/41) zeppelin-embed::graph_query_plan renamed_origins_remain_checked_through_multiple_patterns
+        PASS [   0.016s] (31/41) zeppelin-embed::graph_query_plan plan_hard_caps_accept_exact_nodes_depth_and_scope_width
+        PASS [   0.008s] (32/41) zeppelin-embed::graph_query_plan search_sources_and_evaluated_bounds_never_clamp_invalid_requests
+        PASS [   0.008s] (33/41) zeppelin-embed::graph_query_plan reused_pattern_variables_use_fresh_candidates_equality_and_reprojection
+        PASS [   0.008s] (34/41) zeppelin-embed::graph_query_plan shared_relationship_origins_survive_lookup_joins_and_slot_renames
+        PASS [   0.007s] (35/41) zeppelin-embed::graph_query_plan structured_lookup_uses_distinct_full_ids_and_symbolic_keys
+        PASS [   0.007s] (36/41) zeppelin-embed::graph_query_plan typed_pattern_requires_array_and_every_alternative_name_backing
+        PASS [   0.007s] (37/41) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+        PASS [   0.007s] (38/41) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+        PASS [   0.007s] (39/41) zeppelin-embed::graph_query_plan typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations
+        PASS [   0.007s] (40/41) zeppelin-embed::graph_query_plan typed_plan_revalidates_shared_expressions_after_with_scope
+        PASS [   0.007s] (41/41) zeppelin-embed::graph_query_plan typed_scalar_expression_forms_validate_entity_and_operand_kinds
+────────────
+     Summary [   0.080s] 41 tests run: 41 passed, 0 skipped

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed-cypher",
+    "--lib",
+    "-E",
+    "test(copied_text_preserves_four_byte_boundary_and_polls_every_validation_window)",
+    "--success-output",
+    "final"
+  ],
+  "env": {
+    "CARGO_TARGET_DIR": "/tmp/ze-126-resource-review/target"
+  },
+  "mutation": "Bypass only copied-text original control callback with Ok; leave helper algorithm unchanged",
+  "red_exit": 100,
+  "green_exit": 0,
+  "restored_sha256": "1ac3dc5093dda21e1cd01ee7b01ac54058178f95d7c3a1ff1022e8241d251b52",
+  "exact_restore": true
+}

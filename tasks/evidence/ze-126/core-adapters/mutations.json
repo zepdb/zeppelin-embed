@@ -1,0 +1,48 @@
+{
+  "results": [
+    {
+      "name": "04-scratch-green",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_compiled_context"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "05-fact-credit-mutant-red",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_compiled_context",
+        "-E",
+        "test(charged_fact_arena_is_credited_once)"
+      ],
+      "exit": 100
+    },
+    {
+      "name": "06-reset-value-context-mutant-red",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed",
+        "--test",
+        "graph_compiled_context",
+        "-E",
+        "test(borrowed_driver_keeps_prior_validation) | test(borrowed_driver_cannot_restart)"
+      ],
+      "exit": 100
+    }
+  ],
+  "restored": true
+}

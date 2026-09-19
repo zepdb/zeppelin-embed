@@ -1,0 +1,63 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+error[E0599]: no method named `validate_plan` found for struct `zeppelin_embed::property_graph::query::resources::QueryArena<'m, 'g, T>` in the current scope
+  --> crates/zeppelin-embed/tests/graph_compiled_context.rs:66:37
+   |
+66 |     let (plan, facts_owner) = facts.validate_plan(
+   |                               ------^^^^^^^^^^^^^ method not found in `QueryArena<'_, '_, NodeFacts>`
+   |
+   = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/graph_compiled_context-b982ed3ac0b0729a.long-type-9596889882880727072.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0599]: no method named `validate_plan` found for struct `zeppelin_embed::property_graph::query::resources::QueryArena<'m, 'g, T>` in the current scope
+   --> crates/zeppelin-embed/tests/graph_compiled_context.rs:102:39
+    |
+102 | ...   let (plan, owner) = facts.validate_plan(PlanDescription { operators: &operators, expressions: &[], parameters: &[], root: PlanNodeI...
+    |                                 ^^^^^^^^^^^^^ method not found in `QueryArena<'_, '_, NodeFacts>`
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/target/debug/deps/graph_compiled_context-b982ed3ac0b0729a.long-type-7878795813977332002.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0282]: type annotations needed
+   --> crates/zeppelin-embed/tests/graph_compiled_context.rs:103:24
+    |
+103 |             assert_eq!(plan.facts(PlanNodeId(0)).unwrap().width(), 0);
+    |                        ^^^^ cannot infer type
+
+error[E0425]: cannot find function `execute_in` in this scope
+   --> crates/zeppelin-embed/tests/graph_compiled_context.rs:150:26
+    |
+150 |   ...   let result = execute_in(context, plan, &mut source, &mut completion, ExecutionCapacity { batch_rows: 1, result_rows: 1, ..Execution...
+    |                      ^^^^^^^^^^ help: a function with a similar name exists: `execute`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:207:1
+    |
+207 | / pub fn execute<
+208 | |     'm,
+209 | |     'g,
+210 | |     V: RetainedView,
+...   |
+221 | |     limits: RuntimeLimits,
+222 | | ) -> Result<Execution<C::Output>, RuntimeFailure> {
+    | |_________________________________________________- similarly named function `execute` defined here
+
+error[E0425]: cannot find function `execute_in` in this scope
+   --> crates/zeppelin-embed/tests/graph_compiled_context.rs:174:27
+    |
+174 |   ...   let failure = execute_in(context, plan, &mut source, &mut completion, ExecutionCapacity::default()).err().expect("prior work must r...
+    |                       ^^^^^^^^^^ help: a function with a similar name exists: `execute`
+    |
+   ::: /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs:207:1
+    |
+207 | / pub fn execute<
+208 | |     'm,
+209 | |     'g,
+210 | |     V: RetainedView,
+...   |
+221 | |     limits: RuntimeLimits,
+222 | | ) -> Result<Execution<C::Output>, RuntimeFailure> {
+    | |_________________________________________________- similarly named function `execute` defined here
+
+Some errors have detailed explanations: E0282, E0425, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (test "graph_compiled_context") due to 5 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_compiled_context` exited with code 101

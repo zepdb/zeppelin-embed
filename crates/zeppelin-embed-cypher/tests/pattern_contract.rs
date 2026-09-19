@@ -472,6 +472,7 @@ fn with_pattern_plan<T>(
                         direction: Direction::Outgoing,
                         relationship_types: &types.as_slice()[fixed_count..],
                         pattern: PatternId(1),
+                        completed_edge_predicate: None,
                         edge_predicate: Some(EdgePredicate {
                             current_edge: CURRENT_EDGE,
                             expression: edge_predicate,

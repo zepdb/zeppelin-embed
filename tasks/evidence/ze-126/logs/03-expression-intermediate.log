@@ -1,0 +1,86 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+────────────
+ Nextest run ID d20f01bc-9be9-4233-8d35-93829dd29de2 with nextest profile: default
+    Starting 2 tests across 1 binary
+        FAIL [   0.018s] (1/2) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+  stdout ───
+
+    running 1 test
+    test read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions' (34727839) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:38:13:
+    assertion failed: matches!(plan.expressions[right.0 as usize],
+        Expression::Literal(Literal::I64(-1)))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.018s] (2/2) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_scalar_projection_and_exact_source_spans ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_copies_scalar_projection_and_exact_source_spans
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_copies_scalar_projection_and_exact_source_spans' (34727838) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:76:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.018s] 2 tests run: 0 passed, 2 failed, 0 skipped
+        FAIL [   0.018s] (1/2) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+  stdout ───
+
+    running 1 test
+    test read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions' (34727839) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:38:13:
+    assertion failed: matches!(plan.expressions[right.0 as usize],
+        Expression::Literal(Literal::I64(-1)))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.018s] (2/2) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+  stdout ───
+
+    running 1 test
+    test read_lowering_copies_scalar_projection_and_exact_source_spans ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_copies_scalar_projection_and_exact_source_spans
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_copies_scalar_projection_and_exact_source_spans' (34727838) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:76:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

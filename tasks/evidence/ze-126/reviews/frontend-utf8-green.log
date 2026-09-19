@@ -1,0 +1,80 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-utf8-review/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/private/tmp/ze-126-utf8-review/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.90s
+────────────
+ Nextest run ID dcc0b75c-9015-422a-8567-83390ce8bf43 with nextest profile: default
+    Starting 7 tests across 4 binaries (8 tests skipped)
+        PASS [   0.007s] (1/7) zeppelin-embed-cypher lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window
+        PASS [   0.008s] (2/7) zeppelin-embed-cypher::runtime_lowering compiled_read_final_check_discards_actual_completed_output_and_all_owners
+        PASS [   0.023s] (3/7) zeppelin-embed-cypher::resource_review copied_parameter_can_exceed_a_single_utf8_checkpoint_chunk
+        PASS [   0.023s] (4/7) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+        PASS [   0.008s] (5/7) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+        PASS [   0.571s] (6/7) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+        PASS [   0.571s] (7/7) zeppelin-embed-cypher::runtime_lowering compiled_read_validation_reports_original_cumulative_work_exhaustion
+────────────
+     Summary [   0.595s] 7 tests run: 7 passed, 8 skipped
+        PASS [   0.007s] (1/7) zeppelin-embed-cypher lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window
+  stdout ───
+
+    running 1 test
+    test lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (2/7) zeppelin-embed-cypher::runtime_lowering compiled_read_final_check_discards_actual_completed_output_and_all_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_final_check_discards_actual_completed_output_and_all_owners ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.023s] (3/7) zeppelin-embed-cypher::resource_review copied_parameter_can_exceed_a_single_utf8_checkpoint_chunk
+  stdout ───
+
+    running 1 test
+    test copied_parameter_can_exceed_a_single_utf8_checkpoint_chunk ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+
+  stderr ───
+    accepted copied parameter bytes=131074 peak=597070
+
+        PASS [   0.023s] (4/7) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+  stdout ───
+
+    running 1 test
+    test read_lowering_large_copied_parameter_preserves_split_four_byte_utf8 ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.02s
+
+
+        PASS [   0.008s] (5/7) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+  stdout ───
+
+    running 1 test
+    test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.571s] (6/7) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s
+
+  stderr ───
+    prior=11 prepared=299 completed=305 fact_bytes=4144 admission_delta=272
+
+        PASS [   0.571s] (7/7) zeppelin-embed-cypher::runtime_lowering compiled_read_validation_reports_original_cumulative_work_exhaustion
+  stdout ───
+
+    running 1 test
+    test compiled_read_validation_reports_original_cumulative_work_exhaustion ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s

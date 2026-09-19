@@ -1,0 +1,9 @@
+warning: function `check` is never used
+ --> /tmp/ze-126/positive.rs:3:4
+  |
+3 | fn check(memory: &QueryMemory<'_>, context: &mut ValueContext<'_>) {
+  |    ^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted

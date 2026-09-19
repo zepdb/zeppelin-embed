@@ -1,0 +1,55 @@
+[
+  {
+    "name": "runner-clippy-green",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 10.093
+  },
+  {
+    "name": "pg17-green",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(one_runner_episode_reaches_required_lowering_contracts)",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 8.7
+  },
+  {
+    "name": "runner-format-green",
+    "command": [
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "tests/adversarial/graph_lowering.rs"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.045
+  }
+]

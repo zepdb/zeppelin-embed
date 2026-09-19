@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+────────────
+ Nextest run ID f92e977b-ce4a-41e7-8008-35d02fba714c with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.015s] (1/2) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+        PASS [   0.564s] (2/2) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+────────────
+     Summary [   0.565s] 2 tests run: 2 passed, 0 skipped

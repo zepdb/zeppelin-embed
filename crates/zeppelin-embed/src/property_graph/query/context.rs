@@ -48,6 +48,18 @@ pub struct ValueContext<'a> {
     retained: Option<&'a dyn super::runtime::RetainedView>,
 }
 impl<'a> ValueContext<'a> {
+    /// The original caller control. This conveys no retained-view authority.
+    /// Compiler preparation can share this exact control without constructing a
+    /// second value context or a separate cancellation/deadline policy.
+    pub const fn control(&self) -> &'a QueryControl {
+        self.control
+    }
+    /// Original non-owning retained adapter, when supplied by runtime admission.
+    /// Borrowing this adapter acquires no view or reservation and cannot extend
+    /// its original lifetime. Compiler checkpoints use it before caller control.
+    pub const fn retained_view(&self) -> Option<&'a dyn super::runtime::RetainedView> {
+        self.retained
+    }
     /// Uses the existing deadline/cancellation mechanism and a tightened cap.
     pub fn new(
         view: &'a QueryView,

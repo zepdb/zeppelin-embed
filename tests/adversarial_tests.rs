@@ -19071,3 +19071,40 @@ fn one_runner_episode_reaches_required_native_directory_contracts() {
         );
     }
 }
+
+#[test]
+fn property_graph_lowering_probe_checks_complete_plans_and_inflight_faults() {
+    for seed in [0, 1, 126, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_lowering::probe(seed, &mut coverage)
+            .expect("PG17 independent complete plan oracle");
+        eprintln!("PG17 seed={seed} {report:?}");
+        assert_eq!(
+            (
+                report.comparisons,
+                report.fault_fires,
+                report.clean_controls,
+                report.comparator_fires
+            ),
+            (5, 4, 4, 16)
+        );
+        for key in adversarial::graph_lowering::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_lowering_contracts() {
+    let root = tempfile::tempdir().unwrap();
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_lowering::REQUIRED_COVERAGE {
+        assert!(outcome.coverage.count(key) > 0, "{key}");
+    }
+    eprintln!(
+        "PG17 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

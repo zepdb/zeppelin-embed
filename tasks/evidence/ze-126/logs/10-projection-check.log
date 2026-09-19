@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+────────────
+ Nextest run ID 56a74eb9-81c5-4036-9b86-5df580ed3676 with nextest profile: default
+    Starting 5 tests across 1 binary
+        PASS [   0.017s] (1/5) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.017s] (2/5) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        PASS [   0.017s] (3/5) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.017s] (4/5) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.012s] (5/5) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+────────────
+     Summary [   0.030s] 5 tests run: 5 passed, 0 skipped

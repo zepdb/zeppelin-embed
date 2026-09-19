@@ -1,0 +1,13 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.41s
+────────────
+ Nextest run ID fc7736d3-33a9-4cc4-9979-798fb5a9c785 with nextest profile: default
+    Starting 2 tests across 1 binary (463 tests skipped)
+        PASS [   0.101s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+        PASS [   0.830s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_lowering_contracts
+────────────
+     Summary [   0.830s] 2 tests run: 2 passed, 463 skipped

@@ -1,0 +1,7 @@
+{
+  "host": "Darwin arm64",
+  "macOS": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5388g\n",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "base_main": "736e8440221d4b53d797637e61840b53d0cdc7c7",
+  "imported_head": "beb1a1e44730b56494ec2cb4aafc5d9ea5419763"
+}

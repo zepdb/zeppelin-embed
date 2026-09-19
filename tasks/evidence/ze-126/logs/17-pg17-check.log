@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests/adversarial-oracle)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.57s
+────────────
+ Nextest run ID 737b2261-09ed-44be-a8a3-ed06f3da12d1 with nextest profile: default
+    Starting 1 test across 1 binary (463 tests skipped)
+        FAIL [   0.049s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_lowering_probe_checks_complete_plans_and_inflight_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.04s
+
+  stderr ───
+    PG17 seed=0 ProbeReport { comparisons: 4, fault_fires: 4, clean_controls: 4, comparator_fires: 12 }
+
+    thread 'property_graph_lowering_probe_checks_complete_plans_and_inflight_faults' (34832646) panicked at tests/adversarial_tests.rs:18981:75:
+    PG17 independent complete plan oracle: "PG17 expected Timeout, got Ok(())"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.051s] 1 test run: 0 passed, 1 failed, 463 skipped
+        FAIL [   0.049s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_lowering_probe_checks_complete_plans_and_inflight_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_lowering_probe_checks_complete_plans_and_inflight_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.04s
+
+  stderr ───
+    PG17 seed=0 ProbeReport { comparisons: 4, fault_fires: 4, clean_controls: 4, comparator_fires: 12 }
+
+    thread 'property_graph_lowering_probe_checks_complete_plans_and_inflight_faults' (34832646) panicked at tests/adversarial_tests.rs:18981:75:
+    PG17 independent complete plan oracle: "PG17 expected Timeout, got Ok(())"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

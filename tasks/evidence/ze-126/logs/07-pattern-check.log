@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+────────────
+ Nextest run ID 906c9932-9b8e-44cf-92b2-f50f50b0e973 with nextest profile: default
+    Starting 4 tests across 1 binary
+        PASS [   0.011s] (1/4) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        PASS [   0.011s] (2/4) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.011s] (3/4) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.011s] (4/4) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+────────────
+     Summary [   0.011s] 4 tests run: 4 passed, 0 skipped

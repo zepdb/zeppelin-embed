@@ -1,7 +1,10 @@
 use super::{MemoryError, QueryArena, QueryMemory, QueryReservation};
 use crate::property_graph::query::{
     ValueContext,
-    plan::{GraphPlan, PlanBacking, PlanFootprint, RetainedRegion, VALIDATION_SCRATCH_BYTES},
+    plan::{
+        GraphPlan, NodeFacts, PlanBacking, PlanDescription, PlanFootprint, RetainedRegion,
+        VALIDATION_SCRATCH_BYTES,
+    },
 };
 use std::marker::PhantomData;
 
@@ -69,6 +72,50 @@ impl<'a> RetainedAllocation<'a> {
             charged_owner,
             _borrow: PhantomData,
         })
+    }
+}
+
+impl QueryArena<'_, '_, NodeFacts> {
+    /// Validates using this arena's initialized facts and returns its authentic
+    /// full-capacity ownership certificate alongside the immutable plan.
+    /// Both loans retain this arena and its existing query charge; no numeric
+    /// region or claimed prepayment can supply that authority. The caller keeps
+    /// the remaining plan backing and validator scratch reserved separately.
+    /// The certificate retains the arena even when the plan is dropped:
+    /// ```compile_fail
+    /// use zeppelin_embed::property_graph::query::{ValueContext, plan::*, resources::*};
+    /// fn cannot_mutate<'plan, 'facts>(
+    ///     facts: &'facts mut QueryArena<'_, '_, NodeFacts>,
+    ///     description: PlanDescription<'plan>, footprint: PlanFootprint,
+    ///     backing: PlanBacking<'_>, context: &mut ValueContext<'_>,
+    /// ) -> Result<RetainedAllocation<'facts>, MemoryError> {
+    ///     let (_, owner) = facts.validate_plan(description, footprint, backing, context)?;
+    ///     facts.push(NodeFacts::default())?;
+    ///     Ok(owner)
+    /// }
+    /// ```
+    pub fn validate_plan<'plan, 'facts>(
+        &'facts mut self,
+        description: PlanDescription<'plan>,
+        footprint: PlanFootprint,
+        backing: PlanBacking<'_>,
+        context: &mut ValueContext<'_>,
+    ) -> Result<(GraphPlan<'plan, 'facts>, RetainedAllocation<'facts>), MemoryError> {
+        context.checkpoint()?;
+        let owner = RetainedAllocation::span(
+            self.values.as_ptr() as usize,
+            self.heap_bytes(),
+            Some(self.charge.memory as *const QueryMemory<'_> as usize),
+        )?;
+        let plan = GraphPlan::validate_with_fact_vec(
+            description,
+            &mut self.values,
+            footprint,
+            backing,
+            context,
+        )
+        .map_err(MemoryError::Plan)?;
+        Ok((plan, owner))
     }
 }
 

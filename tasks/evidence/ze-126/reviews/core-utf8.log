@@ -1,0 +1,94 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.52
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling rustix v1.1.3
+   Compiling autocfg v1.5.1
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling regex-syntax v0.8.11
+   Compiling bitflags v2.13.1
+   Compiling once_cell v1.21.4
+   Compiling serde_json v1.0.151
+   Compiling errno v0.3.14
+   Compiling itoa v1.0.18
+   Compiling anstyle v1.0.14
+   Compiling fastrand v2.4.1
+   Compiling clap_lex v1.1.0
+   Compiling memchr v2.8.3
+   Compiling either v1.17.0
+   Compiling ciborium-io v0.2.2
+   Compiling num-traits v0.2.19
+   Compiling wait-timeout v0.2.1
+   Compiling clap_builder v4.6.0
+   Compiling same-file v1.0.6
+   Compiling itertools v0.10.5
+   Compiling bit-vec v0.8.0
+   Compiling quick-error v1.2.3
+   Compiling cast v0.3.0
+   Compiling fnv v1.0.7
+   Compiling walkdir v2.5.0
+   Compiling is-terminal v0.4.17
+   Compiling bit-set v0.8.0
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling rand_core v0.9.5
+   Compiling unarray v0.1.4
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-utf8-review/crates/zeppelin-embed)
+   Compiling rand_xorshift v0.4.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling criterion-plot v0.5.0
+   Compiling regex-automata v0.4.18
+   Compiling tempfile v3.25.0
+   Compiling clap v4.6.1
+   Compiling rusty-fork v0.3.1
+   Compiling regex v1.13.1
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.17s
+────────────
+ Nextest run ID 5b0ea707-4425-4921-807d-1fa87252ef00 with nextest profile: default
+    Starting 3 tests across 1 binary
+        PASS [   0.008s] (1/3) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+        PASS [   0.008s] (2/3) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+        PASS [   0.008s] (3/3) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+────────────
+     Summary [   0.008s] 3 tests run: 3 passed, 0 skipped
+        PASS [   0.008s] (1/3) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+  stdout ───
+
+    running 1 test
+    test checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (2/3) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+  stdout ───
+
+    running 1 test
+    test checked_utf8_polls_each_window_and_preserves_exact_caller_error ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (3/3) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+  stdout ───
+
+    running 1 test
+    test checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s

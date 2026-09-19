@@ -1,0 +1,61 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+────────────
+ Nextest run ID d92a2909-c36f-4f36-85b1-f3b97e40c7b6 with nextest profile: default
+    Starting 12 tests across 1 binary
+        PASS [   0.015s] ( 1/12) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+        PASS [   0.014s] ( 2/12) zeppelin-embed-cypher::read_lowering read_lowering_alias_priority_and_hidden_keys_leave_only_projected_scope
+        PASS [   0.015s] ( 3/12) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.015s] ( 4/12) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+        PASS [   0.010s] ( 5/12) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        FAIL [   0.010s] ( 6/12) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+  stdout ───
+
+    running 1 test
+    test read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal' (34883385) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:450:13:
+    assertion `left == right` failed: RETURN 1 SKIP 1+1
+      left: Unsupported
+     right: InvalidRange
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.011s] ( 7/12) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.010s] ( 8/12) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.010s] ( 9/12) zeppelin-embed-cypher::read_lowering read_lowering_reused_bindings_use_fresh_candidates_and_exact_equalities
+        PASS [   0.010s] (10/12) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+        PASS [   0.027s] (11/12) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+        PASS [   0.010s] (12/12) zeppelin-embed-cypher::read_lowering read_lowering_zero_hop_optional_wildcard_preserves_direction_and_nullable_list
+────────────
+     Summary [   0.045s] 12 tests run: 11 passed, 1 failed, 0 skipped
+        FAIL [   0.010s] ( 6/12) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+  stdout ───
+
+    running 1 test
+    test read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal' (34883385) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:450:13:
+    assertion `left == right` failed: RETURN 1 SKIP 1+1
+      left: Unsupported
+     right: InvalidRange
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

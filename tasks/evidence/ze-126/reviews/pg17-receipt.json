@@ -1,0 +1,137 @@
+{
+  "base": "beb1a1e44730b56494ec2cb4aafc5d9ea5419763",
+  "scratch": "/tmp/ze-126-pg17-independent-scratch",
+  "overlays": [
+    {
+      "root": "/tmp/ze-126-semantic-review-1",
+      "inventory": "inventory.json",
+      "sha256": "2c6e01af32886494503d6e6c61fde0e88b0f2349e144e32f92fe417627264155",
+      "verified_files": 31
+    },
+    {
+      "root": "/tmp/ze-126-control-review-1",
+      "inventory": "inventory.json",
+      "sha256": "5bbef6172d2c451d093e5b683770ea3fc6de88b5b5fdb1ba996405cd04ded059",
+      "verified_files": 4
+    },
+    {
+      "root": "/tmp/ze-126-core-adapters/frozen",
+      "inventory": "../source-hashes.json",
+      "sha256": "aa241cea33ba700d007024ab46533ba7f5be8621e81d743306fc484969583f24",
+      "verified_files": 4
+    },
+    {
+      "root": "/tmp/ze-126-additions-review-1",
+      "inventory": "inventory.json",
+      "sha256": "c167ae5b590a65894bbb31150e670c8e7ac22f7202cf8e6666a068bfdc73d49a",
+      "verified_files": 16
+    },
+    {
+      "root": "/tmp/ze-126-pg17-review-1",
+      "inventory": "inventory.json",
+      "sha256": "eb122b9248deb67a12174d08e1e32e2e4a844f4421634a0e75f29bd05e2dd012",
+      "verified_files": 8
+    }
+  ],
+  "final_files": {
+    "crates/zeppelin-embed/src/property_graph/query/plan/accounting.rs": "dd6c53144bd5aee078bed5bdef95bab7e4cf88191b44a0981b0dfa19111045c3",
+    "crates/zeppelin-embed/src/property_graph/query/plan/expression.rs": "ef84f4148d54c3ef8fd8dbdaf5263c418a57d090e86fb506be192ca9340e6aab",
+    "crates/zeppelin-embed/src/property_graph/query/plan/lineage.rs": "6c30deebbe4807a9b262ff31ce96fc16863d9a855209f2c881c7e49317b36a14",
+    "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs": "464a640a418cd64fc93004e9dd9d96f84e8ba3845927614941a09db6541098a4",
+    "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs": "55f214b7d19e58149e32645d53e6e222404105e5d2281dce7f9ce5dead7da520",
+    "crates/zeppelin-embed/src/property_graph/query/plan/parameters.rs": "1e697ff17b20d051f119b2dabc0f1891db73d0902ca1dda98bc407222ab0cd7c",
+    "crates/zeppelin-embed/src/property_graph/query/plan/search.rs": "eac3af5f93ac6f00d6b600138344159dd2e9de844c680829d5e10327ca3c781b",
+    "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs": "248393a36fb221413aff72a5e815cac539937e11f78146108fe709bac6fdfbb8",
+    "crates/zeppelin-embed-cypher/src/ast.rs": "ed304fc09f082daf2559ceb23bbf69b700ee1b4de731d20efdf1392d080aded8",
+    "crates/zeppelin-embed-cypher/src/binding/expressions.rs": "9a477879e61faac90e5bfb135c8461cc2df9c2b66da842dbabdeff224861de5d",
+    "crates/zeppelin-embed-cypher/src/binding/mutation.rs": "c8216d5647b9aaa1dd686c8af03a5de310da8bbc6f532e6f935a142e523aa60b",
+    "crates/zeppelin-embed-cypher/src/binding/parameters.rs": "33ef3743ec238c50845658468c583911ec6120004a84d5a11640d8cd14b099c7",
+    "crates/zeppelin-embed-cypher/src/binding/patterns.rs": "9dea4c9d6d560200482e2b60743348b9019b7e542778d1088117a8543663f08e",
+    "crates/zeppelin-embed-cypher/src/binding/projection.rs": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5",
+    "crates/zeppelin-embed-cypher/src/binding/search.rs": "642add35510d3e71f2f9c86847f2dcde5830f86dcc2e6fed3291af6805f05c4b",
+    "crates/zeppelin-embed-cypher/src/binding.rs": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+    "crates/zeppelin-embed-cypher/src/lexer.rs": "789bf916ba4b462ea0d5bcbb1d72180a3b2a8634d672bda70c7e781ff191f282",
+    "crates/zeppelin-embed-cypher/src/lib.rs": "289887c3171f7f954289cbb5ff547f63710721102e058f7cc38b15c1e5be6e8e",
+    "crates/zeppelin-embed-cypher/src/lowering/context.rs": "e114fb7aa64f3cc632856cce014450a4e3e704f5883296dbce2bfd93155a11d1",
+    "crates/zeppelin-embed-cypher/src/lowering/expression.rs": "190b3001a327400a6ec28d574b677c7172b0eb27ef531f13134f74ee2cd9ef84",
+    "crates/zeppelin-embed-cypher/src/lowering/mod.rs": "a3841284c16f37db6fce2f02ba2c1be8a8282bef77697862e621ed6d0515cfcb",
+    "crates/zeppelin-embed-cypher/src/lowering/owned.rs": "1ac3dc5093dda21e1cd01ee7b01ac54058178f95d7c3a1ff1022e8241d251b52",
+    "crates/zeppelin-embed-cypher/src/lowering/parameters.rs": "9ae50d3bd23f574f5120f86d5b5a935e9194b012e5ed20c7b0895c2f64c11ae0",
+    "crates/zeppelin-embed-cypher/src/lowering/pattern.rs": "a4b9c9755df3fe898fb1ae7f4d7eedeaeca2b8d3528c8bc91ea4e6aec6b6ce7c",
+    "crates/zeppelin-embed-cypher/src/lowering/projection.rs": "b232d3d4a839007c3540e9b8e1b0efd888dc09dfce823075c53b66060bc7d05d",
+    "crates/zeppelin-embed-cypher/src/parser.rs": "fd9ada1adb02566359617eabd93dc9083d58637bd48b5bd5102e6501fe9cdade",
+    "crates/zeppelin-embed-cypher/src/resources.rs": "7de68182d82b700e0849e2cfb4070a4cbb6e624f7c5426d225dc250ad8a1d216",
+    "crates/zeppelin-embed-cypher/src/shared_resources.rs": "263b5a77c925fda674ccbcd482b1a974608c458c20b79cf3f277d727e5a8a850",
+    "crates/zeppelin-embed-cypher/tests/read_lowering.rs": "1b9aa05cf19b451a2a20c45f9cc31b792e7ed69b548efe6ea1cef2c26740901e",
+    "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs": "c6442e1a935b8efc0b40582537a1706c0d4287e671315ef737f2aad128865bc9",
+    "tasks/evidence/ze-126/scoped-interface.md": "287312a708fb7df2bc5aa9ea3a859961f4089a70a0d477789af08e9d06d8d1c6",
+    "crates/zeppelin-embed/src/property_graph/query/context.rs": "4d0311fc5a1550573746a8d98ec5c7623ae95819d945511c88ff35c1f2b90a17",
+    "crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs": "3c4f62895b55b2189a7e9b9a400c8973e5759601684414f78e11fd57a35226f9",
+    "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs": "86247f3a247088a65c0f2b25450d3c511be617c92812c0c6a72ad92d20320bb1",
+    "crates/zeppelin-embed/src/property_graph/query/runtime.rs": "fa447d95059cca0c86e15b61adf65eda88fe2a3f13182f9f04b8bbd1bcd0057a",
+    "crates/zeppelin-embed/tests/graph_compiled_context.rs": "4da216210861d1f7fcf45dc6ca1b6fa34caf7ed30e40e30b049be48062933b3b",
+    "crates/zeppelin-embed/src/property_graph/mod.rs": "4f26d7f08ff2fcf653eaa89592bcd3c5804e8c11716d8b334503a46bc588ea0f",
+    "crates/zeppelin-embed/src/property_graph/utf8.rs": "970f0f19f1f64a7c53d32707461c596acd9f9621fa2c182e84b1093ccf0f9fb0",
+    "crates/zeppelin-embed/src/property_graph/catalog/work.rs": "5c01ecd7b6f2b6b85ececd2d951b3f103b9768a66bb3a4fb9617b86ca154d997",
+    "crates/zeppelin-embed/tests/graph_checked_utf8.rs": "e6795cdd1c50347224bfeab3ff61f396cf6266850f3ae8fe0c4f804f4faa1f54",
+    "crates/zeppelin-embed/tests/graph_query_plan.rs": "77e9a4fd3d7fd50075bdad56157fcbe556f0b43f0cd0b54813d0974fd03b62e2",
+    "crates/zeppelin-embed-cypher/tests/pattern_contract.rs": "7587dc74a6ed078ee29d32ae4b1cfa0871080194649334a2c54d8f78ec6fdb2d",
+    "tests/adversarial/graph_lowering.rs": "e3778009b1c10a4e45bf74cbe31f43251613f772ddd3b234c6d1a4a3119f4034",
+    "tests/adversarial-oracle/src/graph_lowering.rs": "ffd1d1b9e80265e6aa2f0ca014a8c0836ee0548f4f02fedaba36e25dfe5d5137",
+    "tests/adversarial/mod.rs": "8d570bf6bff1c57b8d1c8f65905942996f4642b946e2fb9b5d7c5c8a00f770ed",
+    "tests/adversarial-oracle/src/lib.rs": "690c1b9008bb4e35e8c2486982531c6c5642db609de00b6af2c5ef7d3fb37a35",
+    "tests/adversarial/runner.rs": "98cb59aa6e370aa790329a736da0e50a4bec1bca10aa475ca3d825849c8ab1c1",
+    "tests/adversarial/coverage.rs": "b2a42bcadd509a71ce0369b6bdcc02cf9bf34aa55b1b83300cc6369c7c22d0c6",
+    "tests/adversarial_tests.rs": "a2475108e687d79541693083f2f265fccec3eaaeba4f987dd3fa48751399eb04",
+    "tests/adversarial/graph_query.rs": "450c518f3c4d58e900cf2833668d24a9ee24538c25d02a614d659cb0210d6675"
+  },
+  "verification": {
+    "final_overlay_files_after_run": 50,
+    "all_frozen_overlay_rows_after_run": 63,
+    "nextest_command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(one_runner_episode_reaches_required_lowering_contracts)",
+      "--success-output",
+      "immediate"
+    ],
+    "nextest_exit_code": 0,
+    "nextest_result": {
+      "passed": 2,
+      "skipped": 463,
+      "seeds": [
+        0,
+        1,
+        126,
+        18446744073709551615
+      ],
+      "per_seed": {
+        "comparisons": 5,
+        "fault_fires": 4,
+        "clean_controls": 4,
+        "comparator_fires": 16
+      },
+      "canonical_runner": {
+        "seed": 0,
+        "operations": 59,
+        "violations": 0
+      }
+    },
+    "log_sha256": "d04fa0ac468c2e29e1e77f2be5ca3a0df4786d32fad92eaf1b5a59e813c284af",
+    "oracle_standalone_command": [
+      "rustc",
+      "--edition=2024",
+      "--crate-type=lib",
+      "/tmp/ze-126-pg17-review-1/tests/adversarial-oracle/src/graph_lowering.rs",
+      "-o",
+      "/tmp/ze-126-pg17-independent-oracle.rlib"
+    ],
+    "oracle_standalone_exit_code": 0
+  }
+}

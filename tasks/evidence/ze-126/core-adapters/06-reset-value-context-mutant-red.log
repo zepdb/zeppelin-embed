@@ -1,0 +1,88 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-core-adapter-scratch/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.14s
+────────────
+ Nextest run ID f755b3d2-3014-43ad-8896-6b46f967d839 with nextest profile: default
+    Starting 2 tests across 1 binary (2 tests skipped)
+        FAIL [   0.010s] (1/2) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_keeps_prior_validation_value_and_operator_work ... FAILED
+
+    failures:
+
+    failures:
+        borrowed_driver_keeps_prior_validation_value_and_operator_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'borrowed_driver_keeps_prior_validation_value_and_operator_work' (34791513) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:278:13:
+    assertion `left == right` failed
+      left: 4
+     right: 58
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.565s] (2/2) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_cannot_restart_exhausted_value_work ... FAILED
+
+    failures:
+
+    failures:
+        borrowed_driver_cannot_restart_exhausted_value_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'borrowed_driver_cannot_restart_exhausted_value_work' (34791512) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:311:14:
+    prior work must remain consumed
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.566s] 2 tests run: 0 passed, 2 failed, 2 skipped
+        FAIL [   0.010s] (1/2) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_keeps_prior_validation_value_and_operator_work ... FAILED
+
+    failures:
+
+    failures:
+        borrowed_driver_keeps_prior_validation_value_and_operator_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'borrowed_driver_keeps_prior_validation_value_and_operator_work' (34791513) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:278:13:
+    assertion `left == right` failed
+      left: 4
+     right: 58
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.565s] (2/2) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_cannot_restart_exhausted_value_work ... FAILED
+
+    failures:
+
+    failures:
+        borrowed_driver_cannot_restart_exhausted_value_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'borrowed_driver_cannot_restart_exhausted_value_work' (34791512) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:311:14:
+    prior work must remain consumed
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

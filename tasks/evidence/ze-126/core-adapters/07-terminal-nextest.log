@@ -1,0 +1,237 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-core-adapter-scratch/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.05s
+────────────
+ Nextest run ID 925f6919-d352-4aab-86e6-668fa20ae7f1 with nextest profile: default
+    Starting 23 tests across 3 binaries
+        PASS [   0.010s] ( 1/23) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+        PASS [   0.010s] ( 2/23) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+        PASS [   0.010s] ( 3/23) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+        PASS [   0.009s] ( 4/23) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+        PASS [   0.009s] ( 5/23) zeppelin-embed::graph_query_runtime failed_variable_reservation_does_not_count_uncopied_bytes
+        PASS [   0.010s] ( 6/23) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+        PASS [   0.008s] ( 7/23) zeppelin-embed::graph_query_runtime flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids
+        PASS [   0.008s] ( 8/23) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+        PASS [   0.008s] ( 9/23) zeppelin-embed::graph_query_runtime flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure
+        PASS [   0.008s] (10/23) zeppelin-embed::graph_query_runtime query_and_writer_share_one_backing_charge_with_nested_local_limits
+        PASS [   0.008s] (11/23) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+        PASS [   0.008s] (12/23) zeppelin-embed::graph_query_runtime retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans
+        PASS [   0.008s] (13/23) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+        PASS [   0.008s] (14/23) zeppelin-embed::graph_query_runtime runtime_counters_enforce_limits_before_work_and_keep_one_view_control
+        PASS [   0.009s] (15/23) zeppelin-embed::graph_query_runtime_control close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel
+        PASS [   0.008s] (16/23) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+        PASS [   0.007s] (17/23) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+        PASS [   0.007s] (18/23) zeppelin-embed::graph_query_runtime_control factory_retains_real_buffers_through_three_stages_and_many_batches
+        PASS [   0.008s] (19/23) zeppelin-embed::graph_query_runtime_control factory_composes_production_relational_owners_and_releases_failed_preparation
+        PASS [   0.008s] (20/23) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+        PASS [   0.009s] (21/23) zeppelin-embed::graph_query_runtime_control failed_last_pull_and_completion_cancellation_never_expose_partial_output
+        PASS [   0.093s] (22/23) zeppelin-embed::graph_query_runtime packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload
+        PASS [   0.551s] (23/23) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+────────────
+     Summary [   0.552s] 23 tests run: 23 passed, 0 skipped
+        PASS [   0.010s] ( 1/23) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_keeps_prior_validation_value_and_operator_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 2/23) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+  stdout ───
+
+    running 1 test
+    test charged_fact_arena_is_credited_once_and_rejects_another_query_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 3/23) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 4/23) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+  stdout ───
+
+    running 1 test
+    test execution_plan_requires_retained_owners_for_every_visible_span ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 5/23) zeppelin-embed::graph_query_runtime failed_variable_reservation_does_not_count_uncopied_bytes
+  stdout ───
+
+    running 1 test
+    test failed_variable_reservation_does_not_count_uncopied_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 6/23) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+  stdout ───
+
+    running 1 test
+    test cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 7/23) zeppelin-embed::graph_query_runtime flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids
+  stdout ───
+
+    running 1 test
+    test flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 8/23) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+  stdout ───
+
+    running 1 test
+    test graph_resources_share_store_reservations_and_record_transient_peak ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 9/23) zeppelin-embed::graph_query_runtime flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure
+  stdout ───
+
+    running 1 test
+    test flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/23) zeppelin-embed::graph_query_runtime query_and_writer_share_one_backing_charge_with_nested_local_limits
+  stdout ───
+
+    running 1 test
+    test query_and_writer_share_one_backing_charge_with_nested_local_limits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/23) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... runtime audit: graph_attributed=48 graph_allocations=2 legacy_unattributed=112 legacy_allocations=2 second_lease_allocations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/23) zeppelin-embed::graph_query_runtime retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans
+  stdout ───
+
+    running 1 test
+    test retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/23) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+  stdout ───
+
+    running 1 test
+    test query_arena_charges_actual_capacity_overlap_and_releases_on_failure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/23) zeppelin-embed::graph_query_runtime runtime_counters_enforce_limits_before_work_and_keep_one_view_control
+  stdout ───
+
+    running 1 test
+    test runtime_counters_enforce_limits_before_work_and_keep_one_view_control ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (15/23) zeppelin-embed::graph_query_runtime_control close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel
+  stdout ───
+
+    running 1 test
+    test close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (16/23) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+  stdout ───
+
+    running 1 test
+    test eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (17/23) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+  stdout ───
+
+    running 1 test
+    test every_cumulative_work_cap_checks_exact_boundary_and_overflow ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (18/23) zeppelin-embed::graph_query_runtime_control factory_retains_real_buffers_through_three_stages_and_many_batches
+  stdout ───
+
+    running 1 test
+    test factory_retains_real_buffers_through_three_stages_and_many_batches ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (19/23) zeppelin-embed::graph_query_runtime_control factory_composes_production_relational_owners_and_releases_failed_preparation
+  stdout ───
+
+    running 1 test
+    test factory_composes_production_relational_owners_and_releases_failed_preparation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (20/23) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+  stdout ───
+
+    running 1 test
+    test failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (21/23) zeppelin-embed::graph_query_runtime_control failed_last_pull_and_completion_cancellation_never_expose_partial_output
+  stdout ───
+
+    running 1 test
+    test failed_last_pull_and_completion_cancellation_never_expose_partial_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.093s] (22/23) zeppelin-embed::graph_query_runtime packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload
+  stdout ───
+
+    running 1 test
+    test packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.09s
+
+
+        PASS [   0.551s] (23/23) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_cannot_restart_exhausted_value_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.54s

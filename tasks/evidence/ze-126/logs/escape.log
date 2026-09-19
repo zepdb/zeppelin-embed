@@ -1,0 +1,19 @@
+error: lifetime may not live long enough
+ --> /tmp/ze-126/escape.rs:4:96
+  |
+4 |  let _ = compile_read_in("RETURN 1", &[], CompileLimits::default(), memory, context, |read, _| Ok(read));
+  |                                                                                       ----   - ^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+  |                                                                                       |      |
+  |                                                                                       |      return type of closure is Result<LoweredRead<'2, '_>, ParseError>
+  |                                                                                       has type `LoweredRead<'1, '_>`
+
+error: lifetime may not live long enough
+ --> /tmp/ze-126/escape.rs:4:96
+  |
+4 |  let _ = compile_read_in("RETURN 1", &[], CompileLimits::default(), memory, context, |read, _| Ok(read));
+  |                                                                                       ----   - ^^^^^^^^ returning this value requires that `'3` must outlive `'4`
+  |                                                                                       |      |
+  |                                                                                       |      return type of closure is Result<LoweredRead<'_, '4>, ParseError>
+  |                                                                                       has type `LoweredRead<'_, '3>`
+
+error: aborting due to 2 previous errors

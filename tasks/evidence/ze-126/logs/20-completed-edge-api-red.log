@@ -1,0 +1,29 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+error[E0422]: cannot find struct, variant or union type `CompletedEdgePredicate` in this scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:2132:42
+     |
+2132 |         *completed_edge_predicate = Some(CompletedEdgePredicate {current_edge: SlotId(42), expression: ExprId(4)});
+     |                                          ^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `CompletedEdgePredicate` in this scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:2146:61
+     |
+2146 |         *edge_predicate=None;*completed_edge_predicate=Some(CompletedEdgePredicate {current_edge:SlotId(private),expression:ExprId(4)});
+     |                                                             ^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0026]: variant `BoundedExpand` does not have a field named `completed_edge_predicate`
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:2130:59
+     |
+2130 |         let OperatorKind::BoundedExpand { edge_predicate, completed_edge_predicate, .. } = &mut operators[2].kind else {unreachable!()};
+     |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^ variant `BoundedExpand` does not have this field
+
+error[E0026]: variant `BoundedExpand` does not have a field named `completed_edge_predicate`
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:2145:57
+     |
+2145 |         let OperatorKind::BoundedExpand {edge_predicate,completed_edge_predicate,..}=&mut operators[2].kind else {unreachable!()};
+     |                                                         ^^^^^^^^^^^^^^^^^^^^^^^^ variant `BoundedExpand` does not have this field
+
+Some errors have detailed explanations: E0026, E0422.
+For more information about an error, try `rustc --explain E0026`.
+error: could not compile `zeppelin-embed` (test "graph_query_plan") due to 4 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_query_plan` exited with code 101

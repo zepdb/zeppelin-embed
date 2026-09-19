@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.94s
+────────────
+ Nextest run ID 48b286da-6154-4c07-9cb3-c82d18fa8251 with nextest profile: default
+    Starting 4 tests across 2 binaries (23 tests skipped)
+        PASS [   0.008s] (1/4) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+        PASS [   0.008s] (2/4) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+        PASS [   0.008s] (3/4) zeppelin-embed::graph_query_plan completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape
+        PASS [   0.008s] (4/4) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+────────────
+     Summary [   0.008s] 4 tests run: 4 passed, 23 skipped

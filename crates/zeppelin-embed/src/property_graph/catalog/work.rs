@@ -90,25 +90,8 @@ pub(super) fn utf8<'a>(
     bytes: &'a [u8],
     checkpoint: Checkpoint<'_>,
 ) -> Result<&'a str, CatalogError> {
-    let mut remaining = bytes;
-    while !remaining.is_empty() {
-        checkpoint()?;
-        let length = remaining.len().min(CHUNK);
-        let part = remaining.get(..length).ok_or(CatalogError::Malformed)?;
-        let consumed = match std::str::from_utf8(part) {
-            Ok(_) => length,
-            Err(error) if error.error_len().is_none() && length < remaining.len() => {
-                error.valid_up_to()
-            }
-            Err(_) => return Err(CatalogError::Malformed),
-        };
-        if consumed == 0 {
-            return Err(CatalogError::Malformed);
-        }
-        remaining = remaining.get(consumed..).ok_or(CatalogError::Malformed)?;
-    }
-    // SAFETY: every byte was validated in complete UTF-8 spans above. A partial
-    // code point at a chunk boundary remains in `remaining` for the next check.
-    // The immutable borrowed bytes cannot change between validation and this cast.
-    Ok(unsafe { std::str::from_utf8_unchecked(bytes) })
+    crate::property_graph::checked_utf8(bytes, checkpoint).map_err(|error| match error {
+        crate::property_graph::Utf8CheckError::Invalid => CatalogError::Malformed,
+        crate::property_graph::Utf8CheckError::Control(error) => error,
+    })
 }

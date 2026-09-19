@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::checked_utf8`, `zeppelin_embed::property_graph::Utf8CheckError`
+ --> crates/zeppelin-embed/tests/graph_checked_utf8.rs:2:38
+  |
+2 | use zeppelin_embed::property_graph::{checked_utf8,Utf8CheckError};
+  |                                      ^^^^^^^^^^^^ ^^^^^^^^^^^^^^ no `Utf8CheckError` in `property_graph`
+  |                                      |
+  |                                      no `checked_utf8` in `property_graph`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_checked_utf8") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_checked_utf8` exited with code 101

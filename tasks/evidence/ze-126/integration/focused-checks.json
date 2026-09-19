@@ -1,0 +1,80 @@
+[
+  {
+    "name": "frontend",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--lib",
+      "--test",
+      "read_lowering",
+      "--test",
+      "runtime_lowering",
+      "--test",
+      "lowering_allocation",
+      "--test",
+      "lowering_semantics",
+      "--test",
+      "pattern_contract",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 23.631,
+    "log": "/tmp/ze-126-main-integration/frontend.log"
+  },
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit,test-support",
+      "--test",
+      "graph_query_plan",
+      "--test",
+      "graph_checked_utf8",
+      "--test",
+      "graph_catalog",
+      "--test",
+      "graph_compiled_context",
+      "--test",
+      "graph_completed_predicate",
+      "--test",
+      "graph_query_runtime",
+      "--test",
+      "graph_query_runtime_control",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 28.154,
+    "log": "/tmp/ze-126-main-integration/core.log"
+  },
+  {
+    "name": "runner",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(one_runner_episode_reaches_required_lowering_contracts) | test(property_graph_binding_probe_preserves_profile_types_and_faults) | test(property_graph_relational_probe_preserves_order_bags_and_inflight_faults) | test(completed_owner_probe_preserves_bits_bags_and_real_fault_controls) | test(property_graph_response_probe_checks_real_owners_and_paired_faults) | test(property_graph_directories_probe_checks_native_roots_and_independent_history)",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 35.176,
+    "log": "/tmp/ze-126-main-integration/runner.log"
+  }
+]

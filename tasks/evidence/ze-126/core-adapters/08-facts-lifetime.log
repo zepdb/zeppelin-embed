@@ -1,0 +1,32 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-core-adapter-scratch/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+   Doc-tests zeppelin_embed
+
+running 1 test
+test crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs - property_graph::query::resources::inputs::QueryArena<'_,'_,NodeFacts>::validate_plan (line 85) - compile fail ... ok
+
+successes:
+
+---- crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs - property_graph::query::resources::inputs::QueryArena<'_,'_,NodeFacts>::validate_plan (line 85) stdout ----
+error[E0499]: cannot borrow `*facts` as mutable more than once at a time
+  --> crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs:94:5
+   |
+ 6 | fn cannot_mutate<'plan, 'facts>(
+   |                         ------ lifetime `'facts` defined here
+...
+11 |     let (_, owner) = facts.validate_plan(description, footprint, backing, context)?;
+   |                      ----- first mutable borrow occurs here
+12 |     facts.push(NodeFacts::default())?;
+   |     ^^^^^ second mutable borrow occurs here
+13 |     Ok(owner)
+   |     --------- returning this value requires that `*facts` is borrowed for `'facts`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0499`.
+
+
+successes:
+    crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs - property_graph::query::resources::inputs::QueryArena<'_,'_,NodeFacts>::validate_plan (line 85)
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s

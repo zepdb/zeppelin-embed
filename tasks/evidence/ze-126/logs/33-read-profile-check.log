@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+────────────
+ Nextest run ID 9815631c-8b9e-4e39-a626-4a7aa8335f13 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors_and_explicit_call_refusal
+────────────
+     Summary [   0.009s] 1 test run: 1 passed, 11 skipped

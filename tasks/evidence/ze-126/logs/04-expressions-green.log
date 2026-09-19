@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+────────────
+ Nextest run ID 09720c36-6a83-4a24-b1f6-a26968e2a975 with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.009s] (1/2) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.009s] (2/2) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+────────────
+     Summary [   0.010s] 2 tests run: 2 passed, 0 skipped

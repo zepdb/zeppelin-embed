@@ -1,0 +1,60 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+────────────
+ Nextest run ID ad1b313b-1201-4413-a017-3a43b40fa9f4 with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.030s] (1/2) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+        FAIL [   0.031s] (2/2) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... FAILED
+
+    failures:
+
+    failures:
+        compiled_read_drains_through_the_same_runtime_context_and_real_owners
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'compiled_read_drains_through_the_same_runtime_context_and_real_owners' (34812890) panicked at crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:102:21:
+    assertion `left == right` failed
+      left: (7, 300)
+     right: (7, 298)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.032s] 2 tests run: 1 passed, 1 failed, 0 skipped
+        PASS [   0.030s] (1/2) zeppelin-embed-cypher::runtime_lowering compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel
+  stdout ───
+
+    running 1 test
+    test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        FAIL [   0.031s] (2/2) zeppelin-embed-cypher::runtime_lowering compiled_read_drains_through_the_same_runtime_context_and_real_owners
+  stdout ───
+
+    running 1 test
+    test compiled_read_drains_through_the_same_runtime_context_and_real_owners ... FAILED
+
+    failures:
+
+    failures:
+        compiled_read_drains_through_the_same_runtime_context_and_real_owners
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'compiled_read_drains_through_the_same_runtime_context_and_real_owners' (34812890) panicked at crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:102:21:
+    assertion `left == right` failed
+      left: (7, 300)
+     right: (7, 298)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

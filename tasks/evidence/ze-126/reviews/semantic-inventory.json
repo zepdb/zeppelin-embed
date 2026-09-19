@@ -1,0 +1,162 @@
+{
+  "base": "736e8440221d4b53d797637e61840b53d0cdc7c7",
+  "head": "beb1a1e44730b56494ec2cb4aafc5d9ea5419763",
+  "source": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126",
+  "entries": [
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/accounting.rs",
+      "sha256": "dd6c53144bd5aee078bed5bdef95bab7e4cf88191b44a0981b0dfa19111045c3",
+      "head_blob": "54b3edcb8a1255a5a8152175c1a23085abb334cb"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/expression.rs",
+      "sha256": "ef84f4148d54c3ef8fd8dbdaf5263c418a57d090e86fb506be192ca9340e6aab",
+      "head_blob": "03e611404a7f25f2cbd85830c4558f741eb0ed68"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/lineage.rs",
+      "sha256": "6c30deebbe4807a9b262ff31ce96fc16863d9a855209f2c881c7e49317b36a14",
+      "head_blob": "4227cffef1a8177529d1ae730f2b9c004706aa1f"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+      "sha256": "945b228dfc39803e3375876ccd2c9fda8ed51f4574d63d160ef9aeaaca216611",
+      "head_blob": "3b9dfaf3fdc59925548c15bb8a04e81cae8b8d28"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs",
+      "sha256": "55f214b7d19e58149e32645d53e6e222404105e5d2281dce7f9ce5dead7da520",
+      "head_blob": "26d87e18697848c72428e2d801982245091f3ad0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/parameters.rs",
+      "sha256": "1e697ff17b20d051f119b2dabc0f1891db73d0902ca1dda98bc407222ab0cd7c",
+      "head_blob": "3f2934a3cdc41274e31dd8af91852c53cfeb5d2e"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/search.rs",
+      "sha256": "eac3af5f93ac6f00d6b600138344159dd2e9de844c680829d5e10327ca3c781b",
+      "head_blob": "986aa7e4549b150083d2167869d098b6ab06a920"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+      "sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec",
+      "head_blob": "2dc8ae498a4a404f7baf698c966612a7dcee060b"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/ast.rs",
+      "sha256": "ed304fc09f082daf2559ceb23bbf69b700ee1b4de731d20efdf1392d080aded8",
+      "head_blob": "e9f4d7a23a7cea6ecaf0f7119ef8945758cc51fe"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/expressions.rs",
+      "sha256": "9a477879e61faac90e5bfb135c8461cc2df9c2b66da842dbabdeff224861de5d",
+      "head_blob": "00671bb989000f80f4f43880cef7f2b4955ec762"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/mutation.rs",
+      "sha256": "c8216d5647b9aaa1dd686c8af03a5de310da8bbc6f532e6f935a142e523aa60b",
+      "head_blob": "109f7975ec089e3935a167dcff719da3d9c76b4a"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/parameters.rs",
+      "sha256": "33ef3743ec238c50845658468c583911ec6120004a84d5a11640d8cd14b099c7",
+      "head_blob": "b41567d1d45c2214109e3a42c8e78cf867bafdbd"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/patterns.rs",
+      "sha256": "9dea4c9d6d560200482e2b60743348b9019b7e542778d1088117a8543663f08e",
+      "head_blob": "bf8d82f0b728c2f391cb420abd5511b60959ff2b"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/projection.rs",
+      "sha256": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5",
+      "head_blob": "d9a0f30aa9ec6d5f7385c842be67678d2cea4efb"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding/search.rs",
+      "sha256": "642add35510d3e71f2f9c86847f2dcde5830f86dcc2e6fed3291af6805f05c4b",
+      "head_blob": "1cffb123c2c77fbc8188e86c2b7db2bb4cfd16af"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/binding.rs",
+      "sha256": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+      "head_blob": "15597a43923eac843a544e7101a2b362e3af73d1"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lexer.rs",
+      "sha256": "789bf916ba4b462ea0d5bcbb1d72180a3b2a8634d672bda70c7e781ff191f282",
+      "head_blob": "f80140a8813ab5ac2cdf271730ea5e0a75c9bfd8"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lib.rs",
+      "sha256": "289887c3171f7f954289cbb5ff547f63710721102e058f7cc38b15c1e5be6e8e",
+      "head_blob": "339dc0220f458e4fd17e5e74fbefd69cd99e8a13"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/context.rs",
+      "sha256": "e114fb7aa64f3cc632856cce014450a4e3e704f5883296dbce2bfd93155a11d1",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/context.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/expression.rs",
+      "sha256": "60726bdd4b9e64e8406a58950c8fb50f1922fd8b6f0b51d603d2519254415654",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/expression.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/mod.rs",
+      "sha256": "846ce0eab770b69b882050f6c76e3ef7799c5208316b45d08a2e5e358c776e25",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/mod.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/owned.rs",
+      "sha256": "7a8f9c16195e54785b0cfff5dcc9f6656c294594d201e269ea7c991b30709a64",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/owned.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/parameters.rs",
+      "sha256": "f6b3d0ccc12ab4b05c93e20d98592b778de596c3cc4cc3e47fac3a232d872a91",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/parameters.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/pattern.rs",
+      "sha256": "37197cb0443b568b3b6c72648773e4f8f068c6e54f4b6796e01decfb47f57bba",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/pattern.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/lowering/projection.rs",
+      "sha256": "b232d3d4a839007c3540e9b8e1b0efd888dc09dfce823075c53b66060bc7d05d",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/src/lowering/projection.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/parser.rs",
+      "sha256": "fd9ada1adb02566359617eabd93dc9083d58637bd48b5bd5102e6501fe9cdade",
+      "head_blob": "10ce221778011cc37081bc04a12c74361c8e2da8"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/resources.rs",
+      "sha256": "7de68182d82b700e0849e2cfb4070a4cbb6e624f7c5426d225dc250ad8a1d216",
+      "head_blob": "4e4d48c4d07d23a414357ce711b26172e5ec7b24"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/src/shared_resources.rs",
+      "sha256": "263b5a77c925fda674ccbcd482b1a974608c458c20b79cf3f277d727e5a8a850",
+      "head_blob": "39d68b9c911746b692e0f82bab2eba0cc68f6571"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
+      "sha256": "9fdf6c6858f9cfe3d913952778ccc8427c8d7b0f1675b185c4e1409c2d6aa274",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/tests/read_lowering.rs"
+    },
+    {
+      "path": "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+      "sha256": "2e7786d406380afeccd7cac43ca4d0c64f1a38df878cff43e562de4d82b54e42",
+      "head_blob": "HEAD:crates/zeppelin-embed-cypher/tests/runtime_lowering.rs"
+    },
+    {
+      "path": "tasks/evidence/ze-126/scoped-interface.md",
+      "sha256": "287312a708fb7df2bc5aa9ea3a859961f4089a70a0d477789af08e9d06d8d1c6",
+      "head_blob": "HEAD:tasks/evidence/ze-126/scoped-interface.md"
+    }
+  ]
+}

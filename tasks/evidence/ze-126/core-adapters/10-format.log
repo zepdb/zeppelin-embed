@@ -1,0 +1,2 @@
+rustfmt --check --edition 2024 --config skip_children=true [all four source-hashes.json paths]
+exit=0

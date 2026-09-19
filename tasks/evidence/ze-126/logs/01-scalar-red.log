@@ -1,0 +1,27 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+error[E0432]: unresolved import `zeppelin_embed_cypher::compile_read_in`
+ --> crates/zeppelin-embed-cypher/tests/read_lowering.rs:9:44
+  |
+9 | use zeppelin_embed_cypher::{CompileLimits, compile_read_in};
+  |                                            ^^^^^^^^^^^^^^^
+  |                                            |
+  |                                            no `compile_read_in` in the root
+  |                                            help: a similar name exists in the module: `compile_in`
+
+error[E0282]: type annotations needed
+  --> crates/zeppelin-embed-cypher/tests/read_lowering.rs:34:80
+   |
+34 |         compile_read_in(text, &[], CompileLimits::default(), memory, context, |read| {
+   |                                                                                ^^^^
+35 |             let description = read.plan().description();
+   |                               ---- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+34 |         compile_read_in(text, &[], CompileLimits::default(), memory, context, |read: /* Type */| {
+   |                                                                                    ++++++++++++
+
+Some errors have detailed explanations: E0282, E0432.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed-cypher` (test "read_lowering") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-cypher --test read_lowering` exited with code 101

@@ -1,0 +1,16 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.75s
+────────────
+ Nextest run ID df0d0c3a-ab11-496d-a761-e69213599e11 with nextest profile: default
+    Starting 9 tests across 2 binaries
+        PASS [   0.008s] (1/9) zeppelin-embed-cypher lowering::owned::tests::copied_text_preserves_four_byte_boundary_and_polls_every_validation_window
+        PASS [   0.011s] (2/9) zeppelin-embed-cypher::read_lowering read_lowering_copies_parameter_names_strings_nested_lists_and_exact_bits
+        PASS [   0.011s] (3/9) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+        PASS [   0.011s] (4/9) zeppelin-embed-cypher::read_lowering read_lowering_completed_path_predicate_keeps_self_list_dependencies_and_spans
+        PASS [   0.008s] (5/9) zeppelin-embed-cypher::read_lowering read_lowering_copies_scalar_projection_and_exact_source_spans
+        PASS [   0.009s] (6/9) zeppelin-embed-cypher::read_lowering read_lowering_real_owner_inventory_admits_without_a_second_context
+        PASS [   0.009s] (7/9) zeppelin-embed-cypher::read_lowering read_lowering_remaps_nested_lists_arithmetic_and_scalar_functions
+        PASS [   0.009s] (8/9) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+        PASS [   0.022s] (9/9) zeppelin-embed-cypher::read_lowering read_lowering_large_copied_parameter_preserves_split_four_byte_utf8
+────────────
+     Summary [   0.034s] 9 tests run: 9 passed, 0 skipped

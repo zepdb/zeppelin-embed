@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-core-adapter-scratch/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.79s
+────────────
+ Nextest run ID 2c53af20-1d37-4c09-ae26-83f00cf66e1b with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+  stdout ───
+
+    running 1 test
+    test charged_fact_arena_is_credited_once_and_rejects_another_query_owner ... FAILED
+
+    failures:
+
+    failures:
+        charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'charged_fact_arena_is_credited_once_and_rejects_another_query_owner' (34790796) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:125:5:
+    assertion `left == right` failed: only actual fact backing is credited
+      left: 33296
+     right: 66448
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+  stdout ───
+
+    running 1 test
+    test charged_fact_arena_is_credited_once_and_rejects_another_query_owner ... FAILED
+
+    failures:
+
+    failures:
+        charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'charged_fact_arena_is_credited_once_and_rejects_another_query_owner' (34790796) panicked at crates/zeppelin-embed/tests/graph_compiled_context.rs:125:5:
+    assertion `left == right` failed: only actual fact backing is credited
+      left: 33296
+     right: 66448
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

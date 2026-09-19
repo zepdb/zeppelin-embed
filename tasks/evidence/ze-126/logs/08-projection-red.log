@@ -1,0 +1,47 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.70s
+────────────
+ Nextest run ID 1c3c88a1-5d4f-473a-8a3e-197fa9acd5b2 with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+  stdout ───
+
+    running 1 test
+    test read_lowering_stages_grouping_distinct_hidden_order_and_bounds ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_stages_grouping_distinct_hidden_order_and_bounds' (34761987) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:156:105:
+    called `Option::unwrap()` on a `None` value
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 4 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+  stdout ───
+
+    running 1 test
+    test read_lowering_stages_grouping_distinct_hidden_order_and_bounds ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_stages_grouping_distinct_hidden_order_and_bounds
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_stages_grouping_distinct_hidden_order_and_bounds' (34761987) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:156:105:
+    called `Option::unwrap()` on a `None` value
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

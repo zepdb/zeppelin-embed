@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-126-utf8-review/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+────────────
+ Nextest run ID 431adfdb-4a3c-478c-9ea5-5757a46a8743 with nextest profile: default
+    Starting 1 test across 1 binary (13 tests skipped)
+        PASS [   0.013s] (1/1) zeppelin-embed::graph_catalog catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 13 skipped
+        PASS [   0.013s] (1/1) zeppelin-embed::graph_catalog catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
+  stdout ───
+
+    running 1 test
+    test catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s

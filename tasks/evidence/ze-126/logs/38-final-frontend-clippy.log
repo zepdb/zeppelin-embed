@@ -1,0 +1,33 @@
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+error: manual slice size calculation
+   --> crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:150:122
+    |
+150 | ...ve_additional(read.owners().len()*size_of::<RetainedAllocation<'_>>()+size_of::<Vec<RetainedAllocation<'_>>>()).unwrap();
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::mem::size_of_val(read.owners())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_slice_size_calculation
+    = note: `-D clippy::manual-slice-size-calculation` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_slice_size_calculation)]`
+
+error: manual slice size calculation
+   --> crates/zeppelin-embed-cypher/tests/runtime_lowering.rs:306:33
+    |
+306 | ...                   read.owners().len() * size_of::<RetainedAllocation<'_>>()
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::mem::size_of_val(read.owners())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_slice_size_calculation
+
+error: could not compile `zeppelin-embed-cypher` (test "runtime_lowering") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: manual slice size calculation
+   --> crates/zeppelin-embed-cypher/tests/read_lowering.rs:166:25
+    |
+166 |                         read.owners().len() * std::mem::size_of::<RetainedAllocation<'_>>()
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::mem::size_of_val(read.owners())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_slice_size_calculation
+    = note: `-D clippy::manual-slice-size-calculation` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_slice_size_calculation)]`
+
+error: could not compile `zeppelin-embed-cypher` (test "read_lowering") due to 1 previous error

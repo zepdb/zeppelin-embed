@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+────────────
+ Nextest run ID c08ba540-983b-4067-aa83-39194d6218a9 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.017s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+  stdout ───
+
+    running 1 test
+    test read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation' (34742420) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:138:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Unsupported, span: Span { start: 0, end: 39 }, message: "read lowering clause" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.017s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.017s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+  stdout ───
+
+    running 1 test
+    test read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_complete_optional_path_keeps_or_edge_predicate_and_correlation' (34742420) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:138:12:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Unsupported, span: Span { start: 0, end: 39 }, message: "read lowering clause" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

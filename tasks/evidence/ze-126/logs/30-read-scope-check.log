@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+error[E0599]: no variant or associated item named `InvalidAggregate` found for enum `zeppelin_embed_cypher::ErrorKind` in the current scope
+   --> crates/zeppelin-embed-cypher/tests/read_lowering.rs:443:60
+    |
+443 |             ("MATCH (n) RETURN count(*)+1 AS c",ErrorKind::InvalidAggregate),
+    |                                                            ^^^^^^^^^^^^^^^^ variant or associated item not found in `zeppelin_embed_cypher::ErrorKind`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed-cypher` (test "read_lowering") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-cypher --test read_lowering` exited with code 101

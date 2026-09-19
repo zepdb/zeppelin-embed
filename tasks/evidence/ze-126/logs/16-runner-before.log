@@ -1,0 +1,24 @@
+   Compiling zerocopy v0.8.52
+   Compiling serde_core v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests/adversarial-oracle)
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_json v1.0.151
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling proptest v1.10.0
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.02s
+────────────
+ Nextest run ID bd7c4158-a227-48f0-aab8-0250b828e022 with nextest profile: default
+    Starting 2 tests across 1 binary (461 tests skipped)
+        PASS [   0.027s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_binding_probe_preserves_profile_types_and_faults
+        PASS [   0.038s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_relational_probe_preserves_order_bags_and_inflight_faults
+────────────
+     Summary [   0.039s] 2 tests run: 2 passed, 461 skipped

@@ -1,0 +1,656 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-126/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+────────────
+ Nextest run ID 9aced8fa-9bd5-42c9-9399-45a7190a0090 with nextest profile: default
+    Starting 65 tests across 7 binaries
+        PASS [   0.008s] ( 1/65) zeppelin-embed::graph_catalog catalog_corruption_refuses_truncation_tags_overflow_duplicates_and_trailing_bytes
+        PASS [   0.008s] ( 2/65) zeppelin-embed::graph_catalog catalog_admission_refuses_every_changed_document_field_or_analyzer
+        PASS [   0.009s] ( 3/65) zeppelin-embed::graph_catalog catalog_budget_and_cancellation_refusals_preserve_private_state
+        PASS [   0.009s] ( 4/65) zeppelin-embed::graph_catalog catalog_document_corruption_rejects_unknown_enums_optional_tags_and_lengths
+        PASS [   0.008s] ( 5/65) zeppelin-embed::graph_catalog catalog_long_interpretation_observes_cancellation_during_exact_comparison
+        PASS [   0.008s] ( 6/65) zeppelin-embed::graph_catalog catalog_long_name_lookup_observes_cancellation_during_comparison
+        PASS [   0.009s] ( 7/65) zeppelin-embed::graph_catalog catalog_independent_goldens_pin_full_identity_and_exact_document_declaration
+        PASS [   0.009s] ( 8/65) zeppelin-embed::graph_catalog catalog_optional_vectors_are_not_required_and_query_towers_do_not_change_documents
+        PASS [   0.009s] ( 9/65) zeppelin-embed::graph_catalog catalog_reconstruction_cancels_during_long_shared_prefix_sorting
+        PASS [   0.008s] (10/65) zeppelin-embed::graph_catalog catalog_reconstruction_preserves_exact_names_domains_and_high_waters
+        PASS [   0.008s] (11/65) zeppelin-embed::graph_catalog catalog_rejects_duplicate_assignments_and_regressed_high_waters
+        PASS [   0.008s] (12/65) zeppelin-embed::graph_catalog catalog_symbols_preserve_full_width_and_refuse_zero_or_overflow
+        PASS [   0.008s] (13/65) zeppelin-embed::graph_catalog logical_catalog_roundtrip_preserves_store_symbols_counters_and_optional_space
+        PASS [   0.008s] (14/65) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+        PASS [   0.008s] (15/65) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+        PASS [   0.012s] (16/65) zeppelin-embed::graph_catalog catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
+        PASS [   0.009s] (17/65) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+        PASS [   0.010s] (18/65) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+        PASS [   0.009s] (19/65) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+        PASS [   0.008s] (20/65) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+        PASS [   0.007s] (21/65) zeppelin-embed::graph_completed_predicate independent_completed_scope_rejects_private_escape_target_and_prefix_list
+        PASS [   0.008s] (22/65) zeppelin-embed::graph_query_plan aliased_large_literal_backing_is_charged_once
+        PASS [   0.007s] (23/65) zeppelin-embed::graph_query_plan completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape
+        PASS [   0.007s] (24/65) zeppelin-embed::graph_query_plan correlated_optional_preserves_an_existing_relationship_binding
+        PASS [   0.007s] (25/65) zeppelin-embed::graph_query_plan eager_search_obligations_survive_limit_zero_and_require_singleton_sources
+        PASS [   0.007s] (26/65) zeppelin-embed::graph_query_plan expression_dags_and_parameter_bindings_reject_cycles_types_and_entities
+        PASS [   0.007s] (27/65) zeppelin-embed::graph_query_plan inner_join_accepts_and_narrows_compatible_optional_bindings
+        PASS [   0.007s] (28/65) zeppelin-embed::graph_query_plan mutation_items_bind_new_entities_in_order_and_validate_every_rhs
+        PASS [   0.007s] (29/65) zeppelin-embed::graph_query_plan pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension
+        PASS [   0.007s] (30/65) zeppelin-embed::graph_query_plan mutations_require_eager_input_and_reject_following_reads_or_search
+        PASS [   0.007s] (31/65) zeppelin-embed::graph_query_plan plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity
+        PASS [   0.007s] (32/65) zeppelin-embed::graph_query_plan relational_barriers_preserve_declared_order_until_a_join_or_distinct
+        PASS [   0.007s] (33/65) zeppelin-embed::graph_query_plan renamed_origins_remain_checked_through_multiple_patterns
+        PASS [   0.007s] (34/65) zeppelin-embed::graph_query_plan retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity
+        PASS [   0.017s] (35/65) zeppelin-embed::graph_query_plan plan_hard_caps_accept_exact_nodes_depth_and_scope_width
+        PASS [   0.008s] (36/65) zeppelin-embed::graph_query_plan reused_pattern_variables_use_fresh_candidates_equality_and_reprojection
+        PASS [   0.007s] (37/65) zeppelin-embed::graph_query_plan search_sources_and_evaluated_bounds_never_clamp_invalid_requests
+        PASS [   0.007s] (38/65) zeppelin-embed::graph_query_plan shared_relationship_origins_survive_lookup_joins_and_slot_renames
+        PASS [   0.007s] (39/65) zeppelin-embed::graph_query_plan structured_lookup_uses_distinct_full_ids_and_symbolic_keys
+        PASS [   0.007s] (40/65) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+        PASS [   0.006s] (41/65) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+        PASS [   0.007s] (42/65) zeppelin-embed::graph_query_plan typed_pattern_requires_array_and_every_alternative_name_backing
+        PASS [   0.007s] (43/65) zeppelin-embed::graph_query_plan typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations
+        PASS [   0.007s] (44/65) zeppelin-embed::graph_query_plan typed_plan_revalidates_shared_expressions_after_with_scope
+        PASS [   0.006s] (45/65) zeppelin-embed::graph_query_plan typed_scalar_expression_forms_validate_entity_and_operand_kinds
+        PASS [   0.009s] (46/65) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+        PASS [   0.008s] (47/65) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+        PASS [   0.008s] (48/65) zeppelin-embed::graph_query_runtime failed_variable_reservation_does_not_count_uncopied_bytes
+        PASS [   0.008s] (49/65) zeppelin-embed::graph_query_runtime flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure
+        PASS [   0.008s] (50/65) zeppelin-embed::graph_query_runtime flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids
+        PASS [   0.007s] (51/65) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+        PASS [   0.009s] (52/65) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+        PASS [   0.008s] (53/65) zeppelin-embed::graph_query_runtime query_and_writer_share_one_backing_charge_with_nested_local_limits
+        PASS [   0.008s] (54/65) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+        PASS [   0.008s] (55/65) zeppelin-embed::graph_query_runtime retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans
+        PASS [   0.008s] (56/65) zeppelin-embed::graph_query_runtime runtime_counters_enforce_limits_before_work_and_keep_one_view_control
+        PASS [   0.009s] (57/65) zeppelin-embed::graph_query_runtime_control close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel
+        PASS [   0.008s] (58/65) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+        PASS [   0.007s] (59/65) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+        PASS [   0.008s] (60/65) zeppelin-embed::graph_query_runtime_control factory_retains_real_buffers_through_three_stages_and_many_batches
+        PASS [   0.008s] (61/65) zeppelin-embed::graph_query_runtime_control factory_composes_production_relational_owners_and_releases_failed_preparation
+        PASS [   0.009s] (62/65) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+        PASS [   0.010s] (63/65) zeppelin-embed::graph_query_runtime_control failed_last_pull_and_completion_cancellation_never_expose_partial_output
+        PASS [   0.094s] (64/65) zeppelin-embed::graph_query_runtime packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload
+        PASS [   0.551s] (65/65) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+────────────
+     Summary [   0.585s] 65 tests run: 65 passed, 0 skipped
+        PASS [   0.008s] ( 1/65) zeppelin-embed::graph_catalog catalog_corruption_refuses_truncation_tags_overflow_duplicates_and_trailing_bytes
+  stdout ───
+
+    running 1 test
+    test catalog_corruption_refuses_truncation_tags_overflow_duplicates_and_trailing_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 2/65) zeppelin-embed::graph_catalog catalog_admission_refuses_every_changed_document_field_or_analyzer
+  stdout ───
+
+    running 1 test
+    test catalog_admission_refuses_every_changed_document_field_or_analyzer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 3/65) zeppelin-embed::graph_catalog catalog_budget_and_cancellation_refusals_preserve_private_state
+  stdout ───
+
+    running 1 test
+    test catalog_budget_and_cancellation_refusals_preserve_private_state ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 4/65) zeppelin-embed::graph_catalog catalog_document_corruption_rejects_unknown_enums_optional_tags_and_lengths
+  stdout ───
+
+    running 1 test
+    test catalog_document_corruption_rejects_unknown_enums_optional_tags_and_lengths ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 5/65) zeppelin-embed::graph_catalog catalog_long_interpretation_observes_cancellation_during_exact_comparison
+  stdout ───
+
+    running 1 test
+    test catalog_long_interpretation_observes_cancellation_during_exact_comparison ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 6/65) zeppelin-embed::graph_catalog catalog_long_name_lookup_observes_cancellation_during_comparison
+  stdout ───
+
+    running 1 test
+    test catalog_long_name_lookup_observes_cancellation_during_comparison ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/65) zeppelin-embed::graph_catalog catalog_independent_goldens_pin_full_identity_and_exact_document_declaration
+  stdout ───
+
+    running 1 test
+    test catalog_independent_goldens_pin_full_identity_and_exact_document_declaration ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/65) zeppelin-embed::graph_catalog catalog_optional_vectors_are_not_required_and_query_towers_do_not_change_documents
+  stdout ───
+
+    running 1 test
+    test catalog_optional_vectors_are_not_required_and_query_towers_do_not_change_documents ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 9/65) zeppelin-embed::graph_catalog catalog_reconstruction_cancels_during_long_shared_prefix_sorting
+  stdout ───
+
+    running 1 test
+    test catalog_reconstruction_cancels_during_long_shared_prefix_sorting ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/65) zeppelin-embed::graph_catalog catalog_reconstruction_preserves_exact_names_domains_and_high_waters
+  stdout ───
+
+    running 1 test
+    test catalog_reconstruction_preserves_exact_names_domains_and_high_waters ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/65) zeppelin-embed::graph_catalog catalog_rejects_duplicate_assignments_and_regressed_high_waters
+  stdout ───
+
+    running 1 test
+    test catalog_rejects_duplicate_assignments_and_regressed_high_waters ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/65) zeppelin-embed::graph_catalog catalog_symbols_preserve_full_width_and_refuse_zero_or_overflow
+  stdout ───
+
+    running 1 test
+    test catalog_symbols_preserve_full_width_and_refuse_zero_or_overflow ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/65) zeppelin-embed::graph_catalog logical_catalog_roundtrip_preserves_store_symbols_counters_and_optional_space
+  stdout ───
+
+    running 1 test
+    test logical_catalog_roundtrip_preserves_store_symbols_counters_and_optional_space ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/65) zeppelin-embed::graph_checked_utf8 checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries
+  stdout ───
+
+    running 1 test
+    test checked_utf8_rejects_invalid_and_truncated_sequences_at_and_after_boundaries ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (15/65) zeppelin-embed::graph_checked_utf8 checked_utf8_polls_each_window_and_preserves_exact_caller_error
+  stdout ───
+
+    running 1 test
+    test checked_utf8_polls_each_window_and_preserves_exact_caller_error ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] (16/65) zeppelin-embed::graph_catalog catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
+  stdout ───
+
+    running 1 test
+    test catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (17/65) zeppelin-embed::graph_checked_utf8 checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary
+  stdout ───
+
+    running 1 test
+    test checked_utf8_retains_four_byte_codepoints_split_at_every_window_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (18/65) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (19/65) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_keeps_prior_validation_value_and_operator_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (20/65) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+  stdout ───
+
+    running 1 test
+    test charged_fact_arena_is_credited_once_and_rejects_another_query_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (21/65) zeppelin-embed::graph_completed_predicate independent_completed_scope_rejects_private_escape_target_and_prefix_list
+  stdout ───
+
+    running 1 test
+    test independent_completed_scope_rejects_private_escape_target_and_prefix_list ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (22/65) zeppelin-embed::graph_query_plan aliased_large_literal_backing_is_charged_once
+  stdout ───
+
+    running 1 test
+    test aliased_large_literal_backing_is_charged_once ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (23/65) zeppelin-embed::graph_query_plan completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape
+  stdout ───
+
+    running 1 test
+    test completed_edge_predicate_sees_full_list_and_private_edge_without_output_escape ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (24/65) zeppelin-embed::graph_query_plan correlated_optional_preserves_an_existing_relationship_binding
+  stdout ───
+
+    running 1 test
+    test correlated_optional_preserves_an_existing_relationship_binding ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (25/65) zeppelin-embed::graph_query_plan eager_search_obligations_survive_limit_zero_and_require_singleton_sources
+  stdout ───
+
+    running 1 test
+    test eager_search_obligations_survive_limit_zero_and_require_singleton_sources ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (26/65) zeppelin-embed::graph_query_plan expression_dags_and_parameter_bindings_reject_cycles_types_and_entities
+  stdout ───
+
+    running 1 test
+    test expression_dags_and_parameter_bindings_reject_cycles_types_and_entities ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (27/65) zeppelin-embed::graph_query_plan inner_join_accepts_and_narrows_compatible_optional_bindings
+  stdout ───
+
+    running 1 test
+    test inner_join_accepts_and_narrows_compatible_optional_bindings ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (28/65) zeppelin-embed::graph_query_plan mutation_items_bind_new_entities_in_order_and_validate_every_rhs
+  stdout ───
+
+    running 1 test
+    test mutation_items_bind_new_entities_in_order_and_validate_every_rhs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (29/65) zeppelin-embed::graph_query_plan pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension
+  stdout ───
+
+    running 1 test
+    test pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (30/65) zeppelin-embed::graph_query_plan mutations_require_eager_input_and_reject_following_reads_or_search
+  stdout ───
+
+    running 1 test
+    test mutations_require_eager_input_and_reject_following_reads_or_search ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (31/65) zeppelin-embed::graph_query_plan plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity
+  stdout ───
+
+    running 1 test
+    test plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (32/65) zeppelin-embed::graph_query_plan relational_barriers_preserve_declared_order_until_a_join_or_distinct
+  stdout ───
+
+    running 1 test
+    test relational_barriers_preserve_declared_order_until_a_join_or_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (33/65) zeppelin-embed::graph_query_plan renamed_origins_remain_checked_through_multiple_patterns
+  stdout ───
+
+    running 1 test
+    test renamed_origins_remain_checked_through_multiple_patterns ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (34/65) zeppelin-embed::graph_query_plan retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity
+  stdout ───
+
+    running 1 test
+    test retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.017s] (35/65) zeppelin-embed::graph_query_plan plan_hard_caps_accept_exact_nodes_depth_and_scope_width
+  stdout ───
+
+    running 1 test
+    test plan_hard_caps_accept_exact_nodes_depth_and_scope_width ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (36/65) zeppelin-embed::graph_query_plan reused_pattern_variables_use_fresh_candidates_equality_and_reprojection
+  stdout ───
+
+    running 1 test
+    test reused_pattern_variables_use_fresh_candidates_equality_and_reprojection ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (37/65) zeppelin-embed::graph_query_plan search_sources_and_evaluated_bounds_never_clamp_invalid_requests
+  stdout ───
+
+    running 1 test
+    test search_sources_and_evaluated_bounds_never_clamp_invalid_requests ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (38/65) zeppelin-embed::graph_query_plan shared_relationship_origins_survive_lookup_joins_and_slot_renames
+  stdout ───
+
+    running 1 test
+    test shared_relationship_origins_survive_lookup_joins_and_slot_renames ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (39/65) zeppelin-embed::graph_query_plan structured_lookup_uses_distinct_full_ids_and_symbolic_keys
+  stdout ───
+
+    running 1 test
+    test structured_lookup_uses_distinct_full_ids_and_symbolic_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (40/65) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test typed_pattern_contract_preserves_or_types_and_private_edge_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (41/65) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+  stdout ───
+
+    running 1 test
+    test typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (42/65) zeppelin-embed::graph_query_plan typed_pattern_requires_array_and_every_alternative_name_backing
+  stdout ───
+
+    running 1 test
+    test typed_pattern_requires_array_and_every_alternative_name_backing ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (43/65) zeppelin-embed::graph_query_plan typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations
+  stdout ───
+
+    running 1 test
+    test typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (44/65) zeppelin-embed::graph_query_plan typed_plan_revalidates_shared_expressions_after_with_scope
+  stdout ───
+
+    running 1 test
+    test typed_plan_revalidates_shared_expressions_after_with_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (45/65) zeppelin-embed::graph_query_plan typed_scalar_expression_forms_validate_entity_and_operand_kinds
+  stdout ───
+
+    running 1 test
+    test typed_scalar_expression_forms_validate_entity_and_operand_kinds ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (46/65) zeppelin-embed::graph_query_runtime cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work
+  stdout ───
+
+    running 1 test
+    test cancellation_inside_byte_copy_rolls_back_cells_and_preserves_actual_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (47/65) zeppelin-embed::graph_query_runtime execution_plan_requires_retained_owners_for_every_visible_span
+  stdout ───
+
+    running 1 test
+    test execution_plan_requires_retained_owners_for_every_visible_span ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (48/65) zeppelin-embed::graph_query_runtime failed_variable_reservation_does_not_count_uncopied_bytes
+  stdout ───
+
+    running 1 test
+    test failed_variable_reservation_does_not_count_uncopied_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (49/65) zeppelin-embed::graph_query_runtime flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure
+  stdout ───
+
+    running 1 test
+    test flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (50/65) zeppelin-embed::graph_query_runtime flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids
+  stdout ───
+
+    running 1 test
+    test flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (51/65) zeppelin-embed::graph_query_runtime graph_resources_share_store_reservations_and_record_transient_peak
+  stdout ───
+
+    running 1 test
+    test graph_resources_share_store_reservations_and_record_transient_peak ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (52/65) zeppelin-embed::graph_query_runtime pull_driver_drains_private_batches_before_completion
+  stdout ───
+
+    running 1 test
+    test pull_driver_drains_private_batches_before_completion ... runtime audit: graph_attributed=48 graph_allocations=2 legacy_unattributed=112 legacy_allocations=2 second_lease_allocations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (53/65) zeppelin-embed::graph_query_runtime query_and_writer_share_one_backing_charge_with_nested_local_limits
+  stdout ───
+
+    running 1 test
+    test query_and_writer_share_one_backing_charge_with_nested_local_limits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (54/65) zeppelin-embed::graph_query_runtime query_arena_charges_actual_capacity_overlap_and_releases_on_failure
+  stdout ───
+
+    running 1 test
+    test query_arena_charges_actual_capacity_overlap_and_releases_on_failure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (55/65) zeppelin-embed::graph_query_runtime retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans
+  stdout ───
+
+    running 1 test
+    test retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (56/65) zeppelin-embed::graph_query_runtime runtime_counters_enforce_limits_before_work_and_keep_one_view_control
+  stdout ───
+
+    running 1 test
+    test runtime_counters_enforce_limits_before_work_and_keep_one_view_control ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (57/65) zeppelin-embed::graph_query_runtime_control close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel
+  stdout ───
+
+    running 1 test
+    test close_after_last_pull_drains_the_same_lease_and_precedes_caller_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (58/65) zeppelin-embed::graph_query_runtime_control eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows
+  stdout ───
+
+    running 1 test
+    test eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (59/65) zeppelin-embed::graph_query_runtime_control every_cumulative_work_cap_checks_exact_boundary_and_overflow
+  stdout ───
+
+    running 1 test
+    test every_cumulative_work_cap_checks_exact_boundary_and_overflow ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (60/65) zeppelin-embed::graph_query_runtime_control factory_retains_real_buffers_through_three_stages_and_many_batches
+  stdout ───
+
+    running 1 test
+    test factory_retains_real_buffers_through_three_stages_and_many_batches ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (61/65) zeppelin-embed::graph_query_runtime_control factory_composes_production_relational_owners_and_releases_failed_preparation
+  stdout ───
+
+    running 1 test
+    test factory_composes_production_relational_owners_and_releases_failed_preparation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (62/65) zeppelin-embed::graph_query_runtime_control failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private
+  stdout ───
+
+    running 1 test
+    test failed_final_view_check_drops_frozen_output_and_metadata_mismatch_is_private ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (63/65) zeppelin-embed::graph_query_runtime_control failed_last_pull_and_completion_cancellation_never_expose_partial_output
+  stdout ───
+
+    running 1 test
+    test failed_last_pull_and_completion_cancellation_never_expose_partial_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+
+        PASS [   0.094s] (64/65) zeppelin-embed::graph_query_runtime packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload
+  stdout ───
+
+    running 1 test
+    test packed_eight_mib_query_list_fits_actual_memory_but_not_four_mib_result_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.09s
+
+
+        PASS [   0.551s] (65/65) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+  stdout ───
+
+    running 1 test
+    test borrowed_driver_cannot_restart_exhausted_value_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.54s
