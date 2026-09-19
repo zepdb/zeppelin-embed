@@ -1,0 +1,272 @@
+[
+  {
+    "mutation": "read-only-access",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "open_rejects_unknown_options_and_read_only_handles_reject_writes",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "open_rejects_unknown_options_and_read_only_handles_reject_writes"
+    ]
+  },
+  {
+    "mutation": "epoch-reserved",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "epoch_identity_validates_tags_and_preserves_runtime_compute_and_os_identity",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "epoch_identity_validates_tags_and_preserves_runtime_compute_and_os_identity"
+    ]
+  },
+  {
+    "mutation": "filter-children",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "filter_grammar_rejects_irrelevant_children_bounds_and_values",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "filter_grammar_rejects_irrelevant_children_bounds_and_values"
+    ]
+  },
+  {
+    "mutation": "null-filter-value",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "filter_values_reject_null_unknown_tags_wrong_columns_and_invalid_bounds",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "filter_values_reject_null_unknown_tags_wrong_columns_and_invalid_bounds"
+    ]
+  },
+  {
+    "mutation": "returned-bool",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "typed_attributes_round_trip_through_get_and_match_exact_filters",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "typed_attributes_round_trip_through_get_and_match_exact_filters"
+    ]
+  },
+  {
+    "mutation": "zero-sized-search-free",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "malformed_result_frees_preserve_caller_bytes_and_live_allocations",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "malformed_result_frees_preserve_caller_bytes_and_live_allocations"
+    ]
+  },
+  {
+    "mutation": "namespace-zero-dimensions",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "namespace_schema_rejects_invalid_columns_flags_and_epoch_geometry",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "namespace_schema_rejects_invalid_columns_flags_and_epoch_geometry"
+    ]
+  },
+  {
+    "mutation": "error-copy-length",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "error_copy_and_scalar_outputs_reject_invalid_buffers_without_writing_them",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "error_copy_and_scalar_outputs_reject_invalid_buffers_without_writing_them"
+    ]
+  },
+  {
+    "mutation": "missing-count-bound",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "wrong_result_type_or_missing_count_never_consumes_the_owned_allocation",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "wrong_result_type_or_missing_count_never_consumes_the_owned_allocation"
+    ]
+  },
+  {
+    "mutation": "purge-busy-code",
+    "source": "crates/zeppelin-embed-ffi/src/error.rs",
+    "test": "purge_busy_and_consumed_tokens_are_typed_without_losing_the_first_request",
+    "exit": 101,
+    "restored_sha256": "8ef7400acb11742cddf97c0ced8790294af81b349ce2124cb137bd29ab76ae58",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "purge_busy_and_consumed_tokens_are_typed_without_losing_the_first_request"
+    ]
+  },
+  {
+    "mutation": "maintenance-access-code",
+    "source": "crates/zeppelin-embed-ffi/src/error.rs",
+    "test": "read_only_maintenance_and_purge_retain_access_mode_errors",
+    "exit": 101,
+    "restored_sha256": "8ef7400acb11742cddf97c0ced8790294af81b349ce2124cb137bd29ab76ae58",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "read_only_maintenance_and_purge_retain_access_mode_errors"
+    ]
+  },
+  {
+    "mutation": "filtered-cancel-code",
+    "source": "crates/zeppelin-embed-ffi/src/error.rs",
+    "test": "filtered_search_reports_cancelled_and_invalid_vector_errors_with_empty_output",
+    "exit": 101,
+    "restored_sha256": "8ef7400acb11742cddf97c0ced8790294af81b349ce2124cb137bd29ab76ae58",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "filtered_search_reports_cancelled_and_invalid_vector_errors_with_empty_output"
+    ]
+  },
+  {
+    "mutation": "empty-ingest-code",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "empty_mutation_batches_and_zero_dimensions_never_advance_generation",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "empty_mutation_batches_and_zero_dimensions_never_advance_generation"
+    ]
+  },
+  {
+    "mutation": "scan-order-admission",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "scan_cursor_and_timestamp_flags_reject_ambiguous_requests",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "scan_cursor_and_timestamp_flags_reject_ambiguous_requests"
+    ]
+  },
+  {
+    "mutation": "search-reserved",
+    "source": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "test": "search_options_reject_reserved_bits_conflicting_controls_and_unknown_profiles",
+    "exit": 101,
+    "restored_sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "abi-panic-probe",
+      "--test",
+      "ffi_boundary_validation",
+      "search_options_reject_reserved_bits_conflicting_controls_and_unknown_profiles"
+    ]
+  }
+]

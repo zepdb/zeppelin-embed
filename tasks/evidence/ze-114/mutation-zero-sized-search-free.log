@@ -1,0 +1,24 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-114/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/ffi_boundary_validation.rs (target/debug/deps/ffi_boundary_validation-6b8d50e0c1c77b64)
+
+running 1 test
+test malformed_result_frees_preserve_caller_bytes_and_live_allocations ... FAILED
+
+failures:
+
+---- malformed_result_frees_preserve_caller_bytes_and_live_allocations stdout ----
+
+thread 'malformed_result_frees_preserve_caller_bytes_and_live_allocations' (32631816) panicked at crates/zeppelin-embed-ffi/tests/ffi_boundary_validation.rs:544:9:
+assertion `left == right` failed
+  left: ZeOk
+ right: ZeErrInvalidArgument
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    malformed_result_frees_preserve_caller_bytes_and_live_allocations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed-ffi --test ffi_boundary_validation`

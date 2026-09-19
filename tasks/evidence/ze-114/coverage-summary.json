@@ -1,0 +1,112 @@
+{
+  "baseline-featured": {
+    "exit_code": 1,
+    "total_lines": {
+      "count": 3867,
+      "covered": 3284,
+      "percent": 84.92371347297647
+    },
+    "files": [
+      {
+        "path": "zeppelin-embed-ffi/src/error.rs",
+        "lines": {
+          "count": 193,
+          "covered": 135,
+          "percent": 69.94818652849742
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/lib.rs",
+        "lines": {
+          "count": 2811,
+          "covered": 2379,
+          "percent": 84.63180362860192
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/marshal.rs",
+        "lines": {
+          "count": 155,
+          "covered": 150,
+          "percent": 96.7741935483871
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/registry.rs",
+        "lines": {
+          "count": 408,
+          "covered": 335,
+          "percent": 82.10784313725489
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/slots.rs",
+        "lines": {
+          "count": 300,
+          "covered": 285,
+          "percent": 95.0
+        }
+      }
+    ],
+    "top_level_tests": {
+      "passed": 97,
+      "failed": 0,
+      "ignored": 3
+    }
+  },
+  "green": {
+    "exit_code": 0,
+    "total_lines": {
+      "count": 3867,
+      "covered": 3484,
+      "percent": 90.09568140677528
+    },
+    "files": [
+      {
+        "path": "zeppelin-embed-ffi/src/error.rs",
+        "lines": {
+          "count": 193,
+          "covered": 155,
+          "percent": 80.31088082901555
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/lib.rs",
+        "lines": {
+          "count": 2811,
+          "covered": 2552,
+          "percent": 90.78619708288863
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/marshal.rs",
+        "lines": {
+          "count": 155,
+          "covered": 150,
+          "percent": 96.7741935483871
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/registry.rs",
+        "lines": {
+          "count": 408,
+          "covered": 342,
+          "percent": 83.82352941176471
+        }
+      },
+      {
+        "path": "zeppelin-embed-ffi/src/slots.rs",
+        "lines": {
+          "count": 300,
+          "covered": 285,
+          "percent": 95.0
+        }
+      }
+    ],
+    "top_level_tests": {
+      "passed": 112,
+      "failed": 0,
+      "ignored": 3
+    }
+  }
+}

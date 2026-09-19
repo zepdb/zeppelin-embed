@@ -1,0 +1,222 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-114/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.34s
+     Running unittests src/lib.rs (target/llvm-cov-target/debug/deps/zeppelin_embed_ffi-fcab8d6278204296)
+
+running 14 tests
+test error::tests::every_store_error_kind_has_its_frozen_abi_code ... ok
+test marshal::tests::raw_parts_reject_null_misalignment_and_arithmetic_overflow ... ok
+test marshal::tests::size_prefix_is_bounded_and_forward_compatible ... ok
+test marshal::tests::paths_are_explicit_utf8_without_nul ... ok
+test error::tests::contained_hybrid_panics_keep_the_frozen_panic_code ... ok
+test error::tests::a_hybrid_leg_failure_keeps_its_store_classification ... ok
+test slots::tests::failed_insert_leaves_no_orphaned_entry ... ok
+test slots::tests::handle_encoding_rejects_reserved_and_exhausted_values ... ok
+test registry::tests::cancel_registry_rejects_stale_tokens_and_reuses_the_slot ... ok
+test registry::tests::result_registry_preserves_a_valid_allocation_after_hostile_frees ... ok
+test registry::tests::stale_free_after_address_reuse_is_rejected ... ok
+test registry::tests::global_last_error_round_trips_without_a_handle ... ok
+test slots::tests::record_only_flag_is_resolved_once_per_handle ... ok
+test slots::tests::slot_table_exercises_close_poison_error_and_reuse_states ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ffi.rs (target/llvm-cov-target/debug/deps/ffi-baf5eb308439c003)
+
+running 1 test
+   Compiling libc v0.2.189
+   Compiling bytemuck v1.25.2
+   Compiling byteorder v1.5.0
+   Compiling xxhash-rust v0.8.18
+   Compiling roaring v0.10.12
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-114/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-114/crates/zeppelin-embed-ffi)
+    Finished `release` profile [optimized] target(s) in 38.57s
+    Finished `release` profile [optimized] target(s) in 0.05s
+test text_feature_off_leaves_the_library_byte_identical ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.78s
+
+     Running tests/ffi_adversarial.rs (target/llvm-cov-target/debug/deps/ffi_adversarial-028cf1e8e0b8fdab)
+
+running 4 tests
+test two_handles_on_the_same_path_in_one_process_are_typed ... ok
+test every_exported_symbol_has_executable_adversarial_registry_coverage ... ok
+test the_adversarial_input_matrix_returns_typed_errors_for_every_cell ... ok
+test concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_ub ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/ffi_c_consumer_windows.rs (target/llvm-cov-target/debug/deps/ffi_c_consumer_windows-227d326776f105f9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ffi_contract.rs (target/llvm-cov-target/debug/deps/ffi_contract-ba919753f802f366)
+
+running 13 tests
+test every_request_struct_has_the_frozen_size_and_field_offsets ... ok
+test every_phase_two_struct_has_the_frozen_size_and_field_offsets ... ok
+test error_codes_are_append_only ... ok
+test swift_error_enum_is_generated_from_the_append_only_error_table ... ok
+test the_poison_table_covers_every_exported_handle_taking_symbol ... ok
+
+running 1 test
+test search_result_ownership_and_the_phase_one_engine_seams_are_real ... ok
+test a_second_process_opening_the_same_path_gets_store_busy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+test a_second_process_opening_the_same_path_gets_store_busy ... ok
+
+running 1 test
+test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+test use_after_close_double_close_and_a_stale_generation_each_return_typed_errors ... ok
+test every_entry_point_returns_ze_err_poisoned_after_a_caught_panic ... ok
+test a_second_concurrent_writer_call_returns_ze_err_busy ... ok
+test a_deadline_mid_query_returns_typed_timeout_through_the_boundary ... ok
+test cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.43s
+
+     Running tests/ffi_count.rs (target/llvm-cov-target/debug/deps/ffi_count-92be0c59664bf46c)
+
+running 13 tests
+test search_filtered_rejects_a_null_filter ... ok
+test malformed_filter_is_typed_invalid_for_count_and_filtered_search ... ok
+test record_only_ingest_is_rejected ... ok
+test count_and_filtered_search_validate_pointers_and_abi_sizes ... ok
+test count_filter_operators_match_scan_page_cardinality ... ok
+test record_only_vector_and_hybrid_queries_are_rejected_while_lexical_still_works ... ok
+test record_only_filtered_search_is_rejected_and_lexical_query_still_works ... ok
+test record_only_search_is_rejected ... ok
+test search_filtered_matches_post_filtered_exact_search_ids_and_score_bits ... ok
+test search_filtered_always_true_counters_match_unfiltered_search ... ok
+test count_timestamp_range_is_half_open_and_excludes_tombstones ... ok
+test count_without_filter_matches_live_rows_across_store_shapes ... ok
+test record_only_sealed_storage_reports_measured_bytes_per_row ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/ffi_get.rs (target/llvm-cov-target/debug/deps/ffi_get-34e5e64233c23433)
+
+running 9 tests
+test get_marks_never_written_id_missing ... ok
+test get_rejects_invalid_pointers_sizes_and_empty_request ... ok
+test get_result_free_rejects_double_free_and_foreign_pointer ... ok
+test get_marks_deleted_id_missing ... ok
+test get_include_flags_select_exactly_their_fields ... ok
+test get_preserves_order_across_hits_and_misses ... ok
+test get_returns_only_live_revision_after_two_upserts ... ok
+test get_hides_record_only_sentinel_vector ... ok
+test get_returns_every_upserted_field_exactly ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ffi_header.rs (target/llvm-cov-target/debug/deps/ffi_header-64f22e6539ee4c72)
+
+running 3 tests
+test header_gate_passes_twice_in_a_row_after_an_instrumented_build ... ignored, manual full-build qualification; rebuilds two release target directories
+test the_committed_header_matches_the_exported_symbol_table_and_the_allowlist ... ignored, manual full-build qualification; validates the release static library
+test the_committed_header_is_the_exact_cbindgen_output ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/ffi_header_windows.rs (target/llvm-cov-target/debug/deps/ffi_header_windows-8feaf336ba8a0668)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ffi_namespace.rs (target/llvm-cov-target/debug/deps/ffi_namespace-43dc165f99890b2b)
+
+running 8 tests
+test namespace_requests_reject_null_zero_and_wrong_sizes_without_crashing ... ok
+test namespace_open_rejects_every_invalid_name ... ok
+test record_only_namespace_rejects_dimensions_above_one_and_a_caller_epoch ... ok
+test namespace_reopen_with_different_epoch_returns_epoch_mismatch ... ok
+test namespace_reopen_with_different_schema_returns_schema_mismatch ... ok
+test record_only_namespace_creates_reopens_and_reports_canonical_epoch ... ok
+test namespace_list_returns_sorted_manifest_directories_and_empty_root ... ok
+test namespace_create_reopen_identical_spec_is_usable_for_ingest_and_search ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ffi_ownership.rs (target/llvm-cov-target/debug/deps/ffi_ownership-98244b1129dfa2fc)
+
+running 2 tests
+test every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat ... ok
+test freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_free ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/ffi_query.rs (target/llvm-cov-target/debug/deps/ffi_query-b2c795447dda33c7)
+
+running 15 tests
+test last_as_prefix_without_text_is_rejected ... ok
+test unknown_lexical_flag_is_rejected ... ok
+test an_unstamped_store_reports_no_current_epoch_as_a_typed_error ... ok
+test one_byte_last_as_prefix_falls_back_to_bounded_exact_search ... ok
+test stopword_tail_does_not_expand_the_previous_term ... ok
+test last_as_prefix_finds_harbour_while_exact_harb_finds_nothing ... ok
+test surface_word_wins_the_trailing_token_tie_over_its_number_variant ... ok
+test flag_off_pins_the_v021_lexical_diagnostics ... ok
+test trailing_separator_disables_last_as_prefix ... ok
+test normal_store_search_result_and_deterministic_counters_are_unchanged ... ok
+test no_tier_preference_is_encoded_distinctly_from_an_explicit_tier ... ok
+test a_vector_only_query_returns_the_same_hits_as_ze_search_with_no_tier_preference ... ok
+test last_as_prefix_hybrid_reports_hybrid_fusion ... ok
+test lexical_and_hybrid_legs_execute_through_the_structured_query_surface ... ok
+test epoch_identity_open_with_epoch_and_transitions_are_typed_through_the_boundary ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/ffi_scan.rs (target/llvm-cov-target/debug/deps/ffi_scan-96690cf4679927fc)
+
+running 7 tests
+test scan_cancellation_deadline_arguments_and_result_ownership_are_typed ... ok
+test scan_record_only_namespace_hides_the_sentinel_vector ... ok
+test scan_malformed_filters_are_typed_invalid_arguments ... ok
+test scan_filter_operators_and_missing_field_semantics_match_the_core ... ok
+test scan_timestamp_orders_and_half_open_range_are_exact ... ok
+test scan_resume_after_write_and_seal_is_stale ... ok
+test scan_storage_pages_return_every_live_row_once_and_clear_has_more ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ffi_soak.rs (target/llvm-cov-target/debug/deps/ffi_soak-ec64afe9471fa3a6)
+
+running 1 test
+test ten_thousand_open_ingest_query_close_rounds_keep_the_footprint_flat ... ignored, minutes-long soak; run explicitly with ZE_FFI_SOAK_ITERATIONS
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ffi_upsert.rs (target/llvm-cov-target/debug/deps/ffi_upsert-f6bebed82c2f676c)
+
+running 9 tests
+test upsert_invalid_pointers_sizes_and_empty_batch_return_typed_errors ... ok
+test upsert_reserved_attribute_id_zero_is_invalid_argument ... ok
+test upsert_attribute_type_mismatch_is_invalid_argument ... ok
+test upsert_duplicate_attribute_id_is_invalid_argument ... ok
+test upsert_missing_non_nullable_attribute_is_invalid_argument ... ok
+test upsert_record_only_namespace_supplies_sentinel_and_rejects_caller_vector ... ok
+test upsert_higher_revision_supersedes_and_stale_revision_is_rejected ... ok
+test upsert_nullable_attribute_stores_null ... ok
+test upsert_with_every_attribute_type_round_trips_through_core_filters ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/parity_fixture.rs (target/llvm-cov-target/debug/deps/parity_fixture-bf03bd458360f68d)
+
+running 1 test
+test parity_fixture_is_generated_from_the_ffi_and_matches_the_checked_in_json ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+    Finished report saved to /tmp/ze-114-qualification/baseline-featured.json
