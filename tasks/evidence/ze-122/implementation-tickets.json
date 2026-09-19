@@ -1,0 +1,170 @@
+[
+  {
+    "key": "ZE-123",
+    "title": "Implement complete typed relationship pattern contracts",
+    "description": "Own the single reviewed typed IR addition needed by native pattern execution and complete Cypher read lowering. Add borrowed exact-name OR relationship type alternatives to fixed/bounded expansion and a nonleaking current-edge scope plus typed per-edge predicate to bounded expansion. Empty alternatives mean unrestricted; duplicate alternatives cannot multiply rows. Every candidate edge is tested before entering a path; null rejects; zero-hop evaluates no edge predicate. Preserve full IDs, 16-hop cap, one PatternId across comma parts of a MATCH and fresh PatternId on next MATCH, relationship uniqueness, stored original endpoints and bags. Specify and prove OptionalApply correlated anchor/rebinding and reused-variable equality/reprojection without overwriting existing slots.\n\nOwn query/plan/mod.rs, validate/expression/lineage and narrow graph_query_plan tests. Coordinate ordinal NodeFacts accessor with the relational owner; no competing graph execution or parser. Add a compiled scoped consumer of final BoundQuery -> actual charged PlanDescription/fact Vec -> validated GraphPlan with source spans and nonescaping borrows, including OR/per-edge/optional/projection shape. This is a contract tracer, not full lowering. RED malformed/foreign scope, wrong name backing, unreachable predicate, overlong hop, omitted alternative/per-edge check; GREEN exact structured facts/barriers, same-account peak/cancel cleanup and lifetime checks. Freeze the exact compiled API and commit hash before downstream lowering starts. No physical graph execution or original TCK pass claim.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n\n\nZE-123 solely owns any needed read-only NodeFacts::slot_at(ordinal) -> Option<(SlotId, ValueKinds)> addition. ZE-125 independently constructs schemas from explicit ordered slots checked against existing width()/slot(); it does not concurrently edit plan/mod.rs. Consumers wait for the compiled immutable accessor commit before using it.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E5",
+    "themes": [
+      "graph",
+      "execution"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.022Z",
+    "updated_at": "2026-09-19T19:00:27.154Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-48",
+      "ZE-49",
+      "ZE-55",
+      "ZE-122"
+    ],
+    "blocks": [
+      "ZE-50",
+      "ZE-126"
+    ]
+  },
+  {
+    "key": "ZE-124",
+    "title": "Implement bounded native adjacency codecs and merging",
+    "description": "Own storage/adjacency code for versioned immutable bases/deltas and bounded sorted merge/consolidation partition kernels. Consume exact typed NodeId/RelId/RelTypeId, direction, half-open RelId range with tagged infinity, base plus at most eight borrowed sorted delta runs, and caller-owned bounded output. Full u128 numeric IDs; <=4096 base entries, <=2048 pending entries, private consolidation required before ninth run/2049th pending entry. Preserve delete neighbor identity; newer committed sequence wins; equal-sequence identical observations may coalesce but conflicting actions/neighbors fail loudly. Validate every input/run/header/order/uniqueness/range before yielding any row. No hidden heap, tree lookup, VFS publication or relaxed caller budget. Poll actual validation/comparison/merge/copy sites, at least each entry and <=64KiB bytes, propagate typed format/limit/control errors, and mark partial scratch invalid on failure.\n\nStorage owner reviewed boundary and reserves outer block tags13 adjacency base /14 adjacency delta (ZE43 owns11 payload chunk /12 provenance). Coordinate append-only kind decoding; own exact hand-written inner encoding/version and byte goldens in this commit. No registry ID collision or new dependencies. Tree descriptors, authoritative records, current-view endpoint liveness, real OUT/IN preparation and publication are still ZE44/45. Tests must cover sparse/empty ranges, high IDs/max-ID tagged infinity, 4097 split, ninth-run/2049-entry trigger, mixed insert/delete/property-only no-op, same-sequence conflict, truncation/corruption/cancellation, allocation-free hot merge and independent exact edge oracle. Deliberately ignore delete/drop a reverse-model entry to prove comparator detection; local paired direction model is not whole actual participant evidence. ZE44 retains every real integration requirement.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n\n\n## Reviewed sequence and topology freeze\n\nUse native WAL u64 commit sequence (not GraphGeneration). Base/range has explicit consolidation watermark and merge input an explicit committed cutoff: watermark <= cutoff; every run satisfies watermark < sequence <= cutoff; run order is nondecreasing. Exact equal-sequence duplicate observations may coalesce but conflicting actions/neighbors reject. All occurrences of a RelId across all sequences/base must preserve the same neighbor, even when newest observation is a delete. Kernel checks complete supplied group; ZE44 binds cutoff/watermark to real admitted roots and authoritative cross-group topology. Pin storage of watermark/sequence in exact format and malformed goldens. Inner error/control transport is nonallocating (current FormatError owns String). Do not call uncontrolled outer ArtifactFrame decoding then claim bounded cancellation. Full validation plus final checkpoint occurs before valid output; no callback may publish early rows.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E4",
+    "themes": [
+      "graph",
+      "storage"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.055Z",
+    "updated_at": "2026-09-19T19:00:27.276Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-32",
+      "ZE-42",
+      "ZE-122"
+    ],
+    "blocks": [
+      "ZE-44"
+    ]
+  },
+  {
+    "key": "ZE-125",
+    "title": "Implement bounded relational operators and eligible sets",
+    "description": "Own production filter/project/scope/aggregate/distinct/sort/offset/limit kernels and immutable same-view EligibleNodeSet using landed QueryValue semantics, RuntimeContext/QueryMemory, real fixed backing and cumulative counters. First compile a composed multi-operator/multi-batch tracer: existing generic PullOperator lifetimes must compose with retained buffers without unsafe widening. Define a charged ordered SlotId schema; logical slot is never a column index. Any required physical-operator execution-lifetime adaptation is owned here and reviewed before consumers; preserve existing driver barriers and no partial rows. Blocking row storage is a separately charged owner; never raise the256 scheduling-batch cap. Query expression data reads require actual later producer; controlled typed inputs prove kernels only.\n\nImplement and independently verify empty global0/[] vs empty grouped, count/collect null skipping, DISTINCT null/NaN/exact mixed numeric/list equivalence including collision checks, bounded stable explicit sorting/ordered collect, WITH scopes, three-valued filtering, bags, offset/limit across many batches. EligibleNodeSet has private fields, same actual QueryView identity and one real packed NodeId arena; <=524288 total elements per list value (including nested descendants) and <=524288 materialized IDs per set; cumulative examined duplicate rows remain separately counted actual work, not a new cap, sorted unique full IDs, explicit AllIndexed versus empty. Charge simultaneous input/copy/scratch capacities; consume dead storage only through genuine owner transfer. Poll sorting/hashing/copy, count actual work, preserve surrounding bags, validate every member and view. No all-null/default entity accessor, synthetic budget credit or loose error collapse. Runtime entity/storage errors remain typed when integrated. Own query/relational and eligibility modules, minimal runtime/batch/schema additions and tests. ZE123 alone owns any new NodeFacts ordinal accessor; do not edit plan/mod.rs. Start schemas from explicit ordered distinct SlotIds verified using current facts.width()/slot(). Only consume a new accessor after its immutable compiled commit. ZE51 remains mandatory real ZE50/pattern/evaluator/structured-plan integration; ZE64 owns real ranking/eager reports.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E5",
+    "themes": [
+      "graph",
+      "execution"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.088Z",
+    "updated_at": "2026-09-19T19:00:27.216Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-48",
+      "ZE-49",
+      "ZE-122"
+    ],
+    "blocks": [
+      "ZE-51"
+    ]
+  },
+  {
+    "key": "ZE-126",
+    "title": "Implement complete Cypher read plan lowering",
+    "description": "Own complete accepted non-search read lowering in internal zeppelin-embed-cypher/src/lowering and tests after the compiled typed-pattern contract lands. Reuse BoundQuery syntax/facts/projections/expressions/parameters; no second parser, alternate interpreter or public prepared-plan interface. Build owned same-query charged operator/expression/name/edge/projection/parameter/source-map/fact backing, hold compiler/plan overlap, prune/remap sparse expressions and synthesized IDs, validate actual GraphPlan/fact Vec, and retain all backing through a scoped consumer with nonescaping borrows.\n\nCover MATCH/OPTIONAL including exact correlation, node/rel reuse, finite paths/relationship lists, OR types/per-edge predicates, one-MATCH uniqueness, WHERE/WITH/RETURN/scalar functions, count/collect/grouping/DISTINCT/order/skip/limit. Preserve ORDER BY output-alias precedence, hidden-key stage restrictions, exact source spans/types/nullability/barriers, checked query-invariant integer bounds, profile rejection categories and full retained search binding data for ZE58. No accepted CALL is silently discarded; this is explicitly the read lowerer, not a complete public CALL compiler.\n\nAcceptance is complete faithful generated plans, rejection/limit/resource/cancel/lifetime proofs and independent plan comparator controls. Binding/lowering a selected TCK statement does not mark it executed. ZE56 remains mandatory actual public compiler->GraphStore execution of all57 original read coordinates (54 positives+3 specified compile errors), independent persisted tiny graph oracle, bags/order/types/errors, compaction/reopen and real resource faults. Local finite adaptations never count as original TCK. Full99 profile integration remains ZE59.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E6",
+    "themes": [
+      "graph",
+      "cypher"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.122Z",
+    "updated_at": "2026-09-19T18:53:08.122Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-55",
+      "ZE-122",
+      "ZE-123"
+    ],
+    "blocks": [
+      "ZE-56"
+    ]
+  },
+  {
+    "key": "ZE-127",
+    "title": "Implement owned completed graph value storage",
+    "description": "Own internal native copied result representation, bounded builder, report retention and allocation-free consuming transition to application-owned completed values. Use explicit typed bounded arrays/indices for Null/Bool/I64/F64/String/Node/Rel/List, columns/rows, ordered list children, properties/labels/entities. No core import of FFI. Preserve exact bits, full IDs/endpoints/type/revision/optional exact key/last-change generation. Default entity copies exclude original text/vector unless explicitly selected; stored-text result is copied. No neighboring entity recursion, lazy lookup or view/source/caller borrow in final CompletedGraphResult (no store/query lifetime parameter).\n\nPrepared storage owns real query/shared charged backing with initialized lengths. Complete represented core<=4MiB/rows<=65536 and actual capacity/metadata/scratch limits are independently enforced; ABI overlap remains separate<=4MiB plus registry. Final consuming transfer allocates/copies nothing, relinquishes only authentic query/writer accounting exactly once, retains real application-owned backing and drops bytes before guards on failure. Any into-owned resource API is limited to owned element representations; it cannot allow arbitrary borrowed QueryValue escape. Freeze compiled layout/build/transfer API and exact commit before conversion consumers. Preserve lossless generation/per-call reports/counters and separate requested/actual tier, coverage/precision/epoch/empty-leg/alpha policy metadata. Real ranking stays ZE64.\n\nAcceptance: exact standalone owned value/entity/list/report fixtures, malformed ranges/depth/counts, deleted/foreign-view typed errors via explicit producer contract, fail each actual allocation/copy, no partial result, lifetime/owner cleanup and flat allocator loops. A controlled entity adapter is not real graph read proof. ZE53 retains real admitted base/allowed overlay entity resolution, complete read/write/search composition, close-drain and results surviving actual close/reopen/relocation; ZE68 retains genuine native-to-C conversion. Own query/completed module plus minimal reviewed resource-detach seam; coordinate shared resource edits, no replacement GraphStore stub.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E5",
+    "themes": [
+      "graph",
+      "execution",
+      "ownership"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.155Z",
+    "updated_at": "2026-09-19T18:53:08.155Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-32",
+      "ZE-48",
+      "ZE-49",
+      "ZE-122"
+    ],
+    "blocks": [
+      "ZE-53"
+    ]
+  },
+  {
+    "key": "ZE-128",
+    "title": "Implement aligned graph response ownership and registration",
+    "description": "Own real aligned typed C result pools/root descriptor, private prepared registration, infallible expose transition and bounded validated free under ZE67 fixed schema. Guarantee alignment by actual allocation Layout/typed backing (Vec<u8> is insufficient); reserve/charge full actual padding/capacity before allocation. Private prepared owner holds genuine registry admission and complete authoritative pointer/count/type/generation/token geometry. Registry growth is real fallible precommit work; logical entry counts or HashMap capacity are not allocator-byte evidence. A dedicated bounded registry slab is allowed if it preserves legacy registry isolation and explicitly accounts whole backing. Expose only moves prepared ownership/sets known fields: no allocation, copying, hash insertion, formatting or fallible callback.\n\nFree compares complete host-visible immutable geometry/token/type against registered owner and drops a bounded allocation set, never host-mutated recursive pointers. Empty descriptor second free succeeds; stale copied descriptor and changed pointers/counts/token/cross-kind fail without stealing real owner. Implement an independent outcome cell outside unwind scope: reads NotApplicable, potential writes Indeterminate before attempt, known committed generation survives panic/delivery failure/cancel. Only real coordinator determines durable outcome later. Internal prepare/expose/free can be tested now; shipping exports/header/default feature wiring remains coordinated ZE69/107.\n\nAcceptance: real aligned pools/registry with independent descriptor oracle, graph/list/entity/string heap-flat loops, alignment on every typed array, empty/second/stale/forged frees, actual allocator denial during expose/free, all precommit failpoints clean, exact capacities and peak core/ABI overlap. Freeze compiled owner/reservation API before adapters. Do not cast ZE37 byte arenas or fake authentic charge transfer. ZE68 remains mandatory native-result conversion, actual receipt hook/aligned preparation adaptation, no graph lease after real close/reopen, true commit-window allocation denial and real coordinator outcome faults. No public ABI success or postcommit safety claim from synthetic result data alone. Own ffi graph_result/graph registry owner modules and minimal registry hooks; core transfer belongs native values owner.\n\nOwner authorization and readiness: ZE-122 records the 2026-09-19 owner instruction to separate implementation readiness from mandatory integration acceptance. Read docs/graph/plans/parallel-contracts.md and the owning plan. This is an independent production component, not a stub or a replacement acceptance route. Claim only after native blockers are done and use its own current-main worktree. No new third-party dependencies. Preserve inherited changes. Literal focused RED then GREEN with independent expected results, real capacity/cancellation counters, changed-path seeded can-fire and same-seed clean controls. Nonessential broad suites are deferred through ZE-118 with exact changed commits and commands. Commit starts with this ticket key; root cherry-picks verified candidate. No public storage/admission/TCK/recovery/release claim follows from a component test.\n",
+    "status": "todo",
+    "type": "story",
+    "epic": "E8",
+    "themes": [
+      "graph",
+      "bindings",
+      "ownership"
+    ],
+    "labels": [],
+    "resolution": null,
+    "created_at": "2026-09-19T18:53:08.186Z",
+    "updated_at": "2026-09-19T18:53:08.186Z",
+    "closed_at": null,
+    "blocked": true,
+    "blocked_by": [
+      "ZE-29",
+      "ZE-37",
+      "ZE-49",
+      "ZE-67",
+      "ZE-122"
+    ],
+    "blocks": [
+      "ZE-68"
+    ]
+  }
+]

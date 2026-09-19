@@ -1,0 +1,26 @@
+{
+  "head": "8517c9e5f2f75b6d35ca1cffbf96c5bcbed54978",
+  "files": {
+    "docs/graph/plans/execution.md": "6bf49d9c0bd3093f06967d1746a19d49e5e2519e51ac184d748627daf1a5ea06",
+    "docs/graph/plans/bindings.md": "d59774c76b75edd7a0f157a1613d271044ba2b51f5f2bf4d4aa848da0aa13c02",
+    "crates/zeppelin-embed/src/property_graph/query/runtime.rs": "44efce27f3c20a148840a7b75edc61434186922e280ec1563ba37918dd390f5d",
+    "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs": "e0cb26386eb28c6626cb3ce89e38cd3f8d33b54582319de3e41eb52f53ecdb43",
+    "crates/zeppelin-embed/src/property_graph/query/runtime/batch.rs": "814dbc575b1a8a176bedd07acd2ac7cbf600f3ecb5e3b6bf6fb765a7a09e5996",
+    "crates/zeppelin-embed/src/property_graph/query/resources.rs": "057ce50498ea232a048c4bd7ac2424292b58feb4ea535a2d21e8a76461e71e3a",
+    "crates/zeppelin-embed/src/property_graph/query/resources/inputs.rs": "36e9bf5d6b2f4e71a998f2ad043cc6b976ea70ff0278dd017e5b4a85e5c72608",
+    "crates/zeppelin-embed/src/property_graph/query/context.rs": "cb2f4fef2ae3fa2214dedae7890dbf844be70ae3e5fea1ecebe28aeda6f15864",
+    "crates/zeppelin-embed/src/property_graph/query/mod.rs": "f811f111c0990a61f7b6de306641d0ae5abff4a21720924300d3e06f40326239",
+    "crates/zeppelin-embed/src/property_graph/query/grouping.rs": "5907246f814535afe1497fbbe95d43dbfb6335728e217af74667b64c4b8223a3",
+    "crates/zeppelin-embed/src/property_graph/query/list.rs": "4cfb760d843d5b1bcbde040ec4b4d45f6c165c483150545e88ffa8067be2c8ca",
+    "crates/zeppelin-embed/src/property_graph/query/value.rs": "6c04e052657410bf3a15137593da405588b55681339ccee017f622ed2be40cd7",
+    "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs": "e688e528be3f7c3d2c4c5ebd08d85fd41caa2e029aa80465768a9d25163f71ca",
+    "crates/zeppelin-embed/src/property_graph/resources.rs": "08e0e3d6ec8295fbf9eacfbe311779cec8daa5543168762499c7090d17476e14",
+    "crates/zeppelin-embed/src/property_graph/staging.rs": "68603d847134a1f811b34eca28d005f63c7052c34d3144c66b552c5828252094",
+    "crates/zeppelin-embed/src/property_graph/staging/result.rs": "7b1a04487acf254ff0b8bcfd79b8dd1ffb7e15b21fd598fe2cc9744b46413de8",
+    "crates/zeppelin-embed/src/property_graph/staging/memory.rs": "7914e84cd8c6adb11c1c250eb3d8fe89180e27b7d730e499c5284a737f782d78",
+    "crates/zeppelin-embed-ffi/src/graph_contracts.rs": "f23f1c12829db80303a8ea18e4fc754de06b45d806668d5129934b743a1737dc",
+    "crates/zeppelin-embed-ffi/src/graph_validate.rs": "9b5671fc0f409cde0050d180c50b029181a12a1f64c27646af24edb1d408b735",
+    "crates/zeppelin-embed-ffi/src/graph_error.rs": "e02c356a45930d5d92ec2e1255254a03c9aedef3b0d7b052014f133faf2095c3",
+    "crates/zeppelin-embed-ffi/src/registry.rs": "89a76b3ef08e5f8c44634fcdc0c0855ae7560594629d2fd2700fd09de62b4895"
+  }
+}

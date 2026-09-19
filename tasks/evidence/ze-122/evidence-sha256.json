@@ -1,0 +1,15 @@
+{
+  "tasks/evidence/ze-122/audit-dependencies.py": "b5604c37a8cfff5bf7eefb86b9b93c25d7f6bca25d277717cdc537eb4dea55fc",
+  "tasks/evidence/ze-122/compiler-lowering-audit.md": "df9fbf2702e5f2ec1d9c430fc15e4fa272eb7f92fc5ad9328dbdaaa8fce98aae",
+  "tasks/evidence/ze-122/dependency-audit.json": "282f2cbfe9ad5a899097dd38f36485b71800e809bb3317d7ab136d33b2779fbb",
+  "tasks/evidence/ze-122/dependency-negative-control.txt": "49b7e5a5c3d62447ffe6452cfb30d9131fbc4f000b27798ea7a2836251569de5",
+  "tasks/evidence/ze-122/execution-bindings-audit.md": "d76c0d05f2c11ec8f32fd9a1d55909f75d8f047aeef543065d87722b5c630c87",
+  "tasks/evidence/ze-122/execution-bindings-source-inventory.json": "97ecf711e0ae47c8e9f61139b8846a29b3c6a030731b371e88e4934c61987960",
+  "tasks/evidence/ze-122/final-adjacency-review.md": "e07e3665183932834ebac081c01a4c7a04345583267991ddcbe5d8f9248bcaaa",
+  "tasks/evidence/ze-122/final-compiler-review.md": "af19f31bfee8a5a9dc2b0123faee73e8c25f124d7b78dcaa68dc8542e332f526",
+  "tasks/evidence/ze-122/final-execution-review.md": "6596f68978fbbd2b958b657e9ee8494f9bff6ff54f4624eb7cd371b230ac4dbb",
+  "tasks/evidence/ze-122/implementation-tickets.json": "af149290565900474e8483faea6a0add5fd1c324af7cffcf848a6b3c152d7431",
+  "tasks/evidence/ze-122/parallel-contracts.md": "08d086feb41f5393f56d0051feeb820a25a3b67dab9b1e3114098ef01ef3d68a",
+  "tasks/evidence/ze-122/plan-sha256.json": "2b922cb630d80cfbe453e9dbc4bfd734ab95d1908e0cb6bbf9e1e366be52eed7",
+  "tasks/evidence/ze-122/review-resolutions.md": "6b76bf63e1e1860d5d7f77a539a548cc8d4e60943ddd41d991b76dfcc3af737c"
+}
