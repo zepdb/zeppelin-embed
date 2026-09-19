@@ -1,0 +1,133 @@
+[
+  {
+    "test": "column_roundtrip_checks_each_independent_observation_surface",
+    "target": "metadata_contracts",
+    "file": "metadata_filter_planner.rs",
+    "mutation": [
+      "if observed.raw.row_count != expected_rows {",
+      "if false {"
+    ],
+    "exit": 101,
+    "log": "metadata-mutant-red.log.gz",
+    "restored_sha256": "82f1cbb8a9d3b299ffbcaea33a371c2815cd45e8876e1908aa0f963f5c66ec82",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test metadata_contracts column_roundtrip_checks_each_independent_observation_surface -- --exact"
+  },
+  {
+    "test": "manifest_header_rejects_each_malformed_framing_field",
+    "target": "storage_formats",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if flags != 0 {",
+      "if false {"
+    ],
+    "exit": 101,
+    "log": "storage-header-mutant-red.log.gz",
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_formats",
+    "note": "At this vertical step the target contained only this one named test."
+  },
+  {
+    "test": "manifest_payload_validates_identity_schema_epoch_and_range_boundaries",
+    "target": "storage_formats",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if cursor.u32()? != 0 {",
+      "if cursor.u32()? == u32::MAX {"
+    ],
+    "exit": 101,
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "log": "manifest_payload_validates_identity_schema_epoch_and_range_boundaries-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_formats manifest_payload_validates_identity_schema_epoch_and_range_boundaries -- --exact"
+  },
+  {
+    "test": "segment_directory_rejects_checksums_reserved_bytes_and_invalid_ranges",
+    "target": "storage_formats",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if checksum != actual {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "log": "segment_directory_rejects_checksums_reserved_bytes_and_invalid_ranges-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_formats segment_directory_rejects_checksums_reserved_bytes_and_invalid_ranges -- --exact"
+  },
+  {
+    "test": "wal_parser_preserves_exact_header_and_corrupt_prefix_diagnostics",
+    "target": "storage_formats",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if sequence != expected_seq {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "log": "wal_parser_preserves_exact_header_and_corrupt_prefix_diagnostics-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_formats wal_parser_preserves_exact_header_and_corrupt_prefix_diagnostics -- --exact"
+  },
+  {
+    "test": "reachability_checker_rejects_incomplete_classification_and_changed_cleanup_evidence",
+    "target": "storage_observations",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if observed.directory_syncs != expected.expected_directory_syncs {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "log": "reachability_checker_rejects_incomplete_classification_and_changed_cleanup_evidence-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_observations reachability_checker_rejects_incomplete_classification_and_changed_cleanup_evidence -- --exact"
+  },
+  {
+    "test": "format_checker_rejects_wrong_case_call_control_and_partial_results",
+    "target": "storage_observations",
+    "file": "storage_durability.rs",
+    "mutation": [
+      "if observed.partial_candidates != 0 {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "log": "format_checker_rejects_wrong_case_call_control_and_partial_results-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test storage_observations format_checker_rejects_wrong_case_call_control_and_partial_results -- --exact"
+  },
+  {
+    "test": "bitmap_algebra_refuses_duplicate_dead_and_uncorrelated_observations",
+    "target": "metadata_contracts",
+    "file": "metadata_filter_planner.rs",
+    "mutation": [
+      "if public.len() != observed.public_results.len() {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "82f1cbb8a9d3b299ffbcaea33a371c2815cd45e8876e1908aa0f963f5c66ec82",
+    "log": "bitmap_algebra_refuses_duplicate_dead_and_uncorrelated_observations-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test metadata_contracts bitmap_algebra_refuses_duplicate_dead_and_uncorrelated_observations -- --exact"
+  },
+  {
+    "test": "execution_receipts_require_exact_correlations_counters_and_lifecycle",
+    "target": "metadata_contracts",
+    "file": "metadata_filter_planner.rs",
+    "mutation": [
+      "if observed.allow_list_threshold != expected_case.allow_list_threshold {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "82f1cbb8a9d3b299ffbcaea33a371c2815cd45e8876e1908aa0f963f5c66ec82",
+    "log": "execution_receipts_require_exact_correlations_counters_and_lifecycle-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test metadata_contracts execution_receipts_require_exact_correlations_counters_and_lifecycle -- --exact"
+  },
+  {
+    "test": "pruning_requires_complete_live_baselines_and_exact_source_evidence",
+    "target": "metadata_contracts",
+    "file": "metadata_filter_planner.rs",
+    "mutation": [
+      "if observed.wal_delete_records != input.expected_delete_records {",
+      "if false {"
+    ],
+    "exit": 101,
+    "restored_sha256": "82f1cbb8a9d3b299ffbcaea33a371c2815cd45e8876e1908aa0f963f5c66ec82",
+    "log": "pruning_requires_complete_live_baselines_and_exact_source_evidence-mutant-red.log.gz",
+    "command": "CARGO_TARGET_DIR=target/ze116 cargo test -p zeppelin-embed-adversarial-oracle --test metadata_contracts pruning_requires_complete_live_baselines_and_exact_source_evidence -- --exact"
+  }
+]

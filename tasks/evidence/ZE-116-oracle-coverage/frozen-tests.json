@@ -1,0 +1,5 @@
+{
+  "tests/adversarial-oracle/tests/storage_formats.rs": "41b8aaf4873bb42e38214b2dec7f56c4eb0dca499c5b38eacade3a7ff2ded21c",
+  "tests/adversarial-oracle/tests/storage_observations.rs": "8149d72eb71d3b2fdd25370ffe6adc0c36cff6731f029c7434574fdc9da1f968",
+  "tests/adversarial-oracle/tests/metadata_contracts.rs": "c55773a2c7e65301bc5a0f4b32672a16ced7d84831d8a3bd402bf1f74662fc07"
+}

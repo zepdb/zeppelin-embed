@@ -1,0 +1,180 @@
+{
+  "inventory": {
+    "diagnostics_health.rs": {
+      "baseline": {
+        "count": 67,
+        "covered": 67,
+        "percent": 100.0
+      },
+      "final": {
+        "count": 67,
+        "covered": 67,
+        "percent": 100.0
+      }
+    },
+    "ffi_bindings.rs": {
+      "baseline": {
+        "count": 82,
+        "covered": 82,
+        "percent": 100.0
+      },
+      "final": {
+        "count": 82,
+        "covered": 82,
+        "percent": 100.0
+      }
+    },
+    "fts.rs": {
+      "baseline": {
+        "count": 1024,
+        "covered": 864,
+        "percent": 84.375
+      },
+      "final": {
+        "count": 1024,
+        "covered": 864,
+        "percent": 84.375
+      }
+    },
+    "hybrid_fusion.rs": {
+      "baseline": {
+        "count": 697,
+        "covered": 597,
+        "percent": 85.65279770444764
+      },
+      "final": {
+        "count": 697,
+        "covered": 597,
+        "percent": 85.65279770444764
+      }
+    },
+    "ingest_retention.rs": {
+      "baseline": {
+        "count": 2050,
+        "covered": 1803,
+        "percent": 87.95121951219512
+      },
+      "final": {
+        "count": 2050,
+        "covered": 1803,
+        "percent": 87.95121951219512
+      }
+    },
+    "lib.rs": {
+      "baseline": {
+        "count": 37,
+        "covered": 36,
+        "percent": 97.2972972972973
+      },
+      "final": {
+        "count": 37,
+        "covered": 36,
+        "percent": 97.2972972972973
+      }
+    },
+    "lifecycle_accounting.rs": {
+      "baseline": {
+        "count": 81,
+        "covered": 81,
+        "percent": 100.0
+      },
+      "final": {
+        "count": 81,
+        "covered": 81,
+        "percent": 100.0
+      }
+    },
+    "metadata_filter_planner.rs": {
+      "baseline": {
+        "count": 3945,
+        "covered": 3406,
+        "percent": 86.33713561470215
+      },
+      "final": {
+        "count": 3945,
+        "covered": 3735,
+        "percent": 94.67680608365019
+      }
+    },
+    "property_graph.rs": {
+      "baseline": {
+        "count": 25,
+        "covered": 25,
+        "percent": 100.0
+      },
+      "final": {
+        "count": 25,
+        "covered": 25,
+        "percent": 100.0
+      }
+    },
+    "storage_durability.rs": {
+      "baseline": {
+        "count": 2915,
+        "covered": 2185,
+        "percent": 74.95711835334477
+      },
+      "final": {
+        "count": 2915,
+        "covered": 2568,
+        "percent": 88.09605488850771
+      }
+    },
+    "tiering_maintenance.rs": {
+      "baseline": {
+        "count": 431,
+        "covered": 400,
+        "percent": 92.80742459396751
+      },
+      "final": {
+        "count": 431,
+        "covered": 400,
+        "percent": 92.80742459396751
+      }
+    },
+    "vamana_graph.rs": {
+      "baseline": {
+        "count": 757,
+        "covered": 675,
+        "percent": 89.16776750330251
+      },
+      "final": {
+        "count": 757,
+        "covered": 675,
+        "percent": 89.16776750330251
+      }
+    },
+    "vector_execution.rs": {
+      "baseline": {
+        "count": 4139,
+        "covered": 3765,
+        "percent": 90.96400096641702
+      },
+      "final": {
+        "count": 4139,
+        "covered": 3765,
+        "percent": 90.96400096641702
+      }
+    }
+  },
+  "baseline_clean": {
+    "covered": 13961,
+    "count": 16225,
+    "percent": 86.0462249614792
+  },
+  "baseline_integrated": {
+    "covered": 13986,
+    "count": 16250,
+    "percent": 86.06769230769231
+  },
+  "final_clean": {
+    "covered": 14673,
+    "count": 16225,
+    "percent": 90.43451463790447
+  },
+  "final_integrated": {
+    "covered": 14698,
+    "count": 16250,
+    "percent": 90.44923076923077
+  }
+}
