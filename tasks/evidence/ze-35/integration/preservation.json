@@ -1,0 +1,10 @@
+{
+  "user_file_hashes_match": 45,
+  "retained_profile_hashes_match": 313,
+  "old_production_source_changes": [
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "tests/adversarial-oracle/src/lib.rs"
+  ],
+  "base": "77bc3fe0135f63a4eeff87f6f21cc29a239cb2e6",
+  "candidate": "0a6312a94262b5c35607a93849dee2b3ea6606ce"
+}

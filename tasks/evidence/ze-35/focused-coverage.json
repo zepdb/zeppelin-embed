@@ -1,0 +1,47 @@
+[
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/catalog.rs",
+    "lines": {
+      "count": 236,
+      "covered": 226,
+      "percent": 95.76271186440678
+    },
+    "sha256": "8e019622b281391c5212ca988c45a09247318cac66ec248ea0d7ca569769d295"
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/catalog/codec.rs",
+    "lines": {
+      "count": 269,
+      "covered": 260,
+      "percent": 96.6542750929368
+    },
+    "sha256": "4f305203f88c84606066ccf10a6dabbf127c4d4209fe29d07eb7412871b9575f"
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/catalog/interpretation.rs",
+    "lines": {
+      "count": 126,
+      "covered": 126,
+      "percent": 100.0
+    },
+    "sha256": "df75ee5b1e0e8aa64bf981cb768f95c319d535dc8e7e046ba7800fe371221396"
+  },
+  {
+    "file": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+    "lines": {
+      "count": 93,
+      "covered": 91,
+      "percent": 97.84946236559139
+    },
+    "sha256": "3d2877b17eb49b17500368f349a2302d25aef55fdbb019de711e8bfc9e3e7591"
+  },
+  {
+    "file": "tests/adversarial-oracle/src/graph_catalog.rs",
+    "lines": {
+      "count": 72,
+      "covered": 72,
+      "percent": 100.0
+    },
+    "sha256": "29e850fb57c0182f3748a5b5472f116e3713ed53e3f5c606c90d9ac596658262"
+  }
+]

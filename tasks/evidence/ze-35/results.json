@@ -1,0 +1,57 @@
+{
+  "pre_adversarial": {
+    "passed": 426,
+    "failed": 0,
+    "ignored": 11,
+    "seconds": 2437.58
+  },
+  "post_smoke": {
+    "seeds": 224,
+    "violations": 0,
+    "passed": 1,
+    "seconds": 128.11
+  },
+  "public_catalog_tests": 14,
+  "allocation_tests": 1,
+  "primitive_oracle_tests": 1,
+  "runner_catalog_tests": 2,
+  "fault_pairs": {
+    "cancellation": {
+      "fire": 8,
+      "clean": 8
+    },
+    "budget": {
+      "fire": 8,
+      "clean": 8
+    },
+    "checksum": {
+      "fire": 8,
+      "clean": 8
+    }
+  },
+  "fuzz_raw": {
+    "executions": 861901,
+    "seconds": 61
+  },
+  "fuzz_raw_and_repaired": {
+    "executions": 548869,
+    "seconds": 61,
+    "max_len": 262144,
+    "largest_seed_bytes": 131227
+  },
+  "behavioral_mutants_detected_and_restored": 8,
+  "focused_core_lines": {
+    "covered": 703,
+    "total": 724
+  },
+  "focused_oracle_lines": {
+    "covered": 72,
+    "total": 72
+  },
+  "native_arm64_linked_kb": {
+    "core": 3645,
+    "ffi": 3840,
+    "budget": 5120
+  },
+  "full_integrated_per_crate_acceptance": "pending coordinator; ticket remains open"
+}

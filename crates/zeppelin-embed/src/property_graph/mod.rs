@@ -86,3 +86,6 @@ impl std::error::Error for DomainError {}
 
 #[cfg(test)]
 mod tests;
+
+/// Logical symbol dictionary and graph interpretation validation.
+pub mod catalog;

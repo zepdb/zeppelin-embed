@@ -1,0 +1,66 @@
+[
+  {
+    "mutation": "duplicate-id",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog.rs",
+    "restored_sha256": "8e019622b281391c5212ca988c45a09247318cac66ec248ea0d7ca569769d295",
+    "test": "catalog_rejects_duplicate_assignments_and_regressed_high_waters",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "regressed-water",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog.rs",
+    "restored_sha256": "8e019622b281391c5212ca988c45a09247318cac66ec248ea0d7ca569769d295",
+    "test": "catalog_rejects_duplicate_assignments_and_regressed_high_waters",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "truncated-store",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog/codec.rs",
+    "restored_sha256": "4f305203f88c84606066ccf10a6dabbf127c4d4209fe29d07eb7412871b9575f",
+    "test": "catalog_independent_goldens_pin_full_identity_and_exact_document_declaration",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "ignored-model-version",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog/interpretation.rs",
+    "restored_sha256": "df75ee5b1e0e8aa64bf981cb768f95c319d535dc8e7e046ba7800fe371221396",
+    "test": "catalog_admission_refuses_every_changed_document_field_or_analyzer",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "missing-chunk-poll",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+    "restored_sha256": "3d2877b17eb49b17500368f349a2302d25aef55fdbb019de711e8bfc9e3e7591",
+    "test": "catalog_long_name_lookup_observes_cancellation_during_comparison",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "reserved-bytes",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog/codec.rs",
+    "restored_sha256": "4f305203f88c84606066ccf10a6dabbf127c4d4209fe29d07eb7412871b9575f",
+    "test": "catalog_corruption_refuses_truncation_tags_overflow_duplicates_and_trailing_bytes",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "broken-utf8-carry",
+    "source": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+    "restored_sha256": "3d2877b17eb49b17500368f349a2302d25aef55fdbb019de711e8bfc9e3e7591",
+    "test": "catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail",
+    "exit": 101,
+    "detected": true
+  },
+  {
+    "mutation": "blind-oracle",
+    "source": "tests/adversarial-oracle/src/graph_catalog.rs",
+    "restored_sha256": "29e850fb57c0182f3748a5b5472f116e3713ed53e3f5c606c90d9ac596658262",
+    "test": "primitive_catalog_oracle_rejects_malformed_or_mismatched_observations",
+    "exit": 101,
+    "detected": true
+  }
+]

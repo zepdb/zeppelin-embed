@@ -669,3 +669,42 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Exact layouts and reviewed tag assignments are recorded in
   `tasks/evidence/ze-42-native-graph-artifact-codecs.md`; independent golden files
   freeze bytes. No new dependency or foreign persisted format was introduced.
+
+## ZE-35: logical graph catalog participant
+
+- LabelId, RelTypeId, PropertyKeyId and NamespaceId are separate nonzero u64
+  domains. Reconstruction rejects duplicate names/IDs inside each domain and
+  high-waters below retained IDs; gaps and exhausted high-waters survive. Names
+  remain exact UTF-8, including empty strings and NUL. Intern only names required
+  by normalized mutations, never names mentioned by an effect-free removal.
+- SymbolCatalog is optional bounded staging/reconstruction scratch, not a
+  mandatory resident catalog or a whole-catalog copy on each write. Its fixed
+  descriptor capacity is reserved fallibly against the caller's already-reserved
+  shared allowance and reports actual Vec capacity bytes. It never grows
+  implicitly. Borrowed name/tower backing and caller output remain charged to
+  their staging owner or immutable storage lease. Later storage owns pages.
+- ZGCA v1 is a logical snapshot participant, not a new global persisted family
+  or graph root. Its 120-byte little-endian prefix is magic ZGCA, codec u16 and
+  required interpretation u16 (both 1), complete byte length u64, StoreInstanceId
+  u128, node/relationship high-waters u128 each, four symbol high-waters u64,
+  TokenizerEpoch u64, symbol count u64, embedding-present u8 and seven zero bytes.
+  The optional document tower follows: u64-length-prefixed model id, version,
+  weights digest; dims u32; normalization u16; prefixed prompt; max_tokens u32;
+  runtime/compute-units u16; OS-build-present u8 and optional prefixed UTF-8 build.
+  Each symbol is domain u8, seven zero bytes, ID u64, name length u64, UTF-8 name.
+  The final xxh3-64 covers every preceding byte. Unknown versions/tags, nonzero
+  reserved bytes, invalid UTF-8, bad extents/checksums and trailing bytes reject.
+  Symbol record order has no logical meaning; no canonical-byte identity is
+  inferred from this physical arrangement. Frozen logical fixtures pin both
+  optional embedding arms; existing persisted format goldens are unchanged.
+- Graph interpretation has one lexical identity and zero or one complete
+  document tower. No mandatory timestamp, vector, text membership or graph epoch
+  alias is introduced. Query-only tower/alignment changes do not change stored
+  document interpretation. Admission calls controlled validate_for rather than
+  derived Eq; it checks full fields, not a hash. Sorting, name comparison, UTF-8
+  validation, descriptor loops and encoding poll cancellation during real work.
+- CatalogDeclaration preserves the storage-owned StoreInstanceId without any
+  entropy fallback. Its pure validation seam has no filesystem side effects.
+  ZE-38/40 still own durable carriage, coherent high-waters, recovery and refusing
+  incompatible interpretation before replay/cleanup; codec success alone does
+  not admit a GraphStore or establish whole-store reopen/compaction correctness.

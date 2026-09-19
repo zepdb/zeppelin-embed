@@ -120,3 +120,5 @@ impl OracleRecord {
 fn escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
+
+pub mod graph_catalog;

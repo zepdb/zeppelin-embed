@@ -1,0 +1,30 @@
+{
+  "source_commit": "23fb6b961087281fbba90934966347d7231fa0aa",
+  "candidate_commit": "0a6312a94262b5c35607a93849dee2b3ea6606ce",
+  "final_shared_differences": [
+    "crates/zeppelin-embed/CLAUDE.md",
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "fuzz/Cargo.toml",
+    "tests/adversarial-oracle/src/lib.rs",
+    "tests/adversarial/coverage.rs",
+    "tests/adversarial/mod.rs",
+    "tests/adversarial/runner.rs",
+    "tests/adversarial_tests.rs"
+  ],
+  "all_other_source_hashes_match": true,
+  "old_module_prefixes_preserved": {
+    "crates/zeppelin-embed/src/property_graph/mod.rs": true,
+    "tests/adversarial-oracle/src/lib.rs": true
+  },
+  "final_module_hashes": {
+    "crates/zeppelin-embed/src/property_graph/mod.rs": "373d7ebfef28660c31fbf9647fa8fa6df0c7d23a39b8feb19fa24705d49efd56",
+    "tests/adversarial-oracle/src/lib.rs": "10362cc798581c9d138301ef17986e1b06bdaeeb0a189d8b921383128ee75668"
+  },
+  "final_nextest_command": "cargo nextest run --config-file /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-117/.config/nextest.toml -p zeppelin-embed-adversarial-oracle -p zeppelin-embed-workspace-tests --test graph_catalog --test adversarial_tests -E 'package(zeppelin-embed-adversarial-oracle) | test(property_graph_)' --locked --no-tests=fail --success-output final",
+  "passed": 7,
+  "skipped": 435,
+  "exit_code": 0,
+  "fmt_exit_code": 0,
+  "broad_final_qualification_deferred_to": "ZE-118",
+  "prior_coverage_boundary": "Existing full reports precede the declaration-only oracle module EOF move. Preserve as measured intermediate evidence, not a fresh final-source full-suite claim."
+}

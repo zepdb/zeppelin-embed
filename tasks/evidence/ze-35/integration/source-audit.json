@@ -1,0 +1,22 @@
+{
+  "source_commit": "23fb6b961087281fbba90934966347d7231fa0aa",
+  "candidate_commit": "0a6312a94262b5c35607a93849dee2b3ea6606ce",
+  "existing_production_changes": [
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "tests/adversarial-oracle/src/lib.rs"
+  ],
+  "merged_inventory_differences": [
+    "crates/zeppelin-embed/CLAUDE.md",
+    "crates/zeppelin-embed/src/property_graph/mod.rs",
+    "fuzz/Cargo.toml",
+    "tests/adversarial-oracle/src/lib.rs",
+    "tests/adversarial/coverage.rs",
+    "tests/adversarial/mod.rs",
+    "tests/adversarial/runner.rs",
+    "tests/adversarial_tests.rs"
+  ],
+  "other_source_hashes_match": true,
+  "environment": {
+    "CARGO_LLVM_COV_TARGET_DIR": "target/ze42-clean-coverage"
+  }
+}

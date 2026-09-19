@@ -1,0 +1,140 @@
+{
+  "no_removed_source": true,
+  "new_feature_inventory": "Existing allocation-audit feature paths are included and exercised by the full core lib test run. Existing product source is unchanged; catalog module declaration is appended after the complete original prefix.",
+  "changed_denominators": [
+    {
+      "path": "crates/zeppelin-embed/src/allocation_audit.rs",
+      "before": null,
+      "after": {
+        "count": 102,
+        "covered": 102,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/fts/alloc_gate.rs",
+      "before": null,
+      "after": {
+        "count": 98,
+        "covered": 98,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/fts/query.rs",
+      "before": {
+        "count": 1105,
+        "covered": 1083,
+        "percent": 98.00904977375565
+      },
+      "after": {
+        "count": 1134,
+        "covered": 1113,
+        "percent": 98.14814814814817
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/ingest/active.rs",
+      "before": {
+        "count": 2299,
+        "covered": 2078,
+        "percent": 90.3871248368856
+      },
+      "after": {
+        "count": 2302,
+        "covered": 2079,
+        "percent": 90.31277150304084
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/ingest/mod.rs",
+      "before": {
+        "count": 853,
+        "covered": 778,
+        "percent": 91.20750293083235
+      },
+      "after": {
+        "count": 876,
+        "covered": 801,
+        "percent": 91.43835616438356
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/lifecycle/mod.rs",
+      "before": {
+        "count": 7025,
+        "covered": 6026,
+        "percent": 85.779359430605
+      },
+      "after": {
+        "count": 7051,
+        "covered": 6052,
+        "percent": 85.83179690823997
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/lifecycle/stats.rs",
+      "before": {
+        "count": 798,
+        "covered": 687,
+        "percent": 86.09022556390978
+      },
+      "after": {
+        "count": 820,
+        "covered": 709,
+        "percent": 86.46341463414635
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/canonical.rs",
+      "before": {
+        "count": 358,
+        "covered": 338,
+        "percent": 94.41340782122904
+      },
+      "after": {
+        "count": 418,
+        "covered": 398,
+        "percent": 95.21531100478468
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/catalog.rs",
+      "before": null,
+      "after": {
+        "count": 236,
+        "covered": 228,
+        "percent": 96.61016949152543
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/catalog/codec.rs",
+      "before": null,
+      "after": {
+        "count": 269,
+        "covered": 260,
+        "percent": 96.6542750929368
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/catalog/interpretation.rs",
+      "before": null,
+      "after": {
+        "count": 126,
+        "covered": 126,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/catalog/work.rs",
+      "before": null,
+      "after": {
+        "count": 93,
+        "covered": 91,
+        "percent": 97.84946236559139
+      }
+    }
+  ],
+  "old_files": 156,
+  "new_files": 162
+}

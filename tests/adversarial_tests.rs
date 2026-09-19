@@ -9,6 +9,32 @@
 mod adversarial;
 
 #[test]
+fn property_graph_catalog_probe_preserves_independent_symbol_and_admission_contracts() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_catalog::probe(0, &mut coverage).expect("independent catalog oracle");
+    for key in adversarial::graph_catalog::REQUIRED_COVERAGE {
+        assert!(coverage.count(key) > 0, "missing catalog case {key}");
+    }
+}
+
+#[test]
+fn property_graph_catalog_faults_fire_with_same_seed_clean_controls() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_catalog::probe(41, &mut coverage).expect("catalog fault campaign");
+    for key in [
+        "property-graph.catalog.cancel.fire",
+        "property-graph.catalog.cancel.clean",
+        "property-graph.catalog.budget.fire",
+        "property-graph.catalog.budget.clean",
+        "property-graph.catalog.decode-error.fire",
+        "property-graph.catalog.decode-error.clean",
+    ] {
+        assert_eq!(coverage.count(key), 8, "unpaired catalog fault: {key}");
+        println!("{key}={}", coverage.count(key));
+    }
+}
+
+#[test]
 fn property_graph_domain_probe_preserves_primitive_contracts() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
     adversarial::property_graph::probe(0, &mut coverage).expect("independent graph domain oracle");

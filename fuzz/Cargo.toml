@@ -123,3 +123,10 @@ path = "fuzz_targets/native_graph_artifact.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "graph_catalog"
+path = "fuzz_targets/graph_catalog.rs"
+test = false
+doc = false
+bench = false
