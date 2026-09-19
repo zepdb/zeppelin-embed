@@ -33,7 +33,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy supported workspace targets
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: >-
+          cargo clippy --workspace --all-targets
+          --features zeppelin-embed-workspace-tests/graph-result-test-support
+          -- -D warnings
 
   doc:
     name: doc (macos-14)
@@ -45,7 +48,9 @@ jobs:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: Document supported workspace targets
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        run: >-
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+          --features zeppelin-embed-workspace-tests/graph-result-test-support
 
   test:
     name: test (macos-14)
@@ -61,7 +66,16 @@ jobs:
         with:
           tool: cargo-llvm-cov,cbindgen@0.29.4
       - name: Test supported workspace targets
-        run: cargo test --workspace --exclude zeppelin-embed-workspace-tests
+        run: >-
+          cargo test --workspace --exclude zeppelin-embed-workspace-tests
+          --features zeppelin-embed-ffi/graph-cypher
+      - name: Exercise the scoped graph-result allocation hook
+        run: >-
+          cargo test -p zeppelin-embed-workspace-tests
+          --features graph-result-test-support
+          --test adversarial_tests
+          property_graph_response_probe_checks_real_owners_and_paired_faults
+          -- --exact
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 

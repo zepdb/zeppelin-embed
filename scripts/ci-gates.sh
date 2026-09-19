@@ -3,8 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/graph-feature-target.sh"
 
 cd "$PROJECT_ROOT"
+
+WORKSPACE_ARGS=(--workspace)
+GRAPH_TARGET="$(graph_effective_target)"
+if graph_target_supports_native_graph "$GRAPH_TARGET"; then
+    WORKSPACE_ARGS+=(--features zeppelin-embed-workspace-tests/graph-result-test-support)
+    echo "native graph qualification: selected for $GRAPH_TARGET"
+else
+    WORKSPACE_ARGS+=(--exclude zeppelin-embed-cypher)
+    echo "native graph qualification: not selected for $GRAPH_TARGET; running legacy qualification"
+fi
 
 for source in tests/adversarial/*.rs tests/adversarial_tests.rs; do
     if tr -d '[:space:]' < "$source" | grep -E 'clean_control_passed(:|=)(true|!false)'; then
@@ -43,10 +54,10 @@ if grep -R -n -E 'sleep|Duration|Instant|timeout' crates/zeppelin-embed/src/wal 
 fi
 
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy "${WORKSPACE_ARGS[@]}" --all-targets -- -D warnings
 cargo clippy -p zeppelin-embed --all-targets --features allocation-audit -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc "${WORKSPACE_ARGS[@]}" --no-deps
+cargo test "${WORKSPACE_ARGS[@]}"
 cargo test -p zeppelin-embed --features allocation-audit \
     lifecycle::stats::tests::nothing_allocates_outside_accounting \
     -- --exact --test-threads=1

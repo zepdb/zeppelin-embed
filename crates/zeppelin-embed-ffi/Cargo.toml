@@ -11,8 +11,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = []
-# Contract surface only; ZE-107 owns complete artifact/compiler feature wiring.
-graph-cypher = []
+graph-cypher = ["zeppelin-embed/graph-cypher", "dep:zeppelin-embed-cypher"]
 # Scoped allocation-site scheduling for the opt-in canonical test runner only.
 graph-result-test-support = ["graph-cypher"]
 abi-panic-probe = []
@@ -23,6 +22,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dependencies]
 zeppelin-embed = { path = "../zeppelin-embed", version = "=0.4.2" }
+zeppelin-embed-cypher = { path = "../zeppelin-embed-cypher", version = "=0.4.2", optional = true }
 zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.4.2", optional = true }
 
 # loom is compiled only under `--cfg loom`, the model-checking build of the
@@ -32,3 +32,15 @@ loom = "=0.7.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "ffi_graph_contract"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "ffi_graph_header"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "ffi_graph_layout"
+required-features = ["graph-cypher"]

@@ -1,0 +1,102 @@
+[
+  {
+    "name": "boundary",
+    "command": [
+      "bash",
+      "scripts/check-graph-feature-boundary.sh"
+    ],
+    "returncode": 0,
+    "seconds": 19.087429666076787
+  },
+  {
+    "name": "legacy-ann",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_node_blocks",
+      "-j4"
+    ],
+    "returncode": 0,
+    "seconds": 14.493221250013448
+  },
+  {
+    "name": "default-registry",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(runner_keys_are)",
+      "-j4"
+    ],
+    "returncode": 0,
+    "seconds": 17.31505458301399
+  },
+  {
+    "name": "graph-registry",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(runner_keys_are)",
+      "-j4"
+    ],
+    "returncode": 0,
+    "seconds": 28.83697216701694
+  },
+  {
+    "name": "hook-registry-pg16",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-result-test-support",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(runner_keys_are) | test(property_graph_response_probe_checks_real_owners_and_paired_faults)",
+      "-j4"
+    ],
+    "returncode": 0,
+    "seconds": 17.73812654206995
+  },
+  {
+    "name": "ffi-contracts",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "ffi_graph_contract",
+      "--test",
+      "ffi_graph_header",
+      "--test",
+      "ffi_graph_layout",
+      "-j4"
+    ],
+    "returncode": 0,
+    "seconds": 21.139331875019707
+  }
+]

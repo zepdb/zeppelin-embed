@@ -74,10 +74,12 @@ impl Accounting {
         }
     }
 
+    #[cfg(feature = "graph-cypher")]
     pub(crate) const fn resident_limit(&self) -> u64 {
         self.budgets.resident_limit()
     }
 
+    #[cfg(feature = "graph-cypher")]
     pub(crate) fn resident_peak_bytes(&self) -> Result<u64, StoreError> {
         Ok(self
             .state
@@ -379,6 +381,7 @@ impl AccountedCounter {
         self.reservation.bytes
     }
 
+    #[cfg(feature = "graph-cypher")]
     pub(crate) fn belongs_to(&self, accounting: &Arc<Accounting>) -> bool {
         Arc::ptr_eq(&self.reservation.accounting, accounting)
     }

@@ -7,8 +7,14 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+graph-cypher = [
+    "dep:zeppelin-embed-cypher",
+    "zeppelin-embed/graph-cypher",
+]
+
 [dependencies]
-zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher" }
+zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", optional = true }
 libfuzzer-sys = "0.4.13"
 rand = "0.9.5"
 rand_chacha = "0.9.0"
@@ -116,6 +122,7 @@ path = "fuzz_targets/cypher_parser.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "native_graph_artifact"
@@ -123,6 +130,7 @@ path = "fuzz_targets/native_graph_artifact.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "graph_catalog"
@@ -130,6 +138,7 @@ path = "fuzz_targets/graph_catalog.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "native_graph_wal"
@@ -137,6 +146,7 @@ path = "fuzz_targets/native_graph_wal.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "native_graph_adjacency"
@@ -144,6 +154,7 @@ path = "fuzz_targets/native_graph_adjacency.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "native_graph_records"
@@ -151,3 +162,4 @@ path = "fuzz_targets/native_graph_records.rs"
 test = false
 doc = false
 bench = false
+required-features = ["graph-cypher"]

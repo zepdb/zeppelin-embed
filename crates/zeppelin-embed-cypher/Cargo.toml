@@ -8,4 +8,4 @@ publish = false
 description = "Bounded internal Cypher syntax frontend for Zeppelin Embed"
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.4.2" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.4.2", features = ["graph-cypher"] }

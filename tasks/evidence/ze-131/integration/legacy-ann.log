@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.08s
+────────────
+ Nextest run ID 8293efa8-4657-49d1-afee-833cb747099b with nextest profile: default
+    Starting 10 tests across 1 binary
+        PASS [   0.008s] ( 1/10) zeppelin-embed::graph_node_blocks graph_node_block_alignment_and_stride
+        PASS [   0.008s] ( 2/10) zeppelin-embed::graph_node_blocks graph_node_block_decoder_rejects_each_malformed_field
+        PASS [   0.008s] ( 3/10) zeppelin-embed::graph_node_blocks graph_node_block_goldens_are_byte_exact
+        PASS [   0.014s] ( 4/10) zeppelin-embed::graph_node_blocks corrupt_graph_fallback_retains_the_complete_boundary_tie_set
+        PASS [   0.007s] ( 5/10) zeppelin-embed::graph_node_blocks graph_node_block_writer_rejects_invalid_layouts_and_nodes
+        PASS [   0.012s] ( 6/10) zeppelin-embed::graph_node_blocks graph_node_block_round_trip_through_mapped_accessor
+        PASS [   0.007s] ( 7/10) zeppelin-embed::graph_node_blocks graph_segment_writer_rejects_mismatched_dimensions_and_node_count
+        PASS [   0.013s] ( 8/10) zeppelin-embed::graph_node_blocks graph_segment_reader_rejects_checksum_valid_geometry_mismatches
+        PASS [   0.022s] ( 9/10) zeppelin-embed::graph_node_blocks graph_reader_validates_every_node_after_forgeable_checksums
+        PASS [   0.014s] (10/10) zeppelin-embed::graph_node_blocks prop_graph_node_block_round_trip_and_corruption_is_typed
+────────────
+     Summary [   0.034s] 10 tests run: 10 passed, 0 skipped

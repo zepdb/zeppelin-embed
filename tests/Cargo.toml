@@ -23,7 +23,16 @@ path = "graph_refinement.rs"
 
 [features]
 # Opt-in internal graph component campaigns; default artifacts stay unchanged.
-graph-cypher = ["zeppelin-embed-ffi/graph-result-test-support"]
+graph-cypher = [
+    "dep:zeppelin-embed-cypher",
+    "zeppelin-embed/graph-cypher",
+    "zeppelin-embed-ffi/graph-cypher",
+]
+# Scoped allocation scheduling for PG16 qualification only.
+graph-result-test-support = [
+    "graph-cypher",
+    "zeppelin-embed-ffi/graph-result-test-support",
+]
 
 [dependencies]
 proptest.workspace = true
@@ -35,12 +44,14 @@ zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.4.2", featur
 zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.4.2" }
 zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.4.2", features = ["abi-panic-probe"] }
 
-zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.4.2" }
+zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.4.2", optional = true }
 
 [[test]]
 name = "graph_fixture"
 path = "graph_fixture.rs"
+required-features = ["graph-cypher"]
 
 [[bin]]
 name = "graph-fixture"
 path = "graph_fixture_cli.rs"
+required-features = ["graph-cypher"]

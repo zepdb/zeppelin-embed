@@ -16,6 +16,7 @@ impl Budgets {
         }
     }
 
+    #[cfg(feature = "graph-cypher")]
     pub(crate) const fn resident_limit(self) -> u64 {
         self.resident
     }

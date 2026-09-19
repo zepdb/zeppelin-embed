@@ -1,0 +1,26 @@
+graph feature command routing: PASS
+    Updating crates.io index
+     Locking 6 packages to latest Rust 1.93.0 compatible versions
+   Compiling libc v0.2.189
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Checking zeppelin-embed-graph-feature-enabled-core-probe v0.0.0 (/Users/aghatage/Documents/code/zeppelin-embed/tools/graph-feature-probe/core-graph)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.66s
+    Updating crates.io index
+     Locking 37 packages to latest Rust 1.93.0 compatible versions
+default FFI direct dependencies: ['zeppelin_embed']
+graph FFI direct dependencies: ['zeppelin_embed', 'zeppelin_embed_cypher']
+core graph-required test targets: 21
+FFI graph-required test targets: 3
+fuzz graph-required targets: 6
+   Compiling libc v0.2.189
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.22s
+graph feature boundary: PASS

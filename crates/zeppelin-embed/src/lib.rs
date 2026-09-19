@@ -27,6 +27,12 @@
 )]
 #![warn(missing_docs)]
 
+#[cfg(all(
+    feature = "graph-cypher",
+    not(all(target_os = "macos", target_arch = "aarch64"))
+))]
+compile_error!("graph-cypher requires macOS arm64; graph packaging requires macOS 14+");
+
 #[cfg(feature = "allocation-audit")]
 mod allocation_audit;
 
@@ -59,6 +65,7 @@ pub mod meta;
 /// Query planning and selectivity decisions.
 pub mod planner;
 /// Native property-graph identity and values, independent of vector indexes.
+#[cfg(feature = "graph-cypher")]
 pub mod property_graph;
 /// Training-free vector quantization.
 pub mod quant;

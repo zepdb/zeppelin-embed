@@ -1,0 +1,283 @@
+[
+  {
+    "case": "mac-arm",
+    "script": "ci-gates.sh",
+    "exit": 73,
+    "args": [
+      "clippy",
+      "--workspace",
+      "--features",
+      "zeppelin-embed-workspace-tests/graph-result-test-support",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "expected_graph": true,
+    "selected_graph": true,
+    "pass": true
+  },
+  {
+    "case": "mac-arm",
+    "script": "coverage.sh",
+    "exit": 73,
+    "args": [
+      "llvm-cov",
+      "--workspace",
+      "--features",
+      "zeppelin-embed-workspace-tests/graph-result-test-support",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)"
+    ],
+    "expected_graph": true,
+    "selected_graph": true,
+    "pass": true
+  },
+  {
+    "case": "mac-arm",
+    "script": "adversarial.sh",
+    "exit": 73,
+    "args": [
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-result-test-support",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "expected_graph": true,
+    "selected_graph": true,
+    "pass": true
+  },
+  {
+    "case": "mac-intel",
+    "script": "ci-gates.sh",
+    "exit": 73,
+    "args": [
+      "clippy",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "mac-intel",
+    "script": "coverage.sh",
+    "exit": 73,
+    "args": [
+      "llvm-cov",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "mac-intel",
+    "script": "adversarial.sh",
+    "exit": 73,
+    "args": [
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "linux",
+    "script": "ci-gates.sh",
+    "exit": 73,
+    "args": [
+      "clippy",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "linux",
+    "script": "coverage.sh",
+    "exit": 73,
+    "args": [
+      "llvm-cov",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-bench",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--exclude",
+      "zeppelin-embed-text",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "linux",
+    "script": "adversarial.sh",
+    "exit": 73,
+    "args": [
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-target-intel",
+    "script": "ci-gates.sh",
+    "exit": 73,
+    "args": [
+      "clippy",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-target-intel",
+    "script": "coverage.sh",
+    "exit": 73,
+    "args": [
+      "llvm-cov",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-target-intel",
+    "script": "adversarial.sh",
+    "exit": 73,
+    "args": [
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-intel-toolchain",
+    "script": "ci-gates.sh",
+    "exit": 73,
+    "args": [
+      "clippy",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-intel-toolchain",
+    "script": "coverage.sh",
+    "exit": 73,
+    "args": [
+      "llvm-cov",
+      "--workspace",
+      "--exclude",
+      "zeppelin-embed-cypher",
+      "--fail-under-lines",
+      "90",
+      "--ignore-filename-regex",
+      "(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  },
+  {
+    "case": "arm-intel-toolchain",
+    "script": "adversarial.sh",
+    "exit": 73,
+    "args": [
+      "test",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "smoke",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "expected_graph": false,
+    "selected_graph": false,
+    "pass": true
+  }
+]

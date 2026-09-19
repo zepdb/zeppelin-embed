@@ -14,6 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [[ "${1:-}" == "run" && -n "${2:-}" ]]; then
     TARGET_NAME="$2"
+    GRAPH_FEATURE_ARGS=()
+    case "$TARGET_NAME" in
+      cypher_parser|native_graph_artifact|graph_catalog|native_graph_wal|native_graph_adjacency|native_graph_records)
+        GRAPH_FEATURE_ARGS=(--features graph-cypher)
+        ;;
+    esac
     SEED_DIR="$PROJECT_ROOT/fuzz/seeds/$TARGET_NAME"
     if [[ -d "$SEED_DIR" ]]; then
         CORPUS_DIR="$PROJECT_ROOT/fuzz/corpus/$TARGET_NAME"
@@ -30,11 +36,15 @@ if [[ "${1:-}" == "run" && -n "${2:-}" ]]; then
                 FUZZER_ARGS+=("$argument")
             fi
         done
-        COMMAND=(run "${RUN_OPTIONS[@]}" "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR")
+        COMMAND=(run "${RUN_OPTIONS[@]}" "${GRAPH_FEATURE_ARGS[@]}" "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR")
         if (( AFTER_SEPARATOR == 1 )); then
             COMMAND+=(-- "${FUZZER_ARGS[@]}")
         fi
         exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz "${COMMAND[@]}"
+    fi
+    if (( ${#GRAPH_FEATURE_ARGS[@]} > 0 )); then
+        exec env RUSTUP_TOOLCHAIN=nightly cargo-fuzz run \
+            "${GRAPH_FEATURE_ARGS[@]}" "${@:2}"
     fi
 fi
 

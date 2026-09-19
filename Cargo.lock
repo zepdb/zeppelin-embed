@@ -1302,6 +1302,7 @@ dependencies = [
  "loom",
  "tempfile",
  "zeppelin-embed",
+ "zeppelin-embed-cypher",
  "zeppelin-embed-text",
 ]
 

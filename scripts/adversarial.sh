@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/graph-feature-target.sh"
 
 campaign_catalog=(
   overall
@@ -286,6 +287,15 @@ if [[ "${ZE_ADV_CLI_TEST:-0}" == "1" ]]; then
   exit 0
 fi
 
+graph_target="$(graph_effective_target)"
+graph_feature_args=()
+if graph_target_supports_native_graph "$graph_target"; then
+  graph_feature_args=(--features graph-result-test-support)
+  echo "native graph campaigns: selected for $graph_target"
+else
+  echo "native graph campaigns: not selected for $graph_target; running legacy campaigns"
+fi
+
 cd "$repo_root"
 base_artifacts="$artifacts"
 for selected_campaign in "${campaigns[@]}"; do
@@ -302,18 +312,22 @@ for selected_campaign in "${campaigns[@]}"; do
   case "$subcommand" in
     episode)
       cargo test -p zeppelin-embed-workspace-tests \
+        ${graph_feature_args[@]+"${graph_feature_args[@]}"} \
         --test adversarial_tests run -- --ignored --exact --nocapture
       ;;
     replay)
       cargo test -p zeppelin-embed-workspace-tests \
+        ${graph_feature_args[@]+"${graph_feature_args[@]}"} \
         --test adversarial_tests replay -- --ignored --exact --nocapture
       ;;
     smoke)
       cargo test -p zeppelin-embed-workspace-tests \
+        ${graph_feature_args[@]+"${graph_feature_args[@]}"} \
         --test adversarial_tests smoke -- --exact --nocapture
       ;;
     campaign)
       cargo test --release -p zeppelin-embed-workspace-tests \
+        ${graph_feature_args[@]+"${graph_feature_args[@]}"} \
         --test adversarial_tests campaign -- --ignored --exact --nocapture
       ;;
   esac

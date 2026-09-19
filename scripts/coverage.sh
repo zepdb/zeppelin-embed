@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/graph-feature-target.sh"
 
 if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
     echo "error: cargo-llvm-cov is required; install it with 'cargo install cargo-llvm-cov'" >&2
@@ -12,8 +13,21 @@ fi
 cd "$PROJECT_ROOT"
 
 WORKSPACE_ARGS=(--workspace)
-if [[ "$(uname -s)" != "Darwin" ]]; then
-    WORKSPACE_ARGS+=(--exclude zeppelin-embed-text --exclude zeppelin-embed-bench)
+GRAPH_TARGET="$(graph_effective_target "$@")"
+if graph_target_supports_native_graph "$GRAPH_TARGET"; then
+    WORKSPACE_ARGS+=(--features zeppelin-embed-workspace-tests/graph-result-test-support)
+    echo "native graph coverage: selected for $GRAPH_TARGET"
+else
+    if graph_host_is_darwin; then
+        WORKSPACE_ARGS+=(--exclude zeppelin-embed-cypher)
+    else
+        WORKSPACE_ARGS+=(
+            --exclude zeppelin-embed-bench
+            --exclude zeppelin-embed-cypher
+            --exclude zeppelin-embed-text
+        )
+    fi
+    echo "native graph coverage: not selected for $GRAPH_TARGET; running legacy coverage"
 fi
 
 # Line coverage is the contract. LLVM's function count includes closures,

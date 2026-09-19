@@ -8,6 +8,7 @@
 
 mod adversarial;
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_catalog_probe_preserves_independent_symbol_and_admission_contracts() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -17,6 +18,7 @@ fn property_graph_catalog_probe_preserves_independent_symbol_and_admission_contr
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_catalog_faults_fire_with_same_seed_clean_controls() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -34,6 +36,7 @@ fn property_graph_catalog_faults_fire_with_same_seed_clean_controls() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_domain_probe_preserves_primitive_contracts() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -43,6 +46,7 @@ fn property_graph_domain_probe_preserves_primitive_contracts() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_contents_probe_preserves_exact_logical_equality() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -53,6 +57,7 @@ fn property_graph_contents_probe_preserves_exact_logical_equality() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_artifact_probe_preserves_preparation_and_reopen_contracts() {
     for seed in [0, 1, 42, u64::MAX] {
@@ -8161,12 +8166,15 @@ fn one_episode_records_successful_public_path_coverage() {
         outcome.coverage.count("store.hybrid_search") > 0,
         "Store hybrid path was not registered"
     );
-    for key in adversarial::property_graph_storage::REQUIRED_COVERAGE {
-        assert_eq!(
-            outcome.coverage.count(key),
-            1,
-            "missing artifact runner coverage {key}"
-        );
+    #[cfg(feature = "graph-cypher")]
+    {
+        for key in adversarial::property_graph_storage::REQUIRED_COVERAGE {
+            assert_eq!(
+                outcome.coverage.count(key),
+                1,
+                "missing artifact runner coverage {key}"
+            );
+        }
     }
     assert!(
         !outcome.coverage_bytes.is_empty(),
@@ -18675,6 +18683,7 @@ fn campaign_invariant_checked(
     coverage.count(evidence) > 0
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_key_lifecycle_probe_preserves_exact_history() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -18685,6 +18694,7 @@ fn property_graph_key_lifecycle_probe_preserves_exact_history() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_query_probe_checks_values_scopes_and_inflight_faults() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -18705,6 +18715,7 @@ fn property_graph_query_probe_checks_values_scopes_and_inflight_faults() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_query_contracts() {
     let root = tempfile::tempdir().expect("query runner episode artifacts");
@@ -18724,6 +18735,7 @@ fn one_runner_episode_reaches_required_query_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_wal_probe_pairs_faults_with_same_seed_clean_controls() {
     for seed in [0, 1, 42, u64::MAX] {
@@ -18735,6 +18747,7 @@ fn property_graph_wal_probe_pairs_faults_with_same_seed_clean_controls() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_wal_contracts() {
     let root = tempfile::tempdir().expect("query runner episode artifacts");
@@ -18754,6 +18767,7 @@ fn one_runner_episode_reaches_required_wal_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -18769,6 +18783,7 @@ fn property_graph_runtime_probe_checks_bags_counters_and_scheduled_failures() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_runtime_contracts() {
     let root = tempfile::tempdir().expect("runtime runner episode artifacts");
@@ -18788,6 +18803,7 @@ fn one_runner_episode_reaches_required_runtime_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults() {
     for seed in [0, 41] {
@@ -18805,6 +18821,7 @@ fn property_graph_staging_probe_checks_atomic_mixed_outcomes_and_paired_faults()
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_staging_contracts() {
     let root = tempfile::tempdir().expect("staging runner episode artifacts");
@@ -18824,6 +18841,7 @@ fn one_runner_episode_reaches_required_staging_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_binding_probe_preserves_profile_types_and_faults() {
     for seed in [0, 1, 55, u64::MAX] {
@@ -18839,6 +18857,7 @@ fn property_graph_binding_probe_preserves_profile_types_and_faults() {
         }
     }
 }
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_binding_contracts() {
     let root = tempfile::tempdir().expect("binder runner artifacts");
@@ -18858,6 +18877,7 @@ fn one_runner_episode_reaches_required_binding_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn graph_fixture_seed_stream_preserves_existing_adversarial_derivation() {
     use rand::Rng;
@@ -18876,6 +18896,7 @@ fn graph_fixture_seed_stream_preserves_existing_adversarial_derivation() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_fixture_comparators_fire_with_same_seed_controls() {
     for seed in [0, 1, 42, u64::MAX] {
@@ -18886,6 +18907,7 @@ fn property_graph_fixture_comparators_fire_with_same_seed_controls() {
         }
     }
 }
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_fixture_comparators() {
     let root = tempfile::tempdir().unwrap();
@@ -18904,6 +18926,7 @@ fn one_runner_episode_reaches_required_fixture_comparators() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls() {
     for seed in [0, 1, 124, u64::MAX] {
@@ -18923,6 +18946,7 @@ fn property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls() 
         eprintln!("PG12 seed={seed} {report:?}");
     }
 }
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_adjacency_contracts() {
     let root = tempfile::tempdir().unwrap();
@@ -18938,6 +18962,7 @@ fn one_runner_episode_reaches_required_adjacency_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_relational_probe_preserves_order_bags_and_inflight_faults() {
     for seed in [0, 1, 125, u64::MAX] {
@@ -18955,6 +18980,7 @@ fn property_graph_relational_probe_preserves_order_bags_and_inflight_faults() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_relational_contracts() {
     let root = tempfile::tempdir().expect("relational runner artifacts");
@@ -18974,6 +19000,7 @@ fn one_runner_episode_reaches_required_relational_contracts() {
     );
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn completed_owner_probe_preserves_bits_bags_and_real_fault_controls() {
     for seed in [0, 1, 127, u64::MAX] {
@@ -18989,6 +19016,7 @@ fn completed_owner_probe_preserves_bits_bags_and_real_fault_controls() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_completed_owner_controls() {
     let root = tempfile::tempdir().unwrap();
@@ -18999,7 +19027,7 @@ fn one_runner_episode_reaches_completed_owner_controls() {
     }
 }
 
-#[cfg(feature = "graph-cypher")]
+#[cfg(feature = "graph-result-test-support")]
 #[test]
 fn property_graph_response_probe_checks_real_owners_and_paired_faults() {
     for seed in [0, 1, 128, u64::MAX] {
@@ -19015,7 +19043,7 @@ fn property_graph_response_probe_checks_real_owners_and_paired_faults() {
     }
 }
 
-#[cfg(feature = "graph-cypher")]
+#[cfg(feature = "graph-result-test-support")]
 #[test]
 fn one_runner_episode_reaches_required_graph_response_contracts() {
     let root = tempfile::tempdir().expect("graph response runner artifacts");
@@ -19037,14 +19065,49 @@ fn one_runner_episode_reaches_required_graph_response_contracts() {
 
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
-fn graph_response_runner_keys_are_absent_without_graph_feature() {
+fn native_graph_runner_keys_are_absent_without_graph_feature() {
     assert!(
-        !adversarial::coverage::REQUIRED_SMOKE_COVERAGE
-            .iter()
+        !adversarial::coverage::required_smoke_coverage()
+            .any(|key| key.starts_with("property-graph."))
+    );
+    assert!(
+        adversarial::coverage::REQUIRED_SMOKE_COVERAGE.contains(&"search.graph"),
+        "the legacy ANN graph campaign must remain enabled by default"
+    );
+    assert!(
+        adversarial::coverage::REQUIRED_SMOKE_COVERAGE.contains(&"search.filtered_graph"),
+        "the filtered legacy ANN graph campaign must remain enabled by default"
+    );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_graph_runner_keys_are_active_with_graph_feature() {
+    let active = adversarial::coverage::required_smoke_coverage().collect::<BTreeSet<_>>();
+    for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
+        assert!(active.contains(key), "enabled graph runner omitted {key}");
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", not(feature = "graph-result-test-support")))]
+#[test]
+fn graph_response_runner_keys_are_absent_without_test_hook() {
+    assert!(
+        !adversarial::coverage::required_smoke_coverage()
             .any(|key| key.starts_with("property-graph.response."))
     );
 }
 
+#[cfg(feature = "graph-result-test-support")]
+#[test]
+fn graph_response_runner_keys_are_active_with_test_hook() {
+    let response_keys = adversarial::coverage::required_smoke_coverage()
+        .filter(|key| key.starts_with("property-graph.response."))
+        .collect::<Vec<_>>();
+    assert_eq!(response_keys.len(), 12);
+}
+
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_directories_probe_checks_native_roots_and_independent_history() {
     for seed in [0, 41] {
@@ -19058,6 +19121,7 @@ fn property_graph_directories_probe_checks_native_roots_and_independent_history(
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_native_directory_contracts() {
     let root = tempfile::tempdir().expect("directory runner episode artifacts");
@@ -19072,6 +19136,7 @@ fn one_runner_episode_reaches_required_native_directory_contracts() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_lowering_probe_checks_complete_plans_and_inflight_faults() {
     for seed in [0, 1, 126, u64::MAX] {
@@ -19094,6 +19159,7 @@ fn property_graph_lowering_probe_checks_complete_plans_and_inflight_faults() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 fn one_runner_episode_reaches_required_lowering_contracts() {
     let root = tempfile::tempdir().unwrap();

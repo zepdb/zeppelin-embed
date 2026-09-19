@@ -16,6 +16,7 @@ categories = ["database-implementations", "text-processing"]
 crate-type = ["rlib", "staticlib"]
 
 [features]
+graph-cypher = []
 query-timing = []
 allocation-audit = []
 test-support = []
@@ -63,3 +64,87 @@ harness = false
 [[bench]]
 name = "filtered_exec"
 harness = false
+
+[[test]]
+name = "graph_adjacency"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_artifact"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_canonical"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_catalog"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_checked_utf8"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_compiled_context"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_completed_predicate"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_completed_results"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_directories"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_key_lifecycle"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_allocation"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_external_capacity"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_plan"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_runtime"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_runtime_control"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_query_values"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_relational"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_storage_failures"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_storage_prepare"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_wal"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_write_staging"
+required-features = ["graph-cypher"]

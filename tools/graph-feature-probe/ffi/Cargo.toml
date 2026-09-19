@@ -1,0 +1,13 @@
+[package]
+name = "zeppelin-embed-graph-feature-ffi-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+graph-cypher = ["zeppelin-embed-ffi/graph-cypher"]
+
+[dependencies]
+zeppelin-embed-ffi = { path = "../../../crates/zeppelin-embed-ffi", default-features = false }

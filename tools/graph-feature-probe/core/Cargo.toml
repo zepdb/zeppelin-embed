@@ -1,0 +1,10 @@
+[package]
+name = "zeppelin-embed-graph-feature-core-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+zeppelin-embed = { path = "../../../crates/zeppelin-embed", default-features = false }

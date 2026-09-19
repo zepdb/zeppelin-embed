@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-/// Exact product and fault paths that the 12-seed default smoke matrix must reach.
-pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+/// Native property-graph paths required when the graph feature is selected.
+pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.directories.native-history",
     "property-graph.directories.old-root",
     "property-graph.directories.reopen",
@@ -18,29 +18,29 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.directories.budget.fire",
     "property-graph.directories.budget.clean",
     "property-graph.directories.private-reuse",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.aligned-owner",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.private-forged-stale",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.abort-cleanup",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.concurrent-single-owner",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.known-outcome",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.allocation.fire",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.cancel.fire",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.memory.fire",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.work.fire",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.registry.fire",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.same-seed-control",
-    #[cfg(feature = "graph-cypher")]
+    #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.oracle.can-fire",
     "property-graph.completed.bits-and-bags",
     "property-graph.completed.full-id",
@@ -174,6 +174,10 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.runtime.clock.final",
     "property-graph.runtime.same-seed-control",
     "property-graph.runtime.release",
+];
+
+/// Legacy product and fault paths required by every default smoke matrix.
+pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "op.open",
     "op.ingest",
     "op.epoch_mismatch_probe",
@@ -264,6 +268,18 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "fault.mode.crash",
 ];
 
+#[cfg(feature = "graph-cypher")]
+const ACTIVE_GRAPH_SMOKE_COVERAGE: &[&str] = REQUIRED_GRAPH_SMOKE_COVERAGE;
+#[cfg(not(feature = "graph-cypher"))]
+const ACTIVE_GRAPH_SMOKE_COVERAGE: &[&str] = &[];
+
+pub fn required_smoke_coverage() -> impl Iterator<Item = &'static str> {
+    REQUIRED_SMOKE_COVERAGE
+        .iter()
+        .copied()
+        .chain(ACTIVE_GRAPH_SMOKE_COVERAGE.iter().copied())
+}
+
 pub const REQUIRED_LAYERED_COVERAGE: &[&str] = &[
     "fault.layer.io",
     "fault.layer.content",
@@ -314,9 +330,7 @@ impl CoverageRegistry {
 
     #[must_use]
     pub fn missing_required_smoke(&self) -> Vec<&'static str> {
-        REQUIRED_SMOKE_COVERAGE
-            .iter()
-            .copied()
+        required_smoke_coverage()
             .filter(|key| self.count(key) == 0)
             .collect()
     }
